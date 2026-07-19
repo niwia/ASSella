@@ -1973,6 +1973,62 @@ class SettingsDialog(QDialog):
             self.asshead_status_label.setText("Status: Not checked.")
             self.asshead_status_label.setStyleSheet("color: #888888;")
 
+        # Enable/disable restore backup button based on backup existence
+        from utils.assfixer import get_latest_backup_path, DEFAULT_CONFIG_PATH
+        if hasattr(self, "restore_backup_btn") and self.restore_backup_btn:
+            has_bak = get_latest_backup_path(DEFAULT_CONFIG_PATH) is not None
+            self.restore_backup_btn.setEnabled(has_bak)
+
+    def open_sls_config(self) -> None:
+        """Open the SLSsteam config.yaml file."""
+        from utils.assfixer import DEFAULT_CONFIG_PATH
+        if not DEFAULT_CONFIG_PATH.exists():
+            QMessageBox.warning(self, "Open Config", "SLSsteam config.yaml does not exist.")
+            return
+
+        # Attempt to open using the default system handler
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+        try:
+            opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(DEFAULT_CONFIG_PATH)))
+            if not opened:
+                import webbrowser
+                webbrowser.open(DEFAULT_CONFIG_PATH.as_uri())
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open config.yaml:\n{e}")
+
+    def restore_sls_backup(self) -> None:
+        """Restores the last backup copy of config.yaml."""
+        from utils.assfixer import restore_latest_backup, DEFAULT_CONFIG_PATH
+
+        reply = QMessageBox.question(
+            self, "Restore Backup",
+            "Are you sure you want to restore the latest backup? This will overwrite your current config.yaml.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        success, msg, bak_path = restore_latest_backup(DEFAULT_CONFIG_PATH)
+        if success:
+            import utils.assfixer
+            utils.assfixer.boot_status = "checking"
+
+            import threading
+            def run_check():
+                utils.assfixer.run_boot_config_check()
+                # Safely update status label
+                from PyQt6.QtCore import QMetaObject, Qt
+                QMetaObject.invokeMethod(self, "_update_asshead_status_ui", Qt.ConnectionType.QueuedConnection)
+                if self.main_window and hasattr(self.main_window, "refresh_system_status"):
+                    self.main_window.refresh_system_status()
+
+            threading.Thread(target=run_check, daemon=True).start()
+            QMessageBox.information(self, "Restore Backup", msg)
+        else:
+            QMessageBox.critical(self, "Restore Backup Error", msg)
+
     def run_asshead_fixer(self) -> None:
         """Runs the ASShead config fixer and shows outcomes."""
         from utils.assfixer import run_asshead_migration, DEFAULT_CONFIG_PATH

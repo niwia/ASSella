@@ -54,6 +54,82 @@ VERSION = "2.0.0"
 boot_status = None
 boot_issues = []
 
+def fetch_and_apply_rules() -> bool:
+    """Fetches latest rules JSON from ASSfixer repo and updates validation keys."""
+    global SCALAR_KEYS, BOOLEAN_KEYS, LIST_KEYS, MAP_KEYS, MAP_OF_LIST_KEYS, KNOWN_KEYS
+    rules_url = "https://raw.githubusercontent.com/niwia/ASSfixer/main/asshead_rules.json"
+    try:
+        req = urllib.request.Request(rules_url, headers={"User-Agent": "ASSella-Fixer"})
+        with urllib.request.urlopen(req, timeout=8) as response:
+            rules_data = json.loads(response.read().decode("utf-8"))
+            
+            if "SCALAR_KEYS" in rules_data:
+                SCALAR_KEYS.clear()
+                SCALAR_KEYS.update(rules_data["SCALAR_KEYS"])
+                
+            if "BOOLEAN_KEYS" in rules_data:
+                BOOLEAN_KEYS.clear()
+                BOOLEAN_KEYS.update(rules_data["BOOLEAN_KEYS"])
+                
+            if "LIST_KEYS" in rules_data:
+                LIST_KEYS.clear()
+                LIST_KEYS.update(rules_data["LIST_KEYS"])
+                
+            if "MAP_KEYS" in rules_data:
+                MAP_KEYS.clear()
+                MAP_KEYS.update(rules_data["MAP_KEYS"])
+                
+            if "MAP_OF_LIST_KEYS" in rules_data:
+                MAP_OF_LIST_KEYS.clear()
+                MAP_OF_LIST_KEYS.update(rules_data["MAP_OF_LIST_KEYS"])
+                
+            KNOWN_KEYS = (
+                SCALAR_KEYS | LIST_KEYS | MAP_KEYS | MAP_OF_LIST_KEYS
+                | {IDLE_STATUS_KEY, "UnownedStatus"}
+            )
+            return True
+    except Exception as e:
+        # Fall back to local rules (hardcoded below)
+        return False
+
+def get_latest_backup_path(config_path: Path) -> Optional[Path]:
+    """
+    Returns the path to the most recent backup file (config.yaml.bak*)
+    sorted by modification time (newest first).
+    """
+    parent = config_path.parent
+    name = config_path.name
+    backups = []
+    
+    bak_base = parent / (name + ".bak")
+    if bak_base.exists():
+        backups.append(bak_base)
+        
+    for p in parent.glob(name + ".bak*"):
+        if p.exists() and p != bak_base:
+            backups.append(p)
+            
+    if not backups:
+        return None
+        
+    backups.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    return backups[0]
+
+def restore_latest_backup(config_path: Path) -> tuple[bool, str, Optional[Path]]:
+    """
+    Restores the newest backup over the config.yaml file.
+    Returns (success, message, restored_backup_path).
+    """
+    try:
+        bak_path = get_latest_backup_path(config_path)
+        if not bak_path:
+            return False, "No backup file found to restore.", None
+            
+        shutil.copy2(bak_path, config_path)
+        return True, f"Successfully restored config from backup:\n{bak_path.name}", bak_path
+    except Exception as e:
+        return False, f"Failed to restore backup: {e}", None
+
 def run_boot_config_check() -> None:
     """
     Checks the SLSsteam config once in a background thread and updates global status.
@@ -65,6 +141,9 @@ def run_boot_config_check() -> None:
 
     boot_status = "checking"
     try:
+        # Fetch dynamic rules first
+        fetch_and_apply_rules()
+
         config_path = DEFAULT_CONFIG_PATH
         if not config_path.exists():
             boot_status = "no_config"
@@ -74,8 +153,6 @@ def run_boot_config_check() -> None:
         issues = validate_config(config_path)
 
         # Try to download template to check for missing upstream keys.
-        # If the network is unavailable, we still report the local validation result
-        # rather than marking the whole check as failed.
         new_keys = set()
         try:
             template_yaml = fetch_template(TEMPLATE_SOURCE_URL)
@@ -86,7 +163,6 @@ def run_boot_config_check() -> None:
         except Exception as net_err:
             # Network unavailable or GitHub unreachable — skip upstream key check
             boot_issues = [f"[Network] Could not fetch template: {net_err}"]
-            # Still report based purely on local validation
             if issues:
                 boot_status = "needs_fix"
                 boot_issues = issues[:]

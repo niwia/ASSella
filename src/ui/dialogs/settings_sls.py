@@ -313,12 +313,26 @@ def create_sls_tab(dialog) -> QWidget:
     dialog.asshead_status_label.setWordWrap(True)
     fixer_layout.addWidget(dialog.asshead_status_label)
 
+    fixer_btn_layout = QHBoxLayout()
+
     dialog.run_asshead_btn = QPushButton("Run SLS Config Fixer")
     dialog.run_asshead_btn.setToolTip(
         "Scan, format, deduplicate, and merge latest upstream keys into your SLSsteam config.yaml."
     )
     dialog.run_asshead_btn.clicked.connect(dialog.run_asshead_fixer)
-    fixer_layout.addWidget(dialog.run_asshead_btn)
+    fixer_btn_layout.addWidget(dialog.run_asshead_btn)
+
+    dialog.open_config_btn = QPushButton("Open Config")
+    dialog.open_config_btn.setToolTip("Open the config.yaml file in the system default text editor.")
+    dialog.open_config_btn.clicked.connect(dialog.open_sls_config)
+    fixer_btn_layout.addWidget(dialog.open_config_btn)
+
+    dialog.restore_backup_btn = QPushButton("Restore Backup")
+    dialog.restore_backup_btn.setToolTip("Restore the last backup copy of config.yaml.")
+    dialog.restore_backup_btn.clicked.connect(dialog.restore_sls_backup)
+    fixer_btn_layout.addWidget(dialog.restore_backup_btn)
+
+    fixer_layout.addLayout(fixer_btn_layout)
 
     fixer_group.setLayout(fixer_layout)
     layout.addWidget(fixer_group)

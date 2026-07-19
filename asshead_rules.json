@@ -1,0 +1,52 @@
+{
+  "SCALAR_KEYS": [
+    "DisableFamilyShareLock",
+    "UseWhitelist",
+    "AutoFilterList",
+    "PlayNotOwnedGames",
+    "SafeMode",
+    "Notifications",
+    "WarnHashMissmatch",
+    "NotifyInit",
+    "API",
+    "DisableCloud",
+    "FakeEmail",
+    "FakeWalletBalance",
+    "LogLevel",
+    "ExtendedLogging",
+    "MaxSchemaTries",
+    "DisableUpdates"
+  ],
+  "BOOLEAN_KEYS": [
+    "DisableFamilyShareLock",
+    "UseWhitelist",
+    "AutoFilterList",
+    "PlayNotOwnedGames",
+    "SafeMode",
+    "Notifications",
+    "WarnHashMissmatch",
+    "NotifyInit",
+    "API",
+    "DisableCloud",
+    "ExtendedLogging",
+    "MaxSchemaTries",
+    "DisableUpdates"
+  ],
+  "LIST_KEYS": [
+    "AppIds",
+    "AdditionalApps",
+    "FakeOffline",
+    "DepotBlacklist"
+  ],
+  "MAP_KEYS": [
+    "AppTokens",
+    "FakeAppIds",
+    "GameTitles",
+    "SubscriptionTimestamps",
+    "DlcData",
+    "ManifestIds"
+  ],
+  "MAP_OF_LIST_KEYS": [
+    "DenuvoGames"
+  ]
+}
