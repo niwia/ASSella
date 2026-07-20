@@ -1,19 +1,19 @@
-# Release Notes - ASSella v2.3.1-rc1
+# ASSella v2.3.1-rc2 Release Notes
 
-### SLS Config Enhancements & Dynamic Rules
+## DLC Only Mode Enhancements
+- Restructured DLC only mode to be modular, robust, and safe.
+- Uninstallation in DLC only mode now deletes only the files belonging to the selected DLC depots, strictly leaving the base game files untouched.
+- Cleaned up empty installation folders automatically after a DLC-only uninstall if no other files remain.
+- Synchronized DLC configuration rules to config.yaml seamlessly.
+- Consolidated all DLC mode state queries throughout the codebase to use a centralized helper.
 
-* **Dynamic Validation Rules:** The SLS config validator (ASShead) now fetches its validation rules (`asshead_rules.json`) dynamically from the ASSfixer GitHub repository on boot. New SLSsteam configuration options can now be supported immediately without requiring an ASSella update. An offline fallback is in place.
-* **Open Config Button:** Added a button in Settings -> SLS to open the config.yaml file directly in the system's default text editor.
-* **Restore Backup Button:** Added a button in Settings -> SLS to restore the last backup copy of config.yaml. The button enables/disables dynamically based on backup file availability.
-
-### Credits Screen Redesign
-
-* **Adaptive Layout:** Redesigned the Credits & Updates page into a dynamic, responsive grid layout that adapts to container resizing.
-* **Pill Badges:** Added orange BETA and ALPHA branch badges next to the version label to clearly distinguish pre-release channels.
-* **Simplified Credits:** Cleaned up descriptions to lists, credited contributors and third-party projects directly.
-
-### Robust Self-Updater
-
-* **Delta updates fixed:** Corrected the ZSync asset filename mapping in the build pipeline and updater logic, resolving the exit code -6 (SIGABRT) crash.
-* **Robust Fail-safe:** If delta updates fail, the updater automatically falls back to streaming the full AppImage directly from GitHub, featuring a live progress bar with downloaded and total sizes.
-* **Fixed Background Checker Crash:** Fixed a missing import error (re module) that previously caused background update checks to fail silently.
+## Game Details Redesign
+- Fully redesigned the Game Details page with a compact, layout-matching design.
+- Replaced the vertical sidebar with a clean horizontal tab bar (Info and Tools).
+- Aligned text labels, inputs, and buttons to use unmuted high-contrast typography that matches the main application's theme.
+- Structured the Info tab with a compact grid layout for key statistics (Install size, Manifest cache status).
+- Replaced path details with a single full-width button to open the installation folder directly.
+- Consolidated status pill and check-for-updates actions, displaying the last-checked timestamp inline.
+- Integrated Goldberg Emulator and DRM actions into a neat, grid-based layout in the Tools tab.
+- Added quick links (Steam Store, SteamDB) and copy clipboard helpers (App ID, Install path).
+- Redesigned the Uninstall workflow to expand as an inline danger zone pill at the bottom of the Info tab.

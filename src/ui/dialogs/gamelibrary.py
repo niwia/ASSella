@@ -109,13 +109,9 @@ def format_game_display_name(game_data: dict) -> str:
     name = game_data.get("game_name", "Unknown")
     appid = str(game_data.get("appid", ""))
     if appid and appid not in ("0", "N/A", "unknown"):
-        from utils.settings import get_settings
-        try:
-            settings = get_settings()
-            if settings.value(f"dlc_only_mode/{appid}", False, type=bool):
-                return f"{name} [DLC MODE]"
-        except Exception:
-            pass
+        from utils.dlc_helpers import is_dlc_only_mode
+        if is_dlc_only_mode(appid):
+            return f"{name} [DLC MODE]"
     return name
 
 
@@ -780,12 +776,8 @@ class GameLibraryDialog(QDialog):
             has_update = game.get("update_status") == "update_available"
             return (0 if has_update else 1, game.get("game_name", "").lower())
         if sort_option == "dlc_only_first":
-            from utils.settings import get_settings
-            try:
-                settings = get_settings()
-                is_dlc = settings.value(f"dlc_only_mode/{game.get('appid')}", False, type=bool)
-            except Exception:
-                is_dlc = False
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc = is_dlc_only_mode(str(game.get("appid", "")))
             return (0 if is_dlc else 1, game.get("game_name", "").lower())
         return game.get("game_name", "").lower()
 
@@ -1732,8 +1724,15 @@ class GameLibraryDialog(QDialog):
         c_data = opts.get("compat").isChecked() if "compat" in opts else False
         c_saves = opts.get("saves").isChecked() if "saves" in opts else False
 
+        is_dlc_only = False
+        appid = str(game_data.get("appid", "0"))
+        if appid and appid not in ("0", "N/A", "unknown"):
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc_only = is_dlc_only_mode(appid)
+
+        progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
         self._uninstall_progress_dialog = QProgressDialog(
-            "Uninstalling game...", None, 0, 0, self
+            progress_title, None, 0, 0, self
         )
         self._uninstall_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self._uninstall_progress_dialog.show()

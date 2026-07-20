@@ -1029,4 +1029,7 @@ def get_dotnet_env():
     return env
 
 
+from utils.dlc_helpers import get_dlc_only_info, is_dlc_only_mode
+
+
 

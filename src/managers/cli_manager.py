@@ -405,7 +405,8 @@ class CLITaskManager:
         appid = self.game_data.get("appid") if self.game_data else None
         is_dlc_only = False
         if appid:
-            is_dlc_only = self.settings.value(f"dlc_only_mode/{appid}", False, type=bool)
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc_only = is_dlc_only_mode(str(appid))
 
         if steamless_enabled and not is_dlc_only:
             self.logger.info("Steamless is enabled, starting DRM removal...")
@@ -437,6 +438,15 @@ class CLITaskManager:
         """Create Steam ACF manifest file"""
         if not self.game_data or not self.current_dest_path:
             return
+
+        appid = self.game_data.get("appid")
+        if appid:
+            # Bypass ACF file generation in DLC Only mode since the base game ACF is owned by Steam
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc_only = is_dlc_only_mode(str(appid))
+            if is_dlc_only:
+                self.logger.info("DLC Only mode active. Skipping base game .acf manifest generation.")
+                return
 
         self.logger.info("Generating Steam .acf manifest file...")
 
@@ -529,20 +539,32 @@ class CLITaskManager:
         if not selected_depots or not all_manifests:
             return
 
-        main_depot_id = str(selected_depots[0])
-        manifest_id = all_manifests.get(main_depot_id)
-        if not manifest_id:
-            return
-
         try:
             depots_dir = Path(get_base_path()) / "depots"
             depots_dir.mkdir(parents=True, exist_ok=True)
-
             depot_file = depots_dir / f"{appid}.depot"
-            with open(depot_file, "w") as f:
-                f.write(f"{main_depot_id}: {manifest_id}\n")
 
-            self.logger.info(f"Saved main depot info: {appid}:{manifest_id}")
+            existing_entries = {}
+            if depot_file.exists():
+                try:
+                    for line in depot_file.read_text().splitlines():
+                        parts = [p.strip() for p in line.split(":")]
+                        if len(parts) >= 2:
+                            existing_entries[parts[0]] = line
+                except Exception:
+                    pass
+
+            for depot_id_raw in selected_depots:
+                depot_id = str(depot_id_raw)
+                manifest_id = all_manifests.get(depot_id)
+                if manifest_id:
+                    existing_entries[depot_id] = f"{depot_id}: {manifest_id}"
+
+            with open(depot_file, "w") as f:
+                for entry_line in existing_entries.values():
+                    f.write(entry_line + "\n")
+
+            self.logger.info(f"Saved depot info for app {appid}: {len(existing_entries)} depot(s)")
         except OSError as e:
             self.logger.error(f"Failed to save depot info: {e}")
 
@@ -889,8 +911,8 @@ class CLITaskManager:
             main_appid = self.game_data.get("appid")
             game_name = self.game_data.get("game_name", "")
             if main_appid:
-                add_additional_app(config_path, str(main_appid), game_name)
-                self.logger.info(f"Added AppID '{main_appid}' to SLSsteam config")
+                from utils.dlc_helpers import sync_dlc_only_sls_config
+                sync_dlc_only_sls_config(config_path, str(main_appid), game_name)
 
             selected_dlcs: list = self.game_data.get("selected_dlcs", [])
             dlcs: dict = self.game_data.get("dlcs", {})

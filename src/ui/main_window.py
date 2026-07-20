@@ -443,9 +443,10 @@ class SimplifiedTerminalWidget(QWidget):
             for g in games_with_updates:
                 name = g.get("game_name", "Unknown Game")
                 appid = str(g.get("appid", ""))
-                if appid and settings.value(f"dlc_only_mode/{appid}", False, type=bool):
+                from utils.dlc_helpers import is_dlc_only_mode
+                if appid and is_dlc_only_mode(appid):
                     name = f"{name} [DLC MODE]"
-                
+
                 # Make it look like a little card/row
                 row = QFrame()
                 row.setStyleSheet("""
@@ -500,8 +501,8 @@ class SimplifiedTerminalWidget(QWidget):
 
                 game_name = entry.get('game_name', 'Unknown')
                 appid = str(entry.get('appid', ''))
-                settings = self.main_window.settings
-                if appid and settings.value(f"dlc_only_mode/{appid}", False, type=bool):
+                from utils.dlc_helpers import is_dlc_only_mode
+                if appid and is_dlc_only_mode(appid):
                     game_name = f"{game_name} [DLC MODE]"
 
                 success = entry.get("success", True)

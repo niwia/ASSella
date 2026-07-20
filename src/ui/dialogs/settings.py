@@ -1076,18 +1076,18 @@ class SettingsDialog(QDialog):
 
 
     def _create_style_tab(self) -> None:
-        """Create the Style settings tab."""
+        """Create the Theme settings tab."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(12)
 
-        desc_lbl = QLabel("Customize the visual appearance, accent colors, and typography of ASSella.")
+        desc_lbl = QLabel("Customize the visual appearance, accent colors, and font settings of ASSella.")
         desc_lbl.setStyleSheet("color: #a0a0ab; font-size: 11px; margin-bottom: 5px;")
         layout.addWidget(desc_lbl)
 
         # Colors & Font combined in a neat group
-        theme_group = QGroupBox("Theme & Typography")
+        theme_group = QGroupBox("Theme")
         theme_layout = QGridLayout()
         theme_layout.setContentsMargins(15, 15, 15, 15)
         theme_layout.setSpacing(10)
@@ -1172,7 +1172,7 @@ class SettingsDialog(QDialog):
 
         layout.addStretch(1)
 
-        self.tab_widget.addTab(tab, "Style")
+        self.tab_widget.addTab(tab, "Theme")
 
     def _create_webui_tab(self) -> None:
         """Create the WebUI settings tab."""

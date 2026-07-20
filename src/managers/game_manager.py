@@ -380,6 +380,22 @@ class GameManager(QObject):
         # Cache the main Steam installation path to avoid repeated lookups
         steam_install_path = find_steam_install()
 
+        # Build a GLOBAL ACF cache across ALL Steam libraries so that a game
+        # installed in one library (e.g. external drive) whose ACF manifest sits
+        # in another library (e.g. internal) can still be resolved correctly.
+        # This is the common case for DLC-only installs: the DLC files land on
+        # the external drive but appmanifest_XXXX.acf stays on the internal one.
+        global_acf_cache = {}
+        for lib in steam_libraries:
+            sp = os.path.join(lib, "steamapps")
+            if os.path.exists(sp):
+                partial = self._build_acf_cache(sp)
+                # Merge — first library wins on collision (preserves earlier match)
+                for k, v in partial.items():
+                    if k not in global_acf_cache:
+                        global_acf_cache[k] = v
+        logger.debug(f"Built global ACF cache with {len(global_acf_cache)} entries across {len(steam_libraries)} library(ies)")
+
         # Thread-safe local list to collect scanned games
         scanned_games = []
 
@@ -390,7 +406,7 @@ class GameManager(QObject):
             logger.info(f"Scanning library: {library_path}")
             scanned_libraries += 1
 
-            games_found += self._scan_library(library_path, steam_install_path, scanned_games)
+            games_found += self._scan_library(library_path, steam_install_path, scanned_games, global_acf_cache=global_acf_cache)
 
         accela_games_found = sum(
             1 for game in scanned_games if game.get("is_accela_install")
@@ -437,7 +453,7 @@ class GameManager(QObject):
 
         return games_found
 
-    def _scan_library(self, library_path, steam_install_path, scanned_games):
+    def _scan_library(self, library_path, steam_install_path, scanned_games, global_acf_cache=None):
         """Scan a single Steam library for games."""
         games_found = 0
         steamapps_path = os.path.join(library_path, "steamapps")
@@ -450,10 +466,10 @@ class GameManager(QObject):
             logger.warning(f"Common directory not found at: {common_path}")
             return 0
 
-        # Build ACF lookup cache ONCE for this library instead of re-scanning
-        # all .acf files for every single game folder (eliminates O(N×M) reads).
-        acf_cache = self._build_acf_cache(steamapps_path)
-        logger.debug(f"Built ACF cache with {len(acf_cache)} entries for {library_path}")
+        # Use the pre-built global ACF cache (covers all libraries) if available,
+        # otherwise fall back to building a local cache for just this library.
+        acf_cache = global_acf_cache if global_acf_cache is not None else self._build_acf_cache(steamapps_path)
+        logger.debug(f"Using ACF cache with {len(acf_cache)} entries for {library_path}")
 
         seen_paths = {game.get("install_path") for game in scanned_games}
 
@@ -606,7 +622,8 @@ class GameManager(QObject):
             logger.debug("SLSsteam config.yaml not found, skipping sync")
             return
 
-        # Add each game's AppID to AdditionalApps
+        # Add each game's AppID to AdditionalApps (or DLC AppIDs if dlc_only_mode is enabled)
+        from utils.dlc_helpers import sync_dlc_only_sls_config
         added_count = 0
         for game in self.games:
             if not game.get("is_accela_install"):
@@ -614,7 +631,7 @@ class GameManager(QObject):
             appid = game.get("appid")
             game_name = game.get("game_name", "")
             if appid and appid not in ("0", "N/A", "unknown"):
-                if add_additional_app(config_path, appid, game_name):
+                if sync_dlc_only_sls_config(config_path, str(appid), game_name):
                     added_count += 1
 
         if added_count > 0:
@@ -1048,11 +1065,20 @@ class GameManager(QObject):
 
         import os
         import platform
-
         from core.steam_helpers import find_steam_install, get_steam_libraries
 
-        confirm_msg = f"Are you sure you want to uninstall '{game_name}'?\n\n"
         is_accela_install = game_data.get("is_accela_install", False)
+
+        is_dlc_only = False
+        if appid and appid not in ("0", "N/A", "unknown"):
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc_only = is_dlc_only_mode(str(appid))
+
+        if is_dlc_only:
+            from utils.dlc_helpers import get_dlc_uninstall_message
+            return get_dlc_uninstall_message(game_data)
+
+        confirm_msg = f"Are you sure you want to uninstall '{game_name}'?\n\n"
 
         # Warn if appid is unknown
         if not appid or appid in ("0", "N/A", "unknown"):
@@ -1158,6 +1184,99 @@ class GameManager(QObject):
         confirm_msg += "\nThis action cannot be undone!"
         return confirm_msg
 
+    def _delete_single_dlc_depot(self, install_path, base_appid, dlc_appid, manifest_id):
+        """Uses DepotDownloader to get files list for DLC depot and deletes only those files."""
+        import subprocess
+        import tempfile
+        from utils.paths import Paths
+        from utils.helpers import get_dotnet_path, get_dotnet_env
+        
+        depotdownloader_path = Paths.deps("depot-downloader/DepotDownloader.dll")
+        if not depotdownloader_path.exists():
+            logger.warning("DepotDownloader.dll not found, cannot delete DLC files")
+            return
+            
+        dotnet = get_dotnet_path()
+        if not dotnet:
+            logger.warning(".NET runtime not found, cannot delete DLC files")
+            return
+            
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cmd = [
+                str(dotnet),
+                str(depotdownloader_path),
+                "-app", str(base_appid),
+                "-depot", str(dlc_appid),
+                "-manifest", str(manifest_id),
+                "-manifest-only",
+                "-dir", temp_dir
+            ]
+            try:
+                env = get_dotnet_env()
+                subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
+                txt_path = Path(temp_dir) / f"manifest_{dlc_appid}_{manifest_id}.txt"
+                if txt_path.exists():
+                    start_parsing = False
+                    files_deleted = 0
+                    dirs_to_check = set()
+                    
+                    with open(txt_path, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            line_stripped = line.strip()
+                            if not line_stripped:
+                                continue
+                            if "Size Chunks File SHA" in line_stripped:
+                                start_parsing = True
+                                continue
+                            if not start_parsing:
+                                continue
+                            
+                            parts = line_stripped.split(None, 4)
+                            if len(parts) >= 5:
+                                name = parts[4].strip()
+                                file_path = Path(install_path) / name
+                                if file_path.exists() and file_path.is_file():
+                                    try:
+                                        file_path.unlink()
+                                        files_deleted += 1
+                                        dirs_to_check.add(file_path.parent)
+                                    except OSError as e:
+                                        logger.warning(f"Failed to delete DLC file {file_path}: {e}")
+                                        
+                    logger.info(f"Deleted {files_deleted} DLC files for depot {dlc_appid}")
+                    
+                    # Clean up empty subdirectories
+                    sorted_dirs = sorted(list(dirs_to_check), key=lambda x: len(x.parts), reverse=True)
+                    for d in sorted_dirs:
+                        if d.exists() and d.is_dir() and not os.listdir(d):
+                            try:
+                                d.rmdir()
+                            except OSError:
+                                pass
+            except Exception as e:
+                logger.error(f"Failed to fetch manifest and delete files for DLC {dlc_appid}: {e}")
+
+    def _delete_dlc_depot_files(self, install_path, appid):
+        """Finds and deletes files for all DLC depots listed in appid.depot."""
+        from utils.helpers import get_base_path
+        depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+        if not depot_file.exists():
+            return
+
+        try:
+            lines = depot_file.read_text().splitlines()
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(":")
+                if len(parts) >= 2:
+                    dlc_appid = parts[0].strip()
+                    manifest_id = parts[1].strip()
+                    self._delete_single_dlc_depot(install_path, appid, dlc_appid, manifest_id)
+        except Exception as e:
+            logger.error(f"Failed to read/delete files from depot config: {e}")
+
     def uninstall_game(
         self,
         game_data,
@@ -1167,7 +1286,7 @@ class GameManager(QObject):
         remove_shortcuts=False,
     ):
         """
-        Uninstall a game by removing its folder, ACF file, and optionally compatdata/saves.
+        Uninstall a game by removing its folder (or DLC files if dlc_only), ACF file, and optionally compatdata/saves.
         Returns (success: bool, error_message: str)
         """
         game_name = game_data.get("game_name", "Unknown")
@@ -1179,21 +1298,38 @@ class GameManager(QObject):
         import platform
 
         try:
-            # Remove game folder
-            if install_path and os.path.exists(install_path):
-                import shutil
+            is_dlc_only = False
+            if appid and appid not in ("0", "N/A", "unknown"):
+                from utils.dlc_helpers import is_dlc_only_mode
+                is_dlc_only = is_dlc_only_mode(str(appid))
 
-                shutil.rmtree(install_path)
-                logger.info(f"Removed game folder: {install_path}")
+            if is_dlc_only:
+                # 1. Delete only files belonging to the DLC depots
+                if install_path and os.path.exists(install_path):
+                    self._delete_dlc_depot_files(install_path, appid)
+                    # Clean up empty install folder if all DLC files were removed
+                    try:
+                        if os.path.isdir(install_path) and not os.listdir(install_path):
+                            import shutil
+                            shutil.rmtree(install_path)
+                            logger.info(f"Removed empty game folder after DLC uninstall: {install_path}")
+                    except Exception as _e:
+                        logger.warning(f"Could not remove empty folder {install_path}: {_e}")
+            else:
+                # Remove full game folder
+                if install_path and os.path.exists(install_path):
+                    import shutil
+                    shutil.rmtree(install_path)
+                    logger.info(f"Removed game folder: {install_path}")
 
-            # Remove ACF file
-            if library_path and appid != "N/A":
-                acf_path = os.path.join(
-                    library_path, "steamapps", f"appmanifest_{appid}.acf"
-                )
-                if os.path.exists(acf_path):
-                    os.remove(acf_path)
-                    logger.info(f"Removed ACF file: {acf_path}")
+                # Remove ACF file
+                if library_path and appid != "N/A":
+                    acf_path = os.path.join(
+                        library_path, "steamapps", f"appmanifest_{appid}.acf"
+                    )
+                    if os.path.exists(acf_path):
+                        os.remove(acf_path)
+                        logger.info(f"Removed ACF file: {acf_path}")
 
             # Remove depot file
             if (
@@ -1211,24 +1347,36 @@ class GameManager(QObject):
                         f"Failed to remove depot file for appid {appid}: {e}"
                     )
 
-            # Remove platform-specific data
-            if platform.system() == "Linux":
+            # Remove platform-specific data (only for full uninstalls)
+            if platform.system() == "Linux" and not is_dlc_only:
                 self._remove_linux_game_data(appid, remove_compatdata, remove_saves)
 
                 # Remove shortcuts only if explicitly requested
                 if remove_shortcuts:
                     self._remove_linux_shortcuts_and_icons(appid)
 
-                # Always clean up this game's AppID from SLSsteam config.yaml
-                if appid and appid not in ("0", "N/A", "unknown"):
-                    config_path = get_user_config_path()
-                    if config_path.exists():
+            # Clean up appid from SLSsteam config.yaml
+            if appid and appid not in ("0", "N/A", "unknown"):
+                config_path = get_user_config_path()
+                if config_path.exists():
+                    if is_dlc_only:
+                        # Remove all DLC entries matching the depots config
+                        depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+                        if depot_file.exists():
+                            try:
+                                for line in depot_file.read_text().splitlines():
+                                    parts = line.split(":")
+                                    if parts and parts[0].strip():
+                                        remove_additional_app(config_path, str(parts[0].strip()))
+                            except Exception:
+                                pass
+                    else:
                         remove_additional_app(config_path, str(appid))
-                        logger.info(f"Removed appid {appid} from SLS config")
-            elif platform.system() == "Windows":
+                    logger.info(f"Removed appid entries from SLS config")
+            elif platform.system() == "Windows" and not is_dlc_only:
                 self._remove_windows_game_data(appid, game_data)
 
-            # Remove from game manager
+            # Remove from game manager list
             self.remove_game(appid)
 
             return True, None

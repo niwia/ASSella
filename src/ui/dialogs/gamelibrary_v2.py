@@ -3,55 +3,44 @@ import platform
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSize, QRect, QPropertyAnimation, pyqtProperty, pyqtSignal, QTimer
-from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter, QIntValidator, QPalette
+from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, pyqtProperty, pyqtSignal, QUrl
+from PyQt6.QtGui import QColor, QPixmap, QPainter, QIntValidator, QPalette, QDesktopServices, QLinearGradient
 from PyQt6.QtWidgets import (
-    QDialog,
-    QHBoxLayout,
-    QVBoxLayout,
+    QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QCheckBox,
+    QLineEdit, QComboBox, QMessageBox, QWidget, QFrame, QStackedWidget,
+    QStylePainter, QStyleOptionComboBox, QStyle, QScrollArea, QApplication,
     QGridLayout,
-    QLabel,
-    QPushButton,
-    QCheckBox,
-    QLineEdit,
-    QComboBox,
-    QMessageBox,
-    QWidget,
-    QFrame,
-    QStackedWidget,
-    QStylePainter,
-    QStyleOptionComboBox,
-    QStyle,
 )
 
 from utils.helpers import get_base_path
 from utils.settings import get_settings
 from utils.update_status_cache import get_update_cache
 from utils.yaml_config_manager import (
-    get_user_config_path,
-    add_fake_app_id,
-    remove_fake_app_id,
-    get_fake_appid,
-    is_slssteam_config_management_enabled,
+    get_user_config_path, add_fake_app_id, remove_fake_app_id,
+    get_fake_appid, is_slssteam_config_management_enabled,
 )
 from utils.image_fetcher import ImageFetcher
 
 logger = logging.getLogger(__name__)
 
 
+# ──────────────────────────────────────────────────────────
+#  Reusable widgets
+# ──────────────────────────────────────────────────────────
+
 class SwitchToggle(QWidget):
     stateChanged = pyqtSignal(bool)
 
-    def __init__(self, parent=None, active_color="#4CAF50", bg_color="#33333C", circle_color="#FFFFFF"):
+    def __init__(self, parent=None, active_color="#4CAF50", bg_color="#333340", circle_color="#FFFFFF"):
         super().__init__(parent)
-        self.setFixedSize(40, 18)
+        self.setFixedSize(36, 16)
         self._checked = False
         self._active_color = QColor(active_color)
         self._bg_color = QColor(bg_color)
         self._circle_color = QColor(circle_color)
         self._circle_pos = 2
         self._animation = QPropertyAnimation(self, b"circle_pos", self)
-        self._animation.setDuration(120)
+        self._animation.setDuration(110)
 
     @pyqtProperty(int)
     def circle_pos(self):
@@ -68,8 +57,7 @@ class SwitchToggle(QWidget):
     def setChecked(self, checked):
         if self._checked != checked:
             self._checked = checked
-            target = 24 if checked else 2
-            self._animation.setEndValue(target)
+            self._animation.setEndValue(20 if checked else 2)
             self._animation.start()
             self.update()
 
@@ -79,103 +67,69 @@ class SwitchToggle(QWidget):
             self.stateChanged.emit(self._checked)
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # Draw background
-        painter.setPen(Qt.PenStyle.NoPen)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
         if not self.isEnabled():
-            painter.setBrush(QColor("#222225"))
+            p.setBrush(QColor("#222226"))
         elif self._checked:
-            painter.setBrush(self._active_color)
+            p.setBrush(self._active_color)
         else:
-            painter.setBrush(self._bg_color)
-        painter.drawRoundedRect(0, 0, self.width(), self.height(), 9, 9)
-        
-        # Draw circle
-        if not self.isEnabled():
-            painter.setBrush(QColor("#555558"))
-        else:
-            painter.setBrush(self._circle_color)
-        painter.drawEllipse(self._circle_pos, 2, 14, 14)
+            p.setBrush(self._bg_color)
+        p.drawRoundedRect(0, 0, self.width(), self.height(), 8, 8)
+        p.setBrush(QColor("#444448") if not self.isEnabled() else self._circle_color)
+        p.drawEllipse(self._circle_pos, 2, 12, 12)
 
 
 class CenteredComboBox(QComboBox):
     def paintEvent(self, event):
-        painter = QStylePainter(self)
+        p = QStylePainter(self)
         opt = QStyleOptionComboBox()
         self.initStyleOption(opt)
-        
-        # Draw the combobox frame and arrow
-        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, opt)
-        
-        # Get the edit field rectangle
+        p.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, opt)
         rect = self.style().subControlRect(
-            QStyle.ComplexControl.CC_ComboBox,
-            opt,
-            QStyle.SubControl.SC_ComboBoxEditField,
-            self
-        )
-        
-        # Draw the text centered
-        painter.drawItemText(
-            rect,
-            Qt.AlignmentFlag.AlignCenter,
-            self.palette(),
-            self.isEnabled(),
-            self.currentText(),
-            QPalette.ColorRole.Text
-        )
+            QStyle.ComplexControl.CC_ComboBox, opt,
+            QStyle.SubControl.SC_ComboBoxEditField, self)
+        p.drawItemText(rect, Qt.AlignmentFlag.AlignCenter, self.palette(),
+                       self.isEnabled(), self.currentText(), QPalette.ColorRole.Text)
 
 
-class HeaderWidget(QWidget):
-    def __init__(self, parent_dialog, parent=None):
+class HeroBanner(QWidget):
+    """Compact header art: fades from solid bg on left → art visible on right."""
+    def __init__(self, bg_hex="#1a1a1e", parent=None):
         super().__init__(parent)
-        self.bg_label = QLabel(self)
-        self.overlay = QWidget(self)
-        self.original_pixmap = None
-        
-        # Resolve parent background color dynamically to blend gradient
-        bg_hex = getattr(parent_dialog, "background_color", "#1E1E24")
-        if bg_hex.startswith("#"):
-            r = int(bg_hex[1:3], 16)
-            g = int(bg_hex[3:5], 16)
-            b = int(bg_hex[5:7], 16)
-        else:
-            r, g, b = 30, 30, 36
-            
-        self.setStyleSheet("background-color: #121214; border-radius: 6px;")
-        self.bg_label.setStyleSheet("border-radius: 6px;")
-        self.overlay.setStyleSheet(
-            f"border-radius: 6px; "
-            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-            f"stop:0.0 rgba({r}, {g}, {b}, 255), "
-            f"stop:0.3 rgba({r}, {g}, {b}, 220), "
-            f"stop:0.7 rgba({r}, {g}, {b}, 100), "
-            f"stop:1.0 rgba({r}, {g}, {b}, 20));"
-        )
-        
-    def set_header_pixmap(self, pixmap):
-        self.original_pixmap = pixmap
-        self.update_pixmap()
+        self._px = None
+        c = QColor(bg_hex) if bg_hex.startswith("#") else QColor("#1a1a1e")
+        self._r, self._g, self._b = c.red(), c.green(), c.blue()
 
-    def update_pixmap(self):
-        if self.original_pixmap and not self.original_pixmap.isNull():
-            scaled = self.original_pixmap.scaled(
-                self.size(),
+    def set_pixmap(self, px):
+        self._px = px
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        w, h = self.width(), self.height()
+        p.fillRect(0, 0, w, h, QColor(self._r, self._g, self._b))
+        if self._px and not self._px.isNull():
+            sc = self._px.scaled(QSize(w, h),
                 Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.bg_label.setPixmap(scaled)
-        else:
-            self.bg_label.setPixmap(QPixmap())
+                Qt.TransformationMode.SmoothTransformation)
+            sx = max(0, (sc.width() - w) // 2)
+            sy = max(0, (sc.height() - h) // 2)
+            p.drawPixmap(0, 0, sc, sx, sy, w, h)
+        grad = QLinearGradient(0, 0, w, 0)
+        r, g, b = self._r, self._g, self._b
+        grad.setColorAt(0.0,  QColor(r, g, b, 255))
+        grad.setColorAt(0.45, QColor(r, g, b, 220))
+        grad.setColorAt(0.75, QColor(r, g, b, 100))
+        grad.setColorAt(1.0,  QColor(r, g, b, 20))
+        p.fillRect(0, 0, w, h, grad)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.bg_label.setGeometry(0, 0, self.width(), self.height())
-        self.overlay.setGeometry(0, 0, self.width(), self.height())
-        self.update_pixmap()
 
+# ──────────────────────────────────────────────────────────
+#  Main dialog
+# ──────────────────────────────────────────────────────────
 
 class GameDetailsDialogV2(QDialog):
     def __init__(self, parent, game_data):
@@ -186,350 +140,352 @@ class GameDetailsDialogV2(QDialog):
         self.settings = get_settings()
         self._active_fetchers = {}
 
-        self.accent_color = getattr(parent, "accent_color", "#C06C84")
-        self.background_color = getattr(parent, "background_color", "#1E1E24")
+        self.accent_color  = getattr(parent, "accent_color",  "#C06C84")
+        self.background_color = getattr(parent, "background_color", "#1a1a1e")
 
-        self.setWindowTitle("Game Details")
-        
-        # Make the dialog resizable with scaling elements, starting a bit wider and taller
-        self.setMinimumSize(600, 420)
-        self.resize(720, 500)
+        self.setWindowTitle(f"{game_data.get('game_name', 'Game')} — Details")
+        self.setMinimumSize(540, 420)
+        self.resize(580, 480)
         self.setModal(True)
 
-        self._apply_theme_stylesheet()
+        self._apply_stylesheet()
         self._setup_ui()
 
-    def _apply_theme_stylesheet(self):
+    # ──────────────────────────────────────────
+    def _apply_stylesheet(self):
+        ac = self.accent_color
+        bg = self.background_color
         self.setStyleSheet(f"""
             QDialog {{
-                background-color: {self.background_color};
+                background-color: {bg};
+                color: #FFFFFF;
             }}
             QFrame {{
                 border: none;
                 background: transparent;
             }}
             QLabel {{
-                color: #e2e2e9;
-                font-size: 11px;
+                color: #FFFFFF;
                 border: none;
                 background: transparent;
+                font-size: 9.5pt;
             }}
             QPushButton {{
-                background-color: transparent;
-                color: #e2e2e9;
-                border: 1px solid #2d2d34;
+                background-color: rgba(255, 255, 255, 0.08);
+                color: #FFFFFF;
+                border: none;
                 border-radius: 4px;
-                padding: 3px 8px;
-                font-size: 11px;
+                padding: 5px 14px;
+                font-size: 9.5pt;
             }}
             QPushButton:hover {{
-                background-color: #242428;
-                border-color: {self.accent_color};
+                background-color: rgba(255, 255, 255, 0.16);
+                color: {ac};
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(255, 255, 255, 0.02);
+                color: rgba(255, 255, 255, 25);
             }}
             QLineEdit {{
-                background-color: #151518;
-                color: #ffffff;
-                border: 1px solid #2d2d34;
+                background-color: rgba(0, 0, 0, 50);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 15);
                 border-radius: 4px;
-                padding: 3px 6px;
-                font-size: 11px;
+                padding: 4px 8px;
+                font-size: 9.5pt;
             }}
+            QLineEdit:focus {{ border-color: {ac}; }}
             QLineEdit:disabled {{
-                background-color: #111113;
-                color: #555558;
-                border-color: #1a1a1e;
-            }}
-            QLineEdit:focus {{
-                border-color: {self.accent_color};
+                color: rgba(255, 255, 255, 30);
+                border-color: rgba(255, 255, 255, 8);
             }}
             QComboBox {{
-                background-color: transparent;
-                color: #e2e2e9;
-                border: 1px solid #2d2d34;
+                background-color: rgba(0, 0, 0, 50);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 15);
                 border-radius: 4px;
-                padding: 3px 6px;
-                font-size: 11px;
-                height: 20px;
+                padding: 3px 8px;
+                font-size: 9.5pt;
             }}
+            QComboBox::drop-down {{ border: none; width: 18px; }}
             QComboBox QAbstractItemView {{
-                background-color: #1a1a1f;
-                color: #e2e2e9;
-                border: 1px solid #2d2d34;
-                selection-background-color: {self.accent_color};
-                font-size: 11px;
+                background-color: {bg};
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 15);
+                selection-background-color: {ac};
+                selection-color: #000000;
+                font-size: 9.5pt;
             }}
             QCheckBox {{
-                color: #e2e2e9;
-                font-size: 11px;
+                color: #FFFFFF;
+                font-size: 9.5pt;
+                spacing: 6px;
             }}
             QCheckBox::indicator {{
-                width: 14px;
-                height: 14px;
-                border: 1px solid #282830;
+                width: 14px; height: 14px;
+                border: 1px solid rgba(255, 255, 255, 20);
                 border-radius: 3px;
-                background-color: #18181b;
+                background: rgba(0, 0, 0, 40);
             }}
             QCheckBox::indicator:checked {{
-                background-color: {self.accent_color};
-                border-color: {self.accent_color};
+                background-color: {ac};
+                border-color: {ac};
             }}
-            
-            /* Specific Card Styling */
-            QFrame#card1, QFrame#card2, QFrame#card3, QFrame#card4, QFrame#uninstall_card,
-            QFrame#drm_card, QFrame#gb_card, QFrame#depot_card, QFrame#fix_card, QFrame#log_card {{
-                background-color: #151518;
-                border: 1px solid #242428;
-                border-radius: 6px;
+            QScrollArea {{ border: none; background: transparent; }}
+            QScrollBar:vertical {{
+                border: none;
+                background: rgba(0, 0, 0, 15);
+                width: 4px;
+                margin: 0px;
+                border-radius: 2px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(255, 255, 255, 35);
+                min-height: 20px;
+                border-radius: 2px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: rgba(255, 255, 255, 65);
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
             }}
         """)
 
+    # ──────────────────────────────────────────
     def _setup_ui(self):
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # 1. Left Sidebar Navigation (Centered Text ASCII Buttons)
-        sidebar = QFrame()
-        sidebar.setStyleSheet("background-color: #151518; border-right: 1px solid #242428;")
-        sidebar.setFixedWidth(85)
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(4, 15, 4, 15)
-        sidebar_layout.setSpacing(8)
+        # Hero Banner
+        self.hero = HeroBanner(bg_hex=self.background_color)
+        self.hero.setFixedHeight(65)
+        banner_layout = QHBoxLayout(self.hero)
+        banner_layout.setContentsMargins(14, 6, 180, 6)
+        banner_layout.setSpacing(0)
 
-        self.nav_buttons = []
-        self.pages_info = [
-            ("Overview", 0),
-            ("Uninstall", 1),
-            ("Tools", 2)
-        ]
-
-        for name, index in self.pages_info:
-            btn = QPushButton(name)
-            btn.setCheckable(True)
-            btn.setFlat(True)
-            btn.setFixedWidth(77)
-            btn.setFixedHeight(30)
-            btn.clicked.connect(lambda checked, idx=index: self._switch_page(idx))
-            sidebar_layout.addWidget(btn)
-            self.nav_buttons.append(btn)
-
-        sidebar_layout.addStretch()
-        main_layout.addWidget(sidebar)
-
-        # 2. Right Content Panel
-        right_container = QWidget()
-        right_layout = QVBoxLayout(right_container)
-        right_layout.setContentsMargins(10, 10, 10, 10)
-        right_layout.setSpacing(8)
-
-        # Create Persistent Header Widget
-        self.header_widget = HeaderWidget(self)
-        self.header_widget.setFixedHeight(90)
-        
-        # Header Content Layout (Overlay Text)
-        header_content = QVBoxLayout(self.header_widget)
-        header_content.setContentsMargins(12, 10, 12, 10)
-        header_content.setSpacing(2)
-
+        name_col = QVBoxLayout()
+        name_col.setSpacing(2)
         self.name_lbl = QLabel(self.game_data.get("game_name", "Unknown"))
-        self.name_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #FFFFFF; background: transparent; border: none;")
+        self.name_lbl.setStyleSheet(
+            "font-size: 12.5pt; font-weight: bold; color: #FFFFFF; background: transparent;")
         self.name_lbl.setWordWrap(True)
-        header_content.addWidget(self.name_lbl)
-
         self.appid_lbl = QLabel(f"App ID: {self.appid}")
-        self.appid_lbl.setStyleSheet("color: #a0a0ab; font-size: 10px; background: transparent; border: none;")
-        header_content.addWidget(self.appid_lbl)
-        header_content.addStretch()
+        self.appid_lbl.setStyleSheet(
+            "font-size: 8pt; color: rgba(255, 255, 255, 60); background: transparent;")
+        name_col.addWidget(self.name_lbl)
+        name_col.addWidget(self.appid_lbl)
+        name_col.addStretch()
+        banner_layout.addLayout(name_col)
+        banner_layout.addStretch()
 
-        # Load/Fetch Background Image for Persistent Header
-        cached_image = self.parent_window._image_cache.get(self.appid)
-        if cached_image:
-            pixmap = QPixmap()
-            pixmap.loadFromData(cached_image)
-            if not pixmap.isNull():
-                self.header_widget.set_header_pixmap(pixmap)
-        else:
-            if self.appid not in ("0", "N/A", "unknown"):
-                if ImageFetcher:
-                    url = ImageFetcher.get_header_image_url(self.appid)
-                    fetcher = ImageFetcher(url)
-                    fetcher.setProperty("app_id", self.appid)
-                    
-                    def _on_img_ready(data):
-                        if data:
-                            px = QPixmap()
-                            px.loadFromData(data)
-                            if not px.isNull():
-                                self.header_widget.set_header_pixmap(px)
-                    
-                    fetcher.finished.connect(_on_img_ready)
-                    fetcher.start()
-                    self._active_fetchers[f"details_{self.appid}"] = fetcher
-                    fetcher.finished.connect(lambda _, aid=self.appid: self._cleanup_fetcher(f"details_{aid}"))
+        self._load_hero_image()
+        root.addWidget(self.hero)
 
-        right_layout.addWidget(self.header_widget)
+        # Tab Bar
+        tab_bar_frame = QFrame()
+        tab_bar_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: rgba(0, 0, 0, 20);
+                border-bottom: 1px solid rgba(255, 255, 255, 10);
+            }}
+        """)
+        tab_bar_layout = QHBoxLayout(tab_bar_frame)
+        tab_bar_layout.setContentsMargins(10, 0, 10, 0)
+        tab_bar_layout.setSpacing(0)
 
-        # Stacked Widget (for different tabs)
-        self.stacked_widget = QStackedWidget()
-        
-        # Create tabs
-        self._init_overview_tab()
-        self._init_uninstall_tab()
+        self._tab_buttons = []
+        self._pages_info = [("Info", 0), ("Tools", 1)]
+        for label, idx in self._pages_info:
+            btn = QPushButton(label)
+            btn.setFlat(True)
+            btn.setCheckable(True)
+            btn.setFixedHeight(30)
+            btn.setStyleSheet("border: none; border-radius: 0px; padding: 0px 16px; font-size: 9.5pt;")
+            btn.clicked.connect(lambda _c, i=idx: self._switch_tab(i))
+            tab_bar_layout.addWidget(btn)
+            self._tab_buttons.append(btn)
+
+        tab_bar_layout.addStretch()
+
+        close_btn = QPushButton("✕ Close")
+        close_btn.setFlat(True)
+        close_btn.setFixedHeight(30)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                border: none; border-radius: 0;
+                padding: 0 10px; font-size: 9.5pt;
+                color: rgba(255, 255, 255, 60);
+            }}
+            QPushButton:hover {{ color: {self.accent_color}; }}
+        """)
+        close_btn.clicked.connect(self.accept)
+        tab_bar_layout.addWidget(close_btn)
+
+        root.addWidget(tab_bar_frame)
+
+        # Stacked content
+        self.stacked = QStackedWidget()
+        self.stacked.setStyleSheet("background: transparent;")
+        self._init_info_tab()
         self._init_tools_tab()
+        root.addWidget(self.stacked, 1)
 
-        right_layout.addWidget(self.stacked_widget)
+        self._switch_tab(0)
 
-        # Footer Actions (Just a Close Button)
-        footer_layout = QHBoxLayout()
-        self.close_btn = QPushButton("✕ Close")
-        self.close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: #18181b;
-                border: 1px solid #282830;
-                font-weight: bold;
-                padding: 6px 16px;
-                font-size: 11px;
-            }}
-            QPushButton:hover {{
-                background-color: #242428;
-                border-color: {self.accent_color};
-            }}
-        """)
-        self.close_btn.clicked.connect(self.accept)
-        footer_layout.addWidget(self.close_btn, 1)
-        right_layout.addLayout(footer_layout)
-
-        main_layout.addWidget(right_container, 1)
-        self._switch_page(0)
-
-    def _switch_page(self, index):
-        self.stacked_widget.setCurrentIndex(index)
-        for idx, btn in enumerate(self.nav_buttons):
-            btn.setChecked(idx == index)
-            name = self.pages_info[idx][0]
-            if idx == index:
-                btn.setText(f"[ {name} ]")
-                btn.setStyleSheet(f"background: transparent; color: {self.accent_color}; font-size: 11px; font-weight: bold; border: none;")
+    def _switch_tab(self, index):
+        self.stacked.setCurrentIndex(index)
+        for i, btn in enumerate(self._tab_buttons):
+            active = (i == index)
+            if active:
+                btn.setChecked(True)
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        border: none; border-radius: 0;
+                        border-bottom: 2px solid {self.accent_color};
+                        padding: 0px 16px; font-size: 9.5pt;
+                        color: {self.accent_color};
+                        font-weight: bold;
+                    }}
+                """)
             else:
-                btn.setText(name)
-                btn.setStyleSheet("background: transparent; color: #8a8a93; font-size: 11px; font-weight: bold; border: none;")
+                btn.setChecked(False)
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        border: none; border-radius: 0;
+                        padding: 0px 16px; font-size: 9.5pt;
+                        color: rgba(255, 255, 255, 50);
+                    }}
+                    QPushButton:hover {{ color: {self.accent_color}; }}
+                """)
 
-    # ----------------------------------------------------
-    # Overview Tab (Compact)
-    # ----------------------------------------------------
-    def _init_overview_tab(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+    # ──────────────────────────────────────────
+    def _load_hero_image(self):
+        if not hasattr(self.parent_window, "_image_cache"):
+            return
+        cached = self.parent_window._image_cache.get(self.appid)
+        if cached:
+            px = QPixmap()
+            px.loadFromData(cached)
+            if not px.isNull():
+                self.hero.set_pixmap(px)
+            return
+        if self.appid not in ("0", "N/A", "unknown") and ImageFetcher:
+            url = ImageFetcher.get_header_image_url(self.appid)
+            fetcher = ImageFetcher(url)
+            def _done(data):
+                if data:
+                    px = QPixmap()
+                    px.loadFromData(data)
+                    if not px.isNull():
+                        self.hero.set_pixmap(px)
+            fetcher.finished.connect(_done)
+            fetcher.finished.connect(
+                lambda _, k=f"hero_{self.appid}": self._active_fetchers.pop(k, None))
+            fetcher.start()
+            self._active_fetchers[f"hero_{self.appid}"] = fetcher
 
-        # --- 2. Compact Grid Layout ---
-        grid_layout = QGridLayout()
-        grid_layout.setSpacing(8)
+    # ──────────────────────────────────────────
+    def _thin_line(self):
+        f = QFrame()
+        f.setFrameShape(QFrame.Shape.HLine)
+        f.setStyleSheet("background: rgba(255, 255, 255, 8); border: none; max-height: 1px;")
+        return f
 
-        # Card 1: Stats Info
-        card1 = QFrame()
-        card1.setObjectName("card1")
-        c1_layout = QVBoxLayout(card1)
-        c1_layout.setContentsMargins(10, 10, 10, 10)
-        c1_layout.setSpacing(5)
+    def _section_title(self, text):
+        lbl = QLabel(text.upper())
+        lbl.setStyleSheet(
+            "color: rgba(255, 255, 255, 45); font-size: 8px; font-weight: bold;"
+            "letter-spacing: 1px; border: none; background: transparent;")
+        return lbl
 
-        c1_layout.addStretch(1)
+    def _card_btn(self, text, tooltip=None):
+        b = QPushButton(text)
+        b.setFixedHeight(25)
+        if tooltip:
+            b.setToolTip(tooltip)
+        return b
 
-        # Size
-        size_layout = QHBoxLayout()
-        size_lbl = QLabel("Size:")
-        size_lbl.setStyleSheet("color: #8a8a93; font-weight: bold; font-size: 11px;")
-        size_val = QLabel(self.parent_window._format_size(self.game_data.get("size_on_disk", 0)))
-        size_val.setStyleSheet("color: #ffffff; font-size: 11px;")
-        size_layout.addWidget(size_lbl)
-        size_layout.addStretch()
-        size_layout.addWidget(size_val)
-        c1_layout.addLayout(size_layout)
+    # ──────────────────────────────────────────
+    #  TAB 1 — Info
+    # ──────────────────────────────────────────
+    def _init_info_tab(self):
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(0)
 
-        c1_layout.addSpacing(10)
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        # Path Row (Only a Browse button)
-        path_layout = QHBoxLayout()
-        path_lbl = QLabel("Installation Path:")
-        path_lbl.setStyleSheet("color: #8a8a93; font-weight: bold; font-size: 11px;")
-        browse_btn = QPushButton("Browse")
-        browse_btn.setFixedSize(70, 24)
-        browse_btn.setStyleSheet(f"""
-            QPushButton {{
-                font-size: 11px;
-                padding: 2px 8px;
-                background-color: #1c1c21;
-            }}
-            QPushButton:hover {{
-                border-color: {self.accent_color};
-            }}
-        """)
-        browse_btn.clicked.connect(
-            lambda: self.parent_window._open_folder(self.game_data.get("install_path"))
-        )
-        path_layout.addWidget(path_lbl)
-        path_layout.addStretch()
-        path_layout.addWidget(browse_btn)
-        c1_layout.addLayout(path_layout)
+        # ── Status Pill / Banner ─────────────────────────────────
+        self.status_btn = QPushButton()
+        self.status_btn.setFixedHeight(26)
+        self.status_btn.clicked.connect(self._on_status_btn_clicked)
+        lay.addWidget(self.status_btn)
+        lay.addSpacing(12)
 
-        c1_layout.addSpacing(10)
+        # ── Stats Grid (Bright text labels) ──────────────────────
+        stats_widget = QWidget()
+        stats_grid = QGridLayout(stats_widget)
+        stats_grid.setContentsMargins(0, 0, 0, 0)
+        stats_grid.setSpacing(10)
 
-        # Manifest Age
-        age_layout = QHBoxLayout()
-        age_lbl = QLabel("Manifest Age:")
-        age_lbl.setStyleSheet("color: #8a8a93; font-weight: bold; font-size: 11px;")
-        manifest_age_value = self._get_manifest_age()
-        age_val = QLabel(manifest_age_value)
-        age_val.setStyleSheet("color: #ffffff; font-size: 11px;")
-        age_layout.addWidget(age_lbl)
-        age_layout.addStretch()
-        age_layout.addWidget(age_val)
-        c1_layout.addLayout(age_layout)
+        size_lbl = QLabel("Install size:")
+        size_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
+        size_val = self.parent_window._format_size(self.game_data.get("size_on_disk", 0))
+        self.size_val_lbl = QLabel(size_val)
+        self.size_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
 
-        c1_layout.addSpacing(10)
+        cached_lbl = QLabel("Manifest cached:")
+        cached_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
+        self.cached_val_lbl = QLabel(self._get_manifest_age())
+        self.cached_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
 
-        # Last Checked
-        check_layout = QHBoxLayout()
-        check_lbl = QLabel("Last Checked:")
-        check_lbl.setStyleSheet("color: #8a8a93; font-weight: bold; font-size: 11px;")
-        last_check_value = self._get_last_checked()
-        check_val = QLabel(last_check_value)
-        check_val.setStyleSheet("color: #ffffff; font-size: 11px;")
-        check_layout.addWidget(check_lbl)
-        check_layout.addStretch()
-        check_val.setAlignment(Qt.AlignmentFlag.AlignRight)
-        check_layout.addWidget(check_val)
-        c1_layout.addLayout(check_layout)
+        stats_grid.addWidget(size_lbl, 0, 0)
+        stats_grid.addWidget(self.size_val_lbl, 0, 1)
+        stats_grid.addWidget(cached_lbl, 0, 2)
+        stats_grid.addWidget(self.cached_val_lbl, 0, 3)
 
-        c1_layout.addStretch(1)
+        from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
+        self._is_dlc = is_dlc_only_mode(self.appid)
+        if self._is_dlc:
+            dlc_list = get_dlc_only_info(self.appid)
+            cnt = len(dlc_list)
+            mode_lbl = QLabel("Mode:")
+            mode_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
+            mode_val = QLabel(f"DLC Only ({cnt} DLC{'s' if cnt != 1 else ''})")
+            mode_val.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold;")
+            stats_grid.addWidget(mode_lbl, 1, 0)
+            stats_grid.addWidget(mode_val, 1, 1)
 
-        grid_layout.addWidget(card1, 0, 0)
+        lay.addWidget(stats_widget)
+        lay.addSpacing(10)
 
-        # Card 2: Update Actions
-        card2 = QFrame()
-        card2.setObjectName("card2")
-        c2_layout = QVBoxLayout(card2)
-        c2_layout.setContentsMargins(10, 10, 10, 10)
-        c2_layout.setSpacing(5)
+        # ── Open Install Folder button ───────────────────────────
+        open_folder_btn = QPushButton("Open Install Folder")
+        open_folder_btn.setFixedHeight(28)
+        open_folder_btn.clicked.connect(
+            lambda: self.parent_window._open_folder(self.game_data.get("install_path")))
+        lay.addWidget(open_folder_btn)
 
-        c2_layout.addStretch(1)
+        lay.addSpacing(12)
+        lay.addWidget(self._thin_line())
+        lay.addSpacing(10)
 
-        # Status badge pill
-        self.status_badge = QLabel()
-        self.status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_badge.setFixedHeight(22)
-        c2_layout.addWidget(self.status_badge)
+        # ── Actions (Select Build & Validate) ────────────────────
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(8)
 
-        c2_layout.addSpacing(8)
-
-        # Rollback Combo using CenteredComboBox
         self.rollback_combo = CenteredComboBox()
         self.rollback_combo.addItem("Latest Build", None)
-        
         manifests_dir = get_base_path() / "hubcap_manifests"
-        backups = sorted(manifests_dir.glob(f"accela_fetch_{self.appid}_*.zip"), reverse=True)
-        for b in backups:
+        self._backups = sorted(manifests_dir.glob(f"accela_fetch_{self.appid}_*.zip"), reverse=True)
+        for b in self._backups:
             try:
                 parts = b.stem.split("_")
                 ts1, ts2 = parts[-2], parts[-1]
@@ -540,283 +496,550 @@ class GameDetailsDialogV2(QDialog):
                     self.rollback_combo.addItem(f"Backup: {b.name}", str(b))
             except Exception:
                 self.rollback_combo.addItem(f"Backup: {b.name}", str(b))
+        self.rollback_combo.setFixedHeight(26)
+        actions_row.addWidget(self.rollback_combo, 1)
 
-        self.rollback_combo.setFixedHeight(28)
-        c2_layout.addWidget(self.rollback_combo)
-
-        c2_layout.addSpacing(8)
-
-        # Main validate/download button
         self.validate_btn = QPushButton()
-        self.validate_btn.setFixedHeight(28)
-        self.validate_btn.setStyleSheet("font-weight: bold; font-size: 11px;")
-        c2_layout.addWidget(self.validate_btn)
+        self.validate_btn.setFixedHeight(26)
+        self.validate_btn.setStyleSheet("font-weight: bold;")
+        actions_row.addWidget(self.validate_btn, 1)
 
-        c2_layout.addSpacing(8)
+        lay.addLayout(actions_row)
+        lay.addSpacing(3)
 
-        # Check for Updates button
-        self.check_btn = QPushButton("Check for Updates")
-        self.check_btn.setFixedHeight(28)
-        self.check_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                border: 1px solid #2d2d34;
-            }}
-            QPushButton:hover {{
-                border-color: {self.accent_color};
-                color: {self.accent_color};
-            }}
-        """)
-        c2_layout.addWidget(self.check_btn)
-
-        c2_layout.addStretch(1)
-
-        # Connect actions
         self.validate_btn.clicked.connect(
             lambda: self.parent_window._fetch_game_manifest(
-                self.game_data,
-                self,
-                local_path_override=self.rollback_combo.currentData() if backups else None
-            )
-        )
-
-        def _on_check_clicked():
-            if self.parent_window.game_manager:
-                self.check_btn.setEnabled(False)
-                self.check_btn.setText("Checking...")
-                self.parent_window.game_manager.check_single_game_update(self.appid)
-
-        self.check_btn.clicked.connect(_on_check_clicked)
-
-        def _on_combo_changed():
-            if self.rollback_combo.currentData() is not None:
-                self.validate_btn.setText("Install Selected Build")
-            else:
-                is_update_now = self.game_data.get("update_status") == "update_available"
-                self.validate_btn.setText("Download Update" if is_update_now else "Validate Files")
-
-        if backups:
-            self.rollback_combo.currentIndexChanged.connect(_on_combo_changed)
+                self.game_data, self,
+                local_path_override=self.rollback_combo.currentData() if self._backups else None))
+        if self._backups:
+            self.rollback_combo.currentIndexChanged.connect(self._on_combo_changed)
 
         self._update_status_ui(self.game_data.get("update_status"))
-        
+
         if self.parent_window.game_manager:
             self.parent_window.game_manager.game_update_status_changed.connect(self._on_status_changed)
             self.finished.connect(
-                lambda: self.parent_window.game_manager.game_update_status_changed.disconnect(self._on_status_changed)
-                if self.parent_window.game_manager else None
-            )
+                lambda: self.parent_window.game_manager.game_update_status_changed.disconnect(
+                    self._on_status_changed)
+                if self.parent_window.game_manager else None)
 
-        grid_layout.addWidget(card2, 0, 1)
+        lay.addSpacing(12)
+        lay.addWidget(self._thin_line())
+        lay.addSpacing(10)
 
-        # Card 3: Game Preferences
-        card3 = QFrame()
-        card3.setObjectName("card3")
-        c3_layout = QVBoxLayout(card3)
-        c3_layout.setContentsMargins(10, 10, 10, 10)
-        c3_layout.setSpacing(6)
+        # ── Preferences ──────────────────────────────────────────
+        def _pref_row(label, toggle, tooltip=None):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            lbl = QLabel(label)
+            lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt;")
+            if tooltip:
+                lbl.setToolTip(tooltip)
+            row.addWidget(lbl, 1)
+            row.addWidget(toggle)
+            return row
 
-        c3_layout.addStretch(1)
-
-        pref_title = QLabel("Game Preferences")
-        pref_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
-        c3_layout.addWidget(pref_title)
-
-        c3_layout.addSpacing(10)
-
-        pref1_layout = QHBoxLayout()
-        pref1_lbl = QLabel("Auto-update manifest")
-        pref1_lbl.setStyleSheet("color: #a0a0ab; font-size: 11px;")
         self.pref1_toggle = SwitchToggle(active_color=self.accent_color)
         self.pref1_toggle.setChecked(
-            self.settings.value(f"auto_update_manifest/{self.appid}", True, type=bool) if self.settings else True
-        )
+            self.settings.value(f"auto_update_manifest/{self.appid}", True, type=bool) if self.settings else True)
         self.pref1_toggle.stateChanged.connect(
-            lambda state: self.settings.setValue(f"auto_update_manifest/{self.appid}", state) if self.settings else None
-        )
-        pref1_layout.addWidget(pref1_lbl)
-        pref1_layout.addStretch()
-        pref1_layout.addWidget(self.pref1_toggle)
-        c3_layout.addLayout(pref1_layout)
+            lambda s: self.settings.setValue(f"auto_update_manifest/{self.appid}", s) if self.settings else None)
+        lay.addLayout(_pref_row("Auto-update manifest", self.pref1_toggle))
+        lay.addSpacing(6)
 
-        c3_layout.addSpacing(10)
-
-        pref2_layout = QHBoxLayout()
-        pref2_lbl = QLabel("Exclude from update all")
-        pref2_lbl.setStyleSheet("color: #a0a0ab; font-size: 11px;")
         self.pref2_toggle = SwitchToggle(active_color="#e05a47")
         self.pref2_toggle.setChecked(
-            self.settings.value(f"exclude_from_update_all/{self.appid}", False, type=bool) if self.settings else False
-        )
+            self.settings.value(f"exclude_from_update_all/{self.appid}", False, type=bool) if self.settings else False)
         self.pref2_toggle.stateChanged.connect(
-            lambda state: self.settings.setValue(f"exclude_from_update_all/{self.appid}", state) if self.settings else None
-        )
-        pref2_layout.addWidget(pref2_lbl)
-        pref2_layout.addStretch()
-        pref2_layout.addWidget(self.pref2_toggle)
-        c3_layout.addLayout(pref2_layout)
+            lambda s: self.settings.setValue(f"exclude_from_update_all/{self.appid}", s) if self.settings else None)
+        lay.addLayout(_pref_row("Exclude from update-all", self.pref2_toggle))
+        lay.addSpacing(6)
 
-        c3_layout.addSpacing(10)
-
-        pref3_layout = QHBoxLayout()
-        pref3_lbl = QLabel("DLC Only Mode")
-        pref3_lbl.setStyleSheet("color: #a0a0ab; font-size: 11px;")
-        pref3_lbl.setToolTip("Only select this if you own the base game separately.\nIn DLC Only Mode, update checks only compare the depots you selected — not the whole game.")
         self.pref3_toggle = SwitchToggle(active_color="#4a90d9")
         self.pref3_toggle.setChecked(
-            self.settings.value(f"dlc_only_mode/{self.appid}", False, type=bool) if self.settings else False
-        )
-        self.pref3_toggle.stateChanged.connect(
-            lambda state: self.settings.setValue(f"dlc_only_mode/{self.appid}", state) if self.settings else None
-        )
-        pref3_layout.addWidget(pref3_lbl)
-        pref3_layout.addStretch()
-        pref3_layout.addWidget(self.pref3_toggle)
-        c3_layout.addLayout(pref3_layout)
+            self.settings.value(f"dlc_only_mode/{self.appid}", False, type=bool) if self.settings else False)
+        self.pref3_toggle.stateChanged.connect(self._on_dlc_only_toggled)
+        lay.addLayout(_pref_row("DLC Only Mode", self.pref3_toggle,
+            "Enable if you own the base game separately.\n"
+            "Update checks compare only your selected DLC depots."))
 
-        c3_layout.addStretch(1)
+        lay.addSpacing(12)
+        lay.addWidget(self._thin_line())
+        lay.addSpacing(10)
 
-        grid_layout.addWidget(card3, 1, 0)
-
-        # Card 4: SLSonline (Seamless Auto-Save)
-        card4 = QFrame()
-        card4.setObjectName("card4")
-        c4_layout = QVBoxLayout(card4)
-        c4_layout.setContentsMargins(10, 10, 10, 10)
-        c4_layout.setSpacing(6)
-
-        c4_layout.addStretch(1)
-
-        sls_title = QLabel("SLSonline")
-        sls_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
-        c4_layout.addWidget(sls_title)
-
-        c4_layout.addSpacing(12)
-
+        # ── SLSonline ────────────────────────────────────────────
         sls_row = QHBoxLayout()
-        sls_row.setSpacing(8)
-
+        sls_row.setContentsMargins(0, 0, 0, 0)
+        sls_row.setSpacing(10)
+        el = QLabel("Enable SLSonline")
+        el.setStyleSheet("color: #FFFFFF; font-size: 9.5pt;")
         self.sls_toggle = SwitchToggle(active_color=self.accent_color)
+        sls_row.addWidget(el)
         sls_row.addWidget(self.sls_toggle)
-
+        fl = QLabel("Fake App ID:")
+        fl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
         self.sls_input = QLineEdit()
         self.sls_input.setPlaceholderText("480")
         self.sls_input.setValidator(QIntValidator())
-        self.sls_input.setFixedHeight(24)
-        sls_row.addWidget(self.sls_input, 1)
-        c4_layout.addLayout(sls_row)
-        
-        c4_layout.addStretch(1)
+        self.sls_input.setFixedHeight(22)
+        self.sls_input.setFixedWidth(80)
+        sls_row.addWidget(fl)
+        sls_row.addWidget(self.sls_input)
+        sls_row.addStretch()
+        lay.addLayout(sls_row)
+        self._init_slsonline_logic()
 
-        # Connect SLSonline logic
+        lay.addSpacing(12)
+        lay.addWidget(self._thin_line())
+        lay.addSpacing(10)
+
+        # ── Uninstall expandable panel at bottom footer ──────────
+        self._uninstall_expanded = False
+        self._uninstall_panel = QFrame()
+        self._uninstall_panel.setStyleSheet(f"""
+            QFrame {{
+                background-color: rgba(180,30,20,12);
+                border: 1px solid rgba(180,60,50,30);
+                border-radius: 4px;
+            }}
+        """)
+        self._uninstall_panel.setVisible(False)
+        self._uninstall_inner = QVBoxLayout(self._uninstall_panel)
+        self._uninstall_inner.setContentsMargins(10, 8, 10, 8)
+        self._uninstall_inner.setSpacing(6)
+        self._uninstall_content = QVBoxLayout()
+        self._uninstall_inner.addLayout(self._uninstall_content)
+        self._build_uninstall_panel()
+
+        self._uninstall_pill = QPushButton("⚠  Uninstall Game / Content")
+        self._uninstall_pill.setFixedHeight(28)
+        self._uninstall_pill.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(160,30,20,25);
+                color: #ff8a7a;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 9.5pt;
+            }}
+            QPushButton:hover {{
+                background: rgba(160,30,20,45);
+            }}
+        """)
+        self._uninstall_pill.clicked.connect(self._toggle_uninstall_panel)
+        lay.addWidget(self._uninstall_pill)
+        lay.addSpacing(4)
+        lay.addWidget(self._uninstall_panel)
+        lay.addStretch()
+
+        self.stacked.addWidget(scroll)
+
+    # ──────────────────────────────────────────
+    def _build_uninstall_panel(self):
+        while self._uninstall_content.count():
+            item = self._uninstall_content.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
+        is_dlc = is_dlc_only_mode(self.appid)
+
+        if is_dlc:
+            dlc_list = get_dlc_only_info(self.appid)
+            info = QLabel("Choose DLC depot files to remove:")
+            info.setStyleSheet("color: #ff8a7a; font-size: 9.5pt; background: transparent;")
+            self._uninstall_content.addWidget(info)
+            self._dlc_checkboxes = {}
+            for dlc in (dlc_list or []):
+                did = dlc.get("dlc_appid", "")
+                dname = dlc.get("dlc_name") or did
+                cb = QCheckBox(f"{dname}  ({did})")
+                cb.setChecked(True)
+                cb.setStyleSheet("color: #ffd0c8; font-size: 9.5pt; background: transparent;")
+                self._dlc_checkboxes[did] = cb
+                self._uninstall_content.addWidget(cb)
+            if not dlc_list:
+                self._uninstall_content.addWidget(QLabel("No DLC depot info found."))
+            confirm = QPushButton("Remove Selected DLC Files")
+            confirm.setFixedHeight(25)
+            confirm.setStyleSheet("""
+                QPushButton { background: rgba(160,40,30,60); color: #ff8a7a;
+                    border: none; font-size: 9.5pt; font-weight: bold; }
+                QPushButton:hover { background: rgba(180,50,35,80); }
+            """)
+            confirm.clicked.connect(self._do_dlc_uninstall)
+            self._uninstall_content.addWidget(confirm)
+        else:
+            warn = QLabel(
+                f"Permanently removes all files for '{self.game_data.get('game_name','this game')}'.")
+            warn.setStyleSheet("color: #ff8a7a; font-size: 9.5pt; background: transparent;")
+            warn.setWordWrap(True)
+            self._uninstall_content.addWidget(warn)
+            self._uninstall_opts = {}
+            if platform.system() == "Linux":
+                for key, text in [("compat", "Remove Proton/Wine prefix"),
+                                   ("saves", "Remove local cloud saves")]:
+                    cb = QCheckBox(text)
+                    cb.setStyleSheet("color: #ffd0c8; font-size: 9.5pt; background: transparent;")
+                    self._uninstall_opts[key] = cb
+                    self._uninstall_content.addWidget(cb)
+            confirm = QPushButton("Confirm Uninstall")
+            confirm.setFixedHeight(25)
+            confirm.setStyleSheet("""
+                QPushButton { background: rgba(160,40,30,60); color: #ff8a7a;
+                    border: none; font-size: 9.5pt; font-weight: bold; }
+                QPushButton:hover { background: rgba(180,50,35,80); }
+            """)
+            confirm.clicked.connect(
+                lambda: self.parent_window._uninstall_game(
+                    self.game_data, self, getattr(self, "_uninstall_opts", {})))
+            self._uninstall_content.addWidget(confirm)
+
+    def _toggle_uninstall_panel(self):
+        self._uninstall_expanded = not self._uninstall_expanded
+        self._uninstall_panel.setVisible(self._uninstall_expanded)
+
+    def _do_dlc_uninstall(self):
+        checked = [did for did, cb in getattr(self, "_dlc_checkboxes", {}).items() if cb.isChecked()]
+        if not checked:
+            QMessageBox.information(self, "Nothing selected", "Select at least one DLC to remove.")
+            return
+        gd = dict(self.game_data)
+        gd["_dlc_uninstall_ids"] = checked
+        self.parent_window._uninstall_game(gd, self, {})
+
+    def _on_dlc_only_toggled(self, state):
+        if self.settings:
+            self.settings.setValue(f"dlc_only_mode/{self.appid}", state)
+            try:
+                from utils.paths import get_user_config_path
+                from utils.dlc_helpers import sync_dlc_only_sls_config
+                cp = get_user_config_path()
+                if cp.exists():
+                    sync_dlc_only_sls_config(cp, self.appid, self.game_data.get("game_name", ""))
+            except Exception as e:
+                logger.debug(f"DLC sync error: {e}")
+        self._build_uninstall_panel()
+
+    def _init_slsonline_logic(self):
         if is_slssteam_config_management_enabled() and self.appid not in ("0", "N/A", "unknown", "480"):
             config = get_user_config_path()
             if config.exists():
-                existing_fake_id = get_fake_appid(config, self.appid)
-                if existing_fake_id:
+                existing = get_fake_appid(config, self.appid)
+                if existing:
                     self.sls_toggle.setChecked(True)
-                    self.sls_input.setText(existing_fake_id)
+                    self.sls_input.setText(existing)
                     self.sls_input.setEnabled(True)
                 else:
                     self.sls_toggle.setChecked(False)
                     self.sls_input.setText("480")
                     self.sls_input.setEnabled(False)
 
-            def _on_sls_toggle_changed(checked):
-                self.sls_input.setEnabled(checked)
-                fake_id = self.sls_input.text().strip() or "480"
-                name = self.game_data.get("game_name", "Unknown")
-                if checked:
-                    # Sync to config
-                    current_in_config = get_fake_appid(config, self.appid)
-                    if current_in_config:
-                        remove_fake_app_id(config, self.appid, current_in_config)
-                    add_fake_app_id(config, self.appid, name, fake_id)
-                else:
-                    current_in_config = get_fake_appid(config, self.appid)
-                    if current_in_config:
-                        remove_fake_app_id(config, self.appid, current_in_config)
-
-            def _on_sls_input_finished():
-                if self.sls_toggle.isChecked():
-                    fake_id = self.sls_input.text().strip() or "480"
+                def _tog(checked):
+                    self.sls_input.setEnabled(checked)
+                    fid = self.sls_input.text().strip() or "480"
                     name = self.game_data.get("game_name", "Unknown")
-                    current_fake_id = get_fake_appid(config, self.appid)
-                    if current_fake_id != fake_id:
-                        if current_fake_id:
-                            remove_fake_app_id(config, self.appid, current_fake_id)
-                        add_fake_app_id(config, self.appid, name, fake_id)
+                    if checked:
+                        cur = get_fake_appid(config, self.appid)
+                        if cur:
+                            remove_fake_app_id(config, self.appid, cur)
+                        add_fake_app_id(config, self.appid, name, fid)
+                    else:
+                        cur = get_fake_appid(config, self.appid)
+                        if cur:
+                            remove_fake_app_id(config, self.appid, cur)
 
-            self.sls_toggle.stateChanged.connect(_on_sls_toggle_changed)
-            self.sls_input.editingFinished.connect(_on_sls_input_finished)
+                def _fin():
+                    if self.sls_toggle.isChecked():
+                        fid = self.sls_input.text().strip() or "480"
+                        name = self.game_data.get("game_name", "Unknown")
+                        cur = get_fake_appid(config, self.appid)
+                        if cur != fid:
+                            if cur:
+                                remove_fake_app_id(config, self.appid, cur)
+                            add_fake_app_id(config, self.appid, name, fid)
+
+                self.sls_toggle.stateChanged.connect(_tog)
+                self.sls_input.editingFinished.connect(_fin)
         else:
             self.sls_toggle.setEnabled(False)
             self.sls_input.setEnabled(False)
 
-        grid_layout.addWidget(card4, 1, 1)
-
-        layout.addLayout(grid_layout)
-        self.stacked_widget.addWidget(page)
+    # ──────────────────────────────────────────
+    def _on_status_btn_clicked(self):
+        if self.parent_window.game_manager:
+            self.status_btn.setEnabled(False)
+            self._update_status_ui("checking")
+            self.parent_window.game_manager.check_single_game_update(self.appid)
 
     def _update_status_ui(self, status):
-        """Update status badge indicator design & text (Download Button is Green)."""
+        ac = self.accent_color
+        last_chk = self._get_last_checked()
+        time_suffix = f" ({last_chk})" if last_chk != "Never" else ""
+
         if status == "update_available":
-            self.status_badge.setText("★  NEW VERSION AVAILABLE")
-            self.status_badge.setStyleSheet(
-                "background-color: #1a301d; color: #7be09d; border: 1px solid #1a422b; border-radius: 4px; font-weight: bold; font-size: 9px;"
-            )
+            self.status_btn.setText(f"★  UPDATE AVAILABLE{time_suffix}  —  click to check")
+            self.status_btn.setStyleSheet("""
+                QPushButton { background: rgba(30,80,35,110); color: #7be09d;
+                    border: none; border-radius: 4px;
+                    font-weight: bold; font-size: 8.5pt; }
+                QPushButton:hover { background: rgba(30,80,35,150); }
+            """)
+            self.status_btn.setEnabled(True)
             self.validate_btn.setText("Download Update")
-            # Green button styling when update is available
-            self.validate_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #4CAF50;
-                    color: #ffffff;
-                    border: none;
-                }
-                QPushButton:hover {
-                    background-color: #66bb6a;
-                }
+            self.validate_btn.setStyleSheet(f"""
+                QPushButton {{ background: {ac}; color: #000000; border: none; font-weight: bold; }}
+                QPushButton:hover {{ background: #FFFFFF; color: #000000; }}
             """)
         elif status == "up_to_date":
-            self.status_badge.setText("✓  UP TO DATE")
-            self.status_badge.setStyleSheet(
-                "background-color: #16161a; color: #a0a0ab; border: 1px solid #282830; border-radius: 4px; font-weight: bold; font-size: 9px;"
-            )
+            self.status_btn.setText(f"✓  UP TO DATE{time_suffix}  —  click to check")
+            self.status_btn.setStyleSheet("""
+                QPushButton { background: rgba(255,255,255,12); color: #FFFFFF;
+                    border: none; border-radius: 4px;
+                    font-weight: bold; font-size: 8.5pt; }
+                QPushButton:hover { background: rgba(255,255,255,20); color: #FFFFFF; }
+            """)
+            self.status_btn.setEnabled(True)
             self.validate_btn.setText("Validate Files")
             self.validate_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent;
-                    color: #ffffff;
-                    border: 1px solid #2d2d34;
-                }}
-                QPushButton:hover {{
-                    border-color: {self.accent_color};
-                }}
+                QPushButton {{ background: rgba(255,255,255,12); color: #FFFFFF; border: none; font-weight: bold; }}
+                QPushButton:hover {{ background: rgba(255,255,255,20); color: {ac}; }}
             """)
         elif status == "checking":
-            self.status_badge.setText("⟳  CHECKING FOR UPDATES...")
-            self.status_badge.setStyleSheet(
-                "background-color: #1a223a; color: #7ab3ff; border: 1px solid #22355e; border-radius: 4px; font-weight: bold; font-size: 9px;"
-            )
-            self.validate_btn.setText("Validate Files")
+            self.status_btn.setText("⟳  CHECKING FOR UPDATES...")
+            self.status_btn.setStyleSheet("""
+                QPushButton { background: rgba(20,40,80,100); color: #7ab3ff;
+                    border: none; border-radius: 4px;
+                    font-weight: bold; font-size: 8.5pt; }
+            """)
+            self.status_btn.setEnabled(False)
         else:
-            self.status_badge.setText("?  STATUS UNKNOWN")
-            self.status_badge.setStyleSheet(
-                "background-color: #16161a; color: #a0a0ab; border: 1px solid #282830; border-radius: 4px; font-weight: bold; font-size: 9px;"
-            )
+            self.status_btn.setText("?  STATUS UNKNOWN  —  click to check")
+            self.status_btn.setStyleSheet("""
+                QPushButton { background: rgba(255,255,255,12); color: rgba(255,255,255,75);
+                    border: none; border-radius: 4px;
+                    font-weight: bold; font-size: 8.5pt; }
+                QPushButton:hover { background: rgba(255,255,255,20); }
+            """)
+            self.status_btn.setEnabled(True)
             self.validate_btn.setText("Validate Files")
+            self.validate_btn.setStyleSheet(f"""
+                QPushButton {{ background: rgba(255,255,255,12); color: #FFFFFF; border: none; font-weight: bold; }}
+                QPushButton:hover {{ background: rgba(255,255,255,20); }}
+            """)
 
     def _on_status_changed(self, changed_appid, new_status):
         if changed_appid != self.appid:
             return
         self.game_data["update_status"] = new_status
         self._update_status_ui(new_status)
-        self.check_btn.setEnabled(True)
-        self.check_btn.setText("Check for Updates")
-        
-        # Check if auto-update is enabled
         if self.pref1_toggle.isChecked() and new_status == "update_available":
             self.parent_window._fetch_game_manifest(self.game_data, self, download_only=True)
+
+    def _on_combo_changed(self):
+        if self.rollback_combo.currentData() is not None:
+            self.validate_btn.setText("Install Selected Build")
+        else:
+            is_upd = self.game_data.get("update_status") == "update_available"
+            self.validate_btn.setText("Download Update" if is_upd else "Validate Files")
+
+    # ──────────────────────────────────────────
+    #  TAB 2 — Tools (Clean Two-Column Grid Setup)
+    # ──────────────────────────────────────────
+    def _init_tools_tab(self):
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        path = self.game_data.get("install_path")
+        name = self.game_data.get("game_name")
+        ac = self.accent_color
+
+        def _row_label(text):
+            lbl = QLabel(text)
+            lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
+            return lbl
+
+        grid_widget = QWidget()
+        grid = QGridLayout(grid_widget)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(10)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
+        row_idx = 0
+
+        # Section 1: DRM Removal
+        grid.addWidget(self._section_title("DRM & Emulation"), row_idx, 0, 1, 2)
+        row_idx += 1
+
+        b_steamless = self._card_btn("Run Steamless")
+        b_steamless.clicked.connect(
+            lambda: self.parent_window.main_window.task_manager.run_steamless_for_game(path, name))
+        grid.addWidget(_row_label("Steamless DRM Remover"), row_idx, 0)
+        grid.addWidget(b_steamless, row_idx, 1)
+        row_idx += 1
+
+        b_aio = self._card_btn("Run Steamless-AIO")
+        b_aio.clicked.connect(
+            lambda: self.parent_window.main_window.task_manager.run_steamless_aio_for_game(path, name))
+        grid.addWidget(_row_label("Steamless All-In-One"), row_idx, 0)
+        grid.addWidget(b_aio, row_idx, 1)
+        row_idx += 1
+
+        # Goldberg buttons side by side in the second column
+        self.gb_apply_btn = self._card_btn("Apply Goldberg")
+        self.gb_remove_btn = self._card_btn("Remove Goldberg")
+        self.parent_window.goldberg_check_complete.connect(self._on_goldberg_check_complete)
+        self.finished.connect(
+            lambda: self.parent_window.goldberg_check_complete.disconnect(
+                self._on_goldberg_check_complete)
+            if hasattr(self.parent_window, "goldberg_check_complete") else None)
+        self.parent_window.executor.submit(self.parent_window._check_goldberg_async, path)
+
+        def _apply_gb():
+            if self.parent_window.main_window and self.parent_window.main_window.task_manager:
+                self.parent_window.main_window.task_manager.apply_goldberg_to_game(
+                    path, self.appid, name, show_dialog=True)
+                self.parent_window.executor.submit(self.parent_window._check_goldberg_async, path)
+
+        def _remove_gb():
+            if self.parent_window.main_window and self.parent_window.main_window.task_manager:
+                self.parent_window.main_window.task_manager.remove_goldberg_from_game(
+                    path, self.appid, name, show_dialog=True)
+                self.parent_window.executor.submit(self.parent_window._check_goldberg_async, path)
+
+        self.gb_apply_btn.clicked.connect(_apply_gb)
+        self.gb_remove_btn.clicked.connect(_remove_gb)
+
+        gb_row = QHBoxLayout()
+        gb_row.setContentsMargins(0, 0, 0, 0)
+        gb_row.setSpacing(6)
+        gb_row.addWidget(self.gb_apply_btn, 1)
+        gb_row.addWidget(self.gb_remove_btn, 1)
+
+        grid.addWidget(_row_label("Goldberg Steam Emulator"), row_idx, 0)
+        grid.addLayout(gb_row, row_idx, 1)
+        row_idx += 1
+
+        # Divider
+        grid.addWidget(self._thin_line(), row_idx, 0, 1, 2)
+        row_idx += 1
+
+        # Section 2: Depot selection & ACF fixing
+        grid.addWidget(self._section_title("Depots & Installation"), row_idx, 0, 1, 2)
+        row_idx += 1
+
+        self.depot_status_lbl = QLabel()
+        self.depot_status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.75); font-size: 9.5pt;")
+        self._update_depot_label()
+
+        choose_btn = self._card_btn("Choose...")
+        choose_btn.clicked.connect(self._configure_depots_wrapper)
+        reset_btn = self._card_btn("Reset")
+        reset_btn.clicked.connect(self._reset_depots_wrapper)
+
+        depot_row = QHBoxLayout()
+        depot_row.setContentsMargins(0, 0, 0, 0)
+        depot_row.setSpacing(6)
+        depot_row.addWidget(choose_btn, 1)
+        depot_row.addWidget(reset_btn)
+
+        grid.addWidget(self.depot_status_lbl, row_idx, 0)
+        grid.addLayout(depot_row, row_idx, 1)
+        row_idx += 1
+
+        fix_btn = self._card_btn("Fix Installation")
+        fix_btn.setToolTip("Removes local manifest (.acf) to force Steam verification.")
+        fix_btn.clicked.connect(lambda: self.parent_window._fix_game_install(self.game_data))
+        grid.addWidget(_row_label("Fix Installation State"), row_idx, 0)
+        grid.addWidget(fix_btn, row_idx, 1)
+        row_idx += 1
+
+        # Divider
+        grid.addWidget(self._thin_line(), row_idx, 0, 1, 2)
+        row_idx += 1
+
+        # Section 3: Clipboard & Web Links
+        grid.addWidget(self._section_title("Utility & Store Links"), row_idx, 0, 1, 2)
+        row_idx += 1
+
+        if self.appid not in ("0", "N/A", "unknown"):
+            steam_btn = self._card_btn("Open Store")
+            steam_btn.clicked.connect(lambda: QDesktopServices.openUrl(
+                QUrl(f"https://store.steampowered.com/app/{self.appid}/")))
+            grid.addWidget(_row_label("Steam Store Page"), row_idx, 0)
+            grid.addWidget(steam_btn, row_idx, 1)
+            row_idx += 1
+
+            steamdb_btn = self._card_btn("Open SteamDB")
+            steamdb_btn.clicked.connect(lambda: QDesktopServices.openUrl(
+                QUrl(f"https://www.steamdb.info/app/{self.appid}/")))
+            grid.addWidget(_row_label("Steam Database"), row_idx, 0)
+            grid.addWidget(steamdb_btn, row_idx, 1)
+            row_idx += 1
+
+        copy_appid = self._card_btn("Copy ID")
+        copy_appid.clicked.connect(lambda: QApplication.clipboard().setText(self.appid))
+        grid.addWidget(_row_label("Game Application ID"), row_idx, 0)
+        grid.addWidget(copy_appid, row_idx, 1)
+        row_idx += 1
+
+        copy_path = self._card_btn("Copy Path")
+        copy_path.clicked.connect(lambda: QApplication.clipboard().setText(
+            str(self.game_data.get("install_path", ""))))
+        grid.addWidget(_row_label("Install Folder Location"), row_idx, 0)
+        grid.addWidget(copy_path, row_idx, 1)
+        row_idx += 1
+
+        lay.addWidget(grid_widget)
+        lay.addStretch()
+
+        self.stacked.addWidget(scroll)
+
+    # ──────────────────────────────────────────
+    def _on_goldberg_check_complete(self, is_applied):
+        if hasattr(self, "gb_apply_btn") and hasattr(self, "gb_remove_btn"):
+            if is_applied:
+                self.gb_apply_btn.setEnabled(False)
+                self.gb_remove_btn.setEnabled(True)
+                self.gb_remove_btn.setStyleSheet(f"background: rgba(160,30,20,30); color: #ff8a7a;")
+                self.gb_apply_btn.setStyleSheet("")
+            else:
+                self.gb_apply_btn.setEnabled(True)
+                self.gb_remove_btn.setEnabled(False)
+                self.gb_apply_btn.setStyleSheet(f"background: rgba(255, 255, 255, 0.12); color: {self.accent_color};")
+                self.gb_remove_btn.setStyleSheet("")
+
+    def _update_depot_label(self):
+        if self.settings:
+            val = self.settings.value(f"depot_selection/{self.appid}", "", type=str)
+            if val:
+                try:
+                    import json
+                    data = json.loads(val)
+                    sel = data.get("selected", [])
+                    tot = len(data.get("all_available", []))
+                    self.depot_status_lbl.setText(f"{len(sel)} of {tot} depots selected")
+                    return
+                except Exception:
+                    pass
+        self.depot_status_lbl.setText("All depots selected (default)")
+
+    def _configure_depots_wrapper(self):
+        self.parent_window._configure_depots(self.game_data)
+        self._update_depot_label()
+
+    def _reset_depots_wrapper(self):
+        self.parent_window._reset_depot_selection(self.game_data)
+        self._update_depot_label()
 
     def _get_manifest_age(self):
         if self.appid in ("0", "N/A", "unknown"):
@@ -827,7 +1050,7 @@ class GameDetailsDialogV2(QDialog):
                 return self._format_time_diff(fpath.stat().st_mtime)
             except Exception:
                 pass
-        return "Not Cached"
+        return "Not cached"
 
     def _get_last_checked(self):
         if self.appid in ("0", "N/A", "unknown"):
@@ -847,335 +1070,12 @@ class GameDetailsDialogV2(QDialog):
         diff = int(time.time() - ts)
         if diff < 0:
             diff = 0
-        if diff < 60:
-            return "just now"
-        elif diff < 3600:
-            return f"{diff // 60}min ago"
-        elif diff < 86400:
-            return f"{diff // 3600}hr ago"
-        elif diff < 2592000:
-            return f"{diff // 86400}day ago"
-        elif diff < 31536000:
-            return f"{diff // 2592000}mo ago"
-        else:
-            return f"{diff // 31536000}yr ago"
+        if diff < 60:   return "just now"
+        elif diff < 3600:    return f"{diff // 60}min ago"
+        elif diff < 86400:   return f"{diff // 3600}hr ago"
+        elif diff < 2592000: return f"{diff // 86400}d ago"
+        elif diff < 31536000:return f"{diff // 2592000}mo ago"
+        else:                return f"{diff // 31536000}yr ago"
 
     def _cleanup_fetcher(self, key):
         self._active_fetchers.pop(key, None)
-
-    # ----------------------------------------------------
-    # Uninstall Tab
-    # ----------------------------------------------------
-    def _init_uninstall_tab(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        layout.addStretch(1)
-
-        card = QFrame()
-        card.setObjectName("uninstall_card")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(15, 15, 15, 15)
-        card_layout.setSpacing(10)
-
-        title = QLabel("Remove Game")
-        title.setStyleSheet("font-size: 13px; font-weight: bold; color: #e05a47; border: none; background: transparent;")
-        card_layout.addWidget(title)
-
-        desc = QLabel("Are you sure you want to remove this game and its downloaded files?")
-        desc.setStyleSheet("color: #a0a0ab; border: none; background: transparent;")
-        desc.setWordWrap(True)
-        card_layout.addWidget(desc)
-
-        self.uninstall_opts = {}
-        if platform.system() == "Linux":
-            self.uninstall_opts["compat"] = QCheckBox("Remove Proton/Wine prefix data")
-            self.uninstall_opts["saves"] = QCheckBox("Remove local cloud saves")
-            card_layout.addWidget(self.uninstall_opts["compat"])
-            card_layout.addWidget(self.uninstall_opts["saves"])
-
-        uninstall_btn = QPushButton("Uninstall Game")
-        uninstall_btn.setFixedHeight(28)
-        uninstall_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #3a1614;
-                color: #ff8a7a;
-                border: 1px solid #54221d;
-                font-weight: bold;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #54221d;
-            }
-        """)
-        uninstall_btn.clicked.connect(
-            lambda: self.parent_window._uninstall_game(self.game_data, self, self.uninstall_opts)
-        )
-        card_layout.addWidget(uninstall_btn)
-
-        layout.addWidget(card)
-        layout.addStretch(1)
-        self.stacked_widget.addWidget(page)
-
-    # ----------------------------------------------------
-    # Tools Tab (Redesigned Alignment and Spacing)
-    # ----------------------------------------------------
-    def _init_tools_tab(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        path = self.game_data.get("install_path")
-        name = self.game_data.get("game_name")
-
-        row1_layout = QHBoxLayout()
-        row1_layout.setSpacing(10)
-
-        # Card: DRM Removal
-        drm_card = QFrame()
-        drm_card.setObjectName("drm_card")
-        drm_layout = QVBoxLayout(drm_card)
-        drm_layout.setContentsMargins(10, 10, 10, 10)
-        drm_layout.setSpacing(6)
-
-        drm_title = QLabel("DRM Removal")
-        drm_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
-        drm_layout.addWidget(drm_title)
-        
-        drm_layout.addStretch(1)
-
-        sl_btn = QPushButton("Remove DRM (Steamless)")
-        sl_btn.setFixedHeight(28)
-        sl_btn.clicked.connect(
-            lambda: self.parent_window.main_window.task_manager.run_steamless_for_game(path, name)
-        )
-        drm_layout.addWidget(sl_btn)
-
-        sl_aio_btn = QPushButton("Remove DRM (Steamless-AIO)")
-        sl_aio_btn.setFixedHeight(28)
-        sl_aio_btn.clicked.connect(
-            lambda: self.parent_window.main_window.task_manager.run_steamless_aio_for_game(path, name)
-        )
-        drm_layout.addWidget(sl_aio_btn)
-        
-        drm_layout.addStretch(1)
-        row1_layout.addWidget(drm_card, 1)
-
-        # Card: Goldberg Emulator
-        gb_card = QFrame()
-        gb_card.setObjectName("gb_card")
-        gb_layout = QVBoxLayout(gb_card)
-        gb_layout.setContentsMargins(10, 10, 10, 10)
-        gb_layout.setSpacing(6)
-
-        gb_title = QLabel("Goldberg Emulator")
-        gb_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
-        gb_layout.addWidget(gb_title)
-        
-        gb_layout.addStretch(1)
-
-        self.gb_btn = QPushButton("Checking Goldberg status...")
-        self.gb_btn.setFixedHeight(28)
-        self.gb_btn.setEnabled(False)
-        gb_layout.addWidget(self.gb_btn)
-        
-        # Connect signal to update gb_btn
-        self.parent_window.goldberg_check_complete.connect(self._on_goldberg_check_complete)
-        self.finished.connect(
-            lambda: self.parent_window.goldberg_check_complete.disconnect(self._on_goldberg_check_complete)
-            if hasattr(self.parent_window, "goldberg_check_complete") else None
-        )
-        
-        # Start background check
-        self.parent_window.executor.submit(self.parent_window._check_goldberg_async, path)
-        
-        # Connect Goldberg click action
-        def _on_gb_click():
-            if not self.parent_window.main_window or not self.parent_window.main_window.task_manager:
-                return
-            is_applied = "Remove" in self.gb_btn.text()
-            if is_applied:
-                self.parent_window.main_window.task_manager.remove_goldberg_from_game(
-                    path, self.appid, name, show_dialog=True
-                )
-            else:
-                self.parent_window.main_window.task_manager.apply_goldberg_to_game(
-                    path, self.appid, name, show_dialog=True
-                )
-            self.gb_btn.setText("Updating status...")
-            self.gb_btn.setEnabled(False)
-            self.parent_window.executor.submit(self.parent_window._check_goldberg_async, path)
-
-        self.gb_btn.clicked.connect(_on_gb_click)
-        
-        gb_layout.addStretch(1)
-        row1_layout.addWidget(gb_card, 1)
-
-        layout.addLayout(row1_layout)
-
-        # Row 2 Grid: Depot Card & Fix Install Card
-        row2_layout = QHBoxLayout()
-        row2_layout.setSpacing(10)
-
-        # Card: Depot Config
-        depot_card = QFrame()
-        depot_card.setObjectName("depot_card")
-        depot_layout = QVBoxLayout(depot_card)
-        depot_layout.setContentsMargins(10, 10, 10, 10)
-        depot_layout.setSpacing(6)
-
-        depot_title = QLabel("Depot Configuration")
-        depot_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
-        depot_layout.addWidget(depot_title)
-        
-        depot_layout.addStretch(1)
-
-        self.depot_status_lbl = QLabel()
-        self.depot_status_lbl.setStyleSheet("color: #a0a0ab; font-style: italic; font-size: 10px;")
-        self._update_depot_label()
-        depot_layout.addWidget(self.depot_status_lbl)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(6)
-        configure_btn = QPushButton("Choose...")
-        configure_btn.setFixedHeight(28)
-        configure_btn.clicked.connect(lambda: self._configure_depots_wrapper())
-        btn_row.addWidget(configure_btn, 1)
-
-        reset_btn = QPushButton("Reset")
-        reset_btn.setFixedHeight(28)
-        reset_btn.clicked.connect(lambda: self._reset_depots_wrapper())
-        btn_row.addWidget(reset_btn, 1)
-        
-        depot_layout.addLayout(btn_row)
-        
-        depot_layout.addStretch(1)
-        row2_layout.addWidget(depot_card, 1)
-
-        # Card: Fix Install
-        fix_card = QFrame()
-        fix_card.setObjectName("fix_card")
-        fix_layout = QVBoxLayout(fix_card)
-        fix_layout.setContentsMargins(10, 10, 10, 10)
-        fix_layout.setSpacing(6)
-
-        fix_title = QLabel("Fix Install")
-        fix_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
-        fix_layout.addWidget(fix_title)
-        
-        fix_layout.addStretch(1)
-
-        fix_desc = QLabel("Removes local .acf file.")
-        fix_desc.setStyleSheet("color: #888890; font-size: 10px;")
-        fix_desc.setWordWrap(True)
-        fix_layout.addWidget(fix_desc)
-
-        fix_btn = QPushButton("Fix Install (Remove .acf)")
-        fix_btn.setFixedHeight(28)
-        fix_btn.clicked.connect(lambda: self.parent_window._fix_game_install(self.game_data))
-        fix_layout.addWidget(fix_btn)
-        
-        fix_layout.addStretch(1)
-        row2_layout.addWidget(fix_card, 1)
-
-        layout.addLayout(row2_layout)
-
-        # Row 3: Log Configuration Card
-        row3_layout = QHBoxLayout()
-        log_card = QFrame()
-        log_card.setObjectName("log_card")
-        log_layout = QVBoxLayout(log_card)
-        log_layout.setContentsMargins(10, 10, 10, 10)
-        log_layout.setSpacing(6)
-
-        log_title = QLabel("Log Configuration")
-        log_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
-        log_layout.addWidget(log_title)
-        
-        log_layout.addStretch(1)
-
-        combos_layout = QHBoxLayout()
-        combos_layout.setSpacing(10)
-
-        level_lbl = QLabel("Level:")
-        level_lbl.setStyleSheet("color: #a0a0ab;")
-        self.log_level_combo = CenteredComboBox()
-        self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
-        self.log_level_combo.setFixedHeight(28)
-        self.log_level_combo.setCurrentText(
-            self.settings.value("log_filter_level", "DEBUG", type=str) if self.settings else "DEBUG"
-        )
-
-        category_lbl = QLabel("Filter:")
-        category_lbl.setStyleSheet("color: #a0a0ab;")
-        self.log_category_combo = CenteredComboBox()
-        self.log_category_combo.addItems([
-            "All Modules",
-            "Only Steam Client & API",
-            "Only Downloads & Manifests",
-            "Only Database & Library"
-        ])
-        self.log_category_combo.setFixedHeight(28)
-        self.log_category_combo.setCurrentText(
-            self.settings.value("log_filter_category", "All Modules", type=str) if self.settings else "All Modules"
-        )
-
-        combos_layout.addWidget(level_lbl)
-        combos_layout.addWidget(self.log_level_combo, 1)
-        combos_layout.addWidget(category_lbl)
-        combos_layout.addWidget(self.log_category_combo, 1)
-
-        log_layout.addLayout(combos_layout)
-        log_layout.addStretch(1)
-
-        row3_layout.addWidget(log_card, 1)
-        layout.addLayout(row3_layout)
-
-        def _on_log_settings_changed():
-            if self.settings:
-                self.settings.setValue("log_filter_level", self.log_level_combo.currentText())
-                self.settings.setValue("log_filter_category", self.log_category_combo.currentText())
-            try:
-                from utils.logger import update_log_filters
-                update_log_filters()
-            except Exception as e:
-                logger.error(f"Failed to update log filters: {e}")
-
-        self.log_level_combo.currentIndexChanged.connect(_on_log_settings_changed)
-        self.log_category_combo.currentIndexChanged.connect(_on_log_settings_changed)
-
-        self.stacked_widget.addWidget(page)
-
-    def _on_goldberg_check_complete(self, is_applied):
-        if hasattr(self, "gb_btn"):
-            self.gb_btn.setText("Remove Goldberg" if is_applied else "Apply Goldberg")
-            self.gb_btn.setEnabled(True)
-            if is_applied:
-                self.gb_btn.setStyleSheet(f"border: 1px solid {self.accent_color}; color: {self.accent_color};")
-            else:
-                self.gb_btn.setStyleSheet("")
-
-    def _update_depot_label(self):
-        if self.settings:
-            val = self.settings.value(f"depot_selection/{self.appid}", "", type=str)
-            if val:
-                try:
-                    import json
-                    data = json.loads(val)
-                    selected = data.get("selected", [])
-                    total = len(data.get("all_available", []))
-                    self.depot_status_lbl.setText(f"{len(selected)} of {total} depots")
-                    return
-                except Exception:
-                    pass
-        self.depot_status_lbl.setText("All depots selected")
-
-    def _configure_depots_wrapper(self):
-        self.parent_window._configure_depots(self.game_data)
-        self._update_depot_label()
-
-    def _reset_depots_wrapper(self):
-        self.parent_window._reset_depot_selection(self.game_data)
-        self._update_depot_label()
