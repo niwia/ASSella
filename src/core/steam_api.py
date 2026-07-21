@@ -376,6 +376,7 @@ def batched_get_product_info(
                         app_data = apps_data.get(appid_str, {})
                         build_id = None
                         app_name = None
+                        time_updated = None
 
                         # Parse the app data
                         depot_info = {}
@@ -383,8 +384,6 @@ def batched_get_product_info(
                             app_data.get("config", {}).get("installdir")
                             ImageFetcher.get_header_image_url(int_appid)
                             app_name = app_data.get("common", {}).get("name")
-                            build_id = None
-                            time_updated = None
                             try:
                                 public_branch = (
                                     app_data.get("depots", {})

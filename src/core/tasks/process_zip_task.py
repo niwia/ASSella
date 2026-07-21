@@ -14,6 +14,7 @@ from utils.yaml_config_manager import (
     is_slssteam_mode_enabled,
 )
 from core.appinfo_editor import get_appinfo_path, add_token_to_appinfo
+from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,7 @@ class ProcessZipTask:
                             )
 
                         enriched_depots = {}
+                        filter_soundtracks = get_settings().value("filter_soundtracks", True, type=bool)
                         for depot_id, lua_data in filtered_depots.items():
                             final_depot_data = {"key": lua_data["key"]}
                             details = api_details.get(str(depot_id))
@@ -281,9 +283,6 @@ class ProcessZipTask:
                                 final_depot_data["language"] = details.get("language")
                             else:
                                 final_description = base_description
-
-                            from utils.settings import get_settings
-                            filter_soundtracks = get_settings().value("filter_soundtracks", True, type=bool)
 
                             if filter_soundtracks:
                                 lower_desc = final_description.lower()
@@ -321,9 +320,10 @@ class ProcessZipTask:
                         game_data["depots"] = enriched_depots
 
                 if not game_data.get("game_name"):
-                    game_data["game_name"] = f"App_{game_data['appid']}"
+                    _fallback_name = f"App_{game_data.get('appid', 'Unknown')}"
+                    game_data["game_name"] = _fallback_name
                     logger.warning(
-                        f"Could not determine game name from Lua or API. Fallback to {game_data['game_name']}"
+                        f"Could not determine game name from Lua or API. Fallback to {_fallback_name}"
                     )
 
                 manifest_dir = os.path.join(

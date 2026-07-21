@@ -12,7 +12,7 @@ from utils.settings import get_settings
 from utils.paths import Paths
 from utils.helpers import get_base_path, get_dotnet_path
 from core import steam_helpers
-from core.morrenus_api import _get_base_url
+from core.morrenus_api import BASE_URL
 from ui.dialogs.steamlibrary import SteamLibraryDialog
 
 def extract_workshop_id(raw: str):

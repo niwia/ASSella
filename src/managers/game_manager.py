@@ -56,6 +56,7 @@ class GameManager(QObject):
     @pyqtSlot(int)
     def _emit_scan_signals(self, games_found: int) -> None:
         """Main-thread slot: emit library_updated and scan_complete after a background scan."""
+        self.is_scanning = False
         self.library_updated.emit()
         self.scan_complete.emit(games_found)
 
@@ -82,6 +83,7 @@ class GameManager(QObject):
         # Library scan task management
         self.scan_runner = None
         self._scan_cancelled = False
+        self.is_scanning = False
 
         logger.info("GameManager initialized")
 
@@ -339,8 +341,11 @@ class GameManager(QObject):
 
         if game is not None:
             old_status = game.get("update_status")
-            game["update_status"] = update_status
-            logger.debug(f"Updated status for game {appid}: {update_status}")
+            game_title = game.get("name", f"AppID {appid}")
+            if update_status == UPDATE_STATUS["CANNOT_DETERMINE"]:
+                logger.info(f"Updated status for game {appid} ({game_title}): {update_status}")
+            else:
+                logger.debug(f"Updated status for game {appid} ({game_title}): {update_status}")
             self.game_update_status_changed.emit(appid, update_status)
 
             # Persist to disk cache so the result survives a restart
@@ -389,8 +394,9 @@ class GameManager(QObject):
         """
         logger.info("Starting async scan of Steam libraries for installed Steam games...")
 
-        # Reset cancel flag
+        # Reset cancel flag and set scanning state
         self._scan_cancelled = False
+        self.is_scanning = True
 
         # Create a worker function that does the scanning
         def do_scan():

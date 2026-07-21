@@ -91,7 +91,7 @@ fi
 echo -e "${GREEN}Verification successful! AppImage launched successfully.${NC}"
 
 echo -e "${YELLOW}=== Installing built AppImage locally ===${NC}"
-cp "$WORKDIR/ASSella.AppImage" "$OUTPUT_APPIMAGE"
+cp -f "$WORKDIR/ASSella.AppImage" "$OUTPUT_APPIMAGE"
 echo -e "${GREEN}Installed locally at: $OUTPUT_APPIMAGE${NC}"
 
 echo -e "${YELLOW}=== Pushing to GitHub ===${NC}"

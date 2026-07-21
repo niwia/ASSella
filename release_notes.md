@@ -1,16 +1,20 @@
-# ASSella v2.3.2 Beta Release Notes
+# ASSella v2.3.3 Release Notes
 
-> CAUTION: This beta release includes new two-stage Hubcap manifest freshness verification features. While basic logic and dry-run tests have passed, these features are newly implemented and require further real-world testing. Please use with caution.
+## Critical Fixes and Improvements
 
-## Stage 1 & Stage 2 Hubcap Manifest Verification
-- Implemented a two-stage verification safeguard system to prevent downloading outdated or stale manifests from Hubcap when Steam updates occur.
-- Stage 1 Pre-Download Check: Queries Hubcap status API before downloading update manifests to check if Hubcap reports needs_update or update_in_progress. Displays warning prompts if Hubcap is not yet ready.
-- Stage 2 Post-Download Check: Compares downloaded manifest IDs inside the zip archive against Steam's latest manifest ID. Alerts users if the downloaded manifest is older than Steam's live build or identical to currently installed game files.
-- Smart Pass for File Validation: When running "Validate Files" on up-to-date games, Stage 1 pre-checks are bypassed, and Stage 2 skips identical-version alerts to allow fast, seamless re-verification while still protecting against outdated validation files.
+### Steam API and Library Update Detection
+- Fixed UnboundLocalError in Steam API batch product info fetcher where empty API responses caused unassigned variable errors, leading to update detection failures.
+- Added comprehensive diagnostic logging for update checks returning cannot_determine status (logging missing depot files, empty payloads, and missing Steam public manifests).
+- Added library scanning state tracking to GameManager and updated UI statistics panel to show active scanning status instead of premature zero counts.
 
-## Experimental Refined Update Check
-- Added a new "Refined Update Check" setting under the ASSella -> Experimental section in Settings (disabled by default).
-- Modular Verifier: Built src/utils/manifest_verifier.py to parse and compare Steam's live build release timestamp (timeupdated) against Hubcap's manifest modification date (file_modified) strictly in UTC.
-- Zero Local Clock Sensitivity: Bypasses system clocks, local timezones, and Deck settings by comparing pure UTC timestamps.
-- Non-Blocking Graceful Fallback: If Steam or Hubcap timestamps are missing or unreachable, the check automatically yields a cannot_determine status and bypasses without hanging or blocking user downloads.
-- UI Integration: When enabled, Hubcap manifest staleness is reflected directly in Game Details status pills and download confirmation dialogs.
+### Download Progress, Speed, and ETA Smoothing
+- Enhanced DownloadDepotsTask progress parsing to distinguish between local disk file validation and network downloading. The UI now displays "Validating local files..." during disk hashing instead of inaccurate network speeds.
+- Implemented Exponential Moving Average (EMA) download speed calculation with negative speed clamping and guaranteed persistent ETA formatting.
+- Upgraded downloader process output parsing to chunked reads for improved performance and responsiveness.
+
+### UI and Thread Safety Hardening
+- Resolved QMetaObject.invokeMethod RuntimeError on Python 3.14 by converting background boot check callbacks to a thread-safe PyQt signal.
+- Removed obsolete cursor stylesheet property from bottom titlebar that caused QSS warnings.
+- Upgraded settings management to use thread-local QSettings instances for thread safety across background workers.
+- Refactored Morrenus API health check endpoints to pass through ISP bypass transport logic.
+- Cleaned up legacy proxy fallback code paths from Morrenus API and updated dialog callers.

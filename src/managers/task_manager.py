@@ -683,7 +683,7 @@ class TaskManager(QObject):
                 return
             self._finalize_greenluma(config_enabled)
 
-        except OSError as e:
+        except Exception as e:
             logger.error(
                 f"Critical error in post-processing thread: {e}", exc_info=True
             )

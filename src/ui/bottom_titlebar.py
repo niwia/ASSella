@@ -41,7 +41,7 @@ class ClickableLabel(QLabel):
     ):
         super().__init__(text, parent)
         self.callback = callback
-        self.setStyleSheet("cursor: pointer;")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self.callback:
@@ -118,7 +118,7 @@ class BottomTitleBar(QFrame):
             self.parent_window,
             lambda: self.trigger_update_flow()
         )
-        self.update_arrow_label.setStyleSheet("color: #E05A47; font-weight: bold; cursor: pointer;")
+        self.update_arrow_label.setStyleSheet("color: #E05A47; font-weight: bold;")
         self.update_arrow_label.setToolTip("Click here to apply delta updates (ZSync) now.")
         self.update_arrow_label.setVisible(False)
         layout.addWidget(self.update_arrow_label, alignment=Qt.AlignmentFlag.AlignLeft)

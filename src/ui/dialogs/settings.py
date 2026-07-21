@@ -214,6 +214,7 @@ class SettingsDialog(QDialog):
         self.autofetch_manifests_checkbox = None
         self.use_lancache_checkbox = None
         self.refined_update_check_checkbox = None
+        self.isp_bypass_hubcap_checkbox = None
         self.fakeappid_db_integration_checkbox = None
         self.remote_web_ui_checkbox = None
         self.max_downloads_spinbox = None
@@ -480,6 +481,16 @@ class SettingsDialog(QDialog):
             "Compares Steam's live build release timestamp against Hubcap's manifest modification date for higher accuracy, rather than relying solely on the server's update flag.",
         )
         experimental_layout.addWidget(self.refined_update_check_checkbox)
+
+        self.isp_bypass_hubcap_checkbox = create_checkbox_setting(
+            "ISP Bypass (Hubcap API)",
+            "isp_bypass_hubcap",
+            False,
+            self,
+            "Bypasses ISP DNS blocking/censorship for Hubcap API requests using DoH (DNS-over-HTTPS) with automatic background Tor helper fallback.",
+        )
+        self.isp_bypass_hubcap_checkbox.stateChanged.connect(self._on_isp_bypass_toggled)
+        experimental_layout.addWidget(self.isp_bypass_hubcap_checkbox)
         experimental_group.setLayout(experimental_layout)
         layout.addWidget(experimental_group)
 
@@ -710,7 +721,7 @@ class SettingsDialog(QDialog):
         try:
             if not self.auto_apply_goldberg_checkbox.isChecked():
                 return
-        except:
+        except AttributeError:
             if not self.settings.value("auto_apply_goldberg", False):
                 return
 
@@ -1651,6 +1662,25 @@ class SettingsDialog(QDialog):
             self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
         if hasattr(self, "refined_update_check_checkbox") and self.refined_update_check_checkbox is not None:
             self.settings.setValue("refined_update_check", self.refined_update_check_checkbox.isChecked())
+        if hasattr(self, "isp_bypass_hubcap_checkbox") and self.isp_bypass_hubcap_checkbox is not None:
+            new_val = self.isp_bypass_hubcap_checkbox.isChecked()
+            self.settings.setValue("isp_bypass_hubcap", new_val)
+            if not new_val:
+                try:
+                    from utils.isp_bypass import TorManager
+                    TorManager.stop_tor()
+                except Exception:
+                    pass
+
+    def _on_isp_bypass_toggled(self, state) -> None:
+        """Stops background Tor process if user unchecks ISP Bypass."""
+        if hasattr(self, "isp_bypass_hubcap_checkbox") and self.isp_bypass_hubcap_checkbox is not None:
+            if not self.isp_bypass_hubcap_checkbox.isChecked():
+                try:
+                    from utils.isp_bypass import TorManager
+                    TorManager.stop_tor()
+                except Exception as e:
+                    logger.warning(f"Error stopping Tor on toggle untick: {e}")
 
         if hasattr(self, "log_level_combo"):
             self.settings.setValue("log_filter_level", self.log_level_combo.currentText())

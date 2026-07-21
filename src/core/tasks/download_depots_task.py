@@ -1,5 +1,7 @@
 import logging
 import os
+import hashlib
+import random
 import re
 import shutil
 import subprocess
@@ -53,6 +55,7 @@ class DownloadDepotsTask(QObject):
         self.temp_file_list = None
         self._last_speed_calc_time = 0.0
         self._last_downloaded_bytes = 0.0
+        self._smooth_speed_bps = 0.0
 
     @property
     def is_running_flag(self) -> bool:
@@ -103,9 +106,10 @@ class DownloadDepotsTask(QObject):
                     logger.info("Download task stopping before next depot.")
                     break
 
-                depot_id = current_cmd[
-                    5
-                ]  # 'dotnet', 'dll', '-app', 'id', '-depot', 'id'
+                try:
+                    depot_id = current_cmd[current_cmd.index("-depot") + 1]
+                except (ValueError, IndexError):
+                    depot_id = f"depot_{i}"
                 self.current_depot_size = depot_sizes[i]
 
                 self.progress.emit(
@@ -165,31 +169,34 @@ class DownloadDepotsTask(QObject):
                     logger.warning(msg)
                 else:
                     self.completed_so_far_for_this_job += self.current_depot_size
+                    self._last_speed_calc_time = 0.0
+                    self._smooth_speed_bps = 0.0
                     # Copy manifest and create .sha sidecar in .DepotDownloader to enable future delta updates
                     try:
-                        manifest_id = current_cmd[7]
-                        manifest_file_path = current_cmd[9]
+                        # Safely extract manifest_id and manifest_file_path via flag names
+                        manifest_idx = current_cmd.index("-manifest")
+                        manifest_id = current_cmd[manifest_idx + 1]
+                        mf_idx = current_cmd.index("-manifestfile")
+                        manifest_file_path = current_cmd[mf_idx + 1]
+
                         dest_depot_downloader = os.path.join(self.download_dir, ".DepotDownloader")
                         os.makedirs(dest_depot_downloader, exist_ok=True)
-                        
+
                         dest_manifest_path = os.path.join(dest_depot_downloader, f"{depot_id}_{manifest_id}.manifest")
-                        
-                        import shutil
-                        import hashlib
-                        
+
                         if os.path.exists(manifest_file_path):
                             shutil.copy2(manifest_file_path, dest_manifest_path)
-                            
+
                             # Calculate SHA1 hash of the manifest file
                             sha1 = hashlib.sha1()
                             with open(dest_manifest_path, "rb") as f:
                                 while chunk := f.read(8192):
                                     sha1.update(chunk)
-                            
+
                             # Write the raw bytes of the SHA1 hash to the .sha file (as expected by DDM's Util.LoadManifestFromFile)
                             with open(dest_manifest_path + ".sha", "wb") as f:
                                 f.write(sha1.digest())
-                                
+
                             logger.info(f"Successfully copied manifest and created SHA sidecar for depot {depot_id} to enable delta patching.")
                         else:
                             logger.warning(f"Manifest file not found at {manifest_file_path}, skipping delta manifest setup.")
@@ -230,38 +237,40 @@ class DownloadDepotsTask(QObject):
             self.process = None
             self.error.emit()
             raise
-
     def _read_process_output(self):
-        """Reads process output byte-by-byte to handle \r updates."""
+        """Reads process output in chunks, splitting on \\r and \\n for progress updates."""
         if not self.process or not self.process.stdout:
             return
 
         buffer = bytearray()
         while self._is_running:
-            # Check if process is None before reading
             if self.process is None:
                 break
 
-            # Read small chunks to be responsive
-            chunk = self.process.stdout.read(1)
+            # Read in chunks to avoid one syscall per byte
+            try:
+                chunk = self.process.stdout.read(4096)
+            except OSError:
+                break
 
             if not chunk:
-                # Check if process is None before polling
                 if self.process and self.process.poll() is not None:
                     break
                 time.sleep(0.01)
                 continue
 
-            if chunk == b"\r" or chunk == b"\n":
-                if buffer:
-                    try:
-                        line = buffer.decode("utf-8", errors="replace")
-                        self._handle_downloader_output(line)
-                    except UnicodeDecodeError:
-                        pass
-                    buffer.clear()
-            else:
-                buffer.extend(chunk)
+            for byte in chunk:
+                b = bytes([byte])
+                if b == b"\r" or b == b"\n":
+                    if buffer:
+                        try:
+                            line = buffer.decode("utf-8", errors="replace")
+                            self._handle_downloader_output(line)
+                        except UnicodeDecodeError:
+                            pass
+                        buffer.clear()
+                else:
+                    buffer.extend(b)
 
         # Process remaining buffer
         if buffer:
@@ -348,43 +357,66 @@ class DownloadDepotsTask(QObject):
                         self.progress_percentage.emit(total_percentage)
                         self.last_percentage = total_percentage
 
-                    # Calculate Speed & ETA locally from percentage progress changes
+                    # Check if line indicates local disk file validation phase vs real chunk download
+                    is_validation = line.startswith("Validating ") or ("[Downloading...]" not in line and ("/" in line or "\\" in line))
                     current_time = time.time()
-                    if self._last_speed_calc_time == 0.0:
-                        self._last_speed_calc_time = current_time
-                        self._last_downloaded_bytes = total_progress_bytes
-                    elif current_time - self._last_speed_calc_time >= 1.0:
-                        elapsed = current_time - self._last_speed_calc_time
-                        bytes_diff = total_progress_bytes - self._last_downloaded_bytes
-                        self._last_downloaded_bytes = total_progress_bytes
-                        self._last_speed_calc_time = current_time
 
-                        speed_bps = bytes_diff / elapsed
-                        remaining_bytes = self.total_download_size_for_this_job - total_progress_bytes
+                    if is_validation:
+                        if current_time - self._last_speed_calc_time >= 1.0:
+                            self._last_speed_calc_time = current_time
+                            self._last_downloaded_bytes = total_progress_bytes
+                            self._smooth_speed_bps = 0.0
+                            self.speed_update.emit("Validating local files... | ETA: Calculating...")
+                    else:
+                        # Real network chunk downloading phase
+                        if self._last_speed_calc_time == 0.0:
+                            self._last_speed_calc_time = current_time
+                            self._last_downloaded_bytes = total_progress_bytes
+                            self.speed_update.emit("Speed: 0.00 B/s | ETA: Calculating...")
+                        elif current_time - self._last_speed_calc_time >= 1.0:
+                            elapsed = current_time - self._last_speed_calc_time
+                            bytes_diff = total_progress_bytes - self._last_downloaded_bytes
+                            self._last_downloaded_bytes = total_progress_bytes
+                            self._last_speed_calc_time = current_time
 
-                        # Format Speed
-                        if speed_bps < 1024:
-                            speed_str = f"{speed_bps:.2f} B/s"
-                        elif speed_bps < 1024**2:
-                            speed_str = f"{(speed_bps / 1024):.2f} KB/s"
-                        else:
-                            speed_str = f"{(speed_bps / 1024**2):.2f} MB/s"
+                            # Guard against negative diffs (e.g. depot switch or validation transition)
+                            if bytes_diff < 0:
+                                bytes_diff = 0.0
 
-                        # Format ETA
-                        if speed_bps > 0:
-                            eta_seconds = int(remaining_bytes / speed_bps)
-                            if eta_seconds < 60:
-                                eta_str = f"{eta_seconds}s remaining"
-                            elif eta_seconds < 3600:
-                                eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s remaining"
+                            inst_speed_bps = bytes_diff / elapsed
+
+                            # Exponential moving average for smooth speed display (alpha = 0.35)
+                            if self._smooth_speed_bps == 0.0:
+                                self._smooth_speed_bps = inst_speed_bps
                             else:
-                                eta_str = f"{eta_seconds // 3600}h {(eta_seconds % 3600) // 60}m remaining"
+                                self._smooth_speed_bps = 0.35 * inst_speed_bps + 0.65 * self._smooth_speed_bps
 
-                            self.speed_update.emit(f"Speed: {speed_str} | ETA: {eta_str}")
-                            logger.debug(f"Download Progress: {total_percentage}% | Speed: {speed_str} | ETA: {eta_str} | Completed size: {total_progress_bytes} bytes")
-                        else:
-                            self.speed_update.emit(f"Speed: {speed_str}")
-                            logger.debug(f"Download Progress: {total_percentage}% | Speed: {speed_str}")
+                            speed_bps = self._smooth_speed_bps
+                            remaining_bytes = max(0.0, float(self.total_download_size_for_this_job - total_progress_bytes))
+
+                            # Format Speed
+                            if speed_bps < 1024:
+                                speed_str = f"{speed_bps:.2f} B/s"
+                            elif speed_bps < 1024**2:
+                                speed_str = f"{(speed_bps / 1024):.2f} KB/s"
+                            else:
+                                speed_str = f"{(speed_bps / (1024**2)):.2f} MB/s"
+
+                            # Format ETA (always included, never hidden)
+                            if speed_bps > 1024:  # At least 1 KB/s to give meaningful ETA
+                                eta_seconds = int(remaining_bytes / speed_bps)
+                                if eta_seconds < 60:
+                                    eta_str = f"{eta_seconds}s remaining"
+                                elif eta_seconds < 3600:
+                                    eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s remaining"
+                                else:
+                                    eta_str = f"{eta_seconds // 3600}h {(eta_seconds % 3600) // 60}m remaining"
+                            else:
+                                eta_str = "Calculating..."
+
+                            speed_display = f"Speed: {speed_str} | ETA: {eta_str}"
+                            self.speed_update.emit(speed_display)
+                            logger.debug(f"Download Progress: {total_percentage}% | {speed_display} | Completed: {total_progress_bytes:.0f} bytes")
                 else:
                     int_percentage = int(percentage)
                     if int_percentage != self.last_percentage:
@@ -507,7 +539,6 @@ class DownloadDepotsTask(QObject):
                 cmd_args.append("-use-lancache")
 
             # 2. LoginID session isolation (randomized 32-bit integer)
-            import random
             login_id = random.randint(1, 2147483647)
             cmd_args.extend(["-loginid", str(login_id)])
 

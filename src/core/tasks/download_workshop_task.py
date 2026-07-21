@@ -12,7 +12,7 @@ from utils.settings import get_settings
 from utils.paths import Paths
 from utils.helpers import get_base_path, get_dotnet_path
 from core import steam_helpers
-from core.morrenus_api import _get_base_url
+from core.morrenus_api import BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +49,7 @@ class DownloadWorkshopTask(QObject):
 
     def fetch_manifest(self, wid: str, api_key: str):
         try:
-            base_url = _get_base_url()
-            url = f"{base_url}/generate/workshopmanifest/{wid}"
+            url = f"{BASE_URL}/generate/workshopmanifest/{wid}"
             r = requests.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=30)
             r.raise_for_status()
         except Exception as e:

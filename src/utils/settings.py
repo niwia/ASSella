@@ -1,8 +1,11 @@
+import threading
 from typing import Any
 from PyQt6.QtCore import QSettings
 
 APP_NAME = "ACCELA"
 ORG_NAME = "Tachibana Labs"
+
+_settings_local = threading.local()
 
 
 class RobustQSettings(QSettings):
@@ -23,5 +26,12 @@ class RobustQSettings(QSettings):
 
 
 def get_settings() -> QSettings:
-    """Get the application settings object."""
-    return RobustQSettings(ORG_NAME, APP_NAME)
+    """Get the application settings object.
+
+    Returns a thread-local cached instance so that background threads each get
+    their own QSettings object (QSettings is not safe to share across threads).
+    This avoids creating a new object on every call while still being thread-safe.
+    """
+    if not hasattr(_settings_local, "instance"):
+        _settings_local.instance = RobustQSettings(ORG_NAME, APP_NAME)
+    return _settings_local.instance

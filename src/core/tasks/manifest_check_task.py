@@ -1,4 +1,5 @@
 import logging
+import os
 import traceback
 from pathlib import Path
 
@@ -95,7 +96,7 @@ class ManifestCheckTask(QObject):
                         pass
 
             # Use batched API call for all valid games and any DLC depot IDs
-            appid_list = list({game["appid"] for game in valid_games} | additional_appids)
+            appid_list = list({game.get("appid") for game in valid_games if game.get("appid")} | additional_appids)
             batch_size = 20
             rate_limit_delay = 0.3
 
@@ -185,6 +186,7 @@ class ManifestCheckTask(QObject):
 
         # Skip if no valid appid
         if not appid or appid in ("0", "N/A", "unknown"):
+            logger.info(f"[UpdateCheck] Cannot determine status: Invalid/missing AppID '{appid}' in game_data")
             return "cannot_determine"
 
         # DLC-Only mode: check only the user-selected depots, not the whole game
@@ -210,7 +212,7 @@ class ManifestCheckTask(QObject):
 
         if not depot_file.exists():
             # No saved manifest file, cannot determine version
-            logger.debug(f"Depot file not found for app {appid}: {depot_file}")
+            logger.info(f"[UpdateCheck {appid}] Cannot determine status: Local depot file does not exist ({depot_file})")
             return "cannot_determine"
 
         # Read the saved manifest IDs from the depot file
@@ -226,22 +228,29 @@ class ManifestCheckTask(QObject):
                     manifest_id = parts[1].strip()
                     saved_depots[depot_id] = manifest_id
         except Exception as e:
-            logger.error(f"Error reading depot file {depot_file}: {e}")
+            logger.error(f"[UpdateCheck {appid}] Error reading depot file {depot_file}: {e}")
             return "cannot_determine"
 
         if not saved_depots:
-            logger.debug(f"No saved depots found in depot file {depot_file}")
+            logger.info(f"[UpdateCheck {appid}] Cannot determine status: Local depot file ({depot_file}) is empty or contains no valid depot entries")
             return "cannot_determine"
 
         # Compare manifest IDs for each saved depot
         try:
             any_update_available = False
             all_cannot_determine = True
+            reasons = []
+
+            # Check if appid exists in batched API results
+            steam_client_data = batched_results.get(appid, {})
+            if not steam_client_data:
+                logger.info(
+                    f"[UpdateCheck {appid}] Cannot determine status: AppID {appid} was not returned in Steam API batched results payload (Steam API / DB lookup returned no product info)"
+                )
 
             for saved_depot_id, saved_manifest_id in saved_depots.items():
                 try:
                     # 1. Try in base game depots
-                    steam_client_data = batched_results.get(appid, {})
                     depots = steam_client_data.get("depots", {})
 
                     # 2. Try in DLC depots
@@ -252,6 +261,9 @@ class ManifestCheckTask(QObject):
                             depots = dlc_depots
 
                     if not depots or saved_depot_id not in depots:
+                        reason_msg = f"Depot {saved_depot_id} not found in Steam depots payload (available depots in API: {list(depots.keys()) if depots else 'None'})"
+                        reasons.append(reason_msg)
+                        logger.debug(f"[UpdateCheck {appid}] {reason_msg}")
                         continue
 
                     depot_info = depots[saved_depot_id]
@@ -271,21 +283,28 @@ class ManifestCheckTask(QObject):
                         # Compare manifest IDs
                         if saved_manifest_id != current_manifest_id:
                             logger.info(
-                                f"Update available for app {appid} depot {saved_depot_id}: saved={saved_manifest_id}, current={current_manifest_id}"
+                                f"[UpdateCheck {appid}] Update available for depot {saved_depot_id}: saved={saved_manifest_id}, current={current_manifest_id}"
                             )
                             any_update_available = True
+                    else:
+                        reason_msg = f"Steam API returned no public manifest_id for depot {saved_depot_id}"
+                        reasons.append(reason_msg)
+                        logger.debug(f"[UpdateCheck {appid}] {reason_msg}")
                     
                 except Exception as e:
-                    logger.error(f"Error checking depot {saved_depot_id} update for app {appid}: {e}")
+                    logger.error(f"[UpdateCheck {appid}] Error checking depot {saved_depot_id} update: {e}")
 
             if any_update_available:
                 return "update_available"
             if all_cannot_determine:
+                logger.info(
+                    f"[UpdateCheck {appid}] Update status: cannot_determine. Reason: None of the {len(saved_depots)} saved depot(s) ({list(saved_depots.keys())}) resolved to a public manifest ID from Steam API data. Details: {'; '.join(reasons)}"
+                )
                 return "cannot_determine"
             return "up_to_date"
 
         except Exception as e:
-            logger.error(f"Error checking for updates for app {appid}: {e}")
+            logger.error(f"[UpdateCheck {appid}] Exception checking for updates: {e}")
             return "cannot_determine"
 
     @staticmethod
@@ -313,13 +332,20 @@ class ManifestCheckTask(QObject):
             return None
 
         try:
-            for fname in os.listdir(ddm_dir):
-                if fname.startswith(f"{depot_id}_") and fname.endswith(".manifest"):
-                    # Extract the manifest ID: depotId_manifestId.manifest
-                    base = fname[:-9]  # strip ".manifest"
-                    parts = base.split("_", 1)
-                    if len(parts) == 2:
-                        return parts[1]
+            candidates = [
+                fname for fname in os.listdir(ddm_dir)
+                if fname.startswith(f"{depot_id}_") and fname.endswith(".manifest")
+            ]
+            # Sort newest-first so we always use the most recently written manifest
+            candidates.sort(
+                key=lambda f: os.path.getmtime(os.path.join(ddm_dir, f)),
+                reverse=True,
+            )
+            for fname in candidates:
+                base = fname[:-9]  # strip ".manifest"
+                parts = base.split("_", 1)
+                if len(parts) == 2:
+                    return parts[1]
         except Exception:
             pass
         return None
@@ -350,6 +376,9 @@ class ManifestCheckTask(QObject):
             return "update_available"
         if any_resolved:
             return "up_to_date"
+        logger.info(
+            f"[UpdateCheck {appid}] [DLC Only] Cannot determine status: None of the selected DLC depots {selected_depot_ids} resolved to a public manifest ID in Steam API data"
+        )
         return "cannot_determine"
 
     def stop(self):

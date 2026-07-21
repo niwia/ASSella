@@ -6,7 +6,7 @@ import sys
 from collections import deque
 from typing import Dict, Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot, QMetaObject, Q_ARG
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QMetaObject, Q_ARG
 from PyQt6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
@@ -412,8 +412,24 @@ class SimplifiedTerminalWidget(QWidget):
             return
 
         settings = self.main_window.settings
-        games = self.main_window.game_manager.games
+        gm = self.main_window.game_manager
+        games = gm.games
         total_games = len(games)
+
+        # If scan is currently running and no games have been populated yet
+        is_scanning = getattr(gm, "is_scanning", False)
+        if total_games == 0 and is_scanning:
+            self.total_games_label.setText("Library Size: Scanning...")
+            self.updates_label.setText("Updates: Scanning...")
+            while self.updates_scroll_layout.count():
+                child = self.updates_scroll_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+            lbl = QLabel("Scanning installed games...")
+            lbl.setStyleSheet("color: #888888; font-style: italic; font-size: 9pt;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.updates_scroll_layout.addWidget(lbl)
+            return
 
         # Only include updates for games NOT excluded from "Update All"
         games_with_updates = [
@@ -732,8 +748,11 @@ class MainWindow(QMainWindow):
 
     """Main application window."""
 
+    refresh_system_status_signal = pyqtSignal()
+
     def __init__(self):
         super().__init__()
+        self.refresh_system_status_signal.connect(self.refresh_system_status)
         self.resize_handles: Dict[str, ResizeHandle] = {}
         self.key_sequence = deque(maxlen=4)
         self.target_sequence = ["l", "a", "i", "n"]
@@ -818,7 +837,7 @@ class MainWindow(QMainWindow):
             run_boot_update_check()
             run_boot_config_check()
             # Safely refresh system status labels on the main window dashboard
-            QMetaObject.invokeMethod(self, "refresh_system_status", Qt.ConnectionType.QueuedConnection)
+            self.refresh_system_status_signal.emit()
 
         threading.Thread(target=run_boot_checks, daemon=True).start()
 
@@ -1580,6 +1599,7 @@ class MainWindow(QMainWindow):
             logger.error(f"Error reading steam.cfg: {e}")
             return False
 
+    @pyqtSlot()
     def refresh_system_status(self) -> None:
         """Refresh local Steam updates and SLS status labels."""
         if not self.steam_updates_value or not self.sls_status_value:
@@ -1868,6 +1888,11 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "web_server_manager") and self.web_server_manager:
                 self.web_server_manager.stop()
+            try:
+                from utils.isp_bypass import TorManager
+                TorManager.stop_tor()
+            except Exception:
+                pass
             from utils.update_status_cache import get_update_cache
             get_update_cache().save()  # Force synchronous save of status cache before exit
             MainWindow._cleanup_logging()
@@ -1914,6 +1939,7 @@ class MainWindow(QMainWindow):
             return raw.strip()
 
         def _parse_version(v_str: str) -> tuple:
+            import re as _re
             v_str = v_str.lstrip('v').strip()
             parts = v_str.split('-')
             main_part = parts[0]
@@ -1933,7 +1959,7 @@ class MainWindow(QMainWindow):
             if len(parts) > 1:
                 pre_tag = parts[1].lower()
                 pre_release_val = -1
-                match = re.search(r'\d+$', pre_tag)
+                match = _re.search(r'\d+$', pre_tag)
                 if match:
                     try:
                         pre_release_num = int(match.group(0))

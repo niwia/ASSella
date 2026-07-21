@@ -287,10 +287,7 @@ class FetchManifestDialog(QDialog):
             self.api_status_dot.setStyleSheet(
                 "border-radius: 6px; background-color: #2ecc71;"
             )  # Green
-            if morrenus_api.is_using_proxy():
-                self.api_status_text.setText("Online (Proxy)")
-            else:
-                self.api_status_text.setText("Online")
+            self.api_status_text.setText("Online")
         else:
             self.api_status_dot.setStyleSheet(
                 "border-radius: 6px; background-color: #e74c3c;"
