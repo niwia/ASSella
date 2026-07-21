@@ -344,3 +344,13 @@ def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
 
         error_msg = _handle_request_exception(e, f"Download {app_id}")
         return None, error_msg
+
+
+def get_manifest_status(app_id: str) -> Dict:
+    """
+    Calls /api/v1/status/{app_id} to check Hubcap's manifest freshness.
+    Returns dict with keys: status, needs_update, update_in_progress, file_modified, error
+    """
+    logger.info(f"Fetching manifest status for app {app_id}")
+    return _make_json_request("GET", f"/status/{app_id}")
+

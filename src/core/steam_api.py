@@ -384,13 +384,16 @@ def batched_get_product_info(
                             ImageFetcher.get_header_image_url(int_appid)
                             app_name = app_data.get("common", {}).get("name")
                             build_id = None
+                            time_updated = None
                             try:
-                                build_id = (
+                                public_branch = (
                                     app_data.get("depots", {})
                                     .get("branches", {})
                                     .get("public", {})
-                                    .get("buildid")
                                 )
+                                if isinstance(public_branch, dict):
+                                    build_id = public_branch.get("buildid")
+                                    time_updated = public_branch.get("timeupdated")
                             except AttributeError:
                                 pass
 
@@ -426,6 +429,7 @@ def batched_get_product_info(
                                 else None
                             ),
                             "buildid": build_id,
+                            "timeupdated": time_updated,
                             "name": app_name,
                         }
                 batch_success = True

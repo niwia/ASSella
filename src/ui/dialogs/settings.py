@@ -213,6 +213,7 @@ class SettingsDialog(QDialog):
         self.smart_depot_selection_checkbox = None
         self.autofetch_manifests_checkbox = None
         self.use_lancache_checkbox = None
+        self.refined_update_check_checkbox = None
         self.fakeappid_db_integration_checkbox = None
         self.remote_web_ui_checkbox = None
         self.max_downloads_spinbox = None
@@ -467,6 +468,20 @@ class SettingsDialog(QDialog):
         
         rollback_group.setLayout(rollback_layout)
         layout.addWidget(rollback_group)
+
+        # Experimental Group
+        experimental_group = QGroupBox("Experimental")
+        experimental_layout = QVBoxLayout()
+        self.refined_update_check_checkbox = create_checkbox_setting(
+            "Refined Update Check",
+            "refined_update_check",
+            False,
+            self,
+            "Compares Steam's live build release timestamp against Hubcap's manifest modification date for higher accuracy, rather than relying solely on the server's update flag.",
+        )
+        experimental_layout.addWidget(self.refined_update_check_checkbox)
+        experimental_group.setLayout(experimental_layout)
+        layout.addWidget(experimental_group)
 
         layout.addStretch()
 
@@ -1634,6 +1649,8 @@ class SettingsDialog(QDialog):
             self.settings.setValue("max_old_manifests", self.max_old_manifests_spinbox.value())
         if hasattr(self, "hide_macos_depots_checkbox"):
             self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
+        if hasattr(self, "refined_update_check_checkbox") and self.refined_update_check_checkbox is not None:
+            self.settings.setValue("refined_update_check", self.refined_update_check_checkbox.isChecked())
 
         if hasattr(self, "log_level_combo"):
             self.settings.setValue("log_filter_level", self.log_level_combo.currentText())

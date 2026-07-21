@@ -518,10 +518,19 @@ class GameDetailsDialogV2(QDialog):
 
         if self.parent_window.game_manager:
             self.parent_window.game_manager.game_update_status_changed.connect(self._on_status_changed)
-            self.finished.connect(
-                lambda: self.parent_window.game_manager.game_update_status_changed.disconnect(
-                    self._on_status_changed)
-                if self.parent_window.game_manager else None)
+            self.parent_window.game_manager.game_hubcap_status_checked.connect(self._on_hubcap_status_changed)
+            
+            def _cleanup_signals():
+                if self.parent_window.game_manager:
+                    try:
+                        self.parent_window.game_manager.game_update_status_changed.disconnect(self._on_status_changed)
+                    except Exception:
+                        pass
+                    try:
+                        self.parent_window.game_manager.game_hubcap_status_checked.disconnect(self._on_hubcap_status_changed)
+                    except Exception:
+                        pass
+            self.finished.connect(_cleanup_signals)
 
         lay.addSpacing(12)
         lay.addWidget(self._thin_line())
@@ -778,13 +787,26 @@ class GameDetailsDialogV2(QDialog):
         time_suffix = f" ({last_chk})" if last_chk != "Never" else ""
 
         if status == "update_available":
-            self.status_btn.setText(f"★  UPDATE AVAILABLE{time_suffix}  —  click to check")
-            self.status_btn.setStyleSheet("""
-                QPushButton { background: rgba(30,80,35,110); color: #7be09d;
-                    border: none; border-radius: 4px;
-                    font-weight: bold; font-size: 8.5pt; }
-                QPushButton:hover { background: rgba(30,80,35,150); }
-            """)
+            hubcap_needs_update = self.game_data.get("hubcap_needs_update", False)
+            hubcap_update_in_progress = self.game_data.get("hubcap_update_in_progress", False)
+            
+            if hubcap_needs_update or hubcap_update_in_progress:
+                reason = "HUBCAP UPDATING" if hubcap_update_in_progress else "HUBCAP NOT READY"
+                self.status_btn.setText(f"⚠  UPDATE AVAILABLE ({reason}){time_suffix}  —  click to check")
+                self.status_btn.setStyleSheet("""
+                    QPushButton { background: rgba(180, 110, 30, 110); color: #ffe699;
+                        border: none; border-radius: 4px;
+                        font-weight: bold; font-size: 8.5pt; }
+                    QPushButton:hover { background: rgba(180, 110, 30, 150); }
+                """)
+            else:
+                self.status_btn.setText(f"★  UPDATE AVAILABLE{time_suffix}  —  click to check")
+                self.status_btn.setStyleSheet("""
+                    QPushButton { background: rgba(30,80,35,110); color: #7be09d;
+                        border: none; border-radius: 4px;
+                        font-weight: bold; font-size: 8.5pt; }
+                    QPushButton:hover { background: rgba(30,80,35,150); }
+                """)
             self.status_btn.setEnabled(True)
             self.validate_btn.setText("Download Update")
             self.validate_btn.setStyleSheet(f"""
@@ -835,6 +857,13 @@ class GameDetailsDialogV2(QDialog):
         self._update_status_ui(new_status)
         if self.pref1_toggle.isChecked() and new_status == "update_available":
             self.parent_window._fetch_game_manifest(self.game_data, self, download_only=True)
+
+    def _on_hubcap_status_changed(self, changed_appid, needs_update, update_in_progress):
+        if changed_appid != self.appid:
+            return
+        self.game_data["hubcap_needs_update"] = needs_update
+        self.game_data["hubcap_update_in_progress"] = update_in_progress
+        self._update_status_ui(self.game_data.get("update_status"))
 
     def _on_combo_changed(self):
         if self.rollback_combo.currentData() is not None:

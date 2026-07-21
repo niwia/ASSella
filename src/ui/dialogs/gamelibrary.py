@@ -373,6 +373,7 @@ class GameLibraryDialog(QDialog):
     manifest_download_complete = pyqtSignal(str, str, dict)  # fpath, error, game_data
     uninstall_complete = pyqtSignal(bool, str)  # success, error_message
     zip_parse_complete = pyqtSignal(object, str, dict, object, object)  # parsed_data, filepath, game_data, dialog, parse_progress
+    hubcap_status_check_complete = pyqtSignal(dict, dict, object, object)  # result, game_data, dialog, check_progress
 
     def __init__(self, main_window, show_details_for_appid=None):
         super().__init__(main_window)
@@ -670,6 +671,7 @@ class GameLibraryDialog(QDialog):
         self.manifest_download_complete.connect(self._on_manifest_download_complete)
         self.uninstall_complete.connect(self._on_uninstall_complete)
         self.zip_parse_complete.connect(self._on_zip_parse_complete)
+        self.hubcap_status_check_complete.connect(self._on_hubcap_status_check_complete)
 
     # --- Scanning & Updates ---
 
@@ -1434,7 +1436,10 @@ class GameLibraryDialog(QDialog):
             if download_only:
                 game_data = game_data.copy()
                 game_data["_download_only"] = True
-            self._handle_download_manifest(app_id, name, game_data, dialog)
+            if status == "update_available" and not download_only:
+                self._check_hubcap_status_first(app_id, game_data, dialog)
+            else:
+                self._handle_download_manifest(app_id, name, game_data, dialog)
         else:
             if not download_only:
                 # For rollback builds, mark game data so we don't clear update_available
@@ -1517,6 +1522,84 @@ class GameLibraryDialog(QDialog):
             else:
                 logger.error(f"Background manifest download failed for appid {game_data.get('appid')}: {error}")
 
+    def _check_hubcap_status_first(self, app_id: str, game_data: dict, dialog: QDialog) -> None:
+        """Runs the Stage 1 pre-download Hubcap status check asynchronously."""
+        check_progress = QProgressDialog("Checking Hubcap status...", None, 0, 0, self)
+        check_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        check_progress.setCancelButton(None)
+        check_progress.show()
+
+        def _check_in_background():
+            from core import morrenus_api
+            try:
+                res = morrenus_api.get_manifest_status(app_id)
+            except Exception as e:
+                logger.error(f"Error checking Hubcap status in background: {e}")
+                res = {"error": str(e)}
+            self.hubcap_status_check_complete.emit(res, game_data, dialog, check_progress)
+
+        self.executor.submit(_check_in_background)
+
+    def _on_hubcap_status_check_complete(self, result: dict, game_data: dict, dialog: QDialog, check_progress: object) -> None:
+        """Handles completion of Stage 1 check on the main thread."""
+        if check_progress:
+            try:
+                check_progress.close()
+            except Exception:
+                pass
+
+        app_id = str(game_data.get("appid"))
+        name = game_data.get("game_name", "Unknown")
+
+        # Check if Hubcap says it needs an update or update is in progress
+        needs_update = result.get("needs_update", False) if isinstance(result, dict) else False
+        update_in_progress = result.get("update_in_progress", False) if isinstance(result, dict) else False
+        is_error = "error" in result if isinstance(result, dict) else True
+
+        if is_error:
+            logger.warning(f"Hubcap status check returned error or invalid result for {app_id}: {result}")
+            # Do not block download on status check failure (e.g. offline/network issues)
+            self._handle_download_manifest(app_id, name, game_data, dialog)
+            return
+
+        is_refined = self.settings.value("refined_update_check", False, type=bool) if self.settings else False
+        is_timestamp_stale = False
+        timestamp_reason = ""
+        if not (needs_update or update_in_progress) and is_refined:
+            from utils.manifest_verifier import verify_hubcap_freshness
+            ver_status, reason, _ = verify_hubcap_freshness(app_id, result)
+            if ver_status == "stale":
+                is_timestamp_stale = True
+                timestamp_reason = reason
+
+        if needs_update or update_in_progress or is_timestamp_stale:
+            msg = (
+                f"Hubcap reports that its manifest for '{name}' is currently outdated/stale.\n\n"
+                "If you proceed, you might download the old version instead of the latest Steam update.\n\n"
+            )
+            if update_in_progress:
+                msg += "Hubcap is currently processing/fetching the update. Please try again in a few minutes.\n\n"
+            elif is_timestamp_stale:
+                msg += f"Refined Update Check: {timestamp_reason}\n\n"
+            else:
+                msg += "Hubcap is aware of the new Steam update, but has not ingested the new manifest yet.\n\n"
+
+            msg += "Do you want to continue anyway?"
+            
+            btn = QMessageBox.warning(
+                self, 
+                "Hubcap Manifest Not Ready", 
+                msg, 
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if btn != QMessageBox.StandardButton.Yes:
+                logger.info("User cancelled download due to stale Hubcap manifest")
+                return
+
+        # Proceed with download
+        self._handle_download_manifest(app_id, name, game_data, dialog)
+
     def _submit_job(self, filepath: str, game_data: dict, dialog: QDialog) -> None:
         """Submit the job to the main window queue.
 
@@ -1573,6 +1656,73 @@ class GameLibraryDialog(QDialog):
         # Propagate rollback flag so task_manager won't mark game as up_to_date
         if game_data.get("_is_rollback"):
             metadata["_is_rollback"] = True
+
+        if parsed_data:
+            # Stage 2 check:
+            # Check if the parsed manifest IDs match the latest steam manifest ID we expected,
+            # or if they are identical to the previously installed manifest IDs.
+            appid = str(game_data.get("appid"))
+            latest_steam_id = self.settings.value(f"latest_steam_manifest_id/{appid}", "", type=str) if self.settings else ""
+            
+            # Read old installed manifest IDs from depots/{appid}.depot
+            depot_file = get_base_path() / "depots" / f"{appid}.depot"
+            old_manifest_ids = set()
+            if depot_file.exists():
+                try:
+                    with open(depot_file, "r") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or ":" not in line:
+                                continue
+                            parts = line.split(":", 2)
+                            if len(parts) >= 2:
+                                old_manifest_ids.add(parts[1].strip())
+                except Exception as e:
+                    logger.error(f"Error reading old depot file for comparison: {e}")
+
+            # Extract new manifest IDs from parsed zip data
+            new_manifests = parsed_data.get("manifests", {})
+            new_manifest_ids = set(new_manifests.values())
+
+            is_stale_update = False
+            is_stale_validation = False
+            warning_reason = ""
+
+            # Check 1: if we have a known latest Steam manifest ID, it MUST be present in the new zip
+            if latest_steam_id and latest_steam_id not in new_manifest_ids:
+                is_stale_validation = True
+                warning_reason = f"The manifest does not contain the latest Steam manifest ID ({latest_steam_id})."
+                
+            # Check 2: if all new manifest IDs are identical to the old ones (and there are old ones)
+            elif old_manifest_ids and new_manifest_ids.issubset(old_manifest_ids):
+                is_stale_update = True
+                warning_reason = "The manifest is identical to the currently installed version."
+
+            should_warn = False
+            is_update = game_data.get("update_status") == "update_available"
+            if not game_data.get("_is_rollback"):
+                if is_update and (is_stale_update or is_stale_validation):
+                    should_warn = True
+                elif not is_update and is_stale_validation:
+                    should_warn = True
+
+            if should_warn:
+                msg = (
+                    f"ASSella detected that the manifest is older than the latest Steam version.\n\n"
+                    f"Reason: {warning_reason}\n\n"
+                    "This usually means Hubcap has not yet ingested the latest Steam update.\n\n"
+                    "Do you want to continue with this version anyway?"
+                )
+                btn = QMessageBox.warning(
+                    self,
+                    "Manifest Outdated",
+                    msg,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                if btn != QMessageBox.StandardButton.Yes:
+                    logger.info("User aborted task due to post-download manifest mismatch")
+                    return
 
         if parsed_data and parsed_data.get("depots"):
             from ui.dialogs.depotselection import DepotSelectionDialog

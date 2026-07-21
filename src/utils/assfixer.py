@@ -688,18 +688,21 @@ def dedup_map(entries: dict) -> dict:
 # Steam name resolution  (module-level cache + parallel lookups)
 # ──────────────────────────────────────────────────────────────
 
-_name_cache: dict[str, str] = {"480": "Spacewar"}
+_app_details_cache: dict[str, tuple[str, Optional[str], Optional[list[str]]]] = {
+    "480": ("Spacewar", None, [])
+}
 
 
-def get_name(appid: str) -> str:
+def get_app_details(appid: str) -> tuple[str, Optional[str], Optional[list[str]]]:
     """
-    Query the SteamCMD API for an app's display name.
-    Results are cached in _name_cache so parallel threads avoid duplicate requests.
+    Query the SteamCMD API for an app's display name, parent app ID (if DLC), and any list of DLCs.
+    Returns (name, parent_appid, list_of_dlcs).
     """
     if not appid:
-        return ""
-    if appid in _name_cache:
-        return _name_cache[appid]
+        return "", None, None
+    if appid in _app_details_cache:
+        return _app_details_cache[appid]
+
     url = f"https://api.steamcmd.net/v1/info/{appid}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -707,19 +710,69 @@ def get_name(appid: str) -> str:
             res = json.loads(resp.read().decode("utf-8"))
             if res.get("status") == "success":
                 app_info = res.get("data", {}).get(appid, {})
-                name     = app_info.get("common", {}).get("name") or app_info.get("name")
+                name = app_info.get("common", {}).get("name") or app_info.get("name")
+
+                # Check if it's a DLC and get parent
+                app_type = app_info.get("common", {}).get("type") or app_info.get("extended", {}).get("type")
+                parent = app_info.get("common", {}).get("parent") or app_info.get("extended", {}).get("dlcforappid")
+
+                is_dlc = (app_type and str(app_type).upper() == "DLC") or parent
+                parent_id = str(parent) if parent else None
+
+                # Check for list of DLCs
+                dlc_list = None
+                dlc_raw = app_info.get("extended", {}).get("listofdlc")
+                if dlc_raw:
+                    dlc_list = [d.strip() for d in str(dlc_raw).split(",") if d.strip()]
+
                 if name:
-                    _name_cache[appid] = name
-                    return name
+                    _app_details_cache[appid] = (name, parent_id if is_dlc else None, dlc_list)
+                    return _app_details_cache[appid]
     except Exception:
         pass
-    _name_cache[appid] = ""
-    return ""
+
+    _app_details_cache[appid] = ("", None, None)
+    return "", None, None
+
+
+def get_formatted_name(appid: str) -> str:
+    """
+    Get the fully formatted name (including [DLC] tag and parent game name if applicable).
+    """
+    name, parent_id, _ = get_app_details(appid)
+    if not name:
+        return ""
+
+    if parent_id:
+        # Resolve the parent name
+        parent_name, _, _ = get_app_details(parent_id)
+        if parent_name:
+            return f"[DLC] {name} / {parent_name}"
+        else:
+            return f"[DLC] {name}"
+
+    return name
+
+
+def is_generic_or_missing_comment(raw_value: str) -> bool:
+    """
+    Check if a comment is missing or generic (e.g. '# App 12345' or '# unknown').
+    """
+    if "#" not in raw_value:
+        return True
+    comment = raw_value.split("#", 1)[1].strip()
+    if not comment:
+        return True
+
+    # Matches placeholder comments like "App <digits>", "unknown app", "unknown", "untitled", "placeholder"
+    if re.match(r'^(App\s*\d+|unknown|untitled|placeholder)$', comment, re.IGNORECASE):
+        return True
+    return False
 
 
 def resolve_missing_names(old_data: dict) -> None:
     """
-    Fill in missing inline comments (game names) for AdditionalApps and FakeAppIds.
+    Fill in or update generic inline comments (game names) for AdditionalApps and FakeAppIds.
     All API lookups are issued in parallel for speed.
     """
     additional_apps = old_data.get("AdditionalApps") or []
@@ -727,11 +780,11 @@ def resolve_missing_names(old_data: dict) -> None:
 
     missing_additional = [
         e for e in additional_apps
-        if isinstance(e, ConfigEntry) and "#" not in e.raw_value
+        if isinstance(e, ConfigEntry) and is_generic_or_missing_comment(e.raw_value)
     ]
     missing_fake = [
         (k, e) for k, e in fake_app_ids.items()
-        if isinstance(e, ConfigEntry) and "#" not in e.raw_value
+        if isinstance(e, ConfigEntry) and is_generic_or_missing_comment(e.raw_value)
     ]
 
     if not missing_additional and not missing_fake:
@@ -744,19 +797,20 @@ def resolve_missing_names(old_data: dict) -> None:
     for src_appid, entry in missing_fake:
         all_ids.add(src_appid)
         all_ids.add(entry.dedup_key)
-    uncached = {aid for aid in all_ids if aid.isdigit() and aid not in _name_cache}
+
+    uncached = {aid for aid in all_ids if aid.isdigit() and aid not in _app_details_cache}
 
     if uncached:
         info(f"Resolving {len(uncached)} game name(s) in parallel...")
         with ThreadPoolExecutor(max_workers=8) as ex:
-            futures = {ex.submit(get_name, aid): aid for aid in uncached}
+            futures = {ex.submit(get_app_details, aid): aid for aid in uncached}
             for f in as_completed(futures):
-                pass   # side-effect: results land in _name_cache
+                pass   # side-effect: results land in cache
 
     # Patch entries using the now-populated cache
     for entry in missing_additional:
         appid = entry.dedup_key
-        name  = _name_cache.get(appid, "")
+        name  = get_formatted_name(appid)
         if appid.isdigit() and name:
             entry.raw_value = f"{appid} # {name}"
             info(f"  AdditionalApps {appid} → {name}")
@@ -765,12 +819,121 @@ def resolve_missing_names(old_data: dict) -> None:
         tgt_appid = entry.dedup_key
         if not (src_appid.isdigit() and tgt_appid.isdigit()):
             continue
-        src_name = _name_cache.get(src_appid, "")
-        tgt_name = _name_cache.get(tgt_appid, "")
+        src_name = get_formatted_name(src_appid)
+        tgt_name = get_formatted_name(tgt_appid)
         if src_name:
             comment         = f"{src_name} → {tgt_name}" if tgt_name else src_name
             entry.raw_value = f"{tgt_appid} # {comment}"
             info(f"  FakeAppIds {src_appid}:{tgt_appid} → {src_name}")
+
+
+def fetch_raw_app_info(appid: str) -> Optional[dict]:
+    """Fetch raw app info dict from SteamCMD API."""
+    url = f"https://api.steamcmd.net/v1/info/{appid}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=STEAM_API_TIMEOUT) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            if res.get("status") == "success":
+                return res.get("data", {}).get(appid, {})
+    except Exception:
+        pass
+    return None
+
+
+def resolve_and_print_manifests(appid: str) -> None:
+    """
+    Query the SteamCMD API for the given AppID, print depot manifest mapping,
+    and do the same for any DLCs associated with the app.
+    """
+    if not appid or not appid.isdigit():
+        error("Invalid AppID.")
+        return
+
+    info(f"Retrieving app info for {appid}...")
+    app_info = fetch_raw_app_info(appid)
+    if not app_info:
+        error(f"Failed to retrieve data for AppID {appid}.")
+        return
+
+    game_name = app_info.get("common", {}).get("name") or app_info.get("name") or f"App {appid}"
+
+    # Pre-warm cache for the main game details
+    get_app_details(appid)
+
+    # Process depots of this app
+    depots = app_info.get("depots", {})
+    manifest_lines = []
+
+    def process_depots_dict(depots_dict: dict, label: str):
+        for dep_id, dep_data in depots_dict.items():
+            if not dep_id.isdigit() or not isinstance(dep_data, dict):
+                continue
+            manifests = dep_data.get("manifests", {})
+            public_manifest = manifests.get("public", {})
+            if isinstance(public_manifest, dict) and "gid" in public_manifest:
+                gid = public_manifest["gid"]
+                dep_name = dep_data.get("name")
+                oslist = dep_data.get("config", {}).get("oslist", "")
+
+                # Check if this depot belongs to a DLC
+                dlc_appid = dep_data.get("dlcappid")
+                dep_label = label
+                if dlc_appid:
+                    # Resolve the DLC formatted name (e.g. "[DLC] DLC Name / Parent Name")
+                    dlc_name = get_formatted_name(str(dlc_appid))
+                    if dlc_name:
+                        dep_label = dlc_name
+                    else:
+                        dep_label = f"[DLC] App {dlc_appid} / {label}"
+
+                comment = f"{dep_label}"
+                if dep_name:
+                    comment += f" - {dep_name}"
+                else:
+                    comment += f" - Depot {dep_id}"
+                if oslist:
+                    comment += f" ({oslist})"
+                manifest_lines.append(f"  {dep_id}: {gid} # {comment}")
+
+    process_depots_dict(depots, game_name)
+
+    # Check for list of DLCs
+    dlc_raw = app_info.get("extended", {}).get("listofdlc")
+    if dlc_raw:
+        dlc_ids = [d.strip() for d in str(dlc_raw).split(",") if d.strip()]
+        if dlc_ids:
+            info(f"Found {len(dlc_ids)} DLC(s) for this app. Fetching DLC depots...")
+
+            # Fetch DLC details in parallel to populate details cache
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                futures = {ex.submit(get_app_details, aid): aid for aid in dlc_ids}
+                for f in as_completed(futures):
+                    pass
+
+            for dlc_id in sorted(dlc_ids, key=int):
+                # Retrieve from cache
+                dlc_name, _, dlc_depots_raw = get_app_details(dlc_id)
+                if not dlc_name:
+                    continue
+                # Also retrieve depots for the DLC specifically
+                dlc_app_info = fetch_raw_app_info(dlc_id)
+                if dlc_app_info:
+                    dlc_depots = dlc_app_info.get("depots", {})
+                    process_depots_dict(dlc_depots, get_formatted_name(dlc_id) or f"[DLC] {dlc_name} / {game_name}")
+
+    print()
+    print(f"{BOLD}{'─'*60}{RESET}")
+    print(f"{BOLD}ManifestIds mapping for {game_name} (AppID {appid}):{RESET}")
+    print(f"{BOLD}{'─'*60}{RESET}")
+    print("ManifestIds:")
+    if manifest_lines:
+        for line in manifest_lines:
+            print(line)
+    else:
+        print("  # No public manifests or depots found.")
+    print(f"{BOLD}{'─'*60}{RESET}")
+    print()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -935,6 +1098,9 @@ def main():
 
               Skip outbound name lookups:
                 python3 slssteam_config.py --no-resolve-names
+
+              Query manifest/depot mapping for AppID 480:
+                python3 slssteam_config.py --manifests 480
         """),
     )
     parser.add_argument(
@@ -957,9 +1123,18 @@ def main():
         "--template-url", default=TEMPLATE_SOURCE_URL,
         help="Override the GitHub URL for the default config template",
     )
+    parser.add_argument(
+        "--manifests", "-m", type=str, default=None,
+        help="Query SteamCMD API for an AppID's depot manifests, and print them as a YAML snippet"
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
 
     args = parser.parse_args()
+
+    # If manifests query is requested, handle it immediately and exit
+    if args.manifests:
+        resolve_and_print_manifests(args.manifests)
+        return
 
     # Interactive mode: no CLI flags were passed by the user
     interactive = (
@@ -970,6 +1145,7 @@ def main():
         and not args.validate_only
         and not args.no_resolve_names
         and args.template_url == TEMPLATE_SOURCE_URL
+        and args.manifests    is None
     )
 
     print()
@@ -986,19 +1162,20 @@ def main():
         print("  1) Clean & Update Config")
         print("  2) Restore Backup  (from config.bck)")
         print("  3) Apply Steam Deck Recommended Settings")
+        print("  4) Resolve Manifests/Depots for a Game")
         while True:
             try:
-                user_choice = input("Enter choice (1-3, default: 1): ").strip()
+                user_choice = input("Enter choice (1-4, default: 1): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print("\nCancelled.")
                 sys.exit(0)
             if not user_choice:
                 choice = 1
                 break
-            if user_choice in ("1", "2", "3"):
+            if user_choice in ("1", "2", "3", "4"):
                 choice = int(user_choice)
                 break
-            print("Invalid choice. Please enter 1, 2, or 3.")
+            print("Invalid choice. Please enter 1, 2, 3, or 4.")
         print()
 
     # ── Option 2: Restore backup ─────────────────────────────────
@@ -1026,6 +1203,19 @@ def main():
         except Exception as exc:
             error(f"Failed to restore backup: {exc}")
             sys.exit(1)
+        print()
+        return
+
+    # ── Option 4: Resolve Manifests/Depots for a Game ────────────
+    if interactive and choice == 4:
+        try:
+            appid_input = input("Enter Steam AppID: ").strip()
+            if appid_input:
+                resolve_and_print_manifests(appid_input)
+            else:
+                error("No AppID provided.")
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
         print()
         return
 

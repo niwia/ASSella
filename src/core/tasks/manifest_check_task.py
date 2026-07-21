@@ -264,6 +264,10 @@ class ManifestCheckTask(QObject):
                         settings = get_settings()
                         settings.setValue(f"latest_steam_manifest_id/{appid}", current_manifest_id)
 
+                        timeupdated = steam_client_data.get("timeupdated")
+                        if timeupdated:
+                            settings.setValue(f"latest_steam_timeupdated/{appid}", timeupdated)
+
                         # Compare manifest IDs
                         if saved_manifest_id != current_manifest_id:
                             logger.info(

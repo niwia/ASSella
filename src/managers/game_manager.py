@@ -51,6 +51,7 @@ class GameManager(QObject):
     scan_complete = pyqtSignal(int)  # Emits number of games found
     game_update_status_changed = pyqtSignal(str, str)  # (appid, update_status)
     all_updates_checked = pyqtSignal()  # Emitted when a full batch check finishes
+    game_hubcap_status_checked = pyqtSignal(str, bool, bool)  # (appid, needs_update, update_in_progress)
 
     @pyqtSlot(int)
     def _emit_scan_signals(self, games_found: int) -> None:
@@ -256,6 +257,8 @@ class GameManager(QObject):
 
         # Reset status so the UI shows spinner
         game["update_status"] = UPDATE_STATUS["CHECKING"]
+        game["hubcap_needs_update"] = False
+        game["hubcap_update_in_progress"] = False
         self.game_update_status_changed.emit(appid, UPDATE_STATUS["CHECKING"])
 
         task = ManifestCheckTask([game])
@@ -263,6 +266,8 @@ class GameManager(QObject):
 
         def _on_checked(checked_appid, status):
             self._on_game_update_checked(checked_appid, status)
+            if status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
+                self._check_hubcap_status_async(checked_appid)
 
         def _on_done():
             # Clean up this runner from the list
@@ -277,6 +282,50 @@ class GameManager(QObject):
         self._single_check_runners.append(runner)
         runner.run(task.run)
         logger.info(f"Single update check started for appid {appid}")
+
+    def _check_hubcap_status_async(self, appid: str) -> None:
+        """Fetch Hubcap status asynchronously and update game dict/UI."""
+        from core import morrenus_api
+
+        runner = TaskRunner()
+        self._single_check_runners.append(runner)
+
+        def _fetch_status():
+            try:
+                res = morrenus_api.get_manifest_status(appid)
+                return res
+            except Exception as e:
+                logger.error(f"Error fetching Hubcap status for {appid}: {e}")
+                return {"error": str(e)}
+
+        def _on_status_done(result):
+            # Clean up runner
+            self._single_check_runners[:] = [
+                r for r in self._single_check_runners if r is not runner
+            ]
+            if not result or "error" in result:
+                logger.warning(f"Failed to get Hubcap status for {appid}: {result.get('error') if result else 'empty'}")
+                return
+
+            needs_update = result.get("needs_update", False)
+            update_in_progress = result.get("update_in_progress", False)
+
+            is_refined = self.settings.value("refined_update_check", False, type=bool) if self.settings else False
+            if is_refined and not needs_update and not update_in_progress:
+                from utils.manifest_verifier import verify_hubcap_freshness
+                ver_status, reason, _ = verify_hubcap_freshness(appid, result)
+                if ver_status == "stale":
+                    needs_update = True  # Override flag so UI indicates Hubcap is not ready
+
+            game = self._games_by_appid.get(appid)
+            if game:
+                game["hubcap_needs_update"] = needs_update
+                game["hubcap_update_in_progress"] = update_in_progress
+
+            self.game_hubcap_status_checked.emit(appid, needs_update, update_in_progress)
+
+        worker = runner.run(_fetch_status)
+        worker.finished.connect(_on_status_done)
 
     def _on_game_update_checked(self, appid: str, update_status: str) -> None:
         """Handle individual game update check result — O(1) via _games_by_appid dict."""
