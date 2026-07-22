@@ -446,10 +446,41 @@ class GameDetailsDialogV2(QDialog):
         self.cached_val_lbl = QLabel(self._get_manifest_age())
         self.cached_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
 
+        build_id_str = str(self.game_data.get("buildid") or "Unknown")
+        build_lbl = QLabel("Build ID:")
+        build_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
+        self.build_val_lbl = QLabel(build_id_str)
+        self.build_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
+
+        open_folder_btn = QPushButton("📁 Open Install Folder")
+        open_folder_btn.setFixedHeight(24)
+        open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_folder_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.10);
+                border: 1px solid rgba(255, 255, 255, 0.22);
+                border-radius: 4px;
+                color: #FFFFFF;
+                font-weight: bold;
+                font-size: 8.5pt;
+                padding: 2px 8px;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 255, 255, 0.22);
+                border-color: {self.accent_color};
+                color: {self.accent_color};
+            }}
+        """)
+        open_folder_btn.clicked.connect(
+            lambda: self.parent_window._open_folder(self.game_data.get("install_path")))
+
         stats_grid.addWidget(size_lbl, 0, 0)
         stats_grid.addWidget(self.size_val_lbl, 0, 1)
         stats_grid.addWidget(cached_lbl, 0, 2)
         stats_grid.addWidget(self.cached_val_lbl, 0, 3)
+        stats_grid.addWidget(build_lbl, 1, 0)
+        stats_grid.addWidget(self.build_val_lbl, 1, 1)
+        stats_grid.addWidget(open_folder_btn, 1, 2, 1, 2)
 
         from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
         self._is_dlc = is_dlc_only_mode(self.appid)
@@ -460,19 +491,10 @@ class GameDetailsDialogV2(QDialog):
             mode_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
             mode_val = QLabel(f"DLC Only ({cnt} DLC{'s' if cnt != 1 else ''})")
             mode_val.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold;")
-            stats_grid.addWidget(mode_lbl, 1, 0)
-            stats_grid.addWidget(mode_val, 1, 1)
+            stats_grid.addWidget(mode_lbl, 2, 0)
+            stats_grid.addWidget(mode_val, 2, 1)
 
         lay.addWidget(stats_widget)
-        lay.addSpacing(10)
-
-        # ── Open Install Folder button ───────────────────────────
-        open_folder_btn = QPushButton("Open Install Folder")
-        open_folder_btn.setFixedHeight(28)
-        open_folder_btn.clicked.connect(
-            lambda: self.parent_window._open_folder(self.game_data.get("install_path")))
-        lay.addWidget(open_folder_btn)
-
         lay.addSpacing(12)
         lay.addWidget(self._thin_line())
         lay.addSpacing(10)
@@ -482,20 +504,32 @@ class GameDetailsDialogV2(QDialog):
         actions_row.setSpacing(8)
 
         self.rollback_combo = CenteredComboBox()
-        self.rollback_combo.addItem("Latest Build", None)
+        installed_bid = str(self.game_data.get("buildid") or "")
+        top_label = f"Build: {installed_bid} (Latest)" if installed_bid and self.game_data.get("update_status") == "up_to_date" else "Latest Build"
+        self.rollback_combo.addItem(top_label, None)
+        self.rollback_combo.setItemData(0, QColor("#46b464"), Qt.ItemDataRole.ForegroundRole)
+
         manifests_dir = get_base_path() / "hubcap_manifests"
         self._backups = sorted(manifests_dir.glob(f"accela_fetch_{self.appid}_*.zip"), reverse=True)
-        for b in self._backups:
+        for idx, b in enumerate(self._backups, start=1):
             try:
-                parts = b.stem.split("_")
-                ts1, ts2 = parts[-2], parts[-1]
-                if len(ts1) == 8 and len(ts2) == 6:
-                    date_str = f"{ts1[:4]}-{ts1[4:6]}-{ts1[6:]}"
-                    self.rollback_combo.addItem(f"Backup: {date_str}", str(b))
+                b_name = b.stem
+                if "_build_" in b_name:
+                    bid = b_name.split("_build_")[-1]
+                    item_text = f"Build: {bid}"
                 else:
-                    self.rollback_combo.addItem(f"Backup: {b.name}", str(b))
+                    parts = b_name.split("_")
+                    ts1, ts2 = parts[-2], parts[-1]
+                    if len(ts1) == 8 and len(ts2) == 6:
+                        date_str = f"{ts1[:4]}-{ts1[4:6]}-{ts1[6:]}"
+                        item_text = f"Backup: {date_str}"
+                    else:
+                        item_text = f"Backup: {b.name}"
+                self.rollback_combo.addItem(item_text, str(b))
+                self.rollback_combo.setItemData(idx, QColor("#e0995a"), Qt.ItemDataRole.ForegroundRole)
             except Exception:
                 self.rollback_combo.addItem(f"Backup: {b.name}", str(b))
+                self.rollback_combo.setItemData(idx, QColor("#e0995a"), Qt.ItemDataRole.ForegroundRole)
         self.rollback_combo.setFixedHeight(26)
         actions_row.addWidget(self.rollback_combo, 1)
 
@@ -816,13 +850,13 @@ class GameDetailsDialogV2(QDialog):
         elif status == "up_to_date":
             self.status_btn.setText(f"✓  UP TO DATE{time_suffix}  —  click to check")
             self.status_btn.setStyleSheet("""
-                QPushButton { background: rgba(255,255,255,12); color: #FFFFFF;
-                    border: none; border-radius: 4px;
+                QPushButton { background: rgba(36, 140, 70, 210); color: #ffffff;
+                    border: 1px solid rgba(46, 180, 90, 0.9); border-radius: 4px;
                     font-weight: bold; font-size: 8.5pt; }
-                QPushButton:hover { background: rgba(255,255,255,20); color: #FFFFFF; }
+                QPushButton:hover { background: rgba(46, 180, 90, 240); color: #ffffff; }
             """)
             self.status_btn.setEnabled(True)
-            self.validate_btn.setText("Validate Files")
+            self.validate_btn.setText("Verify & Repair")
             self.validate_btn.setStyleSheet(f"""
                 QPushButton {{ background: rgba(255,255,255,12); color: #FFFFFF; border: none; font-weight: bold; }}
                 QPushButton:hover {{ background: rgba(255,255,255,20); color: {ac}; }}
@@ -844,7 +878,7 @@ class GameDetailsDialogV2(QDialog):
                 QPushButton:hover { background: rgba(255,255,255,20); }
             """)
             self.status_btn.setEnabled(True)
-            self.validate_btn.setText("Validate Files")
+            self.validate_btn.setText("Verify & Repair")
             self.validate_btn.setStyleSheet(f"""
                 QPushButton {{ background: rgba(255,255,255,12); color: #FFFFFF; border: none; font-weight: bold; }}
                 QPushButton:hover {{ background: rgba(255,255,255,20); }}
@@ -866,11 +900,34 @@ class GameDetailsDialogV2(QDialog):
         self._update_status_ui(self.game_data.get("update_status"))
 
     def _on_combo_changed(self):
-        if self.rollback_combo.currentData() is not None:
-            self.validate_btn.setText("Install Selected Build")
+        selected_file = self.rollback_combo.currentData()
+        installed_bid = str(self.game_data.get("buildid") or "")
+        is_upd = self.game_data.get("update_status") == "update_available"
+
+        if selected_file is None:
+            # Top "Latest Build" / default option
+            if is_upd:
+                self.validate_btn.setText("Download Update")
+            else:
+                self.validate_btn.setText("Verify & Repair")
         else:
-            is_upd = self.game_data.get("update_status") == "update_available"
-            self.validate_btn.setText("Download Update" if is_upd else "Validate Files")
+            # Specific backup item selected from dropdown
+            current_text = self.rollback_combo.currentText()
+            if installed_bid and f"Build: {installed_bid}" in current_text:
+                self.validate_btn.setText("Verify & Repair")
+            else:
+                # Try comparing numerical buildid to show "Downgrade" vs "Install Selected Build"
+                selected_bid = None
+                if "Build: " in current_text:
+                    try:
+                        selected_bid = int(current_text.split("Build: ")[1].strip())
+                        inst_bid_num = int(installed_bid) if installed_bid.isdigit() else 0
+                        if inst_bid_num > 0 and selected_bid < inst_bid_num:
+                            self.validate_btn.setText("Downgrade")
+                            return
+                    except (ValueError, IndexError):
+                        pass
+                self.validate_btn.setText("Install Selected Build")
 
     # ──────────────────────────────────────────
     #  TAB 2 — Tools (Clean Two-Column Grid Setup)

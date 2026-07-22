@@ -1661,50 +1661,14 @@ class GameLibraryDialog(QDialog):
             # Stage 2 check:
             # Check if the parsed manifest IDs match the latest steam manifest ID we expected,
             # or if they are identical to the previously installed manifest IDs.
+            from utils.manifest_verifier import verify_extracted_zip_manifest
             appid = str(game_data.get("appid"))
-            latest_steam_id = self.settings.value(f"latest_steam_manifest_id/{appid}", "", type=str) if self.settings else ""
-            
-            # Read old installed manifest IDs from depots/{appid}.depot
-            depot_file = get_base_path() / "depots" / f"{appid}.depot"
-            old_manifest_ids = set()
-            if depot_file.exists():
-                try:
-                    with open(depot_file, "r") as f:
-                        for line in f:
-                            line = line.strip()
-                            if not line or ":" not in line:
-                                continue
-                            parts = line.split(":", 2)
-                            if len(parts) >= 2:
-                                old_manifest_ids.add(parts[1].strip())
-                except Exception as e:
-                    logger.error(f"Error reading old depot file for comparison: {e}")
-
-            # Extract new manifest IDs from parsed zip data
-            new_manifests = parsed_data.get("manifests", {})
-            new_manifest_ids = set(new_manifests.values())
-
-            is_stale_update = False
-            is_stale_validation = False
-            warning_reason = ""
-
-            # Check 1: if we have a known latest Steam manifest ID, it MUST be present in the new zip
-            if latest_steam_id and latest_steam_id not in new_manifest_ids:
-                is_stale_validation = True
-                warning_reason = f"The manifest does not contain the latest Steam manifest ID ({latest_steam_id})."
-                
-            # Check 2: if all new manifest IDs are identical to the old ones (and there are old ones)
-            elif old_manifest_ids and new_manifest_ids.issubset(old_manifest_ids):
-                is_stale_update = True
-                warning_reason = "The manifest is identical to the currently installed version."
+            is_update = game_data.get("update_status") == "update_available"
+            is_valid_stage2, warning_reason = verify_extracted_zip_manifest(appid, parsed_data, is_update=is_update)
 
             should_warn = False
-            is_update = game_data.get("update_status") == "update_available"
-            if not game_data.get("_is_rollback"):
-                if is_update and (is_stale_update or is_stale_validation):
-                    should_warn = True
-                elif not is_update and is_stale_validation:
-                    should_warn = True
+            if not game_data.get("_is_rollback") and not is_valid_stage2:
+                should_warn = True
 
             if should_warn:
                 msg = (

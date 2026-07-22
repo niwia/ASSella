@@ -1082,16 +1082,55 @@ class MainWindow(QMainWindow):
 
         def run_downloads():
             from core import morrenus_api
+            from utils.manifest_verifier import verify_hubcap_freshness
             for appid, name in games_to_fetch:
-                logger.info(f"Auto-fetch background: downloading manifest for {name} ({appid})")
+                logger.info(f"Auto-fetch background: checking Hubcap manifest status for {name} ({appid})")
                 try:
+                    status_res = morrenus_api.get_manifest_status(appid)
+                    if status_res and isinstance(status_res, dict) and not status_res.get("error"):
+                        needs_up = status_res.get("needs_update", False)
+                        up_in_prog = status_res.get("update_in_progress", False)
+                        
+                        # Default check: skip if Hubcap reports needs_update or update_in_progress
+                        if needs_up or up_in_prog:
+                            logger.info(
+                                f"Auto-fetch background: Hubcap manifest for {name} ({appid}) is not ready (needs_update={needs_up}, in_progress={up_in_prog}). Skipping download."
+                            )
+                            continue
+
+                        # Refined check: if user enabled 'refined_update_check', also perform timestamp verification
+                        is_refined = self.settings.value("refined_update_check", False, type=bool) if self.settings else False
+                        if is_refined:
+                            ver_status, reason, _ = verify_hubcap_freshness(appid, status_res)
+                            if ver_status == "stale":
+                                logger.info(
+                                    f"Auto-fetch background: Hubcap manifest for {name} ({appid}) is timestamp-stale ({reason}). Skipping download."
+                                )
+                                continue
+
                     fpath, error = morrenus_api.download_manifest(appid)
                     if fpath and not error:
+                        # Stage 2 Post-Check: Parse zip and verify extracted manifest IDs against Steam
+                        from core.tasks.process_zip_task import ProcessZipTask
+                        from utils.manifest_verifier import verify_extracted_zip_manifest
+
+                        try:
+                            parsed_zip = ProcessZipTask().run(fpath)
+                            is_valid, post_reason = verify_extracted_zip_manifest(appid, parsed_zip, is_update=True)
+                            if not is_valid:
+                                logger.warning(
+                                    f"Auto-fetch background: Stage 2 Post-Check failed for {name} ({appid}): {post_reason}. Discarding downloaded manifest zip."
+                                )
+                                continue
+                        except Exception as p_ex:
+                            logger.error(f"Auto-fetch background: error during Stage 2 zip processing for {name} ({appid}): {p_ex}")
+                            continue
+
                         self.settings.setValue(f"manifest_is_fresh/{appid}", True)
                         latest_id = self.settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
                         if latest_id:
                             self.settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
-                        logger.info(f"Auto-fetch background: successfully downloaded manifest for {name} ({appid})")
+                        logger.info(f"Auto-fetch background: successfully downloaded and verified manifest for {name} ({appid})")
                     else:
                         logger.warning(f"Auto-fetch background: failed for {name} ({appid}): {error}")
                 except Exception as ex:

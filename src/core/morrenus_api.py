@@ -232,12 +232,17 @@ def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
     try:
         settings = get_settings()
         if settings and settings.value("save_old_manifests", True, type=bool):
-            if save_path.exists():
-                mod_time = save_path.stat().st_mtime
-                dt = datetime.datetime.fromtimestamp(mod_time)
-                ts_str = dt.strftime("%Y%m%d_%H%M%S")
-                backup_path = manifests_dir / f"accela_fetch_{app_id}_{ts_str}.zip"
+                old_buildid = settings.value(f"fetched_buildid/{app_id}", "", type=str) if settings else ""
+                if old_buildid:
+                    backup_path = manifests_dir / f"accela_fetch_{app_id}_build_{old_buildid}.zip"
+                else:
+                    mod_time = save_path.stat().st_mtime
+                    dt = datetime.datetime.fromtimestamp(mod_time)
+                    ts_str = dt.strftime("%Y%m%d_%H%M%S")
+                    backup_path = manifests_dir / f"accela_fetch_{app_id}_{ts_str}.zip"
                 try:
+                    if backup_path.exists():
+                        backup_path.unlink()
                     os.rename(save_path, backup_path)
                     logger.info(f"Backed up previous manifest to {backup_path.name}")
                 except OSError as e:

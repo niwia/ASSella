@@ -229,6 +229,7 @@ class ProcessZipTask:
 
                         if api_data.get("buildid"):
                             game_data["buildid"] = api_data["buildid"]
+                            get_settings().setValue(f"fetched_buildid/{game_data['appid']}", api_data["buildid"])
                             logger.info(
                                 f"Found official buildid: {game_data['buildid']}"
                             )

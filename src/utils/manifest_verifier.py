@@ -139,3 +139,62 @@ def verify_hubcap_freshness(
         reason = f"Hubcap manifest ({hubcap_dt.strftime('%Y-%m-%d %H:%M UTC')}) is up-to-date with Steam release ({steam_dt.strftime('%Y-%m-%d %H:%M UTC')})."
         logger.info(f"[ManifestVerifier] AppID {app_id}: FRESH — {reason}")
         return ("fresh", reason, debug_info)
+
+
+def verify_extracted_zip_manifest(app_id: str, parsed_zip_data: dict, is_update: bool = False) -> Tuple[bool, str]:
+    """
+    Stage 2 Verification:
+    Compares the manifest IDs inside an extracted zip archive against Steam's latest manifest ID
+    and the locally installed depot file manifest IDs.
+
+    Args:
+        app_id: App ID string
+        parsed_zip_data: Dictionary returned from ProcessZipTask().run(zip_path)
+        is_update: Whether this operation is an expected game update (True) or a verify/repair (False)
+
+    Returns:
+        Tuple of (is_valid: bool, warning_reason: str)
+    """
+    if not parsed_zip_data:
+        return (False, "Parsed zip data is empty or invalid.")
+
+    settings = get_settings()
+    appid_str = str(app_id)
+    latest_steam_id = settings.value(f"latest_steam_manifest_id/{appid_str}", "", type=str) if settings else ""
+
+    # Read old installed manifest IDs from depots/{appid}.depot
+    from utils.helpers import get_base_path
+    depot_file = get_base_path() / "depots" / f"{appid_str}.depot"
+    old_manifest_ids = set()
+    if depot_file.exists():
+        try:
+            with open(depot_file, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or ":" not in line:
+                        continue
+                    parts = line.split(":", 2)
+                    if len(parts) >= 2:
+                        old_manifest_ids.add(parts[1].strip())
+        except Exception as e:
+            logger.error(f"[ManifestVerifier] Error reading old depot file for comparison: {e}")
+
+    # Extract new manifest IDs from parsed zip data
+    new_manifests = parsed_zip_data.get("manifests", {})
+    new_manifest_ids = set(new_manifests.values())
+
+    # Check 1: If we have a known latest Steam manifest ID, it MUST be present in the new zip
+    if latest_steam_id and latest_steam_id not in new_manifest_ids:
+        reason = f"The downloaded manifest does not contain the latest Steam manifest ID ({latest_steam_id})."
+        logger.warning(f"[ManifestVerifier] AppID {appid_str}: Stage 2 STALE — {reason}")
+        return (False, reason)
+
+    # Check 2: If all new manifest IDs are identical to the old ones (and there are old ones)
+    # ONLY warn if an update was expected (is_update is True). When verifying/repairing, identical manifests are expected!
+    if is_update and old_manifest_ids and new_manifest_ids.issubset(old_manifest_ids):
+        reason = "The downloaded manifest is identical to the currently installed version."
+        logger.warning(f"[ManifestVerifier] AppID {appid_str}: Stage 2 STALE — {reason}")
+        return (False, reason)
+
+    logger.info(f"[ManifestVerifier] AppID {appid_str}: Stage 2 FRESH — Extracted zip manifest matches expected Steam build.")
+    return (True, "")
