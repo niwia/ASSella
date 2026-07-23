@@ -1894,6 +1894,7 @@ class MainWindow(QMainWindow):
         # Create a temporary GameLibraryDialog-like enqueue helper
         # by reusing the standalone enqueue logic
         def _do_update_all():
+            from pathlib import Path
             from utils.helpers import get_base_path
             from core import morrenus_api as _api
             from utils.settings import get_settings
