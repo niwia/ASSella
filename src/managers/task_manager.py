@@ -879,17 +879,34 @@ class TaskManager(QObject):
                     # Upsert the new manifest/depot data to SQLite DB to refresh cache age and content
                     try:
                         from managers.db_manager import DatabaseManager
+                        from utils.settings import get_settings
                         db = DatabaseManager()
+                        new_bid = self.game_data.get("buildid")
                         db_data = {
                             "appid": appid,
                             "name": self.game_data.get("game_name"),
                             "installdir": self.game_data.get("installdir"),
                             "header_url": self.game_data.get("header_url"),
-                            "buildid": self.game_data.get("buildid"),
+                            "buildid": new_bid,
                             "depots": self.game_data.get("depots", {}),
                         }
                         db.upsert_app_info(appid, db_data)
                         logger.debug(f"Upserted updated app/manifest info to SQLite DB for appid={appid}")
+
+                        if appid:
+                            settings = get_settings()
+                            sel_b = settings.value(f"selected_branch/{appid}", "public", type=str)
+                            b_dict = getattr(self, "game_data", {}).get("branches", {}) if hasattr(self, "game_data") else {}
+                            target_bid = ""
+                            if isinstance(b_dict, dict) and sel_b in b_dict:
+                                b_entry = b_dict[sel_b]
+                                if isinstance(b_entry, dict):
+                                    target_bid = str(b_entry.get("buildid", ""))
+
+                            final_bid = target_bid or new_bid
+                            settings.setValue(f"installed_branch/{appid}", sel_b)
+                            if final_bid:
+                                settings.setValue(f"installed_buildid/{appid}", str(final_bid))
                     except Exception as e:
                         logger.error(f"Failed to upsert app info on job completion: {e}")
 

@@ -239,11 +239,22 @@ class ImageFetcher(QObject):
             # Sort by mtime (oldest first)
             files.sort(key=lambda x: x[2])
 
+            # Identify installed appids to protect from deletion
+            installed_appids = set()
+            try:
+                depots_dir = Path.home() / ".local" / "share" / "ACCELA" / "depots"
+                if depots_dir.exists():
+                    installed_appids = {p.stem for p in depots_dir.glob("*.depot")}
+            except Exception:
+                pass
+
             logger.info(
                 f"Image cache size ({total_size / (1024*1024):.2f}MB) exceeds limit. "
-                f"Cleaning up oldest files..."
+                f"Cleaning up non-installed cached images..."
             )
             for f, size, _ in files:
+                if f.stem in installed_appids:
+                    continue  # Protect installed game header images
                 try:
                     f.unlink()
                     total_size -= size

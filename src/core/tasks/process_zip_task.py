@@ -8,6 +8,7 @@ import tempfile
 from ui.assets import DEPOT_BLACKLIST
 from core.steam_api import get_depot_info_from_api
 from core.ini_parser import parse_depots_ini
+from utils.helpers import get_base_path
 from utils.yaml_config_manager import (
     get_user_config_path,
     add_app_token,
@@ -174,7 +175,25 @@ class ProcessZipTask:
                     except Exception:
                         pass
                     lua_content = zip_ref.read(lua_files[0]).decode("utf-8")
-                
+                    if lua_content:
+                        ProcessZipTask._parse_lua(lua_content, game_data)
+                        token = ProcessZipTask._extract_app_token(lua_content, game_data.get("appid"))
+                        if token:
+                            game_data["app_token"] = token
+
+                        try:
+                            _extracted_appid = game_data.get("appid")
+                            if not _extracted_appid and lua_files and lua_files[0].endswith(".lua"):
+                                _extracted_appid = lua_files[0].replace(".lua", "").replace("accela_", "")
+                            if _extracted_appid:
+                                lua_dir = get_base_path() / "cached_luas"
+                                lua_dir.mkdir(parents=True, exist_ok=True)
+                                lua_save_file = lua_dir / f"{_extracted_appid}.lua"
+                                lua_save_file.write_text(lua_content, encoding="utf-8")
+                                logger.info(f"[ProcessZipTask] Archived LUA file to {lua_save_file.name}")
+                        except Exception as _lua_arch_err:
+                            logger.debug(f"Failed to archive LUA backup: {_lua_arch_err}")
+
                 manifest_files = {
                     os.path.basename(f): zip_ref.read(f)
                     for f in zip_ref.namelist()
@@ -184,12 +203,6 @@ class ProcessZipTask:
                     parts = depot_id_manifest.replace(".manifest", "").split("_")
                     if len(parts) == 2:
                         game_data.setdefault("manifests", {})[parts[0]] = parts[1]
-
-                if lua_content:
-                    self._parse_lua(lua_content, game_data)
-                    token = self._extract_app_token(lua_content, game_data.get("appid"))
-                    if token:
-                        game_data["app_token"] = token
 
                 # ── Persist depot keys + AppToken to depot_keys.db ──
                 # This enables Smart Update Mode for this game from here on.

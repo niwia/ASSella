@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QCheckBox,
     QLineEdit, QComboBox, QMessageBox, QWidget, QFrame, QStackedWidget,
     QStylePainter, QStyleOptionComboBox, QStyle, QScrollArea, QApplication,
-    QGridLayout,
+    QGridLayout, QListView,
 )
 
 from utils.helpers import get_base_path
@@ -82,6 +82,54 @@ class SwitchToggle(QWidget):
 
 
 class CenteredComboBox(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        view = QListView(self)
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        view.setStyleSheet("""
+            QListView {
+                background-color: #16161a;
+                border: 1px solid rgba(255, 255, 255, 30);
+                border-radius: 4px;
+                padding: 4px;
+                outline: 0px;
+            }
+            QListView::item {
+                min-height: 24px;
+                padding: 4px 8px;
+                color: #E0E0E0;
+                border-radius: 3px;
+            }
+            QListView::item:hover {
+                background-color: rgba(192, 108, 132, 0.6);
+                color: #FFFFFF;
+            }
+            QListView::item:selected {
+                background-color: rgba(255, 255, 255, 0.15);
+                color: #FFFFFF;
+                font-weight: bold;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: rgba(0, 0, 0, 40);
+                width: 8px;
+                margin: 2px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(255, 255, 255, 0.3);
+                min-height: 20px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(255, 255, 255, 0.5);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+        self.setView(view)
+
     def paintEvent(self, event):
         p = QStylePainter(self)
         opt = QStyleOptionComboBox()
@@ -137,6 +185,8 @@ class HeroBanner(QWidget):
 # ──────────────────────────────────────────────────────────
 
 class GameDetailsDialogV2(QDialog):
+    branches_loaded = pyqtSignal(dict)
+
     def __init__(self, parent, game_data):
         super().__init__(parent)
         self.parent_window = parent
@@ -144,6 +194,7 @@ class GameDetailsDialogV2(QDialog):
         self.appid = str(game_data.get("appid", "0"))
         self.settings = get_settings()
         self._active_fetchers = {}
+        self.branches_loaded.connect(self._on_branches_loaded)
 
         self.accent_color  = getattr(parent, "accent_color",  "#C06C84")
         self.background_color = getattr(parent, "background_color", "#1a1a1e")
@@ -214,11 +265,22 @@ class GameDetailsDialogV2(QDialog):
             }}
             QComboBox::drop-down {{ border: none; width: 18px; }}
             QComboBox QAbstractItemView {{
-                background-color: {bg};
-                border: 1px solid rgba(255, 255, 255, 15);
+                background-color: #1a1a20;
+                border: 1px solid rgba(255, 255, 255, 25);
                 selection-background-color: {ac};
-                selection-color: #000000;
+                selection-color: #FFFFFF;
                 font-size: 9.5pt;
+                outline: 0px;
+                padding: 2px;
+            }}
+            QComboBox QAbstractItemView::item {{
+                min-height: 24px;
+                padding: 4px 8px;
+                color: #FFFFFF;
+            }}
+            QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
+                background-color: {ac};
+                color: #FFFFFF;
             }}
             QCheckBox {{
                 color: #FFFFFF;
@@ -512,59 +574,40 @@ class GameDetailsDialogV2(QDialog):
         lay.addWidget(self._thin_line())
         lay.addSpacing(10)
 
-        # ── Actions (Select Build & Validate) ────────────────────
+        # ── Actions (Select Branch, Build & Validate) ────────────
         actions_row = QHBoxLayout()
         actions_row.setSpacing(8)
 
+        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+        installed_bid = self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""), type=str)
+
+        self.branch_combo = CenteredComboBox()
+        saved_b = self.settings.value(f"selected_branch/{self.appid}", "public", type=str)
+        self.branch_combo.addItem(f"public ({installed_bid})" if installed_bid else "public", "public")
+        self.branch_combo.setFixedHeight(26)
+        self.branch_combo.setFixedWidth(160)
+        self.branch_combo.setMaxVisibleItems(5)
+        actions_row.addWidget(self.branch_combo, 0)
+
         self.rollback_combo = CenteredComboBox()
-        installed_bid = str(self.game_data.get("buildid") or "")
-        top_label = f"Build: {installed_bid} (Latest)" if installed_bid and self.game_data.get("update_status") == "up_to_date" else "Latest Build"
-        self.rollback_combo.addItem(top_label, None)
-        self.rollback_combo.setItemData(0, QColor("#46b464"), Qt.ItemDataRole.ForegroundRole)
-
-        import datetime
-        manifests_dir = get_base_path() / "hubcap_manifests"
-        self._backups = sorted(manifests_dir.glob(f"accela_fetch_{self.appid}_*.zip"), reverse=True)
-        for idx, b in enumerate(self._backups, start=1):
-            try:
-                b_name = b.stem
-                mtime_str = datetime.datetime.fromtimestamp(b.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-                if "_build_" in b_name:
-                    bid = b_name.split("_build_")[-1]
-                    if bid == installed_bid:
-                        item_text = f"Backup Build: {bid} ({mtime_str})"
-                    else:
-                        item_text = f"Build: {bid} ({mtime_str})"
-                else:
-                    parts = b_name.split("_")
-                    ts1, ts2 = parts[-2], parts[-1]
-                    if len(ts1) == 8 and len(ts2) == 6:
-                        date_str = f"{ts1[:4]}-{ts1[4:6]}-{ts1[6:]}"
-                        item_text = f"Backup: {date_str} ({mtime_str})"
-                    else:
-                        item_text = f"Backup: {b.name} ({mtime_str})"
-                self.rollback_combo.addItem(item_text, str(b))
-                self.rollback_combo.setItemData(idx, QColor("#e0995a"), Qt.ItemDataRole.ForegroundRole)
-            except Exception:
-                self.rollback_combo.addItem(f"Backup: {b.name}", str(b))
-                self.rollback_combo.setItemData(idx, QColor("#e0995a"), Qt.ItemDataRole.ForegroundRole)
         self.rollback_combo.setFixedHeight(26)
-        actions_row.addWidget(self.rollback_combo, 1)
+        self.rollback_combo.setFixedWidth(200)
+        self.rollback_combo.setMaxVisibleItems(5)
+        actions_row.addWidget(self.rollback_combo, 0)
 
-        self.validate_btn = QPushButton()
+        self.validate_btn = QPushButton("Verify Files")
         self.validate_btn.setFixedHeight(26)
-        self.validate_btn.setStyleSheet("font-weight: bold;")
+        self.validate_btn.setStyleSheet("font-weight: bold; background: #46b464; color: #FFFFFF;")
         actions_row.addWidget(self.validate_btn, 1)
 
         lay.addLayout(actions_row)
         lay.addSpacing(3)
 
-        self.validate_btn.clicked.connect(
-            lambda: self.parent_window._fetch_game_manifest(
-                self.game_data, self,
-                local_path_override=self.rollback_combo.currentData() if self._backups else None))
-        if self._backups:
-            self.rollback_combo.currentIndexChanged.connect(self._on_combo_changed)
+        self.validate_btn.clicked.connect(self._on_validate_btn_clicked)
+        self.branch_combo.currentIndexChanged.connect(self._on_branch_combo_changed)
+        self.rollback_combo.currentIndexChanged.connect(self._on_rollback_combo_changed)
+
+        self._load_branches_async()
 
         self._update_status_ui(self.game_data.get("update_status"))
 
@@ -694,6 +737,164 @@ class GameDetailsDialogV2(QDialog):
         lay.addStretch()
 
         self.stacked.addWidget(scroll)
+
+    def _load_branches_async(self, force_refresh: bool = False):
+        import threading
+        def _fetch():
+            try:
+                from core.steam_api import get_app_branches
+                return get_app_branches(self.appid, force_refresh=force_refresh)
+            except Exception as e:
+                logger.error(f"Error fetching branches for {self.appid}: {e}")
+                return {"public": {"buildid": ""}}
+
+        def run_thread():
+            b_data = _fetch()
+            self.branches_loaded.emit(b_data)
+
+        threading.Thread(target=run_thread, daemon=True).start()
+
+    def _on_branches_loaded(self, branches_dict: dict):
+        if not branches_dict:
+            return
+        self._branches_dict = branches_dict
+        self.branch_combo.blockSignals(True)
+        self.branch_combo.clear()
+
+        # Sort: 'public' branch first, then alphabetical
+        sorted_keys = sorted(branches_dict.keys(), key=lambda k: (0 if k == "public" else 1, k))
+        saved_branch = self.settings.value(f"selected_branch/{self.appid}", "public", type=str)
+        select_idx = 0
+
+        for idx, b_name in enumerate(sorted_keys):
+            b_info = branches_dict[b_name]
+            bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
+            label = f"{b_name} ({bid})" if bid else b_name
+            self.branch_combo.addItem(label, b_name)
+            if b_name == saved_branch:
+                select_idx = idx
+
+        self.branch_combo.setCurrentIndex(select_idx)
+        self.branch_combo.blockSignals(False)
+        self._on_branch_combo_changed()
+
+    def _on_branch_combo_changed(self):
+        sel_branch = self.branch_combo.currentData() or "public"
+        self.settings.setValue(f"selected_branch/{self.appid}", sel_branch)
+
+        b_dict = getattr(self, "_branches_dict", {})
+        b_info = b_dict.get(sel_branch, {}) if isinstance(b_dict, dict) else {}
+        branch_bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
+
+        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+        installed_bid = self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""), type=str)
+
+        # Update Build ID display in stats grid
+        if hasattr(self, "build_val_lbl"):
+            if branch_bid:
+                self.build_val_lbl.setText(f"{branch_bid} ({sel_branch})")
+            else:
+                self.build_val_lbl.setText(installed_bid or "Unknown")
+
+        # Dynamically refresh rollback combo for the selected branch
+        if hasattr(self, "rollback_combo"):
+            self.rollback_combo.blockSignals(True)
+            self.rollback_combo.clear()
+
+            seen_bids = set()
+            is_branch_installed = (installed_branch == sel_branch) and (installed_bid == branch_bid)
+
+            if branch_bid:
+                if is_branch_installed:
+                    top_label = f"{branch_bid} (Installed)"
+                    top_color = QColor("#46b464")  # Green
+                else:
+                    top_label = f"{branch_bid} (Available on Steam)"
+                    top_color = QColor("#7ab3ff")  # Blue
+                seen_bids.add(branch_bid)
+            elif installed_bid:
+                top_label = f"{installed_bid} (Installed)"
+                top_color = QColor("#46b464")
+                seen_bids.add(installed_bid)
+            else:
+                top_label = "Latest Build"
+                top_color = QColor("#FFFFFF")
+
+            self.rollback_combo.addItem(top_label, None)
+            self.rollback_combo.setItemData(0, top_color, Qt.ItemDataRole.ForegroundRole)
+
+            import datetime
+            manifests_dir = get_base_path() / "hubcap_manifests"
+
+            if sel_branch == "public":
+                all_zips = sorted(manifests_dir.glob(f"accela_fetch_{self.appid}*.zip"), reverse=True)
+                # EXPLICITLY FILTER OUT NON-PUBLIC BRANCH ZIPS
+                self._backups = [b for b in all_zips if "_branch_" not in b.name]
+            else:
+                self._backups = sorted(manifests_dir.glob(f"accela_fetch_{self.appid}_branch_{sel_branch}*.zip"), reverse=True)
+
+            item_idx = 1
+            for b in self._backups:
+                try:
+                    b_name = b.stem
+                    mtime_str = datetime.datetime.fromtimestamp(b.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                    if "_build_" in b_name:
+                        bid = b_name.split("_build_")[-1]
+                        if bid in seen_bids:
+                            continue
+                        seen_bids.add(bid)
+                        item_text = f"{bid} ({mtime_str})"
+                    else:
+                        item_text = f"Backup {b.name} ({mtime_str})"
+                    self.rollback_combo.addItem(item_text, str(b))
+                    self.rollback_combo.setItemData(item_idx, QColor("#e0995a"), Qt.ItemDataRole.ForegroundRole)
+                    item_idx += 1
+                except Exception:
+                    pass
+
+            self.rollback_combo.blockSignals(False)
+
+        self._update_validate_button()
+
+    def _on_rollback_combo_changed(self):
+        """Fired only when the user picks a specific backup in rollback_combo."""
+        self._update_validate_button()
+
+    def _update_validate_button(self):
+        sel_branch = self.branch_combo.currentData() or "public" if hasattr(self, "branch_combo") else "public"
+        b_dict = getattr(self, "_branches_dict", {})
+        b_info = b_dict.get(sel_branch, {}) if isinstance(b_dict, dict) else {}
+        branch_bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
+
+        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+        installed_bid = self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""), type=str)
+
+        sel_backup = self.rollback_combo.currentData() if hasattr(self, "rollback_combo") else None
+
+        if sel_backup:
+            self.validate_btn.setText("Restore Backup")
+            self.validate_btn.setStyleSheet("background: #e0995a; color: #FFFFFF; font-weight: bold;")
+        elif installed_branch == sel_branch or (installed_bid and branch_bid and installed_bid == branch_bid):
+            self.validate_btn.setText("Verify Files")
+            self.validate_btn.setStyleSheet("background: #46b464; color: #FFFFFF; font-weight: bold;")
+        elif branch_bid:
+            self.validate_btn.setText(f"Install {sel_branch} ({branch_bid})")
+            self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
+        elif sel_branch != "public":
+            self.validate_btn.setText(f"Install {sel_branch}")
+            self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
+        else:
+            self._update_status_ui(self.game_data.get("update_status"))
+
+    def _on_validate_btn_clicked(self):
+        sel_branch = self.branch_combo.currentData() or "public" if hasattr(self, "branch_combo") else "public"
+        sel_backup = self.rollback_combo.currentData() if hasattr(self, "rollback_combo") else None
+        self.parent_window._fetch_game_manifest(
+            self.game_data,
+            self,
+            local_path_override=sel_backup,
+            branch=sel_branch
+        )
 
     # ──────────────────────────────────────────
     def _build_uninstall_panel(self):
@@ -831,6 +1032,7 @@ class GameDetailsDialogV2(QDialog):
         if self.parent_window.game_manager:
             self.status_btn.setEnabled(False)
             self._update_status_ui("checking")
+            self._load_branches_async(force_refresh=True)
             self.parent_window.game_manager.check_single_game_update(self.appid)
 
     def _update_status_ui(self, status):
@@ -907,15 +1109,6 @@ class GameDetailsDialogV2(QDialog):
             return
         self.game_data["update_status"] = new_status
         self._update_status_ui(new_status)
-        if self.pref1_toggle.isChecked() and new_status == "update_available":
-            # In Smart Update Mode, don't pass download_only=True — SmartUpdateTask routing
-            # is gated by `not download_only`, so we let it route normally.
-            # Classic path still uses download_only=True (background pre-fetch behaviour).
-            from utils.settings import get_settings
-            _smart = True
-            self.parent_window._fetch_game_manifest(
-                self.game_data, self, download_only=not _smart
-            )
 
     def _on_hubcap_status_changed(self, changed_appid, needs_update, update_in_progress):
         if changed_appid != self.appid:

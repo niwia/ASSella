@@ -188,11 +188,19 @@ def search_games(
 
 
 def get_user_stats() -> Dict:
-    """Retrieves user statistics."""
+    """Retrieves user statistics with cached fallback on network timeout."""
     logger.info("Fetching user stats")
     settings = get_settings()
     api_key = settings.value("morrenus_api_key", "", type=str)
-    return _make_json_request("GET", "/user/stats", params={"api_key": api_key})
+    res = _make_json_request("GET", "/user/stats", params={"api_key": api_key})
+    if isinstance(res, dict) and "error" not in res and res:
+        settings.setValue("last_cached_user_stats", res)
+        return res
+    cached = settings.value("last_cached_user_stats", None)
+    if isinstance(cached, dict) and cached:
+        logger.info("Using cached user stats due to network request error")
+        return cached
+    return res
 
 
 def check_health() -> Dict:
@@ -212,7 +220,7 @@ def check_health() -> Dict:
         return {"status": "unhealthy", "error": error_msg}
 
 
-def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
+def download_manifest(app_id, branch: str = "public") -> Tuple[Optional[str], Optional[str]]:
     """
     Downloads a manifest zip through the ISP bypass pipeline.
     Returns (filepath, None) on success, or (None, error_message) on failure.
@@ -222,29 +230,30 @@ def download_manifest(app_id: str) -> Tuple[Optional[str], Optional[str]]:
         return None, "API Key is not set. Please set it in Settings."
 
     url = f"{BASE_URL}/manifest/{app_id}"
+    if branch and branch != "public":
+        url += f"?branch={branch}"
+
     manifests_dir = Path(get_base_path()) / "hubcap_manifests"
     manifests_dir.mkdir(parents=True, exist_ok=True)
-    save_path = manifests_dir / f"accela_fetch_{app_id}.zip"
+    if branch and branch != "public":
+        save_path = manifests_dir / f"accela_fetch_{app_id}_branch_{branch}.zip"
+    else:
+        save_path = manifests_dir / f"accela_fetch_{app_id}.zip"
 
     logger.info(f"Downloading manifest {app_id} to {save_path}")
 
-    # Backup previous manifest if setting is enabled
+    # Backup previous manifest if setting is enabled and old buildid differs
     try:
         settings = get_settings()
         if save_path.exists() and settings and settings.value("save_old_manifests", True, type=bool):
-                old_buildid = settings.value(f"fetched_buildid/{app_id}", "", type=str) if settings else ""
-                if old_buildid:
-                    backup_path = manifests_dir / f"accela_fetch_{app_id}_build_{old_buildid}.zip"
-                else:
-                    mod_time = save_path.stat().st_mtime
-                    dt = datetime.datetime.fromtimestamp(mod_time)
-                    ts_str = dt.strftime("%Y%m%d_%H%M%S")
-                    backup_path = manifests_dir / f"accela_fetch_{app_id}_{ts_str}.zip"
+            old_buildid = settings.value(f"fetched_buildid/{app_id}", "", type=str) if settings else ""
+            if old_buildid:
+                backup_path = manifests_dir / f"accela_fetch_{app_id}_build_{old_buildid}.zip"
                 try:
                     if backup_path.exists():
                         backup_path.unlink()
                     os.rename(save_path, backup_path)
-                    logger.info(f"Backed up previous manifest to {backup_path.name}")
+                    logger.info(f"Backed up previous manifest (build {old_buildid}) to {backup_path.name}")
                 except OSError as e:
                     logger.warning(f"Failed to backup old manifest: {e}")
 

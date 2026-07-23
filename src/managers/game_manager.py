@@ -209,16 +209,14 @@ class GameManager(QObject):
             logger.info("Cancelling previous manifest check task")
             self.cancel_update_checks()
 
-        # Smart filter: skip games whose status is already conclusively known
-        SKIP_STATUSES = ("up_to_date",)
+        # Check all installed games with valid AppID
         self._games_to_check = [
             g for g in self.games
             if g.get("appid") not in ("0", "N/A", "unknown")
-            and g.get("update_status") not in SKIP_STATUSES
         ]
 
         if not self._games_to_check:
-            logger.info("All games already have a known update status — skipping batch check")
+            logger.info("No installed games to check for updates")
             self.all_updates_checked.emit()
             return
 
@@ -341,6 +339,7 @@ class GameManager(QObject):
 
         if game is not None:
             old_status = game.get("update_status")
+            game["update_status"] = update_status
             game_title = game.get("name", f"AppID {appid}")
             if update_status == UPDATE_STATUS["CANNOT_DETERMINE"]:
                 logger.info(f"Updated status for game {appid} ({game_title}): {update_status}")

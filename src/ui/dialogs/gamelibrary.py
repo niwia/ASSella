@@ -1402,7 +1402,7 @@ class GameLibraryDialog(QDialog):
 
     # --- Actions ---
 
-    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog = None, download_only: bool = False, local_path_override: str = None) -> None:
+    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog = None, download_only: bool = False, local_path_override: str = None, branch: str = "public") -> None:
         """Trigger background manifest download and show progress."""
         api_key = self.settings.value("morrenus_api_key", "", type=str).strip()
         if not api_key:
@@ -1421,9 +1421,10 @@ class GameLibraryDialog(QDialog):
         is_rollback = local_path_override is not None
 
         # ── Local zip path (for Verify or Rollback) ─────────────────────────
-        fpath = (
-            get_base_path() / "hubcap_manifests" / f"accela_fetch_{app_id}.zip"
-        )
+        if branch and branch != "public":
+            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{app_id}_branch_{branch}.zip"
+        else:
+            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{app_id}.zip"
         is_fresh = self.settings.value(f"manifest_is_fresh/{app_id}", False, type=bool)
 
         local_path = None
@@ -1445,8 +1446,8 @@ class GameLibraryDialog(QDialog):
                 from managers.depot_key_manager import DepotKeyManager
                 dkm = DepotKeyManager()
                 if dkm.has_depot_keys(app_id):
-                    logger.info(f"[Smart Update] Routing {name} ({app_id}) through SmartUpdateTask")
-                    self._handle_smart_update(app_id, name, game_data, dialog)
+                    logger.info(f"[Smart Update] Routing {name} ({app_id}) branch '{branch}' through SmartUpdateTask")
+                    self._handle_smart_update(app_id, name, game_data, dialog, branch=branch)
                     return
                 else:
                     logger.warning(
@@ -1469,9 +1470,9 @@ class GameLibraryDialog(QDialog):
                 game_data = game_data.copy()
                 game_data["_download_only"] = True
             if status == "update_available" and not download_only:
-                self._check_hubcap_status_first(app_id, game_data, dialog)
+                self._check_hubcap_status_first(app_id, game_data, dialog, branch=branch)
             else:
-                self._handle_download_manifest(app_id, name, game_data, dialog)
+                self._handle_download_manifest(app_id, name, game_data, dialog, branch=branch)
         else:
             if not download_only:
                 # For rollback builds, mark game data so we don't clear update_available
@@ -1480,7 +1481,7 @@ class GameLibraryDialog(QDialog):
                     game_data["_is_rollback"] = True
                 self._submit_job(local_path, game_data, dialog)
 
-    def _handle_smart_update(self, app_id: str, name: str, game_data: dict, dialog) -> None:
+    def _handle_smart_update(self, app_id: str, name: str, game_data: dict, dialog, branch: str = "public") -> None:
         """
         Handles a Smart Update Mode fetch: runs SmartUpdateTask in a background thread
         and routes the result to _submit_job on success, or falls back to classic path
@@ -1491,7 +1492,7 @@ class GameLibraryDialog(QDialog):
 
         logger.info(f"[Smart Update] Starting SmartUpdateTask for {name} ({app_id})")
 
-        task = SmartUpdateTask(app_id, name)
+        task = SmartUpdateTask(app_id, name, branch=branch)
         runner = TaskRunner(self)
 
         # Store runner to prevent GC
@@ -1539,7 +1540,7 @@ class GameLibraryDialog(QDialog):
         runner.run(task.run)
 
 
-    def _handle_download_manifest(self, app_id, name, game_data, dialog):
+    def _handle_download_manifest(self, app_id, name, game_data, dialog, branch: str = "public"):
         """Logic separated to flatten nesting in fetch_game_manifest."""
         if not morrenus_api:
             QMessageBox.critical(self, "Error", "API module missing.")
@@ -1555,12 +1556,12 @@ class GameLibraryDialog(QDialog):
             self._download_progress_dialog.show()
 
         # Start async download
-        self.executor.submit(self._download_manifest_async, app_id, game_data)
+        self.executor.submit(self._download_manifest_async, app_id, game_data, branch)
 
-    def _download_manifest_async(self, app_id: str, game_data: dict) -> None:
+    def _download_manifest_async(self, app_id: str, game_data: dict, branch: str = "public") -> None:
         """Background task to download manifest."""
         try:
-            fpath, error = morrenus_api.download_manifest(app_id)
+            fpath, error = morrenus_api.download_manifest(app_id, branch=branch)
             self.manifest_download_complete.emit(
                 str(fpath) if fpath else "", str(error) if error else "", game_data
             )

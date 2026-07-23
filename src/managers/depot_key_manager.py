@@ -114,10 +114,53 @@ class DepotKeyManager:
                 ).fetchall()
                 conn.close()
             result = {row["depot_id"]: row["aes_key"] for row in rows if str(row["depot_id"]) != str(appid)}
+            if not result:
+                # Check for standalone LUA backup in cached_luas folder
+                result = self._recover_keys_from_lua_file(appid)
             logger.debug(f"[DepotKeyManager] Loaded {len(result)} depot keys for AppID {appid}")
             return result
         except Exception as e:
             logger.error(f"[DepotKeyManager] Failed to load depot keys for AppID {appid}: {e}")
+            return {}
+
+    def _recover_keys_from_lua_file(self, appid: str) -> Dict[str, str]:
+        """Attempt to recover depot keys from cached_luas/{appid}.lua or accela_{appid}.lua."""
+        try:
+            from utils.helpers import get_base_path
+            import re
+            lua_dir = get_base_path() / "cached_luas"
+            candidates = [
+                lua_dir / f"{appid}.lua",
+                lua_dir / f"accela_{appid}.lua",
+            ]
+            target_file = None
+            for c in candidates:
+                if c.exists():
+                    target_file = c
+                    break
+            if not target_file and lua_dir.exists():
+                for f in lua_dir.glob("*.lua"):
+                    if appid in f.name:
+                        target_file = f
+                        break
+            if not target_file or not target_file.exists():
+                return {}
+            text = target_file.read_text(encoding="utf-8", errors="ignore")
+            keys = {}
+            for m in re.finditer(r'addappid\(\s*(\d+)\s*,\s*1\s*,\s*["\']([^"\']+)["\']', text, re.IGNORECASE):
+                did, k = m.group(1), m.group(2)
+                if str(did) != str(appid):
+                    keys[did] = k
+            if keys:
+                mtime = int(target_file.stat().st_mtime)
+                self.save_depot_keys(appid, keys, timestamp=mtime)
+                logger.info(f"[DepotKeyManager] Successfully recovered {len(keys)} depot keys from cached LUA file {target_file.name}")
+            tok_match = re.search(r'addtoken\(\s*\d+\s*,\s*["\']([^"\']+)["\']', text, re.IGNORECASE)
+            if tok_match:
+                self.save_app_token(appid, tok_match.group(1), timestamp=int(target_file.stat().st_mtime))
+            return keys
+        except Exception as e:
+            logger.debug(f"Failed to recover keys from LUA file for AppID {appid}: {e}")
             return {}
 
     def get_key_updated_at(self, appid: str) -> Optional[int]:
@@ -138,17 +181,8 @@ class DepotKeyManager:
 
     def has_depot_keys(self, appid: str) -> bool:
         """Quick check — returns True if any depot keys are cached for this appid."""
-        try:
-            with _lock:
-                conn = self._connect()
-                count = conn.execute(
-                    "SELECT COUNT(*) FROM depot_keys WHERE appid=?", (str(appid),)
-                ).fetchone()[0]
-                conn.close()
-            return count > 0
-        except Exception as e:
-            logger.error(f"[DepotKeyManager] has_depot_keys check failed for AppID {appid}: {e}")
-            return False
+        keys = self.get_depot_keys(appid)
+        return bool(keys)
 
     def has_new_depots(self, appid: str, pics_depot_ids: Set[str]) -> bool:
         """

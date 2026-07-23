@@ -53,10 +53,11 @@ class SmartUpdateTask(QObject):
     needs_full_zip = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, appid: str, game_name: str = ""):
+    def __init__(self, appid: str, game_name: str = "", branch: str = "public"):
         super().__init__()
         self.appid = str(appid)
         self.game_name = game_name or f"App {appid}"
+        self.branch = branch or "public"
 
     def run(self) -> None:
         logger.info(f"[SmartUpdate] Starting smart update for AppID {self.appid} ({self.game_name})")
@@ -136,17 +137,16 @@ class SmartUpdateTask(QObject):
         # ── STEP 3: Check for new depots not in our key cache ──────────────────
         self.progress.emit(f"[Smart Update] Step 3/4: Comparing PICS depots vs cached keys...")
         if dkm.has_new_depots(self.appid, pics_depot_ids):
-            reason = (
-                f"PICS reports new depot(s) for AppID {self.appid} that are not in the "
-                "key cache. A full manifest fetch is required to capture new DLC keys."
+            logger.info(
+                f"[SmartUpdate] Steam PICS reports new depot(s) for AppID {self.appid}. "
+                "Attempting 0-token manifest generation with existing LUA first."
             )
-            logger.warning(f"[SmartUpdate] {reason}")
-            self.progress.emit(f"[Smart Update] WARNING: New depots detected — {reason}")
-            self.needs_full_zip.emit(reason)
-            return
-
-        logger.info(f"[SmartUpdate] No new depots detected — safe to use smart update path")
-        self.progress.emit(f"[Smart Update] Step 3 OK: Depot set unchanged — smart path is safe.")
+            self.progress.emit(
+                f"[Smart Update] Step 3: New depot(s) detected — attempting smart update with existing LUA."
+            )
+        else:
+            logger.info(f"[SmartUpdate] No new depots detected — safe to use smart update path")
+            self.progress.emit(f"[Smart Update] Step 3 OK: Depot set unchanged — smart path is safe.")
 
         # ── STEP 4: Fetch live manifests from /generate/appmanifest ───────────
         self.progress.emit(
@@ -162,7 +162,7 @@ class SmartUpdateTask(QObject):
                 raise ValueError("Hubcap API key is not set in Settings")
 
             headers = {"Authorization": f"Bearer {api_key}"}
-            url = f"{BASE_URL}/generate/appmanifest/{self.appid}?branch=public"
+            url = f"{BASE_URL}/generate/appmanifest/{self.appid}?branch={self.branch}"
             logger.info(f"[SmartUpdate] GET {url}")
 
             if execute_hubcap_request:
@@ -206,6 +206,18 @@ class SmartUpdateTask(QObject):
             logger.error(f"[SmartUpdate] {reason}")
             self.progress.emit(f"[Smart Update] ERROR: {reason}")
             self.error.emit(reason)
+            return
+
+        # Verify generated manifest GIDs against expected Steam PICS manifest ID if known
+        expected_steam_gid = settings.value(f"latest_steam_manifest_id/{self.appid}", "", type=str)
+        if expected_steam_gid and expected_steam_gid not in manifest_mapping.values():
+            reason = (
+                f"Generate endpoint manifest GIDs {list(manifest_mapping.values())} "
+                f"do not match latest Steam PICS manifest GID {expected_steam_gid} for branch '{self.branch}'"
+            )
+            logger.warning(f"[SmartUpdate] {reason} — falling back to full zip download.")
+            self.progress.emit(f"[Smart Update] WARNING: Stale generate bundle — {reason}")
+            self.needs_full_zip.emit(reason)
             return
 
         logger.info(
@@ -264,41 +276,39 @@ class SmartUpdateTask(QObject):
         try:
             manifests_dir = get_base_path() / "hubcap_manifests"
             manifests_dir.mkdir(parents=True, exist_ok=True)
-            save_path = manifests_dir / f"accela_fetch_{self.appid}.zip"
+            if self.branch and self.branch != "public":
+                save_path = manifests_dir / f"accela_fetch_{self.appid}_branch_{self.branch}.zip"
+            else:
+                save_path = manifests_dir / f"accela_fetch_{self.appid}.zip"
 
             settings = get_settings()
 
-            # Backup old zip using old buildid
+            # Backup old zip using old buildid if different from new buildid
             if save_path.exists() and settings.value("save_old_manifests", True, type=bool):
                 import os
                 old_buildid = settings.value(f"fetched_buildid/{self.appid}", "", type=str)
-                if old_buildid:
+                if old_buildid and str(old_buildid) != str(buildid):
                     backup_path = manifests_dir / f"accela_fetch_{self.appid}_build_{old_buildid}.zip"
-                else:
-                    import datetime
-                    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    backup_path = manifests_dir / f"accela_fetch_{self.appid}_{ts}.zip"
+                    if backup_path.exists():
+                        backup_path.unlink()
+                    try:
+                        os.rename(save_path, backup_path)
+                        logger.info(f"[SmartUpdate] Backed up old zip (build {old_buildid}) to {backup_path.name}")
 
-                if backup_path.exists():
-                    backup_path.unlink()
-                try:
-                    os.rename(save_path, backup_path)
-                    logger.info(f"[SmartUpdate] Backed up old zip to {backup_path.name}")
-
-                    # Enforce max_old_manifests limit
-                    limit = settings.value("max_old_manifests", 3, type=int)
-                    backups = sorted(
-                        manifests_dir.glob(f"accela_fetch_{self.appid}_*.zip"),
-                        key=lambda p: p.stat().st_mtime
-                    )
-                    for old in backups[:max(0, len(backups) - limit)]:
-                        try:
-                            os.remove(old)
-                            logger.info(f"[SmartUpdate] Deleted old backup: {old.name}")
-                        except OSError:
-                            pass
-                except OSError as e:
-                    logger.warning(f"[SmartUpdate] Could not backup old zip: {e}")
+                        # Enforce max_old_manifests limit
+                        limit = settings.value("max_old_manifests", 3, type=int)
+                        backups = sorted(
+                            manifests_dir.glob(f"accela_fetch_{self.appid}_*.zip"),
+                            key=lambda p: p.stat().st_mtime
+                        )
+                        for old in backups[:max(0, len(backups) - limit)]:
+                            try:
+                                os.remove(old)
+                                logger.info(f"[SmartUpdate] Deleted old backup: {old.name}")
+                            except OSError:
+                                pass
+                    except OSError as e:
+                        logger.warning(f"[SmartUpdate] Could not backup old zip: {e}")
 
             # Write new zip
             zip_bytes.seek(0)

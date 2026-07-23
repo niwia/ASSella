@@ -1164,7 +1164,11 @@ class MainWindow(QMainWindow):
                                 # Fall through to old endpoint below by not continuing
                             else:
                                 logger.warning(f"[Auto-fetch Smart] {name} ({appid}): no result from SmartUpdateTask")
-                            continue  # Do not fall through to old path if smart result was obtained or a fallback signal fired
+                            
+                            if not _smart_result["fallback"]:
+                                import time
+                                time.sleep(2.0)
+                                continue  # Do not fall through to old path if smart result was obtained or a fallback signal fired
 
                     # ── Classic path: Hubcap /manifest/{appid} ───────────────────────
                     logger.info(f"Auto-fetch background: checking Hubcap manifest status for {name} ({appid})")
@@ -1179,6 +1183,8 @@ class MainWindow(QMainWindow):
                                 f"Auto-fetch background: Hubcap manifest for {name} ({appid}) is not ready "
                                 f"(needs_update={needs_up}, in_progress={up_in_prog}). Skipping download."
                             )
+                            import time
+                            time.sleep(2.0)
                             continue
 
                         # Refined check removed because it is deprecated
@@ -1196,9 +1202,13 @@ class MainWindow(QMainWindow):
                                 logger.warning(
                                     f"Auto-fetch background: Stage 2 Post-Check failed for {name} ({appid}): {post_reason}. Discarding downloaded manifest zip."
                                 )
+                                import time
+                                time.sleep(2.0)
                                 continue
                         except Exception as p_ex:
                             logger.error(f"Auto-fetch background: error during Stage 2 zip processing for {name} ({appid}): {p_ex}")
+                            import time
+                            time.sleep(2.0)
                             continue
 
                         self.settings.setValue(f"manifest_is_fresh/{appid}", True)
@@ -1208,8 +1218,13 @@ class MainWindow(QMainWindow):
                         logger.info(f"Auto-fetch background: successfully downloaded and verified manifest for {name} ({appid})")
                     else:
                         logger.warning(f"Auto-fetch background: failed for {name} ({appid}): {error}")
+                    
+                    import time
+                    time.sleep(2.0)
                 except Exception as ex:
                     logger.error(f"Auto-fetch background error for {name} ({appid}): {ex}", exc_info=True)
+                    import time
+                    time.sleep(2.0)
 
         self._autofetch_runner.run(run_downloads)
 

@@ -533,6 +533,11 @@ class DownloadDepotsTask(QObject):
                 "-validate",
             ]
 
+            # Check selected branch
+            target_branch = game_data.get("branch") or settings.value(f"selected_branch/{game_data['appid']}", "public", type=str)
+            if target_branch and target_branch != "public":
+                cmd_args.extend(["-branch", str(target_branch)])
+
             # 1. LanCache support
             use_lancache = settings.value("use_lancache", False, type=bool)
             if use_lancache:

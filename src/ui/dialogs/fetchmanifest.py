@@ -596,7 +596,7 @@ class FetchManifestDialog(QDialog):
     # Download Logic
     # --------------------------
 
-    def check_and_download_manifest(self, app_id):
+    def check_and_download_manifest(self, app_id, branch: str = "public"):
         """
         Worker function to check if cached manifest zip exists and is up to date with Steam.
         If up to date, returns (cached_path, None).
@@ -643,11 +643,11 @@ class FetchManifestDialog(QDialog):
                                 local_manifests[parts[0]] = parts[1]
                 except Exception as e:
                     logger.warning(f"Failed to parse cached zip {cached_path}: {e}. Will redownload.")
-                    return morrenus_api.download_manifest(app_id)
+                    return morrenus_api.download_manifest(app_id, branch=branch)
 
                 if not local_manifests:
                     logger.warning(f"No manifests found in cached zip {cached_path}. Will redownload.")
-                    return morrenus_api.download_manifest(app_id)
+                    return morrenus_api.download_manifest(app_id, branch=branch)
 
                 # 2. Get current depot info from Steam API (bypassing DB cache)
                 try:
@@ -699,7 +699,7 @@ class FetchManifestDialog(QDialog):
         except Exception as e:
             logger.error(f"Error checking manifest cache for {app_id}: {e}", exc_info=True)
 
-        return morrenus_api.download_manifest(app_id)
+        return morrenus_api.download_manifest(app_id, branch=branch)
 
     def on_item_double_clicked(self, item):
         app_id = item.data(Qt.ItemDataRole.UserRole)
@@ -720,10 +720,35 @@ class FetchManifestDialog(QDialog):
             dialog.exec()
             return
 
-        self._toggle_inputs(False)
-        self.status_label.setText(f"Checking for updates and fetching manifest for App ID {app_id}...")
+        selected_branch = "public"
+        try:
+            from core.steam_api import get_app_branches
+            branches = get_app_branches(app_id)
+            if len(branches) > 1:
+                items = []
+                branch_keys = list(branches.keys())
+                for b_name, b_info in branches.items():
+                    bid = b_info.get("buildid", "") if isinstance(b_info, dict) else ""
+                    items.append(f"{b_name} (Build {bid})" if bid else b_name)
 
-        worker = self.task_runner.run(self.check_and_download_manifest, app_id)
+                from PyQt6.QtWidgets import QInputDialog
+                item_str, ok = QInputDialog.getItem(
+                    self, "Select Branch",
+                    f"Multiple branches available for AppID {app_id}.\nChoose branch to download:",
+                    items, 0, False
+                )
+                if ok and item_str:
+                    idx = items.index(item_str)
+                    selected_branch = branch_keys[idx]
+                else:
+                    return
+        except Exception as e:
+            logger.debug(f"Branch prompt error: {e}")
+
+        self._toggle_inputs(False)
+        self.status_label.setText(f"Checking updates & fetching manifest for App ID {app_id} (Branch: {selected_branch})...")
+
+        worker = self.task_runner.run(self.check_and_download_manifest, app_id, selected_branch)
         worker.finished.connect(self.on_download_finished)
         worker.error.connect(self.on_task_error)
 

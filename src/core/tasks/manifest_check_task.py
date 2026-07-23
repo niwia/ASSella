@@ -241,8 +241,31 @@ class ManifestCheckTask(QObject):
             all_cannot_determine = True
             reasons = []
 
-            # Check if appid exists in batched API results
+            # Read Steam API data
             steam_client_data = batched_results.get(appid, {})
+
+            # Check target branch build ID first if configured
+            settings = get_settings()
+            selected_branch = settings.value(f"selected_branch/{appid}", "public", type=str)
+            branch_info = steam_client_data.get("branches", {}).get(selected_branch, {})
+            branch_buildid = str(branch_info.get("buildid", "")) if isinstance(branch_info, dict) else ""
+            
+            settings = get_settings()
+            installed_branch = settings.value(f"installed_branch/{appid}", "public", type=str)
+            installed_bid = settings.value(f"installed_buildid/{appid}", "", type=str)
+
+            local_buildid = str(game_data.get("buildid") or "")
+            effective_local_bid = installed_bid if (installed_branch == selected_branch and installed_bid) else local_buildid
+
+            if branch_buildid and effective_local_bid and effective_local_bid != "Unknown":
+                try:
+                    if int(branch_buildid) > int(effective_local_bid):
+                        logger.info(f"[UpdateCheck {appid}] Branch '{selected_branch}' update available: local={effective_local_bid}, branch={branch_buildid}")
+                        return "update_available"
+                except (ValueError, TypeError):
+                    if branch_buildid != effective_local_bid:
+                        return "update_available"
+
             if not steam_client_data:
                 logger.info(
                     f"[UpdateCheck {appid}] Cannot determine status: AppID {appid} was not returned in Steam API batched results payload (Steam API / DB lookup returned no product info)"
@@ -267,7 +290,18 @@ class ManifestCheckTask(QObject):
                         continue
 
                     depot_info = depots[saved_depot_id]
-                    current_manifest_id = depot_info.get("manifest_id")
+                    # Check if target branch specifies a manifest GID for this depot
+                    branch_manifest_id = None
+                    if isinstance(depot_info, dict):
+                        branch_manifests = depot_info.get("manifests", {})
+                        if isinstance(branch_manifests, dict) and selected_branch in branch_manifests:
+                            branch_manifest_entry = branch_manifests[selected_branch]
+                            if isinstance(branch_manifest_entry, dict):
+                                branch_manifest_id = str(branch_manifest_entry.get("gid", ""))
+                        if not branch_manifest_id:
+                            branch_manifest_id = str(depot_info.get("manifest_id") or "")
+
+                    current_manifest_id = branch_manifest_id
 
                     if current_manifest_id:
                         all_cannot_determine = False
@@ -276,14 +310,15 @@ class ManifestCheckTask(QObject):
                         settings = get_settings()
                         settings.setValue(f"latest_steam_manifest_id/{appid}", current_manifest_id)
 
-                        timeupdated = steam_client_data.get("timeupdated")
+                        branch_timeupdated = branch_info.get("timeupdated") if isinstance(branch_info, dict) else None
+                        timeupdated = branch_timeupdated or steam_client_data.get("timeupdated")
                         if timeupdated:
                             settings.setValue(f"latest_steam_timeupdated/{appid}", timeupdated)
 
                         # Compare manifest IDs
                         if saved_manifest_id != current_manifest_id:
                             logger.info(
-                                f"[UpdateCheck {appid}] Update available for depot {saved_depot_id}: saved={saved_manifest_id}, current={current_manifest_id}"
+                                f"[UpdateCheck {appid}] Update available for depot {saved_depot_id} (branch '{selected_branch}'): saved={saved_manifest_id}, current={current_manifest_id}"
                             )
                             any_update_available = True
                     else:

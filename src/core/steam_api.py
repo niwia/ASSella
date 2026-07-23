@@ -147,7 +147,17 @@ def _fetch_with_steam_client(app_id, access_token=None):
                 header_url = ImageFetcher.get_header_image_url(int_app_id)
                 logger.debug(f"Found header image URL: {header_url}")
 
+            open_branches = {}
             try:
+                all_branches = app_data.get("depots", {}).get("branches", {})
+                if isinstance(all_branches, dict):
+                    for b_name, b_info in all_branches.items():
+                        if isinstance(b_info, dict):
+                            if b_info.get("pwdrequired") != "1":
+                                open_branches[b_name] = {
+                                    "buildid": str(b_info.get("buildid", "")),
+                                    "timeupdated": str(b_info.get("timeupdated", ""))
+                                }
                 build_id = (
                     app_data.get("depots", {})
                     .get("branches", {})
@@ -165,7 +175,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
 
             depots = app_data.get("depots", {})
             for depot_id, depot_data in depots.items():
-                if not isinstance(depot_data, dict):
+                if depot_id in ("branches", "workshopdepots", "branches_public") or not isinstance(depot_data, dict):
                     continue
                 config = depot_data.get("config", {})
                 manifests = depot_data.get("manifests", {})
@@ -198,6 +208,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
             "header_url": header_url,
             "buildid": build_id,
             "name": app_name,
+            "branches": open_branches,
         }
         logger.debug("Data processed, logging out.")
         client.logout()
@@ -380,6 +391,8 @@ def batched_get_product_info(
 
                         # Parse the app data
                         depot_info = {}
+                        depots = {}
+                        branches = {}
                         if app_data:
                             app_data.get("config", {}).get("installdir")
                             ImageFetcher.get_header_image_url(int_appid)
@@ -396,7 +409,9 @@ def batched_get_product_info(
                             except AttributeError:
                                 pass
 
-                            depots = app_data.get("depots", {})
+                            depots = app_data.get("depots", {}) if isinstance(app_data.get("depots"), dict) else {}
+                            branches = depots.get("branches", {}) if isinstance(depots.get("branches"), dict) else {}
+
                             for depot_id, depot_data in depots.items():
                                 if not isinstance(depot_data, dict):
                                     continue
@@ -417,11 +432,13 @@ def batched_get_product_info(
                                     "steamdeck": config.get("steamdeck") == "1",
                                     "size": None,
                                     "manifest_id": manifest_id,
+                                    "manifests": depot_data.get("manifests"),
                                 }
 
                         all_results[appid_str] = {
                             "depots": depot_info,
-                            "installdir": app_data.get("config", {}).get("installdir"),
+                            "branches": branches,
+                            "installdir": app_data.get("config", {}).get("installdir") if app_data else None,
                             "header_url": (
                                 ImageFetcher.get_header_image_url(int_appid)
                                 if app_data
@@ -573,3 +590,45 @@ def get_manifest_id(appid, depot_id=None, use_cache=True):
             "depot_id": depot_id,
             "error": f"Unexpected error: {str(e)}",
         }
+
+
+_branch_cache = {}
+
+def get_app_branches(appid: str, access_token: str = None, force_refresh: bool = False) -> dict:
+    """
+    Query Steam PICS for available open branches for an AppID.
+    If force_refresh=False, returns cached branch info from DB or memory instantly.
+    """
+    try:
+        if not force_refresh:
+            if appid in _branch_cache:
+                return _branch_cache[appid]
+
+            info = get_depot_info_from_api(appid, access_token)
+            cached_branches = info.get("branches") if info else None
+            if cached_branches and isinstance(cached_branches, dict) and len(cached_branches) > 0:
+                _branch_cache[appid] = cached_branches
+                return cached_branches
+
+            if info and info.get("buildid"):
+                fallback_b = {"public": {"buildid": str(info.get("buildid"))}}
+                _branch_cache[appid] = fallback_b
+                return fallback_b
+
+        data = _fetch_with_steam_client(appid, access_token)
+        branches = data.get("branches", {}) if data else {}
+        if not branches:
+            bid = data.get("buildid", "") if data else ""
+            branches = {"public": {"buildid": bid}}
+
+        if data:
+            data["branches"] = branches
+            db = DatabaseManager()
+            db.upsert_app_info(appid, data)
+
+        _branch_cache[appid] = branches
+        return branches
+    except Exception as e:
+        logger.error(f"Failed to fetch branches for AppID {appid}: {e}")
+        return {"public": {"buildid": ""}}
+
