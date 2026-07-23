@@ -90,7 +90,12 @@ class CenteredComboBox(QComboBox):
         rect = self.style().subControlRect(
             QStyle.ComplexControl.CC_ComboBox, opt,
             QStyle.SubControl.SC_ComboBoxEditField, self)
-        p.drawItemText(rect, Qt.AlignmentFlag.AlignCenter, self.palette(),
+        pal = self.palette()
+        color = self.itemData(self.currentIndex(), Qt.ItemDataRole.ForegroundRole)
+        if isinstance(color, QColor):
+            pal.setColor(QPalette.ColorRole.Text, color)
+        
+        p.drawItemText(rect, Qt.AlignmentFlag.AlignCenter, pal,
                        self.isEnabled(), self.currentText(), QPalette.ColorRole.Text)
 
 
@@ -210,7 +215,6 @@ class GameDetailsDialogV2(QDialog):
             QComboBox::drop-down {{ border: none; width: 18px; }}
             QComboBox QAbstractItemView {{
                 background-color: {bg};
-                color: #FFFFFF;
                 border: 1px solid rgba(255, 255, 255, 15);
                 selection-background-color: {ac};
                 selection-color: #000000;
@@ -452,7 +456,12 @@ class GameDetailsDialogV2(QDialog):
         self.build_val_lbl = QLabel(build_id_str)
         self.build_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
 
-        open_folder_btn = QPushButton("📁 Open Install Folder")
+        lua_lbl = QLabel("LUA cached:")
+        lua_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
+        self.lua_val_lbl = QLabel(self._get_lua_age())
+        self.lua_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
+
+        open_folder_btn = QPushButton("Open Install Folder")
         open_folder_btn.setFixedHeight(24)
         open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_folder_btn.setStyleSheet(f"""
@@ -478,9 +487,13 @@ class GameDetailsDialogV2(QDialog):
         stats_grid.addWidget(self.size_val_lbl, 0, 1)
         stats_grid.addWidget(cached_lbl, 0, 2)
         stats_grid.addWidget(self.cached_val_lbl, 0, 3)
+
         stats_grid.addWidget(build_lbl, 1, 0)
         stats_grid.addWidget(self.build_val_lbl, 1, 1)
-        stats_grid.addWidget(open_folder_btn, 1, 2, 1, 2)
+        stats_grid.addWidget(lua_lbl, 1, 2)
+        stats_grid.addWidget(self.lua_val_lbl, 1, 3)
+
+        stats_grid.addWidget(open_folder_btn, 2, 0, 1, 4)
 
         from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
         self._is_dlc = is_dlc_only_mode(self.appid)
@@ -509,22 +522,27 @@ class GameDetailsDialogV2(QDialog):
         self.rollback_combo.addItem(top_label, None)
         self.rollback_combo.setItemData(0, QColor("#46b464"), Qt.ItemDataRole.ForegroundRole)
 
+        import datetime
         manifests_dir = get_base_path() / "hubcap_manifests"
         self._backups = sorted(manifests_dir.glob(f"accela_fetch_{self.appid}_*.zip"), reverse=True)
         for idx, b in enumerate(self._backups, start=1):
             try:
                 b_name = b.stem
+                mtime_str = datetime.datetime.fromtimestamp(b.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
                 if "_build_" in b_name:
                     bid = b_name.split("_build_")[-1]
-                    item_text = f"Build: {bid}"
+                    if bid == installed_bid:
+                        item_text = f"Backup Build: {bid} ({mtime_str})"
+                    else:
+                        item_text = f"Build: {bid} ({mtime_str})"
                 else:
                     parts = b_name.split("_")
                     ts1, ts2 = parts[-2], parts[-1]
                     if len(ts1) == 8 and len(ts2) == 6:
                         date_str = f"{ts1[:4]}-{ts1[4:6]}-{ts1[6:]}"
-                        item_text = f"Backup: {date_str}"
+                        item_text = f"Backup: {date_str} ({mtime_str})"
                     else:
-                        item_text = f"Backup: {b.name}"
+                        item_text = f"Backup: {b.name} ({mtime_str})"
                 self.rollback_combo.addItem(item_text, str(b))
                 self.rollback_combo.setItemData(idx, QColor("#e0995a"), Qt.ItemDataRole.ForegroundRole)
             except Exception:
@@ -836,10 +854,10 @@ class GameDetailsDialogV2(QDialog):
             else:
                 self.status_btn.setText(f"★  UPDATE AVAILABLE{time_suffix}  —  click to check")
                 self.status_btn.setStyleSheet("""
-                    QPushButton { background: rgba(30,80,35,110); color: #7be09d;
+                    QPushButton { background: rgba(180, 110, 30, 110); color: #ffe699;
                         border: none; border-radius: 4px;
                         font-weight: bold; font-size: 8.5pt; }
-                    QPushButton:hover { background: rgba(30,80,35,150); }
+                    QPushButton:hover { background: rgba(180, 110, 30, 150); }
                 """)
             self.status_btn.setEnabled(True)
             self.validate_btn.setText("Download Update")
@@ -856,7 +874,7 @@ class GameDetailsDialogV2(QDialog):
                 QPushButton:hover { background: rgba(46, 180, 90, 240); color: #ffffff; }
             """)
             self.status_btn.setEnabled(True)
-            self.validate_btn.setText("Verify & Repair")
+            self.validate_btn.setText("Verify")
             self.validate_btn.setStyleSheet(f"""
                 QPushButton {{ background: rgba(255,255,255,12); color: #FFFFFF; border: none; font-weight: bold; }}
                 QPushButton:hover {{ background: rgba(255,255,255,20); color: {ac}; }}
@@ -878,7 +896,7 @@ class GameDetailsDialogV2(QDialog):
                 QPushButton:hover { background: rgba(255,255,255,20); }
             """)
             self.status_btn.setEnabled(True)
-            self.validate_btn.setText("Verify & Repair")
+            self.validate_btn.setText("Verify")
             self.validate_btn.setStyleSheet(f"""
                 QPushButton {{ background: rgba(255,255,255,12); color: #FFFFFF; border: none; font-weight: bold; }}
                 QPushButton:hover {{ background: rgba(255,255,255,20); }}
@@ -890,7 +908,14 @@ class GameDetailsDialogV2(QDialog):
         self.game_data["update_status"] = new_status
         self._update_status_ui(new_status)
         if self.pref1_toggle.isChecked() and new_status == "update_available":
-            self.parent_window._fetch_game_manifest(self.game_data, self, download_only=True)
+            # In Smart Update Mode, don't pass download_only=True — SmartUpdateTask routing
+            # is gated by `not download_only`, so we let it route normally.
+            # Classic path still uses download_only=True (background pre-fetch behaviour).
+            from utils.settings import get_settings
+            _smart = True
+            self.parent_window._fetch_game_manifest(
+                self.game_data, self, download_only=not _smart
+            )
 
     def _on_hubcap_status_changed(self, changed_appid, needs_update, update_in_progress):
         if changed_appid != self.appid:
@@ -909,12 +934,12 @@ class GameDetailsDialogV2(QDialog):
             if is_upd:
                 self.validate_btn.setText("Download Update")
             else:
-                self.validate_btn.setText("Verify & Repair")
+                self.validate_btn.setText("Verify")
         else:
             # Specific backup item selected from dropdown
             current_text = self.rollback_combo.currentText()
             if installed_bid and f"Build: {installed_bid}" in current_text:
-                self.validate_btn.setText("Verify & Repair")
+                self.validate_btn.setText("Verify")
             else:
                 # Try comparing numerical buildid to show "Downgrade" vs "Install Selected Build"
                 selected_bid = None
@@ -1136,6 +1161,19 @@ class GameDetailsDialogV2(QDialog):
                 return self._format_time_diff(fpath.stat().st_mtime)
             except Exception:
                 pass
+        return "Not cached"
+
+    def _get_lua_age(self):
+        if self.appid in ("0", "N/A", "unknown"):
+            return "N/A"
+        try:
+            from managers.depot_key_manager import DepotKeyManager
+            dkm = DepotKeyManager()
+            ts = dkm.get_key_updated_at(self.appid)
+            if ts:
+                return self._format_time_diff(ts)
+        except Exception:
+            pass
         return "Not cached"
 
     def _get_last_checked(self):

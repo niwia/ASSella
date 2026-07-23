@@ -291,6 +291,14 @@ def create_sls_tab(dialog) -> QWidget:
         dialog,
         f"Allow ACCELA to manage {wrapper_name} configuration files.",
     )
+    
+    if sys.platform == "linux":
+        paths = get_sls_paths()
+        if paths["detected"]:
+            dialog.sls_config_management_checkbox.setChecked(True)
+            dialog.sls_config_management_checkbox.setEnabled(False)
+            dialog.sls_config_management_checkbox.setToolTip("Permanently enabled because SLSsteam installation was detected.")
+            
     int_layout.addWidget(dialog.sls_config_management_checkbox)
 
     dialog.prompt_steam_restart_checkbox = create_checkbox_setting(

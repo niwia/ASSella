@@ -229,6 +229,18 @@ class TaskManager(QObject):
 
         self.main_window.progress_bar.setRange(0, 100)
         self.main_window.progress_bar.setValue(100)
+
+        # Merge pre-assembled metadata (from SmartUpdateTask or JobQueueManager) if present
+        if self.current_job_metadata:
+            merged = dict(self.current_job_metadata)
+            if game_data:
+                if "manifests" in game_data:
+                    merged.setdefault("manifests", {}).update(game_data.get("manifests", {}))
+                for k, v in game_data.items():
+                    if v and (k not in merged or not merged[k]):
+                        merged[k] = v
+            game_data = merged
+
         self.game_data = game_data
 
         if self.game_data and self.game_data.get("depots"):

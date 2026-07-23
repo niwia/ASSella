@@ -1417,20 +1417,52 @@ class GameLibraryDialog(QDialog):
         name = game_data.get("game_name", "Unknown")
         status = game_data.get("update_status")
 
-        # Determine if we can use local cache
+        # Flag rollback so downstream won't mark manifest as fresh
+        is_rollback = local_path_override is not None
+
+        # ── Local zip path (for Verify or Rollback) ─────────────────────────
         fpath = (
             get_base_path() / "hubcap_manifests" / f"accela_fetch_{app_id}.zip"
         )
         is_fresh = self.settings.value(f"manifest_is_fresh/{app_id}", False, type=bool)
 
-        # Flag rollback so downstream won't mark manifest as fresh
-        is_rollback = local_path_override is not None
-
         local_path = None
-        if is_rollback and Path(local_path_override).exists():
+        if is_rollback and local_path_override and Path(local_path_override).exists():
             local_path = local_path_override
         elif fpath.exists() and (status != "update_available" or is_fresh):
             local_path = str(fpath)
+
+        if local_path and not download_only:
+            logger.info(f"Using local manifest zip for verify/rollback: {local_path}")
+            self._submit_job(local_path, game_data, dialog)
+            return
+
+        # ── Smart Update Mode routing (for network updates) ─────────────────
+        # Route to SmartUpdateTask only when an update is available or local zip is missing
+        smart_mode = True
+        if smart_mode and not is_rollback and not download_only and status == "update_available":
+            try:
+                from managers.depot_key_manager import DepotKeyManager
+                dkm = DepotKeyManager()
+                if dkm.has_depot_keys(app_id):
+                    logger.info(f"[Smart Update] Routing {name} ({app_id}) through SmartUpdateTask")
+                    self._handle_smart_update(app_id, name, game_data, dialog)
+                    return
+                else:
+                    logger.warning(
+                        f"[Smart Update] {name} ({app_id}): no cached keys — "
+                        "falling back to classic path. Run a full manifest fetch to enable Smart Mode."
+                    )
+                    from PyQt6.QtWidgets import QMessageBox
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda: QMessageBox.information(
+                        self,
+                        "Smart Update Mode",
+                        f"Smart Update Mode is enabled but {name} has no cached depot keys yet.\n\n"
+                        "Using classic fetch. Smart Mode will activate automatically after the first successful fetch."
+                    ))
+            except Exception as _smart_err:
+                logger.error(f"[Smart Update] Smart mode routing error for {app_id}: {_smart_err}")
 
         if not local_path:
             if download_only:
@@ -1447,6 +1479,65 @@ class GameLibraryDialog(QDialog):
                     game_data = game_data.copy()
                     game_data["_is_rollback"] = True
                 self._submit_job(local_path, game_data, dialog)
+
+    def _handle_smart_update(self, app_id: str, name: str, game_data: dict, dialog) -> None:
+        """
+        Handles a Smart Update Mode fetch: runs SmartUpdateTask in a background thread
+        and routes the result to _submit_job on success, or falls back to classic path
+        on needs_full_zip signal.
+        """
+        from core.tasks.smart_update_task import SmartUpdateTask
+        from utils.task_runner import TaskRunner
+
+        logger.info(f"[Smart Update] Starting SmartUpdateTask for {name} ({app_id})")
+
+        task = SmartUpdateTask(app_id, name)
+        runner = TaskRunner(self)
+
+        # Store runner to prevent GC
+        if not hasattr(self, "_smart_runners"):
+            self._smart_runners = []
+        self._smart_runners.append(runner)
+
+        def on_smart_finished(assembled_game_data: dict):
+            logger.info(f"[Smart Update] SmartUpdateTask finished for {name} ({app_id}) — submitting job")
+            # Merge essential fields from original game_data (install_path, etc.) into assembled data
+            merged = dict(game_data)
+            merged.update(assembled_game_data)
+            # Write a temp zip placeholder so _submit_job can find a path
+            import io, zipfile, tempfile, os
+            tmp_dir = get_base_path() / "hubcap_manifests"
+            tmp_path = str(tmp_dir / f"accela_fetch_{app_id}.zip")
+            # The SmartUpdateTask already saved the zip; just submit with that path
+            self._submit_job(tmp_path, merged, dialog)
+            self.settings.setValue(f"manifest_is_fresh/{app_id}", True)
+            if assembled_game_data.get("buildid"):
+                self.settings.setValue(f"fetched_buildid/{app_id}", assembled_game_data["buildid"])
+            if runner in self._smart_runners:
+                self._smart_runners.remove(runner)
+
+        def on_needs_full_zip(reason: str):
+            logger.warning(f"[Smart Update] {name} ({app_id}) needs full zip: {reason}")
+            # Fall back to classic path transparently
+            self._handle_download_manifest(app_id, name, game_data, dialog)
+            if runner in self._smart_runners:
+                self._smart_runners.remove(runner)
+
+        def on_error(err_msg: str):
+            logger.error(f"[Smart Update] Error for {name} ({app_id}): {err_msg}")
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Smart Update Failed", f"Smart update failed for {name}:\n{err_msg}\n\nFalling back to classic fetch.")
+            self._handle_download_manifest(app_id, name, game_data, dialog)
+            if runner in self._smart_runners:
+                self._smart_runners.remove(runner)
+
+        task.finished.connect(on_smart_finished)
+        task.needs_full_zip.connect(on_needs_full_zip)
+        task.error.connect(on_error)
+        task.progress.connect(lambda msg: logger.info(msg))
+
+        runner.run(task.run)
+
 
     def _handle_download_manifest(self, app_id, name, game_data, dialog):
         """Logic separated to flatten nesting in fetch_game_manifest."""
@@ -1562,7 +1653,7 @@ class GameLibraryDialog(QDialog):
             self._handle_download_manifest(app_id, name, game_data, dialog)
             return
 
-        is_refined = self.settings.value("refined_update_check", False, type=bool) if self.settings else False
+        is_refined = False
         is_timestamp_stale = False
         timestamp_reason = ""
         if not (needs_update or update_in_progress) and is_refined:
@@ -1609,7 +1700,26 @@ class GameLibraryDialog(QDialog):
         IMPORTANT: parse_progress must never be touched from the background
         thread — Qt widgets are not thread-safe. The reference is passed through
         the signal so the main-thread slot (_on_zip_parse_complete) closes it.
+
+        Smart Update path: when game_data has _smart_update=True the game_data
+        dict is already fully assembled (keys, manifests, buildid, etc.) and the
+        saved zip is a lua-less generate bundle — skip ProcessZipTask re-parse.
         """
+        # ── Smart Update fast-path ─────────────────────────────────────────
+        # game_data already has depots, manifests, buildid from SmartUpdateTask.
+        # The zip on disk has no .lua, so ProcessZipTask would crash.
+        if game_data.get("_smart_update"):
+            logger.info(f"[Smart Update] _submit_job: using pre-assembled game_data, skipping zip parse for AppID {game_data.get('appid')}")
+            # Emit directly with assembled data — Stage 2 will be skipped in _on_zip_parse_complete
+            parse_progress = QProgressDialog("Applying manifest...", None, 0, 0, self)
+            parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
+            parse_progress.setMinimumDuration(0)
+            parse_progress.setCancelButton(None)
+            parse_progress.show()
+            self.zip_parse_complete.emit(game_data, filepath, game_data, dialog, parse_progress)
+            return
+
+        # ── Classic path ───────────────────────────────────────────────────
         # Show a transient loading indicator while parsing happens in background
         parse_progress = QProgressDialog("Reading manifest...", None, 0, 0, self)
         parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
@@ -1632,6 +1742,7 @@ class GameLibraryDialog(QDialog):
             self.zip_parse_complete.emit(parsed, filepath, game_data, dialog, parse_progress)
 
         self.executor.submit(_parse_in_background)
+
 
     def _on_zip_parse_complete(
         self, parsed_data: object, filepath: str, game_data: dict, dialog: QDialog,
@@ -1658,35 +1769,41 @@ class GameLibraryDialog(QDialog):
             metadata["_is_rollback"] = True
 
         if parsed_data:
-            # Stage 2 check:
-            # Check if the parsed manifest IDs match the latest steam manifest ID we expected,
-            # or if they are identical to the previously installed manifest IDs.
-            from utils.manifest_verifier import verify_extracted_zip_manifest
-            appid = str(game_data.get("appid"))
-            is_update = game_data.get("update_status") == "update_available"
-            is_valid_stage2, warning_reason = verify_extracted_zip_manifest(appid, parsed_data, is_update=is_update)
+            # Smart Update path: data was assembled by SmartUpdateTask using live PICS +
+            # /generate/appmanifest — it's already the latest version. Skip Stage 2 check.
+            is_smart = parsed_data.get("_smart_update") or game_data.get("_smart_update")
+            if is_smart:
+                logger.info(f"[Smart Update] Skipping Stage 2 manifest verification for AppID {game_data.get('appid')} (trust PICS)")
+            else:
+                # Stage 2 check:
+                # Check if the parsed manifest IDs match the latest steam manifest ID we expected,
+                # or if they are identical to the previously installed manifest IDs.
+                from utils.manifest_verifier import verify_extracted_zip_manifest
+                appid = str(game_data.get("appid"))
+                is_update = game_data.get("update_status") == "update_available"
+                is_valid_stage2, warning_reason = verify_extracted_zip_manifest(appid, parsed_data, is_update=is_update)
 
-            should_warn = False
-            if not game_data.get("_is_rollback") and not is_valid_stage2:
-                should_warn = True
+                should_warn = False
+                if not game_data.get("_is_rollback") and not is_valid_stage2:
+                    should_warn = True
 
-            if should_warn:
-                msg = (
-                    f"ASSella detected that the manifest is older than the latest Steam version.\n\n"
-                    f"Reason: {warning_reason}\n\n"
-                    "This usually means Hubcap has not yet ingested the latest Steam update.\n\n"
-                    "Do you want to continue with this version anyway?"
-                )
-                btn = QMessageBox.warning(
-                    self,
-                    "Manifest Outdated",
-                    msg,
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
-                if btn != QMessageBox.StandardButton.Yes:
-                    logger.info("User aborted task due to post-download manifest mismatch")
-                    return
+                if should_warn:
+                    msg = (
+                        f"ASSella detected that the manifest is older than the latest Steam version.\n\n"
+                        f"Reason: {warning_reason}\n\n"
+                        "This usually means Hubcap has not yet ingested the latest Steam update.\n\n"
+                        "Do you want to continue with this version anyway?"
+                    )
+                    btn = QMessageBox.warning(
+                        self,
+                        "Manifest Outdated",
+                        msg,
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No
+                    )
+                    if btn != QMessageBox.StandardButton.Yes:
+                        logger.info("User aborted task due to post-download manifest mismatch")
+                        return
 
         if parsed_data and parsed_data.get("depots"):
             from ui.dialogs.depotselection import DepotSelectionDialog
@@ -1784,7 +1901,7 @@ class GameLibraryDialog(QDialog):
             """
         )
 
-        verify_action = QAction("Verify & Repair Game Files", self)
+        verify_action = QAction("Verify Game Files", self)
         verify_action.triggered.connect(lambda: self._fetch_game_manifest(game_data))
         menu.addAction(verify_action)
 

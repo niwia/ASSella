@@ -1036,12 +1036,46 @@ class MainWindow(QMainWindow):
         if self.game_manager:
             self.game_manager.check_game_updates_async()
 
+        # Run depot key migration in the background (populates depot_keys.db from cached zips)
+        self._run_depot_key_migration()
+
+    def _run_depot_key_migration(self) -> None:
+        """
+        One-time background migration: extracts AES keys and AppTokens from all cached
+        hubcap_manifests/*.zip files and persists them to depot_keys.db.
+        Progress messages are logged at INFO level so they appear in the main window pager.
+        """
+        from core.tasks.depot_key_migration_task import DepotKeyMigrationTask
+        from utils.task_runner import TaskRunner
+
+        migration_task = DepotKeyMigrationTask()
+
+        # Route progress messages through the standard logger so they appear in the pager
+        migration_task.progress.connect(lambda msg: logger.info(msg))
+        migration_task.finished.connect(self._on_depot_key_migration_finished)
+
+        self._migration_runner = TaskRunner(self)
+        self._migration_runner.run(migration_task.run)
+        logger.info("[Depot Key Cache] Background migration started...")
+
+    def _on_depot_key_migration_finished(self, migrated: int, skipped: int) -> None:
+        """Called when depot key migration completes."""
+        if migrated > 0:
+            logger.info(
+                f"[Depot Key Cache] Migration done: {migrated} game(s) migrated, "
+                f"{skipped} skipped. Smart Update Mode is now available."
+            )
+
+
     def _on_boot_autofetch_manifests(self) -> None:
         """Sequential background fetch of update manifests whenever all_updates_checked fires.
 
         Runs on the first batch check (boot) and also on any subsequent check triggered by
         the periodic timer, ensuring newly-detected updates get their manifest downloaded
         automatically without requiring a tool restart.
+
+        When Smart Update Mode is enabled, routes through SmartUpdateTask (PICS + generate
+        endpoint) and skips all Hubcap status/timestamp/Stage-2 verification checks.
         """
         if not self.settings.value("autofetch_manifests_on_boot", False, type=bool):
             return
@@ -1049,6 +1083,10 @@ class MainWindow(QMainWindow):
         # Guard: only mark boot done after the first run, but keep running for periodic checks
         if not self._autofetch_on_boot_done:
             self._autofetch_on_boot_done = True
+
+        smart_mode = True
+        if smart_mode:
+            logger.info("[Auto-fetch] Smart Update Mode is ON — using SmartUpdateTask path")
 
         from utils.helpers import get_base_path
         games_to_fetch = []
@@ -1083,30 +1121,67 @@ class MainWindow(QMainWindow):
         def run_downloads():
             from core import morrenus_api
             from utils.manifest_verifier import verify_hubcap_freshness
+
             for appid, name in games_to_fetch:
-                logger.info(f"Auto-fetch background: checking Hubcap manifest status for {name} ({appid})")
                 try:
+                    if smart_mode:
+                        # ── Smart Update path: PICS + /generate/appmanifest ──────────────
+                        # No status check, no timestamp check, no Stage 2 — trust PICS.
+                        logger.info(f"[Auto-fetch Smart] Processing {name} ({appid})")
+                        from managers.depot_key_manager import DepotKeyManager
+                        from core.tasks.smart_update_task import SmartUpdateTask
+
+                        dkm = DepotKeyManager()
+                        if not dkm.has_depot_keys(appid):
+                            logger.warning(
+                                f"[Auto-fetch Smart] {name} ({appid}): no cached depot keys — "
+                                "falling back to full zip fetch"
+                            )
+                            # Fall through to old path below
+                        else:
+                            # Run SmartUpdateTask synchronously (we're already in a worker thread)
+                            task = SmartUpdateTask(appid, name)
+                            _smart_result = {"game_data": None, "fallback": None}
+
+                            task.progress.connect(lambda msg: logger.info(msg))
+                            task.finished.connect(lambda gd: _smart_result.__setitem__("game_data", gd))
+                            task.needs_full_zip.connect(lambda r: _smart_result.__setitem__("fallback", r))
+                            task.error.connect(lambda e: logger.error(f"[Auto-fetch Smart] Error: {e}"))
+
+                            task._execute()  # Call directly since we're in worker thread
+
+                            if _smart_result["game_data"]:
+                                self.settings.setValue(f"manifest_is_fresh/{appid}", True)
+                                gd = _smart_result["game_data"]
+                                if gd.get("buildid"):
+                                    self.settings.setValue(f"fetched_buildid/{appid}", gd["buildid"])
+                                logger.info(f"[Auto-fetch Smart] SUCCESS for {name} ({appid})")
+                            elif _smart_result["fallback"]:
+                                logger.info(
+                                    f"[Auto-fetch Smart] {name} ({appid}) needs full zip: "
+                                    f"{_smart_result['fallback']} — falling back"
+                                )
+                                # Fall through to old endpoint below by not continuing
+                            else:
+                                logger.warning(f"[Auto-fetch Smart] {name} ({appid}): no result from SmartUpdateTask")
+                            continue  # Do not fall through to old path if smart result was obtained or a fallback signal fired
+
+                    # ── Classic path: Hubcap /manifest/{appid} ───────────────────────
+                    logger.info(f"Auto-fetch background: checking Hubcap manifest status for {name} ({appid})")
                     status_res = morrenus_api.get_manifest_status(appid)
                     if status_res and isinstance(status_res, dict) and not status_res.get("error"):
                         needs_up = status_res.get("needs_update", False)
                         up_in_prog = status_res.get("update_in_progress", False)
-                        
+
                         # Default check: skip if Hubcap reports needs_update or update_in_progress
                         if needs_up or up_in_prog:
                             logger.info(
-                                f"Auto-fetch background: Hubcap manifest for {name} ({appid}) is not ready (needs_update={needs_up}, in_progress={up_in_prog}). Skipping download."
+                                f"Auto-fetch background: Hubcap manifest for {name} ({appid}) is not ready "
+                                f"(needs_update={needs_up}, in_progress={up_in_prog}). Skipping download."
                             )
                             continue
 
-                        # Refined check: if user enabled 'refined_update_check', also perform timestamp verification
-                        is_refined = self.settings.value("refined_update_check", False, type=bool) if self.settings else False
-                        if is_refined:
-                            ver_status, reason, _ = verify_hubcap_freshness(appid, status_res)
-                            if ver_status == "stale":
-                                logger.info(
-                                    f"Auto-fetch background: Hubcap manifest for {name} ({appid}) is timestamp-stale ({reason}). Skipping download."
-                                )
-                                continue
+                        # Refined check removed because it is deprecated
 
                     fpath, error = morrenus_api.download_manifest(appid)
                     if fpath and not error:
@@ -1137,6 +1212,7 @@ class MainWindow(QMainWindow):
                     logger.error(f"Auto-fetch background error for {name} ({appid}): {ex}", exc_info=True)
 
         self._autofetch_runner.run(run_downloads)
+
 
     def _setup_update_timer(self) -> None:
         """Setup a timer to check for game updates periodically."""
@@ -1822,16 +1898,47 @@ class MainWindow(QMainWindow):
                     is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
                     if fpath.exists() and (update_status != "update_available" or is_fresh):
                         local_path = str(fpath)
-                    if not local_path:
-                        fpath, error = _api.download_manifest(appid)
-                        if error or not fpath:
-                            logger.warning(f"Update All: manifest download failed for {name}: {error}")
-                            continue
-                        local_path = str(fpath)
-                        settings.setValue(f"manifest_is_fresh/{appid}", True)
+                    
+                    parsed_data = None
+                    from managers.depot_key_manager import DepotKeyManager
+                    dkm = DepotKeyManager()
+                    
+                    # 1. Try Smart Update Path
+                    if dkm.has_depot_keys(appid):
+                        from core.tasks.smart_update_task import SmartUpdateTask
+                        task = SmartUpdateTask(appid, name)
+                        parsed_data = task.run()
+                        if parsed_data:
+                            local_path = parsed_data.get("zip_path", local_path)
+                    
+                    # 2. Fallback to Classic Path if Smart failed or no keys
+                    if not parsed_data:
+                        # Ensure we have a valid classic zip (must contain .lua)
+                        import zipfile
+                        def has_lua(zp):
+                            try:
+                                with zipfile.ZipFile(zp, "r") as z:
+                                    return any(f.endswith(".lua") for f in z.namelist())
+                            except Exception:
+                                return False
+                                
+                        if not local_path or not has_lua(local_path):
+                            logger.info(f"Update All: Fetching classic manifest for {name}")
+                            if local_path and Path(local_path).exists():
+                                Path(local_path).unlink() # Delete bad/lua-less zip
+                            fpath, error = _api.download_manifest(appid)
+                            if error or not fpath:
+                                logger.warning(f"Update All: manifest download failed for {name}: {error}")
+                                continue
+                            local_path = str(fpath)
+                            settings.setValue(f"manifest_is_fresh/{appid}", True)
 
-                    zip_task = ProcessZipTask()
-                    parsed_data = zip_task.run(local_path)
+                        zip_task = ProcessZipTask()
+                        try:
+                            parsed_data = zip_task.run(local_path)
+                        except Exception as e:
+                            logger.error(f"Update All: Failed to process zip for {name}: {e}")
+                            continue
                     metadata = {
                         "appid": appid,
                         "library_path": game_data.get("library_path"),

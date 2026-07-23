@@ -15,7 +15,8 @@
     "LogLevel",
     "ExtendedLogging",
     "MaxSchemaTries",
-    "DisableUpdates"
+    "DisableUpdates",
+    "DumpClientInterfaces"
   ],
   "BOOLEAN_KEYS": [
     "DisableFamilyShareLock",
@@ -30,7 +31,8 @@
     "DisableCloud",
     "ExtendedLogging",
     "MaxSchemaTries",
-    "DisableUpdates"
+    "DisableUpdates",
+    "DumpClientInterfaces"
   ],
   "LIST_KEYS": [
     "AppIds",

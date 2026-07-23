@@ -312,7 +312,7 @@ class GameManager(QObject):
             needs_update = result.get("needs_update", False)
             update_in_progress = result.get("update_in_progress", False)
 
-            is_refined = self.settings.value("refined_update_check", False, type=bool) if self.settings else False
+            is_refined = False
             if is_refined and not needs_update and not update_in_progress:
                 from utils.manifest_verifier import verify_hubcap_freshness
                 ver_status, reason, _ = verify_hubcap_freshness(appid, result)
@@ -352,8 +352,8 @@ class GameManager(QObject):
             get_update_cache().set_status(appid, update_status)
             get_update_cache().save_async()
 
-            # If a new update is detected, invalidate the manifest freshness cache
-            if update_status == UPDATE_STATUS["UPDATE_AVAILABLE"] and old_status != UPDATE_STATUS["UPDATE_AVAILABLE"]:
+            # If an update is detected, invalidate the manifest freshness cache
+            if update_status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
                 self.settings.setValue(f"manifest_is_fresh/{appid}", False)
             elif update_status == UPDATE_STATUS["UP_TO_DATE"]:
                 self.settings.remove(f"manifest_is_fresh/{appid}")

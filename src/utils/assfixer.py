@@ -135,7 +135,7 @@ def run_boot_config_check() -> None:
     Checks the SLSsteam config once in a background thread and updates global status.
     Uses DEFAULT_CONFIG_PATH.
     """
-    global boot_status, boot_issues
+    global boot_status, boot_issues, KNOWN_KEYS, SCALAR_KEYS, LIST_KEYS, MAP_KEYS, BOOLEAN_KEYS
     if boot_status is not None and boot_status != "checking":
         return  # Already run or running
 
@@ -159,6 +159,22 @@ def run_boot_config_check() -> None:
             reader = SimpleYAMLReader()
             old_data = reader.parse(config_path.read_text(encoding="utf-8"))
             template_data = reader.parse(template_yaml)
+            # Dynamically incorporate any new template keys into KNOWN_KEYS and SCALAR_KEYS
+            for tk, tv in template_data.items():
+                if tk not in KNOWN_KEYS:
+                    if isinstance(tv, list):
+                        LIST_KEYS.add(tk)
+                    elif isinstance(tv, dict):
+                        MAP_KEYS.add(tk)
+                    else:
+                        SCALAR_KEYS.add(tk)
+                        BOOLEAN_KEYS.add(tk)
+            KNOWN_KEYS = (
+                SCALAR_KEYS | LIST_KEYS | MAP_KEYS | MAP_OF_LIST_KEYS
+                | {IDLE_STATUS_KEY, "UnownedStatus"}
+            )
+            # Re-validate config with updated KNOWN_KEYS
+            issues = validate_config(config_path)
             new_keys = set(template_data) - set(old_data)
         except Exception as net_err:
             # Network unavailable or GitHub unreachable — skip upstream key check
@@ -209,6 +225,7 @@ SCALAR_KEYS = {
     "PlayNotOwnedGames", "SafeMode", "Notifications", "WarnHashMissmatch",
     "NotifyInit", "API", "DisableCloud", "FakeEmail", "FakeWalletBalance",
     "LogLevel", "ExtendedLogging", "MaxSchemaTries", "DisableUpdates",
+    "DumpClientInterfaces",
 }
 # All scalar keys that take yes/no values
 BOOLEAN_KEYS = SCALAR_KEYS - {"FakeEmail", "FakeWalletBalance", "LogLevel"}

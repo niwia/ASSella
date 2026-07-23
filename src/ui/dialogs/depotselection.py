@@ -564,39 +564,32 @@ class DepotSelectionDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to extract manifest zip: {e}")
             return
 
-        # Find LUA file to read depot keys
-        lua_files = list(Path(temp_dir).glob("*.lua"))
-        if not lua_files:
-            QMessageBox.critical(self, "Error", "No LUA configuration file found in manifest ZIP.")
-            return
-        lua_path = str(lua_files[0])
-
-        # Find manifest file
-        manifest_files = list(Path(temp_dir).glob(f"{target_depot}_*.manifest"))
-        if not manifest_files:
-            # Fallback to any manifest file
-            manifest_files = list(Path(temp_dir).glob("*.manifest"))
-            if not manifest_files:
-                QMessageBox.critical(self, "Error", f"No manifest file found for depot {target_depot}.")
-                return
-            target_depot = manifest_files[0].stem.split("_")[0]
-
-        manifest_file = str(manifest_files[0])
-        manifest_id = manifest_files[0].stem.split("_")[1]
-
-        # Extract key from LUA config
+        # Extract key from LUA config or fallback to depot_keys.db
         depot_key = None
-        try:
-            with open(lua_path, "r", encoding="utf-8") as lf:
-                lua_content = lf.read()
-                match = re.search(r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)", lua_content)
-                if match:
-                    depot_key = match.group(1)
-        except Exception as e:
-            logger.warning(f"Failed to parse LUA for depot keys: {e}")
+        lua_files = list(Path(temp_dir).glob("*.lua"))
+        if lua_files:
+            try:
+                with open(str(lua_files[0]), "r", encoding="utf-8") as lf:
+                    lua_content = lf.read()
+                    match = re.search(r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)", lua_content)
+                    if match:
+                        depot_key = match.group(1)
+            except Exception as e:
+                logger.warning(f"Failed to parse LUA for depot keys: {e}")
+
+        # Fallback to depot_keys.db if key was not in LUA file (e.g. smart generate bundle)
+        if not depot_key:
+            try:
+                from managers.depot_key_manager import DepotKeyManager
+                dkm = DepotKeyManager()
+                cached = dkm.get_depot_keys(app_id)
+                if target_depot in cached:
+                    depot_key = cached[target_depot]
+            except Exception as dkm_e:
+                logger.warning(f"Failed to load key from depot_keys.db for depot {target_depot}: {dkm_e}")
 
         if not depot_key:
-            QMessageBox.critical(self, "Error", f"Could not find depot key for depot {target_depot} in LUA config.")
+            QMessageBox.critical(self, "Error", f"Could not find depot key for depot {target_depot} in LUA config or local key database.")
             return
 
         # Create depot keys file

@@ -213,6 +213,7 @@ class SettingsDialog(QDialog):
         self.smart_depot_selection_checkbox = None
         self.autofetch_manifests_checkbox = None
         self.use_lancache_checkbox = None
+        self.smart_update_mode_checkbox = None
         self.refined_update_check_checkbox = None
         self.isp_bypass_hubcap_checkbox = None
         self.fakeappid_db_integration_checkbox = None
@@ -473,14 +474,6 @@ class SettingsDialog(QDialog):
         # Experimental Group
         experimental_group = QGroupBox("Experimental")
         experimental_layout = QVBoxLayout()
-        self.refined_update_check_checkbox = create_checkbox_setting(
-            "Refined Update Check",
-            "refined_update_check",
-            False,
-            self,
-            "Compares Steam's live build release timestamp against Hubcap's manifest modification date for higher accuracy, rather than relying solely on the server's update flag.",
-        )
-        experimental_layout.addWidget(self.refined_update_check_checkbox)
 
         self.isp_bypass_hubcap_checkbox = create_checkbox_setting(
             "ISP Bypass (Hubcap API)",
@@ -1660,8 +1653,6 @@ class SettingsDialog(QDialog):
             self.settings.setValue("max_old_manifests", self.max_old_manifests_spinbox.value())
         if hasattr(self, "hide_macos_depots_checkbox"):
             self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
-        if hasattr(self, "refined_update_check_checkbox") and self.refined_update_check_checkbox is not None:
-            self.settings.setValue("refined_update_check", self.refined_update_check_checkbox.isChecked())
         if hasattr(self, "isp_bypass_hubcap_checkbox") and self.isp_bypass_hubcap_checkbox is not None:
             new_val = self.isp_bypass_hubcap_checkbox.isChecked()
             self.settings.setValue("isp_bypass_hubcap", new_val)
