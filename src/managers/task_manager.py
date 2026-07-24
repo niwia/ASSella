@@ -906,6 +906,9 @@ class TaskManager(QObject):
                             final_bid = target_bid or new_bid
                             settings.setValue(f"installed_branch/{appid}", sel_b)
                             if final_bid:
+                                # Store per-branch: installed_buildid/appid/branch
+                                settings.setValue(f"installed_buildid/{appid}/{sel_b}", str(final_bid))
+                                # Also store legacy flat key for backward compat
                                 settings.setValue(f"installed_buildid/{appid}", str(final_bid))
                     except Exception as e:
                         logger.error(f"Failed to upsert app info on job completion: {e}")

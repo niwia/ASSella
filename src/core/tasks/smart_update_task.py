@@ -121,7 +121,17 @@ class SmartUpdateTask(QObject):
         pics_elapsed = time.time() - t0
         game_name = pics_data.get("name") or self.game_name
         installdir = pics_data.get("installdir") or f"App_{self.appid}"
-        buildid = pics_data.get("buildid") or ""
+
+        # Use branch-specific build ID from PICS branches dict when available.
+        # pics_data["buildid"] is always the *public* branch build ID.
+        # pics_data["branches"][self.branch]["buildid"] is the actual branch build.
+        branch_bid = ""
+        branches_map = pics_data.get("branches", {})
+        if isinstance(branches_map, dict) and self.branch in branches_map:
+            binfo = branches_map[self.branch]
+            if isinstance(binfo, dict):
+                branch_bid = str(binfo.get("buildid", ""))
+        buildid = branch_bid or pics_data.get("buildid") or ""
         pics_depots = pics_data.get("depots", {})
         pics_depot_ids = {str(k) for k in pics_depots.keys()}
 
@@ -230,9 +240,26 @@ class SmartUpdateTask(QObject):
         )
 
         # ── Assemble final game_data ───────────────────────────────────────────
-        # Build depots dict with cached keys + PICS size metadata
+        # Build depots dict with cached keys + PICS size metadata.
+        # Only include depots that appear in the saved .depot file so we don't
+        # leak redistributable/common-redist depot IDs into the depot list.
+        saved_depot_ids = set()
+        depot_file = get_base_path() / "depots" / f"{self.appid}.depot"
+        if depot_file.exists():
+            try:
+                for line in depot_file.read_text().strip().splitlines():
+                    parts = line.split(":", 1)
+                    if parts and parts[0].strip():
+                        saved_depot_ids.add(parts[0].strip())
+            except Exception:
+                pass
+
         enriched_depots = {}
         for depot_id, key in cached_keys.items():
+            # Skip depots not tracked in the saved depot config
+            if saved_depot_ids and str(depot_id) not in saved_depot_ids:
+                logger.debug(f"[SmartUpdate] Skipping untracked depot {depot_id} for AppID {self.appid}")
+                continue
             depot_info = {"key": key, "desc": f"Depot {depot_id}"}
             # Enrich with PICS size/oslist if available
             pics_depot = pics_depots.get(str(depot_id), {})
@@ -270,8 +297,8 @@ class SmartUpdateTask(QObject):
 
     def _save_generate_zip(self, zip_bytes: io.BytesIO, buildid: str) -> None:
         """
-        Saves the generate endpoint bundle as accela_fetch_{appid}.zip (primary)
-        and backs up the old one to accela_fetch_{appid}_build_{old_buildid}.zip.
+        Saves the generate endpoint bundle as accela_fetch_{appid}.zip.
+        Old manifest backup is currently disabled — only the latest is kept.
         """
         try:
             manifests_dir = get_base_path() / "hubcap_manifests"
@@ -281,34 +308,9 @@ class SmartUpdateTask(QObject):
             else:
                 save_path = manifests_dir / f"accela_fetch_{self.appid}.zip"
 
-            settings = get_settings()
-
-            # Backup old zip using old buildid if different from new buildid
-            if save_path.exists() and settings.value("save_old_manifests", True, type=bool):
-                import os
-                old_buildid = settings.value(f"fetched_buildid/{self.appid}", "", type=str)
-                if old_buildid and str(old_buildid) != str(buildid):
-                    backup_path = manifests_dir / f"accela_fetch_{self.appid}_build_{old_buildid}.zip"
-                    if backup_path.exists():
-                        backup_path.unlink()
-                    try:
-                        os.rename(save_path, backup_path)
-                        logger.info(f"[SmartUpdate] Backed up old zip (build {old_buildid}) to {backup_path.name}")
-
-                        # Enforce max_old_manifests limit
-                        limit = settings.value("max_old_manifests", 3, type=int)
-                        backups = sorted(
-                            manifests_dir.glob(f"accela_fetch_{self.appid}_*.zip"),
-                            key=lambda p: p.stat().st_mtime
-                        )
-                        for old in backups[:max(0, len(backups) - limit)]:
-                            try:
-                                os.remove(old)
-                                logger.info(f"[SmartUpdate] Deleted old backup: {old.name}")
-                            except OSError:
-                                pass
-                    except OSError as e:
-                        logger.warning(f"[SmartUpdate] Could not backup old zip: {e}")
+            # Old manifest backup disabled — just overwrite
+            if save_path.exists():
+                save_path.unlink()
 
             # Write new zip
             zip_bytes.seek(0)

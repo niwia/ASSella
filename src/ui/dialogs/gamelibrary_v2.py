@@ -187,6 +187,9 @@ class HeroBanner(QWidget):
 class GameDetailsDialogV2(QDialog):
     branches_loaded = pyqtSignal(dict)
 
+    # ── Rollback toggle: set False to use the old 65px hero layout ──
+    USE_V2_HERO = True
+
     def __init__(self, parent, game_data):
         super().__init__(parent)
         self.parent_window = parent
@@ -324,30 +327,11 @@ class GameDetailsDialogV2(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Hero Banner
-        self.hero = HeroBanner(bg_hex=self.background_color)
-        self.hero.setFixedHeight(65)
-        banner_layout = QHBoxLayout(self.hero)
-        banner_layout.setContentsMargins(14, 6, 180, 6)
-        banner_layout.setSpacing(0)
-
-        name_col = QVBoxLayout()
-        name_col.setSpacing(2)
-        self.name_lbl = QLabel(self.game_data.get("game_name", "Unknown"))
-        self.name_lbl.setStyleSheet(
-            "font-size: 12.5pt; font-weight: bold; color: #FFFFFF; background: transparent;")
-        self.name_lbl.setWordWrap(True)
-        self.appid_lbl = QLabel(f"App ID: {self.appid}")
-        self.appid_lbl.setStyleSheet(
-            "font-size: 8pt; color: rgba(255, 255, 255, 60); background: transparent;")
-        name_col.addWidget(self.name_lbl)
-        name_col.addWidget(self.appid_lbl)
-        name_col.addStretch()
-        banner_layout.addLayout(name_col)
-        banner_layout.addStretch()
-
-        self._load_hero_image()
-        root.addWidget(self.hero)
+        # Hero Banner — v2 or legacy
+        if self.USE_V2_HERO:
+            self._init_hero_v2(root)
+        else:
+            self._init_hero_legacy(root)
 
         # Tab Bar
         tab_bar_frame = QFrame()
@@ -453,6 +437,107 @@ class GameDetailsDialogV2(QDialog):
             self._active_fetchers[f"hero_{self.appid}"] = fetcher
 
     # ──────────────────────────────────────────
+    #  Hero v2 — taller card with stats inline
+    # ──────────────────────────────────────────
+    def _init_hero_v2(self, root):
+        self.hero = HeroBanner(bg_hex=self.background_color)
+        self.hero.setFixedHeight(100)
+        banner_layout = QVBoxLayout(self.hero)
+        banner_layout.setContentsMargins(14, 8, 120, 8)
+        banner_layout.setSpacing(4)
+
+        from utils.dlc_helpers import is_dlc_only_mode
+        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+        display_parts = [self.game_data.get("game_name", "Unknown")]
+        if installed_branch and installed_branch != "public":
+            display_parts.append(f"({installed_branch})")
+        if is_dlc_only_mode(self.appid):
+            display_parts.append("[DLC ONLY]")
+        display_name = " ".join(display_parts)
+
+        self.name_lbl = QLabel(display_name)
+        self.name_lbl.setStyleSheet(
+            "font-size: 14pt; font-weight: bold; color: #FFFFFF; background: transparent;")
+        self.name_lbl.setWordWrap(True)
+        self.appid_lbl = QLabel(f"App ID: {self.appid}")
+        self.appid_lbl.setStyleSheet(
+            "font-size: 8pt; color: rgba(255, 255, 255, 55); background: transparent;")
+        banner_layout.addWidget(self.name_lbl)
+        banner_layout.addWidget(self.appid_lbl)
+
+        # Stats row — horizontal labels under name
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(16)
+        def _stat_item(label_text, value_text, value_color=None):
+            item_widget = QVBoxLayout()
+            item_widget.setSpacing(1)
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 7pt; background: transparent; font-weight: bold;")
+            val = QLabel(value_text)
+            val.setStyleSheet(
+                f"color: {value_color or self.accent_color}; font-size: 7.5pt; font-weight: bold; background: transparent;")
+            item_widget.addWidget(lbl)
+            item_widget.addWidget(val)
+            return item_widget, val
+
+        size_str = self.parent_window._format_size(self.game_data.get("size_on_disk", 0))
+        ri, self.size_val_lbl = _stat_item("SIZE", size_str)
+        stats_row.addLayout(ri)
+
+        ri, self.cached_val_lbl = _stat_item("MANIFEST", self._get_manifest_age())
+        stats_row.addLayout(ri)
+
+        bid_str = str(self.game_data.get("buildid") or "Unknown")
+        ri, self.build_val_lbl = _stat_item("BUILD", bid_str)
+        self._hero_build_val_lbl = self.build_val_lbl
+        stats_row.addLayout(ri)
+
+        ri, self.lua_val_lbl = _stat_item("LUA", self._get_lua_age())
+        stats_row.addLayout(ri)
+
+        stats_row.addStretch()
+        banner_layout.addLayout(stats_row)
+        banner_layout.addStretch()
+
+        self._load_hero_image()
+        root.addWidget(self.hero)
+
+    # ──────────────────────────────────────────
+    #  Hero legacy — original compact 65px banner
+    # ──────────────────────────────────────────
+    def _init_hero_legacy(self, root):
+        self.hero = HeroBanner(bg_hex=self.background_color)
+        self.hero.setFixedHeight(65)
+        banner_layout = QHBoxLayout(self.hero)
+        banner_layout.setContentsMargins(14, 6, 180, 6)
+        banner_layout.setSpacing(0)
+
+        name_col = QVBoxLayout()
+        name_col.setSpacing(2)
+        display_parts = [self.game_data.get("game_name", "Unknown")]
+        from utils.dlc_helpers import is_dlc_only_mode
+        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+        if installed_branch and installed_branch != "public":
+            display_parts.append(f"({installed_branch})")
+        if is_dlc_only_mode(self.appid):
+            display_parts.append("[DLC ONLY]")
+        display_name = " ".join(display_parts)
+        self.name_lbl = QLabel(display_name)
+        self.name_lbl.setStyleSheet(
+            "font-size: 12.5pt; font-weight: bold; color: #FFFFFF; background: transparent;")
+        self.name_lbl.setWordWrap(True)
+        self.appid_lbl = QLabel(f"App ID: {self.appid}")
+        self.appid_lbl.setStyleSheet(
+            "font-size: 8pt; color: rgba(255, 255, 255, 60); background: transparent;")
+        name_col.addWidget(self.name_lbl)
+        name_col.addWidget(self.appid_lbl)
+        name_col.addStretch()
+        banner_layout.addLayout(name_col)
+        banner_layout.addStretch()
+
+        self._load_hero_image()
+        root.addWidget(self.hero)
+
     def _thin_line(self):
         f = QFrame()
         f.setFrameShape(QFrame.Shape.HLine)
@@ -487,6 +572,7 @@ class GameDetailsDialogV2(QDialog):
         scroll.setWidget(inner)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.uninstall_scroll = scroll  # for auto-scroll when uninstall panel opens
 
         # ── Status Pill / Banner ─────────────────────────────────
         self.status_btn = QPushButton()
@@ -495,81 +581,99 @@ class GameDetailsDialogV2(QDialog):
         lay.addWidget(self.status_btn)
         lay.addSpacing(12)
 
-        # ── Stats Grid (Bright text labels) ──────────────────────
-        stats_widget = QWidget()
-        stats_grid = QGridLayout(stats_widget)
-        stats_grid.setContentsMargins(0, 0, 0, 0)
-        stats_grid.setSpacing(10)
+        # ── Stats Grid (hidden in v2 hero — stats are inline) ───
+        if not self.USE_V2_HERO:
+            stats_widget = QWidget()
+            stats_grid = QGridLayout(stats_widget)
+            stats_grid.setContentsMargins(0, 0, 0, 0)
+            stats_grid.setSpacing(10)
 
-        size_lbl = QLabel("Install size:")
-        size_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-        size_val = self.parent_window._format_size(self.game_data.get("size_on_disk", 0))
-        self.size_val_lbl = QLabel(size_val)
-        self.size_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
+            size_lbl = QLabel("Install size:")
+            size_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
+            size_val = self.parent_window._format_size(self.game_data.get("size_on_disk", 0))
+            self.size_val_lbl = QLabel(size_val)
+            self.size_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
 
-        cached_lbl = QLabel("Manifest cached:")
-        cached_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-        self.cached_val_lbl = QLabel(self._get_manifest_age())
-        self.cached_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
+            cached_lbl = QLabel("Manifest cached:")
+            cached_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
+            self.cached_val_lbl = QLabel(self._get_manifest_age())
+            self.cached_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
 
-        build_id_str = str(self.game_data.get("buildid") or "Unknown")
-        build_lbl = QLabel("Build ID:")
-        build_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-        self.build_val_lbl = QLabel(build_id_str)
-        self.build_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
+            build_id_str = str(self.game_data.get("buildid") or "Unknown")
+            build_lbl = QLabel("Build ID:")
+            build_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
+            self.build_val_lbl = QLabel(build_id_str)
+            self.build_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
 
-        lua_lbl = QLabel("LUA cached:")
-        lua_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-        self.lua_val_lbl = QLabel(self._get_lua_age())
-        self.lua_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
+            lua_lbl = QLabel("LUA cached:")
+            lua_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
+            self.lua_val_lbl = QLabel(self._get_lua_age())
+            self.lua_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
 
-        open_folder_btn = QPushButton("Open Install Folder")
-        open_folder_btn.setFixedHeight(24)
-        open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        open_folder_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(255, 255, 255, 0.10);
-                border: 1px solid rgba(255, 255, 255, 0.22);
-                border-radius: 4px;
-                color: #FFFFFF;
-                font-weight: bold;
-                font-size: 8.5pt;
-                padding: 2px 8px;
-            }}
-            QPushButton:hover {{
-                background: rgba(255, 255, 255, 0.22);
-                border-color: {self.accent_color};
-                color: {self.accent_color};
-            }}
-        """)
-        open_folder_btn.clicked.connect(
-            lambda: self.parent_window._open_folder(self.game_data.get("install_path")))
+            stats_grid.addWidget(size_lbl, 0, 0)
+            stats_grid.addWidget(self.size_val_lbl, 0, 1)
+            stats_grid.addWidget(cached_lbl, 0, 2)
+            stats_grid.addWidget(self.cached_val_lbl, 0, 3)
 
-        stats_grid.addWidget(size_lbl, 0, 0)
-        stats_grid.addWidget(self.size_val_lbl, 0, 1)
-        stats_grid.addWidget(cached_lbl, 0, 2)
-        stats_grid.addWidget(self.cached_val_lbl, 0, 3)
+            stats_grid.addWidget(build_lbl, 1, 0)
+            stats_grid.addWidget(self.build_val_lbl, 1, 1)
+            stats_grid.addWidget(lua_lbl, 1, 2)
+            stats_grid.addWidget(self.lua_val_lbl, 1, 3)
 
-        stats_grid.addWidget(build_lbl, 1, 0)
-        stats_grid.addWidget(self.build_val_lbl, 1, 1)
-        stats_grid.addWidget(lua_lbl, 1, 2)
-        stats_grid.addWidget(self.lua_val_lbl, 1, 3)
+            open_folder_btn = QPushButton("Open Install Folder")
+            open_folder_btn.setFixedHeight(24)
+            open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            open_folder_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: rgba(255, 255, 255, 0.10);
+                    border: 1px solid rgba(255, 255, 255, 0.22);
+                    border-radius: 4px;
+                    color: #FFFFFF;
+                    font-weight: bold;
+                    font-size: 8.5pt;
+                    padding: 2px 8px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(255, 255, 255, 0.22);
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+            """)
+            open_folder_btn.clicked.connect(
+                lambda: self.parent_window._open_folder(self.game_data.get("install_path")))
+            stats_grid.addWidget(open_folder_btn, 2, 0, 1, 4)
 
-        stats_grid.addWidget(open_folder_btn, 2, 0, 1, 4)
+            from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
+            self._is_dlc = is_dlc_only_mode(self.appid)
 
-        from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
-        self._is_dlc = is_dlc_only_mode(self.appid)
-        if self._is_dlc:
-            dlc_list = get_dlc_only_info(self.appid)
-            cnt = len(dlc_list)
-            mode_lbl = QLabel("Mode:")
-            mode_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
-            mode_val = QLabel(f"DLC Only ({cnt} DLC{'s' if cnt != 1 else ''})")
-            mode_val.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold;")
-            stats_grid.addWidget(mode_lbl, 2, 0)
-            stats_grid.addWidget(mode_val, 2, 1)
+            lay.addWidget(stats_widget)
+        else:
+            # v2 hero: stats moved into hero, just the open folder button
+            open_folder_btn = QPushButton("Open Install Folder")
+            open_folder_btn.setFixedHeight(24)
+            open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            open_folder_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: rgba(255, 255, 255, 0.10);
+                    border: 1px solid rgba(255, 255, 255, 0.22);
+                    border-radius: 4px;
+                    color: #FFFFFF;
+                    font-weight: bold;
+                    font-size: 8.5pt;
+                    padding: 2px 12px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(255, 255, 255, 0.22);
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+            """)
+            open_folder_btn.clicked.connect(
+                lambda: self.parent_window._open_folder(self.game_data.get("install_path")))
+            lay.addWidget(open_folder_btn)
 
-        lay.addWidget(stats_widget)
+            from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
+            self._is_dlc = is_dlc_only_mode(self.appid)
         lay.addSpacing(12)
         lay.addWidget(self._thin_line())
         lay.addSpacing(10)
@@ -579,21 +683,21 @@ class GameDetailsDialogV2(QDialog):
         actions_row.setSpacing(8)
 
         installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
-        installed_bid = self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""), type=str)
+        installed_bid = self.settings.value(
+            f"installed_buildid/{self.appid}/{installed_branch}",
+            self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""), type=str),
+            type=str)
+
+        # Default the selected branch to whatever the user has installed
+        saved_b = installed_branch or self.settings.value(f"selected_branch/{self.appid}", "public", type=str)
+        self.settings.setValue(f"selected_branch/{self.appid}", saved_b)
 
         self.branch_combo = CenteredComboBox()
-        saved_b = self.settings.value(f"selected_branch/{self.appid}", "public", type=str)
         self.branch_combo.addItem(f"public ({installed_bid})" if installed_bid else "public", "public")
         self.branch_combo.setFixedHeight(26)
-        self.branch_combo.setFixedWidth(160)
+        self.branch_combo.setFixedWidth(180)
         self.branch_combo.setMaxVisibleItems(5)
         actions_row.addWidget(self.branch_combo, 0)
-
-        self.rollback_combo = CenteredComboBox()
-        self.rollback_combo.setFixedHeight(26)
-        self.rollback_combo.setFixedWidth(200)
-        self.rollback_combo.setMaxVisibleItems(5)
-        actions_row.addWidget(self.rollback_combo, 0)
 
         self.validate_btn = QPushButton("Verify Files")
         self.validate_btn.setFixedHeight(26)
@@ -605,7 +709,6 @@ class GameDetailsDialogV2(QDialog):
 
         self.validate_btn.clicked.connect(self._on_validate_btn_clicked)
         self.branch_combo.currentIndexChanged.connect(self._on_branch_combo_changed)
-        self.rollback_combo.currentIndexChanged.connect(self._on_rollback_combo_changed)
 
         self._load_branches_async()
 
@@ -740,12 +843,35 @@ class GameDetailsDialogV2(QDialog):
 
     def _load_branches_async(self, force_refresh: bool = False):
         import threading
+        appid = self.appid
+
+        # Fast path: use cached data from DatabaseManager without a Steam connection
+        if not force_refresh:
+            try:
+                from managers.db_manager import DatabaseManager
+                db = DatabaseManager()
+                app_info = db.get_app_info(appid)
+                cached_branches = app_info.get("branches") if app_info else None
+                if cached_branches and isinstance(cached_branches, dict) and len(cached_branches) > 0:
+                    self.branches_loaded.emit(cached_branches)
+                    # Fire a background refresh to keep cache warm silently
+                    threading.Thread(target=lambda: self._silent_refresh_branches(), daemon=True).start()
+                    return
+                elif app_info and app_info.get("buildid"):
+                    fallback = {"public": {"buildid": str(app_info.get("buildid"))}}
+                    self.branches_loaded.emit(fallback)
+                    threading.Thread(target=lambda: self._silent_refresh_branches(), daemon=True).start()
+                    return
+            except Exception:
+                pass
+
+        # Slow path: live fetch
         def _fetch():
             try:
                 from core.steam_api import get_app_branches
-                return get_app_branches(self.appid, force_refresh=force_refresh)
+                return get_app_branches(appid, force_refresh=True)
             except Exception as e:
-                logger.error(f"Error fetching branches for {self.appid}: {e}")
+                logger.error(f"Error fetching branches for {appid}: {e}")
                 return {"public": {"buildid": ""}}
 
         def run_thread():
@@ -754,6 +880,15 @@ class GameDetailsDialogV2(QDialog):
 
         threading.Thread(target=run_thread, daemon=True).start()
 
+    def _silent_refresh_branches(self):
+        try:
+            from core.steam_api import get_app_branches
+            fresh = get_app_branches(self.appid, force_refresh=True)
+            if fresh:
+                self.branches_loaded.emit(fresh)
+        except Exception:
+            pass
+
     def _on_branches_loaded(self, branches_dict: dict):
         if not branches_dict:
             return
@@ -761,9 +896,10 @@ class GameDetailsDialogV2(QDialog):
         self.branch_combo.blockSignals(True)
         self.branch_combo.clear()
 
-        # Sort: 'public' branch first, then alphabetical
+        # Sort: 'public' branch first, then alphabetical. Default to installed branch.
         sorted_keys = sorted(branches_dict.keys(), key=lambda k: (0 if k == "public" else 1, k))
-        saved_branch = self.settings.value(f"selected_branch/{self.appid}", "public", type=str)
+        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+        saved_branch = installed_branch or self.settings.value(f"selected_branch/{self.appid}", "public", type=str)
         select_idx = 0
 
         for idx, b_name in enumerate(sorted_keys):
@@ -787,113 +923,96 @@ class GameDetailsDialogV2(QDialog):
         branch_bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
 
         installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
-        installed_bid = self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""), type=str)
+        installed_bid = self.settings.value(f"installed_buildid/{self.appid}/{sel_branch}", str(self.game_data.get("buildid") or ""), type=str)
 
-        # Update Build ID display in stats grid
+        # Update Build ID display with colour coding:
+        #   green  = installed/current (local zip matches)
+        #   blue   = available on Steam but not cached locally
         if hasattr(self, "build_val_lbl"):
-            if branch_bid:
-                self.build_val_lbl.setText(f"{branch_bid} ({sel_branch})")
+            manifests_dir = get_base_path() / "hubcap_manifests"
+            if sel_branch != "public":
+                local_zip = manifests_dir / f"accela_fetch_{self.appid}_branch_{sel_branch}.zip"
             else:
-                self.build_val_lbl.setText(installed_bid or "Unknown")
+                local_zip = manifests_dir / f"accela_fetch_{self.appid}.zip"
+            is_cached = local_zip.exists()
+
+            if branch_bid:
+                if installed_branch == sel_branch and installed_bid == branch_bid:
+                    self.build_val_lbl.setText(f"Build {branch_bid} (installed)")
+                    self.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold;")
+                elif is_cached:
+                    self.build_val_lbl.setText(f"Build {branch_bid} (cached)")
+                    self.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold;")
+                else:
+                    self.build_val_lbl.setText(f"Build {branch_bid} (steam)")
+                    self.build_val_lbl.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold;")
+            else:
+                bid_text = installed_bid or "Unknown"
+                self.build_val_lbl.setText(f"Build {bid_text}" if bid_text.isdigit() else bid_text)
+                self.build_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
 
         # Dynamically refresh rollback combo for the selected branch
-        if hasattr(self, "rollback_combo"):
-            self.rollback_combo.blockSignals(True)
-            self.rollback_combo.clear()
-
-            seen_bids = set()
-            is_branch_installed = (installed_branch == sel_branch) and (installed_bid == branch_bid)
+        if hasattr(self, "build_val_lbl"):
+            manifests_dir = get_base_path() / "hubcap_manifests"
+            if sel_branch != "public":
+                local_zip = manifests_dir / f"accela_fetch_{self.appid}_branch_{sel_branch}.zip"
+            else:
+                local_zip = manifests_dir / f"accela_fetch_{self.appid}.zip"
+            is_cached = local_zip.exists()
 
             if branch_bid:
-                if is_branch_installed:
-                    top_label = f"{branch_bid} (Installed)"
-                    top_color = QColor("#46b464")  # Green
+                if installed_branch == sel_branch and installed_bid == branch_bid:
+                    self.build_val_lbl.setText(f"Build {branch_bid} (installed)")
+                    self.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold;")
+                elif is_cached:
+                    self.build_val_lbl.setText(f"Build {branch_bid} (cached)")
+                    self.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold;")
                 else:
-                    top_label = f"{branch_bid} (Available on Steam)"
-                    top_color = QColor("#7ab3ff")  # Blue
-                seen_bids.add(branch_bid)
-            elif installed_bid:
-                top_label = f"{installed_bid} (Installed)"
-                top_color = QColor("#46b464")
-                seen_bids.add(installed_bid)
+                    self.build_val_lbl.setText(f"Build {branch_bid} (steam)")
+                    self.build_val_lbl.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold;")
             else:
-                top_label = "Latest Build"
-                top_color = QColor("#FFFFFF")
+                bid_text = installed_bid or "Unknown"
+                self.build_val_lbl.setText(f"Build {bid_text}" if bid_text.isdigit() else bid_text)
+                self.build_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
 
-            self.rollback_combo.addItem(top_label, None)
-            self.rollback_combo.setItemData(0, top_color, Qt.ItemDataRole.ForegroundRole)
-
-            import datetime
-            manifests_dir = get_base_path() / "hubcap_manifests"
-
-            if sel_branch == "public":
-                all_zips = sorted(manifests_dir.glob(f"accela_fetch_{self.appid}*.zip"), reverse=True)
-                # EXPLICITLY FILTER OUT NON-PUBLIC BRANCH ZIPS
-                self._backups = [b for b in all_zips if "_branch_" not in b.name]
-            else:
-                self._backups = sorted(manifests_dir.glob(f"accela_fetch_{self.appid}_branch_{sel_branch}*.zip"), reverse=True)
-
-            item_idx = 1
-            for b in self._backups:
-                try:
-                    b_name = b.stem
-                    mtime_str = datetime.datetime.fromtimestamp(b.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-                    if "_build_" in b_name:
-                        bid = b_name.split("_build_")[-1]
-                        if bid in seen_bids:
-                            continue
-                        seen_bids.add(bid)
-                        item_text = f"{bid} ({mtime_str})"
-                    else:
-                        item_text = f"Backup {b.name} ({mtime_str})"
-                    self.rollback_combo.addItem(item_text, str(b))
-                    self.rollback_combo.setItemData(item_idx, QColor("#e0995a"), Qt.ItemDataRole.ForegroundRole)
-                    item_idx += 1
-                except Exception:
-                    pass
-
-            self.rollback_combo.blockSignals(False)
-
-        self._update_validate_button()
-
-    def _on_rollback_combo_changed(self):
-        """Fired only when the user picks a specific backup in rollback_combo."""
         self._update_validate_button()
 
     def _update_validate_button(self):
         sel_branch = self.branch_combo.currentData() or "public" if hasattr(self, "branch_combo") else "public"
-        b_dict = getattr(self, "_branches_dict", {})
-        b_info = b_dict.get(sel_branch, {}) if isinstance(b_dict, dict) else {}
-        branch_bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
-
         installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
-        installed_bid = self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""), type=str)
 
-        sel_backup = self.rollback_combo.currentData() if hasattr(self, "rollback_combo") else None
+        # Check if a cached manifest zip exists for this branch
+        manifests_dir = get_base_path() / "hubcap_manifests"
+        if sel_branch != "public":
+            local_zip = manifests_dir / f"accela_fetch_{self.appid}_branch_{sel_branch}.zip"
+        else:
+            local_zip = manifests_dir / f"accela_fetch_{self.appid}.zip"
+        has_cache = local_zip.exists()
+        same_branch = (installed_branch == sel_branch)
 
-        if sel_backup:
-            self.validate_btn.setText("Restore Backup")
-            self.validate_btn.setStyleSheet("background: #e0995a; color: #FFFFFF; font-weight: bold;")
-        elif installed_branch == sel_branch or (installed_bid and branch_bid and installed_bid == branch_bid):
+        if not same_branch:
+            b_dict = getattr(self, "_branches_dict", {})
+            branch_bid = ""
+            if isinstance(b_dict, dict):
+                b_info = b_dict.get(sel_branch, {})
+                if isinstance(b_info, dict):
+                    branch_bid = str(b_info.get("buildid", ""))
+            label = f"Install {sel_branch}"
+            if branch_bid:
+                label += f" ({branch_bid})"
+            self.validate_btn.setText(label)
+            self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
+        elif has_cache:
             self.validate_btn.setText("Verify Files")
             self.validate_btn.setStyleSheet("background: #46b464; color: #FFFFFF; font-weight: bold;")
-        elif branch_bid:
-            self.validate_btn.setText(f"Install {sel_branch} ({branch_bid})")
-            self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
-        elif sel_branch != "public":
-            self.validate_btn.setText(f"Install {sel_branch}")
-            self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
         else:
-            self._update_status_ui(self.game_data.get("update_status"))
+            self.validate_btn.setText("Download Update")
+            self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
 
     def _on_validate_btn_clicked(self):
         sel_branch = self.branch_combo.currentData() or "public" if hasattr(self, "branch_combo") else "public"
-        sel_backup = self.rollback_combo.currentData() if hasattr(self, "rollback_combo") else None
         self.parent_window._fetch_game_manifest(
-            self.game_data,
-            self,
-            local_path_override=sel_backup,
-            branch=sel_branch
+            self.game_data, self, branch=sel_branch
         )
 
     # ──────────────────────────────────────────
@@ -940,7 +1059,8 @@ class GameDetailsDialogV2(QDialog):
             self._uninstall_opts = {}
             if platform.system() == "Linux":
                 for key, text in [("compat", "Remove Proton/Wine prefix"),
-                                   ("saves", "Remove local cloud saves")]:
+                                   ("saves", "Remove local cloud saves"),
+                                   ("wipe_sls", "Wipe SLS (you own the game) — removes from config + .DepotDownloader")]:
                     cb = QCheckBox(text)
                     cb.setStyleSheet("color: #ffd0c8; font-size: 9.5pt; background: transparent;")
                     self._uninstall_opts[key] = cb
@@ -954,12 +1074,22 @@ class GameDetailsDialogV2(QDialog):
             """)
             confirm.clicked.connect(
                 lambda: self.parent_window._uninstall_game(
-                    self.game_data, self, getattr(self, "_uninstall_opts", {})))
+                    self.game_data, self, {
+                        key: cb.isChecked() for key, cb in getattr(self, "_uninstall_opts", {}).items()
+                    }))
             self._uninstall_content.addWidget(confirm)
 
     def _toggle_uninstall_panel(self):
         self._uninstall_expanded = not self._uninstall_expanded
         self._uninstall_panel.setVisible(self._uninstall_expanded)
+        if self._uninstall_expanded and hasattr(self, "uninstall_scroll"):
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(100, lambda: self._uninstall_scroll_to_bottom())
+
+    def _uninstall_scroll_to_bottom(self):
+        sb = self.uninstall_scroll.verticalScrollBar()
+        if sb:
+            sb.setValue(sb.maximum())
 
     def _do_dlc_uninstall(self):
         checked = [did for did, cb in getattr(self, "_dlc_checkboxes", {}).items() if cb.isChecked()]
@@ -1116,36 +1246,6 @@ class GameDetailsDialogV2(QDialog):
         self.game_data["hubcap_needs_update"] = needs_update
         self.game_data["hubcap_update_in_progress"] = update_in_progress
         self._update_status_ui(self.game_data.get("update_status"))
-
-    def _on_combo_changed(self):
-        selected_file = self.rollback_combo.currentData()
-        installed_bid = str(self.game_data.get("buildid") or "")
-        is_upd = self.game_data.get("update_status") == "update_available"
-
-        if selected_file is None:
-            # Top "Latest Build" / default option
-            if is_upd:
-                self.validate_btn.setText("Download Update")
-            else:
-                self.validate_btn.setText("Verify")
-        else:
-            # Specific backup item selected from dropdown
-            current_text = self.rollback_combo.currentText()
-            if installed_bid and f"Build: {installed_bid}" in current_text:
-                self.validate_btn.setText("Verify")
-            else:
-                # Try comparing numerical buildid to show "Downgrade" vs "Install Selected Build"
-                selected_bid = None
-                if "Build: " in current_text:
-                    try:
-                        selected_bid = int(current_text.split("Build: ")[1].strip())
-                        inst_bid_num = int(installed_bid) if installed_bid.isdigit() else 0
-                        if inst_bid_num > 0 and selected_bid < inst_bid_num:
-                            self.validate_btn.setText("Downgrade")
-                            return
-                    except (ValueError, IndexError):
-                        pass
-                self.validate_btn.setText("Install Selected Build")
 
     # ──────────────────────────────────────────
     #  TAB 2 — Tools (Clean Two-Column Grid Setup)

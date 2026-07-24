@@ -5,11 +5,19 @@ import os
 import tempfile
 import re
 import time
+import threading
 
 from utils.image_fetcher import ImageFetcher
 from managers.db_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+# Exponential backoff config for batched requests
+BACKOFF_BASE = 1.0
+BACKOFF_MAX = 30.0
+BACKOFF_MULTIPLIER = 2.0
+_batched_consecutive_failures = 0
+_batched_failure_lock = threading.Lock()
 
 try:
     from steam.client import SteamClient
@@ -310,6 +318,8 @@ def batched_get_product_info(
     all_results = {}
     failed_appids = []
 
+    global _batched_consecutive_failures
+
     shared_client = None
     try:
         shared_client = SteamClient()
@@ -492,14 +502,29 @@ def batched_get_product_info(
 
         if not batch_success:
             failed_appids.extend(batch_appids)
+            # Track backpressure
+            with _batched_failure_lock:
+                _batched_consecutive_failures += 1
 
-        # Rate limiting: delay before next batch
-        if is_cancelled and is_cancelled():
-            logger.info("Batched fetch cancelled after batch execution")
-            break
+            # Delay before next batch, with backoff on consecutive failures
+            if is_cancelled and is_cancelled():
+                logger.info("Batched fetch cancelled after batch execution")
+                break
 
-        if batch_idx < len(batches) - 1 and rate_limit_delay > 0:
-            time.sleep(rate_limit_delay)
+            if batch_idx < len(batches) - 1:
+                delay = BACKOFF_BASE
+                with _batched_failure_lock:
+                    delay = min(BACKOFF_BASE * (BACKOFF_MULTIPLIER ** _batched_consecutive_failures), BACKOFF_MAX)
+                logger.info(f"Backoff: waiting {delay:.1f}s before next batch (failures={_batched_consecutive_failures})")
+                time.sleep(delay)
+        else:
+            # Success — decay backpressure
+            with _batched_failure_lock:
+                if _batched_consecutive_failures > 0:
+                    _batched_consecutive_failures -= 1
+            # Normal rate limiting between successful batches
+            if batch_idx < len(batches) - 1 and rate_limit_delay > 0:
+                time.sleep(rate_limit_delay)
 
     success_count = len(all_results)
     failure_count = len(failed_appids)

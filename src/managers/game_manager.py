@@ -190,7 +190,7 @@ class GameManager(QObject):
         if reset_count:
             logger.info(f"Periodic recheck: reset {reset_count} 'up_to_date' game(s) to 'checking'")
 
-    def check_game_updates_async(self):
+    def check_game_updates_async(self, is_periodic: bool = False):
         """
         Start async update checking for games that still need a check.
 
@@ -209,14 +209,23 @@ class GameManager(QObject):
             logger.info("Cancelling previous manifest check task")
             self.cancel_update_checks()
 
-        # Check all installed games with valid AppID
-        self._games_to_check = [
-            g for g in self.games
-            if g.get("appid") not in ("0", "N/A", "unknown")
-        ]
+        # Build filtered list according to smart skip logic
+        games_to_check = []
+        for g in self.games:
+            appid = g.get("appid")
+            if appid in ("0", "N/A", "unknown"):
+                continue
+            status = g.get("update_status", "")
+            if status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
+                continue  # Never re-check — must update to clear
+            if status == UPDATE_STATUS["UP_TO_DATE"] and not is_periodic:
+                continue  # Only re-check on the periodic timer
+            games_to_check.append(g)
+
+        self._games_to_check = games_to_check
 
         if not self._games_to_check:
-            logger.info("No installed games to check for updates")
+            logger.info("No games need an update check at this time")
             self.all_updates_checked.emit()
             return
 
@@ -249,10 +258,24 @@ class GameManager(QObject):
         Trigger an update check for a single game by appid.
         Resets its status to 'checking', then runs ManifestCheckTask for just that game.
         Called from the per-game 'Check for Updates' button in the library UI.
+
+        If a batch check is currently running, defers to it — the batch will
+        include this game and emit the result when done.
         """
         game = self._games_by_appid.get(appid) or self.get_game(appid)
         if not game:
             logger.warning(f"check_single_game_update: appid {appid} not found")
+            return
+
+        # If a batch is already running, include this game in the batch instead
+        if self.manifest_check_task is not None and self.manifest_check_runner is not None:
+            logger.info(f"Batch check running — adding {appid} to existing batch")
+            game["update_status"] = UPDATE_STATUS["CHECKING"]
+            game["hubcap_needs_update"] = False
+            game["hubcap_update_in_progress"] = False
+            self.game_update_status_changed.emit(appid, UPDATE_STATUS["CHECKING"])
+            if game not in self._games_to_check:
+                self._games_to_check.append(game)
             return
 
         # Reset status so the UI shows spinner
@@ -347,8 +370,9 @@ class GameManager(QObject):
                 logger.debug(f"Updated status for game {appid} ({game_title}): {update_status}")
             self.game_update_status_changed.emit(appid, update_status)
 
-            # Persist to disk cache so the result survives a restart
-            get_update_cache().set_status(appid, update_status)
+            # Persist to disk cache with diagnostic metadata
+            diag_meta = self._build_diag_metadata(appid, update_status)
+            get_update_cache().set_status(appid, update_status, diag_meta)
             get_update_cache().save_async()
 
             # If an update is detected, invalidate the manifest freshness cache
@@ -358,6 +382,33 @@ class GameManager(QObject):
                 self.settings.remove(f"manifest_is_fresh/{appid}")
                 self.settings.remove(f"fetched_manifest_id/{appid}")
                 self.settings.remove(f"latest_steam_manifest_id/{appid}")
+
+    def _build_diag_metadata(self, appid: str, status: str) -> dict:
+        """Build diagnostic metadata for cache entry from the last check context."""
+        meta = {}
+        meta["branch"] = str(self.settings.value(f"last_checked_branch/{appid}", "public"))
+        meta["branch_buildid"] = str(self.settings.value(f"last_checked_branch_buildid/{appid}", ""))
+        meta["local_buildid"] = str(self.settings.value(f"last_checked_local_buildid/{appid}", ""))
+
+        if status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
+            meta["reason"] = "depot_manifest_mismatch"
+            dep_diff = {}
+            i = 0
+            while True:
+                dk = f"last_check_depot_diff/{appid}/{i}"
+                diff_str = self.settings.value(dk, "", type=str)
+                if not diff_str:
+                    break
+                parts = diff_str.split("|", 2)
+                if len(parts) >= 2:
+                    dep_diff[parts[0]] = {"saved": parts[1], "current": parts[2] if len(parts) > 2 else ""}
+                i += 1
+            if dep_diff:
+                meta["depot_diffs"] = dep_diff
+        elif status == UPDATE_STATUS["UP_TO_DATE"]:
+            meta["reason"] = "manifests_match"
+
+        return meta
 
     @staticmethod
     def _on_update_check_progress(current, total):

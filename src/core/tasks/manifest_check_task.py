@@ -17,6 +17,25 @@ except ImportError:
     batched_get_product_info = None
 
 
+def _store_check_diag(appid, diag_meta):
+    """Store depot diff data into QSettings for cache metadata assembly."""
+    from utils.settings import get_settings
+    s = get_settings()
+    diffs = diag_meta.get("depot_diffs", {})
+    i = 0
+    for depot_id, diff_data in diffs.items():
+        val = f"{depot_id}|{diff_data.get('saved', '')}|{diff_data.get('current', '')}"
+        s.setValue(f"last_check_depot_diff/{appid}/{i}", val)
+        i += 1
+    # Clean up any stale entries beyond the current count
+    while True:
+        stale_key = f"last_check_depot_diff/{appid}/{i}"
+        if not s.value(stale_key, "", type=str):
+            break
+        s.remove(stale_key)
+        i += 1
+
+
 class ManifestCheckTask(QObject):
     """
     Asynchronous task to check game updates by comparing .depot files
@@ -240,11 +259,15 @@ class ManifestCheckTask(QObject):
             any_update_available = False
             all_cannot_determine = True
             reasons = []
+            _depot_diffs = []  # (depot_id, saved_manifest, current_manifest)
 
             # Read Steam API data
             steam_client_data = batched_results.get(appid, {})
 
-            # Check target branch build ID first if configured
+            # Resolve branch and build IDs for diagnostic logging only.
+            # The depot manifest comparison below is the authoritative update signal.
+            # Branch build IDs can increment for metadata-only pushes that don't
+            # change depot content, so we never short-circuit on build ID alone.
             settings = get_settings()
             selected_branch = settings.value(f"selected_branch/{appid}", "public", type=str)
             branch_info = steam_client_data.get("branches", {}).get(selected_branch, {})
@@ -252,19 +275,31 @@ class ManifestCheckTask(QObject):
             
             settings = get_settings()
             installed_branch = settings.value(f"installed_branch/{appid}", "public", type=str)
-            installed_bid = settings.value(f"installed_buildid/{appid}", "", type=str)
+            installed_bid = settings.value(f"installed_buildid/{appid}/{selected_branch}",
+                                           settings.value(f"installed_buildid/{appid}", "", type=str),
+                                           type=str)
 
             local_buildid = str(game_data.get("buildid") or "")
             effective_local_bid = installed_bid if (installed_branch == selected_branch and installed_bid) else local_buildid
 
+            branch_bid_changed = False
             if branch_buildid and effective_local_bid and effective_local_bid != "Unknown":
                 try:
-                    if int(branch_buildid) > int(effective_local_bid):
-                        logger.info(f"[UpdateCheck {appid}] Branch '{selected_branch}' update available: local={effective_local_bid}, branch={branch_buildid}")
-                        return "update_available"
+                    branch_bid_changed = int(branch_buildid) > int(effective_local_bid)
                 except (ValueError, TypeError):
-                    if branch_buildid != effective_local_bid:
-                        return "update_available"
+                    branch_bid_changed = branch_buildid != effective_local_bid
+
+            if branch_bid_changed:
+                logger.info(
+                    f"[UpdateCheck {appid}] Branch '{selected_branch}' build ID changed "
+                    f"(local={effective_local_bid}, branch={branch_buildid}) — "
+                    "checking depot manifests for actual content changes"
+                )
+
+            # Persist build ID info so cache can record diagnostic data
+            settings.setValue(f"last_checked_branch_buildid/{appid}", branch_buildid)
+            settings.setValue(f"last_checked_local_buildid/{appid}", effective_local_bid or local_buildid)
+            settings.setValue(f"last_checked_branch/{appid}", selected_branch)
 
             if not steam_client_data:
                 logger.info(
@@ -321,6 +356,7 @@ class ManifestCheckTask(QObject):
                                 f"[UpdateCheck {appid}] Update available for depot {saved_depot_id} (branch '{selected_branch}'): saved={saved_manifest_id}, current={current_manifest_id}"
                             )
                             any_update_available = True
+                            _depot_diffs.append((saved_depot_id, saved_manifest_id, current_manifest_id))
                     else:
                         reason_msg = f"Steam API returned no public manifest_id for depot {saved_depot_id}"
                         reasons.append(reason_msg)
@@ -329,13 +365,29 @@ class ManifestCheckTask(QObject):
                 except Exception as e:
                     logger.error(f"[UpdateCheck {appid}] Error checking depot {saved_depot_id} update: {e}")
 
+            # Build diagnostic metadata for the result
+            diag_meta = {
+                "branch": selected_branch,
+                "branch_buildid": branch_buildid,
+                "local_buildid": effective_local_bid or local_buildid,
+            }
+
             if any_update_available:
+                diag_meta["reason"] = "depot_manifest_mismatch"
+                diag_meta["depot_diffs"] = {
+                    did: {"saved": sv, "current": cv}
+                    for did, sv, cv in _depot_diffs
+                }
+                _store_check_diag(appid, diag_meta)
                 return "update_available"
             if all_cannot_determine:
+                diag_meta["reason"] = "no_manifest_resolved"
                 logger.info(
                     f"[UpdateCheck {appid}] Update status: cannot_determine. Reason: None of the {len(saved_depots)} saved depot(s) ({list(saved_depots.keys())}) resolved to a public manifest ID from Steam API data. Details: {'; '.join(reasons)}"
                 )
                 return "cannot_determine"
+            diag_meta["reason"] = "manifests_match"
+            _store_check_diag(appid, diag_meta)
             return "up_to_date"
 
         except Exception as e:

@@ -357,6 +357,7 @@ class SimplifiedTerminalWidget(QWidget):
         dl_card_layout = QHBoxLayout(self.dl_card)
         dl_card_layout.setContentsMargins(12, 6, 12, 6)
         self.dl_text_2_0 = QLabel("Downloading Game Files")
+        self.dl_text_2_0.setObjectName("dlTextLabel")
         self.dl_badge_2_0 = QLabel("Pending")
         self.dl_badge_2_0.setMinimumWidth(60)
         self.dl_badge_2_0.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -515,11 +516,12 @@ class SimplifiedTerminalWidget(QWidget):
                 from datetime import datetime
                 time_str = datetime.fromtimestamp(t).strftime('%H:%M')
 
+                # Use format_game_display_name for proper branch/DLC badges
+                from ui.dialogs.gamelibrary import format_game_display_name
                 game_name = entry.get('game_name', 'Unknown')
+                game_data = {"game_name": game_name, "appid": str(entry.get('appid', ''))}
+                game_name = format_game_display_name(game_data)
                 appid = str(entry.get('appid', ''))
-                from utils.dlc_helpers import is_dlc_only_mode
-                if appid and is_dlc_only_mode(appid):
-                    game_name = f"{game_name} [DLC MODE]"
 
                 success = entry.get("success", True)
                 if not success:
@@ -1032,9 +1034,10 @@ class MainWindow(QMainWindow):
         except TypeError:
             pass  # Already disconnected or not connected
 
-        logger.info(f"Initial game library scan completed ({games_found} games found). Triggering immediate game updates check.")
+        logger.info(f"Initial game library scan completed ({games_found} games found). Triggering staggered game updates check.")
         if self.game_manager:
-            self.game_manager.check_game_updates_async()
+            # Stagger by 2 seconds so the UI finishes rendering before Steam API storms begin
+            QTimer.singleShot(2000, lambda: self.game_manager.check_game_updates_async())
 
         # Run depot key migration in the background (populates depot_keys.db from cached zips)
         self._run_depot_key_migration()
@@ -1115,6 +1118,14 @@ class MainWindow(QMainWindow):
 
         logger.info(f"Auto-fetch on boot: starting background fetch for {len(games_to_fetch)} games.")
 
+        # Pre-compute branch per appid so SmartUpdateTask targets the correct branch
+        from utils.helpers import get_base_path
+        _auto_branches = {}
+        for appid, _ in games_to_fetch:
+            sel_b = self.settings.value(f"selected_branch/{appid}", "public", type=str)
+            inst_b = self.settings.value(f"installed_branch/{appid}", "public", type=str)
+            _auto_branches[appid] = inst_b or sel_b
+
         from utils.task_runner import TaskRunner
         self._autofetch_runner = TaskRunner(self)
 
@@ -1140,7 +1151,7 @@ class MainWindow(QMainWindow):
                             # Fall through to old path below
                         else:
                             # Run SmartUpdateTask synchronously (we're already in a worker thread)
-                            task = SmartUpdateTask(appid, name)
+                            task = SmartUpdateTask(appid, name, branch=_auto_branches.get(appid, "public"))
                             _smart_result = {"game_data": None, "fallback": None}
 
                             task.progress.connect(lambda msg: logger.info(msg))
@@ -1251,7 +1262,7 @@ class MainWindow(QMainWindow):
             # On a periodic check, reset 'up_to_date' games so they get re-verified.
             # 'update_available' games are left as-is (status won't change until downloaded).
             self.game_manager.reset_up_to_date_for_recheck()
-            self.game_manager.check_game_updates_async()
+            self.game_manager.check_game_updates_async(is_periodic=True)
         self.check_tool_updates()
 
     def _setup_ui(self) -> None:

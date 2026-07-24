@@ -95,10 +95,17 @@ class UpdateStatusCache:
 
             return status
 
-    def set_status(self, appid: str, status: str) -> None:
+    def set_status(self, appid: str, status: str, metadata: dict = None) -> None:
         """
         Update the cache for *appid*.  Only PERSISTENT_STATUSES are stored;
         transient statuses are silently ignored.
+
+        Optional *metadata* dict can carry diagnostic fields:
+          - depot_diffs: dict of {depot_id: {"saved": X, "current": Y, "branch": Z}}
+          - branch_buildid: remote branch build ID at check time
+          - local_buildid:  local/installed build ID
+          - branch:         branch name used for comparison
+          - reason:         human-readable reason string
         """
         if status in TRANSIENT_STATUSES:
             return  # Don't persist transient states
@@ -108,10 +115,13 @@ class UpdateStatusCache:
             return
 
         with self._lock:
-            self._cache[str(appid)] = {
+            entry = {
                 "status": status,
                 "updated_at": time.time(),
             }
+            if metadata and isinstance(metadata, dict):
+                entry.update(metadata)
+            self._cache[str(appid)] = entry
             self._dirty = True
 
     def clear_status(self, appid: str) -> None:
@@ -209,10 +219,16 @@ class UpdateStatusCache:
                 status = entry.get("status")
                 if status not in PERSISTENT_STATUSES:
                     continue
-                loaded[str(appid)] = {
+                loaded_entry = {
                     "status": status,
                     "updated_at": float(entry.get("updated_at", 0)),
                 }
+                # Carry forward diagnostic metadata if present
+                for diag_key in ("depot_diffs", "branch_buildid", "local_buildid",
+                                 "branch", "reason"):
+                    if diag_key in entry:
+                        loaded_entry[diag_key] = entry[diag_key]
+                loaded[str(appid)] = loaded_entry
 
             with self._lock:
                 self._cache = loaded
