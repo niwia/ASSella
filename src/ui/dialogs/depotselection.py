@@ -252,6 +252,17 @@ class DepotSelectionDialog(QDialog):
         linux_button = QPushButton("Linux")
         linux_button.setToolTip("Select all Linux-compatible depots (including shared)")
         linux_button.clicked.connect(lambda: self._select_platform("linux"))
+        
+        # Disable the Linux button if there are no Linux-specific depots for this game
+        has_linux = any(
+            "linux" in (d.get("oslist") or "").lower() or "[linux]" in (d.get("desc") or "").lower()
+            for d in self.depots.values()
+            if isinstance(d, dict)
+        )
+        if not has_linux:
+            linux_button.setDisabled(True)
+            linux_button.setToolTip("No Linux-specific depots found for this game")
+
         button_layout.addWidget(linux_button)
 
         windows_button = QPushButton("Windows")
@@ -600,6 +611,26 @@ class DepotSelectionDialog(QDialog):
         except OSError as e:
             QMessageBox.critical(self, "Error", f"Failed to write keys file: {e}")
             return
+
+        # Locate the manifest file and manifest ID
+        manifest_files = list(Path(temp_dir).glob(f"{target_depot}_*.manifest"))
+        if not manifest_files:
+            # Fallback check if it was zipped without depot ID prefix
+            manifest_files = list(Path(temp_dir).glob("*.manifest"))
+
+        if not manifest_files:
+            QMessageBox.critical(self, "Error", f"No manifest file (*.manifest) found for depot {target_depot} in the extracted manifest bundle.")
+            return
+
+        manifest_path = manifest_files[0]
+        manifest_file = str(manifest_path)
+
+        filename = manifest_path.name
+        stem = filename.replace(".manifest", "")
+        if "_" in stem:
+            manifest_id = stem.split("_", 1)[1]
+        else:
+            manifest_id = stem
 
         # Dump manifest files using DDM in background progress
         progress_dialog = QProgressDialog("Loading file list from manifest...", "Cancel", 0, 0, self)

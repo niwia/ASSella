@@ -1764,15 +1764,18 @@ class GameLibraryDialog(QDialog):
                 parse_progress.close()
             except Exception:
                 pass
+        is_verify = (game_data.get("update_status") != "update_available")
         metadata = {
             "appid": game_data.get("appid"),
             "library_path": game_data.get("library_path"),
             "install_path": game_data.get("install_path"),
             "game_name": game_data.get("game_name", "Unknown"),
+            "job_type": "verify" if is_verify else "download",
         }
         # Propagate rollback flag so task_manager won't mark game as up_to_date
         if game_data.get("_is_rollback"):
             metadata["_is_rollback"] = True
+            metadata["job_type"] = "verify"
 
         if parsed_data:
             # Smart Update path: data was assembled by SmartUpdateTask using live PICS +

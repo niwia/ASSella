@@ -203,9 +203,12 @@ class TaskManager(QObject):
 
         self._init_simplified_stages()
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            st = self.main_window.simplified_terminal
+            if hasattr(st, "dl_text_2_0") and st.dl_text_2_0:
+                st.dl_text_2_0.setText("Extracting Manifest Files")
             game_name = (metadata or {}).get("game_name") or os.path.basename(zip_path)
-            self.main_window.simplified_terminal.set_stage_status("download", "in_progress")
-            self.main_window.simplified_terminal.show_active_job(game_name)
+            st.set_stage_status("download", "in_progress")
+            st.show_active_job(game_name)
 
         if self.main_window:
             self.main_window.progress_bar.setVisible(True)
@@ -456,24 +459,32 @@ class TaskManager(QObject):
         self._last_download_duration = 0.0
         self._last_download_size = 0
         self._last_download_avg_speed = 0.0
+        # Determine labels based on job type
+        job_type = self.game_data.get("job_type", "download") if self.game_data else "download"
+        action_verb = "Validating" if job_type == "verify" else "Downloading"
+        action_noun = "Validating Game Files" if job_type == "verify" else "Downloading Game Files"
+
         self._last_ddm_status = "in_progress"
-        self._last_ddm_status_text = "Downloading..."
+        self._last_ddm_status_text = f"{action_verb}..."
         self._last_slscheevo_status = "not_run"
         self._last_slscheevo_status_text = "N/A"
         self._last_steamless_status = "not_run"
         self._last_steamless_status_text = "N/A"
 
-        logger.debug("Download started; GIF animation removed.")
+        logger.debug(f"{action_verb} started; GIF animation removed.")
         self._update_status_button_color()
         self.main_window.drop_text_label.setText(
-            f"Downloading: {self.game_data.get('game_name', '')}"
+            f"{action_verb}: {self.game_data.get('game_name', '')}"
         )
 
         self._init_simplified_stages(selected_depots)
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            st = self.main_window.simplified_terminal
+            if hasattr(st, "dl_text_2_0") and st.dl_text_2_0:
+                st.dl_text_2_0.setText(action_noun)
             game_name = self.game_data.get("game_name", "Game")
-            self.main_window.simplified_terminal.set_stage_status("download", "in_progress")
-            self.main_window.simplified_terminal.show_active_job(game_name)
+            st.set_stage_status("download", "in_progress")
+            st.show_active_job(game_name)
 
         self.main_window.progress_bar.setVisible(True)
         self.main_window.progress_bar.setValue(0)
@@ -572,8 +583,11 @@ class TaskManager(QObject):
 
         self._init_simplified_stages()
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
-            self.main_window.simplified_terminal.set_stage_status("download", "in_progress")
-            self.main_window.simplified_terminal.show_active_job("Workshop Items")
+            st = self.main_window.simplified_terminal
+            if hasattr(st, "dl_text_2_0") and st.dl_text_2_0:
+                st.dl_text_2_0.setText("Downloading Workshop Files")
+            st.set_stage_status("download", "in_progress")
+            st.show_active_job("Workshop Items")
 
         self.main_window.progress_bar.setVisible(True)
         self.main_window.progress_bar.setValue(0)
@@ -2309,8 +2323,10 @@ class TaskManager(QObject):
                 self._stop_speed_monitor()
             else:
                 self.main_window.ui_state.set_pause_button_text("Pause")
+                job_type = self.game_data.get("job_type", "download") if self.game_data else "download"
+                action_verb = "Validating" if job_type == "verify" else "Downloading"
                 self.main_window.drop_text_label.setText(
-                    f"Downloading: {os.path.basename(self.current_job)}"
+                    f"{action_verb}: {os.path.basename(self.current_job)}"
                 )
                 self._start_speed_monitor()
         except Exception as e:

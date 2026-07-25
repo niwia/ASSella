@@ -25,6 +25,9 @@ from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Connection status tracking for UI
+connection_status = "Connecting"
+
 TARGET_DOMAIN = "hubcapmanifest.com"
 DOH_CLOUDFLARE_URL = f"https://1.1.1.1/dns-query?name={TARGET_DOMAIN}&type=A"
 DOH_GOOGLE_URL = f"https://dns.google/resolve?name={TARGET_DOMAIN}&type=A"
@@ -200,14 +203,18 @@ def execute_hubcap_request(
     settings = get_settings()
     isp_bypass_enabled = settings.value("isp_bypass_hubcap", False, type=bool) if settings else False
 
+    global connection_status
+
     # 1. Always try direct connection first
     try:
         logger.debug(f"[ISPBypass] Trying direct request to {url}")
         resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
         resp.raise_for_status()
+        connection_status = "Online"
         return resp
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.SSLError) as e:
         if not isp_bypass_enabled:
+            connection_status = "Offline"
             raise e
         logger.warning(f"[ISPBypass] Direct request to {url} failed: {e}. ISP Bypass enabled — initiating DoH fallback...")
 
@@ -231,6 +238,7 @@ def execute_hubcap_request(
             resp = session.request(method, url, headers=doh_headers, params=params, timeout=timeout, stream=stream)
             resp.raise_for_status()
             logger.info(f"[ISPBypass] DoH request to {url} SUCCESSFUL!")
+            connection_status = "DoH"
             return resp
         except Exception as doh_err:
             logger.warning(f"[ISPBypass] DoH request failed: {doh_err}. Initiating Tor fallback...")
@@ -250,9 +258,11 @@ def execute_hubcap_request(
             )
             resp.raise_for_status()
             logger.info(f"[ISPBypass] Tor/Proxy request to {url} SUCCESSFUL!")
+            connection_status = "Tor"
             return resp
         except Exception as tor_err:
             logger.error(f"[ISPBypass] Tor request failed: {tor_err}")
 
     # If all fallbacks failed, raise original direct error
+    connection_status = "Offline"
     raise requests.exceptions.ConnectionError(f"ISP Bypass failed to connect to Hubcap API for {url}.")

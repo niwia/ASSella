@@ -469,7 +469,7 @@ class SettingsDialog(QDialog):
         rollback_layout.addLayout(limit_layout)
         
         rollback_group.setLayout(rollback_layout)
-        layout.addWidget(rollback_group)
+        # layout.addWidget(rollback_group)
 
         # Experimental Group
         experimental_group = QGroupBox("Experimental")

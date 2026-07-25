@@ -1,27 +1,25 @@
-## Version 2.4.4 Release Changelog
+## Version 2.4.5 Release Changelog
 
-### Update Check Engine
-- Authoritative Depot Manifest Matching: Branch build ID changes no longer trigger false positive updates. Depot manifest IDs are now the sole authoritative comparison signal. Branch build ID changes are logged for diagnostic visibility only.
-- Per-Branch Build ID Tracking: Implemented branch-specific build ID tracking using an 'installed_buildid/{appid}/{branch}' structure with backward-compatible fallback to flat keys.
-- Diagnostic Cache Metadata: The 'update_status_cache.json' cache now stores the branch name, branch/build IDs, depot diff details, and reason strings for every checked game.
-- Smart Skip & De-duplication: Single-game checks defer to running batch checks to prevent overlaps. Cold boot scanner skips up-to-date games, delegating checking of up-to-date games to the periodic check timer.
+### User Interface Redesign
+- Consolidated high-density status dashboard containing two rows of system indicators. Row 1 lists daily Hubcap API stats and resets, expiry dates formatted in bracket syntax ([ 336d ]), SLS configuration, SLSsteam, and Steam Updates. Row 2 lists network connection mode indicators (supporting direct and DoH/Tor mode fallbacks), ASSella version updates, and dynamic game library size statistics.
+- Seamless game updates layout with game cover art thumbnails cropped to fill the right section of the card background and blended into the solid background color on the left via linear gradient transition.
+- Compact pending updates pill size reduced to 38px height.
+- Dedicated game quotes rotator widget relocated as a full-width footer at the extreme bottom of the main layout, with center-aligned text.
+- Cleaned up quotes logic from the terminal sidebar widget.
+- Modernized the simplified terminal idle view into a clean two-column layout showing pending updates and recent activity.
+- Floating action button (FAB) Update All overlayed on the bottom-right of the scroll area, styled with theme colors and responsive resize tracking.
 
-### Steam API Resilience
-- Exponential Backoff: Implemented backpressure backoff for batched product info calls. Consecutive network or client failures delay requests by 1s, 2s, 4s, up to a 30-second cap. Successful batches decay backpressure.
-
-### Game Details V2 Design
-- Hero Layout (100px): Enabled taller hero layout by default. Essential stats (SIZE, MANIFEST, BUILD, LUA) are presented horizontally directly under the game's title in the header banner. Added a fallback option 'USE_V2_HERO = False' to revert to the legacy 65px layout.
-- Branch-Aware Defaults: Opening details defaults directly to the installed branch instead of resetting to public.
-- Branch Suffixes: Display titles in the details header and games library list show branch suffixes, e.g. Game Name (beta), next to the title.
-- DLC Mode Label: Displayed in the header next to the title instead of inside the stats grid.
-- Simplified Action Row: Removed the rollback/backup dropdown from the details action row. Verify, download, and install buttons are simplified to a cache-presence check.
-- Instant Caching Path: Game details pull branch information from local SQLite/database cache instantly (<1ms) on dialog creation, with a silent background PICS refresh updating the UI when done.
-
-### Smart Update & Auto-Fetch
-- Branch-aware Smart Updates: smart update tasks pull build IDs for the selected branch instead of resetting to public.
-- Overwriting Manifest Bundles: Save operations overwrite fetched zip manifest bundles directly instead of archiving multiple old builds.
-- Depot Filtering: Smart update tasks only query and include depots specified in the saved depot file, skipping common redistributables.
-
-### Uninstall
-- SLS Wipe Option: Added a "Wipe SLS (you own the game)" checkbox during uninstall. This removes the app from the SLS configuration and deletes the '.DepotDownloader' folder while leaving ACF, Proton prefixes, and saves intact.
-- Auto-Scroll Panel: Uninstall sub-panel scrolls to view options automatically when expanded.
+### Core Bugfixes & Feature Polish
+- Restored classic manifest behavior by removing the update manifest toggle.
+- Fixed an issue where the download update warning button in Game Details showed up with the wrong download state on launch.
+- Fixed a Linux crash occurring during file select dialog calls.
+- Resolved duplicate beta branch suffixes appearing on game names.
+- Optimized update check routines and simplified the Update All flow to respect branch selections.
+- Automatically hide Linux depots when no Linux files are present in the manifest.
+- Added verification status updates to download progress tasks.
+- Restored download speed and ETA tracking parameters during download verification phases.
+- Polished details dialog tools section layouts and overall text/font color contrast.
+- Extended the Select All toggle to verify and uninstall operations in details lists.
+- Integrated status results reports into pending updates logs.
+- Cleaned up application credits and removed legacy zsync updater components.
+- Added capability to select and download specific build IDs of games.

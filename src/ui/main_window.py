@@ -141,35 +141,6 @@ class SimplifiedTerminalWidget(QWidget):
         self.settings = main_window.settings
         self.installation_history = []
 
-        # (quote text, game/source title) tuples
-        self.quotes = [
-            ("The cake is a lie.", "Portal"),
-            ("Would you kindly?", "BioShock"),
-            ("War. War never changes.", "Fallout"),
-            ("Praise the Sun! \\o/", "Dark Souls"),
-            ("It's dangerous to go alone! Take this.", "The Legend of Zelda"),
-            ("A man chooses, a slave obeys.", "BioShock"),
-            ("Snake? Snake?! SNAAAAAAKE!!!", "Metal Gear Solid"),
-            ("Thank you Mario! But our princess is in another castle!", "Super Mario Bros."),
-            ("All your base are belong to us.", "Zero Wing"),
-            ("Nothing is true, everything is permitted.", "Assassin's Creed"),
-            ("It's time to kick ass and chew bubblegum... and I'm all outta gum.", "Duke Nukem 3D"),
-            ("Wake up, Mister Freeman. Wake up and smell the ashes.", "Half-Life 2"),
-            ("You Died.", "Dark Souls"),
-            ("Do you know the definition of insanity?", "Far Cry 3"),
-            ("Protocol 3: Protect the Pilot.", "Titanfall 2"),
-            ("A hunter must hunt.", "The Witcher 3"),
-            ("Hey, you. You're finally awake.", "The Elder Scrolls V: Skyrim"),
-            ("Determination.", "Undertale"),
-            ("The world fears the inevitable plummet into the abyss.", "NieR: Automata"),
-            ("Stay a while and listen.", "Diablo II"),
-            ("It's not about the money, it's about sending a message.", "Batman: Arkham City"),
-            ("What is a man? A miserable little pile of secrets!", "Castlevania: Symphony of the Night"),
-            ("A famous explorer once said that the extraordinary is in what we do, not who we are.", "Tomb Raider"),
-            ("I used to be an adventurer like you. Then I took an arrow in the knee.", "The Elder Scrolls V: Skyrim"),
-            ("The right man in the wrong place can make all the difference in the world.", "Half-Life 2"),
-        ]
-
         self.setStyleSheet("background: transparent;")
         self.init_ui()
 
@@ -233,38 +204,7 @@ class SimplifiedTerminalWidget(QWidget):
             }
         """
 
-        # Column 1: System Status & Quotes
-        self.panel_left = QFrame()
-        self.panel_left.setFrameShape(QFrame.Shape.StyledPanel)
-        self.panel_left.setStyleSheet(panel_style)
-        left_layout = QVBoxLayout(self.panel_left)
-        left_layout.setContentsMargins(8, 6, 8, 6)
-        left_layout.setSpacing(4)
-
-        self.stats_title = QLabel("SYSTEM STATUS")
-        self.total_games_label = QLabel("Library Size: -- games")
-        self.updates_label = QLabel("Updates: -- available")
-
-        # Separator line
-        self.separator = QFrame()
-        self.separator.setFrameShape(QFrame.Shape.HLine)
-        self.separator.setFrameShadow(QFrame.Shadow.Sunken)
-        self.separator.setLineWidth(1)
-        self.separator.setFixedHeight(1)
-
-        self.quote_label = QLabel(self.quotes[0][0])
-        self.quote_label.setWordWrap(True)
-        self.quote_source_label = QLabel(f"— {self.quotes[0][1]}")
-        self.quote_source_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-
-        left_layout.addWidget(self.stats_title)
-        left_layout.addWidget(self.total_games_label)
-        left_layout.addWidget(self.updates_label)
-        left_layout.addWidget(self.separator)
-        left_layout.addWidget(self.quote_label, 1)
-        left_layout.addWidget(self.quote_source_label)
-
-        # Column 2: Available Updates
+        # Column 1: Available Updates (formerly Column 2)
         self.panel_mid = QFrame()
         self.panel_mid.setFrameShape(QFrame.Shape.StyledPanel)
         self.panel_mid.setStyleSheet(panel_style)
@@ -289,7 +229,14 @@ class SimplifiedTerminalWidget(QWidget):
         mid_layout.addWidget(self.updates_title)
         mid_layout.addWidget(self.updates_scroll, 1)
 
-        # Column 3: Session Activity Log
+        # Floating Update All Action Button
+        self.update_all_btn = QPushButton("⟳ Update All (0)", self.panel_mid)
+        self.update_all_btn.setFixedHeight(36)
+        self.update_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_all_btn.clicked.connect(self.main_window.run_update_all_flow)
+        self.update_all_btn.hide()
+
+        # Column 2: Session Activity Log (formerly Column 3)
         self.panel_right = QFrame()
         self.panel_right.setFrameShape(QFrame.Shape.StyledPanel)
         self.panel_right.setStyleSheet(panel_style)
@@ -316,15 +263,9 @@ class SimplifiedTerminalWidget(QWidget):
         
         self.update_history_display()
 
-        # Add panels to idle layout
-        idle_layout.addWidget(self.panel_left, 1)
+        # Add panels to idle layout (now 2 columns instead of 3)
         idle_layout.addWidget(self.panel_mid, 1)
         idle_layout.addWidget(self.panel_right, 1)
-
-        # QTimer for quotes rotation
-        self.quote_timer = QTimer(self)
-        self.quote_timer.timeout.connect(self.rotate_quote)
-        self.quote_timer.start(10000)
 
         # --- VIEW 1: ACTIVE JOB STATE ---
         self.active_widget = QWidget()
@@ -399,15 +340,6 @@ class SimplifiedTerminalWidget(QWidget):
         # Set to Idle by default
         self.layout.setCurrentIndex(0)
 
-    def rotate_quote(self):
-        # Choose a quote tuple different from the current one
-        current_text = self.quote_label.text()
-        available_quotes = [q for q in self.quotes if q[0] != current_text]
-        if available_quotes:
-            quote, source = random.choice(available_quotes)
-            self.quote_label.setText(quote)
-            self.quote_source_label.setText(f"— {source}")
-
     def update_stats(self):
         if not hasattr(self.main_window, "game_manager") or not self.main_window.game_manager:
             return
@@ -417,11 +349,13 @@ class SimplifiedTerminalWidget(QWidget):
         games = gm.games
         total_games = len(games)
 
+        # Trigger system status refresh in the main window to update Row 1/2 size and updates count!
+        if hasattr(self.main_window, "refresh_system_status"):
+            self.main_window.refresh_system_status()
+
         # If scan is currently running and no games have been populated yet
         is_scanning = getattr(gm, "is_scanning", False)
         if total_games == 0 and is_scanning:
-            self.total_games_label.setText("Library Size: Scanning...")
-            self.updates_label.setText("Updates: Scanning...")
             while self.updates_scroll_layout.count():
                 child = self.updates_scroll_layout.takeAt(0)
                 if child.widget():
@@ -442,8 +376,32 @@ class SimplifiedTerminalWidget(QWidget):
         ]
         total_updates = len(games_with_updates)
 
-        self.total_games_label.setText(f"Library Size: {total_games} games")
-        self.updates_label.setText(f"Updates: {total_updates} available")
+        # Show/Hide/Configure the Floating Update All Action Button
+        if hasattr(self, "update_all_btn") and self.update_all_btn:
+            if total_updates > 0:
+                self.update_all_btn.setText(f"⟳ Update All ({total_updates})")
+                accent = getattr(self.main_window, "accent_color", "#C06C84") or "#C06C84"
+                bg = getattr(self.main_window, "background_color", "#000000") or "#000000"
+                self.update_all_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {accent};
+                        color: {bg};
+                        border: none;
+                        border-radius: 18px;
+                        font-weight: bold;
+                        font-size: 9.5pt;
+                        padding-left: 14px;
+                        padding-right: 14px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: #FFFFFF;
+                        color: #000000;
+                    }}
+                """)
+                self.update_all_btn.show()
+                self.main_window.position_update_all_btn()
+            else:
+                self.update_all_btn.hide()
 
         # Clear existing updates list
         while self.updates_scroll_layout.count():
@@ -464,30 +422,8 @@ class SimplifiedTerminalWidget(QWidget):
                 if appid and is_dlc_only_mode(appid):
                     name = f"{name} [DLC MODE]"
 
-                # Make it look like a little card/row
-                row = QFrame()
-                row.setStyleSheet("""
-                    QFrame {
-                        background-color: rgba(255, 255, 255, 5);
-                        border-radius: 4px;
-                    }
-                    QFrame:hover {
-                        background-color: rgba(255, 255, 255, 15);
-                    }
-                """)
-                row_layout = QHBoxLayout(row)
-                row_layout.setContentsMargins(6, 4, 6, 4)
-                
-                icon = QLabel("📦")
-                icon.setStyleSheet("background: transparent; border: none;")
-                
-                lbl = QLabel(name)
-                lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; background: transparent; border: none;")
-                lbl.setWordWrap(True)
-                
-                row_layout.addWidget(icon)
-                row_layout.addWidget(lbl, 1)
-                
+                accent = getattr(self.main_window, "accent_color", "#C06C84") or "#C06C84"
+                row = UpdateItemWidget(appid, name, accent, self)
                 self.updates_scroll_layout.addWidget(row)
         self.updates_scroll_layout.addStretch()
 
@@ -596,16 +532,13 @@ class SimplifiedTerminalWidget(QWidget):
         accent_style = f"color: {accent};"
 
         title_style = f"font-weight: bold; font-size: 8pt; {accent_style} border: none; background: transparent;"
-        self.stats_title.setStyleSheet(title_style)
-        self.updates_title.setStyleSheet(title_style)
-        self.history_title.setStyleSheet(title_style)
-        self.total_games_label.setStyleSheet("font-weight: normal; font-size: 9pt; color: #E0E0E0;")
-        self.updates_label.setStyleSheet("font-weight: normal; font-size: 9pt; color: #E0E0E0;")
-        self.separator.setStyleSheet(f"background-color: {accent}; border: none;")
-        self.quote_label.setStyleSheet("font-style: italic; font-size: 9pt; color: #FFFFFF;")
-        self.quote_source_label.setStyleSheet("font-size: 8pt; color: #888888;")
+        if hasattr(self, "updates_title") and self.updates_title:
+            self.updates_title.setStyleSheet(title_style)
+        if hasattr(self, "history_title") and self.history_title:
+            self.history_title.setStyleSheet(title_style)
 
-        self.game_title_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style} border: none; background: transparent;")
+        if hasattr(self, "game_title_label") and self.game_title_label:
+            self.game_title_label.setStyleSheet(f"font-weight: bold; font-size: 11pt; {accent_style} border: none; background: transparent;")
 
         # 2.0 active layout styling
         if hasattr(self, "game_info_card") and self.game_info_card:
@@ -746,6 +679,82 @@ class SimplifiedTerminalWidget(QWidget):
             self.main_window._update_tool_update_visibility()
 
 
+class UpdateItemWidget(QFrame):
+    def __init__(self, appid, name, accent_color, parent=None):
+        super().__init__(parent)
+        self.appid = appid
+        self.name = name
+        self.accent_color = accent_color
+        self.pixmap = None
+        
+        self.setFixedHeight(38)
+        
+        from utils.image_fetcher import ImageFetcher
+        cache_path = ImageFetcher.get_cache_path(appid)
+        if cache_path.exists():
+            from PyQt6.QtGui import QPixmap
+            self.pixmap = QPixmap(str(cache_path))
+            
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 2, 12, 2)
+        
+        self.lbl = QLabel(name)
+        self.lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; background: transparent; border: none;")
+        self.lbl.setWordWrap(True)
+        lay.addWidget(self.lbl, 1)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+        
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, event):
+        from PyQt6.QtGui import QPainter, QLinearGradient, QColor, QBrush, QPainterPath, QPen
+        from PyQt6.QtCore import QRect, Qt
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        rect = self.rect()
+        bg_color = QColor(35, 35, 35) if self.underMouse() else QColor(25, 25, 25)
+        
+        path = QPainterPath()
+        path.addRoundedRect(float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 6.0, 6.0)
+        painter.setClipPath(path)
+        
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(bg_color)
+        painter.drawRect(rect)
+        
+        if self.pixmap and not self.pixmap.isNull():
+            # Calculate aspect ratio scaling to fill the right section
+            img_h = rect.height()
+            img_w = int(img_h * (self.pixmap.width() / self.pixmap.height()))
+            target_rect = QRect(rect.width() - img_w, 0, img_w, rect.height())
+            
+            # Draw the image
+            painter.drawPixmap(target_rect, self.pixmap)
+            
+            # Smooth transition from solid background color to transparent specifically over the image's left side
+            fade_w = min(img_w, 80)
+            gradient = QLinearGradient(rect.width() - img_w, 0, rect.width() - img_w + fade_w, 0)
+            gradient.setColorAt(0.0, bg_color)
+            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 0))
+            
+            painter.setBrush(QBrush(gradient))
+            painter.drawRect(rect)
+            
+        painter.setClipping(False)
+        if self.underMouse():
+            pen_color = QColor(self.accent_color)
+            painter.setPen(QPen(pen_color, 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)
+
+
 class MainWindow(QMainWindow):
 
     """Main application window."""
@@ -771,6 +780,38 @@ class MainWindow(QMainWindow):
         self.layout = None
         self.titlebar_position = None
         self.bottom_titlebar = None
+
+        self.quotes = [
+            ("The cake is a lie.", "Portal"),
+            ("Would you kindly?", "BioShock"),
+            ("War. War never changes.", "Fallout"),
+            ("Praise the Sun! \\o/", "Dark Souls"),
+            ("It's dangerous to go alone! Take this.", "The Legend of Zelda"),
+            ("A man chooses, a slave obeys.", "BioShock"),
+            ("Snake? Snake?! SNAAAAAAKE!!!", "Metal Gear Solid"),
+            ("Thank you Mario! But our princess is in another castle!", "Super Mario Bros."),
+            ("All your base are belong to us.", "Zero Wing"),
+            ("Nothing is true, everything is permitted.", "Assassin's Creed"),
+            ("It's time to kick ass and chew bubblegum... and I'm all outta gum.", "Duke Nukem 3D"),
+            ("Wake up, Mister Freeman. Wake up and smell the ashes.", "Half-Life 2"),
+            ("You Died.", "Dark Souls"),
+            ("Do you know the definition of insanity?", "Far Cry 3"),
+            ("Protocol 3: Protect the Pilot.", "Titanfall 2"),
+            ("A hunter must hunt.", "The Witcher 3"),
+            ("Hey, you. You're finally awake.", "The Elder Scrolls V: Skyrim"),
+            ("Determination.", "Undertale"),
+            ("The world fears the inevitable plummet into the abyss.", "NieR: Automata"),
+            ("Stay a while and listen.", "Diablo II"),
+            ("It's not about the money, it's about sending a message.", "Batman: Arkham City"),
+            ("What is a man? A miserable little pile of secrets!", "Castlevania: Symphony of the Night"),
+            ("A famous explorer once said that the extraordinary is in what we do, not who we are.", "Tomb Raider"),
+            ("I used to be an adventurer like you. Then I took an arrow in the knee.", "The Elder Scrolls V: Skyrim"),
+            ("The right man in the wrong place can make all the difference in the world.", "Half-Life 2"),
+        ]
+        self.quote_timer = None
+        self.quote_label = None
+        self.quote_source_label = None
+        self.footer_widget = None
         self.main_container = None
         self.main_layout = None
         self.drop_zone_container = None
@@ -1284,6 +1325,36 @@ class MainWindow(QMainWindow):
         self._create_main_content()
         self._create_bottom_section()
 
+        # Create Footer for game quotes
+        self.footer_widget = QWidget()
+        self.footer_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.footer_widget.setFixedHeight(24)
+        self.footer_widget.setStyleSheet("background: transparent; border: none;")
+        
+        footer_layout = QHBoxLayout(self.footer_widget)
+        footer_layout.setContentsMargins(15, 0, 15, 0)
+        footer_layout.setSpacing(8)
+        
+        self.quote_label = QLabel(self.quotes[0][0])
+        self.quote_label.setStyleSheet("font-style: italic; font-size: 11px; color: #FFFFFF; background: transparent; border: none;")
+        
+        self.quote_source_label = QLabel(f"— {self.quotes[0][1]}")
+        self.quote_source_label.setStyleSheet("font-size: 10px; color: #888888; background: transparent; border: none;")
+        
+        footer_layout.addStretch()
+        footer_layout.addWidget(self.quote_label)
+        footer_layout.addWidget(self.quote_source_label)
+        footer_layout.addStretch()
+        
+        self.layout.addWidget(self.footer_widget)
+
+        # Start quote rotation timer
+        self.quote_timer = QTimer(self)
+        self.quote_timer.timeout.connect(self.rotate_quote)
+        self.quote_timer.start(10000)
+
         if self.titlebar_position != "top":
             self.bottom_titlebar = BottomTitleBar(self)
             self.layout.addWidget(self.bottom_titlebar)
@@ -1353,6 +1424,16 @@ class MainWindow(QMainWindow):
         """Update resize handle positions when window is resized."""
         super().resizeEvent(event)
         self._update_resize_handles_geometry()
+        self.position_update_all_btn()
+
+    def position_update_all_btn(self):
+        if hasattr(self, "simplified_terminal") and self.simplified_terminal:
+            term = self.simplified_terminal
+            if hasattr(term, "update_all_btn") and term.update_all_btn and term.update_all_btn.isVisible():
+                term.update_all_btn.adjustSize()
+                x = term.panel_mid.width() - term.update_all_btn.width() - 16
+                y = term.panel_mid.height() - term.update_all_btn.height() - 16
+                term.update_all_btn.move(x, y)
 
     def _create_main_content(self) -> None:
         """Create the main content area with drop zone."""
@@ -1401,147 +1482,126 @@ class MainWindow(QMainWindow):
         self.dashboard_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        self.dashboard_widget.setMinimumHeight(70)
+        self.dashboard_widget.setMinimumHeight(65)
         self.dashboard_widget.setMaximumHeight(85)
         
-        dash_layout = QHBoxLayout(self.dashboard_widget)
-        dash_layout.setContentsMargins(15, 5, 15, 5)
-        dash_layout.setSpacing(10)
-        
-        card_style = """
+        self.dashboard_widget.setStyleSheet("""
             QWidget {
-                background-color: rgba(30, 30, 30, 120);
+                background-color: rgba(25, 25, 25, 150);
                 border: 1px solid rgba(255, 255, 255, 12);
-                border-radius: 6px;
+                border-radius: 8px;
             }
-        """
-        
-        # Hubcap API Stats Card (Left)
-        self.hubcap_stats_card = QWidget()
-        self.hubcap_stats_card.setStyleSheet(card_style)
-        hubcap_layout = QVBoxLayout(self.hubcap_stats_card)
-        hubcap_layout.setContentsMargins(10, 4, 10, 4)
-        hubcap_layout.setSpacing(1)
-        
-        self.hubcap_title = QLabel("HUBCAP API STATS")
-        self.hubcap_title.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 8px; font-weight: bold; border: none; background: transparent;")
-        
-        usage_row = QHBoxLayout()
-        usage_row.setSpacing(4)
-        usage_lbl = QLabel("Usage:")
-        usage_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
-        self.usage_value = QLabel("-- / --")
-        self.usage_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        reset_lbl = QLabel("(Resets Daily)")
-        reset_lbl.setStyleSheet("color: rgba(255, 255, 255, 80); font-size: 8px; border: none; background: transparent;")
-        usage_row.addWidget(usage_lbl)
-        usage_row.addWidget(self.usage_value)
-        usage_row.addWidget(reset_lbl)
-        usage_row.addStretch()
-        
-        expiry_row = QHBoxLayout()
-        expiry_row.setSpacing(4)
-        expiry_lbl = QLabel("Expiry:")
-        expiry_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
-        self.expiry_value = QLabel("-- days")
-        self.expiry_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        expiry_row.addWidget(expiry_lbl)
-        expiry_row.addWidget(self.expiry_value)
-        expiry_row.addStretch()
-        
-        hubcap_layout.addWidget(self.hubcap_title)
-        hubcap_layout.addLayout(usage_row)
-        hubcap_layout.addLayout(expiry_row)
-        
-        # Update Action Card (Middle)
-        self.update_action_card = QWidget()
-        self.update_action_card.setStyleSheet(card_style)
-        action_layout = QVBoxLayout(self.update_action_card)
-        action_layout.setContentsMargins(10, 4, 10, 4)
-        action_layout.setSpacing(4)
-        
-        self.action_title = QLabel("LIBRARY UPDATE")
-        self.action_title.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 8px; font-weight: bold; border: none; background: transparent;")
-        
-        self.update_all_btn = QPushButton("Update All")
-        self.update_all_btn.setMinimumHeight(28)
-        self.update_all_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {self.accent_color or '#C06C84'};
-                border: 1px solid {self.accent_color or '#C06C84'};
-                border-radius: 4px;
-                padding: 4px 10px;
-                font-size: 11px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: rgba(255, 255, 255, 15);
-            }}
-            QPushButton:disabled {{
-                border: 1px solid rgba(255, 255, 255, 15);
-                color: rgba(255, 255, 255, 60);
-            }}
         """)
-        self.update_all_btn.clicked.connect(self.run_update_all_flow)
-        
-        action_layout.addWidget(self.action_title)
-        action_layout.addWidget(self.update_all_btn)
-        
-        # Steam / SLS Status Card (Right)
-        self.steam_sls_status_card = QWidget()
-        self.steam_sls_status_card.setStyleSheet(card_style)
-        status_layout = QVBoxLayout(self.steam_sls_status_card)
-        status_layout.setContentsMargins(10, 4, 10, 4)
-        status_layout.setSpacing(1)
-        
-        self.status_card_title = QLabel("STEAM / SLS STATUS")
-        self.status_card_title.setStyleSheet("color: rgba(255, 255, 255, 120); font-size: 8px; font-weight: bold; border: none; background: transparent;")
-        
-        steam_row = QHBoxLayout()
-        steam_row.setSpacing(4)
-        steam_lbl = QLabel("Steam Updates:")
-        steam_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
-        self.steam_updates_value = QLabel("Checking...")
-        self.steam_updates_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        steam_row.addWidget(steam_lbl)
-        steam_row.addWidget(self.steam_updates_value)
-        steam_row.addStretch()
-        
-        sls_row = QHBoxLayout()
-        sls_row.setSpacing(4)
+
+        dash_main_layout = QVBoxLayout(self.dashboard_widget)
+        dash_main_layout.setContentsMargins(15, 6, 15, 6)
+        dash_main_layout.setSpacing(4)
+
+        row_item_style = "color: rgba(255, 255, 255, 200); font-size: 11px; font-weight: bold; background: transparent; border: none;"
+
+        # --- ROW 1 ---
+        row1_layout = QHBoxLayout()
+        row1_layout.setSpacing(20)
+        row1_layout.addStretch()
+
+        # 1. Hubcap API Stats
+        hubcap_api_lbl = QLabel("Hubcap API:")
+        hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.hubcap_api_value = QLabel("-- / -- [ --d ]")
+        self.hubcap_api_value.setStyleSheet(row_item_style)
+        hubcap_api_item = QHBoxLayout()
+        hubcap_api_item.setSpacing(4)
+        hubcap_api_item.addWidget(hubcap_api_lbl)
+        hubcap_api_item.addWidget(self.hubcap_api_value)
+        row1_layout.addLayout(hubcap_api_item)
+
+        # 2. SLS Config
         sls_lbl = QLabel("SLS Config:")
-        sls_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
-        self.sls_status_value = QLabel("Healthy")
-        self.sls_status_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        sls_row.addWidget(sls_lbl)
-        sls_row.addWidget(self.sls_status_value)
-        sls_row.addStretch()
+        sls_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.sls_status_value = QLabel("Checking...")
+        self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        sls_item = QHBoxLayout()
+        sls_item.setSpacing(4)
+        sls_item.addWidget(sls_lbl)
+        sls_item.addWidget(self.sls_status_value)
+        row1_layout.addLayout(sls_item)
 
-        if sys.platform == "linux":
-            slssteam_row = QHBoxLayout()
-            slssteam_row.setSpacing(4)
-            slssteam_lbl = QLabel("SLSsteam:")
-            slssteam_lbl.setStyleSheet("color: rgba(255, 255, 255, 160); font-size: 11px; border: none; background: transparent;")
-            self.slssteam_status_value = QLabel("Checking...")
-            self.slssteam_status_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-            slssteam_row.addWidget(slssteam_lbl)
-            slssteam_row.addWidget(self.slssteam_status_value)
-            slssteam_row.addStretch()
-        else:
-            self.slssteam_status_value = None
+        # 3. SLSsteam
+        slssteam_lbl = QLabel("SLSsteam:")
+        slssteam_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.slssteam_status_value = QLabel("Checking...")
+        self.slssteam_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        slssteam_item = QHBoxLayout()
+        slssteam_item.setSpacing(4)
+        slssteam_item.addWidget(slssteam_lbl)
+        slssteam_item.addWidget(self.slssteam_status_value)
+        row1_layout.addLayout(slssteam_item)
 
-        self.web_ui_status_value = None
-        
-        status_layout.addWidget(self.status_card_title)
-        status_layout.addLayout(steam_row)
-        status_layout.addLayout(sls_row)
-        if self.slssteam_status_value is not None:
-            status_layout.addLayout(slssteam_row)
-        
-        dash_layout.addWidget(self.hubcap_stats_card, 1)
-        dash_layout.addWidget(self.update_action_card, 1)
-        dash_layout.addWidget(self.steam_sls_status_card, 1)
+        # 4. Steam Updates
+        steam_updates_lbl = QLabel("Steam Updates:")
+        steam_updates_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.steam_updates_value = QLabel("Checking...")
+        self.steam_updates_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        steam_updates_item = QHBoxLayout()
+        steam_updates_item.setSpacing(4)
+        steam_updates_item.addWidget(steam_updates_lbl)
+        steam_updates_item.addWidget(self.steam_updates_value)
+        row1_layout.addLayout(steam_updates_item)
+
+        row1_layout.addStretch()
+        dash_main_layout.addLayout(row1_layout)
+
+        # --- ROW 2 ---
+        row2_layout = QHBoxLayout()
+        row2_layout.setSpacing(20)
+        row2_layout.addStretch()
+
+        # 1. Hubcap Connection Status
+        hubcap_conn_lbl = QLabel("Hubcap:")
+        hubcap_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.hubcap_conn_value = QLabel("Connecting...")
+        self.hubcap_conn_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        hubcap_conn_item = QHBoxLayout()
+        hubcap_conn_item.setSpacing(4)
+        hubcap_conn_item.addWidget(hubcap_conn_lbl)
+        hubcap_conn_item.addWidget(self.hubcap_conn_value)
+        row2_layout.addLayout(hubcap_conn_item)
+
+        # 2. Steam Connection Status
+        steam_conn_lbl = QLabel("Steam Status:")
+        steam_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.steam_conn_value = QLabel("Connecting...")
+        self.steam_conn_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        steam_conn_item = QHBoxLayout()
+        steam_conn_item.setSpacing(4)
+        steam_conn_item.addWidget(steam_conn_lbl)
+        steam_conn_item.addWidget(self.steam_conn_value)
+        row2_layout.addLayout(steam_conn_item)
+
+        # 3. ASSella Status
+        assella_lbl = QLabel("ASSella:")
+        assella_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.assella_status_value = QLabel("Checking...")
+        self.assella_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        assella_item = QHBoxLayout()
+        assella_item.setSpacing(4)
+        assella_item.addWidget(assella_lbl)
+        assella_item.addWidget(self.assella_status_value)
+        row2_layout.addLayout(assella_item)
+
+        # 4. Library Size
+        library_lbl = QLabel("Library:")
+        library_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.library_size_value = QLabel("-- GB (-- games)")
+        self.library_size_value.setStyleSheet("color: rgba(255, 255, 255, 200); font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        library_item = QHBoxLayout()
+        library_item.setSpacing(4)
+        library_item.addWidget(library_lbl)
+        library_item.addWidget(self.library_size_value)
+        row2_layout.addLayout(library_item)
+
+        row2_layout.addStretch()
+        dash_main_layout.addLayout(row2_layout)
         
         self.drop_zone_layout.addWidget(self.status_pager)
         self.drop_zone_layout.addWidget(self.dashboard_widget, 2)
@@ -1742,39 +1802,36 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def refresh_system_status(self) -> None:
-        """Refresh local Steam updates and SLS status labels."""
-        if not self.steam_updates_value or not self.sls_status_value:
+        """Refresh local Steam updates, SLS, and ASSella status labels."""
+        if not hasattr(self, "steam_updates_value") or not self.steam_updates_value:
             return
             
         blocked = self.check_steam_updates_blocked()
         if blocked:
             self.steam_updates_value.setText("Blocked")
-            self.steam_updates_value.setStyleSheet(f"color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            self.steam_updates_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
         else:
             self.steam_updates_value.setText("Allowed")
-            self.steam_updates_value.setStyleSheet(f"color: #33ff33; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            self.steam_updates_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
             
-        # SLS Config Status based on boot check
+        # SLS Config Status
         import utils.assfixer
         status = utils.assfixer.boot_status
         if status == "optimal":
-            self.sls_status_value.setText("Optimal")
-            self.sls_status_value.setStyleSheet("color: #44bb44; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        elif status == "needs_fix":
-            self.sls_status_value.setText("Action Needed")
+            self.sls_status_value.setText("Good")
+            self.sls_status_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        elif status in ("needs_fix", "failed"):
+            self.sls_status_value.setText("Update")
             self.sls_status_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
         elif status == "no_config":
-            self.sls_status_value.setText("Missing Config")
-            self.sls_status_value.setStyleSheet("color: #cc4444; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        elif status == "failed":
-            self.sls_status_value.setText("Failed Check")
-            self.sls_status_value.setStyleSheet("color: #cc4444; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            self.sls_status_value.setText("Missing")
+            self.sls_status_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
         elif status == "checking":
             self.sls_status_value.setText("Checking...")
             self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
         else:
-            self.sls_status_value.setText("Not Checked")
-            self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            self.sls_status_value.setText("Missing")
+            self.sls_status_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
 
         if self.slssteam_status_value is not None:
             from ui.dialogs.settings_sls import get_local_sls_version
@@ -1782,34 +1839,67 @@ class MainWindow(QMainWindow):
             
             local_ver = get_local_sls_version()
             if local_ver == "Not Installed":
-                self.slssteam_status_value.setText("Configure")
-                self.slssteam_status_value.setStyleSheet("color: #cc4444; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                self.slssteam_status_value.setText("Missing")
+                self.slssteam_status_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
             else:
                 if sls_settings.update_checked and sls_settings.latest_online_version:
                     local_clean = local_ver.strip()
                     if local_clean == "Installed (Version Unknown)" or local_clean != sls_settings.latest_online_version:
-                        self.slssteam_status_value.setText("Update!")
+                        self.slssteam_status_value.setText("Update")
                         self.slssteam_status_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
                     else:
                         self.slssteam_status_value.setText("Latest")
-                        self.slssteam_status_value.setStyleSheet("color: #44bb44; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                        self.slssteam_status_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
                 else:
                     self.slssteam_status_value.setText("Latest")
-                    self.slssteam_status_value.setStyleSheet("color: #44bb44; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                    self.slssteam_status_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+
+        # ASSella Status
+        if hasattr(self, "assella_status_value") and self.assella_status_value:
+            if getattr(self, "_tool_update_available_flag", False):
+                self.assella_status_value.setText("Update Available")
+                self.assella_status_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            else:
+                self.assella_status_value.setText("Up to Date")
+                self.assella_status_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+
+        # Library Size Stats
+        if hasattr(self, "library_size_value") and self.library_size_value:
+            if hasattr(self, "game_manager") and self.game_manager:
+                stats = self.game_manager.get_library_stats()
+                total_games = stats.get("total_games", 0)
+                total_bytes = stats.get("total_size", 0)
+                total_gb = total_bytes / 1_073_741_824
+                self.library_size_value.setText(f"{total_gb:.1f} GB ({total_games} games)")
+
+    def rotate_quote(self):
+        if not hasattr(self, "quote_label") or not self.quote_label:
+            return
+        current_text = self.quote_label.text()
+        available_quotes = [q for q in self.quotes if q[0] != current_text]
+        if available_quotes:
+            import random
+            quote, source = random.choice(available_quotes)
+            self.quote_label.setText(quote)
+            self.quote_source_label.setText(f"— {source}")
 
     def refresh_hubcap_stats(self) -> None:
         """Fetch user statistics from Hubcap API asynchronously."""
         # Also refresh Steam and SLS status locally
         self.refresh_system_status()
 
+        # Trigger background network checks if offline/connecting
+        current_hubcap = self.hubcap_conn_value.text() if hasattr(self, "hubcap_conn_value") else "Connecting..."
+        current_steam = self.steam_conn_value.text() if hasattr(self, "steam_conn_value") else "Connecting..."
+        if current_hubcap in ("Connecting...", "Offline") or current_steam in ("Connecting...", "Offline"):
+            self._check_network_connections_async()
+
         if not self.stats_task_runner:
             self.stats_task_runner = TaskRunner(self)
         
         # Set stats text to loading
-        if self.usage_value:
-            self.usage_value.setText("Loading...")
-        if self.expiry_value:
-            self.expiry_value.setText("Loading...")
+        if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
+            self.hubcap_api_value.setText("Loading...")
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
             self.active_hubcap_label.setText("Hubcap stats: Loading...")
 
@@ -1817,16 +1907,61 @@ class MainWindow(QMainWindow):
         worker.finished.connect(self._on_user_stats_loaded)
         worker.error.connect(self._on_user_stats_error)
 
+    def _check_network_connections_async(self) -> None:
+        """Run connection check once in background thread."""
+        def run_check():
+            try:
+                from utils.network_status import run_connection_check
+                steam_ok, hubcap_ok, hubcap_mode = run_connection_check()
+            except Exception as e:
+                logger.error(f"Error running network connection check: {e}")
+                steam_ok, hubcap_ok, hubcap_mode = False, False, "Offline"
+
+            # Update values thread-safely via QMetaObject.invokeMethod
+            QMetaObject.invokeMethod(
+                self,
+                "_on_connections_checked",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(bool, steam_ok),
+                Q_ARG(bool, hubcap_ok),
+                Q_ARG(str, hubcap_mode)
+            )
+
+        import threading
+        threading.Thread(target=run_check, daemon=True).start()
+
+    @pyqtSlot(bool, bool, str)
+    def _on_connections_checked(self, steam_ok: bool, hubcap_ok: bool, hubcap_mode: str) -> None:
+        """Called thread-safely when background connection check completes."""
+        # 1. Update Hubcap connection label
+        if hasattr(self, "hubcap_conn_value") and self.hubcap_conn_value:
+            if hubcap_ok:
+                lbl = "Online"
+                if hubcap_mode in ("DoH", "Tor"):
+                    lbl = f"Online {hubcap_mode}"
+                self.hubcap_conn_value.setText(lbl)
+                self.hubcap_conn_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            else:
+                self.hubcap_conn_value.setText("Offline")
+                self.hubcap_conn_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+
+        # 2. Update Steam connection label
+        if hasattr(self, "steam_conn_value") and self.steam_conn_value:
+            if steam_ok:
+                self.steam_conn_value.setText("Online")
+                self.steam_conn_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            else:
+                self.steam_conn_value.setText("Offline")
+                self.steam_conn_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+
     def _on_user_stats_loaded(self, stats: dict) -> None:
         """Handle async hubcap stats load success."""
         if not isinstance(stats, dict) or "error" in stats:
             err_msg = stats.get("error", "Unknown error") if isinstance(stats, dict) else "Invalid response"
             logger.warning(f"Failed to load Hubcap user stats: {err_msg}")
             val = "No Key" if "key is not set" in err_msg.lower() else "Error"
-            if self.usage_value:
-                self.usage_value.setText(val)
-            if self.expiry_value:
-                self.expiry_value.setText(val)
+            if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
+                self.hubcap_api_value.setText(val)
             if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
                 self.active_hubcap_label.setText(f"Hubcap stats: {val}")
             return
@@ -1834,10 +1969,6 @@ class MainWindow(QMainWindow):
         # Daily usage
         usage = stats.get("daily_usage", 0)
         limit = stats.get("daily_limit", 45)
-        if self.usage_value:
-            self.usage_value.setText(f"{usage} / {limit}")
-        if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-            self.active_hubcap_label.setText(f"Hubcap stats: {usage} / {limit}")
 
         # Key Expiry
         expires_str = stats.get("api_key_expires_at")
@@ -1856,23 +1987,23 @@ class MainWindow(QMainWindow):
                 elif days == 0:
                     expiry_text = "Expires today"
                 else:
-                    expiry_text = f"{days} day(s)"
+                    expiry_text = f"{days}d"
             except Exception as e:
                 logger.error(f"Failed to parse expiry date '{expires_str}': {e}")
                 expiry_text = "Unknown"
         else:
             expiry_text = "Never"
 
-        if self.expiry_value:
-            self.expiry_value.setText(expiry_text)
+        if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
+            self.hubcap_api_value.setText(f"{usage} / {limit} [ {expiry_text} ]")
+        if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
+            self.active_hubcap_label.setText(f"Hubcap stats: {usage} / {limit}")
 
     def _on_user_stats_error(self, err_tuple: tuple) -> None:
         """Handle async hubcap stats load error."""
         logger.error(f"Async user stats load failed: {err_tuple[1]}")
-        if self.usage_value:
-            self.usage_value.setText("Error")
-        if self.expiry_value:
-            self.expiry_value.setText("Error")
+        if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
+            self.hubcap_api_value.setText("Error")
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
             self.active_hubcap_label.setText("Hubcap stats: Error")
 
@@ -1921,7 +2052,13 @@ class MainWindow(QMainWindow):
                 update_status = game_data.get("update_status")
                 try:
                     local_path = None
-                    fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+                    branch = settings.value(f"selected_branch/{appid}", "public", type=str)
+                    
+                    if branch and branch != "public":
+                        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}_branch_{branch}.zip"
+                    else:
+                        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+                        
                     is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
                     if fpath.exists() and (update_status != "update_available" or is_fresh):
                         local_path = str(fpath)
@@ -1933,10 +2070,20 @@ class MainWindow(QMainWindow):
                     # 1. Try Smart Update Path
                     if dkm.has_depot_keys(appid):
                         from core.tasks.smart_update_task import SmartUpdateTask
-                        task = SmartUpdateTask(appid, name)
-                        parsed_data = task.run()
+                        task = SmartUpdateTask(appid, name, branch=branch)
+                        
+                        def on_finished(assembled):
+                            nonlocal parsed_data
+                            parsed_data = assembled
+                            
+                        task.finished.connect(on_finished)
+                        try:
+                            task.run()
+                        except Exception as e:
+                            logger.error(f"Smart update failed in Update All: {e}")
+                            
                         if parsed_data:
-                            local_path = parsed_data.get("zip_path", local_path)
+                            local_path = str(fpath)
                     
                     # 2. Fallback to Classic Path if Smart failed or no keys
                     if not parsed_data:
@@ -1950,14 +2097,14 @@ class MainWindow(QMainWindow):
                                 return False
                                 
                         if not local_path or not has_lua(local_path):
-                            logger.info(f"Update All: Fetching classic manifest for {name}")
+                            logger.info(f"Update All: Fetching classic manifest for {name} (branch={branch})")
                             if local_path and Path(local_path).exists():
                                 Path(local_path).unlink() # Delete bad/lua-less zip
-                            fpath, error = _api.download_manifest(appid)
-                            if error or not fpath:
+                            fpath_val, error = _api.download_manifest(appid, branch=branch)
+                            if error or not fpath_val:
                                 logger.warning(f"Update All: manifest download failed for {name}: {error}")
                                 continue
-                            local_path = str(fpath)
+                            local_path = str(fpath_val)
                             settings.setValue(f"manifest_is_fresh/{appid}", True)
 
                         zip_task = ProcessZipTask()
@@ -2007,26 +2154,10 @@ class MainWindow(QMainWindow):
         threading.Thread(target=_do_update_all, daemon=True).start()
 
     def update_dashboard_elements(self) -> None:
-        """Dynamically update "Update All" button text based on pending updates count."""
-        if not self.game_manager or not self.update_all_btn:
-            return
-
-        games = self.game_manager.get_all_games()
-        updateable_games = []
-        for g in games:
-            if g.get("update_status") == "update_available":
-                appid = str(g.get("appid", ""))
-                if self.settings.value(f"exclude_from_update_all/{appid}", False, type=bool):
-                    continue
-                updateable_games.append(g)
-        count = len(updateable_games)
-
-        if count > 0:
-            self.update_all_btn.setText(f"🔄 Update All ({count})")
-            self.update_all_btn.setEnabled(True)
-        else:
-            self.update_all_btn.setText("🔄 Update All")
-            self.update_all_btn.setEnabled(True)
+        """Dynamically update dashboard elements and floating action button."""
+        if hasattr(self, "simplified_terminal") and self.simplified_terminal:
+            self.simplified_terminal.update_stats()
+        self.refresh_system_status()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if not event.mimeData().hasUrls():

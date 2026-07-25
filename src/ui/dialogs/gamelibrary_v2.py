@@ -699,9 +699,10 @@ class GameDetailsDialogV2(QDialog):
         self.branch_combo.setMaxVisibleItems(5)
         actions_row.addWidget(self.branch_combo, 0)
 
-        self.validate_btn = QPushButton("Verify Files")
+        self.validate_btn = QPushButton("Checking...")
         self.validate_btn.setFixedHeight(26)
-        self.validate_btn.setStyleSheet("font-weight: bold; background: #46b464; color: #FFFFFF;")
+        self.validate_btn.setEnabled(False)
+        self.validate_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 12); color: rgba(255, 255, 255, 75); border: none;")
         actions_row.addWidget(self.validate_btn, 1)
 
         lay.addLayout(actions_row)
@@ -990,6 +991,13 @@ class GameDetailsDialogV2(QDialog):
         has_cache = local_zip.exists()
         same_branch = (installed_branch == sel_branch)
 
+        from managers.depot_key_manager import DepotKeyManager
+        dkm = DepotKeyManager()
+        has_keys = dkm.has_depot_keys(self.appid)
+        is_missing_manifest_or_lua = (not has_cache) or (not has_keys)
+
+        self.validate_btn.setEnabled(True)
+
         if not same_branch:
             b_dict = getattr(self, "_branches_dict", {})
             branch_bid = ""
@@ -1002,12 +1010,15 @@ class GameDetailsDialogV2(QDialog):
                 label += f" ({branch_bid})"
             self.validate_btn.setText(label)
             self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
-        elif has_cache:
-            self.validate_btn.setText("Verify Files")
-            self.validate_btn.setStyleSheet("background: #46b464; color: #FFFFFF; font-weight: bold;")
-        else:
+        elif is_missing_manifest_or_lua:
+            self.validate_btn.setText("Refetch")
+            self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
+        elif self.game_data.get("update_status") == "update_available":
             self.validate_btn.setText("Download Update")
             self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
+        else:
+            self.validate_btn.setText("Verify Files")
+            self.validate_btn.setStyleSheet("background: #46b464; color: #FFFFFF; font-weight: bold;")
 
     def _on_validate_btn_clicked(self):
         sel_branch = self.branch_combo.currentData() or "public" if hasattr(self, "branch_combo") else "public"
@@ -1192,11 +1203,6 @@ class GameDetailsDialogV2(QDialog):
                     QPushButton:hover { background: rgba(180, 110, 30, 150); }
                 """)
             self.status_btn.setEnabled(True)
-            self.validate_btn.setText("Download Update")
-            self.validate_btn.setStyleSheet(f"""
-                QPushButton {{ background: {ac}; color: #000000; border: none; font-weight: bold; }}
-                QPushButton:hover {{ background: #FFFFFF; color: #000000; }}
-            """)
         elif status == "up_to_date":
             self.status_btn.setText(f"✓  UP TO DATE{time_suffix}  —  click to check")
             self.status_btn.setStyleSheet("""
@@ -1206,11 +1212,6 @@ class GameDetailsDialogV2(QDialog):
                 QPushButton:hover { background: rgba(46, 180, 90, 240); color: #ffffff; }
             """)
             self.status_btn.setEnabled(True)
-            self.validate_btn.setText("Verify")
-            self.validate_btn.setStyleSheet(f"""
-                QPushButton {{ background: rgba(255,255,255,12); color: #FFFFFF; border: none; font-weight: bold; }}
-                QPushButton:hover {{ background: rgba(255,255,255,20); color: {ac}; }}
-            """)
         elif status == "checking":
             self.status_btn.setText("⟳  CHECKING FOR UPDATES...")
             self.status_btn.setStyleSheet("""
@@ -1228,11 +1229,8 @@ class GameDetailsDialogV2(QDialog):
                 QPushButton:hover { background: rgba(255,255,255,20); }
             """)
             self.status_btn.setEnabled(True)
-            self.validate_btn.setText("Verify")
-            self.validate_btn.setStyleSheet(f"""
-                QPushButton {{ background: rgba(255,255,255,12); color: #FFFFFF; border: none; font-weight: bold; }}
-                QPushButton:hover {{ background: rgba(255,255,255,20); }}
-            """)
+
+        self._update_validate_button()
 
     def _on_status_changed(self, changed_appid, new_status):
         if changed_appid != self.appid:

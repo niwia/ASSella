@@ -245,7 +245,9 @@ def download_manifest(app_id, branch: str = "public") -> Tuple[Optional[str], Op
     # Backup previous manifest if setting is enabled and old buildid differs
     try:
         settings = get_settings()
-        if save_path.exists() and settings and settings.value("save_old_manifests", True, type=bool):
+        # Force save_old_manifests to False to disable backup behavior
+        save_old_manifests = False
+        if save_path.exists() and settings and save_old_manifests:
             old_buildid = settings.value(f"fetched_buildid/{app_id}", "", type=str) if settings else ""
             if old_buildid:
                 backup_path = manifests_dir / f"accela_fetch_{app_id}_build_{old_buildid}.zip"
