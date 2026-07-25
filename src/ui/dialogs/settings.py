@@ -639,6 +639,15 @@ class SettingsDialog(QDialog):
         spin_layout.addStretch()
         dl_layout.addLayout(spin_layout)
 
+        self.check_updates_on_boot_checkbox = create_checkbox_setting(
+            "Check Updates on Boot",
+            "check_updates_on_boot",
+            True,
+            self,
+            "Automatically check for game updates in the background on startup."
+        )
+        dl_layout.addWidget(self.check_updates_on_boot_checkbox)
+
         dl_group.setLayout(dl_layout)
         layout.addWidget(dl_group)
 
@@ -1514,15 +1523,25 @@ class SettingsDialog(QDialog):
 
     def accept(self) -> None:
         """Save all settings and close."""
-        if hasattr(self, "service_poll_timer") and self.service_poll_timer:
-            self.service_poll_timer.stop()
-        self._save_general_settings()
-        self._save_download_settings()
-        if not self._save_style_settings():
-            return  # Style validation failed
-        self.settings.sync()  # Flush to disk immediately
-        logger.info("All settings saved.")
-        super().accept()
+        try:
+            if hasattr(self, "service_poll_timer") and self.service_poll_timer:
+                self.service_poll_timer.stop()
+            self._save_general_settings()
+            self._save_download_settings()
+            if not self._save_style_settings():
+                return  # Style validation failed
+            self.settings.sync()  # Flush to disk immediately
+            logger.info("All settings saved.")
+            super().accept()
+        except Exception as e:
+            import traceback
+            from PyQt6.QtWidgets import QMessageBox
+            logger.error(f"Error saving settings: {e}\n{traceback.format_exc()}")
+            QMessageBox.critical(
+                self,
+                "Error Saving Settings",
+                f"An error occurred while saving settings:\n{e}\n\nSee log file for details."
+            )
 
     def _save_general_settings(self) -> None:
         api_key = self.api_key_input.text().strip()
@@ -1639,6 +1658,12 @@ class SettingsDialog(QDialog):
             if self.main_window and hasattr(self.main_window, "apply_update_timer_settings"):
                 self.main_window.apply_update_timer_settings()
 
+        if hasattr(self, "check_updates_on_boot_checkbox"):
+            self.settings.setValue(
+                "check_updates_on_boot",
+                self.check_updates_on_boot_checkbox.isChecked()
+            )
+
         val = 4
         if hasattr(self, "max_downloads_spinbox"):
             try:
@@ -1648,11 +1673,20 @@ class SettingsDialog(QDialog):
         self.settings.setValue("max_downloads", val)
 
         if hasattr(self, "save_old_manifests_checkbox"):
-            self.settings.setValue("save_old_manifests", self.save_old_manifests_checkbox.isChecked())
+            try:
+                self.settings.setValue("save_old_manifests", self.save_old_manifests_checkbox.isChecked())
+            except RuntimeError:
+                pass
         if hasattr(self, "max_old_manifests_spinbox"):
-            self.settings.setValue("max_old_manifests", self.max_old_manifests_spinbox.value())
+            try:
+                self.settings.setValue("max_old_manifests", self.max_old_manifests_spinbox.value())
+            except RuntimeError:
+                pass
         if hasattr(self, "hide_macos_depots_checkbox"):
-            self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
+            try:
+                self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
+            except RuntimeError:
+                pass
         if hasattr(self, "isp_bypass_hubcap_checkbox") and self.isp_bypass_hubcap_checkbox is not None:
             new_val = self.isp_bypass_hubcap_checkbox.isChecked()
             self.settings.setValue("isp_bypass_hubcap", new_val)

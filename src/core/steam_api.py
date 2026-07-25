@@ -292,6 +292,7 @@ def batched_get_product_info(
     rate_limit_delay=0.3,
     is_cancelled=None,
     request_timeout=10,
+    on_progress=None,
 ):
     if access_tokens is None:
         access_tokens = {}
@@ -317,6 +318,7 @@ def batched_get_product_info(
 
     all_results = {}
     failed_appids = []
+    processed_count = 0
 
     global _batched_consecutive_failures
 
@@ -525,6 +527,13 @@ def batched_get_product_info(
             # Normal rate limiting between successful batches
             if batch_idx < len(batches) - 1 and rate_limit_delay > 0:
                 time.sleep(rate_limit_delay)
+
+        processed_count += len(batch_appids)
+        if on_progress:
+            try:
+                on_progress(processed_count, len(appid_list))
+            except Exception:
+                pass
 
     success_count = len(all_results)
     failure_count = len(failed_appids)

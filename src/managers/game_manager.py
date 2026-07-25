@@ -52,6 +52,7 @@ class GameManager(QObject):
     game_update_status_changed = pyqtSignal(str, str)  # (appid, update_status)
     all_updates_checked = pyqtSignal()  # Emitted when a full batch check finishes
     game_hubcap_status_checked = pyqtSignal(str, bool, bool)  # (appid, needs_update, update_in_progress)
+    update_check_progress = pyqtSignal(int, int)  # (current, total)
 
     @pyqtSlot(int)
     def _emit_scan_signals(self, games_found: int) -> None:
@@ -190,16 +191,14 @@ class GameManager(QObject):
         if reset_count:
             logger.info(f"Periodic recheck: reset {reset_count} 'up_to_date' game(s) to 'checking'")
 
-    def check_game_updates_async(self, is_periodic: bool = False):
+    def check_game_updates_async(self, is_periodic: bool = False, force_refresh: bool = False):
         """
         Start async update checking for games that still need a check.
 
         Smart skip logic:
-        - 'update_available' → never re-check until user downloads the update
-        - 'up_to_date'       → only re-check on the periodic timer (not startup)
-        - 'checking' / 'cannot_determine' → always re-check
-
-        This drastically reduces Steam API calls on repeat runs.
+        - If force_refresh is True, we check ALL games (ignoring cache/update status).
+        - Otherwise, we only skip games that are already marked 'update_available'.
+        - 'up_to_date' entries in the cache are ignored for checks but act as a UI middleman.
         """
         # Cancel any existing batch task before starting a new one
         if (
@@ -216,10 +215,8 @@ class GameManager(QObject):
             if appid in ("0", "N/A", "unknown"):
                 continue
             status = g.get("update_status", "")
-            if status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
-                continue  # Never re-check — must update to clear
-            if status == UPDATE_STATUS["UP_TO_DATE"] and not is_periodic:
-                continue  # Only re-check on the periodic timer
+            if not force_refresh and status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
+                continue  # Skip checking already known updateable games
             games_to_check.append(g)
 
         self._games_to_check = games_to_check
@@ -236,6 +233,7 @@ class GameManager(QObject):
 
         # Create new task
         self.manifest_check_task = ManifestCheckTask(self._games_to_check)
+        self.update_check_progress.emit(0, len(self._games_to_check))
 
         # Connect signals
         self.manifest_check_task.game_update_checked.connect(
@@ -410,10 +408,10 @@ class GameManager(QObject):
 
         return meta
 
-    @staticmethod
-    def _on_update_check_progress(current, total):
+    def _on_update_check_progress(self, current, total):
         """Handle update check progress"""
         logger.debug(f"Update check progress: {current}/{total}")
+        self.update_check_progress.emit(current, total)
 
     def _on_update_check_completed(self):
         """Handle update check completion"""

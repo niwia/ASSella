@@ -236,6 +236,13 @@ class SimplifiedTerminalWidget(QWidget):
         self.update_all_btn.clicked.connect(self.main_window.run_update_all_flow)
         self.update_all_btn.hide()
 
+        # Floating Refresh Updates Button (Always visible)
+        self.refresh_updates_btn = QPushButton("↻", self.panel_mid)
+        self.refresh_updates_btn.setFixedSize(36, 36)
+        self.refresh_updates_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_updates_btn.clicked.connect(self.main_window.force_check_all_updates)
+        self.refresh_updates_btn.hide()
+
         # Column 2: Session Activity Log (formerly Column 3)
         self.panel_right = QFrame()
         self.panel_right.setFrameShape(QFrame.Shape.StyledPanel)
@@ -377,11 +384,12 @@ class SimplifiedTerminalWidget(QWidget):
         total_updates = len(games_with_updates)
 
         # Show/Hide/Configure the Floating Update All Action Button
+        accent = getattr(self.main_window, "accent_color", "#C06C84") or "#C06C84"
+        bg = getattr(self.main_window, "background_color", "#000000") or "#000000"
+
         if hasattr(self, "update_all_btn") and self.update_all_btn:
             if total_updates > 0:
                 self.update_all_btn.setText(f"⟳ Update All ({total_updates})")
-                accent = getattr(self.main_window, "accent_color", "#C06C84") or "#C06C84"
-                bg = getattr(self.main_window, "background_color", "#000000") or "#000000"
                 self.update_all_btn.setStyleSheet(f"""
                     QPushButton {{
                         background-color: {accent};
@@ -399,9 +407,30 @@ class SimplifiedTerminalWidget(QWidget):
                     }}
                 """)
                 self.update_all_btn.show()
-                self.main_window.position_update_all_btn()
             else:
                 self.update_all_btn.hide()
+
+        # Show/Configure the Floating Refresh Updates Button (Always visible)
+        if hasattr(self, "refresh_updates_btn") and self.refresh_updates_btn:
+            self.refresh_updates_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {accent};
+                    color: {bg};
+                    border: none;
+                    border-radius: 18px;
+                    font-weight: bold;
+                    font-size: 14pt;
+                    padding: 0px;
+                }}
+                QPushButton:hover {{
+                    background-color: #FFFFFF;
+                    color: #000000;
+                }}
+            """)
+            self.refresh_updates_btn.show()
+
+        # Trigger positioning layout check
+        self.main_window.position_update_all_btn()
 
         # Clear existing updates list
         while self.updates_scroll_layout.count():
@@ -526,6 +555,13 @@ class SimplifiedTerminalWidget(QWidget):
         if speed_bps < 1024**2:
             return f"{(speed_bps / 1024):.2f} KB/s"
         return f"{(speed_bps / 1024**2):.2f} MB/s"
+
+    def set_updates_checking_progress(self, current: int, total: int):
+        if hasattr(self, "updates_title") and self.updates_title:
+            if current >= 0 and total > 0:
+                self.updates_title.setText(f"PENDING UPDATES (CHECKING {current}/{total})")
+            else:
+                self.updates_title.setText("PENDING UPDATES")
 
     def update_style(self):
         accent = self.main_window.accent_color or "#C06C84"
@@ -851,6 +887,15 @@ class MainWindow(QMainWindow):
         self._setup_window_properties()
         self._initialize_managers()
         self._setup_ui()
+        
+        # Connect update progress signals after UI is initialized
+        self.game_manager.update_check_progress.connect(
+            self.simplified_terminal.set_updates_checking_progress
+        )
+        self.game_manager.all_updates_checked.connect(
+            lambda: self.simplified_terminal.set_updates_checking_progress(-1, -1)
+        )
+
         # Deferred refresh: run after the event loop processes the UI construction
         # so update_stats and refresh_system_status always see fully built widgets
         QTimer.singleShot(0, self._deferred_post_init_refresh)
@@ -1075,10 +1120,13 @@ class MainWindow(QMainWindow):
         except TypeError:
             pass  # Already disconnected or not connected
 
-        logger.info(f"Initial game library scan completed ({games_found} games found). Triggering staggered game updates check.")
-        if self.game_manager:
-            # Stagger by 2 seconds so the UI finishes rendering before Steam API storms begin
-            QTimer.singleShot(2000, lambda: self.game_manager.check_game_updates_async())
+        if self.settings.value("check_updates_on_boot", True, type=bool):
+            logger.info(f"Initial game library scan completed ({games_found} games found). Triggering staggered game updates check.")
+            if self.game_manager:
+                # Stagger by 2 seconds so the UI finishes rendering before Steam API storms begin
+                QTimer.singleShot(2000, lambda: self.game_manager.check_game_updates_async())
+        else:
+            logger.info(f"Initial game library scan completed ({games_found} games found). Background boot updates check is disabled.")
 
         # Run depot key migration in the background (populates depot_keys.db from cached zips)
         self._run_depot_key_migration()
@@ -1429,11 +1477,37 @@ class MainWindow(QMainWindow):
     def position_update_all_btn(self):
         if hasattr(self, "simplified_terminal") and self.simplified_terminal:
             term = self.simplified_terminal
-            if hasattr(term, "update_all_btn") and term.update_all_btn and term.update_all_btn.isVisible():
-                term.update_all_btn.adjustSize()
-                x = term.panel_mid.width() - term.update_all_btn.width() - 16
-                y = term.panel_mid.height() - term.update_all_btn.height() - 16
-                term.update_all_btn.move(x, y)
+            
+            # Position refresh button
+            if hasattr(term, "refresh_updates_btn") and term.refresh_updates_btn:
+                # If update_all_btn is visible, place refresh to its left
+                if hasattr(term, "update_all_btn") and term.update_all_btn and term.update_all_btn.isVisible():
+                    term.update_all_btn.adjustSize()
+                    x_update = term.panel_mid.width() - term.update_all_btn.width() - 16
+                    y_update = term.panel_mid.height() - term.update_all_btn.height() - 16
+                    term.update_all_btn.move(x_update, y_update)
+                    
+                    x_refresh = x_update - 36 - 8
+                    y_refresh = term.panel_mid.height() - 36 - 16
+                    term.refresh_updates_btn.move(x_refresh, y_refresh)
+                else:
+                    x_refresh = term.panel_mid.width() - 36 - 16
+                    y_refresh = term.panel_mid.height() - 36 - 16
+                    term.refresh_updates_btn.move(x_refresh, y_refresh)
+
+    def force_check_all_updates(self):
+        """Forces a clean re-check of updates for all games, ignoring cache."""
+        if self.game_manager:
+            logger.info("Forcing full updates check for all games (bypassing cache)")
+            # Set all games to checking status in the UI to give immediate visual feedback
+            self.game_manager.reset_up_to_date_for_recheck()
+            # Also reset any update_available to checking so they get re-verified as well
+            for g in self.game_manager.games:
+                g["update_status"] = "checking"
+            self.game_manager.library_updated.emit()
+            
+            # Start checks with force_refresh = True
+            self.game_manager.check_game_updates_async(force_refresh=True)
 
     def _create_main_content(self) -> None:
         """Create the main content area with drop zone."""

@@ -133,6 +133,10 @@ class ManifestCheckTask(QObject):
                 batched_results = {}
             else:
                 try:
+                    def on_fetch_progress(current_fetched, total_to_fetch):
+                        progress_val = min(total_games, int(current_fetched * total_games / total_to_fetch))
+                        self.progress.emit(progress_val, total_games)
+
                     batched_results = batched_get_product_info(
                         appid_list,
                         access_tokens=access_tokens,
@@ -140,6 +144,7 @@ class ManifestCheckTask(QObject):
                         rate_limit_delay=rate_limit_delay,
                         is_cancelled=lambda: not self._is_running,
                         request_timeout=10,
+                        on_progress=on_fetch_progress,
                     )
                 except BaseException as e:
                     # Safety net: gevent.timeout.Timeout (and other BaseExceptions)
