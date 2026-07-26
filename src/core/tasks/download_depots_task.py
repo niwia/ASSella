@@ -56,6 +56,7 @@ class DownloadDepotsTask(QObject):
         self._last_speed_calc_time = 0.0
         self._last_downloaded_bytes = 0.0
         self._smooth_speed_bps = 0.0
+        self._is_validating = False
 
     @property
     def is_running_flag(self) -> bool:
@@ -331,9 +332,20 @@ class DownloadDepotsTask(QObject):
         # Add to buffer
         self._log_buffer.append(line)
 
+        # Check validation phase vs real chunk download
+        is_validation_line = line.startswith("Validating ") or line.startswith("Checking ")
+        if is_validation_line:
+            self._is_validating = True
+            current_time = time.time()
+            if current_time - self._last_speed_calc_time >= 1.0:
+                self._last_speed_calc_time = current_time
+                self._smooth_speed_bps = 0.0
+                self.speed_update.emit("Validating local files... | ETA: Calculating...")
+
         # Check for percentage update
         match = self.percentage_regex.search(line)
         if match:
+            self._is_validating = False
             try:
                 percentage = float(match.group(1))
 
@@ -357,11 +369,9 @@ class DownloadDepotsTask(QObject):
                         self.progress_percentage.emit(total_percentage)
                         self.last_percentage = total_percentage
 
-                    # Check if line indicates local disk file validation phase vs real chunk download
-                    is_validation = line.startswith("Validating ") or ("[Downloading...]" not in line and ("/" in line or "\\" in line))
                     current_time = time.time()
 
-                    if is_validation:
+                    if self._is_validating:
                         if current_time - self._last_speed_calc_time >= 1.0:
                             self._last_speed_calc_time = current_time
                             self._last_downloaded_bytes = total_progress_bytes

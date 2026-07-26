@@ -1150,13 +1150,30 @@ class SettingsDialog(QDialog):
         font_children, self.font_button, self.font_reset_button = create_font_setting(self)
         self.font_button.clicked.connect(self.choose_font)
         self.font_reset_button.clicked.connect(self.reset_font)
-        
+
         self.font_button.setMinimumWidth(150)
         self.font_reset_button.setFixedWidth(70)
-        
+
         theme_layout.addWidget(QLabel("System Font:"), 2, 0)
         theme_layout.addWidget(self.font_button, 2, 1)
         theme_layout.addWidget(self.font_reset_button, 2, 2)
+
+        # Material presets row
+        theme_layout.addWidget(QLabel("Material Presets:"), 3, 0)
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItem("Custom (Select Color)", "custom")
+        self.preset_combo.addItem("Ocean Breeze (Monet Blue)", "ocean")
+        self.preset_combo.addItem("Forest Sage (Mint Green)", "forest")
+        self.preset_combo.addItem("Lavender Mist (Orchid Purple)", "lavender")
+        self.preset_combo.setMinimumWidth(150)
+
+        saved_preset = self.settings.value("material_preset", "ocean", type=str)
+        idx = self.preset_combo.findData(saved_preset)
+        if idx != -1:
+            self.preset_combo.setCurrentIndex(idx)
+
+        self.preset_combo.currentIndexChanged.connect(self.on_preset_changed)
+        theme_layout.addWidget(self.preset_combo, 3, 1, 1, 2)
 
         self.accent_color_button.clicked.connect(self.choose_accent_color)
         self.accent_reset_button.clicked.connect(self.reset_accent_color)
@@ -1447,11 +1464,19 @@ class SettingsDialog(QDialog):
             return
         hex_c = color.name()
         self.accent_color_button.setStyleSheet(f"background-color: {hex_c};")
+        if hasattr(self, "preset_combo"):
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentIndex(0)
+            self.preset_combo.blockSignals(False)
 
     def reset_accent_color(self) -> None:
         default = "#C06C84"
         self.settings.setValue("accent_color", default)
         self.accent_color_button.setStyleSheet(f"background-color: {default};")
+        if hasattr(self, "preset_combo"):
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentIndex(0)
+            self.preset_combo.blockSignals(False)
 
     def choose_bg_color(self) -> None:
         color = QColorDialog.getColor()
@@ -1459,11 +1484,48 @@ class SettingsDialog(QDialog):
             return
         hex_c = color.name()
         self.bg_color_button.setStyleSheet(f"background-color: {hex_c};")
+        if hasattr(self, "preset_combo"):
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentIndex(0)
+            self.preset_combo.blockSignals(False)
 
     def reset_bg_color(self) -> None:
         default = "#000000"
         self.settings.setValue("background_color", default)
         self.bg_color_button.setStyleSheet(f"background-color: {default};")
+        if hasattr(self, "preset_combo"):
+            self.preset_combo.blockSignals(True)
+            self.preset_combo.setCurrentIndex(0)
+            self.preset_combo.blockSignals(False)
+
+    def on_preset_changed(self, index: int) -> None:
+        preset_type = self.preset_combo.itemData(index)
+        if preset_type == "custom":
+            return
+
+        presets = {
+            "ocean": ("#a1c9fd", "#111318"),
+            "forest": ("#b1ecbe", "#0f1511"),
+            "lavender": ("#e7bdfb", "#141217")
+        }
+
+        if preset_type in presets:
+            accent_hex, bg_hex = presets[preset_type]
+            self.settings.setValue("material_preset", preset_type)
+
+            self.accent_color_button.setStyleSheet(f"background-color: {accent_hex};")
+            self.bg_color_button.setStyleSheet(f"background-color: {bg_hex};")
+
+            self.settings.setValue("user_accent_color", accent_hex)
+            self.settings.setValue("user_background_color", bg_hex)
+            self.settings.setValue("accent_color", accent_hex)
+            self.settings.setValue("background_color", bg_hex)
+
+            from PyQt6.QtWidgets import QApplication
+            from ui.theme import update_appearance
+            app = QApplication.instance()
+            if app:
+                update_appearance(app, accent_hex, bg_hex)
 
     @staticmethod
     def _is_too_dark(color: QColor) -> bool:
@@ -1729,6 +1791,9 @@ class SettingsDialog(QDialog):
 
         self.settings.setValue("user_accent_color", u_accent)
         self.settings.setValue("user_background_color", u_bg)
+        if hasattr(self, "preset_combo"):
+            preset_type = self.preset_combo.itemData(self.preset_combo.currentIndex())
+            self.settings.setValue("material_preset", preset_type)
 
         prev_mode = self.settings.value("ui_mode", "default")
         applied_accent = u_accent

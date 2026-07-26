@@ -51,7 +51,7 @@ def disabled_palette_colors(
     }
 
 
-def apply_palette(app: QApplication, accent: str, background: str) -> None:
+def apply_palette(app: QApplication, accent: str, background: str, font_name: str = "") -> None:
     """Apply the Fusion style and custom color palette to the application."""
     app.setStyle("Fusion")
     dark_palette = QPalette()
@@ -73,7 +73,7 @@ def apply_palette(app: QApplication, accent: str, background: str) -> None:
         dark_palette.setColor(QPalette.ColorGroup.Disabled, role, color)
 
     app.setPalette(dark_palette)
-    _apply_stylesheet(app, background_color, accent_color, disabled_bg, disabled_text)
+    _apply_stylesheet(app, background_color, accent_color, disabled_bg, disabled_text, font_name)
 
 
 def _apply_stylesheet(
@@ -82,142 +82,181 @@ def _apply_stylesheet(
     accent_color: QColor,
     disabled_bg: QColor,
     disabled_text: QColor,
+    font_name: str = "",
 ) -> None:
     """Generate and apply the CSS stylesheet."""
-    bg_effect = bg_color
-    if bg_effect == QColor("#000000"):
-        bg_effect = QColor("#282828")
+    def mix_colors(c1: QColor, c2: QColor, weight: float) -> QColor:
+        r = min(255, max(0, int(c1.red() * (1 - weight) + c2.red() * weight)))
+        g = min(255, max(0, int(c1.green() * (1 - weight) + c2.green() * weight)))
+        b = min(255, max(0, int(c1.blue() * (1 - weight) + c2.blue() * weight)))
+        return QColor(r, g, b)
 
     accent_light = accent_color.lighter(120).name()
-    bg_light = bg_color.lighter(120).name()
+    accent_r = accent_color.red()
+    accent_g = accent_color.green()
+    accent_b = accent_color.blue()
 
-    gradient_border = (
-        f"border-top: 2px solid {accent_light};\n"
-        f"border-bottom: 2px solid {accent_light};\n"
-        f"border-left: 2px solid qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-        f"stop:0 {accent_light}, stop:0.5 {bg_light}, stop:1 {accent_light});\n"
-        f"border-right: 2px solid qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-        f"stop:0 {accent_light}, stop:0.5 {bg_light}, stop:1 {accent_light});"
-    )
+    is_dark = bg_color.lightness() < 128
 
-    gradient_border_full = (
-        f"border-top: 2px solid {accent_light};\n"
-        f"border-bottom: 2px solid {accent_light};\n"
-        f"border-left: 2px solid {accent_light};\n"
-        f"border-right: 2px solid {accent_light};"
-    )
+    # Dynamic Surface (Base Background)
+    surface = bg_color.name()
+
+    # Dynamic Surface Variant (Elevated Cards/Panels) - Lighter in dark mode, darker in light mode
+    bg_elevated = bg_color.lighter(112) if is_dark else bg_color.darker(108)
+    surface_variant_color = mix_colors(bg_elevated, accent_color, 0.06)
+    surface_variant = surface_variant_color.name()
+
+    # Tonal Container color (For buttons, inputs background)
+    container_bg_color = mix_colors(bg_color, accent_color, 0.08)
+    container_bg = container_bg_color.name()
+
+    # Hover surface variant tint (15% accent color blend)
+    hover_bg_color = mix_colors(bg_elevated, accent_color, 0.14)
+    hover_bg = hover_bg_color.name()
+
+    # Active selection variant tint (25% accent color blend)
+    selected_bg_color = mix_colors(bg_elevated, accent_color, 0.25)
+    selected_bg = selected_bg_color.name()
+
+    # Subtle outlines
+    outline_color = mix_colors(bg_color.lighter(140) if is_dark else bg_color.darker(130), accent_color, 0.2)
+    outline = outline_color.name()
+
+    font_family_css = f"font-family: '{font_name}';" if font_name else ""
 
     style_sheet = f"""
+        * {{
+            {font_family_css}
+        }}
+
         QLineEdit {{
-            background-color: {bg_color.name()};
+            background-color: {container_bg};
             color: {accent_color.name()};
-            border: 1px solid {accent_color.name()};
-            padding: 8px;
+            border: 1.5px solid {outline};
+            border-radius: 8px;
+            padding: 5px 10px;
         }}
 
         QLineEdit:hover {{
-            background-color: {bg_color.name()};
-            color: {accent_color.name()};
+            border: 1.5px solid rgba({accent_r}, {accent_g}, {accent_b}, 150);
+        }}
+
+        QLineEdit:focus {{
+            border: 1.5px solid {accent_color.name()};
+            background-color: {surface};
         }}
 
         QCheckBox {{
-            background-color: {bg_color.name()};
+            background-color: transparent;
             color: {accent_color.name()};
-            padding: 8px;
+            padding: 4px;
             spacing: 8px;
+            font-weight: bold;
         }}
 
         QCheckBox::indicator {{
-            width: 12px;
-            height: 12px;
-            background: {bg_color.name()};
-            {gradient_border}
+            width: 14px;
+            height: 14px;
+            background: transparent;
+            border: 1.5px solid {outline};
+            border-radius: 4px;
         }}
 
         QCheckBox::indicator:checked {{
             background: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
         }}
 
         QCheckBox::indicator:hover {{
-            {gradient_border_full}
+            border: 1.5px solid {accent_light};
+            background: rgba({accent_r}, {accent_g}, {accent_b}, 20);
         }}
 
         QDialog {{
-            background-color: {bg_color.name()};
+            background-color: {surface};
             color: {accent_color.name()};
         }}
 
         QListWidget {{
-            background-color: {bg_color.darker(120).name()};
+            background-color: {surface_variant};
             color: {accent_color.name()};
-            border-radius: 4px;
+            border-radius: 12px;
             outline: 0;
             border: none;
+            padding: 4px;
         }}
 
         QListWidget::item {{
-            background-color: {bg_color.darker(120).name()};
+            background-color: transparent;
             color: {accent_color.name()};
-            border-radius: 4px;
-            padding: 6px;
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin: 2px 0px;
         }}
 
         QListWidget::item:hover {{
-            background-color: {bg_effect.lighter(120).name()};
-            color: {accent_color.name()};
+            background-color: {hover_bg};
+            color: {accent_light};
         }}
 
         QListWidget::item:selected {{
-            background-color: {bg_effect.lighter(150).name()};
-            color: {accent_color.name()};
+            background-color: {selected_bg};
+            color: {accent_light};
+            font-weight: bold;
         }}
 
         QListWidget::item:checked {{
-            background-color: {bg_effect.lighter(200).name()};
+            background-color: {hover_bg};
             color: {accent_color.name()};
             font-weight: bold;
         }}
 
-        QListWidget::item:checked:selected {{
-            background-color: {bg_effect.lighter(250).name()};
-            color: {accent_color.name()};
-        }}
-
         QListWidget::indicator {{
-            {gradient_border}
+            width: 14px;
+            height: 14px;
+            background: transparent;
+            border: 1.5px solid {outline};
             border-radius: 4px;
         }}
 
         QListWidget::indicator:unchecked {{
-            background-color: {bg_color.name()};
+            background-color: transparent;
         }}
 
         QListWidget::indicator:checked {{
             background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
         }}
 
         QListWidget::indicator:hover {{
-            {gradient_border_full}
+            border: 1.5px solid {accent_light};
+            background-color: rgba({accent_r}, {accent_g}, {accent_b}, 20);
         }}
 
         QPushButton {{
-            background-color: {bg_color.name()};
+            background-color: {container_bg};
             color: {accent_color.name()};
-            padding: 6px 6px;
-            {gradient_border}
+            padding: 4px 14px;
+            border: 1.5px solid {outline};
+            border-radius: 12px;
             font-weight: bold;
         }}
 
         QPushButton:hover {{
-            background-color: {bg_effect.name()};
-            color: {accent_color.lighter(150).name()};
-            {gradient_border_full}
+            background-color: {hover_bg};
+            color: {accent_light};
+            border: 1.5px solid {accent_color.name()};
+        }}
+
+        QPushButton:pressed {{
+            background-color: {selected_bg};
         }}
 
         QPushButton:disabled {{
             background-color: {disabled_bg.name()};
             color: {disabled_text.name()};
-            border: 1px solid {disabled_text.name()};
+            border: 1.5px solid {disabled_text.name()};
+            border-radius: 12px;
             font-weight: normal;
         }}
 
@@ -230,10 +269,54 @@ def _apply_stylesheet(
             color: {accent_color.name()};
         }}
 
+        QGroupBox {{
+            background-color: {surface_variant};
+            border: 1.5px solid {outline};
+            border-radius: 16px;
+            margin-top: 16px;
+            padding-top: 20px;
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-bottom: 12px;
+            font-weight: bold;
+            font-size: 10.5pt;
+            color: {accent_color.name()};
+        }}
+
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            left: 16px;
+            padding: 0px 8px;
+        }}
+
         QToolTip {{
-            background-color: {bg_color.name()};
+            background-color: {surface_variant};
             color: {accent_color.name()};
             padding: 6px;
+            border: 1px solid {outline};
+            border-radius: 4px;
+        }}
+
+        QScrollBar:vertical {{
+            border: none;
+            background: transparent;
+            width: 8px;
+            margin: 0px;
+        }}
+
+        QScrollBar::handle:vertical {{
+            background: rgba({accent_r}, {accent_g}, {accent_b}, 50);
+            min-height: 20px;
+            border-radius: 4px;
+        }}
+
+        QScrollBar::handle:vertical:hover {{
+            background: rgba({accent_r}, {accent_g}, {accent_b}, 100);
+        }}
+
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            height: 0px;
         }}
     """
     app.setStyleSheet(style_sheet)
@@ -304,6 +387,9 @@ def apply_font(
     Otherwise, falls back to the default TrixieCyrG font.
     """
     default_font_file = "TrixieCyrG-Plain Regular.otf"
+    google_sans_path = Path("/home/deck/.local/share/ACCELA/fonts/Google_Sans/static/GoogleSans-Regular.ttf")
+    if google_sans_path.exists():
+        default_font_file = google_sans_path
 
     # Case 1: Specific font file provided
     if font_file:
@@ -321,7 +407,24 @@ def apply_font(
         # System font not found, log and fall through to default
         logger.debug(f"Font family '{font_family}' not found in system, using default")
 
-    # Case 3: Fallback to default font
+    # Case 3: Default - Check if Roboto is installed in the system
+    families = QFontDatabase.families()
+    if "Roboto" in families:
+        logger.debug("Roboto font found in system database, using as default")
+        if font:
+            font.setFamily("Roboto")
+            new_font = font
+        else:
+            new_font = QFont("Roboto", 10)
+        app.setFont(new_font)
+        return True, "Roboto"
+
+    # Case 4: Fallback default file path if Roboto is not in the system
+    default_font_file = "TrixieCyrG-Plain Regular.otf"
+    google_sans_path = Path("/home/deck/.local/share/ACCELA/fonts/Google_Sans/static/GoogleSans-Regular.ttf")
+    if google_sans_path.exists():
+        default_font_file = google_sans_path
+
     path = _resolve_font_path(default_font_file)
     return _load_and_set_font(app, path, font)
 
@@ -343,5 +446,6 @@ def update_appearance(
         font: Optional QFont object for settings.
         font_file: Relative resource path to load custom font.
     """
-    apply_palette(app, accent, background)
-    return apply_font(app, font, font_file)
+    font_ok, font_info = apply_font(app, font, font_file)
+    apply_palette(app, accent, background, str(font_info) if font_ok else "")
+    return font_ok, font_info

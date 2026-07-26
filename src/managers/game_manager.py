@@ -1387,6 +1387,7 @@ class GameManager(QObject):
         remove_saves=False,
         remove_from_library=False,
         remove_shortcuts=False,
+        remove_sls=False,
     ):
         """
         Uninstall a game by removing its folder (or DLC files if dlc_only), ACF file, and optionally compatdata/saves.
@@ -1433,6 +1434,17 @@ class GameManager(QObject):
                     if os.path.exists(acf_path):
                         os.remove(acf_path)
                         logger.info(f"Removed ACF file: {acf_path}")
+
+            # Clean up .DepotDownloader folder if remove_sls is True and the folder is not already removed
+            if remove_sls and install_path and os.path.exists(install_path):
+                dd_path = os.path.join(install_path, ".DepotDownloader")
+                if os.path.exists(dd_path):
+                    try:
+                        import shutil
+                        shutil.rmtree(dd_path)
+                        logger.info(f"Removed .DepotDownloader folder: {dd_path}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove .DepotDownloader folder: {e}")
 
             # Remove depot file
             if (

@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QCheckBox,
     QLineEdit, QComboBox, QMessageBox, QWidget, QFrame, QStackedWidget,
     QStylePainter, QStyleOptionComboBox, QStyle, QScrollArea, QApplication,
-    QGridLayout, QListView,
+    QGridLayout, QListView, QStyledItemDelegate,
 )
 
 from utils.helpers import get_base_path
@@ -86,17 +86,18 @@ class CenteredComboBox(QComboBox):
         super().__init__(parent)
         view = QListView(self)
         view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        view.setItemDelegate(QStyledItemDelegate(view))
         view.setStyleSheet("""
             QListView {
                 background-color: #16161a;
                 border: 1px solid rgba(255, 255, 255, 30);
                 border-radius: 4px;
-                padding: 4px;
+                padding: 6px;
                 outline: 0px;
             }
             QListView::item {
-                min-height: 24px;
-                padding: 4px 8px;
+                min-height: 28px;
+                padding: 6px 12px;
                 color: #E0E0E0;
                 border-radius: 3px;
             }
@@ -199,8 +200,8 @@ class GameDetailsDialogV2(QDialog):
         self._active_fetchers = {}
         self.branches_loaded.connect(self._on_branches_loaded)
 
-        self.accent_color  = getattr(parent, "accent_color",  "#C06C84")
-        self.background_color = getattr(parent, "background_color", "#1a1a1e")
+        self.accent_color  = getattr(parent, "accent_color",  "#a1c9fd")
+        self.background_color = getattr(parent, "background_color", "#111318")
 
         self.setWindowTitle(f"{game_data.get('game_name', 'Game')} — Details")
         self.setMinimumSize(540, 420)
@@ -547,7 +548,7 @@ class GameDetailsDialogV2(QDialog):
     def _section_title(self, text):
         lbl = QLabel(text.upper())
         lbl.setStyleSheet(
-            "color: rgba(255, 255, 255, 45); font-size: 8px; font-weight: bold;"
+            f"color: {self.accent_color}; font-size: 8px; font-weight: bold;"
             "letter-spacing: 1px; border: none; background: transparent;")
         return lbl
 
@@ -699,19 +700,130 @@ class GameDetailsDialogV2(QDialog):
         self.branch_combo.setMaxVisibleItems(5)
         actions_row.addWidget(self.branch_combo, 0)
 
-        self.validate_btn = QPushButton("Checking...")
+        self.validate_btn = QPushButton("Verify Files")
         self.validate_btn.setFixedHeight(26)
-        self.validate_btn.setEnabled(False)
+        self.validate_btn.setEnabled(True)
         self.validate_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 12); color: rgba(255, 255, 255, 75); border: none;")
         actions_row.addWidget(self.validate_btn, 1)
 
         lay.addLayout(actions_row)
-        lay.addSpacing(3)
+        lay.addSpacing(6)
+
+        # ── Manual Build Download ─────────────────────────────────
+        lay.addWidget(self._thin_line())
+        lay.addSpacing(6)
+
+        # Section Header / Toggle Button
+        self.manual_expanded = False
+        self.manual_expand_btn = QPushButton("▶  Manual Build Download (Advanced)")
+        self.manual_expand_btn.setObjectName("manual_expand_btn")
+        self.manual_expand_btn.setFlat(True)
+        self.manual_expand_btn.setFixedHeight(24)
+        self.manual_expand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.manual_expand_btn.setStyleSheet(f"""
+            QPushButton#manual_expand_btn {{
+                border: none;
+                border-radius: 0px;
+                color: rgba(255, 255, 255, 0.4);
+                font-size: 10px;
+                font-weight: bold;
+                letter-spacing: 0.5px;
+                background: transparent;
+                background-color: transparent;
+                text-align: left;
+                padding: 0px;
+            }}
+            QPushButton#manual_expand_btn:hover {{
+                color: {self.accent_color};
+                background: transparent;
+                background-color: transparent;
+                border: none;
+            }}
+        """)
+        self.manual_expand_btn.clicked.connect(self._toggle_manual_section)
+        lay.addWidget(self.manual_expand_btn)
+
+        # Container widget for the inputs
+        self.manual_container = QWidget()
+        self.manual_container.setVisible(False)
+        manual_layout = QVBoxLayout(self.manual_container)
+        manual_layout.setContentsMargins(0, 4, 0, 4)
+        manual_layout.setSpacing(6)
+
+        manual_row = QHBoxLayout()
+        manual_row.setSpacing(6)
+
+        self.manual_depot_combo = CenteredComboBox()
+        self.manual_depot_combo.setFixedHeight(26)
+        self.manual_depot_combo.setFixedWidth(100)
+        self.manual_depot_combo.setMaxVisibleItems(5)
+        depots_dict = {}
+        try:
+            from managers.db_manager import DatabaseManager
+            from ui.assets import DEPOT_BLACKLIST
+            string_blacklist = {str(item) for item in DEPOT_BLACKLIST}
+            db = DatabaseManager()
+            with db._conn_lock:
+                cur = db.conn.cursor()
+                cur.execute("SELECT depots_json FROM apps WHERE appid = ?", (self.appid,))
+                row = cur.fetchone()
+                if row and row["depots_json"]:
+                    depots_data = db._decompress_depots(row["depots_json"], self.appid)
+                    if depots_data:
+                        depots_dict = {
+                            k: v for k, v in depots_data.items()
+                            if k not in ("branches", "workshopdepots", "branches_public")
+                            and k not in string_blacklist
+                            and isinstance(v, dict)
+                        }
+            logger.info(f"[DEBUG_DEV] Loaded {len(depots_dict)} depots from DB for app {self.appid}")
+        except Exception as e:
+            logger.error(f"[DEBUG_DEV] Failed to load depots from DB directly: {e}", exc_info=True)
+
+        if not depots_dict:
+            depots_dict = self.game_data.get("depots", {})
+
+        if depots_dict:
+            for d_id, d_info in depots_dict.items():
+                self.manual_depot_combo.addItem(str(d_id), d_id)
+        else:
+            self.manual_depot_combo.addItem("No Depots", "")
+        manual_row.addWidget(self.manual_depot_combo)
+
+        self.manual_build_input = QLineEdit()
+        self.manual_build_input.setPlaceholderText("Build ID")
+        self.manual_build_input.setFixedHeight(26)
+        self.manual_build_input.setFixedWidth(90)
+        manual_row.addWidget(self.manual_build_input)
+
+        self.manual_manifest_input = QLineEdit()
+        self.manual_manifest_input.setPlaceholderText("Manifest ID")
+        self.manual_manifest_input.setFixedHeight(26)
+        self.manual_manifest_input.setFixedWidth(160)
+        manual_row.addWidget(self.manual_manifest_input)
+
+        self.manual_download_btn = QPushButton("Download")
+        self.manual_download_btn.setFixedHeight(26)
+        self.manual_download_btn.clicked.connect(self._on_manual_download_clicked)
+        manual_row.addWidget(self.manual_download_btn)
+
+        manual_layout.addLayout(manual_row)
+        lay.addWidget(self.manual_container)
+        lay.addSpacing(6)
+
+        # Hook up manual download button state validation
+        self.manual_depot_combo.currentIndexChanged.connect(self._update_manual_download_btn_state)
+        self.manual_build_input.textChanged.connect(self._update_manual_download_btn_state)
+        self.manual_manifest_input.textChanged.connect(self._update_manual_download_btn_state)
+        self._update_manual_download_btn_state()
 
         self.validate_btn.clicked.connect(self._on_validate_btn_clicked)
         self.branch_combo.currentIndexChanged.connect(self._on_branch_combo_changed)
 
-        self._load_branches_async()
+        # Fast-path: load branches synchronously from DB cache so the combo and
+        # validate button render correctly the moment the dialog opens.
+        # A silent background refresh is fired afterwards to keep the DB warm.
+        self._load_branches_immediate()
 
         self._update_status_ui(self.game_data.get("update_status"))
 
@@ -842,6 +954,44 @@ class GameDetailsDialogV2(QDialog):
 
         self.stacked.addWidget(scroll)
 
+    def _load_branches_immediate(self):
+        """
+        Load branches synchronously from the DB cache so the combo and
+        validate button render correctly the moment the dialog opens.
+        If DB has data, call _on_branches_loaded directly (main thread — no signal delay).
+        Regardless, fire a background refresh to keep the DB warm.
+        """
+        import threading
+        appid = self.appid
+        loaded_from_cache = False
+
+        try:
+            from managers.db_manager import DatabaseManager
+            db = DatabaseManager()
+            app_info = db.get_app_info(appid, bypass_expiration=True)
+            cached_branches = app_info.get("branches") if app_info else None
+            if cached_branches and isinstance(cached_branches, dict) and len(cached_branches) > 0:
+                # Synchronous call — runs on the main thread immediately
+                self._on_branches_loaded(cached_branches)
+                loaded_from_cache = True
+            elif app_info and app_info.get("buildid"):
+                fallback = {"public": {"buildid": str(app_info.get("buildid"))}}
+                self._on_branches_loaded(fallback)
+                loaded_from_cache = True
+            elif self.game_data.get("buildid"):
+                fallback = {"public": {"buildid": str(self.game_data.get("buildid"))}}
+                self._on_branches_loaded(fallback)
+                loaded_from_cache = True
+        except Exception:
+            pass
+
+        # Always fire a background refresh (silent — won't stutter UI since combo is already populated)
+        threading.Thread(target=self._silent_refresh_branches, daemon=True).start()
+
+        if not loaded_from_cache:
+            # No DB data at all — kick off a full live fetch via the normal async path
+            self._load_branches_async(force_refresh=True)
+
     def _load_branches_async(self, force_refresh: bool = False):
         import threading
         appid = self.appid
@@ -851,7 +1001,7 @@ class GameDetailsDialogV2(QDialog):
             try:
                 from managers.db_manager import DatabaseManager
                 db = DatabaseManager()
-                app_info = db.get_app_info(appid)
+                app_info = db.get_app_info(appid, bypass_expiration=True)
                 cached_branches = app_info.get("branches") if app_info else None
                 if cached_branches and isinstance(cached_branches, dict) and len(cached_branches) > 0:
                     self.branches_loaded.emit(cached_branches)
@@ -1025,6 +1175,197 @@ class GameDetailsDialogV2(QDialog):
         self.parent_window._fetch_game_manifest(
             self.game_data, self, branch=sel_branch
         )
+
+    def _toggle_manual_section(self):
+        self.manual_expanded = not self.manual_expanded
+        self.manual_container.setVisible(self.manual_expanded)
+        if self.manual_expanded:
+            self.manual_expand_btn.setText("▼  Manual Build Download (Advanced)")
+        else:
+            self.manual_expand_btn.setText("▶  Manual Build Download (Advanced)")
+
+    def _update_manual_download_btn_state(self):
+        depot = self.manual_depot_combo.currentData()
+        build = self.manual_build_input.text().strip()
+        manifest = self.manual_manifest_input.text().strip()
+        
+        is_valid = bool(depot) and bool(build) and bool(manifest) and build.isdigit() and manifest.isdigit()
+        self.manual_download_btn.setEnabled(is_valid)
+        if is_valid:
+            self.manual_download_btn.setStyleSheet(f"background: {self.accent_color}; color: #FFFFFF; font-weight: bold; border: none; padding: 2px 10px;")
+        else:
+            self.manual_download_btn.setStyleSheet("background: rgba(255, 255, 255, 0.05); color: rgba(255, 255, 255, 0.2); font-weight: bold; border: none; padding: 2px 10px;")
+
+    def _on_manual_download_clicked(self):
+        depot_id = self.manual_depot_combo.currentData()
+        if not depot_id:
+            QMessageBox.warning(self, "No Depot Selected", "Please select a valid depot.")
+            return
+
+        build_id = self.manual_build_input.text().strip()
+        manifest_id = self.manual_manifest_input.text().strip()
+
+        logger.info(f"[DEBUG_DEV] Manual download clicked. AppID: {self.appid}, Depot: {depot_id}, Build: {build_id}, Manifest: {manifest_id}")
+
+        if not build_id or not manifest_id:
+            QMessageBox.warning(self, "Missing Fields", "Please specify both Build ID and Manifest ID.")
+            return
+
+        if not build_id.isdigit() or not manifest_id.isdigit():
+            QMessageBox.warning(self, "Invalid Inputs", "Build ID and Manifest ID must be numeric digits only.")
+            return
+
+        from utils.helpers import get_base_path
+        manifest_filename = f"{depot_id}_{manifest_id}.manifest"
+        global_manifests_dir = get_base_path() / "manifests"
+        src_manifest_path = global_manifests_dir / manifest_filename
+
+        if src_manifest_path.exists():
+            logger.info(f"[DEBUG_DEV] Manifest already exists locally at {src_manifest_path}. Proceeding directly.")
+            self._do_package_and_submit_manual_job(src_manifest_path, manifest_filename, depot_id, build_id, manifest_id)
+            return
+
+        # Manifest does not exist locally. Try to fetch from Hubcap /generate/manifest endpoint.
+        logger.info(f"[DEBUG_DEV] Manifest missing locally. Attempting to download from Hubcap...")
+        
+        # Show a progress dialog
+        from PyQt6.QtWidgets import QProgressDialog
+        progress = QProgressDialog("Generating manifest from Hubcap...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setCancelButton(None)
+        progress.show()
+
+        import threading
+        
+        def _fetch_thread():
+            error_msg = None
+            try:
+                from core.morrenus_api import get_session, _get_headers
+                headers = _get_headers()
+                if not headers:
+                    error_msg = "API key not configured in settings."
+                else:
+                    url = f"https://hubcapmanifest.com/api/v1/generate/manifest?depot_id={depot_id}&manifest_id={manifest_id}"
+                    from utils.isp_bypass import execute_hubcap_request
+                    r = execute_hubcap_request(get_session(), "GET", url, headers=headers, timeout=30)
+                    if r.status_code == 200:
+                        global_manifests_dir.mkdir(parents=True, exist_ok=True)
+                        with open(src_manifest_path, "wb") as f:
+                            f.write(r.content)
+                        logger.info(f"[DEBUG_DEV] Successfully generated, downloaded, and saved manifest: {src_manifest_path}")
+                    else:
+                        try:
+                            detail = r.json().get("detail", r.text)
+                        except Exception:
+                            detail = r.text
+                        error_msg = f"Hubcap returned status code {r.status_code}: {detail}"
+            except Exception as e:
+                logger.error(f"[DEBUG_DEV] Error generating manifest from Hubcap: {e}", exc_info=True)
+                error_msg = str(e)
+
+            # Signal completion back to the main thread
+            from PyQt6.QtCore import QMetaObject, Q_ARG
+            QMetaObject.invokeMethod(
+                self,
+                "_on_manifest_fetch_completed",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, error_msg or ""),
+                Q_ARG(str, str(src_manifest_path)),
+                Q_ARG(str, manifest_filename),
+                Q_ARG(str, depot_id),
+                Q_ARG(str, build_id),
+                Q_ARG(str, manifest_id),
+                Q_ARG(object, progress)
+            )
+
+        threading.Thread(target=_fetch_thread, daemon=True).start()
+
+    from PyQt6.QtCore import pyqtSlot
+    @pyqtSlot(str, str, str, str, str, str, object)
+    def _on_manifest_fetch_completed(self, error_msg, src_manifest_path_str, manifest_filename, depot_id, build_id, manifest_id, progress_dialog):
+        if progress_dialog:
+            try:
+                progress_dialog.close()
+            except Exception:
+                pass
+
+        if error_msg:
+            from utils.helpers import get_base_path
+            global_manifests_dir = get_base_path() / "manifests"
+            QMessageBox.critical(
+                self,
+                "Manifest Retrieval Failed",
+                f"Failed to automatically download manifest from Hubcap.\n\n"
+                f"Error: {error_msg}\n\n"
+                f"Please manually place your manifest file '{manifest_filename}' into:\n"
+                f"{global_manifests_dir}/\n\n"
+                "Then try again."
+            )
+            return
+
+        from pathlib import Path
+        src_manifest_path = Path(src_manifest_path_str)
+        self._do_package_and_submit_manual_job(src_manifest_path, manifest_filename, depot_id, build_id, manifest_id)
+
+    def _do_package_and_submit_manual_job(self, src_manifest_path, manifest_filename, depot_id, build_id, manifest_id):
+        import zipfile
+        from utils.helpers import get_base_path
+
+        manifests_dir = get_base_path() / "hubcap_manifests"
+        manifests_dir.mkdir(parents=True, exist_ok=True)
+        local_zip_path = manifests_dir / f"accela_fetch_{self.appid}_branch_manual.zip"
+
+        logger.info(f"[DEBUG_DEV] Packaging manifest into zip: {local_zip_path}")
+        try:
+            with zipfile.ZipFile(local_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_ref:
+                zip_ref.write(src_manifest_path, manifest_filename)
+            logger.info("[DEBUG_DEV] Successfully packaged manifest file into zip.")
+        except Exception as e:
+            logger.error(f"[DEBUG_DEV] Failed to create temporary manifest zip: {e}", exc_info=True)
+            QMessageBox.critical(self, "Error", f"Failed to package manifest file: {e}")
+            return
+
+        # Prepare game data override
+        game_data = self.game_data.copy()
+        game_data["buildid"] = build_id
+        game_data["branch"] = "public"  # Avoid passing non-existent branch to DepotDownloader
+        game_data["_is_rollback"] = True # Prevent marking game as up-to-date and skipping stage2 warnings
+        game_data.setdefault("manifests", {})[depot_id] = manifest_id
+
+        # Load and verify depots from DB to ensure decryption keys are present
+        depots_dict = {}
+        try:
+            from managers.db_manager import DatabaseManager
+            from ui.assets import DEPOT_BLACKLIST
+            string_blacklist = {str(item) for item in DEPOT_BLACKLIST}
+            db = DatabaseManager()
+            with db._conn_lock:
+                cur = db.conn.cursor()
+                cur.execute("SELECT depots_json FROM apps WHERE appid = ?", (self.appid,))
+                row = cur.fetchone()
+                if row and row["depots_json"]:
+                    depots_data = db._decompress_depots(row["depots_json"], self.appid)
+                    if depots_data:
+                        depots_dict = {
+                            k: v for k, v in depots_data.items()
+                            if k not in ("branches", "workshopdepots", "branches_public")
+                            and k not in string_blacklist
+                            and isinstance(v, dict)
+                        }
+            logger.info(f"[DEBUG_DEV] Loaded {len(depots_dict)} depots from DB for job app {self.appid}")
+        except Exception as e:
+            logger.error(f"[DEBUG_DEV] Failed to load depots from DB directly for job: {e}", exc_info=True)
+
+        if depots_dict:
+            game_data["depots"] = depots_dict
+        else:
+            game_data.setdefault("depots", {})
+
+        # Submit the job
+        logger.info(f"[DEBUG_DEV] Submitting job with zip: {local_zip_path} and game_data: {game_data}")
+        self.parent_window._submit_job(str(local_zip_path), game_data, self)
+
+
 
     # ──────────────────────────────────────────
     def _build_uninstall_panel(self):
@@ -1264,6 +1605,11 @@ class GameDetailsDialogV2(QDialog):
         name = self.game_data.get("game_name")
         ac = self.accent_color
 
+        def _btn(text, tooltip=None, width=246):
+            btn = self._card_btn(text, tooltip)
+            btn.setFixedWidth(width)
+            return btn
+
         def _row_label(text):
             lbl = QLabel(text)
             lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9.5pt;")
@@ -1274,7 +1620,7 @@ class GameDetailsDialogV2(QDialog):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(10)
         grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(1, 0)
 
         row_idx = 0
 
@@ -1282,23 +1628,23 @@ class GameDetailsDialogV2(QDialog):
         grid.addWidget(self._section_title("DRM & Emulation"), row_idx, 0, 1, 2)
         row_idx += 1
 
-        b_steamless = self._card_btn("Run Steamless")
+        b_steamless = _btn("Run Steamless")
         b_steamless.clicked.connect(
             lambda: self.parent_window.main_window.task_manager.run_steamless_for_game(path, name))
         grid.addWidget(_row_label("Steamless DRM Remover"), row_idx, 0)
-        grid.addWidget(b_steamless, row_idx, 1)
+        grid.addWidget(b_steamless, row_idx, 1, Qt.AlignmentFlag.AlignRight)
         row_idx += 1
 
-        b_aio = self._card_btn("Run Steamless-AIO")
+        b_aio = _btn("Run Steamless-AIO")
         b_aio.clicked.connect(
             lambda: self.parent_window.main_window.task_manager.run_steamless_aio_for_game(path, name))
         grid.addWidget(_row_label("Steamless All-In-One"), row_idx, 0)
-        grid.addWidget(b_aio, row_idx, 1)
+        grid.addWidget(b_aio, row_idx, 1, Qt.AlignmentFlag.AlignRight)
         row_idx += 1
 
         # Goldberg buttons side by side in the second column
-        self.gb_apply_btn = self._card_btn("Apply Goldberg")
-        self.gb_remove_btn = self._card_btn("Remove Goldberg")
+        self.gb_apply_btn = _btn("Apply Goldberg", width=120)
+        self.gb_remove_btn = _btn("Remove Goldberg", width=120)
         self.parent_window.goldberg_check_complete.connect(self._on_goldberg_check_complete)
         self.finished.connect(
             lambda: self.parent_window.goldberg_check_complete.disconnect(
@@ -1321,14 +1667,17 @@ class GameDetailsDialogV2(QDialog):
         self.gb_apply_btn.clicked.connect(_apply_gb)
         self.gb_remove_btn.clicked.connect(_remove_gb)
 
-        gb_row = QHBoxLayout()
+        gb_container = QWidget()
+        gb_container.setFixedWidth(246)
+        gb_container.setStyleSheet("background: transparent;")
+        gb_row = QHBoxLayout(gb_container)
         gb_row.setContentsMargins(0, 0, 0, 0)
         gb_row.setSpacing(6)
-        gb_row.addWidget(self.gb_apply_btn, 1)
-        gb_row.addWidget(self.gb_remove_btn, 1)
+        gb_row.addWidget(self.gb_apply_btn)
+        gb_row.addWidget(self.gb_remove_btn)
 
         grid.addWidget(_row_label("Goldberg Steam Emulator"), row_idx, 0)
-        grid.addLayout(gb_row, row_idx, 1)
+        grid.addWidget(gb_container, row_idx, 1, Qt.AlignmentFlag.AlignRight)
         row_idx += 1
 
         # Divider
@@ -1343,26 +1692,29 @@ class GameDetailsDialogV2(QDialog):
         self.depot_status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.75); font-size: 9.5pt;")
         self._update_depot_label()
 
-        choose_btn = self._card_btn("Choose...")
+        choose_btn = _btn("Choose...", width=120)
         choose_btn.clicked.connect(self._configure_depots_wrapper)
-        reset_btn = self._card_btn("Reset")
+        reset_btn = _btn("Reset", width=120)
         reset_btn.clicked.connect(self._reset_depots_wrapper)
 
-        depot_row = QHBoxLayout()
+        depot_container = QWidget()
+        depot_container.setFixedWidth(246)
+        depot_container.setStyleSheet("background: transparent;")
+        depot_row = QHBoxLayout(depot_container)
         depot_row.setContentsMargins(0, 0, 0, 0)
         depot_row.setSpacing(6)
-        depot_row.addWidget(choose_btn, 1)
+        depot_row.addWidget(choose_btn)
         depot_row.addWidget(reset_btn)
 
         grid.addWidget(self.depot_status_lbl, row_idx, 0)
-        grid.addLayout(depot_row, row_idx, 1)
+        grid.addWidget(depot_container, row_idx, 1, Qt.AlignmentFlag.AlignRight)
         row_idx += 1
 
-        fix_btn = self._card_btn("Fix Installation")
+        fix_btn = _btn("Fix Installation")
         fix_btn.setToolTip("Removes local manifest (.acf) to force Steam verification.")
         fix_btn.clicked.connect(lambda: self.parent_window._fix_game_install(self.game_data))
         grid.addWidget(_row_label("Fix Installation State"), row_idx, 0)
-        grid.addWidget(fix_btn, row_idx, 1)
+        grid.addWidget(fix_btn, row_idx, 1, Qt.AlignmentFlag.AlignRight)
         row_idx += 1
 
         # Divider
@@ -1374,31 +1726,31 @@ class GameDetailsDialogV2(QDialog):
         row_idx += 1
 
         if self.appid not in ("0", "N/A", "unknown"):
-            steam_btn = self._card_btn("Open Store")
+            steam_btn = _btn("Open Store")
             steam_btn.clicked.connect(lambda: QDesktopServices.openUrl(
                 QUrl(f"https://store.steampowered.com/app/{self.appid}/")))
             grid.addWidget(_row_label("Steam Store Page"), row_idx, 0)
-            grid.addWidget(steam_btn, row_idx, 1)
+            grid.addWidget(steam_btn, row_idx, 1, Qt.AlignmentFlag.AlignRight)
             row_idx += 1
 
-            steamdb_btn = self._card_btn("Open SteamDB")
+            steamdb_btn = _btn("Open SteamDB")
             steamdb_btn.clicked.connect(lambda: QDesktopServices.openUrl(
                 QUrl(f"https://www.steamdb.info/app/{self.appid}/")))
             grid.addWidget(_row_label("Steam Database"), row_idx, 0)
-            grid.addWidget(steamdb_btn, row_idx, 1)
+            grid.addWidget(steamdb_btn, row_idx, 1, Qt.AlignmentFlag.AlignRight)
             row_idx += 1
 
-        copy_appid = self._card_btn("Copy ID")
+        copy_appid = _btn("Copy ID")
         copy_appid.clicked.connect(lambda: QApplication.clipboard().setText(self.appid))
         grid.addWidget(_row_label("Game Application ID"), row_idx, 0)
-        grid.addWidget(copy_appid, row_idx, 1)
+        grid.addWidget(copy_appid, row_idx, 1, Qt.AlignmentFlag.AlignRight)
         row_idx += 1
 
-        copy_path = self._card_btn("Copy Path")
+        copy_path = _btn("Copy Path")
         copy_path.clicked.connect(lambda: QApplication.clipboard().setText(
             str(self.game_data.get("install_path", ""))))
         grid.addWidget(_row_label("Install Folder Location"), row_idx, 0)
-        grid.addWidget(copy_path, row_idx, 1)
+        grid.addWidget(copy_path, row_idx, 1, Qt.AlignmentFlag.AlignRight)
         row_idx += 1
 
         lay.addWidget(grid_widget)

@@ -49,7 +49,7 @@ class CreditsDialog(QDialog):
 
         self.settings = get_settings()
         self.main_window = parent
-        self.accent_color = self.settings.value("accent_color", "#C06C84")
+        self.accent_color = self.settings.value("accent_color", "#a1c9fd")
 
         logger.debug("Opening CreditsDialog.")
 

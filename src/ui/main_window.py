@@ -705,12 +705,19 @@ class SimplifiedTerminalWidget(QWidget):
     def show_idle(self):
         self.layout.setCurrentIndex(0)
         self.update_stats()
+        # Re-position FABs now that idle view geometry is restored
+        self.main_window.position_update_all_btn()
         if hasattr(self.main_window, "_update_tool_update_visibility"):
             self.main_window._update_tool_update_visibility()
 
     def show_active_job(self, game_name: str = "Installing Game..."):
         self.game_title_label.setText(game_name)
         self.layout.setCurrentIndex(1)
+        # Hide FABs while active — they live inside panel_mid (idle-only view)
+        if hasattr(self, "update_all_btn") and self.update_all_btn:
+            self.update_all_btn.hide()
+        if hasattr(self, "refresh_updates_btn") and self.refresh_updates_btn:
+            self.refresh_updates_btn.hide()
         if hasattr(self.main_window, "_update_tool_update_visibility"):
             self.main_window._update_tool_update_visibility()
 
@@ -1016,8 +1023,8 @@ class MainWindow(QMainWindow):
         """Initialize all manager classes."""
         self.settings = get_settings()
 
-        self.accent_color = self.settings.value("accent_color", "#C06C84")
-        self.background_color = self.settings.value("background_color", "#000000")
+        self.accent_color = self.settings.value("accent_color", "#a1c9fd")
+        self.background_color = self.settings.value("background_color", "#111318")
 
         self.task_manager = TaskManager(self)
         self.ui_state = UIStateManager(self)
@@ -1477,7 +1484,12 @@ class MainWindow(QMainWindow):
     def position_update_all_btn(self):
         if hasattr(self, "simplified_terminal") and self.simplified_terminal:
             term = self.simplified_terminal
-            
+
+            # Don't reposition FABs when the active-job view is shown —
+            # panel_mid has zero/altered geometry then, causing incorrect placement.
+            if hasattr(term, "layout") and term.layout.currentIndex() != 0:
+                return
+
             # Position refresh button
             if hasattr(term, "refresh_updates_btn") and term.refresh_updates_btn:
                 # If update_all_btn is visible, place refresh to its left
@@ -1486,7 +1498,7 @@ class MainWindow(QMainWindow):
                     x_update = term.panel_mid.width() - term.update_all_btn.width() - 16
                     y_update = term.panel_mid.height() - term.update_all_btn.height() - 16
                     term.update_all_btn.move(x_update, y_update)
-                    
+
                     x_refresh = x_update - 36 - 8
                     y_refresh = term.panel_mid.height() - 36 - 16
                     term.refresh_updates_btn.move(x_refresh, y_refresh)
@@ -1499,14 +1511,17 @@ class MainWindow(QMainWindow):
         """Forces a clean re-check of updates for all games, ignoring cache."""
         if self.game_manager:
             logger.info("Forcing full updates check for all games (bypassing cache)")
-            # Set all games to checking status in the UI to give immediate visual feedback
-            self.game_manager.reset_up_to_date_for_recheck()
-            # Also reset any update_available to checking so they get re-verified as well
+            # Reset 'up_to_date' / 'cannot_determine' / 'checking' games to 'checking'
+            # so they are re-queried. Games already marked 'update_available' are
+            # intentionally left intact so the pending-updates list stays populated
+            # during the refresh — cache acts as a display layer throughout.
             for g in self.game_manager.games:
-                g["update_status"] = "checking"
+                if g.get("update_status") != "update_available":
+                    g["update_status"] = "checking"
             self.game_manager.library_updated.emit()
-            
-            # Start checks with force_refresh = True
+
+            # Start checks with force_refresh = True so update_available games are
+            # re-verified too, even though we kept their visual status intact above.
             self.game_manager.check_game_updates_async(force_refresh=True)
 
     def _create_main_content(self) -> None:

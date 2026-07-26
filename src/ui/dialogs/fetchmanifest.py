@@ -5,7 +5,7 @@ import time
 from typing import Any, Dict
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QColor, QIcon, QPixmap
+from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter, QBrush, QLinearGradient
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -137,11 +137,11 @@ class FetchManifestDialog(QDialog):
             from utils.settings import get_settings
             self.settings = get_settings()
 
-        self.accent_color = "#C06C84"
-        self.background_color = "#000000"
+        self.accent_color = "#a1c9fd"
+        self.background_color = "#111318"
         if self.settings:
-            self.accent_color = self.settings.value("accent_color", "#C06C84")
-            self.background_color = self.settings.value("background_color", "#000000")
+            self.accent_color = self.settings.value("accent_color", "#a1c9fd")
+            self.background_color = self.settings.value("background_color", "#111318")
 
         self.task_runner = TaskRunner()
         self._active_image_fetchers = {}
@@ -161,40 +161,46 @@ class FetchManifestDialog(QDialog):
                 f"""
                 QDialog {{
                     background-color: {self.background_color};
-                    color: {self.accent_color};
+                    color: #FFFFFF;
                 }}
                 QLabel {{
-                    color: {self.accent_color};
+                    color: rgba(255, 255, 255, 0.85);
                 }}
                 QLineEdit {{
-                    background-color: #111111;
-                    color: {self.accent_color};
-                    border: 1px solid #333333;
-                    border-radius: 6px;
-                    padding: 6px 12px;
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 18px;
+                    padding: 0px 16px;
+                    height: 36px;
                     font-size: 12px;
                 }}
                 QLineEdit:focus {{
-                    border: 1px solid {self.accent_color};
+                    border: 2px solid {self.accent_color};
+                    background-color: rgba(255, 255, 255, 0.08);
+                    padding: 0px 15px;
                 }}
                 QListWidget {{
                     background-color: {self.background_color};
-                    border: 1px solid #333333;
-                    border-radius: 6px;
+                    border: none;
+                    padding: 10px 0px;
                 }}
                 QListWidget::item {{
-                    background-color: {self.background_color};
-                    border-bottom: 1px solid #222222;
-                    color: {self.accent_color};
-                    padding: 6px;
-                    border-radius: 4px;
+                    background-color: rgba(255, 255, 255, 0.03);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 12px;
+                    margin: 6px 16px;
+                    color: #FFFFFF;
+                    padding: 8px;
                 }}
                 QListWidget::item:hover {{
-                    background-color: #111111;
+                    background-color: rgba(255, 255, 255, 0.07);
+                    border-color: rgba(255, 255, 255, 0.16);
                 }}
                 QListWidget::item:selected {{
-                    background-color: #1a1a1a;
-                    color: {self.accent_color};
+                    background-color: rgba(255, 255, 255, 0.12);
+                    border-color: {self.accent_color};
+                    color: #FFFFFF;
                 }}
                 """
             )
@@ -230,16 +236,17 @@ class FetchManifestDialog(QDialog):
 
         # Connection Dot
         self.api_status_dot = QLabel()
-        self.api_status_dot.setFixedSize(12, 12)
+        self.api_status_dot.setFixedSize(10, 10)
         self.api_status_dot.setStyleSheet(
-            "border-radius: 6px; background-color: #95a5a6;"
-        )  # Gray
+            "border-radius: 5px; background-color: #7f8c8d;"
+        )
 
         self.api_status_text = QLabel("Checking...")
+        self.api_status_text.setStyleSheet("font-weight: bold; color: rgba(255, 255, 255, 0.6);")
 
         # Group Dot + Text
         conn_layout = QHBoxLayout()
-        conn_layout.setSpacing(5)
+        conn_layout.setSpacing(6)
         conn_layout.addWidget(self.api_status_dot)
         conn_layout.addWidget(self.api_status_text)
 
@@ -248,9 +255,11 @@ class FetchManifestDialog(QDialog):
 
         # User Info
         self.username_label = QLabel("User: --")
+        self.username_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 11px;")
         container.addWidget(self.username_label)
 
         self.usage_label = QLabel("Daily: --")
+        self.usage_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 11px;")
         container.addWidget(self.usage_label)
 
         parent_layout.addWidget(status_widget)
@@ -285,14 +294,16 @@ class FetchManifestDialog(QDialog):
         # Update Connection Status
         if is_healthy:
             self.api_status_dot.setStyleSheet(
-                "border-radius: 6px; background-color: #2ecc71;"
+                "border-radius: 5px; background-color: #81C784;"
             )  # Green
             self.api_status_text.setText("Online")
+            self.api_status_text.setStyleSheet("font-weight: bold; color: #81C784;")
         else:
             self.api_status_dot.setStyleSheet(
-                "border-radius: 6px; background-color: #e74c3c;"
+                "border-radius: 5px; background-color: #FF8A80;"
             )  # Red
             self.api_status_text.setText("Offline")
+            self.api_status_text.setStyleSheet("font-weight: bold; color: #FF8A80;")
 
         # Update User Stats
         stats = result.get("stats", {})
@@ -585,7 +596,31 @@ class FetchManifestDialog(QDialog):
             pixmap = QPixmap()
             pixmap.loadFromData(image_data)
             if not pixmap.isNull():
-                item.setIcon(QIcon(pixmap))
+                target_size = QSize(230, 108)
+                scaled = pixmap.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+
+                cropped_faded = QPixmap(target_size)
+                cropped_faded.fill(Qt.GlobalColor.transparent)
+
+                painter = QPainter(cropped_faded)
+                dx = (target_size.width() - scaled.width()) // 2
+                dy = (target_size.height() - scaled.height()) // 2
+                painter.drawPixmap(dx, dy, scaled)
+
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+                gradient = QLinearGradient(0, 0, target_size.width(), 0)
+                gradient.setColorAt(0.0, QColor(0, 0, 0, 255))
+                gradient.setColorAt(0.5, QColor(0, 0, 0, 255))
+                gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
+
+                painter.fillRect(cropped_faded.rect(), QBrush(gradient))
+                painter.end()
+
+                item.setIcon(QIcon(cropped_faded))
 
         # Find fetcher and delete it safely
         sender = self.sender()

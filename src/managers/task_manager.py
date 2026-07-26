@@ -917,7 +917,14 @@ class TaskManager(QObject):
                                 if isinstance(b_entry, dict):
                                     target_bid = str(b_entry.get("buildid", ""))
 
-                            final_bid = target_bid or new_bid
+                            is_rollback_job = self.game_data.get("_is_rollback") if self.game_data else False
+                            if is_rollback_job:
+                                final_bid = new_bid
+                                logger.info(f"[DEBUG_DEV] Rollback/manual install detected. Using manual build ID as final_bid: {final_bid}")
+                            else:
+                                final_bid = target_bid or new_bid
+                                logger.info(f"[DEBUG_DEV] Standard install completed. final_bid: {final_bid}")
+
                             settings.setValue(f"installed_branch/{appid}", sel_b)
                             if final_bid:
                                 # Store per-branch: installed_buildid/appid/branch

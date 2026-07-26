@@ -39,8 +39,8 @@ class WorkshopDialog(QDialog):
         self.resize(550, 420)
         self.settings = get_settings()
         
-        self.accent_color = self.settings.value("accent_color", "#C06C84")
-        self.bg_color = self.settings.value("background_color", "#000000")
+        self.accent_color = self.settings.value("accent_color", "#a1c9fd")
+        self.bg_color = self.settings.value("background_color", "#111318")
         
         self.setStyleSheet(
             f"""

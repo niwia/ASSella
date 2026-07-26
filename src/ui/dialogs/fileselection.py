@@ -28,8 +28,8 @@ class FileSelectionDialog(QDialog):
         self.all_files = []
 
         # Theme styling (inherit from parent)
-        self.accent_color = "#C06C84"
-        self.background_color = "#000000"
+        self.accent_color = "#a1c9fd"
+        self.background_color = "#111318"
         if parent:
             if hasattr(parent, "accent_color"):
                 self.accent_color = parent.accent_color

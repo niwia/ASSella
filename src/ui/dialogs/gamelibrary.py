@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PyQt6.QtCore import QSize, Qt, QTimer, QMetaObject, Q_ARG, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QAction, QIntValidator, QPixmap
+from PyQt6.QtGui import QAction, QIntValidator, QPixmap, QPainter, QBrush, QLinearGradient, QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QSizePolicy,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -151,8 +152,8 @@ class GameItemWidget(QWidget):
     def _init_ui(self, size_str: str) -> None:
         """Initialize the UI components."""
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(10)
+        layout.setContentsMargins(1, 1, 16, 1)
+        layout.setSpacing(16)
 
         # Check setting
         applist_2_0_enabled = self.applist_2_0_enabled
@@ -167,7 +168,7 @@ class GameItemWidget(QWidget):
 
         # --- Image Section ---
         self.image_label = QLabel()
-        self.image_label.setFixedSize(230, 108)  # Standard Steam Header Ratio
+        self.image_label.setFixedSize(210, 116)  # Fits perfectly in 118px card height minus borders
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         name = self.game_data.get("game_name", "Unknown")
@@ -175,9 +176,12 @@ class GameItemWidget(QWidget):
         self.image_label.setText(name[:2].upper())
 
         self.image_label.setStyleSheet(
-            f"background-color: {self.background_color}; "
+            f"border-top-left-radius: 11px; "
+            f"border-bottom-left-radius: 11px; "
+            f"border-top-right-radius: 0px; "
+            f"border-bottom-right-radius: 0px; "
+            f"background-color: rgba(255, 255, 255, 0.02); "
             f"color: {self.accent_color}; "
-            f"border-radius: 4px; "
         )
         layout.addWidget(self.image_label)
 
@@ -206,20 +210,20 @@ class GameItemWidget(QWidget):
 
         # --- Info Section (Vertical) ---
         info_layout = QVBoxLayout()
-        info_layout.setContentsMargins(0, 5, 0, 5)
-        info_layout.setSpacing(2)
+        info_layout.setContentsMargins(0, 8, 0, 8)
+        info_layout.setSpacing(4)
 
         # Game name
         name_label = QLabel(display_name)
         name_label.setStyleSheet(
-            f"font-weight: bold; font-size: 14px; color: {self.accent_color};"
+            "color: #FFFFFF; font-size: 15px; font-weight: bold;"
         )
         name_label.setWordWrap(True)
         info_layout.addWidget(name_label)
 
         # Size
         size_label = QLabel(f"Size: {size_str}")
-        size_label.setStyleSheet(f"color: {self.accent_color};")
+        size_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px;")
         info_layout.addWidget(size_label)
 
         # Update status
@@ -236,23 +240,30 @@ class GameItemWidget(QWidget):
     def _add_status_label(self, layout: QVBoxLayout) -> None:
         """Add the update status label based on game data."""
         update_status = self.game_data.get("update_status", "cannot_determine")
-        status_label = QLabel()
+        self.status_label = QLabel()
 
-        applist_2_0_enabled = self.applist_2_0_enabled
-
+        # Modern MD3 chip design
         status_map = {
-            "update_available": ("New version available", "#E05A47" if applist_2_0_enabled else self.accent_color),
-            "up_to_date": ("Up to date", "#8AE08A" if applist_2_0_enabled else "#00FF00"),
-            "checking": ("Checking for updates...", "#FFA500"),
+            "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
+            "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
+            "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
         }
 
-        text, color = status_map.get(
-            update_status, ("Unable to check updates", "#AAAAAA")
+        text, color, bg_color = status_map.get(
+            update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
         )
 
-        status_label.setText(text)
-        status_label.setStyleSheet(f"color: {color}; font-style: italic;")
-        layout.addWidget(status_label)
+        self.status_label.setText(text)
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.status_label.setStyleSheet(
+            f"color: {color}; "
+            f"background-color: {bg_color}; "
+            f"border-radius: 10px; "
+            f"padding: 3px 10px; "
+            f"font-size: 11px; "
+            f"font-weight: bold;"
+        )
+        layout.addWidget(self.status_label)
 
     def update_manifest_label(self) -> None:
         """Update the manifest status label in-place."""
@@ -261,11 +272,10 @@ class GameItemWidget(QWidget):
 
         appid = self.game_data.get("appid", "0")
         update_status = self.game_data.get("update_status", "cannot_determine")
-        applist_2_0_enabled = self.applist_2_0_enabled
 
         if not appid or appid in ("0", "N/A", "unknown"):
             self.manifest_label.setText("Manifest: N/A")
-            self.manifest_label.setStyleSheet("color: #AAAAAA; font-style: italic; font-size: 11px;")
+            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px;")
             return
 
         last_updated = None
@@ -283,10 +293,10 @@ class GameItemWidget(QWidget):
 
         if update_status == "checking":
             self.manifest_label.setText("Manifest: Fetching...")
-            self.manifest_label.setStyleSheet("color: #FFA500; font-style: italic; font-size: 11px;")
+            self.manifest_label.setStyleSheet("color: #FFA726; font-size: 12px;")
         elif not last_updated:
             self.manifest_label.setText("Manifest: Not Found")
-            self.manifest_label.setStyleSheet("color: #AAAAAA; font-style: italic; font-size: 11px;")
+            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px;")
         else:
             import time
             age_seconds = time.time() - last_updated
@@ -309,41 +319,65 @@ class GameItemWidget(QWidget):
                     age_str = f"{days // 365}y"
 
             self.manifest_label.setText(f"Manifest: Cached ({age_str} ago)")
-            if applist_2_0_enabled:
-                self.manifest_label.setStyleSheet("color: rgba(130, 195, 130, 0.85); font-style: italic; font-size: 10px;")
-            else:
-                self.manifest_label.setStyleSheet("color: #00FF00; font-size: 11px;")
+            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px;")
 
     def update_status(self, update_status: str) -> None:
         """Update update and manifest status labels in-place."""
         self.game_data["update_status"] = update_status
         status_map = {
-            "update_available": ("New version available", "#E05A47" if self.applist_2_0_enabled else self.accent_color),
-            "up_to_date": ("Up to date", "#8AE08A" if self.applist_2_0_enabled else "#00FF00"),
-            "checking": ("Checking for updates...", "#FFA500"),
+            "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
+            "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
+            "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
         }
 
-        text, color = status_map.get(
-            update_status, ("Unable to check updates", "#AAAAAA")
+        text, color, bg_color = status_map.get(
+            update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
         )
 
         if hasattr(self, "status_label") and self.status_label:
             self.status_label.setText(text)
-            self.status_label.setStyleSheet(f"color: {color}; font-style: italic;")
+            self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            self.status_label.setStyleSheet(
+                f"color: {color}; "
+                f"background-color: {bg_color}; "
+                f"border-radius: 10px; "
+                f"padding: 3px 10px; "
+                f"font-size: 11px; "
+                f"font-weight: bold;"
+            )
 
         self.update_manifest_label()
 
     def set_image(self, pixmap: QPixmap) -> None:
-        """Sets the image on the label, scaling it nicely."""
+        """Sets the image on the label, scaling it nicely with right-fade blend."""
         if not pixmap or pixmap.isNull():
             return
 
+        target_size = self.image_label.size()
         scaled = pixmap.scaled(
-            self.image_label.size(),
+            target_size,
             Qt.AspectRatioMode.KeepAspectRatioByExpanding,
             Qt.TransformationMode.SmoothTransformation,
         )
-        self.image_label.setPixmap(scaled)
+
+        cropped_faded = QPixmap(target_size)
+        cropped_faded.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(cropped_faded)
+        dx = (target_size.width() - scaled.width()) // 2
+        dy = (target_size.height() - scaled.height()) // 2
+        painter.drawPixmap(dx, dy, scaled)
+
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        gradient = QLinearGradient(0, 0, target_size.width(), 0)
+        gradient.setColorAt(0.0, QColor(0, 0, 0, 255))
+        gradient.setColorAt(0.5, QColor(0, 0, 0, 255))
+        gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
+
+        painter.fillRect(cropped_faded.rect(), QBrush(gradient))
+        painter.end()
+
+        self.image_label.setPixmap(cropped_faded)
 
     def set_selected(self, selected: bool) -> None:
         """Update the checkbox checked state visually."""
@@ -388,12 +422,12 @@ class GameLibraryDialog(QDialog):
         self.executor = ThreadPoolExecutor(max_workers=4)
 
         # Load theme colors
-        self.accent_color = "#C06C84"
-        self.background_color = "#000000"
+        self.accent_color = "#a1c9fd"
+        self.background_color = "#111318"
 
         if self.settings:
-            self.accent_color = self.settings.value("accent_color", "#C06C84")
-            self.background_color = self.settings.value("background_color", "#000000")
+            self.accent_color = self.settings.value("accent_color", "#a1c9fd")
+            self.background_color = self.settings.value("background_color", "#111318")
         self.applist_2_0_enabled = True
 
         # Search debounce timer
@@ -442,22 +476,30 @@ class GameLibraryDialog(QDialog):
 
         self.setStyleSheet(
             f"""
-            QDialog {{ background-color: {self.background_color}; color: {self.accent_color}; }}
+            QDialog {{ background-color: {self.background_color}; color: #FFFFFF; }}
             
             QListWidget {{ 
                 background-color: {self.background_color}; 
                 border: none; 
-                border-radius: 4px; 
+                padding: 10px 0px;
             }}
             QListWidget::item {{ 
-                border-bottom: 1px solid #333; 
-                color: {self.accent_color};
+                background-color: rgba(255, 255, 255, 0.03); 
+                border: 1px solid rgba(255, 255, 255, 0.08); 
+                border-radius: 12px;
+                margin: 6px 16px;
+                color: #FFFFFF;
+            }}
+            QListWidget::item:hover {{ 
+                background-color: rgba(255, 255, 255, 0.07); 
+                border-color: rgba(255, 255, 255, 0.16); 
             }}
             QListWidget::item:selected {{ 
-                background-color: #1A1A1A; 
+                background-color: rgba(255, 255, 255, 0.12); 
+                border-color: {self.accent_color}; 
             }}
             
-            QLabel {{ color: {self.accent_color}; }}
+            QLabel {{ color: rgba(255, 255, 255, 0.85); }}
             
             QComboBox {{ 
                 background-color: {self.background_color}; 
@@ -508,54 +550,76 @@ class GameLibraryDialog(QDialog):
         self.select_mode_button.clicked.connect(self._toggle_select_mode)
 
         if applist_2_0_enabled:
-            self.search_input.setFixedWidth(200)
+            self.search_input.setFixedWidth(220)
+            self.search_input.setFixedHeight(36)
             self.search_input.setStyleSheet(
                 f"""
                 QLineEdit {{
-                    background-color: #111111;
-                    color: {self.accent_color};
-                    border: 1px solid #333333;
-                    border-radius: 6px;
-                    padding: 5px 10px;
-                    font-size: 11px;
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 18px;
+                    padding: 0px 16px;
+                    font-size: 12px;
                 }}
                 QLineEdit:focus {{
-                    border: 1px solid {self.accent_color};
+                    border: 2px solid {self.accent_color};
+                    background-color: rgba(255, 255, 255, 0.08);
+                    padding: 0px 15px;
                 }}
                 """
             )
+            self.sort_combo.setFixedHeight(36)
             self.sort_combo.setStyleSheet(
                 f"""
                 QComboBox {{
-                    background-color: #111111;
-                    color: {self.accent_color};
-                    border: 1px solid #333333;
-                    border-radius: 6px;
-                    padding: 5px 10px;
-                    font-size: 11px;
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 18px;
+                    padding: 0px 16px;
+                    font-size: 12px;
+                }}
+                QComboBox:hover {{
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border-color: rgba(255, 255, 255, 0.2);
                 }}
                 QComboBox::drop-down {{
                     border: none;
+                    width: 0px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {self.background_color};
+                    color: #FFFFFF;
+                    selection-background-color: rgba(255, 255, 255, 0.12);
+                    selection-color: {self.accent_color};
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 8px;
+                    padding: 4px;
                 }}
                 """
             )
+            self.select_mode_button.setFixedWidth(85)
+            self.select_mode_button.setFixedHeight(36)
             self.select_mode_button.setStyleSheet(
                 f"""
                 QPushButton {{
-                    background-color: #111111;
-                    color: {self.accent_color};
-                    border: 1px solid #333333;
-                    border-radius: 6px;
-                    padding: 5px 10px;
-                    font-size: 11px;
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 18px;
+                    padding: 0px 16px;
+                    font-size: 12px;
+                    font-weight: bold;
                 }}
                 QPushButton:hover {{
-                    background-color: #222222;
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border-color: rgba(255, 255, 255, 0.2);
                 }}
                 QPushButton:checked {{
                     background-color: {self.accent_color};
                     color: #000000;
-                    font-weight: bold;
+                    border: none;
                 }}
                 """
             )
@@ -2022,6 +2086,7 @@ class GameLibraryDialog(QDialog):
 
         # 1. Remove from SLSsteam config
         try:
+            from utils.yaml_config_manager import remove_additional_app
             config_path = get_user_config_path()
             if config_path.exists():
                 remove_additional_app(config_path, appid)

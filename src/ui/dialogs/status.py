@@ -57,7 +57,7 @@ class StatusDialog(QDialog):
     def _gather_status(self) -> None:
         """Gather status from task_manager."""
         settings = get_settings()
-        accent_color = settings.value("accent_color", "#C06C84")
+        accent_color = settings.value("accent_color", "#a1c9fd")
 
         # Set defaults first
         self.ddm_status = accent_color
