@@ -1,23 +1,17 @@
-# ASSella v2.5.1 Prerelease Changelog
+# ASSella v2.5.2 Prerelease Changelog
 
-## Material You UI Overhaul (Beta)
-- Restyled the Game Library and Fetch Manifest lists into modern elevated Material Design 3 card components.
-- Introduced capsule/pill styling for search bars, sort comboboxes, and filter buttons.
-- Implemented an immersive Spotify-style fading thumbnail visual effect that smoothly blends cover art headers into dark card containers.
-- Replaced standard status text with rounded Suggestion Chips/Pills for update availability.
-- Note: The Game Library interface still needs a bit more tuning for UI alignments in future updates.
+## Goldberg Experimental Emulator Update
+- Upgraded the bundled Goldberg Steam Emulator libraries to the latest July 2026 experimental builds.
+- Brings full compatibility for Steam SDK v1.60 interfaces (including ISteamUGC020, ISteamVideo007, and ISteamTimeline001).
+- Introduces native support for the new steam_settings/branches.json configuration schema.
+- Added new statistical toggles (allow_unknown_stats, save_only_higher_stat_achievement_progress) to significantly optimize achievement progression saving.
+- Replaced the interface scanner binaries (generate_interfaces) with the latest compiled tools for both Windows and Linux environments.
 
-## Manual Depot Downloading Option (Beta)
-- Added a manual depot-buildid-manifest selection and verification feature before triggering downloads.
-- This allows custom, targeted downloads of specific historical manifests and build configurations.
-- Note: Currently, this manual selection option is only supported for games that are already owned/installed. Support for unowned or pre-download games is planned for future releases.
+## UI Alignments & Layout Optimization
+- Fixed Game Library alignment by adjusting top-row controls and game cards to share the identical horizontal layout boundaries.
+- Repositioned the update status badges (Up to date, Checking, Update Available) side-by-side next to the game title inside library cards.
+- Italicized the manifest cached and status helper labels.
+- Fixed main window status card alignment by applying identical horizontal margin paddings to the central stats dashboard widget.
 
-## Game Details Performance & Caching Fixes
-- Bypassed cache expiration restrictions on details dialog initialization to guarantee instant rendering of branch configurations and dropdown menus.
-- Implemented a local fallback path that loads installed configuration build IDs synchronously if there is no pre-existing SQLite database cache.
-
-## Bug Fixes & Stability
-- Set the default application font to Roboto, falling back safely to bundled fonts if Roboto is not available on the user's system to ensure stability.
-- Set the default theme to Ocean Breeze (Monet Blue).
-- Fixed a bug where standard DLC uninstallation and SLS config wipes would throw error crashes due to name resolving mismatches.
-- Resolved a download task issue where validation scanning logs were misidentified as network download rates, keeping the download speed and ETA displays permanently frozen.
+## UX Improvements
+- Implemented sort order memory. Game Library now persists and automatically loads your last chosen sorting preference.

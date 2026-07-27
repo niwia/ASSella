@@ -1568,6 +1568,7 @@ class MainWindow(QMainWindow):
 
         # Dashboard container widget
         self.dashboard_widget = QWidget()
+        self.dashboard_widget.setObjectName("dashboard_widget")
         self.dashboard_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
@@ -1575,10 +1576,11 @@ class MainWindow(QMainWindow):
         self.dashboard_widget.setMaximumHeight(85)
         
         self.dashboard_widget.setStyleSheet("""
-            QWidget {
+            #dashboard_widget {
                 background-color: rgba(25, 25, 25, 150);
                 border: 1px solid rgba(255, 255, 255, 12);
                 border-radius: 8px;
+                margin: 4px 15px;
             }
         """)
 

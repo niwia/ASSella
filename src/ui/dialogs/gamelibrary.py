@@ -213,48 +213,31 @@ class GameItemWidget(QWidget):
         info_layout.setContentsMargins(0, 8, 0, 8)
         info_layout.setSpacing(4)
 
-        # Game name
+        # Game name and status badge side-by-side row
+        name_row_layout = QHBoxLayout()
+        name_row_layout.setContentsMargins(0, 0, 0, 0)
+        name_row_layout.setSpacing(8)
+
         name_label = QLabel(display_name)
         name_label.setStyleSheet(
             "color: #FFFFFF; font-size: 15px; font-weight: bold;"
         )
         name_label.setWordWrap(True)
-        info_layout.addWidget(name_label)
+        name_row_layout.addWidget(name_label)
 
-        # Size
-        size_label = QLabel(f"Size: {size_str}")
-        size_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px;")
-        info_layout.addWidget(size_label)
-
-        # Update status
-        self._add_status_label(info_layout)
-
-        # Manifest cache status
-        self.manifest_label = QLabel()
-        info_layout.addWidget(self.manifest_label)
-        self.update_manifest_label()
-
-        info_layout.addStretch()
-        layout.addLayout(info_layout)
-
-    def _add_status_label(self, layout: QVBoxLayout) -> None:
-        """Add the update status label based on game data."""
-        update_status = self.game_data.get("update_status", "cannot_determine")
+        # Update status badge
         self.status_label = QLabel()
-
-        # Modern MD3 chip design
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        update_status = self.game_data.get("update_status", "cannot_determine")
         status_map = {
             "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
             "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
             "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
         }
-
         text, color, bg_color = status_map.get(
             update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
         )
-
         self.status_label.setText(text)
-        self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.status_label.setStyleSheet(
             f"color: {color}; "
             f"background-color: {bg_color}; "
@@ -263,7 +246,23 @@ class GameItemWidget(QWidget):
             f"font-size: 11px; "
             f"font-weight: bold;"
         )
-        layout.addWidget(self.status_label)
+        name_row_layout.addWidget(self.status_label)
+        name_row_layout.addStretch()
+
+        info_layout.addLayout(name_row_layout)
+
+        # Size
+        size_label = QLabel(f"Size: {size_str}")
+        size_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px;")
+        info_layout.addWidget(size_label)
+
+        # Manifest cache status
+        self.manifest_label = QLabel()
+        info_layout.addWidget(self.manifest_label)
+        self.update_manifest_label()
+
+        info_layout.addStretch()
+        layout.addLayout(info_layout)
 
     def update_manifest_label(self) -> None:
         """Update the manifest status label in-place."""
@@ -275,7 +274,7 @@ class GameItemWidget(QWidget):
 
         if not appid or appid in ("0", "N/A", "unknown"):
             self.manifest_label.setText("Manifest: N/A")
-            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px;")
+            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
             return
 
         last_updated = None
@@ -293,10 +292,10 @@ class GameItemWidget(QWidget):
 
         if update_status == "checking":
             self.manifest_label.setText("Manifest: Fetching...")
-            self.manifest_label.setStyleSheet("color: #FFA726; font-size: 12px;")
+            self.manifest_label.setStyleSheet("color: #FFA726; font-size: 12px; font-style: italic;")
         elif not last_updated:
             self.manifest_label.setText("Manifest: Not Found")
-            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px;")
+            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
         else:
             import time
             age_seconds = time.time() - last_updated
@@ -319,7 +318,7 @@ class GameItemWidget(QWidget):
                     age_str = f"{days // 365}y"
 
             self.manifest_label.setText(f"Manifest: Cached ({age_str} ago)")
-            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px;")
+            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px; font-style: italic;")
 
     def update_status(self, update_status: str) -> None:
         """Update update and manifest status labels in-place."""
@@ -487,7 +486,7 @@ class GameLibraryDialog(QDialog):
                 background-color: rgba(255, 255, 255, 0.03); 
                 border: 1px solid rgba(255, 255, 255, 0.08); 
                 border-radius: 12px;
-                margin: 6px 16px;
+                margin: 6px 0px;
                 color: #FFFFFF;
             }}
             QListWidget::item:hover {{ 
@@ -520,11 +519,13 @@ class GameLibraryDialog(QDialog):
     def _setup_ui(self) -> None:
         """Create and arrange UI elements."""
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
 
         applist_2_0_enabled = self.applist_2_0_enabled
 
         # --- Top Bar ---
         top_layout = QHBoxLayout()
+        top_layout.setContentsMargins(0, 0, 0, 0)
 
         self.scan_button = QPushButton("Scan Libraries")
         self.scan_button.clicked.connect(self._scan_for_games)
@@ -542,6 +543,14 @@ class GameLibraryDialog(QDialog):
         self.sort_combo.addItem("Size (Smallest)", "size_asc")
         self.sort_combo.addItem("Size (Largest)", "size_desc")
         self.sort_combo.addItem("AppID", "appid")
+
+        # Load last saved sort option
+        if self.settings:
+            saved_sort = self.settings.value("library_sort_option", "recently_installed", type=str)
+            idx = self.sort_combo.findData(saved_sort)
+            if idx != -1:
+                self.sort_combo.setCurrentIndex(idx)
+
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
 
         self.select_mode_button = QPushButton("☑ Select")
@@ -815,6 +824,9 @@ class GameLibraryDialog(QDialog):
     # --- List Management ---
 
     def _on_sort_changed(self) -> None:
+        if self.settings:
+            sort_option = self.sort_combo.currentData()
+            self.settings.setValue("library_sort_option", sort_option)
         self._refresh_game_list()
 
     def _on_search_changed(self) -> None:
