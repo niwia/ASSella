@@ -13,6 +13,7 @@ ASSella is a powerful, feature-rich fork of ACCELA — a Steam game downloader a
 ## 🚀 Key Features (ASSella vs. 1.0 Stable ACCELA)
 
 ### 📥 Core Downloading & Rollbacks
+* **Import Mode (User-Provided LUA / Manifests)**: Drop your own `.lua` files (into `cached_luas/`) or `.zip` files (into `hubcap_manifests/`), then click **Scan for LUA** in the library. ASSella parses the files, populates your depot keys database, and runs a free staleness check against Steam PICS. Fresh LUAs fetch manifests via the cheap `/generate/appmanifest` endpoint, saving your Hubcap API usage.
 * **Version Rollback (Build History)**: Automatically retains backup manifests for the last `N` builds (configurable, defaults to 3). Rollback to previous builds using a simple dropdown in the Game Details panel.
 * **Smart Depot Memory (Smart Selection)**: Remembers your selected depots (such as language files or DLCs) and automatically applies them to future game updates. You are only prompted if new depots are added.
 * **Auto-Skip Single Depot**: Skips the depot selection pop-up entirely when a game has only one depot, speeding up installations.
@@ -20,6 +21,7 @@ ASSella is a powerful, feature-rich fork of ACCELA — a Steam game downloader a
 * **Modern Download Interface (Screen 2.0)**: A clean, card-based checklist showing active game names (instead of raw depot IDs), download speeds, remaining queue count, and active stage indicators.
 
 ### ⚙️ Post-Processing & Steam Integration
+* **ASShead Config Fixer**: Performs dynamic template alignment, keys merging, formatting, and deduplication on SLSsteam `config.yaml` to ensure clean configurations without manual updates.
 * **Steam Workshop Downloader**: Search and download Steam Workshop items directly within the client.
 * **Automated Achievement Generation**: Integrates SLScheevo to generate Steam achievements and statistics upon download completion. Displays exact counts of generated or up-to-date achievements.
 * **One-Click DRM Removal**: Automates DRM patching using Steamless and Steamless-AIO for downloaded game binaries.

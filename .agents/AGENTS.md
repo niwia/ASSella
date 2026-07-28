@@ -12,9 +12,4 @@ Whenever the user requests a software update, packaging, or release to GitHub, y
 - **Strictly DO NOT use any emojis** in the changelog text.
 - Do not repeat or include items from older releases or changelogs. Keep the focus entirely on the current build/hotfix.
 
-## 3. ZSync AppImage Delta Updates
-- Always package the AppImage using `appimagetool` with the `-u` flag configured for GitHub releases using the correct filename layout:
-  `gh-releases-zsync|niwia|ASSella|latest|ASSella.AppImage.zsync`
-- Always specify `ARCH=x86_64` when running `appimagetool`.
-- Copy or generate both the `ASSella.AppImage` and the matching `ASSella.AppImage.zsync` file (do NOT include `-x86_64` in the filenames to prevent C++ updater abort crashes).
-- Upload both the AppImage and the `.zsync` file to the GitHub release.
+

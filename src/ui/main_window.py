@@ -2463,59 +2463,8 @@ class MainWindow(QMainWindow):
             from pathlib import Path
 
             tmp_path = None
-            try:
-                # --- Try fast delta update via appimageupdatetool ---
-                updater_path = Path("/tmp/assella_updater/appimageupdatetool")
-
-                if not updater_path.exists():
-                    QMetaObject.invokeMethod(progress, "setLabelText",
-                        Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Downloading delta-update tool..."))
-                    updater_url = "https://github.com/AppImage/AppImageUpdate/releases/download/continuous/appimageupdatetool-x86_64.AppImage"
-                    updater_path.parent.mkdir(parents=True, exist_ok=True)
-                    req0 = urllib.request.Request(updater_url, headers={"User-Agent": "ASSella-Updater"})
-                    with urllib.request.urlopen(req0, timeout=30) as r0, open(updater_path, "wb") as f0:
-                        f0.write(r0.read())
-                    updater_path.chmod(updater_path.stat().st_mode | stat.S_IEXEC)
-
-                update_info = f"gh-releases-zsync|niwia|ASSella|{tag}|ASSella.AppImage.zsync"
-                logger.info(f"Running delta update: {updater_path} -u {update_info} {appimage_path}")
-
-                QMetaObject.invokeMethod(progress, "setLabelText",
-                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Checking for delta update..."))
-                QMetaObject.invokeMethod(progress, "setValue",
-                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, 10))
-
-                proc = subprocess.Popen(
-                    [str(updater_path), "-u", update_info, appimage_path],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-                )
-                for line in iter(proc.stdout.readline, ""):
-                    if progress.wasCanceled():
-                        proc.terminate()
-                        return
-                    line = line.strip()
-                    logger.debug(f"Updater: {line}")
-                    m = re.search(r"(\d+(?:\.\d+)?)\s*%", line)
-                    if m:
-                        pct = 10 + int(float(m.group(1)) * 0.88)
-                        QMetaObject.invokeMethod(progress, "setValue",
-                            Qt.ConnectionType.QueuedConnection, Q_ARG(int, min(pct, 97)))
-                    if line:
-                        QMetaObject.invokeMethod(progress, "setLabelText",
-                            Qt.ConnectionType.QueuedConnection, Q_ARG(str, line))
-                proc.wait()
-
-                if proc.returncode == 0:
-                    QMetaObject.invokeMethod(progress, "setValue",
-                        Qt.ConnectionType.QueuedConnection, Q_ARG(int, 100))
-                    QMetaObject.invokeMethod(self, "_on_update_success",
-                        Qt.ConnectionType.QueuedConnection)
-                    return
-                else:
-                    logger.warning(f"appimageupdatetool exited {proc.returncode}, falling back to full download.")
-
-            except Exception as e:
-                logger.warning(f"Delta updater failed ({e}), falling back to full download.")
+            # Bypassed delta update since ZSync packages are deprecated starting v2.5.3
+            logger.info("ZSync updates deprecated. Performing full AppImage download update.")
 
             # --- Fallback: full AppImage download ---
             try:

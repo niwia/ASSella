@@ -54,26 +54,15 @@ rsync -a --delete "$SRC_DIR/src/" "$WORKDIR/squashfs-root/bin/src/"
 # Write version string to squashfs-root version file (just to be absolutely sure)
 echo "$VERSION_STR" > "$WORKDIR/squashfs-root/bin/src/res/version"
 
-echo -e "${YELLOW}=== Building AppImage with appimagetool (ZSync enabled) ===${NC}"
+echo -e "${YELLOW}=== Building AppImage with appimagetool ===${NC}"
 APPIMAGETOOL="/home/deck/bin/appimagetool"
 if [ ! -f "$APPIMAGETOOL" ]; then
     echo -e "${RED}Error: appimagetool not found at $APPIMAGETOOL${NC}"
     exit 1
 fi
 
-# Clean up any pre-existing zsync file in working directory
-rm -f "$SRC_DIR/ASSella.AppImage.zsync"
-
 export ARCH=x86_64
-"$APPIMAGETOOL" -u "gh-releases-zsync|niwia|ASSella|latest|ASSella.AppImage.zsync" \
-    "$WORKDIR/squashfs-root" "$WORKDIR/ASSella.AppImage"
-
-# Move generated zsync file to workdir
-if [ -f "$SRC_DIR/ASSella.AppImage.zsync" ]; then
-    mv "$SRC_DIR/ASSella.AppImage.zsync" "$WORKDIR/ASSella.AppImage.zsync"
-elif [ -f "$WORKDIR/squashfs-root/../ASSella.AppImage.zsync" ]; then
-    mv "$WORKDIR/squashfs-root/../ASSella.AppImage.zsync" "$WORKDIR/ASSella.AppImage.zsync"
-fi
+"$APPIMAGETOOL" "$WORKDIR/squashfs-root" "$WORKDIR/ASSella.AppImage"
 
 echo -e "${YELLOW}=== Verifying built AppImage runs offscreen ===${NC}"
 # We test with offscreen platform. A successful launch will run until timeout (exit code 124).
@@ -112,17 +101,16 @@ if command -v gh &>/dev/null; then
         env -u GITHUB_TOKEN gh release delete "$TAG" -y
     fi
 
-    # Create GitHub release and upload both AppImage and the matching zsync file
-    echo -e "${GREEN}Creating GitHub Release $TAG and uploading AppImage and ZSync files...${NC}"
+    # Create GitHub release and upload AppImage file
+    echo -e "${GREEN}Creating GitHub Release $TAG and uploading AppImage...${NC}"
     env -u GITHUB_TOKEN gh release create "$TAG" \
         "$WORKDIR/ASSella.AppImage" \
-        "$WORKDIR/ASSella.AppImage.zsync" \
         --prerelease \
         --title "ASSella $TAG" \
         --notes-file "$SRC_DIR/release_notes.md"
 else
     echo -e "${YELLOW}Warning: 'gh' CLI not found. Please create the release manually on GitHub and upload:${NC}"
-    echo -e "${YELLOW}File to upload: $WORKDIR/ASSella.AppImage and $WORKDIR/ASSella.AppImage.zsync${NC}"
+    echo -e "${YELLOW}File to upload: $WORKDIR/ASSella.AppImage${NC}"
 fi
 
 echo -e "${GREEN}=== Build and release process completed successfully! ===${NC}"

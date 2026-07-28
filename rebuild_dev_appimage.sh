@@ -48,12 +48,8 @@ if [ ! -f "$APPIMAGETOOL" ]; then
     exit 1
 fi
 
-# Clean up any pre-existing zsync file in working directory
-rm -f "$SRC_DIR/ASSella.AppImage.dev.zsync"
-
 export ARCH=x86_64
-"$APPIMAGETOOL" -u "gh-releases-zsync|niwia|ASSella|latest|ASSella.AppImage.dev.zsync" \
-    "$WORKDIR/squashfs-root" "$WORKDIR/ASSella.AppImage.dev"
+"$APPIMAGETOOL" "$WORKDIR/squashfs-root" "$WORKDIR/ASSella.AppImage.dev"
 
 echo -e "${YELLOW}=== Verifying built Dev AppImage runs offscreen ===${NC}"
 set +e
