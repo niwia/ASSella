@@ -4,7 +4,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from utils.settings import get_settings
 
@@ -1053,3 +1053,128 @@ def clean_fakeappid_db(config_path: Path) -> bool:
         logger.info(f"Successfully cleaned {removed_count} database FakeAppIds from {config_path}")
         return True
     return False
+
+
+def get_denuvo_games(config_path: Path) -> Dict[str, List[str]]:
+    """Get all DenuvoGames mappings from SLSsteam config.yaml.
+
+    Returns:
+        Dict mapping SteamID to list of AppIDs.
+    """
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        logger.error(f"Failed to read config file {config_path}: {e}")
+        return {}
+
+    # Find DenuvoGames section
+    denuvo_games_pattern = re.compile(r"^DenuvoGames:\s*$", re.MULTILINE)
+    match = denuvo_games_pattern.search(content)
+    if not match:
+        return {}
+
+    section_start = match.end()
+    after_section = content[section_start:]
+    next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
+    next_match = next_key_pattern.search(after_section)
+    section_end = section_start + next_match.start() if next_match else len(content)
+    section_content = content[section_start:section_end]
+
+    res = {}
+    current_steam_id = None
+
+    for line in section_content.split("\n"):
+        line_strip = line.strip()
+        if not line_strip or line_strip.startswith("#"):
+            continue
+
+        steam_id_match = re.match(r"^\s*['\"]?(\d+)['\"]?:\s*$", line)
+        if steam_id_match:
+            current_steam_id = steam_id_match.group(1)
+            res[current_steam_id] = []
+            continue
+
+        appid_match = re.match(r"^\s*-\s*['\"]?(\d+)['\"]?\s*(?:#.*)?$", line)
+        if appid_match and current_steam_id is not None:
+            res[current_steam_id].append(appid_match.group(1))
+
+    return res
+
+
+def save_denuvo_games(config_path: Path, steam_id: str, appids: List[str]) -> bool:
+    """Save/update DenuvoGames mapping for a specific SteamId in SLSsteam config.yaml."""
+    if not config_path.exists():
+        return False
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        logger.error(f"Failed to read config file {config_path}: {e}")
+        return False
+
+    denuvo_games_pattern = re.compile(r"^DenuvoGames:\s*$", re.MULTILINE)
+    match = denuvo_games_pattern.search(content)
+
+    if not match:
+        new_section = f"\nDenuvoGames:\n  {steam_id}:\n" + "".join(f"    - {aid}\n" for aid in appids)
+        new_content = content.rstrip() + "\n" + new_section
+    else:
+        section_start = match.end()
+        after_section = content[section_start:]
+        next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
+        next_match = next_key_pattern.search(after_section)
+        section_end = section_start + next_match.start() if next_match else len(content)
+        section_content = content[section_start:section_end]
+
+        lines = section_content.split("\n")
+        new_lines = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            steam_id_match = re.match(r"^\s*['\"]?(\d+)['\"]?:\s*$", line)
+            if steam_id_match:
+                found_id = steam_id_match.group(1)
+                if found_id == steam_id:
+                    i += 1
+                    while i < len(lines):
+                        next_line = lines[i]
+                        if not next_line.strip() or next_line.strip().startswith("#"):
+                            i += 1
+                            continue
+                        if re.match(r"^\s*['\"]?\d+['\"]?:\s*$", next_line):
+                            break
+                        if re.match(r"^\s*-\s*", next_line):
+                            i += 1
+                            continue
+                        break
+                    continue
+
+            new_lines.append(line)
+            i += 1
+
+        while new_lines and not new_lines[-1].strip():
+            new_lines.pop()
+
+        new_block_lines = []
+        if appids:
+            new_block_lines.append(f"  {steam_id}:")
+            for aid in appids:
+                new_block_lines.append(f"    - {aid}")
+
+        if new_block_lines:
+            new_lines.append("")
+            new_lines.extend(new_block_lines)
+            new_lines.append("")
+
+        new_section_content = "\n".join(new_lines)
+        new_content = content[:section_start] + new_section_content + content[section_end:]
+
+    _create_backup(config_path)
+    if _atomic_write(config_path, new_content):
+        logger.info(f"Successfully updated DenuvoGames in {config_path} for steam_id {steam_id}")
+        return True
+    return False
+

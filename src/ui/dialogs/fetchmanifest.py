@@ -16,13 +16,147 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QVBoxLayout,
     QWidget,
+    QTabWidget,
+    QTextEdit,
+    QSpinBox,
+    QGroupBox,
+    QCheckBox,
+    QPushButton,
+    QFileDialog,
+    QSizePolicy,
 )
+
 
 from core import morrenus_api
 from utils.image_fetcher import ImageFetcher
 from utils.task_runner import TaskRunner
+from utils.helpers import get_base_path
+from core import steam_helpers
+from ui.dialogs.steamlibrary import SteamLibraryDialog
+
+class SearchItemWidget(QWidget):
+    """Custom widget for displaying polished search results — styled like the game library cards."""
+    def __init__(self, name: str, app_id: str, in_library: bool, parent=None):
+        super().__init__(parent)
+        self.name = name
+        self.app_id = app_id
+        self.in_library = in_library
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 1, 16, 1)
+        layout.setSpacing(16)
+
+        # --- Image (same proportions as library cards) ---
+        self.img_lbl = QLabel()
+        self.img_lbl.setFixedSize(200, 94)
+        self.img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.img_lbl.setText(name[:2].upper())
+        self.img_lbl.setStyleSheet(
+            "border-top-left-radius: 10px;"
+            "border-bottom-left-radius: 10px;"
+            "border-top-right-radius: 0px;"
+            "border-bottom-right-radius: 0px;"
+            "background-color: rgba(255,255,255,0.04);"
+            "color: rgba(255,255,255,0.5);"
+            "font-size: 20px; font-weight: bold;"
+        )
+        self.img_lbl.setScaledContents(True)
+        layout.addWidget(self.img_lbl)
+
+        # --- Info column ---
+        info_col = QVBoxLayout()
+        info_col.setContentsMargins(0, 10, 0, 10)
+        info_col.setSpacing(5)
+
+        # Top row: game name + badge pills
+        name_row = QHBoxLayout()
+        name_row.setSpacing(8)
+        name_row.setContentsMargins(0, 0, 0, 0)
+
+        self.name_lbl = QLabel(name)
+        name_color = "#77DD77" if in_library else "#FFFFFF"
+        self.name_lbl.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {name_color};")
+        self.name_lbl.setWordWrap(False)
+        name_row.addWidget(self.name_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.denuvo_badge = QLabel()
+        self.denuvo_badge.hide()
+        self.denuvo_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        name_row.addWidget(self.denuvo_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.proton_badge = QLabel()
+        self.proton_badge.hide()
+        self.proton_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        name_row.addWidget(self.proton_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        name_row.addStretch()
+        info_col.addLayout(name_row)
+
+        info_col.addStretch(1)
+
+        # Bottom: AppID row
+        appid_text = f"App ID: {app_id}"
+        if in_library:
+            appid_text += "  •  In Library"
+        self.appid_lbl = QLabel(appid_text)
+        self.appid_lbl.setStyleSheet("font-size: 11px; color: rgba(255,255,255,0.50);")
+        info_col.addWidget(self.appid_lbl)
+
+        layout.addLayout(info_col, 1)
+
+        # Populate ratings/badges immediately (in-memory, instant for cached games)
+        self.update_ratings()
+
+    def update_ratings(self) -> None:
+        """Update Denuvo and ProtonDB badges dynamically."""
+        from core.ratings import get_denuvo_status, get_protondb_tier
+
+        # Denuvo badge
+        denuvo_status = get_denuvo_status(self.app_id)
+        _denuvo_map = {
+            "cracked":    ("Denuvo Cracked",    "#81C784", "rgba(129,199,132,0.15)"),
+            "hypervisor": ("Denuvo Hypervisor", "#FFA726", "rgba(255,167,38,0.12)"),
+            "uncracked":  ("Denuvo Uncracked",  "#E57373", "rgba(229,115,115,0.15)"),
+        }
+        if denuvo_status and denuvo_status in _denuvo_map:
+            text, color, bg = _denuvo_map[denuvo_status]
+            self.denuvo_badge.setText(text)
+            self.denuvo_badge.setStyleSheet(
+                f"color: {color}; background-color: {bg}; border-radius: 10px;"
+                f"padding: 3px 10px; font-size: 11px; font-weight: bold;"
+            )
+            self.denuvo_badge.show()
+        else:
+            self.denuvo_badge.hide()
+
+        # ProtonDB badge
+        proton_tier = get_protondb_tier(self.app_id)
+        _tier_map = {
+            "platinum": ("PLATINUM", "#0d47a1", "#b3e5fc"),
+            "gold":     ("GOLD",     "#5d4037", "#ffd54f"),
+            "silver":   ("SILVER",   "#263238", "#cfd8dc"),
+            "bronze":   ("BRONZE",   "#4e342e", "#ffab91"),
+            "borked":   ("BORKED",   "#ffffff", "#ef5350"),
+            "native":   ("NATIVE",   "#1b5e20", "#a5d6a7"),
+        }
+        if proton_tier and proton_tier in _tier_map:
+            text, color, bg = _tier_map[proton_tier]
+            self.proton_badge.setText(text)
+            self.proton_badge.setStyleSheet(
+                f"color: {color}; background-color: {bg}; border-radius: 3px;"
+                f"padding: 2px 8px; font-size: 10px; font-weight: bold;"
+            )
+            self.proton_badge.show()
+        else:
+            self.proton_badge.hide()
+
+    def set_image(self, pixmap: QPixmap) -> None:
+        if pixmap and not pixmap.isNull():
+            self.img_lbl.setPixmap(pixmap)
+
 
 logger = logging.getLogger(__name__)
+
 
 # Constants
 _API_STATS_CACHE_DURATION = 60  # seconds
@@ -125,7 +259,7 @@ class FetchManifestDialog(QDialog):
     A dialog for searching and downloading manifests from the Morrenus API.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, select_tab: int = 0):
         super().__init__(parent)
         self.parent_window = parent
         self.setWindowTitle("Fetch Manifest from Hubcap API")
@@ -150,6 +284,13 @@ class FetchManifestDialog(QDialog):
         logger.debug("FetchManifestDialog initialized.")
 
         self._request_api_status_update()
+
+        if hasattr(self, "tab_widget") and self.tab_widget:
+            self.tab_widget.setCurrentIndex(select_tab)
+
+        if self.parent():
+            from ui.dialogs.dialog_raiser import DialogRaiser
+            DialogRaiser(self.parent(), self)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -202,30 +343,142 @@ class FetchManifestDialog(QDialog):
                     border-color: {self.accent_color};
                     color: #FFFFFF;
                 }}
+                QTabWidget::pane {{
+                    border: none;
+                    background-color: transparent;
+                }}
+                QTabBar::tab {{
+                    background-color: rgba(255, 255, 255, 0.04);
+                    color: rgba(255, 255, 255, 0.6);
+                    padding: 8px 18px;
+                    margin-right: 4px;
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                    font-weight: bold;
+                }}
+                QTabBar::tab:selected {{
+                    color: {self.accent_color};
+                    background-color: rgba(255, 255, 255, 0.09);
+                    border-bottom: 2px solid {self.accent_color};
+                }}
+                QTabBar::tab:hover {{
+                    background-color: rgba(255, 255, 255, 0.07);
+                }}
+                QGroupBox {{
+                    color: {self.accent_color};
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    margin-top: 10px;
+                    padding-top: 15px;
+                    border-radius: 6px;
+                    font-weight: bold;
+                }}
+                QGroupBox::title {{
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 4px;
+                }}
+                QTextEdit {{
+                    background-color: rgba(255, 255, 255, 0.04);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 8px;
+                    padding: 6px;
+                }}
+                QSpinBox {{
+                    background-color: rgba(255, 255, 255, 0.04);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    padding: 4px;
+                    border-radius: 6px;
+                }}
+                QPushButton#workshopDlBtn {{
+                    background-color: {self.accent_color};
+                    color: #000000;
+                    border: none;
+                    font-weight: bold;
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                }}
+                QPushButton#workshopDlBtn:hover {{
+                    background-color: #FFFFFF;
+                }}
+                QPushButton#workshopDlBtn:disabled {{
+                    background-color: rgba(255, 255, 255, 0.1);
+                    color: rgba(255, 255, 255, 0.3);
+                }}
+                QPushButton#workshopSaveBtn {{
+                    background-color: rgba(255, 255, 255, 0.05);
+                    color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                }}
+                QPushButton#workshopSaveBtn:hover {{
+                    background-color: rgba(255, 255, 255, 0.1);
+                }}
                 """
             )
 
         # 1. API Status Bar
         self._create_api_status_bar(layout)
 
-        # 2. Search Input
+        # Create Tab Widget
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+
+        # --- Tab 1: Game Manifests ---
+        self.games_tab = QWidget()
+        games_layout = QVBoxLayout(self.games_tab)
+        games_layout.setContentsMargins(0, 8, 0, 0)
+
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search for a game...")
         self.search_input.returnPressed.connect(self.on_search)
-        layout.addWidget(self.search_input)
+        games_layout.addWidget(self.search_input)
 
-        # 3. Results List
         self.results_list = QListWidget()
-        # Aspect Ratio approx 2.15 (230x108)
         self.results_list.setIconSize(QSize(230, 108))
         self.results_list.setSpacing(5)
         self.results_list.itemDoubleClicked.connect(self.on_item_double_clicked)
-        layout.addWidget(self.results_list)
+        games_layout.addWidget(self.results_list)
 
-        # 4. Status Label
         self.status_label = QLabel("Search for a game to begin")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.status_label)
+        games_layout.addWidget(self.status_label)
+
+        self.tab_widget.addTab(self.games_tab, "Game Manifests")
+
+        # --- Tab 2: Workshop Downloader ---
+        self.workshop_tab = QWidget()
+        workshop_layout = QVBoxLayout(self.workshop_tab)
+        workshop_layout.setContentsMargins(0, 8, 0, 0)
+
+        # IDs Input
+        ids_group = QGroupBox("Workshop IDs or Steam URLs (one per line, or comma-separated)")
+        ids_g_layout = QVBoxLayout(ids_group)
+        self.ids_input = QTextEdit()
+        self.ids_input.setPlaceholderText("e.g. https://steamcommunity.com/sharedfiles/filedetails/?id=3772598164\nor 3772598164")
+        ids_g_layout.addWidget(self.ids_input)
+        workshop_layout.addWidget(ids_group)
+
+        # Action Buttons
+        btns_layout = QHBoxLayout()
+        btns_layout.setContentsMargins(0, 8, 0, 8)
+        btns_layout.setSpacing(10)
+
+        self.dl_btn = QPushButton("⬇ Download (Add to Queue)")
+        self.dl_btn.setObjectName("workshopDlBtn")
+        self.dl_btn.clicked.connect(self._download_workshop)
+        
+        self.workshop_status_label = QLabel()
+        self.workshop_status_label.setStyleSheet(f"color: {self.accent_color}; font-weight: bold;")
+
+        btns_layout.addWidget(self.dl_btn)
+        btns_layout.addWidget(self.workshop_status_label)
+        btns_layout.addStretch()
+        workshop_layout.addLayout(btns_layout)
+
+        self.tab_widget.addTab(self.workshop_tab, "Workshop Downloader")
 
     def _create_api_status_bar(self, parent_layout):
         """Builds the top status bar widget."""
@@ -562,16 +815,17 @@ class FetchManifestDialog(QDialog):
             if self.parent_window.game_manager.get_game(app_id) is not None:
                 in_library = True
 
-        if applist_2_0_enabled and in_library:
-            item = QListWidgetItem(f"{name} [In Library] (AppID: {app_id})")
-            item.setForeground(QColor("#77DD77"))
-        else:
-            item = QListWidgetItem(f"{name} (AppID: {app_id})")
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(0, 98))
 
         item.setData(Qt.ItemDataRole.UserRole, app_id)
         self.results_list.addItem(item)
 
+        widget = SearchItemWidget(name, app_id, in_library, parent=self)
+        self.results_list.setItemWidget(item, widget)
+
         self._fetch_item_image(item, app_id)
+
 
     # --------------------------
     # Image Fetching
@@ -620,7 +874,12 @@ class FetchManifestDialog(QDialog):
                 painter.fillRect(cropped_faded.rect(), QBrush(gradient))
                 painter.end()
 
-                item.setIcon(QIcon(cropped_faded))
+                widget = self.results_list.itemWidget(item)
+                if widget and hasattr(widget, "set_image"):
+                    widget.set_image(cropped_faded)
+                else:
+                    item.setIcon(QIcon(cropped_faded))
+
 
         # Find fetcher and delete it safely
         sender = self.sender()
@@ -884,6 +1143,57 @@ class FetchManifestDialog(QDialog):
                 pass
         self._active_image_fetchers.clear()
 
+    def _download_workshop(self):
+        api_key = self.settings.value("morrenus_api_key", "", type=str) if self.settings else ""
+        if not api_key:
+            QMessageBox.warning(self, "No API Key", "Please enter your Hubcab API key in ACCELA Settings first.")
+            return
+
+        raw = self.ids_input.toPlainText().strip()
+        if not raw:
+            QMessageBox.warning(self, "No IDs", "Please enter at least one Workshop ID or URL.")
+            return
+
+        wids = parse_workshop_ids(raw)
+        if not wids:
+            QMessageBox.warning(self, "No Valid IDs", "Could not parse any Workshop IDs from the input.")
+            return
+
+        max_downloads = self.settings.value("workshop_max_downloads", 4, type=int) if self.settings else 4
+        cellid = self.settings.value("workshop_cell_id", "", type=str) if self.settings else ""
+        steam_integration = self.settings.value("workshop_steam_enabled", True, type=bool) if self.settings else True
+
+        dest_path = ""
+        if steam_integration:
+            libraries = steam_helpers.get_steam_libraries()
+            if libraries:
+                auto_skip_single_choice = self.settings.value("auto_skip_single_choice", False, type=bool) if self.settings else False
+                if auto_skip_single_choice and len(libraries) == 1:
+                    dest_path = libraries[0]
+                else:
+                    dialog = SteamLibraryDialog(libraries, self)
+                    if dialog.exec():
+                        dest_path = dialog.get_selected_path()
+                    else:
+                        return
+            else:
+                dest_path = QFileDialog.getExistingDirectory(self, "Select Steam Library Folder")
+                if not dest_path:
+                    return
+        else:
+            dest_path = QFileDialog.getExistingDirectory(self, "Select Destination Folder")
+            if not dest_path:
+                return
+
+
+        main_window = self.parent_window
+        if main_window and hasattr(main_window, "job_queue") and main_window.job_queue:
+            main_window.job_queue.add_workshop_job(wids, api_key, max_downloads, cellid, steam_integration, dest_path)
+            QMessageBox.information(self, "Job Queued", f"Successfully added Workshop download job with {len(wids)} items to the queue.")
+            self.accept()
+        else:
+            QMessageBox.critical(self, "Error", "Could not access the application job queue.")
+
     def closeEvent(self, event):
         self._stop_active_image_fetchers()
 
@@ -894,3 +1204,22 @@ class FetchManifestDialog(QDialog):
                 logger.debug(f"Error stopping task runner: {e}")
 
         super().closeEvent(event)
+
+
+def extract_workshop_id(raw: str):
+    raw = raw.strip()
+    m = re.search(r"[?&]id=(\d+)", raw)
+    if m: return m.group(1)
+    if re.fullmatch(r"\d+", raw): return raw
+    return None
+
+
+def parse_workshop_ids(text: str):
+    tokens = re.split(r"[\s,]+", text)
+    ids = []
+    for t in tokens:
+        t = t.strip()
+        if not t: continue
+        wid = extract_workshop_id(t)
+        if wid: ids.append(wid)
+    return list(dict.fromkeys(ids))

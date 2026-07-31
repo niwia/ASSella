@@ -523,6 +523,39 @@ class DownloadDepotsTask(QObject):
                 manifest_dir, f"{depot_id}_{manifest_id}.manifest"
             )
 
+            # Fallback 1: check if the manifest exists in the library's local depotcache folder
+            if not os.path.exists(manifest_file_path) or os.path.getsize(manifest_file_path) == 0:
+                local_depotcache_path = os.path.join(dest_path, "depotcache", f"{depot_id}_{manifest_id}.manifest")
+                if os.path.exists(local_depotcache_path) and os.path.getsize(local_depotcache_path) > 0:
+                    try:
+                        import shutil
+                        os.makedirs(manifest_dir, exist_ok=True)
+                        shutil.copy(local_depotcache_path, manifest_file_path)
+                        self.progress.emit(f"Recovered manifest from local depotcache: {depot_id}_{manifest_id}.manifest")
+                    except Exception as e:
+                        self.progress.emit(f"Warning: Failed to copy local depotcache manifest: {e}")
+
+            # Fallback 2: if manifest is missing or empty, download and extract it from Hubcap API
+            if not os.path.exists(manifest_file_path) or os.path.getsize(manifest_file_path) == 0:
+                self.progress.emit(f"Manifest file {os.path.basename(manifest_file_path)} is missing/invalid. Requesting fallback download from Hubcap...")
+                try:
+                    from core import morrenus_api
+                    import zipfile
+                    
+                    app_id = str(game_data["appid"])
+                    target_branch = game_data.get("branch") or settings.value(f"selected_branch/{app_id}", "public", type=str)
+                    fpath, err = morrenus_api.download_manifest(app_id, target_branch)
+                    if fpath and os.path.exists(fpath):
+                        with zipfile.ZipFile(fpath, "r") as zip_ref:
+                            for item_name in zip_ref.namelist():
+                                if item_name.endswith(".manifest"):
+                                    dest_item_path = os.path.join(manifest_dir, os.path.basename(item_name))
+                                    with open(dest_item_path, "wb") as mf:
+                                        mf.write(zip_ref.read(item_name))
+                                    self.progress.emit(f"Successfully extracted fallback manifest: {os.path.basename(dest_item_path)}")
+                except Exception as e:
+                    self.progress.emit(f"Warning: Failed to fetch fallback manifest from Hubcap: {e}")
+
             cmd_args = [
                 dotnet_cmd,
                 dll_path,

@@ -931,6 +931,21 @@ class TaskManager(QObject):
                                 settings.setValue(f"installed_buildid/{appid}/{sel_b}", str(final_bid))
                                 # Also store legacy flat key for backward compat
                                 settings.setValue(f"installed_buildid/{appid}", str(final_bid))
+
+                                # If pin_build is requested in job metadata, enable it automatically
+                                if self.current_job_metadata and self.current_job_metadata.get("pin_build"):
+                                    settings.setValue(f"pin_build/{appid}", True)
+                                    settings.setValue(f"exclude_from_update_all/{appid}", False)
+                                    try:
+                                        import shutil
+                                        manifests_dir = Path(get_base_path()) / "hubcap_manifests"
+                                        manifests_dir.mkdir(parents=True, exist_ok=True)
+                                        dest_zip = manifests_dir / f"accela_fetch_{appid}_build_{final_bid}.zip"
+                                        if self.current_job and os.path.exists(self.current_job):
+                                            shutil.copy(self.current_job, dest_zip)
+                                            logger.info(f"Cached pinned manifest zip to {dest_zip}")
+                                    except Exception as e:
+                                        logger.warning(f"Failed to cache pinned manifest zip: {e}")
                     except Exception as e:
                         logger.error(f"Failed to upsert app info on job completion: {e}")
 

@@ -20,6 +20,7 @@ from utils.yaml_config_manager import (
     get_fake_appid, is_slssteam_config_management_enabled,
 )
 from utils.image_fetcher import ImageFetcher
+from ui.progress_button import ProgressButton
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,25 @@ class GameDetailsDialogV2(QDialog):
 
         self._apply_stylesheet()
         self._setup_ui()
+
+        if self.parent():
+            from ui.dialogs.dialog_raiser import DialogRaiser
+            DialogRaiser(self.parent(), self)
+
+        # Hook up main progress bar
+        main_win = parent.main_window if hasattr(parent, "main_window") else None
+        if main_win and hasattr(main_win, "progress_bar"):
+            main_win.progress_bar.valueChanged.connect(self._on_main_progress_changed)
+
+    def _on_main_progress_changed(self, value):
+        try:
+            main_win = self.parent_window.main_window if hasattr(self.parent_window, "main_window") else None
+            if main_win and hasattr(main_win, "task_manager") and main_win.task_manager:
+                active_job = main_win.task_manager.game_data
+                if active_job and str(active_job.get("appid")) == str(self.appid):
+                    self.validate_btn.set_progress(value / 100.0)
+        except Exception:
+            pass
 
     # ──────────────────────────────────────────
     def _apply_stylesheet(self):
@@ -447,24 +467,32 @@ class GameDetailsDialogV2(QDialog):
         banner_layout.setContentsMargins(14, 8, 120, 8)
         banner_layout.setSpacing(4)
 
-        from utils.dlc_helpers import is_dlc_only_mode
-        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
-        display_parts = [self.game_data.get("game_name", "Unknown")]
-        if installed_branch and installed_branch != "public":
-            display_parts.append(f"({installed_branch})")
-        if is_dlc_only_mode(self.appid):
-            display_parts.append("[DLC ONLY]")
-        display_name = " ".join(display_parts)
-
-        self.name_lbl = QLabel(display_name)
+        self.name_lbl = QLabel()
         self.name_lbl.setStyleSheet(
             "font-size: 14pt; font-weight: bold; color: #FFFFFF; background: transparent;")
         self.name_lbl.setWordWrap(True)
+        banner_layout.addWidget(self.name_lbl)
+
+        # Ratings badges row (Denuvo + ProtonDB pills, populated by update_title)
+        self._ratings_row = QHBoxLayout()
+        self._ratings_row.setSpacing(6)
+        self._ratings_row.setContentsMargins(0, 0, 0, 0)
+        self._denuvo_badge_lbl = QLabel()
+        self._denuvo_badge_lbl.hide()
+        self._proton_badge_lbl = QLabel()
+        self._proton_badge_lbl.hide()
+        self._ratings_row.addWidget(self._denuvo_badge_lbl)
+        self._ratings_row.addWidget(self._proton_badge_lbl)
+        self._ratings_row.addStretch()
+        banner_layout.addLayout(self._ratings_row)
+
         self.appid_lbl = QLabel(f"App ID: {self.appid}")
         self.appid_lbl.setStyleSheet(
             "font-size: 8pt; color: rgba(255, 255, 255, 55); background: transparent;")
-        banner_layout.addWidget(self.name_lbl)
         banner_layout.addWidget(self.appid_lbl)
+
+        self.update_title()
+
 
         # Stats row — horizontal labels under name
         stats_row = QHBoxLayout()
@@ -515,26 +543,35 @@ class GameDetailsDialogV2(QDialog):
 
         name_col = QVBoxLayout()
         name_col.setSpacing(2)
-        display_parts = [self.game_data.get("game_name", "Unknown")]
-        from utils.dlc_helpers import is_dlc_only_mode
-        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
-        if installed_branch and installed_branch != "public":
-            display_parts.append(f"({installed_branch})")
-        if is_dlc_only_mode(self.appid):
-            display_parts.append("[DLC ONLY]")
-        display_name = " ".join(display_parts)
-        self.name_lbl = QLabel(display_name)
+        self.name_lbl = QLabel()
         self.name_lbl.setStyleSheet(
             "font-size: 12.5pt; font-weight: bold; color: #FFFFFF; background: transparent;")
         self.name_lbl.setWordWrap(True)
+        name_col.addWidget(self.name_lbl)
+
+        # Ratings badges row (Denuvo + ProtonDB pills, populated by update_title)
+        self._ratings_row = QHBoxLayout()
+        self._ratings_row.setSpacing(6)
+        self._ratings_row.setContentsMargins(0, 0, 0, 0)
+        self._denuvo_badge_lbl = QLabel()
+        self._denuvo_badge_lbl.hide()
+        self._proton_badge_lbl = QLabel()
+        self._proton_badge_lbl.hide()
+        self._ratings_row.addWidget(self._denuvo_badge_lbl)
+        self._ratings_row.addWidget(self._proton_badge_lbl)
+        self._ratings_row.addStretch()
+        name_col.addLayout(self._ratings_row)
+
         self.appid_lbl = QLabel(f"App ID: {self.appid}")
         self.appid_lbl.setStyleSheet(
             "font-size: 8pt; color: rgba(255, 255, 255, 60); background: transparent;")
-        name_col.addWidget(self.name_lbl)
         name_col.addWidget(self.appid_lbl)
         name_col.addStretch()
         banner_layout.addLayout(name_col)
         banner_layout.addStretch()
+
+        self.update_title()
+
 
         self._load_hero_image()
         root.addWidget(self.hero)
@@ -700,7 +737,7 @@ class GameDetailsDialogV2(QDialog):
         self.branch_combo.setMaxVisibleItems(5)
         actions_row.addWidget(self.branch_combo, 0)
 
-        self.validate_btn = QPushButton("Verify Files")
+        self.validate_btn = ProgressButton("Verify Files", self)
         self.validate_btn.setFixedHeight(26)
         self.validate_btn.setEnabled(True)
         self.validate_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 12); color: rgba(255, 255, 255, 75); border: none;")
@@ -882,6 +919,20 @@ class GameDetailsDialogV2(QDialog):
         lay.addLayout(_pref_row("DLC Only Mode", self.pref3_toggle,
             "Enable if you own the base game separately.\n"
             "Update checks compare only your selected DLC depots."))
+        lay.addSpacing(6)
+
+        self.pref4_toggle = SwitchToggle(active_color=self.accent_color)
+        is_pinned = self.settings.value(f"pin_build/{self.appid}", False, type=bool) if self.settings else False
+        self.pref4_toggle.setChecked(is_pinned)
+        self.pref4_toggle.stateChanged.connect(self._on_pin_build_toggled)
+        lay.addLayout(_pref_row("Pin Build", self.pref4_toggle,
+            "Lock the installed version in place to disable update prompts\n"
+            "and allow verification of this specific build version."))
+
+        # Initialize Exclude from Update-All state if pinned
+        if is_pinned:
+            self.pref2_toggle.setChecked(False)
+            self.pref2_toggle.setEnabled(False)
 
         lay.addSpacing(12)
         lay.addWidget(self._thin_line())
@@ -1131,14 +1182,25 @@ class GameDetailsDialogV2(QDialog):
     def _update_validate_button(self):
         sel_branch = self.branch_combo.currentData() or "public" if hasattr(self, "branch_combo") else "public"
         installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+        pinned = self.settings.value(f"pin_build/{self.appid}", False, type=bool) if self.settings else False
+        if pinned:
+            self._reconstruct_manifests_from_depotcache()
+        installed_bid = self.settings.value(f"installed_buildid/{self.appid}", "") if self.settings else ""
 
         # Check if a cached manifest zip exists for this branch
         manifests_dir = get_base_path() / "hubcap_manifests"
-        if sel_branch != "public":
+        specific_zip = manifests_dir / f"accela_fetch_{self.appid}_build_{installed_bid}.zip" if installed_bid else None
+
+        if pinned and specific_zip and specific_zip.exists():
+            local_zip = specific_zip
+            has_cache = True
+        elif sel_branch != "public":
             local_zip = manifests_dir / f"accela_fetch_{self.appid}_branch_{sel_branch}.zip"
+            has_cache = local_zip.exists()
         else:
             local_zip = manifests_dir / f"accela_fetch_{self.appid}.zip"
-        has_cache = local_zip.exists()
+            has_cache = local_zip.exists()
+
         same_branch = (installed_branch == sel_branch)
 
         from managers.depot_key_manager import DepotKeyManager
@@ -1148,7 +1210,29 @@ class GameDetailsDialogV2(QDialog):
 
         self.validate_btn.setEnabled(True)
 
-        if not same_branch:
+        # Derive auto colors based on the theme's accent color
+        accent_hex = self.accent_color
+        try:
+            accent_qcolor = QColor(accent_hex)
+            h, s, v, a = accent_qcolor.getHsv()
+            # Derive theme-harmonized success (green) color: hue 120
+            s_s = max(s, 100)
+            v_s = max(v, 120)
+            success_qcolor = QColor.fromHsv(120, s_s, v_s, a)
+            success_hex = success_qcolor.name()
+        except Exception:
+            success_hex = "#46b464"  # Fallback green
+
+        # Reset button progress/loading if no job is active for this game
+        main_win = self.parent_window.main_window if hasattr(self.parent_window, "main_window") else None
+        active_job = main_win.task_manager.game_data if (main_win and hasattr(main_win, "task_manager") and main_win.task_manager) else None
+        if not active_job or str(active_job.get("appid")) != str(self.appid):
+            self.validate_btn.set_progress(0.0)
+
+        if pinned and has_cache and not is_missing_manifest_or_lua:
+            self.validate_btn.setText("Verify Pinned Build")
+            self.validate_btn.setStyleSheet(f"background: {success_hex}; color: #000000; font-weight: bold; border: none;")
+        elif not same_branch:
             b_dict = getattr(self, "_branches_dict", {})
             branch_bid = ""
             if isinstance(b_dict, dict):
@@ -1159,22 +1243,40 @@ class GameDetailsDialogV2(QDialog):
             if branch_bid:
                 label += f" ({branch_bid})"
             self.validate_btn.setText(label)
-            self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
+            self.validate_btn.setStyleSheet(f"background: {accent_hex}; color: #000000; font-weight: bold; border: none;")
         elif is_missing_manifest_or_lua:
             self.validate_btn.setText("Refetch")
-            self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
+            self.validate_btn.setStyleSheet(f"background: {accent_hex}; color: #000000; font-weight: bold; border: none;")
         elif self.game_data.get("update_status") == "update_available":
             self.validate_btn.setText("Download Update")
-            self.validate_btn.setStyleSheet("background: #3a86ff; color: #FFFFFF; font-weight: bold;")
+            self.validate_btn.setStyleSheet(f"background: {accent_hex}; color: #000000; font-weight: bold; border: none;")
         else:
             self.validate_btn.setText("Verify Files")
-            self.validate_btn.setStyleSheet("background: #46b464; color: #FFFFFF; font-weight: bold;")
+            self.validate_btn.setStyleSheet(f"background: {success_hex}; color: #000000; font-weight: bold; border: none;")
 
     def _on_validate_btn_clicked(self):
         sel_branch = self.branch_combo.currentData() or "public" if hasattr(self, "branch_combo") else "public"
-        self.parent_window._fetch_game_manifest(
-            self.game_data, self, branch=sel_branch
-        )
+        btn_text = self.validate_btn.text()
+
+        if btn_text == "Refetch":
+            self.validate_btn.set_loading(True)
+            self.parent_window._fetch_game_manifest(
+                self.game_data, self, branch=sel_branch, download_only=True
+            )
+        else:
+            # Check if pinned build is active and we want to use the specific backup manifest
+            pinned = self.settings.value(f"pin_build/{self.appid}", False, type=bool) if self.settings else False
+            installed_bid = self.settings.value(f"installed_buildid/{self.appid}", "") if self.settings else ""
+            manifests_dir = get_base_path() / "hubcap_manifests"
+            specific_zip = manifests_dir / f"accela_fetch_{self.appid}_build_{installed_bid}.zip" if installed_bid else None
+            
+            local_path_override = None
+            if pinned and specific_zip and specific_zip.exists():
+                local_path_override = str(specific_zip)
+                
+            self.parent_window._fetch_game_manifest(
+                self.game_data, self, branch=sel_branch, download_only=False, local_path_override=local_path_override
+            )
 
     def _toggle_manual_section(self):
         self.manual_expanded = not self.manual_expanded
@@ -1215,6 +1317,13 @@ class GameDetailsDialogV2(QDialog):
             QMessageBox.warning(self, "Invalid Inputs", "Build ID and Manifest ID must be numeric digits only.")
             return
 
+        # Disable button to prevent double-clicking/multiple submission events
+        self.manual_download_btn.setEnabled(False)
+        self.manual_download_btn.setStyleSheet(
+            "background: rgba(255, 255, 255, 0.05); color: rgba(255, 255, 255, 0.2); "
+            "font-weight: bold; border: none; padding: 2px 10px;"
+        )
+
         from utils.helpers import get_base_path
         manifest_filename = f"{depot_id}_{manifest_id}.manifest"
         global_manifests_dir = get_base_path() / "manifests"
@@ -1224,6 +1333,7 @@ class GameDetailsDialogV2(QDialog):
             logger.info(f"[DEBUG_DEV] Manifest already exists locally at {src_manifest_path}. Proceeding directly.")
             self._do_package_and_submit_manual_job(src_manifest_path, manifest_filename, depot_id, build_id, manifest_id)
             return
+
 
         # Manifest does not exist locally. Try to fetch from Hubcap /generate/manifest endpoint.
         logger.info(f"[DEBUG_DEV] Manifest missing locally. Attempting to download from Hubcap...")
@@ -1290,6 +1400,10 @@ class GameDetailsDialogV2(QDialog):
                 pass
 
         if error_msg:
+            # Re-enable the download button so the user can correct inputs and try again
+            self.manual_download_btn.setEnabled(True)
+            self._update_manual_download_btn_state()
+
             from utils.helpers import get_base_path
             global_manifests_dir = get_base_path() / "manifests"
             QMessageBox.critical(
@@ -1303,6 +1417,7 @@ class GameDetailsDialogV2(QDialog):
             )
             return
 
+
         from pathlib import Path
         src_manifest_path = Path(src_manifest_path_str)
         self._do_package_and_submit_manual_job(src_manifest_path, manifest_filename, depot_id, build_id, manifest_id)
@@ -1315,15 +1430,34 @@ class GameDetailsDialogV2(QDialog):
         manifests_dir.mkdir(parents=True, exist_ok=True)
         local_zip_path = manifests_dir / f"accela_fetch_{self.appid}_branch_manual.zip"
 
-        logger.info(f"[DEBUG_DEV] Packaging manifest into zip: {local_zip_path}")
         try:
             with zipfile.ZipFile(local_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_ref:
                 zip_ref.write(src_manifest_path, manifest_filename)
             logger.info("[DEBUG_DEV] Successfully packaged manifest file into zip.")
+            
+            # Copy to specific build zip for future verification
+            import shutil
+            specific_zip_path = manifests_dir / f"accela_fetch_{self.appid}_build_{build_id}.zip"
+            shutil.copy(local_zip_path, specific_zip_path)
+            logger.info(f"Cached manual manifest zip to {specific_zip_path}")
+            
+            # Enable Pin Build by default for manual download
+            if self.settings:
+                self.settings.setValue(f"pin_build/{self.appid}", True)
+                self.settings.setValue(f"exclude_from_update_all/{self.appid}", False)
+                self.settings.setValue(f"installed_buildid/{self.appid}", build_id)
+            if hasattr(self, "pref4_toggle") and self.pref4_toggle:
+                self.pref4_toggle.setChecked(True)
+            if hasattr(self, "pref2_toggle") and self.pref2_toggle:
+                self.pref2_toggle.setChecked(False)
+                self.pref2_toggle.setEnabled(False)
         except Exception as e:
             logger.error(f"[DEBUG_DEV] Failed to create temporary manifest zip: {e}", exc_info=True)
             QMessageBox.critical(self, "Error", f"Failed to package manifest file: {e}")
+            self.manual_download_btn.setEnabled(True)
+            self._update_manual_download_btn_state()
             return
+
 
         # Prepare game data override
         game_data = self.game_data.copy()
@@ -1364,6 +1498,11 @@ class GameDetailsDialogV2(QDialog):
         # Submit the job
         logger.info(f"[DEBUG_DEV] Submitting job with zip: {local_zip_path} and game_data: {game_data}")
         self.parent_window._submit_job(str(local_zip_path), game_data, self)
+
+        # Re-enable button after successful packaging and submission
+        self.manual_download_btn.setEnabled(True)
+        self._update_manual_download_btn_state()
+
 
 
 
@@ -1846,3 +1985,127 @@ class GameDetailsDialogV2(QDialog):
 
     def _cleanup_fetcher(self, key):
         self._active_fetchers.pop(key, None)
+
+    def _on_pin_build_toggled(self, pinned: bool):
+        if self.settings:
+            self.settings.setValue(f"pin_build/{self.appid}", pinned)
+        
+        if pinned:
+            # Force exclude_from_update_all to False and grey it out
+            self.pref2_toggle.setChecked(False)
+            self.pref2_toggle.setEnabled(False)
+            if self.settings:
+                self.settings.setValue(f"exclude_from_update_all/{self.appid}", False)
+            
+            # Smart copy/duplicate default manifest zip to specific zip
+            try:
+                from utils.helpers import get_base_path
+                manifests_dir = get_base_path() / "hubcap_manifests"
+                installed_bid = self.settings.value(f"installed_buildid/{self.appid}", "") if self.settings else ""
+                if installed_bid:
+                    specific_zip = manifests_dir / f"accela_fetch_{self.appid}_build_{installed_bid}.zip"
+                    if not specific_zip.exists():
+                        default_zip = manifests_dir / f"accela_fetch_{self.appid}.zip"
+                        if default_zip.exists():
+                            import shutil
+                            shutil.copy(default_zip, specific_zip)
+                            logger.info(f"Duplicated general manifest zip {default_zip.name} to {specific_zip.name} on pin build activation.")
+            except Exception as e:
+                logger.warning(f"Failed to duplicate manifest zip on pin build activation: {e}")
+        else:
+            self.pref2_toggle.setEnabled(True)
+
+        self._update_validate_button()
+
+    def _reconstruct_manifests_from_depotcache(self):
+        install_path = self.game_data.get("install_path")
+        if not install_path:
+            return
+        try:
+            from pathlib import Path
+            path = Path(install_path).resolve()
+            depotcache_dir = path.parents[1] / "depotcache"
+            if not (depotcache_dir.exists() and depotcache_dir.is_dir()):
+                local_depotcache = path / "depotcache"
+                if local_depotcache.exists() and local_depotcache.is_dir():
+                    depotcache_dir = local_depotcache
+                else:
+                    return
+            
+            # Scan files matching *.manifest
+            manifests_map = {}
+            for f in depotcache_dir.glob("*.manifest"):
+                parts = f.name.replace(".manifest", "").split("_")
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    manifests_map[parts[0]] = parts[1]
+            
+            if manifests_map:
+                self.game_data.setdefault("manifests", {}).update(manifests_map)
+                logger.info(f"Reconstructed {len(manifests_map)} manifests from depotcache: {manifests_map}")
+        except Exception as e:
+            logger.warning(f"Failed to reconstruct manifests from depotcache: {e}")
+
+    def update_title(self) -> None:
+        """Update the hero banner title; Denuvo + ProtonDB shown as separate pill badges."""
+        from utils.dlc_helpers import is_dlc_only_mode
+
+        installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
+        display_parts = [self.game_data.get("game_name", "Unknown")]
+        if installed_branch and installed_branch != "public":
+            display_parts.append(f"({installed_branch})")
+        if is_dlc_only_mode(self.appid):
+            display_parts.append("[DLC ONLY]")
+
+        if hasattr(self, "name_lbl") and self.name_lbl:
+            self.name_lbl.setText(" ".join(display_parts))
+
+        # --- Denuvo badge ---
+        if hasattr(self, "_denuvo_badge_lbl") and self._denuvo_badge_lbl:
+            from core.ratings import get_denuvo_status
+            denuvo = get_denuvo_status(self.appid)
+            if denuvo == "cracked":
+                d_text, d_color, d_bg = "Denuvo Cracked",    "#81C784", "rgba(129,199,132,0.20)"
+            elif denuvo == "hypervisor":
+                d_text, d_color, d_bg = "Denuvo Hypervisor", "#FFA726", "rgba(255,167,38,0.18)"
+            elif denuvo == "uncracked":
+                d_text, d_color, d_bg = "Denuvo Uncracked",  "#E57373", "rgba(229,115,115,0.20)"
+            else:
+                d_text = None
+
+            if d_text:
+                self._denuvo_badge_lbl.setText(d_text)
+                self._denuvo_badge_lbl.setStyleSheet(
+                    f"color: {d_color}; background-color: {d_bg}; "
+                    f"border-radius: 4px; padding: 2px 8px; "
+                    f"font-size: 9pt; font-weight: bold; border: none;"
+                )
+                self._denuvo_badge_lbl.show()
+            else:
+                self._denuvo_badge_lbl.hide()
+
+        # --- ProtonDB badge ---
+        if hasattr(self, "_proton_badge_lbl") and self._proton_badge_lbl:
+            from core.ratings import get_protondb_tier
+            tier = get_protondb_tier(self.appid)
+            _tier_map = {
+                "platinum": ("PLATINUM", "#0d47a1", "#b3e5fc"),
+                "gold":     ("GOLD",     "#5d4037", "#ffd54f"),
+                "silver":   ("SILVER",   "#263238", "#cfd8dc"),
+                "bronze":   ("BRONZE",   "#4e342e", "#ffab91"),
+                "borked":   ("BORKED",   "#ffffff", "#ef5350"),
+                "native":   ("NATIVE",   "#1b5e20", "#a5d6a7"),
+            }
+            if tier and tier in _tier_map:
+                p_text, p_color, p_bg = _tier_map[tier]
+                self._proton_badge_lbl.setText(p_text)
+                self._proton_badge_lbl.setStyleSheet(
+                    f"color: {p_color}; background-color: {p_bg}; "
+                    f"border-radius: 3px; padding: 2px 8px; "
+                    f"font-size: 8.5pt; font-weight: bold; border: none;"
+                )
+                self._proton_badge_lbl.show()
+            else:
+                self._proton_badge_lbl.hide()
+
+
+

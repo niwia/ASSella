@@ -14,6 +14,7 @@ from core.steam_helpers import (
 from core.tasks.manifest_check_task import ManifestCheckTask
 from utils.helpers import get_base_path
 from utils.task_runner import TaskRunner
+from utils.settings import get_settings
 from utils.update_status_cache import get_update_cache
 from utils.yaml_config_manager import (
     get_user_config_path,
@@ -184,7 +185,11 @@ class GameManager(QObject):
         Games with 'update_available' are left untouched.
         """
         reset_count = 0
+        settings = get_settings()
         for game in self.games:
+            appid = game.get("appid")
+            if appid and settings.value(f"pin_build/{appid}", False, type=bool):
+                continue
             if game.get("update_status") == UPDATE_STATUS["UP_TO_DATE"]:
                 game["update_status"] = UPDATE_STATUS["CHECKING"]
                 reset_count += 1
@@ -214,6 +219,14 @@ class GameManager(QObject):
             appid = g.get("appid")
             if appid in ("0", "N/A", "unknown"):
                 continue
+
+            # Pinned build bypass
+            settings = get_settings()
+            if settings.value(f"pin_build/{appid}", False, type=bool):
+                g["update_status"] = UPDATE_STATUS["UP_TO_DATE"]
+                self.game_update_status_changed.emit(appid, UPDATE_STATUS["UP_TO_DATE"])
+                continue
+
             status = g.get("update_status", "")
             if not force_refresh and status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
                 continue  # Skip checking already known updateable games
@@ -263,6 +276,14 @@ class GameManager(QObject):
         game = self._games_by_appid.get(appid) or self.get_game(appid)
         if not game:
             logger.warning(f"check_single_game_update: appid {appid} not found")
+            return
+
+        # Pinned build bypass
+        settings = get_settings()
+        if settings.value(f"pin_build/{appid}", False, type=bool):
+            logger.info(f"check_single_game_update: appid {appid} is pinned. Bypassing check.")
+            game["update_status"] = UPDATE_STATUS["UP_TO_DATE"]
+            self.game_update_status_changed.emit(appid, UPDATE_STATUS["UP_TO_DATE"])
             return
 
         # If a batch is already running, include this game in the batch instead

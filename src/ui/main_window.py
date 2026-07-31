@@ -867,8 +867,16 @@ class MainWindow(QMainWindow):
         self.expiry_value = None
         self.update_all_btn = None
         self.steam_updates_value = None
+        self.sls_lbl = None
         self.sls_status_value = None
+        self.slssteam_lbl = None
         self.slssteam_status_value = None
+        self.denuvo_sync_lbl = None
+        self.denuvo_sync_value = None
+        self._denuvo_sync_status = "Idle"
+
+        self.cloudr_lbl = None
+        self.cloudr_value = None
         self.progress_container = None
         self.progress_layout = None
         self.progress_bar = None
@@ -931,10 +939,39 @@ class MainWindow(QMainWindow):
         def run_boot_checks():
             run_boot_update_check()
             run_boot_config_check()
+
+            # Queue ProtonDB prefetch for all installed games, just before Denuvo sync.
+            # This runs in background (worker threads) so it never blocks startup.
+            try:
+                from core.ratings import prefetch_protondb_for_appids
+                if self.game_manager:
+                    all_appids = [
+                        str(g.get("appid", "0"))
+                        for g in self.game_manager.get_all_games()
+                        if g.get("appid") and str(g.get("appid")) not in ("0", "N/A", "unknown")
+                    ]
+                    if all_appids:
+                        prefetch_protondb_for_appids(all_appids)
+            except Exception as e:
+                logger.debug(f"ProtonDB boot prefetch failed: {e}")
+
+            # Run Denuvo sync at the end of the boot sequence
+            enable_denuvo = self.settings.value("enable_denuvo_sync", True, type=bool) if self.settings else True
+            if enable_denuvo:
+                try:
+                    from core.ratings import sync_denuvo_cache_and_config
+                    sync_denuvo_cache_and_config(main_window=self, force=False)
+                except Exception as e:
+                    logger.error(f"Denuvo boot sync failed: {e}")
+                    self._denuvo_sync_status = "Error"
+            else:
+                self._denuvo_sync_status = "Off"
+
             # Safely refresh system status labels on the main window dashboard
             self.refresh_system_status_signal.emit()
 
         threading.Thread(target=run_boot_checks, daemon=True).start()
+
 
     def _setup_window_properties(self) -> None:
         """Configure basic window properties."""
@@ -1607,24 +1644,24 @@ class MainWindow(QMainWindow):
         row1_layout.addLayout(hubcap_api_item)
 
         # 2. SLS Config
-        sls_lbl = QLabel("SLS Config:")
-        sls_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.sls_lbl = QLabel("SLS Config:")
+        self.sls_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
         self.sls_status_value = QLabel("Checking...")
         self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
         sls_item = QHBoxLayout()
         sls_item.setSpacing(4)
-        sls_item.addWidget(sls_lbl)
+        sls_item.addWidget(self.sls_lbl)
         sls_item.addWidget(self.sls_status_value)
         row1_layout.addLayout(sls_item)
 
         # 3. SLSsteam
-        slssteam_lbl = QLabel("SLSsteam:")
-        slssteam_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.slssteam_lbl = QLabel("SLSsteam:")
+        self.slssteam_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
         self.slssteam_status_value = QLabel("Checking...")
         self.slssteam_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
         slssteam_item = QHBoxLayout()
         slssteam_item.setSpacing(4)
-        slssteam_item.addWidget(slssteam_lbl)
+        slssteam_item.addWidget(self.slssteam_lbl)
         slssteam_item.addWidget(self.slssteam_status_value)
         row1_layout.addLayout(slssteam_item)
 
@@ -1690,6 +1727,17 @@ class MainWindow(QMainWindow):
         library_item.addWidget(library_lbl)
         library_item.addWidget(self.library_size_value)
         row2_layout.addLayout(library_item)
+
+        # 5. CloudR (New)
+        self.cloudr_lbl = QLabel("CloudR:")
+        self.cloudr_lbl.setStyleSheet("color: rgba(255, 255, 255, 140); font-size: 11px; background: transparent; border: none;")
+        self.cloudr_value = QLabel("Checking...")
+        self.cloudr_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; background: transparent; border: none;")
+        cloudr_item = QHBoxLayout()
+        cloudr_item.setSpacing(4)
+        cloudr_item.addWidget(self.cloudr_lbl)
+        cloudr_item.addWidget(self.cloudr_value)
+        row2_layout.addLayout(cloudr_item)
 
         row2_layout.addStretch()
         dash_main_layout.addLayout(row2_layout)
@@ -1848,10 +1896,6 @@ class MainWindow(QMainWindow):
         self.ui_state.fetch_dialog.exec()
         self.ui_state.fetch_dialog = None
 
-    def open_workshop_dialog(self) -> None:
-        from ui.dialogs.workshop import WorkshopDialog
-        dialog = WorkshopDialog(self)
-        dialog.exec()
 
     def open_game_library(self) -> None:
         dialog = GameLibraryDialog(self)
@@ -1905,34 +1949,65 @@ class MainWindow(QMainWindow):
             self.steam_updates_value.setText("Allowed")
             self.steam_updates_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
             
+        # --- SLS Detection ---
+        from ui.dialogs.settings_sls import get_sls_paths, get_local_sls_version
+        import ui.dialogs.settings_sls as sls_settings
+        import os
+
+        sls_paths = get_sls_paths()
+        sls_detected = sls_paths.get("detected", False)
+        version_file_exists = os.path.exists(sls_paths.get("version_file", "")) if sls_detected else False
+        ignore_updater = self.settings.value("ignore_slssteam_updater", False, type=bool) if self.settings else False
+
         # SLS Config Status
         import utils.assfixer
         status = utils.assfixer.boot_status
-        if status == "optimal":
-            self.sls_status_value.setText("Good")
-            self.sls_status_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        elif status in ("needs_fix", "failed"):
-            self.sls_status_value.setText("Update")
-            self.sls_status_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        elif status == "no_config":
+
+        if not sls_detected:
+            self.sls_lbl.setEnabled(False)
+            self.sls_status_value.setEnabled(False)
             self.sls_status_value.setText("Missing")
-            self.sls_status_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        elif status == "checking":
-            self.sls_status_value.setText("Checking...")
             self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
         else:
-            self.sls_status_value.setText("Missing")
-            self.sls_status_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-
-        if self.slssteam_status_value is not None:
-            from ui.dialogs.settings_sls import get_local_sls_version
-            import ui.dialogs.settings_sls as sls_settings
-            
-            local_ver = get_local_sls_version()
-            if local_ver == "Not Installed":
-                self.slssteam_status_value.setText("Missing")
-                self.slssteam_status_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            self.sls_lbl.setEnabled(True)
+            self.sls_status_value.setEnabled(True)
+            if status == "optimal":
+                self.sls_status_value.setText("Good")
+                self.sls_status_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            elif status in ("needs_fix", "failed"):
+                self.sls_status_value.setText("Update")
+                self.sls_status_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            elif status == "no_config":
+                self.sls_status_value.setText("Missing")
+                self.sls_status_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            elif status == "checking":
+                self.sls_status_value.setText("Checking...")
+                self.sls_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
             else:
+                self.sls_status_value.setText("Missing")
+                self.sls_status_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+
+        # SLSsteam Status
+        if self.slssteam_status_value is not None:
+            if not sls_detected:
+                self.slssteam_lbl.setEnabled(False)
+                self.slssteam_status_value.setEnabled(False)
+                self.slssteam_status_value.setText("Missing")
+                self.slssteam_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            elif ignore_updater:
+                self.slssteam_lbl.setEnabled(False)
+                self.slssteam_status_value.setEnabled(False)
+                self.slssteam_status_value.setText("Ignored")
+                self.slssteam_status_value.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            elif not version_file_exists:
+                self.slssteam_lbl.setEnabled(True)
+                self.slssteam_status_value.setEnabled(True)
+                self.slssteam_status_value.setText("Run")
+                self.slssteam_status_value.setStyleSheet("color: #ffaa00; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            else:
+                self.slssteam_lbl.setEnabled(True)
+                self.slssteam_status_value.setEnabled(True)
+                local_ver = get_local_sls_version()
                 if sls_settings.update_checked and sls_settings.latest_online_version:
                     local_clean = local_ver.strip()
                     if local_clean == "Installed (Version Unknown)" or local_clean != sls_settings.latest_online_version:
@@ -1944,6 +2019,47 @@ class MainWindow(QMainWindow):
                 else:
                     self.slssteam_status_value.setText("Latest")
                     self.slssteam_status_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+
+
+
+
+
+        # CloudR (Check DisableCloud in /home/deck/.config/SLSsteam/config.yaml)
+        if hasattr(self, "cloudr_value") and self.cloudr_value:
+            cloudr_config_path = "/home/deck/.config/SLSsteam/config.yaml"
+            cloudr_present = False
+            cloudr_status_str = "Missing"
+            
+            if os.path.exists(cloudr_config_path):
+                try:
+                    with open(cloudr_config_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if ":" in line:
+                                parts = line.split(":", 1)
+                                k = parts[0].strip().lower()
+                                v = parts[1].strip().strip('"').strip("'").lower()
+                                if k == "disablecloud":
+                                    cloudr_present = True
+                                    if v in ("yes", "true", "1"):
+                                        cloudr_status_str = "Off"
+                                    else:
+                                        cloudr_status_str = "On"
+                                    break
+                except Exception as ex:
+                    logger.error(f"Error parsing SLS config for CloudR: {ex}")
+            
+            if cloudr_present:
+                self.cloudr_lbl.setEnabled(True)
+                self.cloudr_value.setEnabled(True)
+                self.cloudr_value.setText(cloudr_status_str)
+                if cloudr_status_str == "On":
+                    self.cloudr_value.setStyleSheet("color: #46b464; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+                else:
+                    self.cloudr_value.setStyleSheet("color: #ff3333; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+            else:
+                self.cloudr_lbl.setEnabled(False)
+                self.cloudr_value.setEnabled(False)
+                self.cloudr_value.setText("")
 
         # ASSella Status
         if hasattr(self, "assella_status_value") and self.assella_status_value:
@@ -2100,7 +2216,13 @@ class MainWindow(QMainWindow):
 
     def run_update_all_flow(self) -> None:
         """Flow for updating all games that have update_available status."""
+        # Guard: prevent re-entrancy if a cycle is already running
+        if getattr(self, "_update_all_running", False):
+            return
+        self._update_all_running = True
+
         if not self.game_manager:
+            self._update_all_running = False
             return
 
         games = self.game_manager.get_all_games()
@@ -2113,6 +2235,7 @@ class MainWindow(QMainWindow):
                 updateable_games.append(g)
 
         if not updateable_games:
+            self._update_all_running = False
             QMessageBox.information(
                 self,
                 "No Updates Available",
@@ -2137,6 +2260,7 @@ class MainWindow(QMainWindow):
 
             settings = get_settings()
             queued = 0
+
             for game_data in updateable_games:
                 appid = str(game_data.get("appid", "0"))
                 name = format_game_display_name(game_data)
@@ -2241,8 +2365,11 @@ class MainWindow(QMainWindow):
                     logger.error(f"Update All failed for {name}: {e}", exc_info=True)
 
             logger.info(f"Update All: queued {queued} of {len(updateable_games)} games.")
+            # Release guard so user can trigger another cycle after this one finishes
+            self._update_all_running = False
 
         threading.Thread(target=_do_update_all, daemon=True).start()
+
 
     def update_dashboard_elements(self) -> None:
         """Dynamically update dashboard elements and floating action button."""
@@ -2251,32 +2378,86 @@ class MainWindow(QMainWindow):
         self.refresh_system_status()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        import os
         if not event.mimeData().hasUrls():
             return
 
         urls = event.mimeData().urls()
-        has_zip = any(
-            url.isLocalFile() and url.toLocalFile().lower().endswith(".zip")
-            for url in urls
-        )
+        acceptable = False
+        for url in urls:
+            if url.isLocalFile():
+                path = url.toLocalFile()
+                if (
+                    path.lower().endswith(".zip")
+                    or path.lower().endswith(".lua")
+                    or path.lower().endswith(".manifest")
+                    or os.path.isdir(path)
+                ):
+                    acceptable = True
+                    break
 
-        if has_zip:
+        if acceptable:
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:
+        import os
+        import tempfile
+        import zipfile
+        
         urls = event.mimeData().urls()
-        new_jobs = [
-            url.toLocalFile()
-            for url in urls
-            if url.isLocalFile() and url.toLocalFile().lower().endswith(".zip")
-        ]
+        
+        zips_to_queue = []
+        files_to_zip = []
+        
+        for url in urls:
+            if not url.isLocalFile():
+                continue
+            path = url.toLocalFile()
+            if path.lower().endswith(".zip"):
+                zips_to_queue.append(path)
+            elif path.lower().endswith(".lua") or path.lower().endswith(".manifest"):
+                files_to_zip.append(path)
+            elif os.path.isdir(path):
+                for root, _, files in os.walk(path):
+                    for file in files:
+                        if file.lower().endswith(".lua") or file.lower().endswith(".manifest"):
+                            files_to_zip.append(os.path.join(root, file))
 
-        if not new_jobs:
+        # Ask if they want to pin the build for these files
+        should_pin = False
+        if zips_to_queue or files_to_zip:
+            pin_choice = QMessageBox.question(
+                self,
+                "Pin Build Option",
+                "Do you want to pin this build? (Pinning locks the installed version and disables automatic updates)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            should_pin = (pin_choice == QMessageBox.StandardButton.Yes)
+
+        if files_to_zip:
+            try:
+                temp_fd, temp_path = tempfile.mkstemp(suffix=".zip")
+                os.close(temp_fd)
+                with zipfile.ZipFile(temp_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
+                    added_names = set()
+                    for fpath in files_to_zip:
+                        bname = os.path.basename(fpath)
+                        if bname not in added_names:
+                            zip_ref.write(fpath, arcname=bname)
+                            added_names.add(bname)
+                zips_to_queue.append(temp_path)
+                logger.info(f"Packaged {len(files_to_zip)} loose files into temporary zip: {temp_path}")
+            except Exception as e:
+                logger.error(f"Failed to create temporary zip for dropped files: {e}")
+                QMessageBox.critical(self, "Error", f"Failed to package dropped files: {e}")
+
+        if not zips_to_queue:
             return
 
-        logger.info(f"Added {len(new_jobs)} file(s) to the queue via drag-drop.")
-        for job_path in new_jobs:
-            self.job_queue.add_job(job_path)
+        logger.info(f"Added {len(zips_to_queue)} file(s) to the queue via drag-drop.")
+        for job_path in zips_to_queue:
+            self.job_queue.add_job(job_path, metadata={"pin_build": should_pin})
 
     def closeEvent(self, event) -> None:
         """Handle application shutdown."""

@@ -34,4 +34,15 @@ def get_settings() -> QSettings:
     """
     if not hasattr(_settings_local, "instance"):
         _settings_local.instance = RobustQSettings(ORG_NAME, APP_NAME)
+        # First run preset overrides for ASSella
+        if _settings_local.instance.value("assela_initialized") is None:
+            _settings_local.instance.setValue("assela_initialized", True)
+            _settings_local.instance.setValue("accent_color", "#a1c9fd")
+            _settings_local.instance.setValue("background_color", "#111318")
+            _settings_local.instance.setValue("material_preset", "ocean")
+            _settings_local.instance.setValue("user_accent_color", "#a1c9fd")
+            _settings_local.instance.setValue("user_background_color", "#111318")
+            _settings_local.instance.setValue("workshop_steam_enabled", True)
+            _settings_local.instance.setValue("workshop_max_downloads", 4)
+            _settings_local.instance.sync()
     return _settings_local.instance

@@ -160,10 +160,6 @@ class BottomTitleBar(QFrame):
         )
         layout.addWidget(self.search_button)
 
-        self.workshop_button = self._create_svg_button(
-            PALETTE_SVG, getattr(parent, "open_workshop_dialog", None), "Workshop Downloader"
-        )
-        layout.addWidget(self.workshop_button)
 
         self.game_library_button = self._create_svg_button(
             BOOK_SVG, getattr(parent, "open_game_library", None), "Game Library"
@@ -250,7 +246,6 @@ class BottomTitleBar(QFrame):
             self.minimize_button,
             self.maximize_button,
             self.search_button,
-            self.workshop_button,
             self.game_library_button,
             self.settings_button,
             self.close_button,
@@ -269,7 +264,6 @@ class BottomTitleBar(QFrame):
             (self.minimize_button, MINIMIZE),
             (self.maximize_button, MAXIMIZE),
             (self.search_button, SEARCH_SVG),
-            (self.workshop_button, PALETTE_SVG),
             (self.game_library_button, BOOK_SVG),
             (self.settings_button, GEAR_SVG),
             (self.close_button, POWER_SVG),

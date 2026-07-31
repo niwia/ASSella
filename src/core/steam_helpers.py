@@ -4,6 +4,8 @@ import sys
 import re
 import psutil
 import subprocess
+from typing import Optional
+
 
 logger = logging.getLogger(__name__)
 
@@ -448,4 +450,49 @@ def app_id_exists_in_applist(app_list_dir, app_id_to_check):
     except OSError:
         pass
 
-    return False
+
+def get_most_recent_steam_id() -> Optional[str]:
+    """Find the most recently logged in Steam ID64 from loginusers.vdf."""
+    from pathlib import Path
+    paths = [
+        Path.home() / ".steam" / "steam" / "config" / "loginusers.vdf",
+        Path.home() / ".steam" / "root" / "config" / "loginusers.vdf",
+        Path.home() / ".local" / "share" / "Steam" / "config" / "loginusers.vdf",
+    ]
+    
+    for path in paths:
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                
+                user_pattern = re.compile(r'"(7656\d+)"\s*\{([^}]+)\}', re.MULTILINE | re.DOTALL)
+                users = []
+                for match in user_pattern.finditer(content):
+                    steam_id = match.group(1)
+                    body = match.group(2)
+                    
+                    ts_match = re.search(r'"Timestamp"\s+"(\d+)"', body)
+                    timestamp = int(ts_match.group(1)) if ts_match else 0
+                    
+                    al_match = re.search(r'"AutoLogin"\s+"(\d+)"', body)
+                    auto_login = int(al_match.group(1)) if al_match else 0
+                    
+                    mr_match = re.search(r'"MostRecent"\s+"(\d+)"', body)
+                    most_recent = int(mr_match.group(1)) if mr_match else 0
+                    
+                    users.append({
+                        "steam_id": steam_id,
+                        "timestamp": timestamp,
+                        "auto_login": auto_login,
+                        "most_recent": most_recent
+                    })
+                
+                if not users:
+                    continue
+                
+                users.sort(key=lambda u: (u["auto_login"], u["most_recent"], u["timestamp"]), reverse=True)
+                return users[0]["steam_id"]
+            except Exception as e:
+                logger.error(f"Error parsing loginusers.vdf at {path}: {e}")
+    return None

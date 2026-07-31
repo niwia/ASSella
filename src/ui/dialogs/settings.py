@@ -8,7 +8,7 @@ import webbrowser
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QDesktopServices, QMovie, QPainter
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -227,6 +227,7 @@ class SettingsDialog(QDialog):
         self.sls_mode_checkbox = None
         self.sls_config_management_checkbox = None
         self.prompt_steam_restart_checkbox = None
+        self.ignore_slssteam_updater_checkbox = None
         self.block_steam_updates_checkbox = None
         self.download_slssteam_button = None
         self.slssteam_status_label = None
@@ -237,7 +238,9 @@ class SettingsDialog(QDialog):
         self.bg_reset_button = None
         self.titlebar_position_checkbox = None
         self.sonic_mode_checkbox = None
-        self.ignore_color_warnings_checkbox = None
+        self.workshop_steam_checkbox = None
+        self.workshop_max_dl_spinbox = None
+        self.workshop_cell_id_input = None
         self.current_font = QFont()
         self.morrenus_stats_widget = None
         self.morrenus_tab_initialized = False
@@ -247,7 +250,9 @@ class SettingsDialog(QDialog):
         self._fade_timer = None
         self._flash_opacity = 0.18
         self._original_remember_origins = self.settings.value("remember_origins", False, type=bool)
+        self._original_simplify_denuvo_status = self.settings.value("simplify_denuvo_status", False, type=bool)
         if self._original_remember_origins:
+
             gif_path = "/home/deck/.local/share/ACCELA/jumpscare/lain.gif"
             if os.path.exists(gif_path):
                 self._origins_movie = QMovie(gif_path)
@@ -283,6 +288,10 @@ class SettingsDialog(QDialog):
 
         logger.debug("Opening SettingsDialog.")
         self._setup_ui()
+
+        if self.parent():
+            from ui.dialogs.dialog_raiser import DialogRaiser
+            DialogRaiser(self.parent(), self)
 
     def _setup_ui(self) -> None:
         """Initialize the UI layout."""
@@ -692,6 +701,41 @@ class SettingsDialog(QDialog):
 
         pp_group.setLayout(pp_layout)
         layout.addWidget(pp_group)
+
+        # Workshop Downloader Settings Group
+        ws_group = QGroupBox("Workshop Downloader Settings")
+        ws_layout = QVBoxLayout()
+
+        self.workshop_steam_checkbox = create_checkbox_setting(
+            "Enable Steam Integration for Workshop Downloads",
+            "workshop_steam_enabled",
+            True,
+            self,
+            "Directs workshop downloads to your detected Steam library directories.",
+        )
+        ws_layout.addWidget(self.workshop_steam_checkbox)
+
+        # Max downloads & Cell ID row
+        ws_row = QHBoxLayout()
+        ws_row.addWidget(QLabel("Max Concurrent Workshop Downloads:"))
+        self.workshop_max_dl_spinbox = QSpinBox()
+        self.workshop_max_dl_spinbox.setRange(1, 30)
+        current_ws_max = self.settings.value("workshop_max_downloads", 4, type=int)
+        self.workshop_max_dl_spinbox.setValue(current_ws_max if 1 <= current_ws_max <= 30 else 4)
+        ws_row.addWidget(self.workshop_max_dl_spinbox)
+        ws_row.addSpacing(20)
+
+        ws_row.addWidget(QLabel("Cell ID:"))
+        self.workshop_cell_id_input = QLineEdit()
+        self.workshop_cell_id_input.setPlaceholderText("Optional")
+        self.workshop_cell_id_input.setText(self.settings.value("workshop_cell_id", "", type=str))
+        self.workshop_cell_id_input.setFixedWidth(100)
+        ws_row.addWidget(self.workshop_cell_id_input)
+        ws_row.addStretch()
+
+        ws_layout.addLayout(ws_row)
+        ws_group.setLayout(ws_layout)
+        layout.addWidget(ws_group)
 
         layout.addStretch()
         self.tab_widget.addTab(tab, "Downloads")
@@ -1196,14 +1240,7 @@ class SettingsDialog(QDialog):
         self.titlebar_position_checkbox.stateChanged.connect(self.on_titlebar_position_changed)
         disp_layout.addWidget(self.titlebar_position_checkbox)
 
-        self.ignore_color_warnings_checkbox = QCheckBox("Ignore safety color limits")
-        ignore_colors = self.settings.value("ignore_color_warnings", False, type=bool)
-        self.ignore_color_warnings_checkbox.setChecked(ignore_colors)
-        self.ignore_color_warnings_checkbox.setToolTip("Disables color contrast and safety checks. Allows setting extremely low-contrast colors.")
-        self.ignore_color_warnings_checkbox.stateChanged.connect(
-            lambda state: self.settings.setValue("ignore_color_warnings", bool(state))
-        )
-        disp_layout.addWidget(self.ignore_color_warnings_checkbox)
+
 
         self.remember_origins_checkbox = QCheckBox("Remember your origins")
         is_origins = self.settings.value("remember_origins", False, type=bool)
@@ -1211,6 +1248,13 @@ class SettingsDialog(QDialog):
         self.remember_origins_checkbox.setToolTip("Subtly displays the Wired layout background.")
         self.remember_origins_checkbox.stateChanged.connect(self._on_origins_toggled)
         disp_layout.addWidget(self.remember_origins_checkbox)
+
+        self.simplify_denuvo_status_checkbox = QCheckBox("Show hypervisor and uncracked as Not Cracked")
+        is_simplify = self.settings.value("simplify_denuvo_status", False, type=bool)
+        self.simplify_denuvo_status_checkbox.setChecked(is_simplify)
+        self.simplify_denuvo_status_checkbox.setToolTip("Displays both Denuvo Hypervisor and Denuvo Uncracked games as simply Denuvo Uncracked.")
+        disp_layout.addWidget(self.simplify_denuvo_status_checkbox)
+
 
         disp_group.setLayout(disp_layout)
         layout.addWidget(disp_group)
@@ -1456,10 +1500,7 @@ class SettingsDialog(QDialog):
         color = QColorDialog.getColor()
         if not color.isValid():
             return
-        if (
-            not self.ignore_color_warnings_checkbox.isChecked()
-            and SettingsDialog._is_too_dark(color)
-        ):
+        if SettingsDialog._is_too_dark(color):
             SettingsDialog._show_color_warning()
             return
         hex_c = color.name()
@@ -1654,9 +1695,30 @@ class SettingsDialog(QDialog):
             "prompt_steam_restart",
             self.prompt_steam_restart_checkbox.isChecked(),
         )
+        if self.ignore_slssteam_updater_checkbox is not None:
+            self.settings.setValue(
+                "ignore_slssteam_updater",
+                self.ignore_slssteam_updater_checkbox.isChecked(),
+            )
         self.settings.setValue(
             "generate_achievements", self.achievements_checkbox.isChecked()
         )
+
+        if self.workshop_steam_checkbox is not None:
+            self.settings.setValue(
+                "workshop_steam_enabled",
+                self.workshop_steam_checkbox.isChecked(),
+            )
+        if self.workshop_max_dl_spinbox is not None:
+            self.settings.setValue(
+                "workshop_max_downloads",
+                self.workshop_max_dl_spinbox.value(),
+            )
+        if self.workshop_cell_id_input is not None:
+            self.settings.setValue(
+                "workshop_cell_id",
+                self.workshop_cell_id_input.text().strip(),
+            )
         
         # Save Consolidated Steamless DRM Remover settings
         drm_mode = self.steamless_remover_combo.currentData()
@@ -1669,6 +1731,10 @@ class SettingsDialog(QDialog):
         else:
             self.settings.setValue("use_steamless_aio", False)
             self.settings.setValue("use_steamless", False)
+
+        if hasattr(self, "enable_denuvo_sync_checkbox") and self.enable_denuvo_sync_checkbox is not None:
+            self.settings.setValue("enable_denuvo_sync", self.enable_denuvo_sync_checkbox.isChecked())
+
 
         # Save Soundtrack and Search Blacklist filtering toggles
         self.settings.setValue("filter_soundtracks", self.filter_soundtracks_checkbox.isChecked())
@@ -1800,8 +1866,7 @@ class SettingsDialog(QDialog):
         applied_bg = u_bg
         self.settings.setValue("font-file", "")
 
-        ignore = self.ignore_color_warnings_checkbox.isChecked()
-        self.settings.setValue("ignore_color_warnings", ignore)
+
 
         self.settings.setValue("nerd_mode", False)
         if self.main_window and hasattr(self.main_window, "update_nerd_mode"):
@@ -1832,7 +1897,27 @@ class SettingsDialog(QDialog):
         origins = self.remember_origins_checkbox.isChecked()
         self.settings.setValue("remember_origins", origins)
 
+        if hasattr(self, "simplify_denuvo_status_checkbox") and self.simplify_denuvo_status_checkbox is not None:
+            simplify = self.simplify_denuvo_status_checkbox.isChecked()
+            self.settings.setValue("simplify_denuvo_status", simplify)
+
+            from PyQt6.QtWidgets import QApplication
+            from ui.dialogs.gamelibrary import GameItemWidget
+            from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+            from ui.dialogs.fetchmanifest import SearchItemWidget
+            for w in QApplication.instance().allWidgets():
+                if isinstance(w, GameItemWidget):
+                    w.update_denuvo_badge()
+                    w.update_proton_badge()
+                elif isinstance(w, GameDetailsDialogV2):
+                    w.update_title()
+                elif isinstance(w, SearchItemWidget):
+                    w.update_ratings()
+
+
+
         if self.main_window and hasattr(self.main_window, "ui_state"):
+
             # noinspection PyUnresolvedReferences
             self.main_window.ui_state.apply_style_settings()
 
@@ -1915,6 +2000,9 @@ class SettingsDialog(QDialog):
         # Revert origins settings and stop movie if running
         if hasattr(self, "_original_remember_origins"):
             self.settings.setValue("remember_origins", self._original_remember_origins)
+        if hasattr(self, "_original_simplify_denuvo_status"):
+            self.settings.setValue("simplify_denuvo_status", self._original_simplify_denuvo_status)
+
         if hasattr(self, "_origins_movie") and self._origins_movie:
             self._origins_movie.stop()
             self._origins_movie = None
@@ -2202,6 +2290,52 @@ class SettingsDialog(QDialog):
                 self.main_window.refresh_system_status()
 
             QMessageBox.critical(self, "ASShead Config Fixer Error", f"Failed to fix configuration:\n{msg}")
+
+    def run_denuvo_sync(self) -> None:
+        """Runs the Denuvo games sync in a background thread."""
+        if not hasattr(self, "run_denuvo_sync_btn") or not self.run_denuvo_sync_btn:
+            return
+        self.run_denuvo_sync_btn.setEnabled(False)
+        self.asshead_status_label.setText("Status: Syncing Denuvo games...")
+        self.asshead_status_label.setStyleSheet("color: #ffaa00;")
+
+        import threading
+        from core.ratings import sync_denuvo_cache_and_config
+
+
+        def do_sync():
+            res = sync_denuvo_cache_and_config(main_window=self.main_window, force=True)
+            self._last_denuvo_sync_result = res
+            from PyQt6.QtCore import QMetaObject, Qt
+            QMetaObject.invokeMethod(self, "_on_denuvo_sync_finished", Qt.ConnectionType.QueuedConnection)
+
+        threading.Thread(target=do_sync, daemon=True).start()
+
+    @pyqtSlot()
+    def _on_denuvo_sync_finished(self) -> None:
+        res = getattr(self, "_last_denuvo_sync_result", {"success": False, "error": "Unknown error"})
+        if hasattr(self, "run_denuvo_sync_btn") and self.run_denuvo_sync_btn:
+            self.run_denuvo_sync_btn.setEnabled(True)
+        self._update_asshead_status_ui()
+
+        if res.get("success"):
+            count = res.get("count", 0)
+            if self.main_window and hasattr(self.main_window, "refresh_system_status"):
+                self.main_window.refresh_system_status()
+            QMessageBox.information(
+                self,
+                "Denuvo Sync",
+                f"Successfully synced Denuvo games to your SLSsteam configuration.\nBlocked games count: {count}"
+            )
+        else:
+            if self.main_window and hasattr(self.main_window, "refresh_system_status"):
+                self.main_window.refresh_system_status()
+            QMessageBox.critical(
+                self,
+                "Denuvo Sync Error",
+                f"Denuvo Sync failed:\n{res.get('error')}"
+            )
+
 
     def run_schema_grabber_manually(self) -> None:
         """Launch schema-grabber manually in a terminal."""

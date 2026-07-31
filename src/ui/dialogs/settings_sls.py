@@ -115,6 +115,11 @@ def get_local_sls_version() -> str:
 def run_boot_update_check() -> None:
     """Query GitHub releases API once during startup in a background thread."""
     global latest_online_version, latest_download_url, update_checked, update_error
+    from utils.settings import get_settings
+    settings = get_settings()
+    if settings.value("ignore_slssteam_updater", False, type=bool):
+        logger.info("SLSsteam updater is ignored, skipping boot update check.")
+        return
     if update_checked:
         return
     try:
@@ -301,6 +306,16 @@ def create_sls_tab(dialog) -> QWidget:
             
     int_layout.addWidget(dialog.sls_config_management_checkbox)
 
+    dialog.enable_denuvo_sync_checkbox = create_checkbox_setting(
+        "Enable Denuvo Sync",
+        "enable_denuvo_sync",
+        True,
+        dialog,
+        "Automatically sync Denuvo crack statuses with SLSsteam config.yaml on startup.",
+    )
+    int_layout.addWidget(dialog.enable_denuvo_sync_checkbox)
+
+
     dialog.prompt_steam_restart_checkbox = create_checkbox_setting(
         "Prompt Steam Restart",
         "prompt_steam_restart",
@@ -309,6 +324,15 @@ def create_sls_tab(dialog) -> QWidget:
         "Show prompt to restart Steam after Steam-integrated downloads.",
     )
     int_layout.addWidget(dialog.prompt_steam_restart_checkbox)
+
+    dialog.ignore_slssteam_updater_checkbox = create_checkbox_setting(
+        "Ignore SLSsteam Updater (managed by Headcrab)",
+        "ignore_slssteam_updater",
+        False,
+        dialog,
+        "Disable boot check and update functionality for SLSsteam.",
+    )
+    int_layout.addWidget(dialog.ignore_slssteam_updater_checkbox)
 
     int_group.setLayout(int_layout)
     layout.addWidget(int_group)
@@ -339,6 +363,14 @@ def create_sls_tab(dialog) -> QWidget:
     dialog.restore_backup_btn.setToolTip("Restore the last backup copy of config.yaml.")
     dialog.restore_backup_btn.clicked.connect(dialog.restore_sls_backup)
     fixer_btn_layout.addWidget(dialog.restore_backup_btn)
+
+    dialog.run_denuvo_sync_btn = QPushButton("Sync Denuvo Games")
+    dialog.run_denuvo_sync_btn.setToolTip(
+        "Fetch latest Denuvo statuses from the website database and update SLSsteam's DenuvoGames list."
+    )
+    dialog.run_denuvo_sync_btn.clicked.connect(dialog.run_denuvo_sync)
+    fixer_btn_layout.addWidget(dialog.run_denuvo_sync_btn)
+
 
     fixer_layout.addLayout(fixer_btn_layout)
 

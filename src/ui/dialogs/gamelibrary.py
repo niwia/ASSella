@@ -223,7 +223,7 @@ class GameItemWidget(QWidget):
             "color: #FFFFFF; font-size: 15px; font-weight: bold;"
         )
         name_label.setWordWrap(True)
-        name_row_layout.addWidget(name_label)
+        name_row_layout.addWidget(name_label, 0, Qt.AlignmentFlag.AlignTop)
 
         # Update status badge
         self.status_label = QLabel()
@@ -246,8 +246,16 @@ class GameItemWidget(QWidget):
             f"font-size: 11px; "
             f"font-weight: bold;"
         )
-        name_row_layout.addWidget(self.status_label)
+        name_row_layout.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignTop)
+
+        # Denuvo badge — populated lazily after the list is built
+        self.denuvo_badge = QLabel()
+        self.denuvo_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.denuvo_badge.hide()
+        name_row_layout.addWidget(self.denuvo_badge, 0, Qt.AlignmentFlag.AlignTop)
+
         name_row_layout.addStretch()
+
 
         info_layout.addLayout(name_row_layout)
 
@@ -263,6 +271,20 @@ class GameItemWidget(QWidget):
 
         info_layout.addStretch()
         layout.addLayout(info_layout)
+
+        # Right column for ProtonDB badge at bottom-right of the card
+        right_col = QVBoxLayout()
+        right_col.setContentsMargins(0, 8, 0, 8)
+        right_col.addStretch(1)
+
+        # ProtonDB badge — populated lazily after the list is built
+        self.proton_badge = QLabel()
+        self.proton_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.proton_badge.hide()
+        right_col.addWidget(self.proton_badge, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+
+        layout.addLayout(right_col)
+
 
     def update_manifest_label(self) -> None:
         """Update the manifest status label in-place."""
@@ -346,6 +368,123 @@ class GameItemWidget(QWidget):
             )
 
         self.update_manifest_label()
+        self.update_denuvo_badge()
+        self.update_proton_badge()
+
+
+
+    def update_denuvo_badge(self) -> None:
+        """Update the Denuvo status badge in-place."""
+        if not hasattr(self, "denuvo_badge") or not self.denuvo_badge:
+            return
+
+        appid = self.game_data.get("appid", "0")
+        if not appid or appid in ("0", "N/A", "unknown"):
+            self.denuvo_badge.hide()
+            return
+
+        from core.ratings import get_denuvo_status
+        status = get_denuvo_status(appid)
+ 
+        if not status:
+            self.denuvo_badge.hide()
+            return
+ 
+        if status == "cracked":
+            text = "Denuvo Cracked"
+            color = "#81C784"
+            bg_color = "rgba(129, 199, 132, 0.15)"
+        elif status == "hypervisor":
+            text = "Denuvo Hypervisor"
+            color = "#FFA726"
+            bg_color = "rgba(255, 167, 38, 0.12)"
+        else:  # uncracked
+            text = "Denuvo Uncracked"
+            color = "#E57373"
+            bg_color = "rgba(229, 115, 115, 0.15)"
+ 
+        self.denuvo_badge.setText(text)
+        self.denuvo_badge.setStyleSheet(
+            f"color: {color}; "
+            f"background-color: {bg_color}; "
+            f"border-radius: 10px; "
+            f"padding: 3px 10px; "
+            f"font-size: 11px; "
+            f"font-weight: bold;"
+        )
+        self.denuvo_badge.show()
+
+    def update_proton_badge(self) -> None:
+        """Update the ProtonDB rating badge in-place."""
+        if not hasattr(self, "proton_badge") or not self.proton_badge:
+            return
+
+        appid = self.game_data.get("appid", "0")
+        if not appid or appid in ("0", "N/A", "unknown"):
+            self.proton_badge.hide()
+            return
+
+        from core.ratings import get_protondb_tier
+        tier = get_protondb_tier(appid)
+
+        if not tier:
+            # Currently loading asynchronously
+            self.proton_badge.setText("LOADING")
+            self.proton_badge.setStyleSheet(
+                "color: #888888; "
+                "background-color: rgba(255, 255, 255, 0.05); "
+                "border-radius: 3px; "
+                "padding: 4px 12px; "
+                "font-size: 10px; "
+                "font-weight: bold;"
+            )
+            self.proton_badge.show()
+            return
+
+        if tier == "unknown":
+            self.proton_badge.hide()
+            return
+
+        if tier == "platinum":
+            text = "PLATINUM"
+            color = "#0d47a1"
+            bg_color = "#b3e5fc"
+        elif tier == "gold":
+            text = "GOLD"
+            color = "#5d4037"
+            bg_color = "#ffd54f"
+        elif tier == "silver":
+            text = "SILVER"
+            color = "#263238"
+            bg_color = "#cfd8dc"
+        elif tier == "bronze":
+            text = "BRONZE"
+            color = "#4e342e"
+            bg_color = "#ffab91"
+        elif tier == "borked":
+            text = "BORKED"
+            color = "#ffffff"
+            bg_color = "#ef5350"
+        elif tier == "native":
+            text = "NATIVE"
+            color = "#1b5e20"
+            bg_color = "#a5d6a7"
+        else:
+            self.proton_badge.hide()
+            return
+
+        self.proton_badge.setText(text)
+        self.proton_badge.setStyleSheet(
+            f"color: {color}; "
+            f"background-color: {bg_color}; "
+            f"border-radius: 3px; "
+            f"padding: 4px 12px; "
+            f"font-size: 10px; "
+            f"font-weight: bold;"
+        )
+        self.proton_badge.show()
+
+
 
     def set_image(self, pixmap: QPixmap) -> None:
         """Sets the image on the label, scaling it nicely with right-fade blend."""
@@ -460,6 +599,10 @@ class GameLibraryDialog(QDialog):
         self._setup_ui()
         self._connect_signals()
 
+        if self.parent():
+            from ui.dialogs.dialog_raiser import DialogRaiser
+            DialogRaiser(self.parent(), self)
+
         # Initial Load
         self._refresh_game_list()
 
@@ -515,6 +658,130 @@ class GameLibraryDialog(QDialog):
             }}
         """
         )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_selection_fab()
+
+    def _position_selection_fab(self):
+        if hasattr(self, "selection_fab") and self.selection_fab and self.selection_fab.isVisible():
+            self.selection_fab.adjustSize()
+            x = self.games_list.x() + self.games_list.width() - self.selection_fab.width() - 25
+            y = self.games_list.y() + self.games_list.height() - self.selection_fab.height() - 25
+            self.selection_fab.move(x, y)
+            self.selection_fab.raise_()
+
+    def _show_fab_menu(self):
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtCore import QPoint
+        
+        menu = QMenu(self)
+        menu.setStyleSheet(self.styleSheet())
+        
+        act_update = menu.addAction("Update Selected")
+        act_uninstall = menu.addAction("Uninstall Selected")
+        
+        act_placeholder = menu.addAction("Placeholder Option")
+        act_placeholder.setEnabled(False)
+        
+        # Position menu above the FAB
+        pos = self.selection_fab.mapToGlobal(QPoint(0, -menu.sizeHint().height()))
+        selected = menu.exec(pos)
+        
+        if selected == act_update:
+            self._on_queue_selected()
+        elif selected == act_uninstall:
+            self._on_uninstall_selected()
+
+    def _on_uninstall_selected(self) -> None:
+        """Batch uninstall all selected games."""
+        if not self._selected_appids:
+            return
+
+        # Gather game data for selected appids
+        selected_games = []
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            if not item:
+                continue
+            game_data = item.data(Qt.ItemDataRole.UserRole)
+            if not game_data:
+                continue
+            appid = str(game_data.get("appid", "0"))
+            if appid in self._selected_appids:
+                selected_games.append(game_data)
+
+        if not selected_games:
+            return
+
+        game_names_str = "\n".join(f"\u2022 {g.get('game_name', 'Unknown')}" for g in selected_games[:10])
+        if len(selected_games) > 10:
+            game_names_str += f"\n\u2022 ...and {len(selected_games) - 10} more."
+
+        confirm_msg = (
+            f"Are you sure you want to uninstall the following {len(selected_games)} games?\n\n"
+            f"{game_names_str}\n\n"
+            "This will delete all files in the game directories and their Steam .acf files!"
+        )
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Batch Uninstall",
+            confirm_msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        progress = QProgressDialog("Uninstalling games...", None, 0, len(selected_games), self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+
+        success_count = 0
+        failed_names = []
+
+        for idx, game_data in enumerate(selected_games):
+            progress.setLabelText(f"Uninstalling {game_data.get('game_name', 'game')}...")
+            progress.setValue(idx)
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+
+            try:
+                success, err = self.game_manager.uninstall_game(
+                    game_data, remove_compatdata=False, remove_saves=False, remove_sls=False
+                )
+                if success:
+                    success_count += 1
+                else:
+                    failed_names.append(f"{game_data.get('game_name')} ({err})")
+            except Exception as e:
+                failed_names.append(f"{game_data.get('game_name')} ({e})")
+
+        progress.setValue(len(selected_games))
+        progress.close()
+
+        # Exit select mode and refresh list
+        self.select_mode_button.setChecked(False)
+        self._toggle_select_mode()
+        self._refresh_game_list()
+
+        if failed_names:
+            failed_str = "\n".join(failed_names[:10])
+            if len(failed_names) > 10:
+                failed_str += f"\n\u2022 ...and {len(failed_names) - 10} more."
+            QMessageBox.warning(
+                self,
+                "Uninstall Summary",
+                f"Successfully uninstalled {success_count} games.\n\n"
+                f"Failed to uninstall:\n{failed_str}"
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Uninstall Complete",
+                f"Successfully uninstalled all {success_count} selected games."
+            )
 
     def _setup_ui(self) -> None:
         """Create and arrange UI elements."""
@@ -688,70 +955,36 @@ class GameLibraryDialog(QDialog):
         self.games_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         layout.addWidget(self.games_list)
 
-        # --- Selection Pill Bar (hidden by default, floats below game list) ---
-        self.selection_footer = QWidget()
-        self.selection_footer.setObjectName("selectionPillBar")
-        self.selection_footer.setStyleSheet(
-            f"""
-            QWidget#selectionPillBar {{
-                background-color: rgba(20, 20, 20, 220);
-                border: 1px solid rgba(255, 255, 255, 18);
-                border-radius: 10px;
-            }}
-            """
-        )
-        pill_layout = QHBoxLayout(self.selection_footer)
-        pill_layout.setContentsMargins(10, 6, 10, 6)
-        pill_layout.setSpacing(10)
-
-        # Left: Exit select mode
-        self._exit_select_btn = QPushButton("✕  Exit")
-        self._exit_select_btn.setFlat(True)
-        self._exit_select_btn.setStyleSheet(
-            "QPushButton { color: rgba(255,255,255,120); border: none; background: transparent; font-size: 9pt; padding: 0; }"
-            "QPushButton:hover { color: #FFFFFF; }"
-        )
-        self._exit_select_btn.clicked.connect(lambda: (
-            self.select_mode_button.setChecked(False),
-            self._toggle_select_mode()
-        ))
-        pill_layout.addWidget(self._exit_select_btn)
-
-        pill_layout.addStretch()
-
-        # Center: Count badge
-        self.selection_count_label = QLabel("0 selected")
-        self.selection_count_label.setStyleSheet(
-            f"color: {self.accent_color}; font-size: 9pt; font-weight: bold;"
-        )
-        self.selection_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pill_layout.addWidget(self.selection_count_label)
-
-        pill_layout.addStretch()
-
-        # Right: Queue action button
-        self.queue_selected_btn = QPushButton("Start Queue  ▶")
-        self.queue_selected_btn.clicked.connect(self._on_queue_selected)
-        self.queue_selected_btn.setEnabled(False)
-        self.queue_selected_btn.setStyleSheet(
+        # --- Selection FAB (floating button) ---
+        self.selection_fab = QPushButton("Actions  ▼", self)
+        self.selection_fab.setVisible(False)
+        self.selection_fab.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.selection_fab.setStyleSheet(
             f"""
             QPushButton {{
                 background-color: {self.accent_color};
                 color: #000000;
                 border: none;
-                border-radius: 5px;
-                padding: 3px 14px;
-                font-size: 9pt;
+                border-radius: 18px;
+                padding: 8px 16px;
+                font-size: 9.5pt;
                 font-weight: bold;
             }}
-            QPushButton:hover {{ background-color: rgba(255,255,255,220); }}
-            QPushButton:disabled {{ background-color: rgba(255,255,255,25); color: rgba(255,255,255,40); }}
+            QPushButton:hover {{
+                background-color: #FFFFFF;
+                color: #000000;
+            }}
             """
         )
-        pill_layout.addWidget(self.queue_selected_btn)
+        self.selection_fab.clicked.connect(self._show_fab_menu)
 
-        self.selection_footer.setVisible(False)
-        layout.addWidget(self.selection_footer)
+        from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+        from PyQt6.QtGui import QColor
+        shadow = QGraphicsDropShadowEffect(self.selection_fab)
+        shadow.setBlurRadius(15)
+        shadow.setColor(QColor(0, 0, 0, 150))
+        shadow.setOffset(0, 4)
+        self.selection_fab.setGraphicsEffect(shadow)
 
         # --- Status Footer ---
         self.info_label = QLabel("Found 0 installed Steam games")
@@ -1271,8 +1504,12 @@ class GameLibraryDialog(QDialog):
             )
         self._refreshing = False
 
-        # Defer image downloads to a 100ms timer to prioritize UI list loading speed
+        # Defer image downloads first (100ms), then ratings badges (300ms).
+        # This keeps widget construction and layout completely free of any
+        # network/lock/thread work.
         QTimer.singleShot(100, self._start_pending_image_fetches)
+        QTimer.singleShot(300, self._populate_ratings_badges)
+
 
     def _add_game_to_list(self, game: dict) -> int:
         """Creates and adds a single game widget to the list. Returns size."""
@@ -1324,6 +1561,46 @@ class GameLibraryDialog(QDialog):
         for item, app_id in self._pending_image_fetches:
             self._fetch_item_image(item, app_id)
         self._pending_image_fetches.clear()
+
+    def _populate_ratings_badges(self) -> None:
+        """
+        Called once after the game list is fully drawn.
+        1) Immediately paints any already-cached Denuvo + ProtonDB badges
+           (in-memory reads, zero I/O on the GUI thread).
+        2) Queues background ProtonDB fetches for uncached games via the
+           single sequential worker — one request at a time, no burst.
+        """
+        if self._closing:
+            return
+
+        from core.ratings import prefetch_protondb_for_appids
+
+        appids_to_prefetch = []
+        count = self.games_list.count()
+        for i in range(count):
+            item = self.games_list.item(i)
+            if not item:
+                continue
+            widget = self.games_list.itemWidget(item)
+            if not isinstance(widget, GameItemWidget):
+                continue
+            # Paint Denuvo badge immediately (in-memory, instant)
+            widget.update_denuvo_badge()
+            # Paint ProtonDB badge if already cached (in-memory, instant);
+            # if not cached, update_proton_badge() returns after hiding the badge.
+            widget.update_proton_badge()
+            # Collect appid for background prefetch
+            appid = str(widget.game_data.get("appid", "0"))
+            if appid and appid not in ("0", "N/A", "unknown"):
+                appids_to_prefetch.append(appid)
+
+        # Hand off uncached appids to the background worker queue.
+        # The worker will process them sequentially with a 200ms sleep between
+        # each request, then fire a debounced UI refresh when done.
+        if appids_to_prefetch:
+            prefetch_protondb_for_appids(appids_to_prefetch)
+
+
 
     @staticmethod
     def _resolve_appid_by_name(name: str) -> str | None:
@@ -1399,17 +1676,18 @@ class GameLibraryDialog(QDialog):
         if not self._select_mode:
             self._selected_appids.clear()
 
-        self.selection_footer.setVisible(self._select_mode)
         self._update_selection_footer()
         self._refresh_game_list()
 
     def _update_selection_footer(self) -> None:
-        """Update the selection count badge and button state."""
+        """Update the selection FAB state and count."""
         count = len(self._selected_appids)
-        self.selection_count_label.setText(
-            f"{count} selected" if count != 1 else "1 selected"
-        )
-        self.queue_selected_btn.setEnabled(count > 0)
+        if self._select_mode and count > 0:
+            self.selection_fab.setText(f"Actions ({count})  ▼")
+            self.selection_fab.setVisible(True)
+            self._position_selection_fab()
+        else:
+            self.selection_fab.setVisible(False)
 
     def _clear_selection(self) -> None:
         """Clear all selections and refresh visual state."""
@@ -1444,8 +1722,8 @@ class GameLibraryDialog(QDialog):
             return
 
         # Disable the button so it can't be double-clicked
-        self.queue_selected_btn.setEnabled(False)
-        self.queue_selected_btn.setText("Queueing...")
+        self.selection_fab.setEnabled(False)
+        self.selection_fab.setText("Queueing...")
         self.info_label.setText(f"Queueing {len(selected_games)} game(s)...")
 
         # Exit select mode immediately
@@ -1998,17 +2276,30 @@ class GameLibraryDialog(QDialog):
             latest_id = self.settings.value(f"latest_steam_manifest_id/{appid}", "", type=str)
             if latest_id:
                 self.settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
+
+            if download_only:
+                try:
+                    from core.tasks.process_zip_task import ProcessZipTask
+                    zip_task = ProcessZipTask()
+                    zip_task.run(fpath)
+                    logger.info(f"Refetch complete: parsed zip and imported keys/token for appid {appid}")
+                except Exception as e:
+                    logger.error(f"Failed to parse zip and import keys/token for appid {appid}: {e}")
             
             # If we have a valid path, submit the job
             # We need to access the dialog passed to _fetch_game_manifest, but it's not stored.
             # However, we stored _details_dialog in _show_game_details_dialog.
             if not download_only and self._details_dialog:
                 self._submit_job(fpath, game_data, self._details_dialog)
+            elif download_only and self._details_dialog:
+                self._details_dialog._update_validate_button()
         else:
             if not download_only:
                 QMessageBox.critical(self, "Error", f"Failed: {error}")
             else:
                 logger.error(f"Background manifest download failed for appid {game_data.get('appid')}: {error}")
+            if self._details_dialog:
+                self._details_dialog._update_validate_button()
 
     def _check_hubcap_status_first(self, app_id: str, game_data: dict, dialog: QDialog) -> None:
         """Runs the Stage 1 pre-download Hubcap status check asynchronously."""
