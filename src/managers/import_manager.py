@@ -284,7 +284,8 @@ class ImportManager:
                 logger.info(f"[ImportManager] Injected AppToken for AppID {appid}")
 
         # Step 3: Check for existing manifest zip
-        zip_path = self._find_manifest_zip(appid)
+        sel_b = get_settings().value(f"selected_branch/{appid}", "public", type=str)
+        zip_path = self._find_manifest_zip(appid, branch=sel_b)
         if zip_path:
             logger.info(f"[ImportManager] Found existing manifest zip: {zip_path}")
             return {
@@ -419,10 +420,14 @@ class ImportManager:
     # Helpers
     # ─────────────────────────────────────────────────────────────
 
-    def _find_manifest_zip(self, appid: str) -> Optional[Path]:
+    def _find_manifest_zip(self, appid: str, branch: str = "public") -> Optional[Path]:
         """Find the primary manifest zip for an appid."""
         if not self._manifests_dir.exists():
             return None
+        if branch and branch != "public":
+            branch_zip = self._manifests_dir / f"accela_fetch_{appid}_branch_{branch}.zip"
+            if branch_zip.exists():
+                return branch_zip
         primary = self._manifests_dir / f"accela_fetch_{appid}.zip"
         if primary.exists():
             return primary

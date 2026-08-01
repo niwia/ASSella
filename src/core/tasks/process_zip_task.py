@@ -161,6 +161,11 @@ class ProcessZipTask:
             known_depot_descriptions = {}
 
         game_data = {}
+        fn = os.path.basename(zip_path)
+        b_match = re.search(r"_branch_([a-zA-Z0-9_-]+)\.zip$", fn)
+        if b_match:
+            game_data["branch"] = b_match.group(1)
+            logger.info(f"[ProcessZipTask] Extracted branch '{game_data['branch']}' from zip filename {fn}")
         try:
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 lua_files = [f for f in zip_ref.namelist() if f.endswith(".lua")]
@@ -314,6 +319,15 @@ class ProcessZipTask:
                             logger.info(
                                 f"Found official buildid: {game_data['buildid']}"
                             )
+                            if not game_data.get("branch"):
+                                try:
+                                    from core.steam_api import find_branch_for_buildid
+                                    pics_branch = find_branch_for_buildid(game_data["appid"], game_data["buildid"])
+                                    if pics_branch:
+                                        game_data["branch"] = pics_branch
+                                        logger.info(f"[ProcessZipTask] Steam PICS matched buildid {game_data['buildid']} -> branch '{pics_branch}'")
+                                except Exception as _pb_err:
+                                    logger.debug(f"PICS branch match failed: {_pb_err}")
 
                         if api_data.get("header_url"):
                             game_data["header_url"] = api_data["header_url"]

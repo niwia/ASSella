@@ -168,7 +168,7 @@ class SimplifiedTerminalWidget(QWidget):
         # --- VIEW 0: IDLE STATE (3-Column Dashboard) ---
         self.idle_widget = QWidget()
         idle_layout = QHBoxLayout(self.idle_widget)
-        idle_layout.setContentsMargins(0, 0, 0, 0)
+        idle_layout.setContentsMargins(15, 0, 15, 0)
         idle_layout.setSpacing(8)
 
         panel_style = """
@@ -955,17 +955,19 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.debug(f"ProtonDB boot prefetch failed: {e}")
 
-            # Run Denuvo sync at the end of the boot sequence
-            enable_denuvo = self.settings.value("enable_denuvo_sync", True, type=bool) if self.settings else True
-            if enable_denuvo:
-                try:
-                    from core.ratings import sync_denuvo_cache_and_config
-                    sync_denuvo_cache_and_config(main_window=self, force=False)
-                except Exception as e:
-                    logger.error(f"Denuvo boot sync failed: {e}")
-                    self._denuvo_sync_status = "Error"
-            else:
-                self._denuvo_sync_status = "Off"
+            # Run Denuvo cache prefetch and clean SLS config of any accidental blocklists (runs ONCE on v2.5.5 launch)
+            try:
+                from core.ratings import sync_denuvo_cache_and_config
+                if self.settings and not self.settings.value("denuvo_config_cleaned_v255", False, type=bool):
+                    from utils.yaml_config_manager import get_user_config_path, clean_denuvo_games_section
+                    cfg = get_user_config_path()
+                    if cfg and cfg.exists():
+                        clean_denuvo_games_section(cfg)
+                    self.settings.setValue("denuvo_config_cleaned_v255", True)
+                    logger.info("Executed one-time SLS Denuvo blocklist cleanup for v2.5.5")
+                sync_denuvo_cache_and_config(main_window=self, force=False)
+            except Exception as e:
+                logger.debug(f"Denuvo boot prefetch skipped/failed: {e}")
 
             # Safely refresh system status labels on the main window dashboard
             self.refresh_system_status_signal.emit()
@@ -1235,7 +1237,13 @@ class MainWindow(QMainWindow):
                     logger.debug(f"Auto-fetch background: AppID {appid} is excluded from manifest auto-fetch.")
                     continue
                 # Skip if already fetched this session and the file is still fresh
-                fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+                sel_b = self.settings.value(f"selected_branch/{appid}", "public", type=str)
+                inst_b = self.settings.value(f"installed_branch/{appid}", "public", type=str)
+                target_b = inst_b or sel_b
+                if target_b and target_b != "public":
+                    fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}_branch_{target_b}.zip"
+                else:
+                    fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
                 is_fresh = self.settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
                 if fpath.exists() and is_fresh:
                     continue
@@ -1333,7 +1341,8 @@ class MainWindow(QMainWindow):
 
                         # Refined check removed because it is deprecated
 
-                    fpath, error = morrenus_api.download_manifest(appid)
+                    target_b = _auto_branches.get(appid, "public")
+                    fpath, error = morrenus_api.download_manifest(appid, branch=target_b)
                     if fpath and not error:
                         # Stage 2 Post-Check: Parse zip and verify extracted manifest IDs against Steam
                         from core.tasks.process_zip_task import ProcessZipTask
@@ -1804,7 +1813,7 @@ class MainWindow(QMainWindow):
         """Create the bottom section with queue and logs."""
         self.bottom_widget = QWidget()
         self.bottom_layout = QHBoxLayout(self.bottom_widget)
-        self.bottom_layout.setContentsMargins(5, 5, 5, 5)
+        self.bottom_layout.setContentsMargins(0, 4, 0, 4)
 
         self.ui_state.setup_queue_panel()
         self.bottom_layout.addWidget(self.ui_state.queue_widget, 1)

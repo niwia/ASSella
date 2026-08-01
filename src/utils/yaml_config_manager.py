@@ -1105,7 +1105,15 @@ def get_denuvo_games(config_path: Path) -> Dict[str, List[str]]:
 
 
 def save_denuvo_games(config_path: Path, steam_id: str, appids: List[str]) -> bool:
-    """Save/update DenuvoGames mapping for a specific SteamId in SLSsteam config.yaml."""
+    """Deprecated: Denuvo status should never be written to SLS config. Calls clean_denuvo_games_section instead."""
+    return clean_denuvo_games_section(config_path)
+
+
+def clean_denuvo_games_section(config_path: Path) -> bool:
+    """
+    Remove all entries under DenuvoGames in SLSsteam config.yaml, returning it to an empty block.
+    This reverses the unintentional Denuvo blocklist write introduced in v2.5.4.
+    """
     if not config_path.exists():
         return False
     try:
@@ -1117,64 +1125,23 @@ def save_denuvo_games(config_path: Path, steam_id: str, appids: List[str]) -> bo
 
     denuvo_games_pattern = re.compile(r"^DenuvoGames:\s*$", re.MULTILINE)
     match = denuvo_games_pattern.search(content)
-
     if not match:
-        new_section = f"\nDenuvoGames:\n  {steam_id}:\n" + "".join(f"    - {aid}\n" for aid in appids)
-        new_content = content.rstrip() + "\n" + new_section
-    else:
-        section_start = match.end()
-        after_section = content[section_start:]
-        next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
-        next_match = next_key_pattern.search(after_section)
-        section_end = section_start + next_match.start() if next_match else len(content)
-        section_content = content[section_start:section_end]
+        return False
 
-        lines = section_content.split("\n")
-        new_lines = []
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            steam_id_match = re.match(r"^\s*['\"]?(\d+)['\"]?:\s*$", line)
-            if steam_id_match:
-                found_id = steam_id_match.group(1)
-                if found_id == steam_id:
-                    i += 1
-                    while i < len(lines):
-                        next_line = lines[i]
-                        if not next_line.strip() or next_line.strip().startswith("#"):
-                            i += 1
-                            continue
-                        if re.match(r"^\s*['\"]?\d+['\"]?:\s*$", next_line):
-                            break
-                        if re.match(r"^\s*-\s*", next_line):
-                            i += 1
-                            continue
-                        break
-                    continue
+    section_start = match.end()
+    after_section = content[section_start:]
+    next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
+    next_match = next_key_pattern.search(after_section)
+    section_end = section_start + next_match.start() if next_match else len(content)
 
-            new_lines.append(line)
-            i += 1
-
-        while new_lines and not new_lines[-1].strip():
-            new_lines.pop()
-
-        new_block_lines = []
-        if appids:
-            new_block_lines.append(f"  {steam_id}:")
-            for aid in appids:
-                new_block_lines.append(f"    - {aid}")
-
-        if new_block_lines:
-            new_lines.append("")
-            new_lines.extend(new_block_lines)
-            new_lines.append("")
-
-        new_section_content = "\n".join(new_lines)
-        new_content = content[:section_start] + new_section_content + content[section_end:]
-
-    _create_backup(config_path)
-    if _atomic_write(config_path, new_content):
-        logger.info(f"Successfully updated DenuvoGames in {config_path} for steam_id {steam_id}")
-        return True
+    section_content = content[section_start:section_end]
+    # If there is content (indented keys or appids) under DenuvoGames, strip it
+    if section_content.strip():
+        new_content = content[:section_start] + "\n" + content[section_end:]
+        _create_backup(config_path)
+        if _atomic_write(config_path, new_content):
+            logger.info(f"Successfully cleaned DenuvoGames block in {config_path}")
+            return True
     return False
+
 

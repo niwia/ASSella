@@ -1512,6 +1512,24 @@ class GameManager(QObject):
             elif platform.system() == "Windows" and not is_dlc_only:
                 self._remove_windows_game_data(appid, game_data)
 
+            # Clear QSettings branch and manifest cache keys for this game
+            try:
+                settings = get_settings()
+                for key in (
+                    f"manifest_is_fresh/{appid}",
+                    f"fetched_manifest_id/{appid}",
+                    f"latest_steam_manifest_id/{appid}",
+                    f"installed_branch/{appid}",
+                    f"selected_branch/{appid}",
+                    f"installed_buildid/{appid}",
+                    f"pin_build/{appid}",
+                    f"exclude_from_update_all/{appid}",
+                    f"auto_update_manifest/{appid}",
+                ):
+                    settings.remove(key)
+            except Exception as _set_err:
+                logger.debug(f"Failed to clear settings keys for appid {appid}: {_set_err}")
+
             # Remove from game manager list
             self.remove_game(appid)
 

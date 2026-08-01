@@ -199,6 +199,11 @@ class TaskManager(QObject):
         self.is_processing = True
         self.current_job = zip_path
         self.current_job_metadata = metadata or {}
+        fn = os.path.basename(zip_path)
+        b_match = re.search(r"_branch_([a-zA-Z0-9_-]+)\.zip$", fn)
+        if b_match and not self.current_job_metadata.get("branch"):
+            self.current_job_metadata["branch"] = b_match.group(1)
+
         self._job_steps_completed.clear()
 
         self._init_simplified_stages()
@@ -909,7 +914,13 @@ class TaskManager(QObject):
 
                         if appid:
                             settings = get_settings()
-                            sel_b = settings.value(f"selected_branch/{appid}", "public", type=str)
+                            sel_b = (
+                                (self.current_job_metadata or {}).get("branch")
+                                or (self.game_data or {}).get("branch")
+                                or settings.value(f"selected_branch/{appid}", "public", type=str)
+                            )
+                            settings.setValue(f"selected_branch/{appid}", sel_b)
+                            settings.setValue(f"installed_branch/{appid}", sel_b)
                             b_dict = getattr(self, "game_data", {}).get("branches", {}) if hasattr(self, "game_data") else {}
                             target_bid = ""
                             if isinstance(b_dict, dict) and sel_b in b_dict:
@@ -924,8 +935,6 @@ class TaskManager(QObject):
                             else:
                                 final_bid = target_bid or new_bid
                                 logger.info(f"[DEBUG_DEV] Standard install completed. final_bid: {final_bid}")
-
-                            settings.setValue(f"installed_branch/{appid}", sel_b)
                             if final_bid:
                                 # Store per-branch: installed_buildid/appid/branch
                                 settings.setValue(f"installed_buildid/{appid}/{sel_b}", str(final_bid))

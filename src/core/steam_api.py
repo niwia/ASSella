@@ -6,6 +6,7 @@ import tempfile
 import re
 import time
 import threading
+from typing import Optional, Dict, List, Tuple
 
 from utils.image_fetcher import ImageFetcher
 from managers.db_manager import DatabaseManager
@@ -238,6 +239,26 @@ def _fetch_with_steam_client(app_id, access_token=None):
             client.logout()
     logger.error("steam.client fetch failed.")
     return {}
+
+
+def find_branch_for_buildid(appid: str, buildid: str) -> Optional[str]:
+    """
+    Looks up live Steam PICS branch metadata for an appid and identifies which branch
+    corresponds to the given buildid.
+    Returns branch name (e.g. 'testingbranch', 'public') or None if not found/matched.
+    """
+    if not appid or not buildid:
+        return None
+    try:
+        branches = get_app_branches(str(appid))
+        if isinstance(branches, dict):
+            for b_name, b_info in branches.items():
+                if isinstance(b_info, dict) and str(b_info.get("buildid")) == str(buildid):
+                    logger.info(f"[SteamAPI] Steam PICS matched buildid {buildid} -> branch '{b_name}' for AppID {appid}")
+                    return b_name
+    except Exception as e:
+        logger.debug(f"[SteamAPI] Failed to lookup branch for buildid {buildid}: {e}")
+    return None
 
 
 def _fetch_with_web_api(app_id):

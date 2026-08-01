@@ -1309,7 +1309,8 @@ class GameLibraryDialog(QDialog):
                         logger.info(
                             f"[ScanImports] Resolving counterpart for {appid} via {api_type} API"
                         )
-                        zip_path, error = mgr.resolve_missing_counterpart(appid, api_type)
+                        sel_b = self.settings.value(f"selected_branch/{appid}", "public", type=str)
+                        zip_path, error = mgr.resolve_missing_counterpart(appid, api_type, branch=sel_b)
                         if error:
                             results.append({
                                 "appid": appid, "game_name": game_name,
@@ -2091,6 +2092,11 @@ class GameLibraryDialog(QDialog):
         name = game_data.get("game_name", "Unknown")
         status = game_data.get("update_status")
 
+        # Persist selected branch and attach to game_data
+        game_data = dict(game_data)
+        game_data["branch"] = branch or "public"
+        self.settings.setValue(f"selected_branch/{app_id}", branch or "public")
+
         # Flag rollback so downstream won't mark manifest as fresh
         is_rollback = local_path_override is not None
 
@@ -2285,20 +2291,29 @@ class GameLibraryDialog(QDialog):
                     logger.info(f"Refetch complete: parsed zip and imported keys/token for appid {appid}")
                 except Exception as e:
                     logger.error(f"Failed to parse zip and import keys/token for appid {appid}: {e}")
+                
+                name = game_data.get("game_name", f"App {appid}")
+                QMessageBox.information(self, "Refetch Manifest", f"Refetched manifest zip successfully for {name}!")
             
             # If we have a valid path, submit the job
-            # We need to access the dialog passed to _fetch_game_manifest, but it's not stored.
-            # However, we stored _details_dialog in _show_game_details_dialog.
             if not download_only and self._details_dialog:
                 self._submit_job(fpath, game_data, self._details_dialog)
             elif download_only and self._details_dialog:
+                if hasattr(self._details_dialog, "validate_btn") and self._details_dialog.validate_btn:
+                    self._details_dialog.validate_btn.set_loading(False)
+                    self._details_dialog.validate_btn.setEnabled(True)
                 self._details_dialog._update_validate_button()
         else:
             if not download_only:
                 QMessageBox.critical(self, "Error", f"Failed: {error}")
             else:
+                name = game_data.get("game_name", f"App {game_data.get('appid')}")
+                QMessageBox.critical(self, "Refetch Manifest Error", f"Failed to refetch manifest for {name}:\n{error}")
                 logger.error(f"Background manifest download failed for appid {game_data.get('appid')}: {error}")
             if self._details_dialog:
+                if hasattr(self._details_dialog, "validate_btn") and self._details_dialog.validate_btn:
+                    self._details_dialog.validate_btn.set_loading(False)
+                    self._details_dialog.validate_btn.setEnabled(True)
                 self._details_dialog._update_validate_button()
 
     def _check_hubcap_status_first(self, app_id: str, game_data: dict, dialog: QDialog) -> None:
@@ -2447,12 +2462,14 @@ class GameLibraryDialog(QDialog):
             except Exception:
                 pass
         is_verify = (game_data.get("update_status") != "update_available")
+        target_branch = game_data.get("branch") or (parsed_data.get("branch") if isinstance(parsed_data, dict) else "public") or "public"
         metadata = {
             "appid": game_data.get("appid"),
             "library_path": game_data.get("library_path"),
             "install_path": game_data.get("install_path"),
             "game_name": game_data.get("game_name", "Unknown"),
             "job_type": "verify" if is_verify else "download",
+            "branch": target_branch,
         }
         # Propagate rollback flag so task_manager won't mark game as up_to_date
         if game_data.get("_is_rollback"):

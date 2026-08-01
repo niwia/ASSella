@@ -1260,6 +1260,8 @@ class GameDetailsDialogV2(QDialog):
 
         if btn_text == "Refetch":
             self.validate_btn.set_loading(True)
+            self.validate_btn.setEnabled(False)
+            self.validate_btn.setToolTip("Refetching manifest zip in progress...")
             self.parent_window._fetch_game_manifest(
                 self.game_data, self, branch=sel_branch, download_only=True
             )

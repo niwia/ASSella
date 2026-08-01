@@ -306,16 +306,6 @@ def create_sls_tab(dialog) -> QWidget:
             
     int_layout.addWidget(dialog.sls_config_management_checkbox)
 
-    dialog.enable_denuvo_sync_checkbox = create_checkbox_setting(
-        "Enable Denuvo Sync",
-        "enable_denuvo_sync",
-        True,
-        dialog,
-        "Automatically sync Denuvo crack statuses with SLSsteam config.yaml on startup.",
-    )
-    int_layout.addWidget(dialog.enable_denuvo_sync_checkbox)
-
-
     dialog.prompt_steam_restart_checkbox = create_checkbox_setting(
         "Prompt Steam Restart",
         "prompt_steam_restart",
@@ -363,13 +353,6 @@ def create_sls_tab(dialog) -> QWidget:
     dialog.restore_backup_btn.setToolTip("Restore the last backup copy of config.yaml.")
     dialog.restore_backup_btn.clicked.connect(dialog.restore_sls_backup)
     fixer_btn_layout.addWidget(dialog.restore_backup_btn)
-
-    dialog.run_denuvo_sync_btn = QPushButton("Sync Denuvo Games")
-    dialog.run_denuvo_sync_btn.setToolTip(
-        "Fetch latest Denuvo statuses from the website database and update SLSsteam's DenuvoGames list."
-    )
-    dialog.run_denuvo_sync_btn.clicked.connect(dialog.run_denuvo_sync)
-    fixer_btn_layout.addWidget(dialog.run_denuvo_sync_btn)
 
 
     fixer_layout.addLayout(fixer_btn_layout)

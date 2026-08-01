@@ -157,31 +157,20 @@ def sync_denuvo_cache_and_config(main_window=None, force: bool = False) -> dict:
             logger.warning(f"Denuvo API request failed: {e}")
 
     from utils.yaml_config_manager import (
-        is_slssteam_config_management_enabled,
         get_user_config_path,
-        save_denuvo_games,
+        clean_denuvo_games_section,
     )
-    from core.steam_helpers import get_most_recent_steam_id
 
-    config_mgmt = is_slssteam_config_management_enabled()
     config_path = get_user_config_path()
+    if config_path and config_path.exists():
+        clean_denuvo_games_section(config_path)
 
-    if config_mgmt and config_path and config_path.exists() and games_map:
-        steam_id = get_most_recent_steam_id()
-        if steam_id:
-            to_block = sorted(
-                {aid for aid, st in games_map.items() if st in ("uncracked", "hypervisor")},
-                key=int,
-            )
-            if not save_denuvo_games(config_path, steam_id, to_block):
-                logger.warning("Failed to write Denuvo blocklist to SLSsteam config.yaml")
-                success   = False
-                error_msg = "Failed to update SLSsteam config.yaml"
-        else:
-            logger.info("No active Steam ID — skipping config sync.")
-
-    count    = sum(1 for s in games_map.values() if s in ("uncracked", "hypervisor"))
-    steam_id = get_most_recent_steam_id() or "N/A"
+    count = sum(1 for s in games_map.values() if s in ("uncracked", "hypervisor"))
+    try:
+        from core.steam_helpers import get_most_recent_steam_id
+        steam_id = get_most_recent_steam_id() or "N/A"
+    except Exception:
+        steam_id = "N/A"
 
     if not success and not games_map:
         return {"success": False, "error": error_msg or "No cache and fetch failed."}

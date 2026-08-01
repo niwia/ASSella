@@ -1039,6 +1039,8 @@ class FetchManifestDialog(QDialog):
         except Exception as e:
             logger.debug(f"Branch prompt error: {e}")
 
+        self._current_selected_branch = selected_branch
+        self.settings.setValue(f"selected_branch/{app_id}", selected_branch)
         self._toggle_inputs(False)
         self.status_label.setText(f"Checking updates & fetching manifest for App ID {app_id} (Branch: {selected_branch})...")
 
@@ -1056,13 +1058,18 @@ class FetchManifestDialog(QDialog):
 
         logger.info(f"Manifest downloaded: {filepath}")
         
-        metadata = {}
+        branch = getattr(self, "_current_selected_branch", "public")
+        metadata = {"branch": branch}
         if self.parent_window:
             try:
                 from core.tasks.process_zip_task import ProcessZipTask
                 zip_task = ProcessZipTask()
                 parsed_data = zip_task.run(filepath)
                 
+                if parsed_data and parsed_data.get("appid"):
+                    appid = str(parsed_data["appid"])
+                    self.settings.setValue(f"selected_branch/{appid}", branch)
+
                 if parsed_data and parsed_data.get("depots"):
                     from ui.dialogs.depotselection import DepotSelectionDialog
                     from utils.settings import get_settings

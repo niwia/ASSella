@@ -208,19 +208,27 @@ class ImageFetcher(QObject):
             cache_path = cache_dir / f"{app_id}.jpg"
             cache_path.write_bytes(data)
 
-            # Enforce 100MB limit
-            ImageFetcher.enforce_cache_limit()
+            # Enforce 300MB limit
+            ImageFetcher._enforce_cache_limit()
         except Exception as e:
             logger.warning(f"Failed to cache image for AppID {app_id}: {e}")
 
+    _last_cleanup_time = 0.0
+
     @staticmethod
-    def enforce_cache_limit() -> None:
+    def _enforce_cache_limit() -> None:
+        """Keep cache under limit by removing oldest non-installed game images."""
+        now = time.time()
+        if now - ImageFetcher._last_cleanup_time < 600:
+            return
+        ImageFetcher._last_cleanup_time = now
+
         try:
             cache_dir = ImageFetcher.get_cache_dir()
             if not cache_dir.exists():
                 return
 
-            MAX_CACHE_SIZE = 100 * 1024 * 1024  # 100MB
+            MAX_CACHE_SIZE = 300 * 1024 * 1024  # 300MB (prevent thrashing during searches)
 
             # Get list of all jpg files in cache with their size and mtime
             files = []

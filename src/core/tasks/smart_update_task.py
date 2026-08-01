@@ -278,6 +278,7 @@ class SmartUpdateTask(QObject):
             "app_token": cached_token,
             "manifests": manifest_mapping,
             "depots": enriched_depots,
+            "branch": self.branch,
             "_smart_update": True,  # Flag so downstream tasks know this came from smart path
         }
 
