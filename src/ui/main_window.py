@@ -2613,7 +2613,7 @@ class MainWindow(QMainWindow):
 
         # Determine where the installed AppImage lives
         appimage_path = os.environ.get("APPIMAGE", "")
-        default_appimage = "/home/deck/.local/share/ACCELA/ASSella.AppImage"
+        default_appimage = os.path.expanduser("~/.local/share/ACCELA/ASSella.AppImage")
         if not appimage_path or not os.path.exists(appimage_path):
             appimage_path = default_appimage
         if not os.path.exists(appimage_path):
