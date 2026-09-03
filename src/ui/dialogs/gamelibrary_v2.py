@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
 
-from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, pyqtProperty, pyqtSignal, QUrl, pyqtSlot
+from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, pyqtProperty, pyqtSignal, QUrl, pyqtSlot, QEvent
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QIntValidator, QPalette, QDesktopServices, QLinearGradient
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QCheckBox,
@@ -197,14 +197,14 @@ class MaterialTile(QPushButton):
     def __init__(self, title, subtext, parent=None, is_toggle=True, icon_char=None):
         super().__init__(parent)
         self.setCheckable(is_toggle)
-        self.setFixedHeight(44)
+        self.setFixedHeight(50)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.title = title
         self.subtext = subtext
         self.icon_char = icon_char
         
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 3, 6, 3)
+        layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(4)
         
         # Optional leading icon
@@ -246,6 +246,10 @@ class MaterialTile(QPushButton):
                     border: none;
                     border-radius: 8px;
                 }}
+                QPushButton:disabled {{
+                    background-color: rgba(255, 255, 255, 0.02);
+                    border: 1px solid rgba(255, 255, 255, 0.04);
+                }}
             """)
             self.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {text_color}; background: transparent;")
             self.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {text_color}; opacity: 0.85; background: transparent;")
@@ -264,12 +268,33 @@ class MaterialTile(QPushButton):
                     background-color: rgba(255, 255, 255, 0.10);
                     border-color: rgba(255, 255, 255, 0.15);
                 }
+                QPushButton:disabled {
+                    background-color: rgba(255, 255, 255, 0.02);
+                    border: 1px solid rgba(255, 255, 255, 0.04);
+                }
             """)
             self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #FFFFFF; background: transparent;")
             self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.6); background: transparent;")
             self.sub_lbl.setText(inactive_sub)
             if hasattr(self, "icon_lbl"):
                 self.icon_lbl.setStyleSheet("font-size: 12pt; font-weight: bold; color: rgba(255, 255, 255, 0.7); background: transparent;")
+
+        if not self.isEnabled():
+            self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: rgba(255, 255, 255, 0.3); background: transparent;")
+            self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.2); background: transparent;")
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange:
+            if not self.isEnabled():
+                self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: rgba(255, 255, 255, 0.3); background: transparent;")
+                self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.2); background: transparent;")
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+            else:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #FFFFFF; background: transparent;")
+                self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.6); background: transparent;")
 
 
 class GameDetailsDialogV2(QDialog):
@@ -480,6 +505,12 @@ class GameDetailsDialogV2(QDialog):
             btn.clicked.connect(lambda _c, i=idx: self._switch_tab(i))
             tab_bar_layout.addWidget(btn)
             self._tab_buttons.append(btn)
+            if label == "Workshop":
+                self.ws_tab_btn = btn
+                self.ws_page_index = idx
+                from utils.dlc_helpers import is_dlc_only_mode
+                if is_dlc_only_mode(self.appid):
+                    btn.setVisible(False)
 
         tab_bar_layout.addStretch()
 
@@ -740,10 +771,16 @@ class GameDetailsDialogV2(QDialog):
         installed_branch = self.settings.value(f"installed_branch/{self.appid}", "", type=str)
         if not installed_branch:
             installed_branch = self.game_data.get("installed_branch", "public")
+        acf_bid = str(self.game_data.get("buildid") or "").strip()
         installed_bid = self.settings.value(
             f"installed_buildid/{self.appid}/{installed_branch}",
-            self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""), type=str),
+            self.settings.value(f"installed_buildid/{self.appid}", acf_bid, type=str),
             type=str)
+        if acf_bid and acf_bid != "Unknown" and acf_bid != installed_bid:
+            installed_bid = acf_bid
+            self.settings.setValue(f"installed_buildid/{self.appid}", acf_bid)
+            if installed_branch:
+                self.settings.setValue(f"installed_buildid/{self.appid}/{installed_branch}", acf_bid)
 
         # Default the selected branch to whatever the user has chosen or installed (prioritize non-public branch)
         saved_b = self.settings.value(f"selected_branch/{self.appid}", "", type=str)
@@ -1136,11 +1173,16 @@ class GameDetailsDialogV2(QDialog):
         # Expandable Advanced Panel
         self._uninstall_expanded = False
         self._uninstall_panel = QFrame()
+        self._uninstall_panel.setObjectName("uninstallPanel")
         self._uninstall_panel.setStyleSheet(f"""
-            QFrame {{
+            QFrame#uninstallPanel {{
                 background-color: {panel_bg};
                 border: 1px solid {panel_border};
                 border-radius: 4px;
+            }}
+            QFrame#uninstallPanel QLabel {{
+                border: none;
+                background: transparent;
             }}
         """)
         self._uninstall_panel.setVisible(False)
@@ -1286,8 +1328,13 @@ class GameDetailsDialogV2(QDialog):
         b_info = b_dict.get(sel_branch, {}) if isinstance(b_dict, dict) else {}
         branch_bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
 
+        acf_bid = str(self.game_data.get("buildid") or "").strip()
         installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
-        installed_bid = self.settings.value(f"installed_buildid/{self.appid}/{sel_branch}", str(self.game_data.get("buildid") or ""), type=str)
+        installed_bid = self.settings.value(f"installed_buildid/{self.appid}/{sel_branch}", acf_bid, type=str)
+        if acf_bid and acf_bid != "Unknown" and sel_branch == installed_branch and acf_bid != installed_bid:
+            installed_bid = acf_bid
+            self.settings.setValue(f"installed_buildid/{self.appid}/{sel_branch}", acf_bid)
+            self.settings.setValue(f"installed_buildid/{self.appid}", acf_bid)
 
         # Update Build ID display with colour coding:
         #   green  = installed/current (local zip matches)
@@ -1751,7 +1798,7 @@ class GameDetailsDialogV2(QDialog):
         else:
             warn = QLabel(
                 f"Permanently removes files for '{self.game_data.get('game_name','this game')}'.")
-            warn.setStyleSheet("color: #ff8a7a; font-size: 9.5pt; background: transparent;")
+            warn.setStyleSheet("color: #ff8a7a; font-size: 9.5pt; background: transparent; border: none;")
             warn.setWordWrap(True)
             self._uninstall_content.addWidget(warn)
 
@@ -1873,13 +1920,50 @@ class GameDetailsDialogV2(QDialog):
                 from utils.dlc_helpers import sync_dlc_only_sls_config
                 cp = get_user_config_path()
                 if cp.exists():
-                    sync_dlc_only_sls_config(cp, self.appid, self.game_data.get("game_name", ""))
+                    sync_dlc_only_sls_config(
+                        cp, self.appid, self.game_data.get("game_name", ""), self.game_data
+                    )
             except Exception as e:
                 logger.debug(f"DLC sync error: {e}")
         self._build_uninstall_panel()
         self._refresh_drm_emulation_state()
+        self.update_title()
+
+        # Update SLSonline & EOS Proxy interactivity
+        if state:
+            if hasattr(self, "sls_tile") and self.sls_tile:
+                self.sls_tile.setEnabled(False)
+                self.sls_tile.setToolTip("Not available in DLC-Only mode")
+            if hasattr(self, "sls_input") and self.sls_input:
+                self.sls_input.setEnabled(False)
+            if hasattr(self, "eos_tile") and self.eos_tile:
+                self.eos_tile.setEnabled(False)
+                self.eos_tile.setToolTip("Not available in DLC-Only mode")
+            # Workshop tab: hide in real-time
+            if hasattr(self, "ws_tab_btn") and self.ws_tab_btn:
+                self.ws_tab_btn.setVisible(False)
+                if hasattr(self, "ws_page_index") and self.stacked.currentIndex() == self.ws_page_index:
+                    self._switch_tab(0)
+        else:
+            if hasattr(self, "sls_tile") and self.sls_tile:
+                self.sls_tile.setEnabled(True)
+                self.sls_tile.setToolTip("")
+            if hasattr(self, "sls_input") and self.sls_input:
+                self.sls_input.setEnabled(True)
+            self._update_eos_btn_state()
+            # Workshop tab: show in real-time if game has workshop
+            if hasattr(self, "ws_tab_btn") and self.ws_tab_btn:
+                from utils.workshop_helpers import check_game_has_workshop
+                if check_game_has_workshop(self.appid, self.game_data):
+                    self.ws_tab_btn.setVisible(True)
 
     def _update_eos_btn_state(self):
+        from utils.dlc_helpers import is_dlc_only_mode
+        if is_dlc_only_mode(self.appid):
+            self.eos_tile.setEnabled(False)
+            self.eos_tile.setToolTip("Not available in DLC-Only mode")
+            return
+
         # Phase 1: File Detection & Hash-based State Resolution
         install_path = self.game_data.get("install_path")
         if not install_path or not os.path.exists(install_path):
@@ -2037,6 +2121,15 @@ class GameDetailsDialogV2(QDialog):
         # Update EOS Proxy tile state AFTER sls_tile state has been restored
         self._update_eos_btn_state()
 
+        # Check DLC-only mode for SLS and EOS Proxy
+        from utils.dlc_helpers import is_dlc_only_mode
+        if is_dlc_only_mode(self.appid):
+            self.sls_tile.setEnabled(False)
+            self.sls_tile.setToolTip("Not available in DLC-Only mode")
+            self.sls_input.setEnabled(False)
+            self.eos_tile.setEnabled(False)
+            self.eos_tile.setToolTip("Not available in DLC-Only mode")
+
     # ──────────────────────────────────────────
     def _on_status_btn_clicked(self):
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
@@ -2155,6 +2248,11 @@ class GameDetailsDialogV2(QDialog):
                 color: {ac};
             }}
             QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
+            QPushButton:disabled {{
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(255,255,255,0.06);
+                color: rgba(255,255,255,0.25);
+            }}
         """)
         self.b_steamless_aio.clicked.connect(
             lambda: self.parent_window.main_window.task_manager.run_steamless_aio_for_game(path, name))
@@ -2178,18 +2276,23 @@ class GameDetailsDialogV2(QDialog):
                 color: {ac};
             }}
             QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
+            QPushButton:disabled {{
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(255,255,255,0.06);
+                color: rgba(255,255,255,0.25);
+            }}
         """)
         self.b_steamless_cli.clicked.connect(
             lambda: self.parent_window.main_window.task_manager.run_steamless_for_game(path, name))
         self.b_steamless = self.b_steamless_aio
 
-        sl_row_widget = QWidget()
-        sl_row = QHBoxLayout(sl_row_widget)
+        self.sl_row_widget = QWidget()
+        sl_row = QHBoxLayout(self.sl_row_widget)
         sl_row.setContentsMargins(0, 0, 0, 0)
         sl_row.setSpacing(8)
         sl_row.addWidget(self.b_steamless_aio, 1)
         sl_row.addWidget(self.b_steamless_cli, 1)
-        grid.addWidget(sl_row_widget)
+        grid.addWidget(self.sl_row_widget)
 
         # Row 2: Apply Goldberg | Remove Goldberg
         self.gb_apply_btn = QPushButton("Apply Goldberg")
@@ -2211,6 +2314,11 @@ class GameDetailsDialogV2(QDialog):
                 color: {ac};
             }}
             QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
+            QPushButton:disabled {{
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(255,255,255,0.06);
+                color: rgba(255,255,255,0.25);
+            }}
         """)
 
         self.gb_remove_btn = QPushButton("Remove Goldberg")
@@ -2234,6 +2342,11 @@ class GameDetailsDialogV2(QDialog):
             QPushButton:enabled:hover {
                 background: rgba(160,30,20,0.25);
                 border-color: #ff8a7a;
+            }
+            QPushButton:disabled {
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(255,255,255,0.06);
+                color: rgba(255,255,255,0.25);
             }
         """)
         self.gb_remove_btn.setEnabled(False)
@@ -2343,11 +2456,11 @@ class GameDetailsDialogV2(QDialog):
         depots_row.addWidget(choose_reset_group, 1)
 
         # Fix Installation button adjacent on the same row
-        fix_btn = QPushButton("Fix Installation")
-        fix_btn.setFixedHeight(36)
-        fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        fix_btn.setToolTip("Removes local manifest (.acf) to force Steam verification.")
-        fix_btn.setStyleSheet(f"""
+        self.fix_btn = QPushButton("Fix Installation")
+        self.fix_btn.setFixedHeight(36)
+        self.fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fix_btn.setToolTip("Removes local manifest (.acf) to force Steam verification.")
+        self.fix_btn.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(255, 255, 255, 0.05);
                 border: 1px solid rgba(255, 255, 255, 0.12);
@@ -2362,9 +2475,14 @@ class GameDetailsDialogV2(QDialog):
                 border-color: {ac};
                 color: {ac};
             }}
+            QPushButton:disabled {{
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.25);
+            }}
         """)
-        fix_btn.clicked.connect(lambda: self.parent_window._fix_game_install(self.game_data))
-        depots_row.addWidget(fix_btn, 1)
+        self.fix_btn.clicked.connect(lambda: self.parent_window._fix_game_install(self.game_data))
+        depots_row.addWidget(self.fix_btn, 1)
 
         grid.addWidget(depots_row_widget)
 
@@ -2480,6 +2598,38 @@ class GameDetailsDialogV2(QDialog):
         links_row.addWidget(copy_path, 1)
 
         grid.addWidget(links_row_widget)
+
+        grid.addWidget(self._thin_line())
+
+        # Section 4: Experimental / Advanced DLC Tools
+        grid.addWidget(self._section_title("Experimental DLC Tools"))
+
+        self.dlcdata_exp_btn = QPushButton("Move DLC to DlcData (Advanced)")
+        self.dlcdata_exp_btn.setFixedHeight(34)
+        self.dlcdata_exp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._refresh_dlcdata_btn_text()
+        self.dlcdata_exp_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 140, 0, 0.08);
+                border: 1px solid rgba(255, 140, 0, 0.25);
+                border-radius: 8px;
+                color: #FFA726;
+                font-size: 8.5pt;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 140, 0, 0.16);
+                border-color: #FFA726;
+                color: #FFB74D;
+            }}
+            QPushButton:disabled {{
+                color: rgba(255, 255, 255, 0.25);
+                border-color: rgba(255, 255, 255, 0.05);
+                background: rgba(255, 255, 255, 0.02);
+            }}
+        """)
+        self.dlcdata_exp_btn.clicked.connect(self._handle_move_dlc_to_dlcdata)
+        grid.addWidget(self.dlcdata_exp_btn)
 
         lay.addWidget(grid_widget)
         lay.addStretch()
@@ -3085,9 +3235,14 @@ class GameDetailsDialogV2(QDialog):
         applied = getattr(self, "_last_goldberg_applied", False)
 
         if is_dlc:
+            if hasattr(self, "sl_row_widget") and self.sl_row_widget:
+                self.sl_row_widget.setVisible(False)
             if hasattr(self, "b_steamless_aio") and self.b_steamless_aio:
                 self.b_steamless_aio.setEnabled(False)
                 self.b_steamless_aio.setToolTip("Not available in DLC-Only mode")
+            if hasattr(self, "b_steamless_cli") and self.b_steamless_cli:
+                self.b_steamless_cli.setEnabled(False)
+                self.b_steamless_cli.setToolTip("Not available in DLC-Only mode")
             if hasattr(self, "b_steamless") and self.b_steamless:
                 self.b_steamless.setEnabled(False)
                 self.b_steamless.setToolTip("Not available in DLC-Only mode")
@@ -3097,15 +3252,26 @@ class GameDetailsDialogV2(QDialog):
             if hasattr(self, "gb_remove_btn") and self.gb_remove_btn:
                 self.gb_remove_btn.setEnabled(False)
                 self.gb_remove_btn.setToolTip("Not available in DLC-Only mode")
+            if hasattr(self, "fix_btn") and self.fix_btn:
+                self.fix_btn.setEnabled(False)
+                self.fix_btn.setToolTip("Not needed for DLC-only games")
             return
 
         # Regular game mode - enable / configure buttons
+        if hasattr(self, "sl_row_widget") and self.sl_row_widget:
+            self.sl_row_widget.setVisible(True)
         if hasattr(self, "b_steamless_aio") and self.b_steamless_aio:
             self.b_steamless_aio.setEnabled(True)
             self.b_steamless_aio.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
+        if hasattr(self, "b_steamless_cli") and self.b_steamless_cli:
+            self.b_steamless_cli.setEnabled(True)
+            self.b_steamless_cli.setToolTip("Remove Steam DRM using .NET 9 Steamless CLI")
         if hasattr(self, "b_steamless") and self.b_steamless:
             self.b_steamless.setEnabled(True)
-            self.b_steamless.setToolTip("Remove Steam DRM using legacy Steamless")
+            self.b_steamless.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
+        if hasattr(self, "fix_btn") and self.fix_btn:
+            self.fix_btn.setEnabled(True)
+            self.fix_btn.setToolTip("Removes local manifest (.acf) to force Steam verification.")
 
         if hasattr(self, "gb_apply_btn") and hasattr(self, "gb_remove_btn"):
             if applied:
@@ -3120,7 +3286,7 @@ class GameDetailsDialogV2(QDialog):
                 self.gb_remove_btn.setToolTip("Goldberg is not applied")
 
     def _update_depot_label(self):
-        btn_text = "Depots: Default"
+        btn_text = "Depots: Select"
         if self.settings:
             val = self.settings.value(f"depot_selection/{self.appid}", "", type=str)
             if val:
@@ -3132,9 +3298,11 @@ class GameDetailsDialogV2(QDialog):
                     if sel and tot and len(sel) < tot:
                         btn_text = f"Depots: {len(sel)} of {tot}"
                     elif sel and tot and len(sel) == tot:
-                        btn_text = "Depots: Default"
+                        btn_text = "Depots: All"
                     elif sel:
                         btn_text = f"Depots: {len(sel)} Selected"
+                    else:
+                        btn_text = "Depots: Select"
                 except Exception:
                     pass
         if hasattr(self, "choose_depots_btn") and self.choose_depots_btn:
@@ -3201,12 +3369,42 @@ class GameDetailsDialogV2(QDialog):
         self._active_fetchers.pop(key, None)
 
     def _on_pin_build_toggled(self, pinned: bool):
+        from utils.dlc_helpers import is_dlc_only_mode
+        if pinned and is_dlc_only_mode(self.appid):
+            res = QMessageBox.warning(
+                self,
+                "Pin Build Warning",
+                f"'{self.game_data.get('game_name', 'This game')}' is currently in DLC-Only mode.\n\n"
+                "Pinning a build for a DLC-only game is typically not required and may freeze manifest tracking.\n\n"
+                "Are you sure you want to enable Pin Build?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if res != QMessageBox.StandardButton.Yes:
+                if hasattr(self, "pin_tile") and self.pin_tile:
+                    self.pin_tile.blockSignals(True)
+                    self.pin_tile.setChecked(False)
+                    self.pin_tile.update_state(False, self.accent_color)
+                    self.pin_tile.blockSignals(False)
+                return
+
         if hasattr(self, "pin_tile") and self.pin_tile:
             self.pin_tile.update_state(pinned, self.accent_color)
         if self.settings:
             self.settings.setValue(f"pin_build/{self.appid}", pinned)
         
         if pinned:
+            # Mark update status as up_to_date and persist to cache immediately
+            self.game_data["update_status"] = "up_to_date"
+            try:
+                from utils.update_status_cache import get_update_cache
+                get_update_cache().set_status(self.appid, "up_to_date")
+                get_update_cache().save_async()
+                if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
+                    self.parent_window.game_manager.game_update_status_changed.emit(self.appid, "up_to_date")
+            except Exception:
+                pass
+
             # Force exclude_from_update_all to True and grey it out
             if hasattr(self, "update_all_tile") and self.update_all_tile:
                 self.update_all_tile.setChecked(False)
@@ -3332,6 +3530,110 @@ class GameDetailsDialogV2(QDialog):
                 self._proton_badge_lbl.show()
             else:
                 self._proton_badge_lbl.hide()
+
+    def _refresh_dlcdata_btn_text(self):
+        if not hasattr(self, "dlcdata_exp_btn") or not self.dlcdata_exp_btn:
+            return
+        try:
+            from utils.yaml_config_manager import get_user_config_path, get_dlc_data
+            cp = get_user_config_path()
+            if cp.exists() and bool(get_dlc_data(cp, self.appid)):
+                self.dlcdata_exp_btn.setText("Revert DLC from DlcData (Advanced)")
+            else:
+                self.dlcdata_exp_btn.setText("Move DLC to DlcData (Advanced)")
+        except Exception:
+            self.dlcdata_exp_btn.setText("Move DLC to DlcData (Advanced)")
+
+    def _handle_move_dlc_to_dlcdata(self):
+        from utils.yaml_config_manager import (
+            get_user_config_path, get_dlc_data, add_dlc_data_batch, remove_dlc_data
+        )
+        from utils.dlc_helpers import get_all_dlcs_for_app
+        from PyQt6.QtWidgets import QMessageBox
+
+        cp = get_user_config_path()
+        if not cp.exists():
+            QMessageBox.warning(self, "Config Not Found", "SLSsteam config.yaml could not be found.")
+            return
+
+        current_dlcs = get_dlc_data(cp, self.appid)
+        game_name = self.game_data.get("game_name", f"AppID {self.appid}")
+
+        if current_dlcs:
+            # Revert Option
+            ans = QMessageBox.question(
+                self,
+                "Revert DLC from DlcData",
+                f"This game currently has {len(current_dlcs)} DLC(s) configured under DlcData in SLSsteam config.yaml.\n\n"
+                f"Are you sure you want to revert and remove these DLC entries from DlcData for '{game_name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if ans == QMessageBox.StandardButton.Yes:
+                if remove_dlc_data(cp, self.appid):
+                    QMessageBox.information(
+                        self,
+                        "DlcData Reverted",
+                        f"✓ Successfully removed DlcData entries for '{game_name}'.",
+                    )
+                else:
+                    QMessageBox.warning(self, "Action Failed", "Could not remove entries from DlcData.")
+                self._refresh_dlcdata_btn_text()
+            return
+
+        # Move to DlcData Option
+        warn_msg = (
+            f"⚠️ EXPERIMENTAL / ADVANCED OPTION\n\n"
+            f"This will scan all DLCs for '{game_name}' (AppID {self.appid}) "
+            f"and write them to the DlcData section in SLSsteam config.yaml.\n\n"
+            f"Notice: This is NOT needed in normal cases! It is only required for rare games "
+            f"or games hitting Steam's 64 DLC limit where in-game DLCs do not appear unlocked.\n\n"
+            f"You can revert this action at any time using this same button.\n\n"
+            f"Do you want to proceed?"
+        )
+        ans = QMessageBox.question(
+            self,
+            "Move DLC to DlcData (Advanced)",
+            warn_msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+
+        # Fetch DLCs
+        self.dlcdata_exp_btn.setEnabled(False)
+        self.dlcdata_exp_btn.setText("Fetching DLCs...")
+        QApplication.processEvents()
+
+        try:
+            dlc_list = get_all_dlcs_for_app(self.appid, self.game_data)
+            if not dlc_list:
+                QMessageBox.information(
+                    self,
+                    "No DLCs Found",
+                    f"No downloadable or store DLCs could be found for '{game_name}'.",
+                )
+                return
+
+            dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
+            ok = add_dlc_data_batch(cp, self.appid, dlc_dict)
+            if ok:
+                QMessageBox.information(
+                    self,
+                    "DLCs Moved to DlcData",
+                    f"✓ Successfully wrote {len(dlc_dict)} DLC(s) for '{game_name}' to DlcData in config.yaml.\n\n"
+                    f"SLSsteam will now explicitly report all these DLCs to the game.",
+                )
+            else:
+                QMessageBox.critical(
+                    self,
+                    "Write Failed",
+                    "Failed to write entries to DlcData in config.yaml.",
+                )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to move DLCs: {e}")
+        finally:
+            self.dlcdata_exp_btn.setEnabled(True)
+            self._refresh_dlcdata_btn_text()
 
 
 

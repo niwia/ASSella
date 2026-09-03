@@ -631,108 +631,251 @@ def remove_additional_app(config_path: Path, app_id: str) -> bool:
     )
 
 
+def replace_additional_app(config_path: Path, old_app_id: str, new_app_id: str, new_comment: str = "") -> bool:
+    """
+    Replace an existing AppID in AdditionalApps with a new AppID and optional comment.
+    Also migrates any DlcData or FakeAppIds entries if present.
+    """
+    content = _read_config_content(config_path)
+    if not content:
+        return False
+
+    old_aid_str = str(old_app_id).strip()
+    new_aid_str = str(new_app_id).strip()
+    if not old_aid_str or not new_aid_str:
+        return False
+
+    add_apps_match = re.search(r"^AdditionalApps:\s*$", content, re.MULTILINE)
+    if not add_apps_match:
+        return False
+
+    start_idx = add_apps_match.end()
+    next_sec = re.search(r"^[A-Za-z0-9_]+:\s*", content[start_idx:], re.MULTILINE)
+    end_idx = start_idx + next_sec.start() if next_sec else len(content)
+
+    sec_content = content[start_idx:end_idx]
+    pattern = re.compile(rf"^[ \t]*-[ \t]*{re.escape(old_aid_str)}[ \t]*(?:#.*)?$", re.MULTILINE)
+    if not pattern.search(sec_content):
+        logger.warning(f"AppID '{old_aid_str}' not found in AdditionalApps section of {config_path}")
+        return False
+
+    replacement_line = f"  - {new_aid_str} # {new_comment}" if new_comment else f"  - {new_aid_str}"
+    new_sec_content = pattern.sub(replacement_line, sec_content, count=1)
+    updated_content = content[:start_idx] + new_sec_content + content[end_idx:]
+
+    # Migrate DlcData section key if present
+    dlc_match = re.search(r"^DlcData:[ \t]*$", updated_content, re.MULTILINE)
+    if dlc_match:
+        d_start = dlc_match.end()
+        d_next = re.search(r"^[A-Za-z0-9_]+:[ \t]*", updated_content[d_start:], re.MULTILINE)
+        d_end = d_start + d_next.start() if d_next else len(updated_content)
+        d_sec = updated_content[d_start:d_end]
+        d_pat = re.compile(rf"^[ \t]+{re.escape(old_aid_str)}:[ \t]*$", re.MULTILINE)
+        if d_pat.search(d_sec):
+            new_d_sec = d_pat.sub(f"  {new_aid_str}:", d_sec, count=1)
+            updated_content = updated_content[:d_start] + new_d_sec + updated_content[d_end:]
+
+    if _atomic_write(config_path, updated_content):
+        logger.info(f"Successfully replaced AppID '{old_aid_str}' with '{new_aid_str}' in {config_path}")
+        return True
+    return False
+
+
+def get_additional_apps(config_path: Path) -> List[str]:
+    """Get list of AppIDs currently in AdditionalApps section."""
+    content = _read_config_content(config_path)
+    if not content:
+        return []
+    match = re.search(r"^AdditionalApps:\s*$", content, re.MULTILINE)
+    if not match:
+        return []
+    after = content[match.end() :]
+    next_top = re.search(r"^[A-Za-z0-9_]+:\s*", after, re.MULTILINE)
+    sec = after[: next_top.start()] if next_top else after
+    results = []
+    for line in sec.splitlines():
+        m = re.match(r"^\s*-\s*([0-9]+)", line)
+        if m:
+            results.append(m.group(1))
+    return results
+
+
 def add_dlc_data(
     config_path: Path, parent_app_id: str, dlc_id: str, dlc_name: str
 ) -> bool:
     """Add a DLC entry to DlcData section in SLSsteam config.yaml."""
+    return add_dlc_data_batch(config_path, parent_app_id, {str(dlc_id): dlc_name})
+
+
+def add_dlc_data_batch(
+    config_path: Path, parent_app_id: str, dlc_dict: Dict[str, str]
+) -> bool:
+    """Add multiple DLC entries under parent_app_id in DlcData section in SLSsteam config.yaml."""
+    if not dlc_dict:
+        return True
     try:
         content = _get_config_content_if_enabled(config_path, log_missing=True)
         if content is _CONFIG_DISABLED or content is None:
             return False
 
+        parent_app_id = str(parent_app_id).strip()
         dlc_data_pattern = re.compile(r"^DlcData:\s*$", re.MULTILINE)
         match = dlc_data_pattern.search(content)
 
         if not match:
             # Create new DlcData section
-            new_entry = f'DlcData:\n  {parent_app_id}:\n    {dlc_id}: "{dlc_name}"\n'
-            new_content = content + "\n" + new_entry
-            return _atomic_write_and_log(
-                config_path, new_content, dlc_name, dlc_id, parent_app_id
-            )
+            lines = ["DlcData:", f"  {parent_app_id}:"]
+            for did, dname in dlc_dict.items():
+                cname = str(dname or f"DLC {did}").replace('"', '\\"')
+                lines.append(f'    {did}: "{cname}"')
+            new_entry = "\n".join(lines) + "\n"
+            new_content = content.rstrip() + "\n\n" + new_entry
+            return _atomic_write(config_path, new_content)
 
         dlc_data_end = match.end()
 
-        # Find parent AppID under DlcData
-        parent_pattern = re.compile(
-            rf"^(\s*){re.escape(parent_app_id)}:\s*$", re.MULTILINE
-        )
-        parent_match = parent_pattern.search(content, dlc_data_end)
+        # Find the end of DlcData section (next unindented top-level key or EOF)
+        after_dlcdata = content[dlc_data_end:]
+        next_top_level = re.search(r"^[A-Za-z0-9_]+:\s*", after_dlcdata, re.MULTILINE)
+        sec_end = (dlc_data_end + next_top_level.start()) if next_top_level else len(content)
+
+        dlc_section = content[dlc_data_end:sec_end]
+
+        # Check if parent_app_id already exists in DlcData section
+        parent_pattern = re.compile(rf"^  {re.escape(parent_app_id)}:\s*$", re.MULTILINE)
+        parent_match = parent_pattern.search(dlc_section)
 
         if not parent_match:
-            # Add new parent AppID section under DlcData
-            remaining = content[dlc_data_end:]
-            next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
-            next_match = next_key_pattern.search(remaining)
-            insert_pos = (
-                dlc_data_end + next_match.start() if next_match else len(content)
-            )
+            # Parent AppID does not exist under DlcData yet. Insert it.
+            lines = [f"  {parent_app_id}:"]
+            for did, dname in dlc_dict.items():
+                cname = str(dname or f"DLC {did}").replace('"', '\\"')
+                lines.append(f'    {did}: "{cname}"')
+            insert_text = "\n".join(lines) + "\n"
+            insert_pos = sec_end
+            new_content = content[:insert_pos].rstrip() + "\n" + insert_text + "\n" + content[insert_pos:].lstrip("\n")
+            return _atomic_write(config_path, new_content)
 
-            new_entry = f'  {parent_app_id}:\n    {dlc_id}: "{dlc_name}"\n'
-            new_content = content[:insert_pos] + new_entry + content[insert_pos:]
-            return _atomic_write_and_log(
-                config_path, new_content, dlc_name, dlc_id, parent_app_id
-            )
+        # Parent exists in DlcData section.
+        # Find parent block boundary (up to next child '  \d+:' or end of DlcData section)
+        p_start = dlc_data_end + parent_match.end()
+        after_parent = content[p_start:sec_end]
+        next_parent = re.search(r"^  [0-9A-Za-z_]+:\s*$", after_parent, re.MULTILINE)
+        parent_end = (p_start + next_parent.start()) if next_parent else sec_end
 
-        # Parent exists, check for DLC
-        parent_line_end = parent_match.end()
-        parent_indent = len(parent_match.group(1))
-        remaining = content[parent_line_end:]
+        parent_block = content[p_start:parent_end]
+        new_dlc_lines = []
+        for did, dname in dlc_dict.items():
+            check_pat = re.compile(rf'^\s*{re.escape(str(did))}:\s*"', re.MULTILINE)
+            if not check_pat.search(parent_block):
+                cname = str(dname or f"DLC {did}").replace('"', '\\"')
+                new_dlc_lines.append(f'    {did}: "{cname}"')
 
-        # Find scope of this parent block
-        next_parent_pattern = re.compile(
-            rf"^(\s{{{parent_indent}}})[0-9]", re.MULTILINE
-        )
-        next_match = next_parent_pattern.search(remaining)
+        if not new_dlc_lines:
+            return True  # All already exist
 
-        if next_match:
-            parent_section = remaining[: next_match.start()]
-            insert_pos = parent_line_end + next_match.start()
-        else:
-            # Until end of DlcData or EOF
-            after_dlcdata = content[dlc_data_end:]
-            end_match = re.compile(r"^[A-Za-z]", re.MULTILINE).search(after_dlcdata)
-            if end_match:
-                limit = dlc_data_end + end_match.start() - parent_line_end
-                parent_section = remaining[:limit]
-                insert_pos = dlc_data_end + end_match.start()
-            else:
-                parent_section = remaining
-                insert_pos = len(content)
+        insert_text = "\n".join(new_dlc_lines) + "\n"
+        new_content = content[:parent_end].rstrip() + "\n" + insert_text + content[parent_end:]
+        return _atomic_write(config_path, new_content)
 
-        dlc_check_pattern = re.compile(rf'^\s*{re.escape(dlc_id)}:\s*"', re.MULTILINE)
-        if dlc_check_pattern.search(parent_section):
-            logger.debug(f"DLC '{dlc_id}' already exists under AppID '{parent_app_id}'")
+    except Exception as e:
+        logger.error(f"Failed to add DLC batch for '{parent_app_id}': {e}", exc_info=True)
+        return False
+
+
+def remove_dlc_data(
+    config_path: Path, parent_app_id: str, dlc_id: Optional[str] = None
+) -> bool:
+    """Remove a DLC or entire parent_app_id from DlcData section in SLSsteam config.yaml."""
+    try:
+        content = _get_config_content_if_enabled(config_path, log_missing=True)
+        if content is _CONFIG_DISABLED or content is None:
             return False
 
-        # Build new DLC entry with proper indentation
-        new_entry = f'{" " * (parent_indent + 2)}{dlc_id}: "{dlc_name}"\n'
-        new_content = content[:insert_pos] + new_entry + content[insert_pos:]
+        parent_app_id = str(parent_app_id).strip()
+        dlc_data_pattern = re.compile(r"^DlcData:\s*$", re.MULTILINE)
+        match = dlc_data_pattern.search(content)
+        if not match:
+            return True
 
-        return _atomic_write_and_log(
-            config_path, new_content, dlc_name, dlc_id, parent_app_id
+        dlc_data_end = match.end()
+        after_dlcdata = content[dlc_data_end:]
+        next_top_level = re.search(r"^[A-Za-z0-9_]+:\s*", after_dlcdata, re.MULTILINE)
+        sec_end = (dlc_data_end + next_top_level.start()) if next_top_level else len(content)
+
+        dlc_section = content[dlc_data_end:sec_end]
+        parent_pattern = re.compile(rf"^  {re.escape(parent_app_id)}:\s*$", re.MULTILINE)
+        parent_match = parent_pattern.search(dlc_section)
+        if not parent_match:
+            return True
+
+        p_line_start = dlc_data_end + parent_match.start()
+        p_after = content[dlc_data_end + parent_match.end() : sec_end]
+        next_parent = re.search(r"^  [0-9A-Za-z_]+:\s*$", p_after, re.MULTILINE)
+        p_block_end = (
+            dlc_data_end + parent_match.end() + next_parent.start()
+            if next_parent
+            else sec_end
         )
 
-    except OSError as e:
-        logger.error(f"Failed to add DLC '{dlc_id}': {e}", exc_info=True)
+        if dlc_id is None:
+            # Remove entire parent section
+            new_content = content[:p_line_start] + content[p_block_end:]
+            return _atomic_write(config_path, new_content)
+        else:
+            # Remove specific DLC line
+            dlc_pattern = re.compile(
+                rf"^\s*{re.escape(str(dlc_id))}:[^\n]*\n?", re.MULTILINE
+            )
+            target_block = content[p_line_start:p_block_end]
+            new_block, count = dlc_pattern.subn("", target_block)
+            if count > 0:
+                new_content = content[:p_line_start] + new_block + content[p_block_end:]
+                return _atomic_write(config_path, new_content)
+            return True
+
+    except Exception as e:
+        logger.error(f"Failed to remove DLC data for '{parent_app_id}': {e}", exc_info=True)
         return False
 
 
-def _atomic_write_and_log(
-    config_path: Path,
-    content: str,
-    dlc_name: str,
-    dlc_id: str,
-    parent_app_id: str,
-) -> bool:
-    """Helper to write file and log success for DLC addition."""
-    if not _atomic_write(config_path, content):
-        return False
-    logger.info(
-        f"Added DLC '{dlc_name}' ({dlc_id}) to DlcData under "
-        f"AppID '{parent_app_id}' in {config_path}"
-    )
-    return True
+def get_dlc_data(config_path: Path, parent_app_id: str) -> Dict[str, str]:
+    """Retrieve all DLC entries for a given parent_app_id under DlcData in SLSsteam config.yaml."""
+    try:
+        content = _get_config_content_if_enabled(config_path)
+        if content is _CONFIG_DISABLED or content is None:
+            return {}
+
+        parent_app_id = str(parent_app_id).strip()
+        dlc_data_pattern = re.compile(r"^DlcData:\s*$", re.MULTILINE)
+        match = dlc_data_pattern.search(content)
+        if not match:
+            return {}
+
+        dlc_data_end = match.end()
+        after_dlcdata = content[dlc_data_end:]
+        next_top_level = re.search(r"^[A-Za-z0-9_]+:\s*", after_dlcdata, re.MULTILINE)
+        sec_end = (dlc_data_end + next_top_level.start()) if next_top_level else len(content)
+
+        dlc_section = content[dlc_data_end:sec_end]
+        parent_pattern = re.compile(rf"^  {re.escape(parent_app_id)}:\s*$", re.MULTILINE)
+        parent_match = parent_pattern.search(dlc_section)
+        if not parent_match:
+            return {}
+
+        p_start = dlc_data_end + parent_match.end()
+        p_after = content[p_start:sec_end]
+        next_parent = re.search(r"^  [0-9A-Za-z_]+:\s*$", p_after, re.MULTILINE)
+        p_end = (p_start + next_parent.start()) if next_parent else sec_end
+
+        result = {}
+        for line in content[p_start:p_end].splitlines():
+            m = re.match(r'^\s*([0-9]+):\s*"(.*)"\s*$', line)
+            if m:
+                result[m.group(1)] = m.group(2)
+        return result
+    except Exception:
+        return {}
 
 
 def add_app_token(config_path: Path, app_id: str, token: str) -> bool:

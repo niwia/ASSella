@@ -305,6 +305,13 @@ class UpdatesPanel(QFrame):
                     painter.setOpacity(0.4)
                     painter.fillPath(path, QBrush(vignette))
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "terminal_widget") and self.terminal_widget:
+            main_win = getattr(self.terminal_widget, "main_window", None)
+            if main_win and hasattr(main_win, "position_update_all_btn"):
+                main_win.position_update_all_btn()
+
 
 class SimplifiedTerminalWidget(QWidget):
     """A simplified terminal widget that displays stats and quotes when idle, and a job progress checklist when active."""
@@ -428,11 +435,44 @@ class SimplifiedTerminalWidget(QWidget):
 
         # Floating Refresh Updates Button (ProgressButton with loading animation)
         from ui.progress_button import ProgressButton
+        from utils.color_utils import get_best_foreground_color, get_dark_container_color, make_svg_icon
+        from utils.paths import Paths
+        from PyQt6.QtCore import QSize
+
+        accent = getattr(self.main_window, "accent_color", "#C06C84") or "#C06C84"
+        fg = get_best_foreground_color(accent, dark_color="#121214", light_color="#FFFFFF")
+        disabled_bg = get_dark_container_color(accent)
+
         self.refresh_updates_btn = ProgressButton("", self.panel_mid)
         self.refresh_updates_btn.setFixedSize(36, 36)
         self.refresh_updates_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_updates_btn.clicked.connect(self.main_window.force_check_all_updates)
-        self.refresh_updates_btn.hide()
+        icon_ref = make_svg_icon(Paths.icon("ref3.svg"), fg, size=20)
+        self.refresh_updates_btn.setIcon(icon_ref)
+        self.refresh_updates_btn.setIconSize(QSize(20, 20))
+        self.refresh_updates_btn.setToolTip("Force re-check updates for all games")
+        self.refresh_updates_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {accent};
+                color: {fg};
+                border: none;
+                border-radius: 18px;
+                padding: 0px;
+            }}
+            QPushButton:hover {{
+                background-color: #FFFFFF;
+                color: #000000;
+            }}
+            QPushButton:pressed {{
+                background-color: {disabled_bg};
+            }}
+            QPushButton:disabled {{
+                background-color: {disabled_bg};
+                opacity: 0.5;
+            }}
+        """)
+        self.refresh_updates_btn.show()
+        self.refresh_updates_btn.raise_()
 
         # Column 2: Session Activity Log (formerly Column 3)
         self.panel_right = QFrame()
@@ -1327,6 +1367,8 @@ class MainWindow(QMainWindow):
     def _initialize_managers(self) -> None:
         """Initialize all manager classes."""
         self.settings = get_settings()
+        if not self.settings.contains("update_check_api_provider"):
+            self.settings.setValue("update_check_api_provider", "steampics")
 
         self.accent_color = self.settings.value("accent_color", "#a1c9fd")
         self.background_color = self.settings.value("background_color", "#111318")
@@ -1631,22 +1673,33 @@ class MainWindow(QMainWindow):
             if hasattr(term, "layout") and term.layout.currentIndex() != 0:
                 return
 
+            if not hasattr(term, "panel_mid") or not term.panel_mid:
+                return
+
+            w = term.panel_mid.width()
+            h = term.panel_mid.height()
+            if w < 50 or h < 50:
+                return
+
             # Position refresh button
             if hasattr(term, "refresh_updates_btn") and term.refresh_updates_btn:
                 # If update_all_btn is visible, place refresh to its left
                 if hasattr(term, "update_all_btn") and term.update_all_btn and term.update_all_btn.isVisible():
                     term.update_all_btn.adjustSize()
-                    x_update = term.panel_mid.width() - term.update_all_btn.width() - 16
-                    y_update = term.panel_mid.height() - term.update_all_btn.height() - 16
+                    x_update = max(8, w - term.update_all_btn.width() - 16)
+                    y_update = max(8, h - term.update_all_btn.height() - 16)
                     term.update_all_btn.move(x_update, y_update)
+                    term.update_all_btn.raise_()
 
-                    x_refresh = x_update - 36 - 8
-                    y_refresh = term.panel_mid.height() - 36 - 16
+                    x_refresh = max(8, x_update - 36 - 8)
+                    y_refresh = max(8, h - 36 - 16)
                     term.refresh_updates_btn.move(x_refresh, y_refresh)
                 else:
-                    x_refresh = term.panel_mid.width() - 36 - 16
-                    y_refresh = term.panel_mid.height() - 36 - 16
+                    x_refresh = max(8, w - 36 - 16)
+                    y_refresh = max(8, h - 36 - 16)
                     term.refresh_updates_btn.move(x_refresh, y_refresh)
+
+                term.refresh_updates_btn.raise_()
 
     def force_check_all_updates(self):
         """Forces a clean re-check of updates for all games, ignoring cache."""

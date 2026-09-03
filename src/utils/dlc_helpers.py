@@ -113,32 +113,136 @@ def get_dlc_only_info(base_appid: str) -> List[Dict[str, str]]:
     return results
 
 
-def sync_dlc_only_sls_config(config_path: Path, appid: str, game_name: str) -> bool:
+def get_all_dlcs_for_app(appid: str, game_data: Optional[dict] = None, allow_network: bool = True) -> list:
+    """
+    Returns a unified list of DLC dicts for an app:
+      [{"dlc_appid": str, "dlc_name": str, "base_game_name": str}, ...]
+
+    Order of resolution:
+    1. Saved DLC-only info in QSettings (from a previous DLC toggle or import)
+    2. game_data["dlcs"] (from local manifest / SLS config)
+    3. Steam Store API appdetails (if allow_network=True)
+    """
+    appid_str = str(appid).strip()
+    results = get_dlc_only_info(appid_str)
+    if results:
+        return results
+
+    game_name = (game_data.get("game_name") if game_data else "") or ""
+
+    # Check game_data["dlcs"]
+    if game_data and game_data.get("dlcs"):
+        dlc_map = game_data["dlcs"]
+        if isinstance(dlc_map, dict):
+            for d_id, d_name in dlc_map.items():
+                results.append({
+                    "dlc_appid": str(d_id),
+                    "dlc_name": str(d_name or f"DLC {d_id}"),
+                    "base_game_name": game_name,
+                })
+        elif isinstance(dlc_map, list):
+            for d_id in dlc_map:
+                results.append({
+                    "dlc_appid": str(d_id),
+                    "dlc_name": f"DLC {d_id}",
+                    "base_game_name": game_name,
+                })
+        if results:
+            return results
+
+    if not allow_network:
+        return results
+
+    # Fetch from Steam Store API (handles uninstalled/owned games with 64+ DLCs like 4678800)
+    try:
+        import urllib.request
+        import json
+
+        url = f"https://store.steampowered.com/api/appdetails?appids={appid_str}"
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            app_info = data.get(appid_str, {}).get("data", {})
+            if not game_name:
+                game_name = app_info.get("name", "")
+            dlc_ids = app_info.get("dlc", [])
+            for d_id in dlc_ids:
+                results.append({
+                    "dlc_appid": str(d_id),
+                    "dlc_name": (
+                        f"{game_name} - DLC {d_id}" if game_name else f"DLC {d_id}"
+                    ),
+                    "base_game_name": game_name,
+                })
+    except Exception as e:
+        logger.debug(f"Could not fetch DLC list for {appid_str} from Steam Store API: {e}")
+
+    return results
+
+
+def sync_dlc_only_sls_config(
+    config_path: Path, appid: str, game_name: str, game_data: Optional[dict] = None
+) -> bool:
     """
     Syncs a game to SLSsteam config.yaml based on DLC-only mode status.
     If DLC-only mode is active:
       - Ensures the base game AppID is REMOVED from AdditionalApps.
-      - Adds each installed DLC AppID with comment '[DLC] {dlc_name} / {base_game_name}'.
+      - Adds each DLC AppID with comment '[DLC] {dlc_name} / {base_game_name}'.
+      - If the game has 64 or more DLCs, adds them under DlcData to bypass Steam's 64 DLC limit.
     Else:
-      - Adds the base game AppID.
+      - Adds the base game AppID to AdditionalApps.
+      - Removes DLC AppIDs from AdditionalApps.
+      - If the game has 64 or more DLCs, adds them under DlcData to bypass Steam's 64 DLC limit.
     """
-    from utils.yaml_config_manager import add_additional_app, remove_additional_app
+    from utils.yaml_config_manager import (
+        add_additional_app,
+        remove_additional_app,
+        add_dlc_data_batch,
+        remove_dlc_data,
+    )
 
-    dlc_list = get_dlc_only_info(str(appid))
-    if dlc_list:
+    appid_str = str(appid).strip()
+    dlc_mode = is_dlc_only_mode(appid_str)
+    # Only allow slow network lookups if the game is in DLC-only mode or specifically requested
+    dlc_list = get_all_dlcs_for_app(appid_str, game_data, allow_network=dlc_mode)
+
+    if dlc_mode:
         # Base game AppID MUST NOT be in AdditionalApps when in DLC-only mode
-        remove_additional_app(config_path, str(appid))
+        remove_additional_app(config_path, appid_str)
         added_any = False
-        for dlc_entry in dlc_list:
-            dlc_appid = dlc_entry["dlc_appid"]
-            dlc_name = dlc_entry["dlc_name"]
-            base_game_name = dlc_entry["base_game_name"] or game_name
-            comment = f"[DLC] {dlc_name or dlc_appid} / {base_game_name}"
-            if add_additional_app(config_path, str(dlc_appid), comment):
-                added_any = True
+        if dlc_list:
+            for dlc_entry in dlc_list:
+                dlc_appid = str(dlc_entry["dlc_appid"])
+                dlc_name = dlc_entry["dlc_name"]
+                base_name = dlc_entry["base_game_name"] or game_name
+                comment = f"[DLC] {dlc_name or dlc_appid} / {base_name}"
+                if add_additional_app(config_path, dlc_appid, comment):
+                    added_any = True
+
+            # If 64 or more DLCs, add them under DlcData to bypass Steam's 64 DLC limit
+            if len(dlc_list) >= 64:
+                dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
+                add_dlc_data_batch(config_path, appid_str, dlc_dict)
+            else:
+                remove_dlc_data(config_path, appid_str)
         return added_any
     else:
-        return add_additional_app(config_path, str(appid), game_name)
+        # Regular game mode - ensure base game in AdditionalApps
+        added = add_additional_app(config_path, appid_str, game_name)
+        # Remove individual DLCs from AdditionalApps if they were present
+        if dlc_list:
+            for dlc_entry in dlc_list:
+                remove_additional_app(config_path, str(dlc_entry["dlc_appid"]))
+
+        # If the game has 64 or more DLCs, ensure DlcData is populated
+        if dlc_list and len(dlc_list) >= 64:
+            dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
+            add_dlc_data_batch(config_path, appid_str, dlc_dict)
+        elif not dlc_list or len(dlc_list) < 64:
+            remove_dlc_data(config_path, appid_str)
+        return added
 
 
 def get_dlc_uninstall_message(game_data: dict) -> str:

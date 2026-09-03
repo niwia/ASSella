@@ -159,7 +159,7 @@ class ManifestCheckTask(QObject):
                             depot_id = parts[0].strip()
                             # Note: depot_id is a depot of this app, not a standalone appid.
                             # It is already returned in the parent game's depots payload.
-                            
+
                             if len(parts) >= 3 and parts[2].strip():
                                 token = parts[2].strip()
                                 access_tokens[appid] = token
@@ -168,8 +168,17 @@ class ManifestCheckTask(QObject):
                         pass
 
                 if is_dlc_mode:
-                    # Use dlc_helpers to reliably collect all DLC appids from the .depot file.
-                    # This is more robust than parsing the LUA file, which may not always exist.
+                    # In DLC mode, collect all DLC AppIDs associated with this game:
+                    # 1. From cached LUA (matches addappid(...) for dedicated DLC appids)
+                    lua_file = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
+                    if lua_file.exists():
+                        try:
+                            for m in re.finditer(r"addappid\(\s*(\d+)", lua_file.read_text()):
+                                additional_appids.add(m.group(1))
+                        except Exception as e:
+                            logger.error(f"Error parsing cached LUA for DLC appids ({appid}): {e}")
+
+                    # 2. From dlc_helpers / .depot file
                     try:
                         from utils.dlc_helpers import get_dlc_only_info
                         for dlc_entry in get_dlc_only_info(appid):
@@ -205,45 +214,95 @@ class ManifestCheckTask(QObject):
                         self.game_update_checked.emit(appid, "cannot_determine")
                 return
 
-            # 2. Fetch data concurrently via SteamCMD REST API (Fast 25-worker HTTP)
-            from core.steam_api import batched_fetch_steamcmd_info
-            try:
-                logger.info(f"Starting SteamCMD REST API batch check for {len(appid_list)} games...")
-                def on_fetch_progress(current_fetched, total_to_fetch):
-                    progress_val = min(total_games, int(current_fetched * total_games / total_to_fetch))
-                    self.progress.emit(progress_val, total_games)
+            # 2. Check update check provider preference from QSettings (default: steampics)
+            settings = get_settings()
+            update_provider = settings.value("update_check_api_provider", "steampics", type=str)
+            batched_results = {}
 
-                batched_results = batched_fetch_steamcmd_info(
-                    appid_list,
-                    max_workers=50,
-                    on_progress=on_fetch_progress,
-                )
-            except Exception as cmd_err:
-                logger.warning(f"SteamCMD REST API batch fetch error: {cmd_err}")
-                batched_results = {}
+            if update_provider == "steamcmd":
+                # Primary: SteamCMD REST API (Fast concurrent HTTP via CDN)
+                from core.steam_api import batched_fetch_steamcmd_info
+                try:
+                    logger.info(f"Starting SteamCMD REST API primary batch check for {len(appid_list)} games...")
+                    def on_cmd_progress(current_fetched, total_to_fetch):
+                        progress_val = min(total_games, int(current_fetched * total_games / max(1, total_to_fetch)))
+                        self.progress.emit(progress_val, total_games)
 
-            # 2. Check for missing/unresolved AppIDs and fall back to Steam PICS
-            missing_appids = [aid for aid in appid_list if str(aid) not in batched_results]
-            if missing_appids:
-                logger.info(
-                    f"{len(missing_appids)} games missing from SteamCMD REST API; "
-                    "falling back to Steam PICS client..."
-                )
-                if batched_get_product_info is not None:
+                    batched_results = batched_fetch_steamcmd_info(
+                        appid_list,
+                        max_workers=50,
+                        on_progress=on_cmd_progress,
+                    )
+                except Exception as cmd_err:
+                    logger.warning(f"SteamCMD REST API primary batch fetch error: {cmd_err}")
+                    batched_results = {}
+
+                # Fallback: Live Steam PICS for any missing or unresolved games
+                missing_appids = [aid for aid in appid_list if str(aid) not in batched_results]
+                if missing_appids and batched_get_product_info is not None:
+                    logger.info(
+                        f"{len(missing_appids)} games missing from SteamCMD REST API; falling back to Steam PICS..."
+                    )
                     try:
                         pics_results = batched_get_product_info(
                             missing_appids,
                             access_tokens=access_tokens,
-                            batch_size=25,
-                            rate_limit_delay=rate_limit_delay,
+                            batch_size=50,
+                            rate_limit_delay=0.15,
                             is_cancelled=lambda: not self._is_running,
                             request_timeout=10,
                         )
                         batched_results.update(pics_results)
-                    except BaseException as e:
-                        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    except BaseException as pics_err:
+                        if isinstance(pics_err, (KeyboardInterrupt, SystemExit)):
                             raise
-                        logger.error(f"PICS fallback error in update check: {e}")
+                        logger.error(f"PICS fallback error in update check: {pics_err}")
+            else:
+                # Primary: Live Steam PICS client (Direct from Valve, authoritative, zero stale cache)
+                if batched_get_product_info is not None:
+                    # Pre-warm the SteamClientWorker so the CM login is fully complete
+                    # before we start firing batches.  Without this, the first batch can
+                    # race the async anonymous_login() handshake and get a ConnectionError
+                    # even though the worker is technically "started".
+                    try:
+                        from core.steam_api import get_steam_worker
+                        _worker = get_steam_worker()
+                        _worker._started_evt.wait(timeout=20)
+                        _worker_ok = (
+                            _worker.client is not None
+                            and getattr(_worker.client, "connected", False)
+                            and getattr(_worker.client, "logged_on", False)
+                        )
+                        if _worker_ok:
+                            logger.info("Steam PICS worker pre-warmed and logged on — starting batch check.")
+                        else:
+                            logger.warning(
+                                "Steam PICS worker pre-warm complete but client is not logged on. "
+                                "Batch fetch will attempt anyway and may fall back to SteamCMD."
+                            )
+                    except Exception as _pw_err:
+                        logger.warning(f"Steam PICS worker pre-warm failed: {_pw_err}")
+
+                    try:
+                        logger.info(f"Starting live Steam PICS primary batch check for {len(appid_list)} games...")
+                        def on_pics_progress(current_fetched, total_to_fetch):
+                            progress_val = min(total_games, int(current_fetched * total_games / max(1, total_to_fetch)))
+                            self.progress.emit(progress_val, total_games)
+
+                        batched_results = batched_get_product_info(
+                            appid_list,
+                            access_tokens=access_tokens,
+                            batch_size=50,
+                            rate_limit_delay=0.15,
+                            is_cancelled=lambda: not self._is_running,
+                            request_timeout=10,
+                            on_progress=on_pics_progress,
+                        )
+                    except BaseException as pics_err:
+                        if isinstance(pics_err, (KeyboardInterrupt, SystemExit)):
+                            raise
+                        logger.warning(f"Steam PICS batch fetch error: {pics_err}")
+                        batched_results = {}
 
             if not self._is_running:
                 logger.debug("Update check task was stopped after batched fetch")
@@ -315,6 +374,12 @@ class ManifestCheckTask(QObject):
             logger.info(f"[UpdateCheck] Cannot determine status: Invalid/missing AppID '{appid}' in game_data")
             return "cannot_determine"
 
+        # Pinned build bypass: If game is pinned to a specific build, ignore updates and treat as up-to-date
+        settings = get_settings()
+        if settings.value(f"pin_build/{appid}", False, type=bool):
+            logger.info(f"[UpdateCheck {appid}] Game build is pinned. Ignoring updates. Status: up_to_date.")
+            return "up_to_date"
+
         # DLC-Only mode: the normal .depot file comparison below handles this correctly.
         # It reads all DLC depot IDs from {appid}.depot and looks each one up across ALL
         # entries in batched_results (including DLC appids fetched via additional_appids
@@ -358,6 +423,8 @@ class ManifestCheckTask(QObject):
 
             # Read Steam API data
             steam_client_data = batched_results.get(appid, {})
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc_mode = is_dlc_only_mode(appid)
 
             # Resolve branch and build IDs for diagnostic logging only.
             # The depot manifest comparison below is the authoritative update signal.
@@ -378,7 +445,7 @@ class ManifestCheckTask(QObject):
             effective_local_bid = installed_bid if (installed_branch == selected_branch and installed_bid) else local_buildid
 
             branch_bid_changed = False
-            if branch_buildid and effective_local_bid and effective_local_bid != "Unknown":
+            if branch_buildid and effective_local_bid and effective_local_bid not in ("", "0", "Unknown"):
                 try:
                     branch_bid_changed = int(branch_buildid) > int(effective_local_bid)
                 except (ValueError, TypeError):
@@ -391,6 +458,29 @@ class ManifestCheckTask(QObject):
                     "checking depot manifests for actual content changes"
                 )
 
+            # Guard against stale API mirrors / lagging CDN caches offering older builds:
+            # On Steam, build IDs are strictly sequential and monotonically increasing.
+            # If the remote API build ID is strictly lower than the local installed build ID,
+            # the API is returning stale/older data (or local install is newer).
+            # We must NOT declare an update, which would downgrade the game!
+            if not is_dlc_mode and branch_buildid and effective_local_bid and effective_local_bid not in ("", "0", "Unknown"):
+                try:
+                    if int(branch_buildid) < int(effective_local_bid):
+                        logger.info(
+                            f"[UpdateCheck {appid}] API build ID ({branch_buildid}) is older than local build ID ({effective_local_bid}) "
+                            f"on branch '{selected_branch}'. Upstream API mirror may be stale; ignoring downgrade trigger. Status: up_to_date."
+                        )
+                        diag_meta = {
+                            "branch": selected_branch,
+                            "branch_buildid": branch_buildid,
+                            "local_buildid": effective_local_bid,
+                            "reason": "local_build_newer_than_api",
+                        }
+                        _store_check_diag(appid, diag_meta)
+                        return "up_to_date"
+                except (ValueError, TypeError):
+                    pass
+
             # Persist build ID info so cache can record diagnostic data
             settings.setValue(f"last_checked_branch_buildid/{appid}", branch_buildid)
             settings.setValue(f"last_checked_local_buildid/{appid}", effective_local_bid or local_buildid)
@@ -400,6 +490,7 @@ class ManifestCheckTask(QObject):
                 logger.info(
                     f"[UpdateCheck {appid}] Cannot determine status: AppID {appid} was not returned in Steam API batched results payload (Steam API / DB lookup returned no product info)"
                 )
+                return "cannot_determine"
 
             for saved_depot_id, saved_manifest_id in saved_depots.items():
                 try:
@@ -414,6 +505,27 @@ class ManifestCheckTask(QObject):
                                 if saved_depot_id in dlc_depots:
                                     depots = dlc_depots
                                     break
+
+                    # 2b. If still not in depots and base game listed DLCs (hasdepotsindlc), fetch DLC AppIDs live
+                    if saved_depot_id not in depots:
+                        dlc_list_str = steam_client_data.get("listofdlc", "")
+                        if dlc_list_str:
+                            try:
+                                dlc_ids = [int(x) for x in dlc_list_str.split(",") if x.strip()]
+                                if dlc_ids:
+                                    from core.steam_api import get_steam_worker
+                                    worker = get_steam_worker()
+                                    res_dlc = worker.execute("get_product_info", apps=dlc_ids, timeout=20)
+                                    if res_dlc and isinstance(res_dlc, dict):
+                                        for d_app_id, d_app in res_dlc.get("apps", {}).items():
+                                            if isinstance(d_app, dict):
+                                                d_depots = d_app.get("depots", {})
+                                                batched_results[str(d_app_id)] = {"depots": d_depots}
+                                                if saved_depot_id in d_depots or str(saved_depot_id) in d_depots:
+                                                    depots = d_depots
+                                                    break
+                            except Exception as dlc_fetch_err:
+                                logger.debug(f"[UpdateCheck {appid}] Live listofdlc lookup error for depot {saved_depot_id}: {dlc_fetch_err}")
 
                     current_manifest_id = None
                     if depots and saved_depot_id in depots:
@@ -519,14 +631,22 @@ class ManifestCheckTask(QObject):
         # 1. Try in base game depots
         base_depots = batched_results.get(appid, {}).get("depots", {})
         if depot_id in base_depots:
-            return base_depots[depot_id].get("manifest_id")
+            m = base_depots[depot_id].get("manifest_id")
+            if not m:
+                m = base_depots[depot_id].get("manifests", {}).get("public", {}).get("gid")
+            if m:
+                return str(m)
 
         # 2. Try in all loaded appids in batched_results
         for app_info in batched_results.values():
             if isinstance(app_info, dict):
                 dlc_depots = app_info.get("depots", {})
                 if depot_id in dlc_depots:
-                    return dlc_depots[depot_id].get("manifest_id")
+                    m = dlc_depots[depot_id].get("manifest_id")
+                    if not m:
+                        m = dlc_depots[depot_id].get("manifests", {}).get("public", {}).get("gid")
+                    if m:
+                        return str(m)
 
         # 3. Fallback: Parse from cached Hubcap LUA file
         lua_file = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"

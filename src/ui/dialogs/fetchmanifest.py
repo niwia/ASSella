@@ -394,7 +394,7 @@ class FetchManifestDialog(QDialog):
     A dialog for searching and downloading manifests from the Morrenus API.
     """
 
-    def __init__(self, parent=None, select_tab: int = 0):
+    def __init__(self, parent=None, select_tab: int = 0, initial_query: str = ""):
         super().__init__(parent)
         self.parent_window = parent
         self.setWindowTitle("Fetch Manifest from Hubcap API")
@@ -432,6 +432,11 @@ class FetchManifestDialog(QDialog):
 
         if hasattr(self, "tab_widget") and self.tab_widget:
             self.tab_widget.setCurrentIndex(select_tab)
+
+        if initial_query and hasattr(self, "search_input") and self.search_input:
+            self.search_input.setText(str(initial_query))
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(200, self.on_search)
 
         if self.parent():
             from ui.dialogs.dialog_raiser import DialogRaiser

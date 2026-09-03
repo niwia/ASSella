@@ -298,6 +298,18 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"DB Delete Error {appid}: {e}")
 
+    def clear_all_branches(self):
+        """Clear cached branch and depot info across all apps."""
+        if not self.conn:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                cur.execute("UPDATE apps SET depots_json = NULL")
+                self.conn.commit()
+        except Exception as e:
+            logger.error(f"DB Clear All Branches Error: {e}")
+
     def get_cache_time(self, appid: str) -> Optional[int]:
         """Get the last_updated timestamp for a given appid (ignoring expiration)."""
         if not self.conn:

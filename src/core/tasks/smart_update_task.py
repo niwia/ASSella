@@ -412,6 +412,12 @@ class SmartUpdateTask(QObject):
                     depot_info["oslist"] = pics_depot["oslist"]
             enriched_depots[depot_id] = depot_info
 
+        manifests_dir = get_base_path() / "hubcap_manifests"
+        if self.branch and self.branch != "public":
+            save_path = manifests_dir / f"accela_fetch_{self.appid}_branch_{self.branch}.zip"
+        else:
+            save_path = manifests_dir / f"accela_fetch_{self.appid}.zip"
+
         game_data = {
             "appid": self.appid,
             "game_name": game_name,
@@ -421,6 +427,7 @@ class SmartUpdateTask(QObject):
             "manifests": manifest_mapping,
             "depots": enriched_depots,
             "branch": self.branch,
+            "zip_path": str(save_path),
             "_smart_update": True,  # Flag so downstream tasks know this came from smart path
         }
 

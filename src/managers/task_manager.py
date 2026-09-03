@@ -239,7 +239,11 @@ class TaskManager(QObject):
             merged = dict(self.current_job_metadata)
             if game_data:
                 if "manifests" in game_data:
-                    merged.setdefault("manifests", {}).update(game_data.get("manifests", {}))
+                    if not merged.get("_smart_update"):
+                        merged.setdefault("manifests", {}).update(game_data.get("manifests", {}))
+                    else:
+                        for m_k, m_v in game_data.get("manifests", {}).items():
+                            merged.setdefault("manifests", {}).setdefault(m_k, m_v)
                 for k, v in game_data.items():
                     if v and (k not in merged or not merged[k]):
                         merged[k] = v
@@ -1768,14 +1772,16 @@ class TaskManager(QObject):
                     shutil.move(interfaces_src, interfaces_dst)
                     logger.info(f"Moved steam_interfaces.txt to {steam_settings_dir}")
 
+    @staticmethod
     def _run_generate_interfaces_for_file(
-        self,
         game_directory: str,
         valve_file_path: str,
         is_64bit: bool,
-        goldberg_src: Path,
+        goldberg_src: Optional[Path] = None,
     ) -> bool:
         """Run generate_interfaces for one .valve file. Return True on success."""
+        if goldberg_src is None:
+            goldberg_src = Paths.deps("Goldberg")
         is_windows = sys.platform == "win32"
         exe_name = f"generate_interfaces_x{'64' if is_64bit else '32'}"
         if is_windows:
@@ -2339,14 +2345,7 @@ class TaskManager(QObject):
             game_name = self.game_data.get("game_name", "")
             if main_appid:
                 from utils.dlc_helpers import sync_dlc_only_sls_config
-                sync_dlc_only_sls_config(config_path, str(main_appid), game_name)
-
-            selected_dlcs = self.game_data.get("selected_dlcs", [])
-            dlcs = self.game_data.get("dlcs", {})
-            if main_appid and selected_dlcs:
-                for dlc_id in selected_dlcs:
-                    dlc_name = dlcs.get(dlc_id, "")
-                    add_dlc_data(config_path, str(main_appid), str(dlc_id), dlc_name)
+                sync_dlc_only_sls_config(config_path, str(main_appid), game_name, self.game_data)
 
         except OSError as e:
             logger.warning(f"Failed to add AppIDs to SLSsteam config: {e}")

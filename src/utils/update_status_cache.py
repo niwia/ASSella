@@ -143,6 +143,13 @@ class UpdateStatusCache:
                 del self._cache[str(appid)]
                 self._dirty = True
 
+    def clear_all(self) -> None:
+        """Remove all entries from the update status cache and persist immediately."""
+        with self._lock:
+            self._cache.clear()
+            self._dirty = True
+        self.save()
+
     def save(self) -> None:
         """Write the in-memory cache to disk.  Non-blocking; errors are logged."""
         with self._lock:

@@ -75,6 +75,22 @@ def _depot_is_macos(depot_data: dict) -> bool:
     return False
 
 
+def _depot_is_android(depot_data: dict) -> bool:
+    """Check if a depot is Android-only."""
+    oslist = (depot_data.get("oslist") or "").lower()
+    desc = (depot_data.get("desc") or "").lower()
+
+    # Check oslist
+    if oslist == "android":
+        return True
+
+    # Check description tags
+    if "[android]" in desc:
+        return True
+
+    return False
+
+
 def is_bonus_or_media_depot(depot_data: dict) -> bool:
     """Check if depot is soundtrack, wallpaper, artbook, manual, etc."""
     text = (
@@ -100,11 +116,11 @@ def get_smart_default_depots(depots: dict, target_platform: str = "linux", langu
     1. If target_platform == "linux" and native Linux depots exist -> Target Linux + shared.
        If target_platform == "linux" and NO native Linux depots exist -> Target Windows + shared (for Proton).
        If target_platform == "windows" -> Target Windows + shared.
-    2. Exclude macOS-only depots.
+    2. Exclude macOS-only and Android-only depots.
     3. Exclude soundtracks, wallpapers, artbooks, manuals, bonus media by default.
     4. Exclude 32-bit depots if 64-bit depots exist for the target architecture.
     5. Prioritize selected language (English) if language-specific depots exist.
-    6. Safety: fallback to non-macOS depots if filtered list is empty.
+    6. Safety: fallback to non-macOS/non-Android depots if filtered list is empty.
     """
     if not depots:
         return []
@@ -112,7 +128,7 @@ def get_smart_default_depots(depots: dict, target_platform: str = "linux", langu
     # Check if there are any native Linux depots
     has_linux = False
     for d_id, d_data in depots.items():
-        if not isinstance(d_data, dict) or _depot_is_macos(d_data):
+        if not isinstance(d_data, dict) or _depot_is_macos(d_data) or _depot_is_android(d_data):
             continue
         oslist = (d_data.get("oslist") or "").lower()
         desc = (d_data.get("desc") or "").lower()
@@ -188,10 +204,10 @@ def get_smart_default_depots(depots: dict, target_platform: str = "linux", langu
 
         selected.append(str(d_id))
 
-    # Safety fallback: if everything got filtered out, fallback to basic non-macOS matching
+    # Safety fallback: if everything got filtered out, fallback to basic non-macOS/non-Android matching
     if not selected:
         for d_id, d_data in depots.items():
-            if isinstance(d_data, dict) and not _depot_is_macos(d_data):
+            if isinstance(d_data, dict) and not _depot_is_macos(d_data) and not _depot_is_android(d_data):
                 if _depot_matches_platform(d_data, active_platform):
                     selected.append(str(d_id))
 
@@ -257,14 +273,16 @@ class DepotSelectionDialog(QDialog):
 
         self.anchor_row = -1
 
-        # Check if we should hide macOS depots
+        # Check if we should hide macOS & Android depots
         try:
             from utils.settings import get_settings
             settings = get_settings()
             self._hide_macos = settings.value("hide_macos_depots", True, type=bool)
+            self._hide_android = settings.value("hide_android_depots", True, type=bool)
             self.accent_color = settings.value("accent_color", "#C06C84", type=str)
         except Exception:
             self._hide_macos = True
+            self._hide_android = True
             self.accent_color = "#C06C84"
 
         # Dynamically generate solid dark container color for selection background
@@ -462,6 +480,11 @@ class DepotSelectionDialog(QDialog):
             # Filter out macOS depots if setting is enabled
             if self._hide_macos and _depot_is_macos(depot_data):
                 logger.debug(f"Hiding macOS depot {depot_id}")
+                continue
+
+            # Filter out Android depots if setting is enabled
+            if self._hide_android and _depot_is_android(depot_data):
+                logger.debug(f"Hiding Android depot {depot_id}")
                 continue
 
             original_desc = depot_data["desc"]

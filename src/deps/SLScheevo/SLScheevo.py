@@ -22,6 +22,19 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from steam.client import SteamClient
+try:
+    import steam.core.crypto as steam_crypto
+    _orig_sym_decrypt_hmac = steam_crypto.symmetric_decrypt_HMAC
+
+    def _safe_symmetric_decrypt_HMAC(cyphertext, key, hmac_secret):
+        try:
+            return _orig_sym_decrypt_hmac(cyphertext, key, hmac_secret)
+        except ValueError as val_err:
+            raise RuntimeError(f"Unable to decrypt message (truncated block): {val_err}") from val_err
+
+    steam_crypto.symmetric_decrypt_HMAC = _safe_symmetric_decrypt_HMAC
+except Exception:
+    pass
 from steam.core.msg import MsgProto
 from steam.enums.common import EResult
 from steam.enums.emsg import EMsg

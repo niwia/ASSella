@@ -168,7 +168,7 @@ class CreditsDialog(QDialog):
         ver_row.setContentsMargins(0, 0, 0, 0)
         ver_row.setSpacing(8)
 
-        build_date = "20/08/2026"
+        build_date = "03/09/2026"
         ver_lbl = QLabel(f"v{app_version}  ·  {build_date}")
         ver_lbl.setStyleSheet("font-size: 11px; color: #666666;")
 
@@ -209,7 +209,7 @@ class CreditsDialog(QDialog):
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
         layout.addWidget(self._section_label("Developer"))
 
@@ -218,6 +218,12 @@ class CreditsDialog(QDialog):
             "font-size: 15px; font-weight: bold; color: #f0f0f0;"
         )
         layout.addWidget(name_lbl)
+
+        orig_lbl = QLabel("Original code from ACCELA dev")
+        orig_lbl.setStyleSheet(
+            "font-size: 11px; color: #777777; font-style: italic;"
+        )
+        layout.addWidget(orig_lbl)
         return w
 
     def _build_contributors_section(self) -> QWidget:
@@ -229,22 +235,34 @@ class CreditsDialog(QDialog):
         layout.addWidget(self._section_label("Contributors"))
 
         contributors = [
-            ("Morrenus",  "Steamless AIO / API"),
-            ("gogovang",  "Workshop / General"),
-            ("AceSLS",    "SLSteam API"),
-            ("YesYes",    "EOS Proxy"),
+            ("Morrenus",  "Steamless AIO / API", None, None),
+            ("gogovang",  "Workshop / General", None, None),
+            ("AceSLS",    "SLSsteam", "https://github.com/AceSLS/SLSsteam", "https://github.com/AceSLS/SLSsteam"),
+            ("YesYes",    "EOS Proxy", "https://github.com/yesyes0649/eos-proxy", "https://github.com/yesyes0649/eos-proxy"),
         ]
 
-        for cname, crole in contributors:
+        for cname, crole, name_url, role_url in contributors:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(10)
 
-            name_lbl = QLabel(cname)
+            name_lbl = QLabel()
+            if name_url:
+                name_lbl.setText(f'<a href="{name_url}" style="color: #cccccc; text-decoration: none;">{cname}</a>')
+                name_lbl.setOpenExternalLinks(True)
+                name_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                name_lbl.setText(cname)
             name_lbl.setStyleSheet("font-size: 13px; color: #cccccc; font-weight: bold;")
             name_lbl.setFixedWidth(120)
 
-            role_lbl = QLabel(crole)
+            role_lbl = QLabel()
+            if role_url:
+                role_lbl.setText(f'<a href="{role_url}" style="color: #666666; text-decoration: underline;">{crole}</a>')
+                role_lbl.setOpenExternalLinks(True)
+                role_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                role_lbl.setText(crole)
             role_lbl.setStyleSheet("font-size: 11px; color: #666666;")
 
             row.addWidget(name_lbl)
@@ -263,23 +281,44 @@ class CreditsDialog(QDialog):
         layout.addWidget(self._section_label("Third-Party Tools"))
 
         tools = [
-            ("h3adcrab (drazy)",       "SLSteam / SLScheevo"),
-            ("Goldberg",               "Steam Emulator"),
-            ("DepotDownloaderMod",     "Depot Downloader"),
-            ("Steamless",              "DRM Removal"),
-            ("GreenLuma",              "Steam Emulator (Win)"),
+            (
+                "h3adcrab",
+                "drazy",
+                "https://github.com/Deadboy666/h3adcr-b",
+                '<a href="https://github.com/Deadboy666/h3adcr-b" style="color: #555555; text-decoration: underline;">drazy</a>',
+            ),
+            (
+                "Goldberg",
+                "07/26 - Detanup01",
+                "https://github.com/Detanup01/gbe_fork",
+                '<a href="https://github.com/Detanup01/gbe_fork" style="color: #555555; text-decoration: underline;">07/26 - Detanup01</a>',
+            ),
+            (
+                "Steamless",
+                "morrenus / atom0s",
+                None,
+                'morrenus / <a href="https://github.com/atom0s/Steamless" style="color: #555555; text-decoration: underline;">atom0s</a>',
+            ),
         ]
 
-        for tname, trole in tools:
+        for tname, trole_text, name_url, role_html in tools:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(10)
 
-            name_lbl = QLabel(tname)
+            name_lbl = QLabel()
+            if name_url:
+                name_lbl.setText(f'<a href="{name_url}" style="color: #999999; text-decoration: none; font-weight: bold;">{tname}</a>')
+                name_lbl.setOpenExternalLinks(True)
+                name_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                name_lbl.setText(tname)
             name_lbl.setStyleSheet("font-size: 12px; color: #999999;")
-            name_lbl.setFixedWidth(170)
+            name_lbl.setFixedWidth(140)
 
-            role_lbl = QLabel(trole)
+            role_lbl = QLabel(role_html)
+            role_lbl.setOpenExternalLinks(True)
+            role_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
             role_lbl.setStyleSheet("font-size: 11px; color: #555555;")
 
             row.addWidget(name_lbl)

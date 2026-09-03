@@ -496,7 +496,8 @@ class TrainingWheelsDialog(QDialog):
 
         if self.chk_macos.isChecked():
             self.settings.setValue("hide_macos_depots", True)
-            applied.append("Hide macOS Depots: ON")
+            self.settings.setValue("hide_android_depots", True)
+            applied.append("Hide macOS & Android Depots: ON")
 
         self.settings.setValue("assella_twp_seen", True)
         self.settings.sync()

@@ -853,7 +853,8 @@ class CLITaskManager:
                             success = TaskManager._run_generate_interfaces_for_file(
                                 dest_dir,
                                 valve_path,
-                                is_64bit
+                                is_64bit,
+                                goldberg_src,
                             )
                             
                             if success:
@@ -935,15 +936,7 @@ class CLITaskManager:
             game_name = self.game_data.get("game_name", "")
             if main_appid:
                 from utils.dlc_helpers import sync_dlc_only_sls_config
-                sync_dlc_only_sls_config(config_path, str(main_appid), game_name)
-
-            selected_dlcs: list = self.game_data.get("selected_dlcs", [])
-            dlcs: dict = self.game_data.get("dlcs", {})
-
-            if main_appid and selected_dlcs and len(selected_dlcs) > 64:
-                for dlc_id in selected_dlcs:
-                    dlc_name = dlcs.get(dlc_id, "")
-                    add_dlc_data(config_path, str(main_appid), str(dlc_id), dlc_name)
+                sync_dlc_only_sls_config(config_path, str(main_appid), game_name, self.game_data)
 
             self.logger.info("AppIDs added to SLSsteam config")
         except (OSError, ValueError) as e:

@@ -2358,8 +2358,13 @@ class GameLibraryDialog(QDialog):
             # Write a temp zip placeholder so _submit_job can find a path
             import io, zipfile, tempfile, os
             tmp_dir = get_base_path() / "hubcap_manifests"
-            tmp_path = str(tmp_dir / f"accela_fetch_{app_id}.zip")
-            # The SmartUpdateTask already saved the zip; just submit with that path
+            if assembled_game_data.get("zip_path"):
+                tmp_path = assembled_game_data["zip_path"]
+            elif branch and branch != "public":
+                tmp_path = str(tmp_dir / f"accela_fetch_{app_id}_branch_{branch}.zip")
+            else:
+                tmp_path = str(tmp_dir / f"accela_fetch_{app_id}.zip")
+            # The SmartUpdateTask already saved the zip; submit with that path
             self._submit_job(tmp_path, merged, dialog)
             self.settings.setValue(f"manifest_is_fresh/{app_id}", True)
             if assembled_game_data.get("buildid"):
@@ -2651,14 +2656,15 @@ class GameLibraryDialog(QDialog):
                 pass
         is_verify = (game_data.get("update_status") != "update_available")
         target_branch = game_data.get("branch") or (parsed_data.get("branch") if isinstance(parsed_data, dict) else "public") or "public"
-        metadata = {
+        metadata = dict(game_data)
+        metadata.update({
             "appid": game_data.get("appid"),
             "library_path": game_data.get("library_path"),
             "install_path": game_data.get("install_path"),
             "game_name": game_data.get("game_name", "Unknown"),
             "job_type": "verify" if is_verify else "download",
             "branch": target_branch,
-        }
+        })
         # Propagate rollback flag so task_manager won't mark game as up_to_date
         if game_data.get("_is_rollback"):
             metadata["_is_rollback"] = True
@@ -2971,7 +2977,9 @@ class GameLibraryDialog(QDialog):
                 remove_additional_app(config_path, appid)
                 remove_fake_app_id(config_path, appid)
                 remove_app_token(config_path, appid)
-                logger.info(f"I bought the game: Removed AppID {appid} from SLS AdditionalApps, FakeAppIds, and AppTokens")
+                from utils.yaml_config_manager import remove_dlc_data
+                remove_dlc_data(config_path, str(appid))
+                logger.info(f"I bought the game: Removed AppID {appid} from SLS AdditionalApps, FakeAppIds, AppTokens, and DlcData")
 
             import platform
             if platform.system() == "Linux":

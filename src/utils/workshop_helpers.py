@@ -120,18 +120,27 @@ def delete_workshop_item(appid: str, wid: str, mod_path: str) -> bool:
     return success
 
 
-def check_game_has_workshop(appid: str, game_data: Optional[Dict[str, Any]] = None) -> bool:
-    """
-    Check if a game supports Steam Workshop in a fast and resource-friendly way:
-    1. Check if local workshop directory or acf file already exists (0ms, 0 network).
-    2. Check cached result in QSettings (0ms, 0 network).
-    3. Check local depot / app metadata (0ms, 0 network).
-    4. Query Steam Store categories (Category 30 = Steam Workshop) and cache the result.
+def check_game_has_workshop(appid: str, game_data: Optional[dict] = None) -> bool:
+    """Check if a game has Steam Workshop support.
+    Checks:
+    0. DLC-only mode: games in DLC-only mode never show workshop
+    1. Local filesystem for workshop content or appworkshop manifest
+    2. Cached result from QSettings
+    3. game_data depots metadata for 'workshopdepots'
+    4. Steam store API categories (category 30 = Workshop)
     """
     if not appid or str(appid) in ("0", "N/A", "unknown"):
         return False
 
     appid_str = str(appid).strip()
+
+    # 0. DLC-only mode guard
+    try:
+        from utils.dlc_helpers import is_dlc_only_mode
+        if is_dlc_only_mode(appid_str):
+            return False
+    except Exception:
+        pass
 
     # 1. Quick local check: do installed workshop files or directory exist?
     try:

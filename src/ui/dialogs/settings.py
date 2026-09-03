@@ -411,6 +411,7 @@ class SettingsDialog(QDialog):
         self.autofetch_manifests_checkbox = None
         self.smart_update_mode_checkbox = None
         self.refined_update_check_checkbox = None
+        self.update_provider_combo = None
         self.isp_bypass_hubcap_checkbox = None
         self.experimental_acf_independent_checkbox = None
         self.fakeappid_db_integration_checkbox = None
@@ -419,6 +420,8 @@ class SettingsDialog(QDialog):
         self.steamless_remover_combo = None
         self.filter_soundtracks_checkbox = None
         self.filter_search_blacklist_checkbox = None
+        self.hide_macos_depots_checkbox = None
+        self.hide_android_depots_checkbox = None
         self.achievements_checkbox = None
         self.auto_apply_goldberg_checkbox = None
         self.sls_mode_checkbox = None
@@ -963,6 +966,82 @@ class SettingsDialog(QDialog):
         slider_layout.addWidget(self.update_interval_value_label)
         assella_lay.addLayout(slider_layout)
 
+        # SteamAPI provider selector
+        provider_layout = QHBoxLayout()
+        provider_layout.setSpacing(12)
+        provider_label = QLabel("SteamAPI Provider:")
+        provider_label.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500; border: none; background: transparent;")
+        provider_label.setToolTip(
+            "Select which API service is prioritized for library game update checks.\n\n"
+            "• SteamPICS: Queries Valve servers directly. Authoritative, live data with zero stale caching.\n"
+            "• SteamcmdAPI: Fast parallel scan via CDN mirror."
+        )
+
+        self.update_provider_combo = QComboBox()
+        self.update_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.update_provider_combo.setStyleSheet("""
+            QComboBox {
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                padding: 4px 12px;
+                color: #FFFFFF;
+                font-size: 9pt;
+                min-width: 130px;
+            }
+            QComboBox:hover {
+                background: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.25);
+            }
+            QComboBox QAbstractItemView {
+                background: #1e1e24;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                color: #FFFFFF;
+                selection-background-color: %s;
+            }
+        """ % self.accent_color)
+        self.update_provider_combo.addItem("SteamPICS", "steampics")
+        self.update_provider_combo.addItem("SteamcmdAPI", "steamcmd")
+
+        current_provider = self.settings.value("update_check_api_provider", "steampics", type=str)
+        p_idx = self.update_provider_combo.findData(current_provider)
+        if p_idx >= 0:
+            self.update_provider_combo.setCurrentIndex(p_idx)
+
+        provider_layout.addWidget(provider_label)
+        provider_layout.addStretch(1)
+        provider_layout.addWidget(self.update_provider_combo)
+        assella_lay.addLayout(provider_layout)
+
+        # Clear Update & Build ID Cache Row
+        cache_layout = QHBoxLayout()
+        cache_desc = QLabel("Update & Build ID Cache:")
+        cache_desc.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        cache_desc.setToolTip("Clears local caches so game build IDs, branches, and update statuses are queried fresh from Steam.")
+        self.clear_update_cache_btn = QPushButton("Clear Cache")
+        self.clear_update_cache_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_update_cache_btn.setToolTip("Purges cached build IDs, branch manifests, and update status entries.")
+        self.clear_update_cache_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 6px;
+                padding: 4px 14px;
+                color: #FFFFFF;
+                font-size: 9pt;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.16);
+                border-color: rgba(255, 255, 255, 0.35);
+            }
+        """)
+        self.clear_update_cache_btn.clicked.connect(self._on_clear_update_cache_clicked)
+        cache_layout.addWidget(cache_desc)
+        cache_layout.addStretch(1)
+        cache_layout.addWidget(self.clear_update_cache_btn)
+        assella_lay.addLayout(cache_layout)
+
         layout.addWidget(assella_card)
 
         # ── Training Wheels Protocol ──────────────────────────────────────
@@ -1204,6 +1283,16 @@ class SettingsDialog(QDialog):
             show_description=False,
         )
         adv_layout.addWidget(self.hide_macos_depots_checkbox)
+
+        self.hide_android_depots_checkbox = create_checkbox_setting(
+            "Hide Android depots in depot selection",
+            "hide_android_depots",
+            True,
+            self,
+            "Hide Android platform depots to reduce clutter.",
+            show_description=False,
+        )
+        adv_layout.addWidget(self.hide_android_depots_checkbox)
 
         self.filter_soundtracks_checkbox = create_checkbox_setting(
             "Filter Soundtracks and OSTs from Depots",
@@ -1521,7 +1610,7 @@ class SettingsDialog(QDialog):
         if sys.platform == "linux":
             assfixer_card, assfixer_layout = self._create_card_frame("ASSfixer")
 
-            assfixer_desc = QLabel("Validate, repair, and synchronize your SLSsteam config with the latest upstream template.")
+            assfixer_desc = QLabel("Validate, repair and update slsconfig")
             assfixer_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
             assfixer_desc.setWordWrap(True)
             assfixer_layout.addWidget(assfixer_desc)
@@ -1587,6 +1676,45 @@ class SettingsDialog(QDialog):
 
             layout.addWidget(assfixer_card)
 
+        # SLS Inheritance Card (Testing)
+        if sys.platform == "linux":
+            sls_inh_card, sls_inh_layout = self._create_card_frame("SLS inheritance (testing)")
+
+            sls_inh_desc = QLabel("orphan configs and external installtion manger (beta testing)")
+            sls_inh_desc.setStyleSheet(
+                "color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;"
+            )
+            sls_inh_desc.setWordWrap(True)
+            sls_inh_layout.addWidget(sls_inh_desc)
+
+            sls_inh_row = QHBoxLayout()
+            sls_inh_row.setContentsMargins(0, 4, 0, 4)
+            sls_inh_row.setSpacing(10)
+
+            self.sls_inh_btn = QPushButton("Manage SLS Inheritance")
+            self.sls_inh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.sls_inh_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.18);
+                    border-radius: 8px;
+                    color: #FFFFFF;
+                    padding: 7px 16px;
+                    font-size: 9.5pt;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 255, 255, 0.16);
+                    border-color: rgba(255, 255, 255, 0.32);
+                }
+            """)
+            self.sls_inh_btn.clicked.connect(self._open_sls_inheritance_dialog)
+            sls_inh_row.addWidget(self.sls_inh_btn)
+            sls_inh_row.addStretch()
+            sls_inh_layout.addLayout(sls_inh_row)
+
+            layout.addWidget(sls_inh_card)
+
         # Windows Registry Card
         if sys.platform == "win32":
             reg_card, reg_layout = self._create_card_frame("Windows Registry")
@@ -1607,10 +1735,16 @@ class SettingsDialog(QDialog):
 
             layout.addWidget(reg_card)
 
-        # Logging Configuration Card
+        # Logging Configuration Card (Single Row Layout)
         log_card, log_layout = self._create_card_frame("Logging Configuration")
 
-        level_row = QHBoxLayout()
+        log_row = QHBoxLayout()
+        log_row.setContentsMargins(0, 4, 0, 4)
+        log_row.setSpacing(24)
+
+        # Log Level
+        level_box = QHBoxLayout()
+        level_box.setSpacing(8)
         level_label = QLabel("Log Level:")
         level_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500;")
         level_label.setToolTip(
@@ -1622,12 +1756,13 @@ class SettingsDialog(QDialog):
         _current_level = self.settings.value("log_filter_level", "DEBUG") or "DEBUG"
         idx = self.log_level_combo.findText(_current_level)
         self.log_level_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        level_row.addWidget(level_label)
-        level_row.addWidget(self.log_level_combo)
-        level_row.addStretch()
-        log_layout.addLayout(level_row)
+        level_box.addWidget(level_label)
+        level_box.addWidget(self.log_level_combo)
+        log_row.addLayout(level_box)
 
-        cat_row = QHBoxLayout()
+        # Log Filter
+        cat_box = QHBoxLayout()
+        cat_box.setSpacing(8)
         cat_label = QLabel("Log Filter:")
         cat_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500;")
         cat_label.setToolTip("Restrict logs to a specific module group.")
@@ -1641,10 +1776,12 @@ class SettingsDialog(QDialog):
         _current_cat = self.settings.value("log_filter_category", "All Modules") or "All Modules"
         cat_idx = self.log_category_combo.findText(_current_cat)
         self.log_category_combo.setCurrentIndex(cat_idx if cat_idx >= 0 else 0)
-        cat_row.addWidget(cat_label)
-        cat_row.addWidget(self.log_category_combo)
-        cat_row.addStretch()
-        log_layout.addLayout(cat_row)
+        cat_box.addWidget(cat_label)
+        cat_box.addWidget(self.log_category_combo)
+        log_row.addLayout(cat_box)
+
+        log_row.addStretch()
+        log_layout.addLayout(log_row)
 
         _log_note = QLabel(
             "Changes take effect immediately when you click OK."
@@ -1679,6 +1816,8 @@ class SettingsDialog(QDialog):
                 self.achievements_checkbox.setChecked(self.settings.value("generate_achievements", False, type=bool))
             if hasattr(self, "hide_macos_depots_checkbox") and self.hide_macos_depots_checkbox:
                 self.hide_macos_depots_checkbox.setChecked(self.settings.value("hide_macos_depots", True, type=bool))
+            if hasattr(self, "hide_android_depots_checkbox") and self.hide_android_depots_checkbox:
+                self.hide_android_depots_checkbox.setChecked(self.settings.value("hide_android_depots", True, type=bool))
 
     def uninstall_assela(self) -> None:
         """Remove ASSella and optionally restore the original ACCELA backup."""
@@ -1816,6 +1955,15 @@ class SettingsDialog(QDialog):
         layout.addLayout(row_box)
         return btn
 
+
+    def _open_sls_inheritance_dialog(self) -> None:
+        try:
+            from ui.dialogs.sls_inheritance import SlsInheritanceDialog
+            parent = self.parent() if self.parent() else self
+            dlg = SlsInheritanceDialog(parent)
+            dlg.exec()
+        except Exception as e:
+            logger.error(f"Error opening SLS Inheritance dialog: {e}", exc_info=True)
 
     def _run_assfixer_check(self) -> None:
         logger.info("ASSfixer check triggered from Settings -> Tools tab.")
@@ -2605,6 +2753,12 @@ class SettingsDialog(QDialog):
                 self.check_updates_on_boot_checkbox.isChecked()
             )
 
+        if hasattr(self, "update_provider_combo") and self.update_provider_combo:
+            self.settings.setValue(
+                "update_check_api_provider",
+                self.update_provider_combo.currentData() or "steampics"
+            )
+
         val = 8
         if hasattr(self, "max_downloads_slider") and self.max_downloads_slider:
             try:
@@ -2628,6 +2782,11 @@ class SettingsDialog(QDialog):
                 self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
             except RuntimeError:
                 pass
+        if hasattr(self, "hide_android_depots_checkbox"):
+            try:
+                self.settings.setValue("hide_android_depots", self.hide_android_depots_checkbox.isChecked())
+            except RuntimeError:
+                pass
         if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo is not None:
             mode = self.isp_gateway_combo.currentData() or "auto"
             self.settings.setValue("isp_bypass_mode", mode)
@@ -2648,6 +2807,39 @@ class SettingsDialog(QDialog):
                     ensure_slssteam_prerequisites()
                 except Exception:
                     pass
+
+    def _on_clear_update_cache_clicked(self):
+        """Purges local update status cache, branch cache, and stored build IDs."""
+        try:
+            from utils.update_status_cache import get_update_cache
+            get_update_cache().clear_all()
+        except Exception as e:
+            logger.warning(f"Error clearing update_status_cache: {e}")
+
+        try:
+            from core.steam_api import clear_branch_cache
+            clear_branch_cache()
+        except Exception as e:
+            logger.warning(f"Error clearing branch cache: {e}")
+
+        # Clear QSettings last_checked and installed_buildid keys
+        for key in list(self.settings.allKeys()):
+            if key.startswith("last_checked_") or key.startswith("installed_buildid/"):
+                self.settings.remove(key)
+        self.settings.sync()
+
+        self.clear_update_cache_btn.setText("Cleared!")
+        self.clear_update_cache_btn.setEnabled(False)
+        QTimer.singleShot(2500, lambda: (
+            self.clear_update_cache_btn.setText("Clear Cache"),
+            self.clear_update_cache_btn.setEnabled(True)
+        ))
+        QMessageBox.information(
+            self,
+            "Cache Cleared",
+            "Update status, build ID, and branch caches have been cleared successfully.\n\n"
+            "Fresh live data will be queried next time you check for updates or open game details."
+        )
 
     def _on_isp_gateway_changed(self, index: int) -> None:
         """Saves selected mode immediately and triggers Tor warm boot if needed."""

@@ -795,7 +795,7 @@ class GameManager(QObject):
             appid = game.get("appid")
             game_name = game.get("game_name", "")
             if appid and appid not in ("0", "N/A", "unknown"):
-                if sync_dlc_only_sls_config(config_path, str(appid), game_name):
+                if sync_dlc_only_sls_config(config_path, str(appid), game_name, game_data=game):
                     added_count += 1
 
         if added_count > 0:
@@ -1064,6 +1064,11 @@ class GameManager(QObject):
 
             # Set update status — restore from disk cache if available
             if appid and appid not in ("0", "N/A", "unknown"):
+                settings = get_settings()
+                if settings.value(f"pin_build/{appid}", False, type=bool):
+                    game_data["update_status"] = UPDATE_STATUS["UP_TO_DATE"]
+                    return game_data
+
                 cached_status = get_update_cache().get_status(appid)
                 if cached_status is not None:
                     # We have a fresh (non-expired) cached status — use it directly
@@ -1618,7 +1623,9 @@ class GameManager(QObject):
                                 pass
                     else:
                         remove_additional_app(config_path, str(appid))
-                    logger.info(f"Removed appid entries from SLS config")
+                    from utils.yaml_config_manager import remove_dlc_data
+                    remove_dlc_data(config_path, str(appid))
+                    logger.info(f"Removed appid entries and DlcData from SLS config")
             elif platform.system() == "Windows" and not is_dlc_only:
                 self._remove_windows_game_data(appid, game_data)
 
