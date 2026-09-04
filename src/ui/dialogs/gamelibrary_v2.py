@@ -4,13 +4,15 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
 
-from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, pyqtProperty, pyqtSignal, QUrl, pyqtSlot, QEvent
+from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, pyqtProperty, pyqtSignal, QUrl, pyqtSlot, QEvent, QTimer
 from PyQt6.QtGui import QColor, QPixmap, QPainter, QIntValidator, QPalette, QDesktopServices, QLinearGradient
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QCheckBox,
     QLineEdit, QComboBox, QMessageBox, QWidget, QFrame, QStackedWidget,
     QStylePainter, QStyleOptionComboBox, QStyle, QScrollArea, QApplication,
     QGridLayout, QListView, QStyledItemDelegate,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QInputDialog,
+    QSizePolicy,
 )
 
 from utils.helpers import get_base_path
@@ -22,6 +24,8 @@ from utils.yaml_config_manager import (
 )
 from utils.image_fetcher import ImageFetcher
 from ui.progress_button import ProgressButton
+from ui.material_progress import MaterialSpinner
+from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +303,10 @@ class MaterialTile(QPushButton):
 
 class GameDetailsDialogV2(QDialog):
     branches_loaded = pyqtSignal(dict)
+    builds_loaded = pyqtSignal(list)
+    builds_error = pyqtSignal(str)
+    build_depots_loaded = pyqtSignal(str, dict)
+    build_depots_error = pyqtSignal(str)
 
     # ── Rollback toggle: set False to use the old 65px hero layout ──
     USE_V2_HERO = True
@@ -311,6 +319,15 @@ class GameDetailsDialogV2(QDialog):
         self.settings = get_settings()
         self._active_fetchers = {}
         self.branches_loaded.connect(self._on_branches_loaded)
+
+        # SteamDB Builds Cache and Scraper
+        self.builds_cache = SteamDBBuildsCache()
+        self.steamdb_scraper = SteamDBScraper()
+        self._cached_build_depots = {}
+        self.builds_loaded.connect(self._on_builds_loaded)
+        self.builds_error.connect(self._on_builds_error)
+        self.build_depots_loaded.connect(self._on_build_depots_loaded)
+        self.build_depots_error.connect(self._on_build_depots_error)
 
         self.accent_color  = getattr(parent, "accent_color",  "#a1c9fd")
         self.background_color = getattr(parent, "background_color", "#111318")
@@ -326,6 +343,23 @@ class GameDetailsDialogV2(QDialog):
 
         self._apply_stylesheet()
         self._setup_ui()
+
+        # Load initial cached builds and trigger background SteamDB check
+        aid = int(self.appid) if self.appid.isdigit() else 0
+        cached_builds, cache_age = self.builds_cache.get_builds_with_age(aid)
+        CACHE_FRESH_SECONDS = 3600  # Don't re-scrape if under 1 hour old
+
+        if cached_builds:
+            self._populate_builds_cards(cached_builds)
+            self.builds_center_stack.setCurrentIndex(1)
+            if cache_age < 0 or cache_age >= CACHE_FRESH_SECONDS:
+                # Stale (or unknown age) — trigger quiet background refresh
+                QTimer.singleShot(250, self._fetch_steamdb_builds_async)
+            # Fresh: nothing to do, show as-is
+        else:
+            self.builds_center_stack.setCurrentIndex(0)
+            QTimer.singleShot(250, self._fetch_steamdb_builds_async)
+
 
         if self.parent():
             from ui.dialogs.dialog_raiser import DialogRaiser
@@ -488,8 +522,8 @@ class GameDetailsDialogV2(QDialog):
         tab_bar_layout.setSpacing(0)
 
         self._tab_buttons = []
-        self._pages_info = [("Info", 0), ("Tools", 1)]
-        p_idx = 2
+        self._pages_info = [("Info", 0), ("Builds", 1), ("Tools", 2)]
+        p_idx = 3
         if self._has_workshop:
             self._pages_info.append(("Workshop", p_idx))
             p_idx += 1
@@ -534,6 +568,7 @@ class GameDetailsDialogV2(QDialog):
         self.stacked = QStackedWidget()
         self.stacked.setStyleSheet("background: transparent;")
         self._init_info_tab()
+        self._init_builds_tab()
         self._init_tools_tab()
         if self._has_workshop:
             self._init_workshop_tab()
@@ -671,9 +706,28 @@ class GameDetailsDialogV2(QDialog):
         ri, self.cached_val_lbl = _stat_item("MANIFEST", self._get_manifest_age())
         stats_row.addLayout(ri)
 
-        bid_str = str(self.game_data.get("buildid") or "Unknown")
-        ri, self.build_val_lbl = _stat_item("BUILD", bid_str)
+        installed_bid = self._get_installed_buildid()
+        bid_str = installed_bid if installed_bid else "Unknown"
+        initial_build_color = None
+        if installed_bid:
+            cached_bid = str(self.game_data.get("buildid", "")) if hasattr(self, "game_data") and isinstance(self.game_data, dict) else ""
+            if cached_bid:
+                is_old = False
+                try:
+                    is_old = int(installed_bid) < int(cached_bid)
+                except (ValueError, TypeError):
+                    is_old = (cached_bid != installed_bid)
+                initial_build_color = "#FFB84D" if is_old else "#46b464"
+
+        ri, self.build_val_lbl = _stat_item("BUILD", bid_str, value_color=initial_build_color)
         self._hero_build_val_lbl = self.build_val_lbl
+        if installed_bid:
+            tip = f"Installed Build: {installed_bid}"
+            if initial_build_color == "#FFB84D":
+                tip += " (Update available)"
+            elif initial_build_color == "#46b464":
+                tip += " (Up to date)"
+            self.build_val_lbl.setToolTip(tip)
         stats_row.addLayout(ri)
 
         ri, self.lua_val_lbl = _stat_item("LUA", self._get_lua_age())
@@ -802,119 +856,7 @@ class GameDetailsDialogV2(QDialog):
         actions_row.addWidget(self.validate_btn, 1)
 
         lay.addLayout(actions_row)
-        lay.addSpacing(6)
-
-        # ── Manual Build Download ─────────────────────────────────
-        lay.addWidget(self._thin_line())
-        lay.addSpacing(6)
-
-        # Section Header / Toggle Button
-        self.manual_expanded = False
-        self.manual_expand_btn = QPushButton("▶  Manual Build Download (Advanced)")
-        self.manual_expand_btn.setObjectName("manual_expand_btn")
-        self.manual_expand_btn.setFlat(True)
-        self.manual_expand_btn.setFixedHeight(24)
-        self.manual_expand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.manual_expand_btn.setStyleSheet(f"""
-            QPushButton#manual_expand_btn {{
-                border: none;
-                border-radius: 0px;
-                color: rgba(255, 255, 255, 0.4);
-                font-size: 10px;
-                font-weight: bold;
-                letter-spacing: 0.5px;
-                background: transparent;
-                background-color: transparent;
-                text-align: left;
-                padding: 0px;
-            }}
-            QPushButton#manual_expand_btn:hover {{
-                color: {self.accent_color};
-                background: transparent;
-                background-color: transparent;
-                border: none;
-            }}
-        """)
-        self.manual_expand_btn.clicked.connect(self._toggle_manual_section)
-        lay.addWidget(self.manual_expand_btn)
-
-        # Container widget for the inputs
-        self.manual_container = QWidget()
-        self.manual_container.setVisible(False)
-        manual_layout = QVBoxLayout(self.manual_container)
-        manual_layout.setContentsMargins(0, 4, 0, 4)
-        manual_layout.setSpacing(6)
-
-        manual_row = QHBoxLayout()
-        manual_row.setSpacing(6)
-
-        self.manual_depot_combo = CenteredComboBox()
-        self.manual_depot_combo.setFixedHeight(26)
-        self.manual_depot_combo.setFixedWidth(110)
-        self.manual_depot_combo.setMaxVisibleItems(5)
-        depots_dict = {}
-        try:
-            from managers.db_manager import DatabaseManager
-            from ui.assets import DEPOT_BLACKLIST
-            string_blacklist = {str(item) for item in DEPOT_BLACKLIST}
-            db = DatabaseManager()
-            with db._conn_lock:
-                cur = db.conn.cursor()
-                cur.execute("SELECT depots_json FROM apps WHERE appid = ?", (self.appid,))
-                row = cur.fetchone()
-                if row and row["depots_json"]:
-                    depots_data = db._decompress_depots(row["depots_json"], self.appid)
-                    if depots_data:
-                        depots_dict = {
-                            k: v for k, v in depots_data.items()
-                            if k not in ("branches", "workshopdepots", "branches_public")
-                            and k not in string_blacklist
-                            and isinstance(v, dict)
-                        }
-            logger.info(f"[DEBUG_DEV] Loaded {len(depots_dict)} depots from DB for app {self.appid}")
-        except Exception as e:
-            logger.error(f"[DEBUG_DEV] Failed to load depots from DB directly: {e}", exc_info=True)
-
-        if not depots_dict:
-            depots_dict = self.game_data.get("depots", {})
-
-        if depots_dict:
-            for d_id, d_info in depots_dict.items():
-                self.manual_depot_combo.addItem(str(d_id), d_id)
-        else:
-            self.manual_depot_combo.addItem("No Depots", "")
-        manual_row.addWidget(self.manual_depot_combo)
-
-        # Increased width to 120 so the active build ID is never cut off
-        self.manual_build_input = QLineEdit()
-        self.manual_build_input.setPlaceholderText("Build ID")
-        self.manual_build_input.setFixedHeight(26)
-        self.manual_build_input.setFixedWidth(120)
-        manual_row.addWidget(self.manual_build_input)
-
-        # Increased width to 180 to fit full Manifest IDs
-        self.manual_manifest_input = QLineEdit()
-        self.manual_manifest_input.setPlaceholderText("Manifest ID")
-        self.manual_manifest_input.setFixedHeight(26)
-        self.manual_manifest_input.setFixedWidth(180)
-        manual_row.addWidget(self.manual_manifest_input)
-
-        self.manual_download_btn = QPushButton("Download")
-        self.manual_download_btn.setFixedHeight(26)
-        self.manual_download_btn.clicked.connect(self._on_manual_download_clicked)
-        manual_row.addWidget(self.manual_download_btn)
-
-        manual_layout.addLayout(manual_row)
-        lay.addWidget(self.manual_container)
-        lay.addSpacing(6)
-
-        # Hook up manual download button state validation
-        self.manual_depot_combo.currentIndexChanged.connect(self._update_manual_download_btn_state)
-        self.manual_build_input.textChanged.connect(self._update_manual_download_btn_state)
-        self.manual_manifest_input.textChanged.connect(self._update_manual_download_btn_state)
-        self._update_manual_download_btn_state()
-
-        lay.addSpacing(12)
+        lay.addSpacing(10)
         lay.addWidget(self._thin_line())
         lay.addSpacing(10)
 
@@ -1328,63 +1270,40 @@ class GameDetailsDialogV2(QDialog):
         b_info = b_dict.get(sel_branch, {}) if isinstance(b_dict, dict) else {}
         branch_bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
 
-        acf_bid = str(self.game_data.get("buildid") or "").strip()
+        installed_bid = self._get_installed_buildid()
         installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
-        installed_bid = self.settings.value(f"installed_buildid/{self.appid}/{sel_branch}", acf_bid, type=str)
-        if acf_bid and acf_bid != "Unknown" and sel_branch == installed_branch and acf_bid != installed_bid:
-            installed_bid = acf_bid
-            self.settings.setValue(f"installed_buildid/{self.appid}/{sel_branch}", acf_bid)
-            self.settings.setValue(f"installed_buildid/{self.appid}", acf_bid)
+        if installed_bid and installed_branch == sel_branch:
+            self.settings.setValue(f"installed_buildid/{self.appid}/{sel_branch}", installed_bid)
+            self.settings.setValue(f"installed_buildid/{self.appid}", installed_bid)
 
-        # Update Build ID display with colour coding:
-        #   green  = installed/current (local zip matches)
-        #   blue   = available on Steam but not cached locally
+        # Update Build ID display in hero banner:
+        # Show strictly the INSTALLED build ID.
+        # If older than latest on the selected branch -> Orange (#FFB84D).
+        # If up to date with latest -> Green (#46b464).
         if hasattr(self, "build_val_lbl"):
-            manifests_dir = get_base_path() / "hubcap_manifests"
-            if sel_branch != "public":
-                local_zip = manifests_dir / f"accela_fetch_{self.appid}_branch_{sel_branch}.zip"
-            else:
-                local_zip = manifests_dir / f"accela_fetch_{self.appid}.zip"
-            is_cached = local_zip.exists()
+            if installed_bid:
+                is_older = False
+                if branch_bid and sel_branch == installed_branch:
+                    try:
+                        is_older = int(installed_bid) < int(branch_bid)
+                    except (ValueError, TypeError):
+                        is_older = (branch_bid != installed_bid)
 
-            if branch_bid:
-                if installed_branch == sel_branch and installed_bid == branch_bid:
-                    self.build_val_lbl.setText(f"Build {branch_bid} (installed)")
-                    self.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold;")
-                elif is_cached:
-                    self.build_val_lbl.setText(f"Build {branch_bid} (cached)")
-                    self.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold;")
+                self.build_val_lbl.setText(installed_bid)
+                if is_older:
+                    self.build_val_lbl.setStyleSheet("color: #FFB84D; font-size: 9.5pt; font-weight: bold; background: transparent;")
+                    self.build_val_lbl.setToolTip(f"Installed Build: {installed_bid}\nLatest on Steam ({sel_branch}): Build {branch_bid} (Update available)")
                 else:
-                    self.build_val_lbl.setText(f"Build {branch_bid} (steam)")
-                    self.build_val_lbl.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold;")
+                    self.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold; background: transparent;")
+                    self.build_val_lbl.setToolTip(f"Installed Build: {installed_bid} (Up to date)")
             else:
-                bid_text = installed_bid or "Unknown"
-                self.build_val_lbl.setText(f"Build {bid_text}" if bid_text.isdigit() else bid_text)
-                self.build_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
-
-        # Dynamically refresh rollback combo for the selected branch
-        if hasattr(self, "build_val_lbl"):
-            manifests_dir = get_base_path() / "hubcap_manifests"
-            if sel_branch != "public":
-                local_zip = manifests_dir / f"accela_fetch_{self.appid}_branch_{sel_branch}.zip"
-            else:
-                local_zip = manifests_dir / f"accela_fetch_{self.appid}.zip"
-            is_cached = local_zip.exists()
-
-            if branch_bid:
-                if installed_branch == sel_branch and installed_bid == branch_bid:
-                    self.build_val_lbl.setText(f"Build {branch_bid} (installed)")
-                    self.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold;")
-                elif is_cached:
-                    self.build_val_lbl.setText(f"Build {branch_bid} (cached)")
-                    self.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold;")
+                if branch_bid:
+                    self.build_val_lbl.setText(branch_bid)
+                    self.build_val_lbl.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold; background: transparent;")
+                    self.build_val_lbl.setToolTip(f"Latest on Steam ({sel_branch}): Build {branch_bid}\n(Game not installed or build ID unknown)")
                 else:
-                    self.build_val_lbl.setText(f"Build {branch_bid} (steam)")
-                    self.build_val_lbl.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold;")
-            else:
-                bid_text = installed_bid or "Unknown"
-                self.build_val_lbl.setText(f"Build {bid_text}" if bid_text.isdigit() else bid_text)
-                self.build_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold;")
+                    self.build_val_lbl.setText("Unknown")
+                    self.build_val_lbl.setStyleSheet(f"color: {self.accent_color}; font-size: 9.5pt; font-weight: bold; background: transparent;")
 
         self._update_validate_button()
 
@@ -1530,51 +1449,117 @@ class GameDetailsDialogV2(QDialog):
                 self.game_data, self, branch=sel_branch, download_only=False, local_path_override=local_path_override
             )
 
-    def _toggle_manual_section(self):
-        self.manual_expanded = not self.manual_expanded
-        self.manual_container.setVisible(self.manual_expanded)
-        if self.manual_expanded:
-            self.manual_expand_btn.setText("▼  Manual Build Download (Advanced)")
-        else:
-            self.manual_expand_btn.setText("▶  Manual Build Download (Advanced)")
 
-    def _update_manual_download_btn_state(self):
-        depot = self.manual_depot_combo.currentData()
-        build = self.manual_build_input.text().strip()
-        manifest = self.manual_manifest_input.text().strip()
-        
-        is_valid = bool(depot) and bool(build) and bool(manifest) and build.isdigit() and manifest.isdigit()
-        self.manual_download_btn.setEnabled(is_valid)
-        if is_valid:
-            self.manual_download_btn.setStyleSheet(f"background: {self.accent_color}; color: #FFFFFF; font-weight: bold; border: none; padding: 2px 10px;")
-        else:
-            self.manual_download_btn.setStyleSheet("background: rgba(255, 255, 255, 0.05); color: rgba(255, 255, 255, 0.2); font-weight: bold; border: none; padding: 2px 10px;")
 
-    def _on_manual_download_clicked(self):
-        depot_id = self.manual_depot_combo.currentData()
-        if not depot_id:
-            QMessageBox.warning(self, "No Depot Selected", "Please select a valid depot.")
-            return
+    def _get_available_depots(self) -> dict:
+        """Resolves all valid depots for this game with multi-tier fast local fallbacks (non-blocking)."""
+        depots_dict = {}
 
-        build_id = self.manual_build_input.text().strip()
-        manifest_id = self.manual_manifest_input.text().strip()
+        # Tier 1: In-memory game_data
+        if isinstance(self.game_data.get("installed_depots"), dict) and self.game_data["installed_depots"]:
+            depots_dict = dict(self.game_data["installed_depots"])
+        elif isinstance(self.game_data.get("depots"), dict) and self.game_data["depots"]:
+            depots_dict = dict(self.game_data["depots"])
 
-        logger.info(f"[DEBUG_DEV] Manual download clicked. AppID: {self.appid}, Depot: {depot_id}, Build: {build_id}, Manifest: {manifest_id}")
+        # Tier 2: In-memory cached build depots from current session
+        if not depots_dict and hasattr(self, "_cached_build_depots") and self._cached_build_depots:
+            for bd in self._cached_build_depots.values():
+                if isinstance(bd, dict):
+                    for d_id, d_info in bd.items():
+                        depots_dict[str(d_id)] = d_info
 
-        if not build_id or not manifest_id:
-            QMessageBox.warning(self, "Missing Fields", "Please specify both Build ID and Manifest ID.")
-            return
+        # Tier 3: SteamDB cached builds in SQLite
+        if not depots_dict and hasattr(self, "builds_cache"):
+            try:
+                aid = int(self.appid) if self.appid.isdigit() else 0
+                c_builds = self.builds_cache.get_builds(aid)
+                for b in c_builds:
+                    if b.get("depots") and isinstance(b["depots"], dict):
+                        for d_id, d_info in b["depots"].items():
+                            depots_dict[str(d_id)] = d_info
+            except Exception:
+                pass
 
-        if not build_id.isdigit() or not manifest_id.isdigit():
-            QMessageBox.warning(self, "Invalid Inputs", "Build ID and Manifest ID must be numeric digits only.")
-            return
+        # Tier 4: DatabaseManager apps table
+        if not depots_dict:
+            try:
+                from managers.db_manager import DatabaseManager
+                from ui.assets import DEPOT_BLACKLIST
+                string_blacklist = {str(item) for item in DEPOT_BLACKLIST}
+                db = DatabaseManager()
+                with db._conn_lock:
+                    cur = db.conn.cursor()
+                    cur.execute("SELECT depots_json FROM apps WHERE appid = ?", (self.appid,))
+                    row = cur.fetchone()
+                    if row and row["depots_json"]:
+                        depots_data = db._decompress_depots(row["depots_json"], self.appid)
+                        if depots_data:
+                            depots_dict = {
+                                k: v for k, v in depots_data.items()
+                                if k not in ("branches", "workshopdepots", "branches_public")
+                                and k not in string_blacklist
+                                and isinstance(v, dict)
+                            }
+            except Exception as e:
+                logger.debug(f"Depot resolution from DB failed: {e}")
 
-        # Disable button to prevent double-clicking/multiple submission events
-        self.manual_download_btn.setEnabled(False)
-        self.manual_download_btn.setStyleSheet(
-            "background: rgba(255, 255, 255, 0.05); color: rgba(255, 255, 255, 0.2); "
-            "font-weight: bold; border: none; padding: 2px 10px;"
+        # Tier 5: Parse local ACF file directly if present
+        if not depots_dict:
+            acf_path = self.game_data.get("appmanifest_path")
+            if acf_path and os.path.exists(acf_path):
+                try:
+                    import vdf
+                    with open(acf_path, "r", encoding="utf-8") as f:
+                        vd = vdf.loads(f.read())
+                    ins_depots = vd.get("AppState", {}).get("InstalledDepots")
+                    if isinstance(ins_depots, dict) and ins_depots:
+                        depots_dict = ins_depots
+                except Exception:
+                    pass
+
+        return depots_dict
+
+    def _on_manual_rollback_clicked(self):
+        from ui.dialogs.rollback_dialogs import ManualRollbackDialog
+        depots = self._get_available_depots()
+        dialog = ManualRollbackDialog(
+            parent=self,
+            appid=self.appid,
+            game_name=self.game_data.get("game_name", ""),
+            depots_dict=depots,
+            accent_color=self.accent_color,
         )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._trigger_rollback_job(
+                dialog.selected_depot_id,
+                dialog.selected_build_id,
+                dialog.selected_manifest_id,
+                pin_build=dialog.should_pin_build
+            )
+
+    def _on_steamdb_history_clicked(self):
+        from ui.dialogs.rollback_dialogs import SteamDBHistoryDialog
+        dialog = SteamDBHistoryDialog(
+            parent=self,
+            appid=self.appid,
+            game_name=self.game_data.get("game_name", ""),
+            accent_color=self.accent_color,
+        )
+        dialog.rollback_requested.connect(
+            lambda depot_id, build_id, manifest_id: self._trigger_rollback_job(
+                depot_id, build_id, manifest_id, pin_build=True
+            )
+        )
+        dialog.exec()
+
+    def _trigger_rollback_job(self, depot_id: str, build_id: str, manifest_id: str, pin_build: bool = True):
+        logger.info(f"[DEBUG_DEV] Triggering rollback job. AppID: {self.appid}, Depot: {depot_id}, Build: {build_id}, Manifest: {manifest_id}, Pin: {pin_build}")
+
+        if not depot_id or not build_id or not manifest_id:
+            QMessageBox.warning(self, "Missing Fields", "Please specify Depot ID, Build ID, and Manifest ID.")
+            return
+
+        self._last_rollback_pin_build = pin_build
 
         from utils.helpers import get_base_path
         manifest_filename = f"{depot_id}_{manifest_id}.manifest"
@@ -1583,12 +1568,11 @@ class GameDetailsDialogV2(QDialog):
 
         if src_manifest_path.exists():
             logger.info(f"[DEBUG_DEV] Manifest already exists locally at {src_manifest_path}. Proceeding directly.")
-            self._do_package_and_submit_manual_job(src_manifest_path, manifest_filename, depot_id, build_id, manifest_id)
+            self._do_package_and_submit_manual_job(src_manifest_path, manifest_filename, depot_id, build_id, manifest_id, pin_build=pin_build)
             return
 
-
         # Manifest does not exist locally. Try to fetch from Hubcap /generate/manifest endpoint.
-        logger.info(f"[DEBUG_DEV] Manifest missing locally. Attempting to download from Hubcap...")
+        logger.info("[DEBUG_DEV] Manifest missing locally. Attempting to download from Hubcap...")
         
         # Show a progress dialog
         from PyQt6.QtWidgets import QProgressDialog
@@ -1634,9 +1618,9 @@ class GameDetailsDialogV2(QDialog):
                 Q_ARG(str, error_msg or ""),
                 Q_ARG(str, str(src_manifest_path)),
                 Q_ARG(str, manifest_filename),
-                Q_ARG(str, depot_id),
-                Q_ARG(str, build_id),
-                Q_ARG(str, manifest_id),
+                Q_ARG(str, str(depot_id)),
+                Q_ARG(str, str(build_id)),
+                Q_ARG(str, str(manifest_id)),
                 Q_ARG(object, progress)
             )
 
@@ -1652,10 +1636,6 @@ class GameDetailsDialogV2(QDialog):
                 pass
 
         if error_msg:
-            # Re-enable the download button so the user can correct inputs and try again
-            self.manual_download_btn.setEnabled(True)
-            self._update_manual_download_btn_state()
-
             from utils.helpers import get_base_path
             global_manifests_dir = get_base_path() / "manifests"
             QMessageBox.critical(
@@ -1669,12 +1649,12 @@ class GameDetailsDialogV2(QDialog):
             )
             return
 
-
         from pathlib import Path
         src_manifest_path = Path(src_manifest_path_str)
-        self._do_package_and_submit_manual_job(src_manifest_path, manifest_filename, depot_id, build_id, manifest_id)
+        pin_build = getattr(self, "_last_rollback_pin_build", True)
+        self._do_package_and_submit_manual_job(src_manifest_path, manifest_filename, depot_id, build_id, manifest_id, pin_build=pin_build)
 
-    def _do_package_and_submit_manual_job(self, src_manifest_path, manifest_filename, depot_id, build_id, manifest_id):
+    def _do_package_and_submit_manual_job(self, src_manifest_path, manifest_filename, depot_id, build_id, manifest_id, pin_build: bool = True):
         import zipfile
         from utils.helpers import get_base_path
 
@@ -1693,9 +1673,9 @@ class GameDetailsDialogV2(QDialog):
             shutil.copy(local_zip_path, specific_zip_path)
             logger.info(f"Cached manual manifest zip to {specific_zip_path}")
             
-            # Enable Pin Build by default for manual download
+            # Update Pin Build setting based on pin_build argument
             if self.settings:
-                self.settings.setValue(f"pin_build/{self.appid}", True)
+                self.settings.setValue(f"pin_build/{self.appid}", pin_build)
                 self.settings.setValue(f"exclude_from_update_all/{self.appid}", False)
                 self.settings.setValue(f"installed_buildid/{self.appid}", build_id)
             if hasattr(self, "pin_tile") and self.pin_tile:
@@ -1708,8 +1688,6 @@ class GameDetailsDialogV2(QDialog):
         except Exception as e:
             logger.error(f"[DEBUG_DEV] Failed to create temporary manifest zip: {e}", exc_info=True)
             QMessageBox.critical(self, "Error", f"Failed to package manifest file: {e}")
-            self.manual_download_btn.setEnabled(True)
-            self._update_manual_download_btn_state()
             return
 
 
@@ -1752,10 +1730,6 @@ class GameDetailsDialogV2(QDialog):
         # Submit the job
         logger.info(f"[DEBUG_DEV] Submitting job with zip: {local_zip_path} and game_data: {game_data}")
         self.parent_window._submit_job(str(local_zip_path), game_data, self)
-
-        # Re-enable button after successful packaging and submission
-        self.manual_download_btn.setEnabled(True)
-        self._update_manual_download_btn_state()
 
 
 
@@ -2198,6 +2172,552 @@ class GameDetailsDialogV2(QDialog):
         self.game_data["hubcap_needs_update"] = needs_update
         self.game_data["hubcap_update_in_progress"] = update_in_progress
         self._update_status_ui(self.game_data.get("update_status"))
+
+    # ──────────────────────────────────────────
+    #  TAB 1 — Builds (SteamDB Build History & Rollback)
+    # ──────────────────────────────────────────
+    def _init_builds_tab(self):
+        builds_page = QWidget()
+        builds_page.setStyleSheet("background: transparent;")
+        page_layout = QVBoxLayout(builds_page)
+        page_layout.setContentsMargins(14, 10, 14, 10)
+        page_layout.setSpacing(8)
+
+        # ── Central Stack: Page 0 = Initial Spinner, Page 1 = Card list ──
+        self.builds_center_stack = QStackedWidget()
+
+        # Page 0: First-time loading spinner (shown before any cache exists)
+        loading_container = QWidget()
+        loading_layout = QVBoxLayout(loading_container)
+        loading_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        loading_layout.setSpacing(10)
+        self.builds_main_spinner = MaterialSpinner(loading_container, size=32, color=self.accent_color, thickness=3)
+        loading_lbl = QLabel("Fetching version history from SteamDB...")
+        loading_lbl.setStyleSheet("color: rgba(255,255,255,0.55); font-size: 8.5pt;")
+        loading_layout.addWidget(self.builds_main_spinner, 0, Qt.AlignmentFlag.AlignCenter)
+        loading_layout.addWidget(loading_lbl, 0, Qt.AlignmentFlag.AlignCenter)
+        self.builds_center_stack.addWidget(loading_container)
+
+        # Page 1: Scrollable card list
+        self.builds_scroll = QScrollArea()
+        self.builds_scroll.setWidgetResizable(True)
+        self.builds_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.builds_scroll.setStyleSheet("""
+            QScrollArea { background: transparent; border: none; }
+            QScrollBar:vertical {
+                background: transparent; width: 6px; margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(255, 255, 255, 0.14); border-radius: 3px; min-height: 24px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: rgba(255, 255, 255, 0.25);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+        """)
+        self.builds_scroll_inner = QWidget()
+        self.builds_scroll_inner.setStyleSheet("background: transparent;")
+        self.builds_cards_layout = QVBoxLayout(self.builds_scroll_inner)
+        self.builds_cards_layout.setContentsMargins(0, 4, 4, 4)
+        self.builds_cards_layout.setSpacing(8)
+        self.builds_cards_layout.addStretch()
+        self.builds_scroll.setWidget(self.builds_scroll_inner)
+        self.builds_center_stack.addWidget(self.builds_scroll)
+
+        # Page 2: SteamDB Unavailable error state
+        self.builds_error_container = QWidget()
+        err_layout = QVBoxLayout(self.builds_error_container)
+        err_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        err_layout.setSpacing(10)
+
+        err_title = QLabel("SteamDB Solver Required")
+        err_title.setStyleSheet("color: #FFFFFF; font-size: 11pt; font-weight: bold; border: none; background: transparent;")
+        err_desc = QLabel(
+            "SteamDB is protected by Cloudflare and requires the local Byparr solver.\n"
+            "Once setup, ACCELA will automatically start and stop Byparr as needed."
+        )
+        err_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        err_desc.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8.5pt; border: none; background: transparent;")
+
+        btns_row = QHBoxLayout()
+        btns_row.setSpacing(10)
+        btns_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        copy_btn = QPushButton("Copy Setup Command")
+        copy_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                color: #FFFFFF;
+                font-size: 8.5pt;
+                font-weight: 600;
+                padding: 6px 14px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.14);
+            }
+        """)
+        def _on_copy_setup_cmd():
+            from PyQt6.QtWidgets import QApplication
+            from PyQt6.QtCore import QTimer
+            cb = QApplication.clipboard()
+            if cb:
+                cb.setText("bash <(curl -sSL https://raw.githubusercontent.com/niwia/ASSella/beta/scripts/setup_byparr.sh)")
+            copy_btn.setText("✓ Copied!")
+            QTimer.singleShot(2000, lambda: copy_btn.setText("Copy Setup Command"))
+        copy_btn.clicked.connect(_on_copy_setup_cmd)
+
+        retry_btn = QPushButton("Retry")
+        retry_btn.setFixedWidth(90)
+        retry_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                color: #FFFFFF;
+                font-size: 8.5pt;
+                font-weight: 600;
+                padding: 6px 14px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.14);
+            }
+        """)
+        retry_btn.clicked.connect(self._fetch_steamdb_builds_async)
+
+        btns_row.addWidget(copy_btn)
+        btns_row.addWidget(retry_btn)
+
+        err_layout.addWidget(err_title, 0, Qt.AlignmentFlag.AlignCenter)
+        err_layout.addWidget(err_desc, 0, Qt.AlignmentFlag.AlignCenter)
+        err_layout.addLayout(btns_row)
+        self.builds_center_stack.addWidget(self.builds_error_container)
+
+        page_layout.addWidget(self.builds_center_stack, 1)
+
+        # ── Bottom 3-button bar (equal width) ──
+        bottom_row = QHBoxLayout()
+        bottom_row.setContentsMargins(0, 4, 0, 0)
+        bottom_row.setSpacing(8)
+
+        self.builds_refresh_btn = QPushButton("⟳  Refresh")
+        self.builds_manual_btn = QPushButton("Manual")
+        self.builds_download_btn = QPushButton("Download Manifest")
+        self.builds_download_btn.setEnabled(False)
+
+        ghost_style = """
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
+                color: #FFFFFF;
+                font-weight: 600;
+                font-size: 9pt;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.1);
+                color: #FFFFFF;
+            }
+            QPushButton:disabled {
+                background-color: rgba(255, 255, 255, 0.02);
+                color: rgba(255, 255, 255, 0.2);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+            }
+        """
+        from utils.color_utils import get_best_foreground_color
+        dl_fg = get_best_foreground_color(self.accent_color)
+        download_style = f"""
+            QPushButton {{
+                background-color: {self.accent_color};
+                color: {dl_fg};
+                border: none;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 9pt;
+            }}
+            QPushButton:hover:!disabled {{
+                background-color: #FFFFFF;
+                color: #000000;
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.25);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+        """
+        for btn in (self.builds_refresh_btn, self.builds_manual_btn):
+            btn.setFixedHeight(36)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(ghost_style)
+
+        self.builds_download_btn.setFixedHeight(36)
+        self.builds_download_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.builds_download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.builds_download_btn.setStyleSheet(download_style)
+
+        self.builds_refresh_btn.clicked.connect(self._fetch_steamdb_builds_async)
+        self.builds_manual_btn.clicked.connect(self._on_manual_rollback_clicked)
+        self.builds_download_btn.clicked.connect(self._on_builds_download_clicked)
+
+        bottom_row.addWidget(self.builds_refresh_btn)
+        bottom_row.addWidget(self.builds_manual_btn)
+        bottom_row.addWidget(self.builds_download_btn)
+        page_layout.addLayout(bottom_row)
+
+        self.stacked.addWidget(builds_page)
+
+        # Runtime state
+        self._selected_build_idx = -1
+        self._build_cards = []   # [(QFrame, build_data_dict), ...]
+        self._cached_build_depots = {}
+
+    # ── Card builder ───────────────────────────────────────────────────────
+    def _strip_build_title(self, title: str, game_name: str) -> str:
+        """Strip the game name prefix from a SteamDB patch title."""
+        if not game_name or not title:
+            return title
+        for sep in (" - ", ": ", " – ", " — ", " / "):
+            if title.lower().startswith(game_name.lower() + sep):
+                return title[len(game_name) + len(sep):]
+        return title
+
+    def _make_build_card(self, idx: int, item: dict, current_bid: str, game_name: str) -> QFrame:
+        build_id = str(item.get("buildid", ""))
+        title = item.get("title", "Update")
+        date_str = item.get("date", "")
+        time_str = item.get("time", "")
+        is_current = bool(build_id) and build_id == current_bid
+
+        short_title = self._strip_build_title(title, game_name)
+
+        card = QFrame()
+        card.setObjectName("build_card")
+        card.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        from utils.color_utils import get_dark_container_color
+        tinted_bg = get_dark_container_color(self.accent_color)
+
+        def _normal_style():
+            if is_current:
+                return f"""
+                    QFrame#build_card {{
+                        background-color: rgba(255, 255, 255, 0.035);
+                        border: 1px solid rgba(255, 255, 255, 0.12);
+                        border-radius: 8px;
+                    }}
+                    QFrame#build_card:hover {{
+                        background-color: rgba(255, 255, 255, 0.065);
+                        border: 1px solid rgba(255, 255, 255, 0.22);
+                    }}
+                    QFrame#build_card QLabel {{
+                        border: none;
+                        background: transparent;
+                    }}
+                """
+            return f"""
+                QFrame#build_card {{
+                    background-color: rgba(255, 255, 255, 0.025);
+                    border: 1px solid rgba(255, 255, 255, 0.07);
+                    border-radius: 8px;
+                }}
+                QFrame#build_card:hover {{
+                    background-color: rgba(255, 255, 255, 0.055);
+                    border: 1px solid rgba(255, 255, 255, 0.18);
+                }}
+                QFrame#build_card QLabel {{
+                    border: none;
+                    background: transparent;
+                }}
+            """
+
+        def _selected_style():
+            return f"""
+                QFrame#build_card {{
+                    background-color: rgba(255, 255, 255, 0.06);
+                    border: 1.5px solid {self.accent_color};
+                    border-radius: 8px;
+                }}
+                QFrame#build_card QLabel {{
+                    border: none;
+                    background: transparent;
+                }}
+            """
+
+        card._normal_style = _normal_style
+        card._selected_style = _selected_style
+        card.setStyleSheet(_normal_style())
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 11, 16, 11)
+        layout.setSpacing(6)
+
+        # ─ Row 1: Short title (left) + Installed Badge (right) ─
+        row1 = QHBoxLayout()
+        row1.setContentsMargins(0, 0, 0, 0)
+        row1.setSpacing(8)
+
+        title_lbl = QLabel(short_title)
+        title_lbl.setStyleSheet("color: #FFFFFF; font-size: 10pt; font-weight: bold; border: none; background: transparent;")
+        title_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        row1.addWidget(title_lbl, 1)
+
+        if is_current:
+            badge = QLabel("Installed")
+            badge.setStyleSheet(f"""
+                color: #FFFFFF;
+                background-color: {tinted_bg};
+                border: 1px solid {self.accent_color};
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 8pt;
+                font-weight: 600;
+            """)
+            badge.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+            row1.addWidget(badge, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        layout.addLayout(row1)
+
+        # ─ Row 2: Build ID <id>    <date>    <time> ─
+        row2 = QHBoxLayout()
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.setSpacing(16)
+        row2.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        bid_html = (
+            f'<span style="color: rgba(255, 255, 255, 0.5); font-size: 9pt;">Build ID</span>'
+            f'&nbsp;&nbsp;'
+            f'<span style="color: {self.accent_color}; font-size: 9pt; font-weight: bold;">{build_id}</span>'
+        )
+        bid_lbl = QLabel(bid_html)
+        bid_lbl.setStyleSheet("border: none; background: transparent;")
+        bid_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        row2.addWidget(bid_lbl)
+
+        if date_str:
+            date_lbl = QLabel(date_str)
+            date_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8.5pt; border: none; background: transparent;")
+            date_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+            row2.addWidget(date_lbl)
+
+        if time_str:
+            time_lbl = QLabel(time_str)
+            time_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8.5pt; border: none; background: transparent;")
+            time_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+            row2.addWidget(time_lbl)
+
+        row2.addStretch(1)
+        layout.addLayout(row2)
+
+        # Click handler
+        card.mousePressEvent = lambda _e, i=idx: self._on_build_card_clicked(i)
+
+        return card
+
+    # ── Async fetch ────────────────────────────────────────────────────────
+    def _fetch_steamdb_builds_async(self):
+        self.builds_refresh_btn.setText("⟳  Checking...")
+        self.builds_refresh_btn.setEnabled(False)
+
+        # If no cached cards exist yet, show spinner page while fetching
+        if self.builds_cards_layout.count() <= 1:
+            self.builds_center_stack.setCurrentIndex(0)
+
+        def _worker():
+            try:
+                aid = int(self.appid) if self.appid.isdigit() else 0
+                data = self.steamdb_scraper.get_patchnotes(aid, limit=20)
+                self.builds_loaded.emit(data)
+            except Exception as e:
+                logger.error(f"Failed to fetch SteamDB builds for {self.appid}: {e}")
+                self.builds_error.emit(str(e))
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_builds_loaded(self, builds: list):
+        self.builds_refresh_btn.setText("⟳  Refresh")
+        self.builds_refresh_btn.setEnabled(True)
+        self.builds_refresh_btn.setToolTip("")
+        if builds:
+            aid = int(self.appid) if self.appid.isdigit() else 0
+            self.builds_cache.save_builds(aid, builds)
+            self._populate_builds_cards(builds)
+            self.builds_center_stack.setCurrentIndex(1)
+        elif self.builds_cards_layout.count() > 1:
+            self.builds_center_stack.setCurrentIndex(1)
+        else:
+            self.builds_center_stack.setCurrentIndex(2)
+
+    def _on_builds_error(self, err_msg: str):
+        self.builds_refresh_btn.setText("⟳  Refresh")
+        self.builds_refresh_btn.setEnabled(True)
+        # If we have cached build cards already displayed, keep showing them!
+        if self.builds_cards_layout.count() > 1:
+            self.builds_center_stack.setCurrentIndex(1)
+            self.builds_refresh_btn.setToolTip(f"SteamDB is currently unavailable. Showing cached builds.\n(Error: {err_msg})")
+        else:
+            # No cache exists - show clean unavailable page (Page 2)
+            self.builds_center_stack.setCurrentIndex(2)
+            self.builds_refresh_btn.setToolTip(f"SteamDB unavailable: {err_msg}")
+
+    def _get_build_action_label(self, build_id: str) -> str:
+        current_bid = self._get_installed_buildid()
+        if current_bid.isdigit() and str(build_id).isdigit():
+            c_int = int(current_bid)
+            s_int = int(build_id)
+            if s_int < c_int:
+                return "Downgrade"
+            elif s_int == c_int:
+                return "Verify"
+            else:
+                return "Update"
+        return "Download Manifest"
+
+    # ── Card list population ───────────────────────────────────────────────
+    def _populate_builds_cards(self, data: list):
+        # Clear existing cards (keep trailing stretch at index 0 = last item)
+        while self.builds_cards_layout.count() > 1:
+            item = self.builds_cards_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        self._build_cards = []
+        self._selected_build_idx = -1
+        self.builds_download_btn.setEnabled(False)
+        self.builds_download_btn.setText("Download Manifest")
+
+        current_bid = self._get_installed_buildid()
+        game_name = self.game_data.get("game_name", "")
+
+        for idx, item in enumerate(data):
+            card = self._make_build_card(idx, item, current_bid, game_name)
+            self.builds_cards_layout.insertWidget(idx, card)
+            self._build_cards.append((card, item))
+
+    # ── Card selection ─────────────────────────────────────────────────────
+    def _on_build_card_clicked(self, idx: int):
+        current_bid = self._get_installed_buildid()
+
+        # Restore previous card to normal style
+        if 0 <= self._selected_build_idx < len(self._build_cards):
+            prev_card, _ = self._build_cards[self._selected_build_idx]
+            prev_card.setStyleSheet(prev_card._normal_style())
+
+        self._selected_build_idx = idx
+        card, item = self._build_cards[idx]
+        card.setStyleSheet(card._selected_style())
+
+        build_id = str(item.get("buildid", ""))
+        self.builds_download_btn.setEnabled(False)
+        action = self._get_build_action_label(build_id)
+        self.builds_download_btn.setText(f"{action}...")
+
+        if not build_id:
+            return
+
+        # Use in-memory depot cache first
+        if build_id in self._cached_build_depots:
+            self._apply_depot_to_download_btn(build_id, self._cached_build_depots[build_id])
+            return
+        if item.get("depots"):
+            self._apply_depot_to_download_btn(build_id, item["depots"])
+            return
+
+        # Async depot resolve
+        self.builds_download_btn.setText("Fetching Manifest...")
+
+        def _depot_worker():
+            try:
+                depots = self.steamdb_scraper.get_patch_depots(build_id)
+                self.build_depots_loaded.emit(build_id, depots)
+            except Exception as e:
+                logger.error(f"Failed to fetch depots for build {build_id}: {e}")
+                self.build_depots_error.emit(f"Failed to resolve manifests for Build {build_id}.")
+
+        import threading
+        threading.Thread(target=_depot_worker, daemon=True).start()
+
+    def _on_build_depots_loaded(self, build_id: str, depots: dict):
+        self._cached_build_depots[build_id] = depots
+        aid = int(self.appid) if self.appid.isdigit() else 0
+        self.builds_cache.update_build_depots(aid, build_id, depots)
+
+        # Only update button if this build is still selected
+        if 0 <= self._selected_build_idx < len(self._build_cards):
+            _, item = self._build_cards[self._selected_build_idx]
+            if str(item.get("buildid")) == str(build_id):
+                self._apply_depot_to_download_btn(build_id, depots)
+
+    def _on_build_depots_error(self, err_msg: str):
+        if 0 <= self._selected_build_idx < len(self._build_cards):
+            self.builds_download_btn.setText("Manifest Error")
+            self.builds_download_btn.setEnabled(False)
+            self.builds_download_btn.setToolTip(err_msg)
+
+    def _apply_depot_to_download_btn(self, build_id: str, depots: dict):
+        has_manifest = any(info.get("manifest_id") for info in depots.values()) if depots else False
+        action = self._get_build_action_label(build_id)
+        if has_manifest:
+            self.builds_download_btn.setText(f"{action} (Build {build_id})")
+            self.builds_download_btn.setEnabled(True)
+        else:
+            self.builds_download_btn.setText("No Manifests Found")
+            self.builds_download_btn.setEnabled(False)
+
+    # ── Download action ────────────────────────────────────────────────────
+    def _on_builds_download_clicked(self):
+        if not (0 <= self._selected_build_idx < len(self._build_cards)):
+            return
+        _, item = self._build_cards[self._selected_build_idx]
+        build_id = str(item.get("buildid", ""))
+
+        depots = self._cached_build_depots.get(build_id) or item.get("depots", {})
+        if not depots:
+            QMessageBox.warning(self, "No Manifest", "No depot manifests found for this build.")
+            return
+
+        installed_depots = self.game_data.get("installed_depots", {})
+        selected_depot_id = None
+
+        for d_id in depots.keys():
+            if d_id in installed_depots:
+                selected_depot_id = d_id
+                break
+
+        if not selected_depot_id and len(depots) == 1:
+            selected_depot_id = list(depots.keys())[0]
+
+        if not selected_depot_id and len(depots) > 1:
+            items = [f"Depot {d_id}  (Manifest: {info.get('manifest_id')})"
+                     for d_id, info in depots.items() if info.get("manifest_id")]
+            if items:
+                chosen, ok = QInputDialog.getItem(
+                    self, "Select Depot",
+                    "Multiple depots found. Select depot to download:", items, 0, False)
+                if not ok or not chosen:
+                    return
+                selected_depot_id = chosen.split(" ")[1]
+
+        if not selected_depot_id:
+            selected_depot_id = list(depots.keys())[0]
+
+        manifest_id = depots[selected_depot_id].get("manifest_id")
+        if not manifest_id:
+            QMessageBox.warning(self, "No Manifest ID",
+                                f"Could not find manifest ID for depot {selected_depot_id}.")
+            return
+
+        action = self._get_build_action_label(build_id)
+        if action == "Downgrade":
+            should_pin = True
+        elif action == "Verify":
+            should_pin = self.settings.value(f"pin_build/{self.appid}", False, type=bool) if self.settings else False
+        else:
+            should_pin = False
+
+        self._trigger_rollback_job(str(selected_depot_id), str(build_id), str(manifest_id), pin_build=should_pin)
 
     # ──────────────────────────────────────────
     #  TAB 2 — Tools (Clean Two-Column Grid Setup)
@@ -3160,7 +3680,7 @@ class GameDetailsDialogV2(QDialog):
         ok, msg = import_ticket(file_path, self.appid)
         if ok:
             QMessageBox.information(self, "Ticket Imported", f"✓ {msg}")
-            self._switch_tab(getattr(self, "_tickets_tab_index", 2))
+            self._switch_tab(getattr(self, "_tickets_tab_index", 3))
         else:
             QMessageBox.critical(self, "Import Failed", msg)
 
@@ -3174,7 +3694,7 @@ class GameDetailsDialogV2(QDialog):
         ok, msg = import_ticket(raw_text, self.appid)
         if ok:
             QMessageBox.information(self, "Ticket Imported", f"✓ {msg}")
-            self._switch_tab(getattr(self, "_tickets_tab_index", 2))
+            self._switch_tab(getattr(self, "_tickets_tab_index", 3))
         else:
             QMessageBox.critical(self, "Import Failed", msg)
 
@@ -3218,7 +3738,7 @@ class GameDetailsDialogV2(QDialog):
             ok, msg = remove_ticket(self.appid)
             if ok:
                 QMessageBox.information(self, "Ticket Removed", f"✓ {msg}")
-                self._switch_tab(getattr(self, "_tickets_tab_index", 2))
+                self._switch_tab(getattr(self, "_tickets_tab_index", 3))
             else:
                 QMessageBox.critical(self, "Removal Failed", msg)
 
@@ -3315,6 +3835,73 @@ class GameDetailsDialogV2(QDialog):
     def _reset_depots_wrapper(self):
         self.parent_window._reset_depot_selection(self.game_data)
         self._update_depot_label()
+
+    def _get_installed_buildid(self) -> str:
+        """Resolves the real installed build ID on disk, exhausting all local sources."""
+        # 1. Check game_data directly if valid numeric
+        bid = str(self.game_data.get("buildid") or "").strip()
+        if bid and bid.isdigit() and bid != "0":
+            return bid
+
+        # 2. Check appmanifest file directly
+        acf_path = self.game_data.get("appmanifest_path")
+        if not acf_path and self.appid and self.appid not in ("0", "N/A", "unknown"):
+            from core.steam_helpers import get_steam_libraries
+            try:
+                for lib in get_steam_libraries():
+                    p = Path(lib) / "steamapps" / f"appmanifest_{self.appid}.acf"
+                    if p.exists():
+                        acf_path = str(p)
+                        self.game_data["appmanifest_path"] = acf_path
+                        break
+            except Exception:
+                pass
+
+        if acf_path and os.path.exists(acf_path):
+            try:
+                with open(acf_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                m = re.search(r'"buildid"\s+"([^"]+)"', content)
+                if m and m.group(1).strip() and m.group(1).strip() != "0":
+                    found_bid = m.group(1).strip()
+                    self.game_data["buildid"] = found_bid
+                    return found_bid
+            except Exception:
+                pass
+
+        # 3. Check QSettings installed_buildid
+        if self.settings and self.appid:
+            installed_branch = self.settings.value(f"installed_branch/{self.appid}", "", type=str)
+            if installed_branch:
+                saved = self.settings.value(f"installed_buildid/{self.appid}/{installed_branch}", "", type=str)
+                if saved and str(saved).isdigit() and str(saved) != "0":
+                    self.game_data["buildid"] = str(saved)
+                    return str(saved)
+            saved = self.settings.value(f"installed_buildid/{self.appid}", "", type=str)
+            if saved and str(saved).isdigit() and str(saved) != "0":
+                self.game_data["buildid"] = str(saved)
+                return str(saved)
+
+        # 4. Check ACCELA metadata JSON
+        if self.appid and self.appid not in ("0", "N/A", "unknown"):
+            try:
+                meta_path = get_base_path() / "metadata" / f"{self.appid}.json"
+                if meta_path.exists():
+                    import json
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        m_data = json.load(f)
+                        mbid = str(m_data.get("buildid", "")).strip()
+                        if mbid and mbid.isdigit() and mbid != "0":
+                            self.game_data["buildid"] = mbid
+                            return mbid
+            except Exception:
+                pass
+
+        # 5. Non-digit fallback from game_data if non-empty
+        if bid and bid.lower() not in ("unknown", "none", "0", ""):
+            return bid
+
+        return ""
 
     def _get_manifest_age(self):
         if self.appid in ("0", "N/A", "unknown"):
@@ -3431,13 +4018,13 @@ class GameDetailsDialogV2(QDialog):
         else:
             if hasattr(self, "update_all_tile") and self.update_all_tile:
                 self.update_all_tile.setEnabled(True)
-                is_ex = self.settings.value(f"exclude_from_update_all/{self.appid}", False, type=bool) if self.settings else False
-                is_inc = not is_ex
-                self.update_all_tile.setChecked(is_inc)
-                self.update_all_tile.update_state(is_inc, self.accent_color if is_inc else "#e05a47", active_sub="Include", inactive_sub="Exclude")
+                self.update_all_tile.setChecked(True)
+                self.update_all_tile.update_state(True, self.accent_color, active_sub="Include", inactive_sub="Exclude")
             if self.settings:
-                is_ex = self.settings.value(f"exclude_from_update_all/{self.appid}", False, type=bool) if self.settings else False
-                self.settings.setValue(f"exclude_from_update_all/{self.appid}", is_ex)
+                self.settings.setValue(f"exclude_from_update_all/{self.appid}", False)
+
+            if self.parent_window and hasattr(self.parent_window, "_update_pending_updates_ui"):
+                self.parent_window._update_pending_updates_ui()
 
         self._update_validate_button()
 

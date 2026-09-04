@@ -31,7 +31,8 @@ workshop_keys.txt
 gifs/
 
 # ── Local test scripts ───────────────────────────────────────────────────────
-scripts/
+scripts/*
+!scripts/setup_byparr.sh
 prerelease_check.py
 
 # ── OS junk ─────────────────────────────────────────────────────────────────
