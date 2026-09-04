@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# ACCELA - Byparr Cloudflare Solver Setup Script
+# ASSella - Byparr Cloudflare Solver Setup Script (Experimental)
+# 
+# Credits:
+#   Byparr by ThePhaseless: https://github.com/ThePhaseless/Byparr
+#   Camoufox by Daij-Djan:  https://github.com/Daij-Djan/camoufox
+#
 # Automatically sets up Byparr inside ~/.local/share/ACCELA/byparr.
-# Managed directly by ACCELA (starts when ACCELA opens, closes when ACCELA exits).
+# Managed directly by ASSella (starts when ASSella opens, closes when ASSella exits).
 # No root / sudo required.
 # ==============================================================================
 
 set -e
 
-echo "=== ACCELA: Setting up Byparr Cloudflare Solver ==="
+echo "=== ASSella: Setting up Byparr Cloudflare Solver (Experimental) ==="
+echo "Credits: Byparr by ThePhaseless (https://github.com/ThePhaseless/Byparr)"
+echo ""
 
-ACCELA_DIR="$HOME/.local/share/ACCELA"
-BYPARR_DIR="$ACCELA_DIR/byparr"
+DATA_DIR="$HOME/.local/share/ACCELA"
+BYPARR_DIR="$DATA_DIR/byparr"
 LOCAL_BIN="$HOME/.local/bin"
 
-mkdir -p "$LOCAL_BIN" "$ACCELA_DIR"
+mkdir -p "$LOCAL_BIN" "$DATA_DIR"
 export PATH="$LOCAL_BIN:$PATH"
 
 # 1. Install uv (fast Python & environment manager) if not present
@@ -40,13 +47,13 @@ else
     git clone --depth 1 https://github.com/ThePhaseless/Byparr.git "$BYPARR_DIR"
 fi
 
-# 3. Create the ACCELA supervisor runner for automatic cleanup on crash/exit
+# 3. Create the ASSella supervisor runner for automatic cleanup on crash/exit
 echo "[3/4] Writing process supervisor..."
-cat <<'EOF' > "$BYPARR_DIR/accela_runner.py"
+cat <<'EOF' > "$BYPARR_DIR/assella_runner.py"
 #!/usr/bin/env python3
 """
-ACCELA Byparr Process Supervisor.
-Monitors the ACCELA parent PID. If ACCELA exits or crashes abruptly,
+ASSella Byparr Process Supervisor.
+Monitors the ASSella parent PID. If ASSella exits or crashes abruptly,
 this supervisor immediately terminates Byparr, Uvicorn, and all spawned
 invisible-playwright Firefox browsers so zero background processes linger.
 """
@@ -62,14 +69,14 @@ parent_pid = int(parent_pid_str) if parent_pid_str and parent_pid_str.isdigit() 
 def _watchdog():
     if not parent_pid:
         return
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [ASSELLA_RUNNER] Supervisor active. Monitoring parent ASSELLA PID {parent_pid}...", flush=True)
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [ASSELLA_RUNNER] Supervisor active. Monitoring parent ASSella PID {parent_pid}...", flush=True)
     while True:
         time.sleep(1.0)
         try:
             os.kill(parent_pid, 0)
         except OSError:
-            # Parent ASSELLA is dead! Suicide the process group immediately.
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [ASSELLA_RUNNER] Parent ASSELLA PID {parent_pid} terminated or crashed. Terminating Byparr process tree.", flush=True)
+            # Parent ASSella is dead! Suicide the process group immediately.
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [ASSELLA_RUNNER] Parent ASSella PID {parent_pid} terminated or crashed. Terminating Byparr process tree.", flush=True)
             try:
                 os.killpg(0, signal.SIGKILL)
             except Exception:
@@ -95,13 +102,13 @@ echo "[4/4] Initializing Python environment and downloading stealth browser..."
 cd "$BYPARR_DIR"
 INVPW_TRUE_HEADLESS=1 uv run python main.py --init
 
-# Copy script to ACCELA dir for easy offline access
-cp -f "$0" "$ACCELA_DIR/setup_byparr.sh" 2>/dev/null || true
+# Copy script to data dir for easy offline access
+cp -f "$0" "$DATA_DIR/setup_byparr.sh" 2>/dev/null || true
 
 echo ""
 echo "=========================================================================="
 echo "  Byparr setup successfully completed!"
 echo "  Location: $BYPARR_DIR"
-echo "  ACCELA will now automatically start Byparr when opened,"
+echo "  ASSella will now automatically start Byparr when opened,"
 echo "  and stop it (freeing all memory & CPU) when closed or crashed."
 echo "=========================================================================="

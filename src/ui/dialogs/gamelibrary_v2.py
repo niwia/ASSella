@@ -2233,8 +2233,8 @@ class GameDetailsDialogV2(QDialog):
         err_title = QLabel("SteamDB Solver Required")
         err_title.setStyleSheet("color: #FFFFFF; font-size: 11pt; font-weight: bold; border: none; background: transparent;")
         err_desc = QLabel(
-            "SteamDB is protected by Cloudflare and requires the local Byparr solver.\n"
-            "Once setup, ACCELA will automatically start and stop Byparr as needed."
+            "SteamDB is protected by Cloudflare and requires the local Byparr solver (Experimental).\n"
+            "Once setup, ASSella will automatically start and stop Byparr as needed."
         )
         err_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         err_desc.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8.5pt; border: none; background: transparent;")
