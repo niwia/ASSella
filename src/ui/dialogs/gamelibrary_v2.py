@@ -241,6 +241,8 @@ class MaterialTile(QPushButton):
         from utils.color_utils import get_best_foreground_color
         bg_color = custom_color if custom_color else accent_color
         text_color = get_best_foreground_color(bg_color, dark_color="#121214", light_color="#FFFFFF")
+        self._is_active = checked
+        self._current_text_color = text_color
         
         if checked:
             self.setChecked(True)
@@ -297,8 +299,13 @@ class MaterialTile(QPushButton):
                 self.setCursor(Qt.CursorShape.ArrowCursor)
             else:
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
-                self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #FFFFFF; background: transparent;")
-                self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.6); background: transparent;")
+                if getattr(self, "_is_active", False) and hasattr(self, "_current_text_color"):
+                    tc = self._current_text_color
+                    self.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {tc}; background: transparent;")
+                    self.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {tc}; opacity: 0.85; background: transparent;")
+                else:
+                    self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #FFFFFF; background: transparent;")
+                    self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.6); background: transparent;")
 
 
 class GameDetailsDialogV2(QDialog):
@@ -344,21 +351,30 @@ class GameDetailsDialogV2(QDialog):
         self._apply_stylesheet()
         self._setup_ui()
 
-        # Load initial cached builds and trigger background SteamDB check
+        # Load initial cached builds and trigger background build check if Byparr is running
         aid = int(self.appid) if self.appid.isdigit() else 0
         cached_builds, cache_age = self.builds_cache.get_builds_with_age(aid)
         CACHE_FRESH_SECONDS = 3600  # Don't re-scrape if under 1 hour old
 
+        try:
+            from core.steamdb_scraper import ByparrManager
+            has_byparr = ByparrManager.find_byparr_dir() is not None
+        except Exception:
+            has_byparr = False
+
         if cached_builds:
             self._populate_builds_cards(cached_builds)
             self.builds_center_stack.setCurrentIndex(1)
-            if cache_age < 0 or cache_age >= CACHE_FRESH_SECONDS:
-                # Stale (or unknown age) — trigger quiet background refresh
+            if has_byparr and (cache_age < 0 or cache_age >= CACHE_FRESH_SECONDS):
+                # Stale (or unknown age) — trigger quiet background refresh if Byparr is installed
                 QTimer.singleShot(250, self._fetch_steamdb_builds_async)
-            # Fresh: nothing to do, show as-is
         else:
-            self.builds_center_stack.setCurrentIndex(0)
-            QTimer.singleShot(250, self._fetch_steamdb_builds_async)
+            if has_byparr:
+                self.builds_center_stack.setCurrentIndex(0)
+                QTimer.singleShot(250, self._fetch_steamdb_builds_async)
+            else:
+                # Byparr not installed: immediately show Manual fallback view
+                self.builds_center_stack.setCurrentIndex(2)
 
 
         if self.parent():
@@ -1173,7 +1189,13 @@ class GameDetailsDialogV2(QDialog):
         threading.Thread(target=self._silent_refresh_branches, daemon=True).start()
 
         if not loaded_from_cache:
-            # No DB data at all — kick off a full live fetch via the normal async path
+            # Branches are not cached in DB — indicate fetching state on action button
+            self._is_fetching_branches = True
+            if hasattr(self, "validate_btn"):
+                self.validate_btn.setEnabled(False)
+                self.validate_btn.setText("Fetching...")
+                self.validate_btn.setToolTip("Fetching branch and depot data from Steam...")
+            # Kick off a full live fetch via the normal async path
             self._load_branches_async(force_refresh=True)
 
     def _load_branches_async(self, force_refresh: bool = False):
@@ -1225,6 +1247,7 @@ class GameDetailsDialogV2(QDialog):
             pass
 
     def _on_branches_loaded(self, branches_dict: dict):
+        self._is_fetching_branches = False
         try:
             if not branches_dict or not isinstance(branches_dict, dict):
                 branches_dict = {"public": {"buildid": str(self.game_data.get("buildid") or "")}}
@@ -1308,6 +1331,13 @@ class GameDetailsDialogV2(QDialog):
         self._update_validate_button()
 
     def _update_validate_button(self):
+        if getattr(self, "_is_fetching_branches", False):
+            if hasattr(self, "validate_btn"):
+                self.validate_btn.setEnabled(False)
+                self.validate_btn.setText("Fetching...")
+                self.validate_btn.setToolTip("Fetching branch and depot data from Steam...")
+            return
+
         sel_branch = self.branch_combo.currentData() or "public" if hasattr(self, "branch_combo") else "public"
         installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str)
         pinned = self.settings.value(f"pin_build/{self.appid}", False, type=bool) if self.settings else False
@@ -2139,7 +2169,35 @@ class GameDetailsDialogV2(QDialog):
             title = "UP TO DATE"
             self.status_tile.title_lbl.setText(title)
             self.status_tile.sub_lbl.setText(sub)
-            self.status_tile.update_state(True, sem_colors["success"], active_sub=sub)
+            
+            # Material You M3 Tonal Success Container:
+            # Elegant dark forest tone with crisp mint typography and subtle border
+            tonal_bg = "rgba(46, 125, 50, 0.22)"
+            tonal_hover = "rgba(46, 125, 50, 0.32)"
+            border_color = "rgba(129, 199, 132, 0.35)"
+            mint_text = "#A8F5B8"
+            
+            self.status_tile.setChecked(True)
+            self.status_tile._is_active = True
+            self.status_tile._current_text_color = mint_text
+            self.status_tile.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {tonal_bg};
+                    border: 1px solid {border_color};
+                    border-radius: 8px;
+                }}
+                QPushButton:hover {{
+                    background-color: {tonal_hover};
+                    border: 1px solid rgba(168, 245, 184, 0.6);
+                }}
+                QPushButton:disabled {{
+                    background-color: rgba(255, 255, 255, 0.02);
+                    border: 1px solid rgba(255, 255, 255, 0.04);
+                }}
+            """)
+            self.status_tile.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {mint_text}; background: transparent;")
+            self.status_tile.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(168, 245, 184, 0.85); background: transparent;")
+            self.status_tile.sub_lbl.setText(sub)
             self.status_tile.setEnabled(True)
             
         elif status == "checking":
@@ -2192,7 +2250,7 @@ class GameDetailsDialogV2(QDialog):
         loading_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         loading_layout.setSpacing(10)
         self.builds_main_spinner = MaterialSpinner(loading_container, size=32, color=self.accent_color, thickness=3)
-        loading_lbl = QLabel("Fetching version history from SteamDB...")
+        loading_lbl = QLabel("Fetching version history...")
         loading_lbl.setStyleSheet("color: rgba(255,255,255,0.55); font-size: 8.5pt;")
         loading_layout.addWidget(self.builds_main_spinner, 0, Qt.AlignmentFlag.AlignCenter)
         loading_layout.addWidget(loading_lbl, 0, Qt.AlignmentFlag.AlignCenter)
@@ -2224,74 +2282,40 @@ class GameDetailsDialogV2(QDialog):
         self.builds_scroll.setWidget(self.builds_scroll_inner)
         self.builds_center_stack.addWidget(self.builds_scroll)
 
-        # Page 2: SteamDB Unavailable error state
+        # Page 2: Manual fallback when builds are unavailable
         self.builds_error_container = QWidget()
-        err_layout = QVBoxLayout(self.builds_error_container)
-        err_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        err_layout.setSpacing(10)
+        manual_layout = QVBoxLayout(self.builds_error_container)
+        manual_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        manual_layout.setSpacing(10)
 
-        err_title = QLabel("SteamDB Solver Required")
-        err_title.setStyleSheet("color: #FFFFFF; font-size: 11pt; font-weight: bold; border: none; background: transparent;")
-        err_desc = QLabel(
-            "SteamDB is protected by Cloudflare and requires the local Byparr solver (Experimental).\n"
-            "Once setup, ASSella will automatically start and stop Byparr as needed."
-        )
-        err_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        err_desc.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8.5pt; border: none; background: transparent;")
-
-        btns_row = QHBoxLayout()
-        btns_row.setSpacing(10)
-        btns_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        copy_btn = QPushButton("Copy Setup Command")
-        copy_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.15);
+        manual_center_btn = QPushButton("Manual")
+        manual_center_btn.setFixedSize(140, 36)
+        manual_center_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        from utils.color_utils import get_best_foreground_color
+        dl_fg = get_best_foreground_color(self.accent_color)
+        download_style = f"""
+            QPushButton {{
+                background-color: {self.accent_color};
+                color: {dl_fg};
+                border: none;
                 border-radius: 6px;
-                color: #FFFFFF;
-                font-size: 8.5pt;
                 font-weight: 600;
-                padding: 6px 14px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.14);
-            }
-        """)
-        def _on_copy_setup_cmd():
-            from PyQt6.QtWidgets import QApplication
-            from PyQt6.QtCore import QTimer
-            cb = QApplication.clipboard()
-            if cb:
-                cb.setText("bash <(curl -sSL https://raw.githubusercontent.com/niwia/ASSella/beta/scripts/setup_byparr.sh)")
-            copy_btn.setText("✓ Copied!")
-            QTimer.singleShot(2000, lambda: copy_btn.setText("Copy Setup Command"))
-        copy_btn.clicked.connect(_on_copy_setup_cmd)
+                font-size: 9pt;
+            }}
+            QPushButton:hover:!disabled {{
+                background-color: #FFFFFF;
+                color: #000000;
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.25);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+        """
+        manual_center_btn.setStyleSheet(download_style)
+        manual_center_btn.clicked.connect(self._on_manual_rollback_clicked)
 
-        retry_btn = QPushButton("Retry")
-        retry_btn.setFixedWidth(90)
-        retry_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 6px;
-                color: #FFFFFF;
-                font-size: 8.5pt;
-                font-weight: 600;
-                padding: 6px 14px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.14);
-            }
-        """)
-        retry_btn.clicked.connect(self._fetch_steamdb_builds_async)
-
-        btns_row.addWidget(copy_btn)
-        btns_row.addWidget(retry_btn)
-
-        err_layout.addWidget(err_title, 0, Qt.AlignmentFlag.AlignCenter)
-        err_layout.addWidget(err_desc, 0, Qt.AlignmentFlag.AlignCenter)
-        err_layout.addLayout(btns_row)
+        manual_layout.addWidget(manual_center_btn, 0, Qt.AlignmentFlag.AlignCenter)
         self.builds_center_stack.addWidget(self.builds_error_container)
 
         page_layout.addWidget(self.builds_center_stack, 1)
@@ -2325,27 +2349,7 @@ class GameDetailsDialogV2(QDialog):
                 border: 1px solid rgba(255, 255, 255, 0.05);
             }
         """
-        from utils.color_utils import get_best_foreground_color
-        dl_fg = get_best_foreground_color(self.accent_color)
-        download_style = f"""
-            QPushButton {{
-                background-color: {self.accent_color};
-                color: {dl_fg};
-                border: none;
-                border-radius: 6px;
-                font-weight: 600;
-                font-size: 9pt;
-            }}
-            QPushButton:hover:!disabled {{
-                background-color: #FFFFFF;
-                color: #000000;
-            }}
-            QPushButton:disabled {{
-                background-color: rgba(255, 255, 255, 0.05);
-                color: rgba(255, 255, 255, 0.25);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-            }}
-        """
+
         for btn in (self.builds_refresh_btn, self.builds_manual_btn):
             btn.setFixedHeight(36)
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -2517,6 +2521,15 @@ class GameDetailsDialogV2(QDialog):
 
     # ── Async fetch ────────────────────────────────────────────────────────
     def _fetch_steamdb_builds_async(self):
+        try:
+            from core.steamdb_scraper import ByparrManager
+            if not ByparrManager.find_byparr_dir():
+                self._on_builds_error("Solver not installed")
+                return
+        except Exception:
+            self._on_builds_error("Solver unavailable")
+            return
+
         self.builds_refresh_btn.setText("⟳  Checking...")
         self.builds_refresh_btn.setEnabled(False)
 
@@ -2530,7 +2543,7 @@ class GameDetailsDialogV2(QDialog):
                 data = self.steamdb_scraper.get_patchnotes(aid, limit=20)
                 self.builds_loaded.emit(data)
             except Exception as e:
-                logger.error(f"Failed to fetch SteamDB builds for {self.appid}: {e}")
+                logger.error(f"Failed to fetch builds for {self.appid}: {e}")
                 self.builds_error.emit(str(e))
 
         import threading
@@ -2556,11 +2569,11 @@ class GameDetailsDialogV2(QDialog):
         # If we have cached build cards already displayed, keep showing them!
         if self.builds_cards_layout.count() > 1:
             self.builds_center_stack.setCurrentIndex(1)
-            self.builds_refresh_btn.setToolTip(f"SteamDB is currently unavailable. Showing cached builds.\n(Error: {err_msg})")
+            self.builds_refresh_btn.setToolTip(f"Build history currently unavailable. Showing cached builds.\n(Error: {err_msg})")
         else:
-            # No cache exists - show clean unavailable page (Page 2)
+            # No cache exists - show clean manual page (Page 2)
             self.builds_center_stack.setCurrentIndex(2)
-            self.builds_refresh_btn.setToolTip(f"SteamDB unavailable: {err_msg}")
+            self.builds_refresh_btn.setToolTip(f"Build history unavailable: {err_msg}")
 
     def _get_build_action_label(self, build_id: str) -> str:
         current_bid = self._get_installed_buildid()

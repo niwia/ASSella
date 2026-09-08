@@ -181,7 +181,9 @@ class JobQueueManager(QObject):
             self._handle_queue_completion()
             return
 
-        next_job = self.job_queue[0]
+        next_job = self.job_queue.pop(0)
+        self._update_ui_state()
+
         if next_job.get("type") == "workshop":
             workshop_data = next_job["workshop_data"]
             self.main_window.task_manager.start_workshop_download(workshop_data)
@@ -189,9 +191,6 @@ class JobQueueManager(QObject):
             file_path = next_job["path"]
             metadata = next_job.get("metadata", {})
             self.main_window.task_manager.start_zip_processing(file_path, metadata)
-
-        self.job_queue.pop(0)
-        self._update_ui_state()
 
     def _handle_queue_completion(self):
         """Handle when queue is empty"""

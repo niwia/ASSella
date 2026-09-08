@@ -13,7 +13,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from utils.helpers import get_base_path
 
 # Constants
-APP_NAME = "accela"
+APP_NAME = "assella"
 MAX_PREVIOUS_LOGS = 3
 
 logger = logging.getLogger(__name__)
@@ -342,7 +342,7 @@ def _install_stderr_tee(file_stream) -> None:
 def _install_global_exception_hooks() -> None:
     """Install sys.excepthook and threading.excepthook to route unhandled
     exceptions from all threads into the logger instead of stderr."""
-    _exc_logger = logging.getLogger("accela.crash")
+    _exc_logger = logging.getLogger("assella.crash")
 
     def _handle_exception(exc_type, exc_value, exc_tb):
         """Main thread unhandled exception hook."""
@@ -519,7 +519,11 @@ def cleanup_old_logs() -> None:
     if not log_dir.exists():
         return
 
-    log_files = [f for f in log_dir.glob(f"{APP_NAME}*.log") if f.is_file()]
+    # Match both new assella_*.log and legacy accela_*.log files
+    log_files = [
+        f for f in log_dir.glob("*.log")
+        if f.is_file() and (f.name.startswith("assella_") or f.name.startswith("accela_"))
+    ]
 
     if not log_files:
         return

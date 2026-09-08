@@ -959,6 +959,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.refresh_system_status_signal.connect(self.refresh_system_status)
         self._main_thread_callable.connect(self._run_on_main_thread)
+        self._steamdb_verified = False
+        self._steamdb_check_running = False
         self.resize_handles: Dict[str, ResizeHandle] = {}
         self.key_sequence = deque(maxlen=4)
         self.target_sequence = ["l", "a", "i", "n"]
@@ -1118,6 +1120,12 @@ class MainWindow(QMainWindow):
         import threading
         from utils.assfixer import run_boot_config_check
         from ui.dialogs.settings_sls import run_boot_update_check
+
+        # Warm up Byparr and verify SteamDB Cloudflare bypass in the background
+        try:
+            self.check_steamdb_status()
+        except Exception:
+            pass
         
         def run_boot_checks():
             run_boot_update_check()
@@ -1368,7 +1376,7 @@ class MainWindow(QMainWindow):
         """Initialize all manager classes."""
         self.settings = get_settings()
         if not self.settings.contains("update_check_api_provider"):
-            self.settings.setValue("update_check_api_provider", "steampics")
+            self.settings.setValue("update_check_api_provider", "auto")
 
         self.accent_color = self.settings.value("accent_color", "#a1c9fd")
         self.background_color = self.settings.value("background_color", "#111318")
@@ -1799,7 +1807,7 @@ class MainWindow(QMainWindow):
         # 1. Hubcap API Stats
         hubcap_api_lbl = QLabel("Hubcap:")
         hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
-        self.hubcap_api_value = QLabel("api: --, bundle: --, single: -- [--d]")
+        self.hubcap_api_value = QLabel("API: --/-- | --/-- | --/--")
         self.hubcap_api_value.setStyleSheet(row_item_style)
         hubcap_api_item = QHBoxLayout()
         hubcap_api_item.setSpacing(4)
@@ -1838,6 +1846,29 @@ class MainWindow(QMainWindow):
         steam_conn_item.addWidget(steam_conn_lbl)
         steam_conn_item.addWidget(self.steam_conn_value)
         row1_layout.addLayout(steam_conn_item)
+
+        # 5. SteamDB Solver Status (Right next to Steam) - only visible if Byparr is installed
+        self.steamdb_container = QWidget()
+        self.steamdb_container.setStyleSheet("background: transparent; border: none;")
+        self.steamdb_item = QHBoxLayout(self.steamdb_container)
+        self.steamdb_item.setContentsMargins(0, 0, 0, 0)
+        self.steamdb_item.setSpacing(4)
+
+        self.steamdb_lbl = QLabel("SteamDB:")
+        self.steamdb_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
+        self.steamdb_status_value = QLabel("Offline")
+        self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
+        self.steamdb_item.addWidget(self.steamdb_lbl)
+        self.steamdb_item.addWidget(self.steamdb_status_value)
+        row1_layout.addWidget(self.steamdb_container)
+
+        # Only show SteamDB if Byparr directory exists
+        try:
+            from core.steamdb_scraper import ByparrManager
+            has_byparr = ByparrManager.find_byparr_dir() is not None
+        except Exception:
+            has_byparr = False
+        self.steamdb_container.setVisible(has_byparr)
 
         row1_layout.addStretch()
         dash_main_layout.addLayout(row1_layout)
@@ -2023,8 +2054,8 @@ class MainWindow(QMainWindow):
         """
         )
 
-    def open_settings(self) -> None:
-        dialog = SettingsDialog(self)
+    def open_settings(self, initial_tab: Optional[str] = None) -> None:
+        dialog = SettingsDialog(self, initial_tab=initial_tab)
         dialog.exec()
         self._check_network_connections_async()
         self.refresh_hubcap_stats()
@@ -2169,21 +2200,47 @@ class MainWindow(QMainWindow):
 
 
 
+        # SteamDB Visor Sync
+        if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
+            try:
+                from core.steamdb_scraper import ByparrManager
+                has_byparr = ByparrManager.find_byparr_dir() is not None
+                if not has_byparr:
+                    self.steamdb_container.setVisible(False)
+                else:
+                    self.steamdb_container.setVisible(True)
+                    if ByparrManager.is_running():
+                        self.steamdb_status_value.setText("Ready")
+                        self.steamdb_status_value.setStyleSheet(self._get_status_style("success"))
+                        self.steamdb_status_value.setToolTip(
+                            "SteamDB: Cloudflare Turnstile bypass active via Byparr\n"
+                            "Version history, patch notes & depot enrichment enabled."
+                        )
+                    else:
+                        self.steamdb_status_value.setText("Offline")
+                        self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
+                        self.steamdb_status_value.setToolTip(
+                            "SteamDB: Solver is currently offline.\n"
+                            "It will start automatically when version history or builds are accessed."
+                        )
+            except Exception:
+                pass
+
         # ASSella Status
         if hasattr(self, "assella_status_value") and self.assella_status_value:
             tool_status = getattr(self, "_tool_update_status", "checking")
             if tool_status == "update_available":
-                self.assella_status_value.setText("Update Available")
+                self.assella_status_value.setText("Update!")
                 self.assella_status_value.setStyleSheet(self._get_status_style("warning"))
                 self.assella_status_value.setToolTip(
                     f"New version available: {getattr(self, '_latest_remote_version', '')}"
                 )
             elif tool_status == "up_to_date":
-                self.assella_status_value.setText("Up to Date")
+                self.assella_status_value.setText("Latest")
                 self.assella_status_value.setStyleSheet(self._get_status_style("success"))
                 self.assella_status_value.setToolTip(f"ASSella is up to date (v{app_version})")
-            elif tool_status == "offline":
-                self.assella_status_value.setText("Offline")
+            elif tool_status in ("offline", "error", "cant_check"):
+                self.assella_status_value.setText("Can't Check")
                 self.assella_status_value.setStyleSheet(self._get_status_style("error"))
                 self.assella_status_value.setToolTip(
                     f"Could not check for ASSella updates (Offline or GitHub unreachable)\nCurrent version: v{app_version}"
@@ -2212,6 +2269,72 @@ class MainWindow(QMainWindow):
             quote, source = random.choice(available_quotes)
             self.quote_label.setText(quote)
             self.quote_source_label.setText(f"— {source}")
+
+    def check_steamdb_status(self) -> None:
+        """Asynchronously verify that Byparr is running and SteamDB Cloudflare bypass works."""
+        if getattr(self, "_steamdb_check_running", False):
+            return
+
+        try:
+            from core.steamdb_scraper import ByparrManager
+            if not ByparrManager.find_byparr_dir():
+                if hasattr(self, "steamdb_container"):
+                    self.steamdb_container.setVisible(False)
+                return
+        except Exception:
+            return
+
+        self._steamdb_check_running = True
+
+        def _worker():
+            try:
+                from core.steamdb_scraper import ByparrManager
+                if not ByparrManager.find_byparr_dir():
+                    self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(False))
+                    return
+                ok = ByparrManager.verify_steamdb_bypass(timeout_seconds=30)
+                logger.info(f"[SteamDB Visor] verify_steamdb_bypass result: {ok}")
+                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(ok))
+            except Exception as e:
+                logger.debug(f"[SteamDB] Error during SteamDB status verification: {e}")
+                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(False))
+            finally:
+                self._steamdb_check_running = False
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_steamdb_status_result(self, is_working: bool) -> None:
+        """Display SteamDB visor item if Byparr is installed and working/ready."""
+        self._steamdb_verified = is_working
+        if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
+            try:
+                from core.steamdb_scraper import ByparrManager
+                has_byparr = ByparrManager.find_byparr_dir() is not None
+            except Exception:
+                has_byparr = False
+
+            if not has_byparr:
+                self.steamdb_container.setVisible(False)
+                return
+
+            self.steamdb_container.setVisible(True)
+            if is_working:
+                self.steamdb_status_value.setText("Ready")
+                self.steamdb_status_value.setStyleSheet(self._get_status_style("success"))
+                self.steamdb_status_value.setToolTip(
+                    "SteamDB: Cloudflare Turnstile bypass active via Byparr\n"
+                    "Version history, patch notes & depot enrichment enabled."
+                )
+                logger.info("[SteamDB Visor] SteamDB status updated to: Ready")
+            else:
+                self.steamdb_status_value.setText("Offline")
+                self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
+                self.steamdb_status_value.setToolTip(
+                    "SteamDB: Solver is currently offline.\n"
+                    "It will start automatically when version history or builds are accessed."
+                )
+                logger.info("[SteamDB Visor] SteamDB status updated to: Offline")
 
     def refresh_hubcap_stats(self) -> None:
         """Fetch user statistics from Hubcap API asynchronously."""
@@ -2344,12 +2467,12 @@ class MainWindow(QMainWindow):
         else:
             expiry_text = "Never"
 
-        quota_str = f"api: {usage}/{limit}, bundle: {b_usage}/{b_limit}, single: {s_usage}/{s_limit} [{expiry_text}]"
+        quota_str = f"API: {usage}/{limit} | {b_usage}/{b_limit} | {s_usage}/{s_limit}"
         tooltip_str = (
             f"Hubcap API Quotas & Limits:\n"
-            f"• api (Daily Manifest Downloads): {usage} / {limit}\n"
-            f"• bundle (App Bundle Generations): {b_usage} / {b_limit}\n"
-            f"• single (Single Depot Generations): {s_usage} / {s_limit}\n"
+            f"• API / Daily Manifests: {usage} / {limit}\n"
+            f"• App Bundle Generations: {b_usage} / {b_limit}\n"
+            f"• Single Depot Generations: {s_usage} / {s_limit}\n"
             f"• API Key Expiry: {expiry_text}"
         )
 
@@ -2357,7 +2480,7 @@ class MainWindow(QMainWindow):
             self.hubcap_api_value.setText(quota_str)
             self.hubcap_api_value.setToolTip(tooltip_str)
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-            self.active_hubcap_label.setText(f"Hubcap: api: {usage}/{limit}, bundle: {b_usage}/{b_limit}, single: {s_usage}/{s_limit}")
+            self.active_hubcap_label.setText(f"Hubcap: {quota_str}")
             self.active_hubcap_label.setToolTip(tooltip_str)
 
     def _on_user_stats_error(self, err_tuple: tuple) -> None:
@@ -2728,18 +2851,6 @@ class MainWindow(QMainWindow):
                         if file.lower().endswith(".lua") or file.lower().endswith(".manifest"):
                             files_to_zip.append(os.path.join(root, file))
 
-        # Ask if they want to pin the build for these files
-        should_pin = False
-        if zips_to_queue or files_to_zip:
-            pin_choice = QMessageBox.question(
-                self,
-                "Pin Build Option",
-                "Do you want to pin this build? (Pinning locks the installed version and disables automatic updates)",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-            should_pin = (pin_choice == QMessageBox.StandardButton.Yes)
-
         if files_to_zip:
             try:
                 temp_fd, temp_path = tempfile.mkstemp(suffix=".zip")
@@ -2760,9 +2871,22 @@ class MainWindow(QMainWindow):
         if not zips_to_queue:
             return
 
-        logger.info(f"Added {len(zips_to_queue)} file(s) to the queue via drag-drop.")
+        from ui.dialogs.zip_confirm_dialog import ZipImportConfirmationDialog
+        from PyQt6.QtWidgets import QDialog
+
+        logger.info(f"Inspecting {len(zips_to_queue)} file(s) for import via drag-drop.")
         for job_path in zips_to_queue:
-            self.job_queue.add_job(job_path, metadata={"pin_build": should_pin})
+            dlg = ZipImportConfirmationDialog(
+                parent=self,
+                zip_path=job_path,
+                accent_color=self.accent_color,
+            )
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                meta = dlg.get_metadata()
+                logger.info(f"User confirmed import for {job_path} with metadata: {meta}")
+                self.job_queue.add_job(job_path, metadata=meta)
+            else:
+                logger.info(f"User cancelled import for {job_path}")
 
     def closeEvent(self, event) -> None:
         """Handle application shutdown."""
@@ -2772,6 +2896,11 @@ class MainWindow(QMainWindow):
             try:
                 from utils.isp_bypass import TorManager
                 TorManager.stop_tor()
+            except Exception:
+                pass
+            try:
+                from core.steamdb_scraper import ByparrManager
+                ByparrManager.stop()
             except Exception:
                 pass
             # Signal SLS background retry workers to stop before teardown

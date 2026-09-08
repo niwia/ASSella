@@ -309,6 +309,7 @@ class GameItemWidget(QWidget):
         # Manifest cache status
         self.manifest_label = QLabel()
         info_layout.addWidget(self.manifest_label)
+
         self.update_manifest_label()
 
         info_layout.addStretch()
@@ -317,7 +318,7 @@ class GameItemWidget(QWidget):
         # Right column for Badges (status, denuvo, proton)
         right_col = QVBoxLayout()
         right_col.setContentsMargins(0, 8, 0, 8)
-        right_col.setSpacing(6)
+        right_col.setSpacing(4)
 
         # Update status badge
         self.status_label = QLabel()
@@ -341,6 +342,14 @@ class GameItemWidget(QWidget):
             f"font-weight: bold;"
         )
         right_col.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignRight)
+
+        # Pinned build label directly below the update status badge
+        self.pinned_build_label = QLabel()
+        self.pinned_build_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.pinned_build_label.setVisible(False)
+        right_col.addWidget(self.pinned_build_label, 0, Qt.AlignmentFlag.AlignRight)
+        self.pinned_label = self.pinned_build_label
+        self.update_pinned_label()
 
         right_col.addStretch(1)
 
@@ -417,6 +426,42 @@ class GameItemWidget(QWidget):
 
             self.manifest_label.setText(f"Manifest: Cached ({age_str} ago)")
             self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px; font-style: italic;")
+
+        self.update_pinned_label()
+
+    def update_pinned_label(self) -> None:
+        """Update pinned build label under the update status badge (cached lookup)."""
+        lbl = getattr(self, "pinned_build_label", None) or getattr(self, "pinned_label", None)
+        if not lbl:
+            return
+
+        appid = str(self.game_data.get("appid", "0"))
+        pinned_cache = getattr(self.parent_dialog, "_pinned_cache", None) if self.parent_dialog else None
+        
+        if pinned_cache is not None:
+            is_pinned = appid in pinned_cache
+            bid = pinned_cache.get(appid, "")
+        else:
+            from utils.settings import get_settings
+            s = get_settings()
+            is_pinned = s.value(f"pin_build/{appid}", False, type=bool)
+            bid = s.value(f"installed_buildid/{appid}", "", type=str)
+
+        if is_pinned:
+            if not bid:
+                bid = str(self.game_data.get("buildid") or "")
+            bid_str = f"Build: {bid}" if bid else "Pinned"
+            lbl.setText(bid_str)
+            lbl.setStyleSheet(
+                "color: #FFB84D; "
+                "font-size: 11px; "
+                "font-weight: bold; "
+                "background: transparent; "
+                "padding-right: 4px;"
+            )
+            lbl.setVisible(True)
+        else:
+            lbl.setVisible(False)
 
     def update_status(self, update_status: str) -> None:
         """Update update and manifest status labels in-place."""
@@ -892,6 +937,7 @@ class GameLibraryDialog(QDialog):
         self.search_input.textChanged.connect(self._on_search_changed)
 
         self.sort_combo = QComboBox()
+        self.sort_combo.addItem("Pinned First", "pinned_first")
         self.sort_combo.addItem("Recently Installed", "recently_installed")
         self.sort_combo.addItem("Has Update First", "update_first")
         self.sort_combo.addItem("DLC Only First", "dlc_only_first")
@@ -1564,6 +1610,15 @@ class GameLibraryDialog(QDialog):
             if path and os.path.exists(path):
                 return os.path.getmtime(path)
             return 0
+        if sort_option == "pinned_first":
+            appid = str(game.get("appid", "0"))
+            pinned_cache = getattr(GameLibraryDialog, "_current_pinned_cache", None)
+            if pinned_cache is not None:
+                is_pinned = appid in pinned_cache
+            else:
+                from utils.settings import get_settings
+                is_pinned = get_settings().value(f"pin_build/{appid}", False, type=bool)
+            return (0 if is_pinned else 1, game.get("game_name", "").lower())
         if sort_option == "update_first":
             # Games with an update available sort first (0), then everything else (1)
             has_update = game.get("update_status") == "update_available"
@@ -1577,11 +1632,15 @@ class GameLibraryDialog(QDialog):
     def _sort_games(self, games: list) -> list:
         sort_option = self.sort_combo.currentData()
         reverse = sort_option in ("name_desc", "size_desc", "recently_installed")
-        return sorted(
-            games,
-            key=lambda g: GameLibraryDialog._get_sort_key(g, sort_option),
-            reverse=reverse,
-        )
+        GameLibraryDialog._current_pinned_cache = getattr(self, "_pinned_cache", {})
+        try:
+            return sorted(
+                games,
+                key=lambda g: GameLibraryDialog._get_sort_key(g, sort_option),
+                reverse=reverse,
+            )
+        finally:
+            GameLibraryDialog._current_pinned_cache = None
 
     def _refresh_game_list(self) -> None:
         if self._closing:
@@ -1603,6 +1662,19 @@ class GameLibraryDialog(QDialog):
         self.games_list.clear()
         self._items_by_appid.clear()
         self._manifest_mtimes.clear()
+        self._pinned_cache = {}
+
+        # Quick in-memory scan of pinned games to avoid per-game disk/ACF latency
+        if self.settings:
+            try:
+                for k in self.settings.allKeys():
+                    if k.startswith("pin_build/"):
+                        if self.settings.value(k, False, type=bool):
+                            appid = k[len("pin_build/"):]
+                            bid = self.settings.value(f"installed_buildid/{appid}", "", type=str)
+                            self._pinned_cache[appid] = bid
+            except Exception as e:
+                logger.warning(f"Failed to populate pinned cache: {e}")
 
         # Pre-scan manifests directory for mtimes
         try:
@@ -1992,19 +2064,25 @@ class GameLibraryDialog(QDialog):
                 val = settings.value(f"depot_selection/{appid}", "", type=str)
                 should_prompt = True
 
-                if smart_active and val:
+                cached_selected = None
+                if val:
                     try:
                         data = json.loads(val)
                         cached_selected = data.get("selected", [])
                         cached_all = data.get("all_available", [])
                         current_depots = list(depots.keys())
                         has_new_depot = any(d not in cached_all for d in current_depots)
-                        if not has_new_depot:
+                        if smart_active and not has_new_depot:
                             selected_depots = [d for d in cached_selected if d in depots]
                             should_prompt = False
                             logger.info(f"Smart selection active (batch). Reusing cached depots for {appid}: {selected_depots}")
                     except Exception as e:
                         logger.warning(f"Error parsing cached depot selection: {e}")
+
+                if not cached_selected:
+                    acf_installed = game_data.get("installed_depots") if isinstance(game_data, dict) else None
+                    if acf_installed and isinstance(acf_installed, list):
+                        cached_selected = [str(d) for d in acf_installed]
 
                 if should_prompt:
                     if auto_skip and len(depots) == 1:
@@ -2012,6 +2090,7 @@ class GameLibraryDialog(QDialog):
                     else:
                         # Depot dialog must run on the main thread
                         result_holder = [None]
+                        storage_holder = [None]
                         done_event = __import__("threading").Event()
 
                         def _show_depot_dialog():
@@ -2022,9 +2101,11 @@ class GameLibraryDialog(QDialog):
                                     depots,
                                     parsed_data.get("header_url"),
                                     self.main_window,
+                                    selected_depots=cached_selected,
                                 )
                                 if depot_dialog.exec():
                                     result_holder[0] = depot_dialog.get_selected_depots()
+                                    storage_holder[0] = depot_dialog.get_selected_storage()
                             finally:
                                 done_event.set()
 
@@ -2036,6 +2117,8 @@ class GameLibraryDialog(QDialog):
                         )
                         done_event.wait(timeout=120)
                         selected_depots = result_holder[0]
+                        if storage_holder[0]:
+                            metadata["library_path"] = storage_holder[0]
 
                 if not selected_depots:
                     logger.info(f"Batch queue: user cancelled depot selection for {name}")
@@ -2730,19 +2813,26 @@ class GameLibraryDialog(QDialog):
             val = settings.value(f"depot_selection/{appid}", "", type=str)
             should_prompt = True
 
-            if smart_active and val:
+            cached_selected = None
+            if val:
                 try:
                     data = json.loads(val)
                     cached_selected = data.get("selected", [])
                     cached_all = data.get("all_available", [])
                     current_depots = list(depots.keys())
                     has_new_depot = any(d not in cached_all for d in current_depots)
-                    if not has_new_depot:
+                    if smart_active and not has_new_depot:
                         selected_depots = [d for d in cached_selected if d in depots]
                         should_prompt = False
                         logger.info(f"Smart selection active. Reusing cached depots for {appid}: {selected_depots}")
                 except Exception as e:
                     logger.warning(f"Error parsing cached depot selection: {e}")
+
+            if not cached_selected:
+                game_info = (metadata or {}).get("game_data") or {}
+                acf_installed = game_info.get("installed_depots") if isinstance(game_info, dict) else None
+                if acf_installed and isinstance(acf_installed, list):
+                    cached_selected = [str(d) for d in acf_installed]
 
             if should_prompt:
                 if auto_skip and len(depots) == 1:
@@ -2754,9 +2844,13 @@ class GameLibraryDialog(QDialog):
                         depots,
                         parsed_data.get("header_url"),
                         self.main_window,
+                        selected_depots=cached_selected,
                     )
                     if depot_dialog.exec():
                         selected_depots = depot_dialog.get_selected_depots()
+                        selected_storage = depot_dialog.get_selected_storage()
+                        if selected_storage:
+                            metadata["library_path"] = selected_storage
 
             if selected_depots:
                 metadata["selected_depots_list"] = selected_depots

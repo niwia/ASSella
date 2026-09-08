@@ -67,6 +67,70 @@ def _get_user_dotnet_root() -> str:
         return os.path.expanduser("~/.dotnet")
 
 
+def get_dotnet_env() -> dict[str, str]:
+    """Get sanitized environment for running .NET processes.
+
+    Cleans AppImage library overrides that break .NET runtime host and sets
+    DOTNET_ROOT and globalization invariant for SteamOS / minimal Linux.
+    """
+    from pathlib import Path
+
+    env = os.environ.copy()
+
+    # 1. Clean AppImage library overrides that break .NET runtime host
+    env.pop("LD_LIBRARY_PATH", None)
+    env.pop("LD_PRELOAD", None)
+
+    # 2. Find local or system .dotnet directory
+    local_dotnet = Path.home() / ".dotnet"
+    system_dotnet = Path("/usr/share/dotnet")
+    usr_lib_dotnet = Path("/usr/lib/dotnet")
+
+    dotnet_dir = None
+    if local_dotnet.exists():
+        dotnet_dir = local_dotnet
+    elif system_dotnet.exists():
+        dotnet_dir = system_dotnet
+    elif usr_lib_dotnet.exists():
+        dotnet_dir = usr_lib_dotnet
+
+    if dotnet_dir:
+        # Set DOTNET_ROOT (required for .NET to find runtimes)
+        env["DOTNET_ROOT"] = str(dotnet_dir)
+        # Prepend to PATH so dotnet executable is found if needed
+        env["PATH"] = f"{dotnet_dir}:{env.get('PATH', '')}"
+
+    # Prevent ICU globalization missing crashes on SteamOS/minimal Linux
+    env.setdefault("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1")
+
+    return env
+
+
+def _clean_corrupt_hostfxr(dotnet_root: str):
+    """Detect and clean ghost/corrupted host/fxr directories that break .NET host.
+
+    If a subdirectory in host/fxr is missing libhostfxr.so/hostfxr.dll, the .NET muxer
+    will pick it as the latest version and crash with code 131 (0x80008083).
+    """
+    try:
+        fxr_dir = os.path.join(dotnet_root, "host", "fxr")
+        if not os.path.isdir(fxr_dir):
+            return
+        lib_name = "hostfxr.dll" if sys.platform == "win32" else "libhostfxr.so"
+        for item in os.listdir(fxr_dir):
+            item_path = os.path.join(fxr_dir, item)
+            if os.path.isdir(item_path):
+                target_lib = os.path.join(item_path, lib_name)
+                if not os.path.isfile(target_lib):
+                    logger.warning(
+                        f"[.NET Auto-Repair] Found corrupt host/fxr directory missing {lib_name}: {item_path}. "
+                        "Removing it to restore .NET functionality."
+                    )
+                    shutil.rmtree(item_path, ignore_errors=True)
+    except Exception as e:
+        logger.debug(f"Error during host/fxr cleanup: {e}")
+
+
 def get_dotnet_path() -> str | None:
     """Get the path to dotnet executable, checking both locations.
 
@@ -103,7 +167,8 @@ def get_dotnet_path() -> str | None:
         try:
             dotnet_exe = str(dotnet_exe)
             dotnet_root = os.path.dirname(dotnet_exe)
-            env = os.environ.copy()
+            _clean_corrupt_hostfxr(dotnet_root)
+            env = get_dotnet_env()
             env.setdefault("DOTNET_ROOT", dotnet_root)
             run_kwargs = {
                 "capture_output": True,
@@ -118,6 +183,14 @@ def get_dotnet_path() -> str | None:
             if "Microsoft.NETCore.App 9." in result.stdout:
                 logger.info(f"Found .NET 9 using {dotnet_exe}")
                 return dotnet_exe
+            elif result.returncode != 0:
+                logger.debug(
+                    f"Probing {dotnet_exe} failed (code {result.returncode}): {result.stderr.strip()}"
+                )
+            else:
+                logger.debug(
+                    f"Probing {dotnet_exe} succeeded but .NET 9 not in runtimes: {result.stdout.strip()}"
+                )
 
         except (OSError, subprocess.SubprocessError) as e:
             logger.debug(f"Error probing {dotnet_exe}: {e}")
@@ -144,7 +217,7 @@ def _install_dotnet_9_linux() -> bool:
 
         # Set DOTNET_ROOT to ensure the install script uses and exposes
         # the correct location
-        env = os.environ.copy()
+        env = get_dotnet_env()
         dotnet_root = _get_user_dotnet_root()
         env["DOTNET_ROOT"] = dotnet_root
 
@@ -200,7 +273,15 @@ def _install_dotnet_9_linux() -> bool:
 
         logger.info("Running .NET 9 installer script...")
         install_result = subprocess.run(
-            [str(install_script_path), "--channel", "9.0", "--runtime", "dotnet"],
+            [
+                str(install_script_path),
+                "--channel",
+                "9.0",
+                "--runtime",
+                "dotnet",
+                "--install-dir",
+                str(dotnet_root),
+            ],
             capture_output=True,
             text=True,
             timeout=300,
@@ -321,6 +402,7 @@ def _install_dotnet_9_windows() -> bool:
 
 def ensure_dotnet_availability() -> bool:
     """Ensure .NET 9 runtime is available, install if missing."""
+    _clean_corrupt_hostfxr(_get_user_dotnet_root())
     if get_dotnet_path():
         return True
 
@@ -457,6 +539,8 @@ DB_RELOCATED_FILES = {
     "update_status_cache.json",
     "update_status_cache.db",
     "workshop_cache.db",
+    "steam_headers.db",
+    "steamdb_builds.db",
 }
 
 
@@ -1343,36 +1427,7 @@ def get_steam_stats_dir() -> Path | None:
     return None
 
 
-def get_dotnet_env():
-    import os
-    from pathlib import Path
-    import sys
-    env = os.environ.copy()
-    
-    # 1. Clean AppImage library overrides that break .NET runtime host
-    env.pop("LD_LIBRARY_PATH", None)
-    env.pop("LD_PRELOAD", None)
-    
-    # 2. Find local or system .dotnet directory
-    local_dotnet = Path.home() / ".dotnet"
-    system_dotnet = Path("/usr/share/dotnet")
-    usr_lib_dotnet = Path("/usr/lib/dotnet")
-    
-    dotnet_dir = None
-    if local_dotnet.exists():
-        dotnet_dir = local_dotnet
-    elif system_dotnet.exists():
-        dotnet_dir = system_dotnet
-    elif usr_lib_dotnet.exists():
-        dotnet_dir = usr_lib_dotnet
-        
-    if dotnet_dir:
-        # Set DOTNET_ROOT (required for .NET to find runtimes)
-        env["DOTNET_ROOT"] = str(dotnet_dir)
-        # Prepend to PATH so dotnet executable is found if needed
-        env["PATH"] = f"{dotnet_dir}:{env.get('PATH', '')}"
-        
-    return env
+
 
 
 from utils.dlc_helpers import get_dlc_only_info, is_dlc_only_mode

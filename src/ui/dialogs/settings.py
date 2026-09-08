@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
@@ -385,17 +386,131 @@ class MorrenusStatsWidget(QWidget):
         self.expiration_label.setText(status_text)
         self.expiration_label.setStyleSheet(f"color: {color}; font-size: 8.5pt; font-weight: 500;")
 
+class WindowsDepotWarningDialog(QDialog):
+    """Warning dialog with a 10-second countdown timer before confirming disabling Windows depots."""
+    def __init__(self, parent=None, accent_color="#C06C84"):
+        super().__init__(parent)
+        self.setWindowTitle("Warning: Disabling Windows Depots")
+        self.setModal(True)
+        self.setFixedWidth(440)
+        self.accent_color = accent_color
+        self.seconds_left = 10
+
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1a1a24;
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+
+        # Title
+        title_lbl = QLabel("⚠️ Disable Windows Depots?")
+        title_lbl.setStyleSheet("font-size: 12pt; font-weight: bold; color: #FFB84D; background: transparent;")
+        layout.addWidget(title_lbl)
+
+        # Warning body
+        msg_lbl = QLabel(
+            "Windows depots are required by the vast majority of games on Steam "
+            "(including games running via Proton on Linux).\n\n"
+            "Disabling Windows depots may cause games to fail to download or show no available files.\n\n"
+            "Are you sure you want to disable Windows depots?"
+        )
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setStyleSheet("font-size: 9.5pt; color: rgba(255, 255, 255, 0.85); line-height: 1.4; background: transparent;")
+        layout.addWidget(msg_lbl)
+
+        layout.addSpacing(6)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setFixedHeight(34)
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 255, 255, 0.10);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.20);
+                border-radius: 6px;
+                font-weight: 500;
+                padding: 0 16px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.16);
+            }
+        """)
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+
+        btn_layout.addStretch()
+
+        self.confirm_btn = QPushButton(f"Confirm ({self.seconds_left}s)")
+        self.confirm_btn.setFixedHeight(34)
+        self.confirm_btn.setEnabled(False)
+        self.confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.confirm_btn.setStyleSheet("""
+            QPushButton {
+                background: #d32f2f;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 6px;
+                font-weight: bold;
+                padding: 0 18px;
+            }
+            QPushButton:hover {
+                background: #f44336;
+            }
+            QPushButton:disabled {
+                background: rgba(211, 47, 47, 0.35);
+                color: rgba(255, 255, 255, 0.45);
+            }
+        """)
+        self.confirm_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.confirm_btn)
+
+        layout.addLayout(btn_layout)
+
+        # 10s Timer
+        self.timer = QTimer(self)
+        self.timer.setInterval(1000)
+        self.timer.timeout.connect(self._on_tick)
+        self.timer.start()
+
+    def _on_tick(self):
+        self.seconds_left -= 1
+        if self.seconds_left > 0:
+            self.confirm_btn.setText(f"Confirm ({self.seconds_left}s)")
+        else:
+            self.timer.stop()
+            self.confirm_btn.setEnabled(True)
+            self.confirm_btn.setText("Confirm")
+
+    def closeEvent(self, event):
+        self.timer.stop()
+        super().closeEvent(event)
+
 
 class SettingsDialog(QDialog):
     """Dialog for configuring application settings."""
 
     assfixer_done_signal = pyqtSignal(tuple)
     assfixer_repair_done_signal = pyqtSignal(tuple)
+    sls_version_check_signal = pyqtSignal(dict)
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None, initial_tab: Optional[str] = None):
         super().__init__(parent)
         self.assfixer_done_signal.connect(self._handle_assfixer_check_done)
         self.assfixer_repair_done_signal.connect(self._handle_assfixer_repair_done)
+        self.sls_version_check_signal.connect(self._handle_sls_version_check_done)
+        self._initial_tab = initial_tab
         self.setWindowTitle("Settings")
         self.setMinimumWidth(525)
         self.setMinimumHeight(650)
@@ -408,6 +523,7 @@ class SettingsDialog(QDialog):
         self.library_mode_checkbox = None
         self.auto_skip_single_choice_checkbox = None
         self.smart_depot_selection_checkbox = None
+        self.use_lancache_checkbox = None
         self.autofetch_manifests_checkbox = None
         self.smart_update_mode_checkbox = None
         self.refined_update_check_checkbox = None
@@ -492,6 +608,12 @@ class SettingsDialog(QDialog):
         if self.parent():
             from ui.dialogs.dialog_raiser import DialogRaiser
             DialogRaiser(self.parent(), self)
+
+        if self._initial_tab and self.tab_widget:
+            for i in range(self.tab_widget.count()):
+                if self.tab_widget.tabText(i).lower() == self._initial_tab.lower():
+                    self.tab_widget.setCurrentIndex(i)
+                    break
 
     def _setup_ui(self) -> None:
         """Initialize the UI layout."""
@@ -671,6 +793,7 @@ class SettingsDialog(QDialog):
         self._create_morrenus_tab()
         # self._create_webui_tab()
         create_sls_tab(self)
+        self._create_health_tab()
         self._create_tools_tab()
         self._create_style_tab()
 
@@ -801,6 +924,16 @@ class SettingsDialog(QDialog):
             "Automatically reuse previously chosen depots on update, unless a brand new depot is added.",
         )
         assella_lay.addWidget(self.smart_depot_selection_checkbox)
+
+        # 2. Check Updates on Boot
+        self.check_updates_on_boot_checkbox = create_checkbox_setting(
+            "Check Updates on Boot",
+            "check_updates_on_boot",
+            True,
+            self,
+            "Automatically check for game updates in the background on startup.",
+        )
+        assella_lay.addWidget(self.check_updates_on_boot_checkbox)
 
         # 2. ISP Bypass & Hubcap Gateway Selector
         isp_group = QVBoxLayout()
@@ -1000,10 +1133,16 @@ class SettingsDialog(QDialog):
                 selection-background-color: %s;
             }
         """ % self.accent_color)
+        self.update_provider_combo.addItem("Auto (Hybrid)", "auto")
         self.update_provider_combo.addItem("SteamPICS", "steampics")
         self.update_provider_combo.addItem("SteamcmdAPI", "steamcmd")
+        self.update_provider_combo.setToolTip(
+            "Auto (Hybrid): Queries SteamCMD and live Steam PICS in tandem with highest-build resolution for maximum speed and zero stale data.\n"
+            "SteamPICS: Live connection directly to Valve CM servers.\n"
+            "SteamcmdAPI: Stateless HTTP requests via CDN."
+        )
 
-        current_provider = self.settings.value("update_check_api_provider", "steampics", type=str)
+        current_provider = self.settings.value("update_check_api_provider", "auto", type=str)
         p_idx = self.update_provider_combo.findData(current_provider)
         if p_idx >= 0:
             self.update_provider_combo.setCurrentIndex(p_idx)
@@ -1044,9 +1183,9 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(assella_card)
 
-        # ── Training Wheels Protocol ──────────────────────────────────────
-        twp_btn = QPushButton("Training Wheels Protocol (Beta)")
-        twp_btn.setToolTip("Launch the first-time setup guide to configure recommended settings for ASSella.")
+        # ── Health & Setup Guide ──────────────────────────────────────
+        twp_btn = QPushButton("Health & Setup Guide")
+        twp_btn.setToolTip("Open the Health tab to check system status, repair config, and configure recommended settings.")
         twp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         twp_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1064,7 +1203,7 @@ class SettingsDialog(QDialog):
                 border-color: {self.accent_color};
             }}
         """)
-        twp_btn.clicked.connect(self._run_training_wheels)
+        twp_btn.clicked.connect(self._open_health_tab)
         layout.addWidget(twp_btn)
 
         layout.addStretch()
@@ -1099,11 +1238,42 @@ class SettingsDialog(QDialog):
         self.tab_widget.addTab(tab, "ASSella")
 
     def _create_downloads_tab(self) -> None:
-        """Create the Downloads settings tab with primary settings."""
+        """Create the Downloads settings tab with General and Hide/unhide depots sub-tabs."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(24)
+        layout.setSpacing(16)
+
+        # Create sub-tabs inside Downloads
+        dl_subtabs = QTabWidget()
+        dl_subtabs.setUsesScrollButtons(True)
+        bg_color = self.settings.value("background_color", "#141416")
+        dl_subtabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: none;
+            }}
+            QTabBar::tab {{
+                background: {bg_color};
+                color: rgba(255, 255, 255, 0.6);
+                padding: 6px 14px;
+                border: none;
+                font-weight: bold;
+                font-size: 9pt;
+            }}
+            QTabBar::tab:selected {{
+                color: {self.accent_color};
+                border-bottom: 2px solid {self.accent_color};
+            }}
+            QTabBar::tab:hover {{
+                color: #FFFFFF;
+            }}
+        """)
+
+        # ── Subtab 1: General ──
+        general_widget = QWidget()
+        gen_layout = QVBoxLayout(general_widget)
+        gen_layout.setContentsMargins(0, 8, 0, 0)
+        gen_layout.setSpacing(16)
 
         # Download Settings Card
         dl_card, dl_layout = self._create_card_frame("Download Settings")
@@ -1121,14 +1291,15 @@ class SettingsDialog(QDialog):
         )
         dl_layout.addWidget(self.library_mode_checkbox)
 
-        self.check_updates_on_boot_checkbox = create_checkbox_setting(
-            "Check Updates on Boot",
-            "check_updates_on_boot",
+        # LanCache Detection Toggle (Moved from ASSella tab)
+        self.use_lancache_checkbox = create_checkbox_setting(
+            "Enable Lan Cache",
+            "use_lancache",
             True,
             self,
-            "Automatically check for game updates in the background on startup."
+            "Use network connected steam game files first",
         )
-        dl_layout.addWidget(self.check_updates_on_boot_checkbox)
+        dl_layout.addWidget(self.use_lancache_checkbox)
 
         dl_layout.addSpacing(8)
 
@@ -1139,7 +1310,7 @@ class SettingsDialog(QDialog):
 
         dl_dir_label = QLabel("Default Download Location:")
         dl_dir_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
-        dl_dir_label.setToolTip("Direct downloads to this folder/library instead of prompting for every game.")
+        dl_dir_label.setToolTip("Direct downloads to this folder/library instead of prompting for every game. Defaults to Ask Every Time.")
         loc_row.addWidget(dl_dir_label, 1)
 
         self.dl_location_combo = QComboBox()
@@ -1166,10 +1337,10 @@ class SettingsDialog(QDialog):
         detected_libs = steam_helpers.get_steam_libraries()
         for lib in detected_libs:
             self.dl_location_combo.addItem(_fmt_path(lib), lib)
-            
+
         self.dl_location_combo.addItem("Custom Folder...", "custom")
-        
-        # Load saved value
+
+        # Load saved value (default is "Ask Every Time" / "")
         current_val = self.settings.value("default_download_directory", "")
         if not current_val:
             self.dl_location_combo.setCurrentIndex(0)
@@ -1180,7 +1351,7 @@ class SettingsDialog(QDialog):
         else:
             self.dl_location_combo.insertItem(1, _fmt_path(current_val), current_val)
             self.dl_location_combo.setCurrentIndex(1)
-            
+
         def on_dl_location_changed(index):
             data = self.dl_location_combo.itemData(index)
             if data == "custom":
@@ -1195,7 +1366,7 @@ class SettingsDialog(QDialog):
                         self.dl_location_combo.setCurrentIndex(insert_pos)
                 else:
                     self.dl_location_combo.setCurrentIndex(0)
-                    
+
         self.dl_location_combo.currentIndexChanged.connect(on_dl_location_changed)
         loc_row.addWidget(self.dl_location_combo)
         dl_layout.addLayout(loc_row)
@@ -1236,22 +1407,165 @@ class SettingsDialog(QDialog):
                 background: white;
             }
         """ % (self.accent_color, self.accent_color))
-        
+
         current_max = self.settings.value("max_downloads", 8, type=int)
         self.max_downloads_slider.setValue(current_max)
-        
+
         self.max_downloads_val_lbl = QLabel(str(current_max))
         self.max_downloads_val_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.8); font-size: 9pt; font-weight: bold; border: none; background: transparent;")
         self.max_downloads_val_lbl.setFixedWidth(30)
         self.max_downloads_slider.valueChanged.connect(lambda val: self.max_downloads_val_lbl.setText(str(val)))
-        
+
         slider_layout.addWidget(self.max_downloads_slider, 1)
         slider_layout.addWidget(self.max_downloads_val_lbl)
-        
-        dl_layout.addLayout(slider_layout)
-        layout.addWidget(dl_card)
-        layout.addStretch()
 
+        dl_layout.addLayout(slider_layout)
+        gen_layout.addWidget(dl_card)
+        gen_layout.addStretch()
+        dl_subtabs.addTab(general_widget, "General")
+
+        # ── Subtab 2: Hide/unhide depots ──
+        hide_widget = QWidget()
+        hide_layout = QVBoxLayout(hide_widget)
+        hide_layout.setContentsMargins(0, 8, 0, 0)
+        hide_layout.setSpacing(16)
+
+        hide_card, hide_card_lay = self._create_card_frame("Depot Visibility Filter")
+
+        desc_lbl = QLabel(
+            "Highlighed buttons are Shown while unhighlited ones are hidden."
+        )
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9pt; border: none; background: transparent;")
+        hide_card_lay.addWidget(desc_lbl)
+        hide_card_lay.addSpacing(6)
+
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        grid.setContentsMargins(4, 4, 4, 4)
+
+        from utils.color_utils import get_best_foreground_color
+        text_on_accent = get_best_foreground_color(self.accent_color, dark_color="#121214", light_color="#FFFFFF")
+
+        def _apply_depot_btn_style(btn: QPushButton, active: bool):
+            if active:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {self.accent_color};
+                        color: {text_on_accent};
+                        border: 1px solid {self.accent_color};
+                        border-radius: 8px;
+                        font-weight: bold;
+                        font-size: 9pt;
+                        padding: 10px 4px;
+                    }}
+                    QPushButton:hover {{
+                        border-color: #FFFFFF;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: rgba(255, 255, 255, 0.05);
+                        color: rgba(255, 255, 255, 0.65);
+                        border: 1px solid rgba(255, 255, 255, 0.12);
+                        border-radius: 8px;
+                        font-weight: 500;
+                        font-size: 9pt;
+                        padding: 10px 4px;
+                    }
+                    QPushButton:hover {
+                        background-color: rgba(255, 255, 255, 0.09);
+                        border-color: rgba(255, 255, 255, 0.22);
+                        color: #FFFFFF;
+                    }
+                """)
+
+        # 3x3 layout configuration:
+        # (tag, label_text, setting_key, default_is_hidden, tooltip)
+        depot_defs = [
+            ("macos", "macOS", "hide_macos_depots", True, "Show or hide macOS platform depots"),
+            ("android", "Android", "hide_android_depots", True, "Show or hide Android platform depots"),
+            ("soundtracks", "Soundtracks / OST", "filter_soundtracks", True, "Show or hide soundtrack & OST depots"),
+            ("windows", "Windows", "hide_windows_depots", False, "Show or hide Windows platform depots"),
+            ("linux", "Linux", "hide_linux_depots", False, "Show or hide Linux platform depots"),
+            ("artbooks", "Artbooks / Extras", "hide_artbooks_depots", True, "Show or hide artbook, wallpaper, and extra content depots"),
+            ("demos", "Demos / Trials", "hide_demos_depots", True, "Show or hide demo and trial depots"),
+            ("tools", "Tools / SDKs", "hide_tools_depots", True, "Show or hide developer tools, dedicated servers, and SDK depots"),
+            ("search_blacklist", "Search Blacklist", "filter_search_blacklist", False, "Filter blacklisted keywords from manifest search"),
+        ]
+
+        platform_tags = ("windows", "linux", "macos", "android")
+        self.depot_toggles = {}
+
+        def make_toggle_handler(t, b):
+            def handler(checked):
+                if not checked and t in platform_tags:
+                    # Sanity check: Ensure at least one platform depot remains enabled
+                    other_active = any(
+                        self.depot_toggles[pt][0].isChecked()
+                        for pt in platform_tags
+                        if pt != t and pt in self.depot_toggles
+                    )
+                    if not other_active:
+                        from PyQt6.QtWidgets import QMessageBox
+                        QMessageBox.warning(
+                            self,
+                            "Platform Required",
+                            "At least one platform depot type (Windows, Linux, macOS, or Android) must remain enabled so game files can be detected."
+                        )
+                        b.blockSignals(True)
+                        b.setChecked(True)
+                        b.blockSignals(False)
+                        _apply_depot_btn_style(b, True)
+                        return
+
+                    # Confirmation dialog with 10-second countdown when disabling Windows depots
+                    if t == "windows":
+                        dlg = WindowsDepotWarningDialog(self, accent_color=self.accent_color)
+                        if dlg.exec() != QDialog.DialogCode.Accepted:
+                            b.blockSignals(True)
+                            b.setChecked(True)
+                            b.blockSignals(False)
+                            _apply_depot_btn_style(b, True)
+                            return
+
+                _apply_depot_btn_style(b, checked)
+            return handler
+
+        for idx, (tag, label_text, skey, def_hidden, tip) in enumerate(depot_defs):
+            r = idx // 3
+            c = idx % 3
+
+            # Setting is 'hide_*' or 'filter_*', so if hidden is True, active/shown is False
+            is_hidden = self.settings.value(skey, def_hidden, type=bool)
+            is_shown = not is_hidden
+
+            btn = QPushButton(label_text)
+            btn.setCheckable(True)
+            btn.setChecked(is_shown)
+            btn.setFixedHeight(44)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(tip)
+            _apply_depot_btn_style(btn, is_shown)
+
+            btn.toggled.connect(make_toggle_handler(tag, btn))
+            grid.addWidget(btn, r, c)
+            self.depot_toggles[tag] = (btn, skey)
+
+        # Sanity check on load: Ensure at least one platform is enabled by default
+        if not any(self.depot_toggles[pt][0].isChecked() for pt in platform_tags if pt in self.depot_toggles):
+            if "windows" in self.depot_toggles:
+                win_btn = self.depot_toggles["windows"][0]
+                win_btn.setChecked(True)
+                _apply_depot_btn_style(win_btn, True)
+
+        hide_card_lay.addLayout(grid)
+        hide_layout.addWidget(hide_card)
+        hide_layout.addStretch()
+        dl_subtabs.addTab(hide_widget, "Hide/unhide depots")
+
+        layout.addWidget(dl_subtabs)
         self.tab_widget.addTab(tab, "Downloads")
 
     def _create_advanced_tab(self) -> None:
@@ -1273,46 +1587,6 @@ class SettingsDialog(QDialog):
             show_description=False,
         )
         adv_layout.addWidget(self.auto_skip_single_choice_checkbox)
-
-        self.hide_macos_depots_checkbox = create_checkbox_setting(
-            "Hide macOS depots in depot selection",
-            "hide_macos_depots",
-            True,
-            self,
-            "Hide macOS platform depots to reduce clutter.",
-            show_description=False,
-        )
-        adv_layout.addWidget(self.hide_macos_depots_checkbox)
-
-        self.hide_android_depots_checkbox = create_checkbox_setting(
-            "Hide Android depots in depot selection",
-            "hide_android_depots",
-            True,
-            self,
-            "Hide Android platform depots to reduce clutter.",
-            show_description=False,
-        )
-        adv_layout.addWidget(self.hide_android_depots_checkbox)
-
-        self.filter_soundtracks_checkbox = create_checkbox_setting(
-            "Filter Soundtracks and OSTs from Depots",
-            "filter_soundtracks",
-            True,
-            self,
-            "Filter out soundtrack and OST depots when downloading game files.",
-            show_description=False,
-        )
-        adv_layout.addWidget(self.filter_soundtracks_checkbox)
-
-        self.filter_search_blacklist_checkbox = create_checkbox_setting(
-            "Filter Blacklisted Keywords in Search",
-            "filter_search_blacklist",
-            False,
-            self,
-            "Hide soundtracks, artbooks, tools, and demos from manifest search results.",
-            show_description=False,
-        )
-        adv_layout.addWidget(self.filter_search_blacklist_checkbox)
 
         layout.addWidget(adv_card)
 
@@ -1540,77 +1814,98 @@ class SettingsDialog(QDialog):
 
 
 
-    def _create_tools_tab(self) -> None:
-        """Create the Tools settings tab."""
+    def _create_health_tab(self) -> None:
+        """Create the consolidated Health settings tab combining SLS status, ASSfixer, SLS inheritance, and TWP."""
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        self.health_tab = tab
+
+        outer_layout = QVBoxLayout(tab)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(24)
+        layout.setSpacing(16)
 
-        # Tools Card
-        tools_card, tools_layout = self._create_card_frame("Tools")
+        # ── 1. SLSsteam & System Health ────────────────────────────────────
+        sls_card, sls_layout = self._create_card_frame("System & SLSsteam Status")
 
-        tools_desc = QLabel("Run Steam achievement configurator or Steamless DRM removal utilities.")
-        tools_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
-        tools_desc.setWordWrap(True)
-        tools_layout.addWidget(tools_desc)
+        # Binary Status Row
+        row_bin = QHBoxLayout()
+        bin_lbl = QLabel("SLSsteam Binary")
+        bin_lbl.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.85); font-weight: 500;")
+        row_bin.addWidget(bin_lbl)
+        row_bin.addStretch()
 
-        tools_btn_row = QHBoxLayout()
-        tools_btn_row.setContentsMargins(0, 4, 0, 4)
-        tools_btn_row.setSpacing(10)
+        self.health_sls_bin_btn = QPushButton("Checking...")
+        self.health_sls_bin_btn.setEnabled(False)
+        self._style_health_pill(self.health_sls_bin_btn, "neutral")
+        row_bin.addWidget(self.health_sls_bin_btn)
 
-        tool_btn_style = """
-            QPushButton {
+        self.health_sls_ver_btn = QPushButton("Checking...")
+        self.health_sls_ver_btn.setEnabled(False)
+        self._style_health_pill(self.health_sls_ver_btn, "neutral")
+        row_bin.addWidget(self.health_sls_ver_btn)
+        sls_layout.addLayout(row_bin)
+
+        self.health_sls_bin_hint = QLabel("")
+        self.health_sls_bin_hint.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8pt; margin-left: 2px;")
+        self.health_sls_bin_hint.setWordWrap(True)
+        sls_layout.addWidget(self.health_sls_bin_hint)
+
+        # Process Status Row
+        row_proc = QHBoxLayout()
+        proc_lbl = QLabel("SLSsteam Process")
+        proc_lbl.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.85); font-weight: 500;")
+        row_proc.addWidget(proc_lbl)
+        row_proc.addStretch()
+
+        self.health_sls_proc_btn = QPushButton("Checking...")
+        self.health_sls_proc_btn.setEnabled(False)
+        self._style_health_pill(self.health_sls_proc_btn, "neutral")
+        row_proc.addWidget(self.health_sls_proc_btn)
+        sls_layout.addLayout(row_proc)
+
+        self.health_sls_proc_hint = QLabel("")
+        self.health_sls_proc_hint.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8pt; margin-left: 2px;")
+        self.health_sls_proc_hint.setWordWrap(True)
+        sls_layout.addWidget(self.health_sls_proc_hint)
+
+        # Refresh row
+        refresh_row = QHBoxLayout()
+        self.health_refresh_btn = QPushButton("Refresh Status")
+        self.health_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.health_refresh_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: rgba(255, 255, 255, 0.08);
                 border: 1px solid rgba(255, 255, 255, 0.18);
-                border-radius: 8px;
+                border-radius: 6px;
                 color: #FFFFFF;
-                padding: 7px 14px;
-                font-size: 9.5pt;
+                padding: 5px 14px;
+                font-size: 8.5pt;
                 font-weight: 500;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: rgba(255, 255, 255, 0.16);
-                border-color: rgba(255, 255, 255, 0.32);
-            }
-            QPushButton:disabled {
-                background-color: rgba(255, 255, 255, 0.03) !important;
-                border: 1px solid rgba(255, 255, 255, 0.08) !important;
-                color: rgba(255, 255, 255, 0.3) !important;
-            }
-        """
+                border-color: {self.accent_color};
+            }}
+        """)
+        self.health_refresh_btn.clicked.connect(self._refresh_health_tab_status)
+        refresh_row.addWidget(self.health_refresh_btn)
+        refresh_row.addStretch()
+        sls_layout.addLayout(refresh_row)
 
-        self.configure_achievements_btn = QPushButton("Achievements")
-        self.configure_achievements_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.configure_achievements_btn.setStyleSheet(tool_btn_style)
-        self.configure_achievements_btn.setToolTip("Perform one-time setup and authenticate Steam for achievements.")
-        self.configure_achievements_btn.clicked.connect(self.run_schema_grabber_manually)
-        tools_btn_row.addWidget(self.configure_achievements_btn)
+        layout.addWidget(sls_card)
 
-        self.steamless_py_btn = QPushButton("Steamless (Python)")
-        self.steamless_py_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.steamless_py_btn.setStyleSheet(tool_btn_style)
-        self.steamless_py_btn.setToolTip("Run Steamless AIO (Python) manually on a game .exe.")
-        self.steamless_py_btn.clicked.connect(self.run_steamless_aio_manually)
-        tools_btn_row.addWidget(self.steamless_py_btn)
-
-        self.steamless_legacy_btn = QPushButton("Steamless (.NET CLI)")
-        self.steamless_legacy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.steamless_legacy_btn.setStyleSheet(tool_btn_style)
-        self.steamless_legacy_btn.setToolTip("Run Steamless (.NET 9 CLI) manually on a game .exe.")
-        self.steamless_legacy_btn.clicked.connect(self.run_steamless_manually)
-        tools_btn_row.addWidget(self.steamless_legacy_btn)
-
-        tools_btn_row.addStretch()
-        tools_layout.addLayout(tools_btn_row)
-
-        layout.addWidget(tools_card)
-
-        # ASSfixer Card (Linux/Steam Deck)
+        # ── 2. ASSfixer (Linux/Steam Deck) ────────────────────────────────
         if sys.platform == "linux":
             assfixer_card, assfixer_layout = self._create_card_frame("ASSfixer")
 
-            assfixer_desc = QLabel("Validate, repair and update slsconfig")
+            assfixer_desc = QLabel("Validate and synchronize ~/.config/SLSsteam/config.yaml against upstream template.")
             assfixer_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
             assfixer_desc.setWordWrap(True)
             assfixer_layout.addWidget(assfixer_desc)
@@ -1676,11 +1971,11 @@ class SettingsDialog(QDialog):
 
             layout.addWidget(assfixer_card)
 
-        # SLS Inheritance Card (Testing)
+        # ── 3. SLS Inheritance Card ───────────────────────────────────────
         if sys.platform == "linux":
-            sls_inh_card, sls_inh_layout = self._create_card_frame("SLS inheritance (testing)")
+            sls_inh_card, sls_inh_layout = self._create_card_frame("SLS Inheritance")
 
-            sls_inh_desc = QLabel("orphan configs and external installtion manger (beta testing)")
+            sls_inh_desc = QLabel("Manage orphan configs, external installations, and ownership mapping.")
             sls_inh_desc.setStyleSheet(
                 "color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;"
             )
@@ -1714,6 +2009,150 @@ class SettingsDialog(QDialog):
             sls_inh_layout.addLayout(sls_inh_row)
 
             layout.addWidget(sls_inh_card)
+
+        # ── 4. Training Wheels Protocol (Recommended Settings) ─────────────
+        twp_card, twp_layout = self._create_card_frame("Training Wheels Protocol")
+
+        twp_desc = QLabel("Essential settings recommended for the optimal ASSella workflow.")
+        twp_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+        twp_desc.setWordWrap(True)
+        twp_layout.addWidget(twp_desc)
+
+        self.twp_chk_smart = QCheckBox("Smart Depot Selection (Reuse previously chosen depots on update)")
+        self.twp_chk_smart.setChecked(self.settings.value("smart_depot_selection", True, type=bool))
+        twp_layout.addWidget(self.twp_chk_smart)
+
+        self.twp_chk_gateway = QCheckBox("Hubcap Gateway: Auto (Smart fallback routing to bypass throttling)")
+        self.twp_chk_gateway.setChecked(self.settings.value("isp_bypass_mode", "auto", type=str) == "auto")
+        twp_layout.addWidget(self.twp_chk_gateway)
+
+        self.twp_chk_sls_api = QCheckBox("SLSsteam Native API (Native ACF generation and automated registration)")
+        self.twp_chk_sls_api.setChecked(self.settings.value("experimental_acf_independent", False, type=bool))
+        twp_layout.addWidget(self.twp_chk_sls_api)
+
+        self.twp_chk_achievements = QCheckBox("Disable Legacy Achievement Generation (Accelerate manifest downloads)")
+        self.twp_chk_achievements.setChecked(not self.settings.value("generate_achievements", True, type=bool))
+        twp_layout.addWidget(self.twp_chk_achievements)
+
+        self.twp_chk_macos = QCheckBox("Hide macOS & Android Depots (Filter platform clutter from queues)")
+        self.twp_chk_macos.setChecked(self.settings.value("hide_macos_depots", False, type=bool))
+        twp_layout.addWidget(self.twp_chk_macos)
+
+        twp_btn_row = QHBoxLayout()
+        twp_btn_row.setContentsMargins(0, 8, 0, 4)
+        twp_btn_row.setSpacing(10)
+
+        self.health_apply_rec_btn = QPushButton("Apply Recommended Settings")
+        self.health_apply_rec_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.health_apply_rec_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.accent_color};
+                color: #000000;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-size: 9.5pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #FFFFFF;
+            }}
+        """)
+        self.health_apply_rec_btn.clicked.connect(self._apply_health_recommended_settings)
+        twp_btn_row.addWidget(self.health_apply_rec_btn)
+
+        self.health_launch_wizard_btn = QPushButton("Open Setup Wizard")
+        self.health_launch_wizard_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.health_launch_wizard_btn.setStyleSheet("""
+            QPushButton {{
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 8px;
+                color: #FFFFFF;
+                padding: 8px 16px;
+                font-size: 9.5pt;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.16);
+                border-color: rgba(255, 255, 255, 0.32);
+            }}
+        """)
+        self.health_launch_wizard_btn.clicked.connect(self._run_training_wheels)
+        twp_btn_row.addWidget(self.health_launch_wizard_btn)
+
+        twp_btn_row.addStretch()
+        twp_layout.addLayout(twp_btn_row)
+
+        layout.addWidget(twp_card)
+
+        layout.addStretch()
+        scroll.setWidget(container)
+        outer_layout.addWidget(scroll)
+
+        self.tab_widget.addTab(tab, "Health")
+        QTimer.singleShot(50, self._refresh_health_tab_status)
+
+    def _create_tools_tab(self) -> None:
+        """Create the Tools settings tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(24)
+
+        # Tools Card
+        tools_card, tools_layout = self._create_card_frame("Tools")
+
+        tools_btn_row = QHBoxLayout()
+        tools_btn_row.setContentsMargins(0, 4, 0, 4)
+        tools_btn_row.setSpacing(10)
+
+        tool_btn_style = """
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 8px;
+                color: #FFFFFF;
+                padding: 7px 14px;
+                font-size: 9.5pt;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.16);
+                border-color: rgba(255, 255, 255, 0.32);
+            }
+            QPushButton:disabled {
+                background-color: rgba(255, 255, 255, 0.03) !important;
+                border: 1px solid rgba(255, 255, 255, 0.08) !important;
+                color: rgba(255, 255, 255, 0.3) !important;
+            }
+        """
+
+        self.configure_achievements_btn = QPushButton("Achievements")
+        self.configure_achievements_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.configure_achievements_btn.setStyleSheet(tool_btn_style)
+        self.configure_achievements_btn.setToolTip("Perform one-time setup and authenticate Steam for achievements.")
+        self.configure_achievements_btn.clicked.connect(self.run_schema_grabber_manually)
+        tools_btn_row.addWidget(self.configure_achievements_btn)
+
+        self.steamless_py_btn = QPushButton("Steamless (Python)")
+        self.steamless_py_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.steamless_py_btn.setStyleSheet(tool_btn_style)
+        self.steamless_py_btn.setToolTip("Run Steamless AIO (Python) manually on a game .exe.")
+        self.steamless_py_btn.clicked.connect(self.run_steamless_aio_manually)
+        tools_btn_row.addWidget(self.steamless_py_btn)
+
+        self.steamless_legacy_btn = QPushButton("Steamless (.NET CLI)")
+        self.steamless_legacy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.steamless_legacy_btn.setStyleSheet(tool_btn_style)
+        self.steamless_legacy_btn.setToolTip("Run Steamless (.NET 9 CLI) manually on a game .exe.")
+        self.steamless_legacy_btn.clicked.connect(self.run_steamless_manually)
+        tools_btn_row.addWidget(self.steamless_legacy_btn)
+
+        tools_btn_row.addStretch()
+        tools_layout.addLayout(tools_btn_row)
+
+        layout.addWidget(tools_card)
 
         # Windows Registry Card
         if sys.platform == "win32":
@@ -1795,6 +2234,157 @@ class SettingsDialog(QDialog):
         self.tab_widget.addTab(tab, "Tools")
 
 
+
+    # ── Health Tab Helpers ───────────────────────────────────────────────
+
+    def _open_health_tab(self) -> None:
+        """Switch view directly to the Health tab."""
+        if hasattr(self, "health_tab") and self.health_tab and self.tab_widget:
+            self.tab_widget.setCurrentWidget(self.health_tab)
+
+    def _style_health_pill(self, btn: QPushButton, state: str = "neutral", text: Optional[str] = None) -> None:
+        if text:
+            btn.setText(text)
+        if state == "ok":
+            bg = "rgba(158, 206, 106, 0.15)"
+            color = "#9ece6a"
+            border = "#9ece6a"
+        elif state == "warn":
+            bg = "rgba(224, 175, 104, 0.15)"
+            color = "#e0af68"
+            border = "#e0af68"
+        elif state == "error":
+            bg = "rgba(247, 118, 142, 0.15)"
+            color = "#f7768e"
+            border = "#f7768e"
+        else:
+            bg = "rgba(255, 255, 255, 0.05)"
+            color = "rgba(255, 255, 255, 0.6)"
+            border = "rgba(255, 255, 255, 0.15)"
+
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {bg};
+                color: {color};
+                border: 1px solid {border};
+                border-radius: 6px;
+                padding: 4px 12px;
+                font-size: 8.5pt;
+                font-weight: 600;
+            }}
+            QPushButton:disabled {{
+                background: {bg};
+                color: {color};
+                border: 1px solid {border};
+            }}
+        """)
+
+    def _refresh_health_tab_status(self) -> None:
+        """Refresh binary, process, and version freshness in the Health tab."""
+        if not hasattr(self, "health_sls_bin_btn") or not self.health_sls_bin_btn:
+            return
+
+        from ui.dialogs.settings_sls import get_sls_paths
+        from utils.slssteam_integration import is_slssteam_process_active, is_steam_process_running
+
+        paths = get_sls_paths()
+        installed = paths.get("detected", False)
+        so_path = paths.get("so_path", "")
+        steam_running = is_steam_process_running()
+        sls_active = is_slssteam_process_active()
+
+        # Binary Detection
+        if installed:
+            self._style_health_pill(self.health_sls_bin_btn, "ok", "Detected")
+            self.health_sls_bin_hint.setText(f"Binary path: {so_path}")
+        else:
+            self._style_health_pill(self.health_sls_bin_btn, "error", "Not Detected")
+            self.health_sls_bin_hint.setText("SLSsteam binary not found. Install it via Settings → SLS.")
+
+        # Process Check
+        if not steam_running:
+            self._style_health_pill(self.health_sls_proc_btn, "warn", "Steam Not Running")
+            self.health_sls_proc_hint.setText("Launch Steam first. SLSsteam only injects into the Steam process.")
+        elif sls_active:
+            self._style_health_pill(self.health_sls_proc_btn, "ok", "Active (Injected)")
+            self.health_sls_proc_hint.setText("Steam is running and SLSsteam is actively loaded in memory.")
+        else:
+            self._style_health_pill(self.health_sls_proc_btn, "error", "Not Injected" if installed else "Not Installed")
+            if installed:
+                self.health_sls_proc_hint.setText("Steam is running but SLSsteam is not loaded. Restart Steam or verify your setup.")
+            else:
+                self.health_sls_proc_hint.setText("SLSsteam is not installed.")
+
+        # Version Check (Async)
+        self._style_health_pill(self.health_sls_ver_btn, "neutral", "Checking Version...")
+
+        def _ver_worker():
+            try:
+                from utils.slssteam_integration import check_slssteam_binary_is_latest
+                res = check_slssteam_binary_is_latest()
+            except Exception as e:
+                res = {"status": "error", "error": str(e)}
+            self.sls_version_check_signal.emit(res)
+
+        import threading
+        threading.Thread(target=_ver_worker, daemon=True).start()
+
+    @pyqtSlot(dict)
+    def _handle_sls_version_check_done(self, result: dict) -> None:
+        if not hasattr(self, "health_sls_ver_btn") or not self.health_sls_ver_btn:
+            return
+
+        status = result.get("status", "error")
+        tag = result.get("release_tag") or "unknown"
+        if status == "up_to_date":
+            self._style_health_pill(self.health_sls_ver_btn, "ok", f"Up to Date ({tag})")
+        elif status == "outdated":
+            self._style_health_pill(self.health_sls_ver_btn, "warn", f"Outdated (Latest: {tag})")
+        elif status == "no_local":
+            self._style_health_pill(self.health_sls_ver_btn, "neutral", "Not Installed")
+        else:
+            self._style_health_pill(self.health_sls_ver_btn, "neutral", "Version Unknown")
+
+    def _apply_health_recommended_settings(self) -> None:
+        """Apply recommended workflow settings from Health tab to QSettings and other UI controls."""
+        self.settings.setValue("smart_depot_selection", self.twp_chk_smart.isChecked())
+        if self.twp_chk_gateway.isChecked():
+            self.settings.setValue("isp_bypass_mode", "auto")
+            self.settings.setValue("isp_bypass_hubcap", True)
+
+        try:
+            from ui.dialogs.settings_sls import get_sls_paths
+            sls_detected = get_sls_paths().get("detected", False)
+        except Exception:
+            sls_detected = False
+
+        if self.twp_chk_sls_api.isChecked() and sls_detected:
+            self.settings.setValue("experimental_acf_independent", True)
+            self.settings.setValue("sls_config_management", True)
+
+        self.settings.setValue("generate_achievements", not self.twp_chk_achievements.isChecked())
+        self.settings.setValue("hide_macos_depots", self.twp_chk_macos.isChecked())
+        self.settings.setValue("hide_android_depots", self.twp_chk_macos.isChecked())
+        self.settings.setValue("assella_twp_seen", True)
+        self.settings.sync()
+
+        # Synchronize other tabs if loaded
+        if hasattr(self, "smart_depot_selection_checkbox") and self.smart_depot_selection_checkbox:
+            self.smart_depot_selection_checkbox.setChecked(self.twp_chk_smart.isChecked())
+        if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo and self.twp_chk_gateway.isChecked():
+            idx = self.isp_gateway_combo.findData("auto")
+            if idx >= 0:
+                self.isp_gateway_combo.setCurrentIndex(idx)
+        if hasattr(self, "experimental_acf_independent_checkbox") and self.experimental_acf_independent_checkbox:
+            self.experimental_acf_independent_checkbox.setChecked(self.twp_chk_sls_api.isChecked() and sls_detected)
+        if hasattr(self, "achievements_checkbox") and self.achievements_checkbox:
+            self.achievements_checkbox.setChecked(not self.twp_chk_achievements.isChecked())
+        if hasattr(self, "hide_macos_depots_checkbox") and self.hide_macos_depots_checkbox:
+            self.hide_macos_depots_checkbox.setChecked(self.twp_chk_macos.isChecked())
+        if hasattr(self, "hide_android_depots_checkbox") and self.hide_android_depots_checkbox:
+            self.hide_android_depots_checkbox.setChecked(self.twp_chk_macos.isChecked())
+
+        QMessageBox.information(self, "Settings Applied", "Recommended workflow settings applied successfully!")
 
     # ── ASSella Manager helpers ───────────────────────────────────────────
 
@@ -2646,6 +3236,11 @@ class SettingsDialog(QDialog):
             "smart_depot_selection",
             self.smart_depot_selection_checkbox.isChecked(),
         )
+        if self.use_lancache_checkbox is not None:
+            self.settings.setValue(
+                "use_lancache",
+                self.use_lancache_checkbox.isChecked(),
+            )
         self.settings.setValue(
             "prompt_steam_restart",
             self.prompt_steam_restart_checkbox.isChecked(),
@@ -2756,7 +3351,7 @@ class SettingsDialog(QDialog):
         if hasattr(self, "update_provider_combo") and self.update_provider_combo:
             self.settings.setValue(
                 "update_check_api_provider",
-                self.update_provider_combo.currentData() or "steampics"
+                self.update_provider_combo.currentData() or "auto"
             )
 
         val = 8
@@ -2777,12 +3372,20 @@ class SettingsDialog(QDialog):
                 self.settings.setValue("max_old_manifests", self.max_old_manifests_spinbox.value())
             except RuntimeError:
                 pass
-        if hasattr(self, "hide_macos_depots_checkbox"):
+        if hasattr(self, "depot_toggles"):
+            for tag, (btn, skey) in self.depot_toggles.items():
+                try:
+                    # Button checked means SHOWN (unhidden) -> is_hidden is False
+                    is_hidden = not btn.isChecked()
+                    self.settings.setValue(skey, is_hidden)
+                except Exception as e:
+                    logger.warning(f"Error saving depot toggle {skey}: {e}")
+        if hasattr(self, "hide_macos_depots_checkbox") and self.hide_macos_depots_checkbox is not None:
             try:
                 self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
             except RuntimeError:
                 pass
-        if hasattr(self, "hide_android_depots_checkbox"):
+        if hasattr(self, "hide_android_depots_checkbox") and self.hide_android_depots_checkbox is not None:
             try:
                 self.settings.setValue("hide_android_depots", self.hide_android_depots_checkbox.isChecked())
             except RuntimeError:

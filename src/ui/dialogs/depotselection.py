@@ -246,6 +246,8 @@ class NumericTableWidgetItem(QTableWidgetItem):
 
 
 class DepotSelectionDialog(QDialog):
+    _depots_enriched_signal = pyqtSignal(dict)
+
     def __init__(
         self,
         app_id,
@@ -257,8 +259,9 @@ class DepotSelectionDialog(QDialog):
         show_storage=True,
     ):
         super().__init__(parent)
+        self._depots_enriched_signal.connect(self._on_depots_enriched)
         self.setWindowTitle("Select Depots to Download")
-        self.depots = depots
+        self.depots = depots or {}
         self.app_id = app_id
         self.game_name = game_name
         self.header_url = header_url
@@ -273,16 +276,34 @@ class DepotSelectionDialog(QDialog):
 
         self.anchor_row = -1
 
+        # Pre-apply any cached enrichments from database
+        try:
+            from managers.db_manager import DatabaseManager
+            db = DatabaseManager()
+            cached_enrichments = db.get_depot_enrichments(str(self.app_id))
+            if cached_enrichments:
+                self._apply_depot_enrichments(cached_enrichments)
+        except Exception as e:
+            logger.debug(f"[DepotSelection] Could not load cached enrichments: {e}")
+
         # Check if we should hide macOS & Android depots
         try:
             from utils.settings import get_settings
             settings = get_settings()
             self._hide_macos = settings.value("hide_macos_depots", True, type=bool)
             self._hide_android = settings.value("hide_android_depots", True, type=bool)
+            self._filter_soundtracks = settings.value("filter_soundtracks", True, type=bool)
+            self._hide_artbooks = settings.value("hide_artbooks_depots", True, type=bool)
+            self._hide_demos = settings.value("hide_demos_depots", True, type=bool)
+            self._hide_tools = settings.value("hide_tools_depots", True, type=bool)
             self.accent_color = settings.value("accent_color", "#C06C84", type=str)
         except Exception:
             self._hide_macos = True
             self._hide_android = True
+            self._filter_soundtracks = True
+            self._hide_artbooks = True
+            self._hide_demos = True
+            self._hide_tools = True
             self.accent_color = "#C06C84"
 
         # Dynamically generate solid dark container color for selection background
@@ -487,6 +508,38 @@ class DepotSelectionDialog(QDialog):
                 logger.debug(f"Hiding Android depot {depot_id}")
                 continue
 
+            # Filter out Soundtrack/OST depots if setting is enabled
+            if getattr(self, "_filter_soundtracks", True):
+                desc_l = (depot_data.get("desc") or "").lower()
+                name_l = (depot_data.get("name") or "").lower()
+                if "soundtrack" in desc_l or "soundtrack" in name_l or "[ost]" in desc_l or " ost" in desc_l:
+                    logger.debug(f"Hiding soundtrack depot {depot_id}")
+                    continue
+
+            # Filter out Artbooks/Extras if setting is enabled
+            if getattr(self, "_hide_artbooks", True):
+                desc_l = (depot_data.get("desc") or "").lower()
+                name_l = (depot_data.get("name") or "").lower()
+                if "artbook" in desc_l or "artbook" in name_l or "wallpaper" in desc_l or "extra content" in desc_l:
+                    logger.debug(f"Hiding artbook/extras depot {depot_id}")
+                    continue
+
+            # Filter out Demos/Trials if setting is enabled
+            if getattr(self, "_hide_demos", True):
+                desc_l = (depot_data.get("desc") or "").lower()
+                name_l = (depot_data.get("name") or "").lower()
+                if "demo" in desc_l or "trial" in desc_l or "playtest" in desc_l:
+                    logger.debug(f"Hiding demo depot {depot_id}")
+                    continue
+
+            # Filter out Tools/SDKs if setting is enabled
+            if getattr(self, "_hide_tools", True):
+                desc_l = (depot_data.get("desc") or "").lower()
+                name_l = (depot_data.get("name") or "").lower()
+                if "dedicated server" in desc_l or "editor" in desc_l or "sdk" in desc_l or " tool" in desc_l:
+                    logger.debug(f"Hiding tool/sdk depot {depot_id}")
+                    continue
+
             original_desc = depot_data["desc"]
 
             original_desc = re.sub(
@@ -520,13 +573,19 @@ class DepotSelectionDialog(QDialog):
                 else:
                     final_desc = base_desc
 
+            is_dlc = depot_data.get("is_dlc", False) or "[dlc]" in original_desc.lower()
+
             # Clean DLC tags from final_desc
             final_desc = re.sub(r"^DLC\s+\d+\s*-?\s*", "", final_desc, flags=re.IGNORECASE).strip()
+            if not final_desc and depot_data.get("name"):
+                final_desc = depot_data["name"]
 
-            # Generate dynamic OS tags
+            # Generate dynamic OS / DLC tags
             oslist = (depot_data.get("oslist") or "").lower()
             os_tag = ""
-            if oslist == "windows":
+            if is_dlc:
+                os_tag = "[DLC]"
+            elif oslist == "windows":
                 os_tag = "[Windows]"
             elif oslist == "linux":
                 os_tag = "[Linux]"
@@ -553,6 +612,8 @@ class DepotSelectionDialog(QDialog):
                     size_str = format_size(size_bytes)
                 except (ValueError, TypeError):
                     size_str = "0.00 B"
+            elif depot_data.get("size_str"):
+                size_str = depot_data["size_str"]
 
             # Use NumericTableWidgetItem for proper numeric sorting
             id_val = int(depot_id) if depot_id.isdigit() else 0
@@ -693,6 +754,106 @@ class DepotSelectionDialog(QDialog):
 
         layout.addLayout(content_widget)
 
+        # Check if any depot needs enrichment (generic description or missing size)
+        needs_enrichment = any(
+            (not d_data.get("size") and not d_data.get("size_str"))
+            or re.match(r"^(?:\[.*?\]\s*)?(?:Depot|DLC)\s+\d+$", str(d_data.get("desc") or "").strip(), re.IGNORECASE)
+            or not str(d_data.get("desc") or "").strip()
+            for d_data in self.depots.values()
+            if isinstance(d_data, dict)
+        )
+        if needs_enrichment and self.app_id and str(self.app_id) not in ("0", "N/A", "unknown"):
+            self._start_enrichment_async()
+
+    def _apply_depot_enrichments(self, enrichments: dict):
+        """Merges enriched metadata into self.depots dictionary."""
+        if not enrichments or not self.depots:
+            return
+        for did, info in enrichments.items():
+            if did in self.depots and isinstance(self.depots[did], dict):
+                d_data = self.depots[did]
+                curr_desc = str(d_data.get("desc") or "").strip()
+                is_generic = (
+                    not curr_desc
+                    or bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", curr_desc, re.IGNORECASE))
+                    or bool(re.match(r"^(?:\[.*?\]\s*)?DLC \d+$", curr_desc, re.IGNORECASE))
+                )
+                if is_generic and info.get("name"):
+                    if info.get("is_dlc"):
+                        d_data["desc"] = f"[DLC] {info['name']}"
+                    else:
+                        d_data["desc"] = info["name"]
+                    d_data["name"] = info["name"]
+
+                if (not d_data.get("size") or d_data.get("size") == 0) and info.get("size_bytes"):
+                    d_data["size"] = info["size_bytes"]
+                if info.get("size_str"):
+                    d_data["size_str"] = info["size_str"]
+                if info.get("oslist") and not d_data.get("oslist"):
+                    d_data["oslist"] = info["oslist"]
+                if info.get("is_dlc"):
+                    d_data["is_dlc"] = True
+
+    def _start_enrichment_async(self):
+        """Asynchronously queries SteamDB / Store API to enrich any generic or sizeless depots."""
+        import threading
+
+        def _worker():
+            try:
+                from core.steamdb_scraper import ByparrManager
+                if not ByparrManager.is_running():
+                    return
+                from core.steamdb_scraper import SteamDBScraper
+                from managers.db_manager import DatabaseManager
+                scraper = SteamDBScraper()
+                depots_info = scraper.get_app_depots(str(self.app_id))
+                if depots_info:
+                    db = DatabaseManager()
+                    db.save_depot_enrichments(str(self.app_id), depots_info)
+                    self._depots_enriched_signal.emit(depots_info)
+            except Exception as e:
+                logger.debug(f"[DepotSelection] Background depot enrichment failed: {e}")
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+    def _on_depots_enriched(self, depots_info: dict):
+        """Live-updates the table widget with enriched names, DLC tags, and sizes."""
+        if not depots_info or not hasattr(self, "table_widget"):
+            return
+
+        self._apply_depot_enrichments(depots_info)
+
+        for row in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(row, 0)
+            if not id_item:
+                continue
+            depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
+            if depot_id in depots_info:
+                info = depots_info[depot_id]
+                config_item = self.table_widget.item(row, 1)
+                size_item = self.table_widget.item(row, 2)
+
+                # Check if current config text is generic or needs enrichment
+                curr_config = config_item.text().strip() if config_item else ""
+                clean_curr = re.sub(r"^\[.*?\]\s*", "", curr_config).strip()
+                if not clean_curr or re.match(r"^(?:Depot|DLC)\s+\d+$", clean_curr, re.IGNORECASE):
+                    name = info.get("name", "")
+                    if name:
+                        tag = "[DLC]" if info.get("is_dlc") else (f"[{info['oslist'].upper()}]" if info.get("oslist") else "")
+                        new_text = f"{tag}  {name}".strip() if tag else name
+                        if config_item:
+                            config_item.setText(new_text)
+
+                # Update size if missing
+                curr_size = size_item.text().strip() if size_item else ""
+                if not curr_size or curr_size in ("0.00 B", "No size", ""):
+                    if info.get("size_str") and info.get("size_str") != "No size":
+                        if size_item:
+                            size_item.setText(info["size_str"])
+                            if hasattr(size_item, "sort_value"):
+                                size_item.sort_value = int(info.get("size_bytes") or 0)
+
     def _setup_storage_buttons(self, layout: QHBoxLayout) -> None:
         import shutil
         from core.steam_helpers import get_steam_libraries, find_steam_install
@@ -700,13 +861,15 @@ class DepotSelectionDialog(QDialog):
         storage_paths = []
         def_dir = self._settings.value("default_download_directory", "", type=str) if self._settings else ""
         if def_dir and os.path.isdir(def_dir):
-            storage_paths.append(def_dir)
+            storage_paths.append(os.path.realpath(def_dir))
 
         try:
             raw_libs = get_steam_libraries() or []
             for p in raw_libs:
-                if p and os.path.isdir(p) and p not in storage_paths:
-                    storage_paths.append(p)
+                if p and os.path.isdir(p):
+                    real_p = os.path.realpath(p)
+                    if real_p not in storage_paths:
+                        storage_paths.append(real_p)
         except Exception as e:
             logger.warning(f"Error discovering Steam storage libraries: {e}")
 
@@ -791,19 +954,21 @@ class DepotSelectionDialog(QDialog):
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.setToolTip(tip_text)
             btn.setStyleSheet(_get_storage_btn_style())
-
-            def _make_handler(target_path=spath, target_btn=btn):
-                def _on_clicked():
-                    if target_btn.isChecked():
-                        self.selected_storage_path = target_path
-                        if self._more_storage_combo:
-                            self._more_storage_combo.setCurrentIndex(0)
-                return _on_clicked
-
-            btn.clicked.connect(_make_handler())
             self._storage_btn_group.addButton(btn, i)
             self._storage_buttons[spath] = btn
             layout.addWidget(btn, 1)
+
+        def _on_storage_btn_clicked(btn_id: int):
+            if 0 <= btn_id < len(storage_paths):
+                target_path = storage_paths[btn_id]
+                self.selected_storage_path = target_path
+                logger.info(f"Storage library selected via button [{btn_id}]: {target_path}")
+                if self._more_storage_combo:
+                    self._more_storage_combo.blockSignals(True)
+                    self._more_storage_combo.setCurrentIndex(0)
+                    self._more_storage_combo.blockSignals(False)
+
+        self._storage_btn_group.idClicked.connect(_on_storage_btn_clicked)
 
         if len(storage_paths) > max_direct_buttons:
             self._more_storage_combo = QComboBox()
@@ -840,6 +1005,7 @@ class DepotSelectionDialog(QDialog):
                     chosen_path = self._more_storage_combo.itemData(index)
                     if chosen_path:
                         self.selected_storage_path = chosen_path
+                        logger.info(f"Storage library selected via dropdown: {chosen_path}")
                         checked_btn = self._storage_btn_group.checkedButton()
                         if checked_btn:
                             self._storage_btn_group.setExclusive(False)
@@ -850,7 +1016,8 @@ class DepotSelectionDialog(QDialog):
             layout.addWidget(self._more_storage_combo, 1)
 
         # Pre-select default download directory or first available library
-        default_target = def_dir if (def_dir and def_dir in storage_paths) else storage_paths[0]
+        real_def = os.path.realpath(def_dir) if def_dir else ""
+        default_target = real_def if (real_def and real_def in storage_paths) else storage_paths[0]
         self.selected_storage_path = default_target
         if default_target in self._storage_buttons:
             self._storage_buttons[default_target].setChecked(True)

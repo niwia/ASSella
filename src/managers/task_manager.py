@@ -202,6 +202,14 @@ class TaskManager(QObject):
 
         self._job_steps_completed.clear()
 
+        # If package was already preprocessed in ZipImportConfirmationDialog,
+        # proceed directly to depot selection without flashing the download screen
+        preprocessed = (metadata or {}).get("preprocessed_game_data")
+        if preprocessed:
+            logger.info(f"Using preprocessed package data for {zip_path}; launching depot selection directly.")
+            QTimer.singleShot(0, lambda data=preprocessed: self._on_zip_processed(data))
+            return
+
         self._init_simplified_stages()
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             st = self.main_window.simplified_terminal
@@ -244,7 +252,25 @@ class TaskManager(QObject):
                     else:
                         for m_k, m_v in game_data.get("manifests", {}).items():
                             merged.setdefault("manifests", {}).setdefault(m_k, m_v)
+
+                # Deep merge for depots: ensure freshly parsed depot keys and info from game_data
+                # are always preserved and never clobbered by keyless metadata (e.g. from Steam .acf)
+                if "depots" in game_data and game_data["depots"]:
+                    merged_depots = dict(merged.get("depots") or {})
+                    for d_id, d_info in game_data["depots"].items():
+                        if d_id not in merged_depots:
+                            merged_depots[d_id] = dict(d_info)
+                        else:
+                            merged_item = dict(merged_depots[d_id])
+                            merged_item.update({k: v for k, v in d_info.items() if v is not None})
+                            if not merged_item.get("key") and d_info.get("key"):
+                                merged_item["key"] = d_info["key"]
+                            merged_depots[d_id] = merged_item
+                    merged["depots"] = merged_depots
+
                 for k, v in game_data.items():
+                    if k in ("manifests", "depots"):
+                        continue
                     if v and (k not in merged or not merged[k]):
                         merged[k] = v
             game_data = merged
@@ -256,7 +282,25 @@ class TaskManager(QObject):
             pre_selected = (self.current_job_metadata or {}).get("selected_depots_list")
             if pre_selected:
                 self.game_data["selected_depots_list"] = pre_selected
-                self._start_download_with_destination(pre_selected)
+                library_dest = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path")
+                # Persist confirmed pre-selection so future updates recall it
+                appid = str((self.game_data or {}).get("appid", ""))
+                depots = (self.game_data or {}).get("depots") or {}
+                if appid and pre_selected:
+                    try:
+                        import json
+                        self.settings.setValue(
+                            f"depot_selection/{appid}",
+                            json.dumps({
+                                "selected": pre_selected,
+                                "all_available": list(depots.keys()),
+                                "descriptions": {d: depots.get(d, {}).get("desc", "") for d in pre_selected}
+                            })
+                        )
+                        logger.info(f"Persisted pre-selected depot selection for AppID {appid}: {pre_selected}")
+                    except Exception as e:
+                        logger.warning(f"Failed to cache pre-selected depot selection: {e}")
+                self._start_download_with_destination(pre_selected, library_dest)
             else:
                 self._show_depot_selection_dialog()
         else:
@@ -290,6 +334,11 @@ class TaskManager(QObject):
                     saved_selection = saved_data.get("selected", [])
                 except Exception:
                     pass
+            # Fallback: if not in QSettings, check if the game is already installed with an ACF containing InstalledDepots
+            if not saved_selection:
+                acf_installed = (self.game_data or {}).get("installed_depots")
+                if acf_installed and isinstance(acf_installed, list):
+                    saved_selection = [str(d) for d in acf_installed]
 
         auto_skip_single_choice = self.settings.value(
             "auto_skip_single_choice", False, type=bool
@@ -315,7 +364,8 @@ class TaskManager(QObject):
                         )
                     except Exception as e:
                         logger.warning(f"Failed to cache single-depot selection: {e}")
-                self._start_download_with_destination(selected_depots)
+                single_dest = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path")
+                self._start_download_with_destination(selected_depots, single_dest)
             else:
                 self.job_finished()
             return
@@ -377,6 +427,13 @@ class TaskManager(QObject):
             self.job_finished()
 
     def _get_destination_path(self):
+        current_job_metadata = self.current_job_metadata or {}
+        existing_library_path = current_job_metadata.get("library_path") or (self.game_data or {}).get("library_path")
+        if existing_library_path and os.path.isdir(existing_library_path):
+            if is_slssteam_mode_enabled():
+                self._handle_slssteam_mode()
+            return existing_library_path
+
         default_dl_dir = self.settings.value("default_download_directory", "")
         if default_dl_dir and os.path.isdir(default_dl_dir):
             if is_slssteam_mode_enabled():
@@ -385,23 +442,15 @@ class TaskManager(QObject):
 
         slssteam_mode = is_slssteam_mode_enabled()
         library_mode = self.settings.value("library_mode", False, type=bool)
-        current_job_metadata = self.current_job_metadata or {}
-        existing_library_path = current_job_metadata.get("library_path")
         from_web = current_job_metadata.get("from_web_ui", False)
         is_headless = os.environ.get("QT_QPA_PLATFORM") == "offscreen" or (self.main_window and not self.main_window.isVisible())
 
         if slssteam_mode:
             self._handle_slssteam_mode()
-            if existing_library_path:
-                return existing_library_path
             return self._get_library_destination_path()
         elif library_mode:
-            if existing_library_path:
-                return existing_library_path
             return self._get_library_destination_path()
         else:
-            if existing_library_path:
-                return existing_library_path
             if from_web or is_headless:
                 libraries = steam_helpers.get_steam_libraries()
                 if libraries:
@@ -1003,12 +1052,13 @@ class TaskManager(QObject):
                                 if isinstance(b_entry, dict):
                                     target_bid = str(b_entry.get("buildid", ""))
 
-                            is_rollback_job = self.game_data.get("_is_rollback") if self.game_data else False
+                            is_rollback_job = (self.current_job_metadata or {}).get("is_rollback") or (self.game_data.get("_is_rollback") if self.game_data else False)
+                            meta_bid = (self.current_job_metadata or {}).get("buildid")
                             if is_rollback_job:
-                                final_bid = new_bid
+                                final_bid = meta_bid or new_bid
                                 logger.info(f"[DEBUG_DEV] Rollback/manual install detected. Using manual build ID as final_bid: {final_bid}")
                             else:
-                                final_bid = target_bid or new_bid
+                                final_bid = meta_bid or target_bid or new_bid
                                 logger.info(f"[DEBUG_DEV] Standard install completed. final_bid: {final_bid}")
                             if final_bid:
                                 # Store per-branch: installed_buildid/appid/branch
@@ -1016,20 +1066,22 @@ class TaskManager(QObject):
                                 # Also store legacy flat key for backward compat
                                 settings.setValue(f"installed_buildid/{appid}", str(final_bid))
 
-                                # If pin_build is requested in job metadata, enable it automatically
-                                if self.current_job_metadata and self.current_job_metadata.get("pin_build"):
-                                    settings.setValue(f"pin_build/{appid}", True)
-                                    settings.setValue(f"exclude_from_update_all/{appid}", False)
-                                    try:
-                                        import shutil
-                                        manifests_dir = Path(get_base_path()) / "hubcap_manifests"
-                                        manifests_dir.mkdir(parents=True, exist_ok=True)
-                                        dest_zip = manifests_dir / f"accela_fetch_{appid}_build_{final_bid}.zip"
-                                        if self.current_job and os.path.exists(self.current_job):
-                                            shutil.copy(self.current_job, dest_zip)
-                                            logger.info(f"Cached pinned manifest zip to {dest_zip}")
-                                    except Exception as e:
-                                        logger.warning(f"Failed to cache pinned manifest zip: {e}")
+                                # If pin_build is specified in job metadata, apply user choice
+                                if self.current_job_metadata and "pin_build" in self.current_job_metadata:
+                                    should_pin = bool(self.current_job_metadata["pin_build"])
+                                    settings.setValue(f"pin_build/{appid}", should_pin)
+                                    if should_pin:
+                                        settings.setValue(f"exclude_from_update_all/{appid}", False)
+                                        try:
+                                            import shutil
+                                            manifests_dir = Path(get_base_path()) / "hubcap_manifests"
+                                            manifests_dir.mkdir(parents=True, exist_ok=True)
+                                            dest_zip = manifests_dir / f"accela_fetch_{appid}_build_{final_bid}.zip"
+                                            if self.current_job and os.path.exists(self.current_job):
+                                                shutil.copy(self.current_job, dest_zip)
+                                                logger.info(f"Cached pinned manifest zip to {dest_zip}")
+                                        except Exception as e:
+                                            logger.warning(f"Failed to cache pinned manifest zip: {e}")
                     except Exception as e:
                         logger.error(f"Failed to upsert app info on job completion: {e}")
 

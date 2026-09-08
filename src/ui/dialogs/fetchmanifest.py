@@ -1347,11 +1347,9 @@ class FetchManifestDialog(QDialog):
                         logger.info(f"Using fresh DB cache for AppID {app_id} (cached {int(time.time() - cache_time)}s ago)")
                         steam_client_data = db.get_app_info(app_id, bypass_expiration=True)
                     else:
-                        logger.info(f"Querying Steam client for fresh AppID {app_id} info...")
-                        steam_client_data = _fetch_with_steam_client(app_id, app_token)
-                        if not steam_client_data or not steam_client_data.get("depots"):
-                            logger.debug("steam.client fetch failed or empty depots, falling back to Web API")
-                            steam_client_data = _fetch_with_web_api(app_id)
+                        logger.info(f"Querying Steam API for fresh AppID {app_id} info...")
+                        from core.steam_api import get_depot_info_from_api
+                        steam_client_data = get_depot_info_from_api(app_id, app_token)
                         
                         if steam_client_data:
                             # Update database with the latest info
@@ -1523,6 +1521,7 @@ class FetchManifestDialog(QDialog):
             settings = get_settings()
             auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
             depots = parsed_data.get("depots")
+            appid = str(parsed_data.get("appid", ""))
             
             selected_depots = None
             if auto_skip and len(depots) == 1:
@@ -1534,12 +1533,24 @@ class FetchManifestDialog(QDialog):
                     self.status_label.setText("Download cancelled.")
                     return
             else:
+                saved_selection = None
+                if appid:
+                    raw = settings.value(f"depot_selection/{appid}", "", type=str)
+                    if raw:
+                        try:
+                            import json
+                            saved_data = json.loads(raw)
+                            saved_selection = saved_data.get("selected", [])
+                        except Exception:
+                            pass
+
                 depot_dialog = DepotSelectionDialog(
                     parsed_data["appid"],
                     parsed_data.get("game_name", ""),
                     depots,
                     parsed_data.get("header_url"),
                     self.parent_window,
+                    selected_depots=saved_selection,
                 )
                 if depot_dialog.exec():
                     selected_depots = depot_dialog.get_selected_depots()
@@ -1550,6 +1561,20 @@ class FetchManifestDialog(QDialog):
             if selected_depots:
                 metadata["selected_depots_list"] = selected_depots
                 metadata["game_name"] = parsed_data.get("game_name", "")
+                if appid:
+                    try:
+                        import json
+                        settings.setValue(
+                            f"depot_selection/{appid}",
+                            json.dumps({
+                                "selected": selected_depots,
+                                "all_available": list(depots.keys()),
+                                "descriptions": {d: depots.get(d, {}).get("desc", "") for d in selected_depots}
+                            })
+                        )
+                        logger.info(f"Persisted depot selection for AppID {appid} in fetchmanifest: {selected_depots}")
+                    except Exception as e:
+                        logger.warning(f"Failed to cache depot selection in fetchmanifest: {e}")
             else:
                 logger.info("User cancelled depot selection.")
                 self.status_label.setText("Download cancelled.")

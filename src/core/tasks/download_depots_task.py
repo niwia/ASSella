@@ -12,8 +12,12 @@ from typing import List, Tuple, Optional, Dict, Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-# Local imports
-from utils.helpers import resource_path, ensure_dotnet_availability, get_dotnet_path
+from utils.helpers import (
+    resource_path,
+    ensure_dotnet_availability,
+    get_dotnet_path,
+    get_dotnet_env,
+)
 from utils.settings import get_settings
 
 # Third-party imports
@@ -57,6 +61,7 @@ class DownloadDepotsTask(QObject):
         self._last_downloaded_bytes = 0.0
         self._smooth_speed_bps = 0.0
         self._is_validating = False
+        self._lancache_error_detected = False
 
     @property
     def is_running_flag(self) -> bool:
@@ -134,6 +139,7 @@ class DownloadDepotsTask(QObject):
                     stderr=subprocess.STDOUT,
                     text=False,  # Binary mode
                     creationflags=creation_flags,
+                    env=get_dotnet_env(),
                 )
 
                 # Read output directly in this thread
@@ -163,6 +169,49 @@ class DownloadDepotsTask(QObject):
                 if self.process:
                     return_code = self.process.poll()
                     self.process = None
+
+                # Automatic LanCache fallback: if LanCache was used and failed, retry directly
+                if return_code != 0 and "-use-lancache" in current_cmd and self._is_running:
+                    fallback_msg = (
+                        f"⚠️ LanCache download issue encountered for depot {depot_id} (exit code {return_code}). "
+                        "Automatically falling back to direct connection without LanCache..."
+                    )
+                    self.progress.emit(fallback_msg)
+                    logger.warning(fallback_msg)
+
+                    fallback_cmd = [arg for arg in current_cmd if arg != "-use-lancache"]
+                    self.last_percentage = -1
+                    self._is_validating = False
+                    self._lancache_error_detected = False
+
+                    self.process = subprocess.Popen(
+                        fallback_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=False,
+                        creationflags=creation_flags,
+                        env=get_dotnet_env(),
+                    )
+                    self._read_process_output()
+
+                    if self.process and self.process.stdout:
+                        try:
+                            self.process.stdout.close()
+                        except OSError:
+                            pass
+
+                    self._flush_log_buffer()
+
+                    if not self._is_running:
+                        if self.process and self.process.poll() is None:
+                            self.process.terminate()
+                        logger.info("Download task stopping because stop() was called.")
+                        self.completed.emit()
+                        return
+
+                    if self.process:
+                        return_code = self.process.poll()
+                        self.process = None
 
                 if return_code != 0:
                     msg = (
@@ -382,6 +431,10 @@ class DownloadDepotsTask(QObject):
         # Add to buffer
         self._log_buffer.append(line)
 
+        # Check for LanCache CDN error lines
+        if "Got CDN auth token=" in line and "result: Fail" in line:
+            self._lancache_error_detected = True
+
         # Check validation phase vs real chunk download
         is_validation_line = line.startswith("Validating ") or line.startswith("Checking ")
         if is_validation_line:
@@ -522,10 +575,43 @@ class DownloadDepotsTask(QObject):
         manifest_dir = os.path.join(temp_dir, "mistwalker_manifests")
 
         self.progress.emit(f"Generating depot keys file at {keys_path}")
+        appid_str = str(game_data.get("appid", ""))
+        cached_dkm_keys = None
+
         with open(keys_path, "w") as f:
             for depot_id in selected_depots:
-                if depot_id in game_data["depots"]:
-                    f.write(f"{depot_id};{game_data['depots'][depot_id]['key']}\n")
+                depots_map = game_data.get("depots", {})
+                depot_info = depots_map.get(str(depot_id))
+                if depot_info is None and str(depot_id).isdigit():
+                    depot_info = depots_map.get(int(depot_id))
+                if not isinstance(depot_info, dict):
+                    depot_info = {}
+
+                key = depot_info.get("key")
+
+                # Fallback: query DepotKeyManager directly if key is missing from in-memory game_data
+                if not key and appid_str:
+                    try:
+                        if cached_dkm_keys is None:
+                            from managers.depot_key_manager import DepotKeyManager
+                            cached_dkm_keys = DepotKeyManager().get_depot_keys(appid_str) or {}
+                        key = cached_dkm_keys.get(str(depot_id))
+                        if key:
+                            logger.info(
+                                f"[DownloadDepotsTask] Recovered missing key for depot {depot_id} "
+                                f"from DepotKeyManager"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"[DownloadDepotsTask] Failed to query DepotKeyManager for depot {depot_id}: {e}"
+                        )
+
+                if key:
+                    f.write(f"{depot_id};{key}\n")
+                else:
+                    logger.warning(
+                        f"[DownloadDepotsTask] No decryption key available for depot {depot_id}"
+                    )
 
         from utils.steam_manifest import get_install_folder_name
         install_folder_name = get_install_folder_name(game_data)
@@ -643,8 +729,10 @@ class DownloadDepotsTask(QObject):
             if target_branch and target_branch != "public":
                 cmd_args.extend(["-branch", str(target_branch)])
 
-            # 1. LanCache support (permanently enabled: DepotDownloader autodetects any local LanCache instance on the LAN)
-            cmd_args.append("-use-lancache")
+            # 1. LanCache support (configurable via settings; falls back to direct if LanCache fails)
+            use_lancache = settings.value("use_lancache", True, type=bool)
+            if use_lancache:
+                cmd_args.append("-use-lancache")
 
             # 2. LoginID session isolation (randomized 32-bit integer)
             login_id = random.randint(1, 2147483647)

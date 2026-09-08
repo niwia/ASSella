@@ -216,10 +216,114 @@ class ManifestCheckTask(QObject):
 
             # 2. Check update check provider preference from QSettings (default: steampics)
             settings = get_settings()
-            update_provider = settings.value("update_check_api_provider", "steampics", type=str)
+            update_provider = settings.value("update_check_api_provider", "auto", type=str)
             batched_results = {}
 
-            if update_provider == "steamcmd":
+            if update_provider == "auto":
+                # HYBRID DUAL-ENGINE RACE (Option 1):
+                # Runs SteamCMD REST API (50 workers) and live Steam PICS in parallel!
+                from core.steam_api import batched_fetch_steamcmd_info
+                import concurrent.futures
+
+                logger.info(
+                    f"Starting Auto (Hybrid) update check for {len(appid_list)} games (SteamCMD + Steam PICS in parallel)..."
+                )
+                cmd_results = {}
+                pics_results = {}
+
+                def _fetch_cmd_job():
+                    try:
+                        def on_cmd_progress(current_fetched, total_to_fetch):
+                            progress_val = min(total_games, int(current_fetched * total_games / max(1, total_to_fetch)))
+                            self.progress.emit(progress_val, total_games)
+
+                        return batched_fetch_steamcmd_info(
+                            appid_list,
+                            max_workers=50,
+                            on_progress=on_cmd_progress,
+                        )
+                    except Exception as cmd_err:
+                        logger.debug(f"Auto-hybrid SteamCMD fetch error: {cmd_err}")
+                        return {}
+
+                def _fetch_pics_job():
+                    if batched_get_product_info is None:
+                        return {}
+                    try:
+                        from core.steam_api import get_steam_worker
+                        _worker = get_steam_worker()
+                        _worker._started_evt.wait(timeout=10)
+                        if not (getattr(_worker.client, "connected", False) and getattr(_worker.client, "logged_on", False)):
+                            logger.debug("Auto-hybrid Steam PICS worker not logged on; relying silently on SteamCMD.")
+                            return {}
+
+                        def on_pics_progress(current_fetched, total_to_fetch):
+                            progress_val = min(total_games, int(current_fetched * total_games / max(1, total_to_fetch)))
+                            self.progress.emit(progress_val, total_games)
+
+                        return batched_get_product_info(
+                            appid_list,
+                            access_tokens=access_tokens,
+                            batch_size=50,
+                            rate_limit_delay=0.15,
+                            is_cancelled=lambda: not self._is_running,
+                            request_timeout=10,
+                            on_progress=on_pics_progress,
+                        )
+                    except Exception as pics_err:
+                        logger.debug(f"Auto-hybrid Steam PICS fetch error: {pics_err}")
+                        return {}
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    f_cmd = executor.submit(_fetch_cmd_job)
+                    f_pics = executor.submit(_fetch_pics_job)
+                    cmd_results = f_cmd.result()
+                    pics_results = f_pics.result()
+
+                # Merge with "Highest BuildID Wins" & "PICS Preferred on Tie"
+                for aid in appid_list:
+                    aid_str = str(aid)
+                    c_data = cmd_results.get(aid_str)
+                    p_data = pics_results.get(aid_str)
+
+                    if not c_data and not p_data:
+                        continue
+                    if p_data and not c_data:
+                        batched_results[aid_str] = p_data
+                        continue
+                    if c_data and not p_data:
+                        batched_results[aid_str] = c_data
+                        continue
+
+                    # Both available: compare build IDs
+                    try:
+                        c_bid = int(c_data.get("buildid") or 0)
+                    except (ValueError, TypeError):
+                        c_bid = 0
+                    try:
+                        p_bid = int(p_data.get("buildid") or 0)
+                    except (ValueError, TypeError):
+                        p_bid = 0
+
+                    if p_bid > c_bid:
+                        batched_results[aid_str] = p_data
+                    elif c_bid > p_bid:
+                        batched_results[aid_str] = c_data
+                    else:
+                        # Equal build ID: Prefer PICS because its depot manifests are direct from Valve,
+                        # but if PICS has empty depots for an app and CMD has them, use CMD
+                        p_depots = p_data.get("depots", {})
+                        if not p_depots and c_data.get("depots"):
+                            batched_results[aid_str] = c_data
+                        else:
+                            batched_results[aid_str] = p_data
+
+                logger.info(
+                    f"Auto (Hybrid) check resolved {len(batched_results)}/{len(appid_list)} games "
+                    f"(SteamCMD: {len(cmd_results)}, Steam PICS: {len(pics_results)})."
+                )
+
+            elif update_provider == "steamcmd":
                 # Primary: SteamCMD REST API (Fast concurrent HTTP via CDN)
                 from core.steam_api import batched_fetch_steamcmd_info
                 try:
@@ -260,14 +364,11 @@ class ManifestCheckTask(QObject):
             else:
                 # Primary: Live Steam PICS client (Direct from Valve, authoritative, zero stale cache)
                 if batched_get_product_info is not None:
-                    # Pre-warm the SteamClientWorker so the CM login is fully complete
-                    # before we start firing batches.  Without this, the first batch can
-                    # race the async anonymous_login() handshake and get a ConnectionError
-                    # even though the worker is technically "started".
+                    _worker_ok = False
                     try:
                         from core.steam_api import get_steam_worker
                         _worker = get_steam_worker()
-                        _worker._started_evt.wait(timeout=20)
+                        _worker._started_evt.wait(timeout=10)
                         _worker_ok = (
                             _worker.client is not None
                             and getattr(_worker.client, "connected", False)
@@ -276,33 +377,58 @@ class ManifestCheckTask(QObject):
                         if _worker_ok:
                             logger.info("Steam PICS worker pre-warmed and logged on — starting batch check.")
                         else:
-                            logger.warning(
-                                "Steam PICS worker pre-warm complete but client is not logged on. "
-                                "Batch fetch will attempt anyway and may fall back to SteamCMD."
+                            logger.debug(
+                                "Steam PICS worker not logged on; seamlessly falling back to SteamCMD REST API."
                             )
                     except Exception as _pw_err:
-                        logger.warning(f"Steam PICS worker pre-warm failed: {_pw_err}")
+                        logger.debug(f"Steam PICS worker pre-warm failed: {_pw_err}")
+                        _worker_ok = False
 
+                    if _worker_ok:
+                        try:
+                            logger.info(f"Starting live Steam PICS primary batch check for {len(appid_list)} games...")
+                            def on_pics_progress(current_fetched, total_to_fetch):
+                                progress_val = min(total_games, int(current_fetched * total_games / max(1, total_to_fetch)))
+                                self.progress.emit(progress_val, total_games)
+
+                            batched_results = batched_get_product_info(
+                                appid_list,
+                                access_tokens=access_tokens,
+                                batch_size=50,
+                                rate_limit_delay=0.15,
+                                is_cancelled=lambda: not self._is_running,
+                                request_timeout=10,
+                                on_progress=on_pics_progress,
+                            )
+                        except BaseException as pics_err:
+                            if isinstance(pics_err, (KeyboardInterrupt, SystemExit)):
+                                raise
+                            logger.debug(f"Steam PICS batch fetch error: {pics_err}")
+                            batched_results = {}
+
+                # Robust Fallback: SteamCMD REST API for any missing, unresolved, or failed games
+                missing_appids = [aid for aid in appid_list if str(aid) not in batched_results]
+                if missing_appids and self._is_running:
+                    from core.steam_api import batched_fetch_steamcmd_info
+                    logger.debug(
+                        f"{len(missing_appids)}/{len(appid_list)} games missing or failed from Steam PICS; "
+                        "silently falling back to SteamCMD REST API..."
+                    )
                     try:
-                        logger.info(f"Starting live Steam PICS primary batch check for {len(appid_list)} games...")
-                        def on_pics_progress(current_fetched, total_to_fetch):
-                            progress_val = min(total_games, int(current_fetched * total_games / max(1, total_to_fetch)))
+                        def on_cmd_fallback_progress(current_fetched, total_to_fetch):
+                            already_done = len(appid_list) - len(missing_appids)
+                            current_total = already_done + current_fetched
+                            progress_val = min(total_games, int(current_total * total_games / max(1, len(appid_list))))
                             self.progress.emit(progress_val, total_games)
 
-                        batched_results = batched_get_product_info(
-                            appid_list,
-                            access_tokens=access_tokens,
-                            batch_size=50,
-                            rate_limit_delay=0.15,
-                            is_cancelled=lambda: not self._is_running,
-                            request_timeout=10,
-                            on_progress=on_pics_progress,
+                        cmd_results = batched_fetch_steamcmd_info(
+                            missing_appids,
+                            max_workers=50,
+                            on_progress=on_cmd_fallback_progress,
                         )
-                    except BaseException as pics_err:
-                        if isinstance(pics_err, (KeyboardInterrupt, SystemExit)):
-                            raise
-                        logger.warning(f"Steam PICS batch fetch error: {pics_err}")
-                        batched_results = {}
+                        batched_results.update(cmd_results)
+                    except Exception as cmd_fallback_err:
+                        logger.debug(f"SteamCMD REST API fallback error: {cmd_fallback_err}")
 
             if not self._is_running:
                 logger.debug("Update check task was stopped after batched fetch")
@@ -487,10 +613,19 @@ class ManifestCheckTask(QObject):
             settings.setValue(f"last_checked_branch/{appid}", selected_branch)
 
             if not steam_client_data:
+                # If remote lookup failed/unavailable, preserve previously known valid status if available
+                current_status = game_data.get("update_status", "")
+                if current_status in ("up_to_date", "update_available"):
+                    logger.info(
+                        f"[UpdateCheck {appid}] AppID {appid} not found in remote API response; preserving existing status '{current_status}'"
+                    )
+                    return current_status
+
                 logger.info(
-                    f"[UpdateCheck {appid}] Cannot determine status: AppID {appid} was not returned in Steam API batched results payload (Steam API / DB lookup returned no product info)"
+                    f"[UpdateCheck {appid}] Cannot determine status: AppID {appid} was not returned in remote Steam API results payload"
                 )
                 return "cannot_determine"
+
 
             for saved_depot_id, saved_manifest_id in saved_depots.items():
                 try:
@@ -513,10 +648,29 @@ class ManifestCheckTask(QObject):
                             try:
                                 dlc_ids = [int(x) for x in dlc_list_str.split(",") if x.strip()]
                                 if dlc_ids:
-                                    from core.steam_api import get_steam_worker
-                                    worker = get_steam_worker()
-                                    res_dlc = worker.execute("get_product_info", apps=dlc_ids, timeout=20)
-                                    if res_dlc and isinstance(res_dlc, dict):
+                                    res_dlc = None
+                                    try:
+                                        from core.steam_api import get_steam_worker
+                                        worker = get_steam_worker()
+                                        if getattr(worker.client, "connected", False) and getattr(worker.client, "logged_on", False):
+                                            res_dlc = worker.execute("get_product_info", apps=dlc_ids, timeout=10)
+                                    except Exception:
+                                        res_dlc = None
+
+                                    if not res_dlc:
+                                        try:
+                                            from core.steam_api import batched_fetch_steamcmd_info
+                                            cmd_dlc_results = batched_fetch_steamcmd_info([str(x) for x in dlc_ids])
+                                            for d_app_id, d_app in cmd_dlc_results.items():
+                                                if isinstance(d_app, dict):
+                                                    d_depots = d_app.get("depots", {})
+                                                    batched_results[str(d_app_id)] = {"depots": d_depots}
+                                                    if saved_depot_id in d_depots or str(saved_depot_id) in d_depots:
+                                                        depots = d_depots
+                                                        break
+                                        except Exception as cmd_dlc_err:
+                                            logger.debug(f"[UpdateCheck {appid}] SteamCMD DLC lookup error: {cmd_dlc_err}")
+                                    elif res_dlc and isinstance(res_dlc, dict):
                                         for d_app_id, d_app in res_dlc.get("apps", {}).items():
                                             if isinstance(d_app, dict):
                                                 d_depots = d_app.get("depots", {})

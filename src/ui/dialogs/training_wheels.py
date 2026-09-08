@@ -40,10 +40,11 @@ class TrainingWheelsDialog(QDialog):
     """
 
     _assfixer_result_signal = pyqtSignal(tuple)
+    _version_result_signal = pyqtSignal(dict)
 
     def __init__(self, parent: Optional[QWidget] = None, manual: bool = False):
         super().__init__(parent)
-        self.setWindowTitle("Training Wheels Protocol (Beta)")
+        self.setWindowTitle("Health & Setup Guide (Training Wheels Protocol)")
         self.setMinimumWidth(560)
         self.resize(600, 720)
         self.setSizeGripEnabled(True)
@@ -59,6 +60,7 @@ class TrainingWheelsDialog(QDialog):
             self.settings.sync()
 
         self._assfixer_result_signal.connect(self._handle_assfixer_done)
+        self._version_result_signal.connect(self._handle_version_done)
 
         self._init_ui()
         self._refresh_sls_health()
@@ -200,6 +202,11 @@ class TrainingWheelsDialog(QDialog):
         self._style_status_btn(self.btn_sls_install, state="neutral")
         self.btn_sls_install.setEnabled(False)
         row1.addWidget(self.btn_sls_install)
+
+        self.btn_sls_version = QPushButton("Checking...")
+        self._style_status_btn(self.btn_sls_version, state="neutral")
+        self.btn_sls_version.setEnabled(False)
+        row1.addWidget(self.btn_sls_version)
         layout.addLayout(row1)
 
         # ── Button 2: Process (Steam running + SLS injected) ─────────────
@@ -267,6 +274,46 @@ class TrainingWheelsDialog(QDialog):
         )
         self.lbl_config_status.setWordWrap(True)
         layout.addWidget(self.lbl_config_status)
+
+        # ── Separator ─────────────────────────────────────────────────────
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet(
+            "background: rgba(255, 255, 255, 0.08); max-height: 1px; margin: 4px 0;"
+        )
+        layout.addWidget(sep2)
+
+        # ── Button 4: SLS Inheritance ────────────────────────────────────
+        row4 = QHBoxLayout()
+        lbl4 = QLabel("SLS Inheritance")
+        lbl4.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.85); font-weight: 500;")
+        row4.addWidget(lbl4)
+        row4.addStretch()
+
+        self.btn_sls_inheritance = QPushButton("Manage SLS Inheritance")
+        self.btn_sls_inheritance.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                padding: 5px 14px;
+                color: #e0e0e0;
+                font-size: 8.5pt;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 255, 255, 0.15);
+                border-color: {self.accent_color};
+            }}
+        """)
+        self.btn_sls_inheritance.clicked.connect(self._open_sls_inheritance)
+        row4.addWidget(self.btn_sls_inheritance)
+        layout.addLayout(row4)
+
+        lbl_inh_status = QLabel("Manage orphan configs, external game installations, and library ownership mapping.")
+        lbl_inh_status.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8pt; margin-left: 2px;")
+        lbl_inh_status.setWordWrap(True)
+        layout.addWidget(lbl_inh_status)
 
         self._config_needs_repair = False
         self._config_issue_count = 0
@@ -365,6 +412,40 @@ class TrainingWheelsDialog(QDialog):
                 self.lbl_process_hint.setText(
                     "SLSsteam is not installed. Install it via Settings → SLS."
                 )
+
+        # Async binary freshness / version check
+        self._style_status_btn(self.btn_sls_version, state="neutral", text="Checking...")
+
+        def _ver_worker():
+            try:
+                from utils.slssteam_integration import check_slssteam_binary_is_latest
+                res = check_slssteam_binary_is_latest()
+            except Exception as e:
+                res = {"status": "error", "error": str(e)}
+            self._version_result_signal.emit(res)
+
+        threading.Thread(target=_ver_worker, daemon=True).start()
+
+    @pyqtSlot(dict)
+    def _handle_version_done(self, result: dict) -> None:
+        status = result.get("status", "error")
+        tag = result.get("release_tag") or "unknown"
+        if status == "up_to_date":
+            self._style_status_btn(self.btn_sls_version, state="ok", text=f"Up to Date ({tag})")
+        elif status == "outdated":
+            self._style_status_btn(self.btn_sls_version, state="warn", text=f"Outdated ({tag})")
+        elif status == "no_local":
+            self._style_status_btn(self.btn_sls_version, state="neutral", text="Not Installed")
+        else:
+            self._style_status_btn(self.btn_sls_version, state="neutral", text="Version Unknown")
+
+    def _open_sls_inheritance(self) -> None:
+        try:
+            from ui.dialogs.sls_inheritance import SlsInheritanceDialog
+            dlg = SlsInheritanceDialog(self)
+            dlg.exec()
+        except Exception as e:
+            logger.error(f"Error opening SLS Inheritance dialog: {e}", exc_info=True)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Config check & repair (online)
@@ -642,3 +723,7 @@ class TrainingWheelsDialog(QDialog):
                 color: {c['text']};
             }}
         """)
+
+
+# Alias for Health dialog naming convention
+HealthDialog = TrainingWheelsDialog

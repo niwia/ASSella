@@ -1200,6 +1200,28 @@ class GameManager(QObject):
                         logger.debug(
                             f"Using ACF SizeOnDisk for {game_data['game_name']}: {acf_size} bytes"
                         )
+
+                # Extract InstalledDepots so game details / rollback UI knows valid depots
+                try:
+                    import vdf
+                    vdf_data = vdf.loads(content)
+                    app_state = vdf_data.get("AppState", {})
+                    installed_depots = app_state.get("InstalledDepots")
+                    if isinstance(installed_depots, dict) and installed_depots:
+                        game_data["installed_depots"] = installed_depots
+                        if not game_data.get("depots"):
+                            game_data["depots"] = {
+                                str(k): (v if isinstance(v, dict) else {"manifest": str(v)})
+                                for k, v in installed_depots.items()
+                            }
+                except Exception as ex_depots:
+                    # Fallback regex if vdf fails
+                    depot_matches = re.findall(r'"(\d{4,9})"\s*\{[^}]*"manifest"\s*"(\d+)"', content)
+                    if depot_matches:
+                        d_dict = {m[0]: {"manifest": m[1]} for m in depot_matches}
+                        game_data["installed_depots"] = d_dict
+                        if not game_data.get("depots"):
+                            game_data["depots"] = d_dict
         except Exception as e:
             logger.debug(f"Could not parse ACF file {appmanifest_path}: {e}")
 

@@ -199,19 +199,25 @@ _BINARY_VERSION_CACHE_TTL = 120.0  # seconds
 
 
 def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
-    """Compare the local SLSsteam.so SHA256 against the upstream GitHub release binary.
+    """Compare local SLSsteam.so timestamp/version against upstream GitHub release.
 
-    Downloads ``SLSsteam-Any-release.7z`` (~5 MB), extracts only ``SLSsteam.so``
-    to a temp directory, computes its SHA256, and compares it with the local binary.
-    Cached for 120 seconds to prevent redundant downloads on rapid checks.
+    Checks the upstream GitHub release timestamp ('published_at') against the
+    local SLSsteam.so modification time ('mtime') or local version tracker file.
+    If the local binary is older than the release timestamp (with 2-minute build
+    tolerance), it is marked 'outdated'. This operates instantly without
+    downloading the full multi-megabyte 7z archive.
+
+    Cached for 120 seconds to prevent redundant network calls.
 
     Returns a dict:
         {
-            "status":       "up_to_date" | "outdated" | "no_local" | "error",
-            "local_hash":   str | None,
-            "remote_hash":  str | None,
-            "release_tag":  str | None,   # e.g. "20260820085507"
-            "error":        str | None,
+            "status":        "up_to_date" | "outdated" | "no_local" | "error",
+            "release_tag":   str | None,   # e.g. "20260903114323"
+            "release_time":  float | None, # UTC timestamp
+            "local_mtime":   float | None, # local file mtime
+            "local_hash":    None,
+            "remote_hash":   None,
+            "error":         str | None,
         }
 
     This function is blocking and should be called from a background thread.
@@ -223,18 +229,17 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
             if _binary_version_cache and (now - _binary_version_cache.get("timestamp", 0) < _BINARY_VERSION_CACHE_TTL):
                 return dict(_binary_version_cache["data"])
 
-    import hashlib
     import json
-    import shutil
-    import subprocess
-    import tempfile
     import urllib.request
+    from datetime import datetime, timezone
 
     result: dict = {
         "status": "error",
+        "release_tag": None,
+        "release_time": None,
+        "local_mtime": None,
         "local_hash": None,
         "remote_hash": None,
-        "release_tag": None,
         "error": None,
     }
 
@@ -243,8 +248,10 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
         from ui.dialogs.settings_sls import get_sls_paths
         paths = get_sls_paths()
         local_so = paths.get("so_path", "")
+        version_file = paths.get("version_file", "")
     except Exception:
         local_so = os.path.expanduser("~/.local/share/SLSsteam/SLSsteam.so")
+        version_file = os.path.expanduser("~/.local/share/SLSsteam/version")
 
     if not local_so or not os.path.exists(local_so):
         result["status"] = "no_local"
@@ -252,10 +259,10 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
         return result
 
     try:
-        local_hash = hashlib.sha256(Path(local_so).read_bytes()).hexdigest()
-        result["local_hash"] = local_hash
+        local_mtime = os.path.getmtime(local_so)
+        result["local_mtime"] = local_mtime
     except Exception as exc:
-        result["error"] = f"Failed to hash local binary: {exc}"
+        result["error"] = f"Failed to inspect local binary mtime: {exc}"
         return result
 
     # ── 2. Fetch latest GitHub release metadata ────────────────────────────
@@ -265,58 +272,53 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
             headers={"User-Agent": "ASSella-SLS-Updater"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
+            data = json.loads(resp.read().decode("utf-8"))
         release_tag = data.get("tag_name")
         result["release_tag"] = release_tag
 
-        download_url = None
-        for asset in data.get("assets", []):
-            if asset.get("name") == "SLSsteam-Any-release.7z":
-                download_url = asset.get("browser_download_url")
-                break
-        if not download_url:
-            raise ValueError("SLSsteam-Any-release.7z not found in release assets")
-    except Exception as exc:
-        result["error"] = f"GitHub API error: {exc}"
-        return result
+        pub_str = data.get("published_at") or data.get("created_at")
+        release_time = 0.0
+        if pub_str:
+            try:
+                dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+                release_time = dt.timestamp()
+            except Exception:
+                pass
 
-    # ── 3. Download & extract just SLSsteam.so ────────────────────────────
-    tmp = tempfile.mkdtemp(prefix="assella_sls_check_")
-    try:
-        arch_path = os.path.join(tmp, "SLSsteam-Any-release.7z")
-        req2 = urllib.request.Request(download_url, headers={"User-Agent": "ASSella-SLS-Updater"})
-        with urllib.request.urlopen(req2, timeout=45) as resp, open(arch_path, "wb") as fout:
-            fout.write(resp.read())
+        if not release_time and release_tag:
+            try:
+                dt = datetime.strptime(release_tag[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+                release_time = dt.timestamp()
+            except Exception:
+                pass
 
-        out_dir = os.path.join(tmp, "out")
-        os.makedirs(out_dir)
+        result["release_time"] = release_time
 
-        # Try to extract bin/SLSsteam.so first, then plain SLSsteam.so
-        extracted = None
-        for inner_path in ("bin/SLSsteam.so", "SLSsteam.so"):
-            r = subprocess.run(
-                ["7z", "e", arch_path, f"-o{out_dir}", inner_path, "-y"],
-                capture_output=True, text=True
-            )
-            candidate = os.path.join(out_dir, "SLSsteam.so")
-            if os.path.exists(candidate):
-                extracted = candidate
-                break
+        # If version tracker matches exact release tag, definitely up to date
+        if version_file and os.path.exists(version_file):
+            try:
+                with open(version_file, "r", encoding="utf-8") as vf:
+                    local_ver = vf.read().strip()
+                if local_ver and release_tag and local_ver == release_tag:
+                    result["status"] = "up_to_date"
+                    with _binary_version_cache_lock:
+                        _binary_version_cache = {"timestamp": time.time(), "data": dict(result)}
+                    return result
+            except Exception:
+                pass
 
-        if not extracted:
-            raise FileNotFoundError("SLSsteam.so not found inside the downloaded archive")
-
-        remote_hash = hashlib.sha256(Path(extracted).read_bytes()).hexdigest()
-        result["remote_hash"] = remote_hash
-        result["status"] = "up_to_date" if local_hash == remote_hash else "outdated"
+        # Time-based comparison with 2-minute build/publication tolerance
+        tolerance_sec = 120.0
+        if release_time > 0 and local_mtime < (release_time - tolerance_sec):
+            result["status"] = "outdated"
+        else:
+            result["status"] = "up_to_date"
 
         with _binary_version_cache_lock:
             _binary_version_cache = {"timestamp": time.time(), "data": dict(result)}
 
     except Exception as exc:
-        result["error"] = f"Download/extract error: {exc}"
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        result["error"] = f"GitHub API error: {exc}"
 
     return result
 

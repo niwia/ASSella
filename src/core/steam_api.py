@@ -39,6 +39,27 @@ try:
         steam_crypto.symmetric_decrypt_HMAC = _safe_symmetric_decrypt_HMAC
     except Exception:
         pass
+
+    # TCP connection timeout patch: steam-py's TCPConnection._connect uses an un-timed socket.connect(),
+    # causing gevent to block indefinitely (up to 127s) if a CM IP drops SYN packets or is dead.
+    # We apply a 4.0s connect timeout so unresponsive CM servers fail fast and allow CMClient to try the next server.
+    try:
+        import steam.core.connection as steam_conn
+        _orig_tcp_connect = steam_conn.TCPConnection._connect
+
+        def _safe_tcp_connect(self, server_addr):
+            self.socket.settimeout(4.0)
+            try:
+                _orig_tcp_connect(self, server_addr)
+            finally:
+                try:
+                    self.socket.settimeout(None)
+                except Exception:
+                    pass
+
+        steam_conn.TCPConnection._connect = _safe_tcp_connect
+    except Exception as tcp_patch_err:
+        logger.debug(f"Could not patch TCPConnection._connect: {tcp_patch_err}")
 except ImportError:
     SteamClient = None
     logger.warning(
@@ -60,17 +81,17 @@ class _SteamClientWorker(threading.Thread):
         try:
             logger.debug("SteamClientWorker starting & initializing SteamClient...")
             self.client = SteamClient()
-            self.client.connect(retry=5)  # try up to 5 CM servers before giving up
-            self.client.anonymous_login()
-            # Block until Valve CM sends the actual LogOnResponse (not just the call returning).
-            # anonymous_login() is non-blocking — it dispatches and returns immediately.
-            # Without this wait, _started_evt can fire before logged_on=True, causing
-            # execute() to see a not-yet-logged-in client and raise ConnectionError.
-            login_ok = self.client.wait_event("logged_on", timeout=15)
-            if login_ok is None:
-                logger.error("SteamClientWorker: timed out waiting for logged_on event")
+            connected = self.client.connect(retry=3)  # try up to 3 CM servers before giving up
+            if connected and getattr(self.client, "connected", False):
+                self.client.anonymous_login()
+                # Block until Valve CM sends the actual LogOnResponse (not just the call returning).
+                login_ok = self.client.wait_event("logged_on", timeout=10)
+                if login_ok is None:
+                    logger.error("SteamClientWorker: timed out waiting for logged_on event")
+                else:
+                    logger.debug("SteamClientWorker connected & logged on anonymously.")
             else:
-                logger.debug("SteamClientWorker connected & logged on anonymously.")
+                logger.warning("SteamClientWorker: failed to connect to Valve CM servers.")
         except Exception as e:
             logger.error(f"SteamClientWorker initial connect error: {e}")
         finally:
@@ -89,15 +110,18 @@ class _SteamClientWorker(threading.Thread):
                         self.client = SteamClient()
                     reconnected = False
                     try:
-                        self.client.connect(retry=5)
-                        self.client.anonymous_login()
-                        # Wait for login before firing the queued query
-                        login_ok = self.client.wait_event("logged_on", timeout=15)
-                        if login_ok is not None:
-                            reconnected = True
-                            logger.info("SteamClientWorker reconnected & logged on successfully.")
+                        connected = self.client.connect(retry=3)
+                        if connected and getattr(self.client, "connected", False):
+                            self.client.anonymous_login()
+                            # Wait for login before firing the queued query
+                            login_ok = self.client.wait_event("logged_on", timeout=10)
+                            if login_ok is not None:
+                                reconnected = True
+                                logger.info("SteamClientWorker reconnected & logged on successfully.")
+                            else:
+                                logger.error("SteamClientWorker: reconnect timed out waiting for logged_on")
                         else:
-                            logger.error("SteamClientWorker: reconnect timed out waiting for logged_on")
+                            logger.warning("SteamClientWorker: reconnect failed to connect to Valve CM servers.")
                     except Exception as rec_err:
                         logger.error(f"SteamClientWorker reconnect error: {rec_err}")
 
@@ -114,11 +138,13 @@ class _SteamClientWorker(threading.Thread):
                     if not getattr(self.client, "connected", False) or not getattr(self.client, "logged_on", False):
                         logger.warning(f"SteamClientWorker disconnected during {func_name} ({call_err}), reconnecting to retry...")
                         try:
-                            self.client.connect(retry=5)
-                            self.client.anonymous_login()
-                            if self.client.wait_event("logged_on", timeout=15) is not None:
-                                logger.info(f"SteamClientWorker reconnected, retrying {func_name}...")
-                                res = getattr(self.client, func_name)(*args, **kwargs)
+                            if self.client.connect(retry=3):
+                                self.client.anonymous_login()
+                                if self.client.wait_event("logged_on", timeout=10) is not None:
+                                    logger.info(f"SteamClientWorker reconnected, retrying {func_name}...")
+                                    res = getattr(self.client, func_name)(*args, **kwargs)
+                                else:
+                                    raise call_err
                             else:
                                 raise call_err
                         except Exception:
@@ -134,10 +160,12 @@ class _SteamClientWorker(threading.Thread):
                 self.q.task_done()
 
     def execute(self, func_name, *args, timeout=30, **kwargs):
-        # Wait up to 20s for initial worker thread readiness
-        self._started_evt.wait(timeout=20)
-        # We do not abort early on self.client.connected here; if the socket closed
-        # during idle periods, the worker loop will seamlessly reconnect and execute the query!
+        # Wait up to 10s for initial worker thread readiness
+        if not self._started_evt.wait(timeout=10):
+            raise TimeoutError("SteamClientWorker startup timed out")
+        if not self.is_alive():
+            raise ConnectionError("SteamClientWorker thread is dead")
+
         reply_q = queue.Queue()
         self.q.put((func_name, args, kwargs, reply_q))
         try:
@@ -312,22 +340,43 @@ def get_depot_info_from_api(app_id, access_token=None):
             f"Cached data for AppID {app_id} has generic/missing name. Forcing API refresh."
         )
 
-    # 2. Try live Steam PICS first if available (direct from Valve, up-to-date)
-    final_data = None
-    if SteamClient:
-        logger.info(f"Attempting to fetch app info for AppID {app_id} using live Steam PICS...")
-        steam_client_data = _fetch_with_steam_client(app_id, access_token)
-        if steam_client_data and steam_client_data.get("depots"):
-            logger.info(f"Successfully fetched AppID {app_id} via live Steam PICS.")
-            final_data = steam_client_data
+    # 2. Fetch remote app info according to update_check_api_provider setting
+    from utils.settings import get_settings
+    settings = get_settings()
+    update_provider = settings.value("update_check_api_provider", "auto", type=str)
 
-    # 3. Fallback to SteamCMD REST API (caching mirror)
-    if not final_data:
-        logger.info(f"Attempting to fetch app info for AppID {app_id} using SteamCMD REST API...")
+    final_data = None
+    if update_provider == "steamcmd":
+        # SteamCMD primary
+        logger.debug(f"Fetching app info for AppID {app_id} using SteamCMD REST API...")
         steamcmd_data = fetch_steamcmd_info(app_id)
         if steamcmd_data and steamcmd_data.get("depots"):
-            logger.info(f"Successfully fetched AppID {app_id} via SteamCMD REST API fallback.")
             final_data = steamcmd_data
+        elif SteamClient:
+            logger.debug(f"SteamCMD returned no depots for AppID {app_id}; silently falling back to live Steam PICS...")
+            try:
+                steam_client_data = _fetch_with_steam_client(app_id, access_token)
+                if steam_client_data and steam_client_data.get("depots"):
+                    final_data = steam_client_data
+            except Exception as e:
+                logger.debug(f"PICS fallback error for AppID {app_id}: {e}")
+    else:
+        # "auto" or "steampics": live Steam PICS primary
+        if SteamClient:
+            logger.debug(f"Fetching app info for AppID {app_id} using live Steam PICS...")
+            try:
+                steam_client_data = _fetch_with_steam_client(app_id, access_token)
+                if steam_client_data and steam_client_data.get("depots"):
+                    final_data = steam_client_data
+            except Exception as e:
+                logger.debug(f"PICS fetch error for AppID {app_id}: {e}")
+
+        # Smooth and silent fallback to SteamCMD
+        if not final_data:
+            logger.debug(f"Live Steam PICS returned no depots for AppID {app_id}; seamlessly falling back to SteamCMD REST API...")
+            steamcmd_data = fetch_steamcmd_info(app_id)
+            if steamcmd_data and steamcmd_data.get("depots"):
+                final_data = steamcmd_data
 
     web_api_data = _fetch_with_web_api(app_id)
     if not final_data:
@@ -876,24 +925,32 @@ def get_app_branches(appid: str, access_token: str = None, force_refresh: bool =
 
         from utils.settings import get_settings
         settings = get_settings()
-        update_provider = settings.value("update_check_api_provider", "steampics", type=str)
+        update_provider = settings.value("update_check_api_provider", "auto", type=str)
         branches = {}
 
-        if update_provider == "steampics":
+        if update_provider in ("auto", "steampics"):
             # 1. Primary: live steam.client PICS (Valve Direct, authoritative)
-            logger.info(f"Fetching branches for AppID {appid} via live Steam PICS...")
-            data = _fetch_with_steam_client(appid, access_token)
-            branches = data.get("branches", {}) if data else {}
-            if not branches and data:
-                bid = data.get("buildid", "")
-                if bid:
-                    branches = {"public": {"buildid": str(bid)}}
+            logger.debug(f"Fetching branches for AppID {appid} via live Steam PICS...")
+            try:
+                data = _fetch_with_steam_client(appid, access_token)
+                branches = data.get("branches", {}) if data else {}
+                if not branches and data:
+                    bid = data.get("buildid", "")
+                    if bid:
+                        branches = {"public": {"buildid": str(bid)}}
+            except Exception as pics_err:
+                logger.debug(f"PICS branch fetch error for {appid}: {pics_err}")
+                branches = {}
 
-            # Fallback to SteamCMD if PICS returned nothing
+            # Smooth and silent fallback to SteamCMD if PICS returned nothing
             if not branches:
-                logger.info(f"Steam PICS returned no branches for AppID {appid}. Falling back to SteamCMD REST API...")
-                cmd_info = fetch_steamcmd_info(appid)
-                branches = cmd_info.get("branches", {}) if cmd_info else {}
+                logger.debug(f"Steam PICS returned no branches for AppID {appid}. Silently falling back to SteamCMD REST API...")
+                try:
+                    cmd_info = fetch_steamcmd_info(appid)
+                    branches = cmd_info.get("branches", {}) if cmd_info else {}
+                except Exception as cmd_err:
+                    logger.debug(f"SteamCMD branch fetch error for {appid}: {cmd_err}")
+                    branches = {}
         else:
             # 1. Primary: SteamCMD REST API (fast 0.2s HTTP call)
             cmd_info = fetch_steamcmd_info(appid)
@@ -901,13 +958,17 @@ def get_app_branches(appid: str, access_token: str = None, force_refresh: bool =
 
             if not branches:
                 # 2. Fallback to steam.client PICS
-                logger.info(f"SteamCMD API returned no branches for AppID {appid}. Falling back to steam.client PICS...")
-                data = _fetch_with_steam_client(appid, access_token)
-                branches = data.get("branches", {}) if data else {}
-                if not branches and data:
-                    bid = data.get("buildid", "")
-                    if bid:
-                        branches = {"public": {"buildid": str(bid)}}
+                logger.debug(f"SteamCMD API returned no branches for AppID {appid}. Silently falling back to steam.client PICS...")
+                try:
+                    data = _fetch_with_steam_client(appid, access_token)
+                    branches = data.get("branches", {}) if data else {}
+                    if not branches and data:
+                        bid = data.get("buildid", "")
+                        if bid:
+                            branches = {"public": {"buildid": str(bid)}}
+                except Exception as pics_err:
+                    logger.debug(f"PICS branch fallback error for {appid}: {pics_err}")
+                    branches = {}
 
         if branches:
             db = DatabaseManager()

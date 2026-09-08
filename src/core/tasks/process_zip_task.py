@@ -330,11 +330,37 @@ class ProcessZipTask:
                                 f"Found official install directory: {game_data['installdir']}"
                             )
 
-                        if api_data.get("buildid"):
+                        # Check if SteamDB builds cache has a match for the zip manifests
+                        zip_manifests = game_data.get("manifests", {})
+                        steamdb_matched_bid = None
+                        if zip_manifests:
+                            try:
+                                from core.steamdb_scraper import SteamDBBuildsCache
+                                aid_int = int(game_data["appid"]) if str(game_data.get("appid")).isdigit() else 0
+                                if aid_int > 0:
+                                    cached_builds = SteamDBBuildsCache().get_builds(aid_int) or []
+                                    for cb in cached_builds:
+                                        c_depots = cb.get("depots", {})
+                                        if any(str(d_id) in c_depots and c_depots[str(d_id)].get("manifest_id") == str(m_id)
+                                               for d_id, m_id in zip_manifests.items()):
+                                            steamdb_matched_bid = str(cb.get("buildid", ""))
+                                            logger.info(f"[ProcessZipTask] SteamDB matched manifest IDs to historical Build ID: {steamdb_matched_bid}")
+                                            break
+                            except Exception as _sdb_err:
+                                logger.debug(f"SteamDB build matching failed in ProcessZipTask: {_sdb_err}")
+
+                        if steamdb_matched_bid:
+                            game_data["buildid"] = steamdb_matched_bid
+                            if api_data.get("buildid") and str(api_data["buildid"]).isdigit() and steamdb_matched_bid.isdigit():
+                                if int(steamdb_matched_bid) < int(api_data["buildid"]):
+                                    game_data["_is_rollback"] = True
+                        elif api_data.get("buildid"):
                             game_data["buildid"] = api_data["buildid"]
+
+                        if api_data.get("buildid"):
                             get_settings().setValue(f"fetched_buildid/{game_data['appid']}", api_data["buildid"])
                             logger.info(
-                                f"Found official buildid: {game_data['buildid']}"
+                                f"Official live buildid: {api_data['buildid']} (Assigned package buildid: {game_data.get('buildid')})"
                             )
                             # Smart branch detection:
                             # 1. First, try to match by manifest GIDs (most robust, works regardless of zip name)
@@ -446,6 +472,13 @@ class ProcessZipTask:
 
                         enriched_depots = {}
                         filter_soundtracks = get_settings().value("filter_soundtracks", True, type=bool)
+                        db_enrichments = {}
+                        try:
+                            from managers.db_manager import DatabaseManager
+                            db_enrichments = DatabaseManager().get_depot_enrichments(str(game_data.get("appid", "")))
+                        except Exception:
+                            pass
+
                         for depot_id, lua_data in filtered_depots.items():
                             final_depot_data = {"key": lua_data["key"]}
                             details = api_details.get(str(depot_id))
@@ -453,6 +486,27 @@ class ProcessZipTask:
                             base_description = known_depot_descriptions.get(
                                 depot_id, lua_data["desc"]
                             )
+
+                            e_info = db_enrichments.get(str(depot_id))
+                            if e_info:
+                                is_generic = (
+                                    not base_description
+                                    or bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", base_description, re.IGNORECASE))
+                                    or bool(re.match(r"^(?:\[.*?\]\s*)?DLC \d+$", base_description, re.IGNORECASE))
+                                )
+                                if is_generic and e_info.get("name"):
+                                    if e_info.get("is_dlc"):
+                                        base_description = f"[DLC] {e_info['name']}"
+                                    else:
+                                        base_description = e_info["name"]
+                                if not details and e_info.get("oslist"):
+                                    final_depot_data["oslist"] = e_info["oslist"]
+                                if e_info.get("size_bytes"):
+                                    final_depot_data["size"] = e_info["size_bytes"]
+                                if e_info.get("size_str"):
+                                    final_depot_data["size_str"] = e_info["size_str"]
+                                if e_info.get("is_dlc"):
+                                    final_depot_data["is_dlc"] = True
 
                             if details:
                                 tags = []

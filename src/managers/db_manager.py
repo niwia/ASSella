@@ -45,13 +45,26 @@ def _create_empty_db(path: Path) -> None:
 
 
 def _setup_database_path() -> Path:
-    """Ensures the database exists in a writable user location."""
-    writable_path = get_base_path() / "steam_headers.db"
+    """Ensures the database exists in a writable user location in db/."""
+    from utils.helpers import get_data_file_path
 
+    # Migrate legacy root file if present and target in db/ doesn't exist
+    legacy_path = get_base_path() / "steam_headers.db"
+    db_target = get_base_path() / "db" / "steam_headers.db"
+    if legacy_path.exists() and not db_target.exists():
+        try:
+            db_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(legacy_path), str(db_target))
+            logger.info(f"Moved legacy steam_headers.db to {db_target}")
+            return db_target
+        except Exception as e:
+            logger.warning(f"Failed to migrate legacy steam_headers.db: {e}")
+
+    writable_path = get_data_file_path("steam_headers.db")
     if writable_path.exists():
         return writable_path
 
-    get_base_path().mkdir(parents=True, exist_ok=True)
+    writable_path.parent.mkdir(parents=True, exist_ok=True)
     seed_path = Paths.base("data/steam_headers.db")
 
     if not seed_path.exists():
@@ -324,3 +337,95 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"DB Read Error for cache time {appid}: {e}")
         return None
+
+    def save_depot_enrichments(self, appid: str, enrichments: Dict[str, dict]):
+        """Persists enriched depot names and sizes for an appid into steam_headers.db."""
+        if not enrichments or not self.conn:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS depot_enrichments (
+                        depot_id TEXT PRIMARY KEY,
+                        appid TEXT,
+                        name TEXT,
+                        size_str TEXT,
+                        size_bytes INTEGER,
+                        dl_str TEXT,
+                        is_dlc INTEGER,
+                        oslist TEXT,
+                        updated_at INTEGER
+                    )
+                """)
+                now = int(time.time())
+                for dep_id, info in enrichments.items():
+                    cur.execute("""
+                        INSERT INTO depot_enrichments (depot_id, appid, name, size_str, size_bytes, dl_str, is_dlc, oslist, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(depot_id) DO UPDATE SET
+                            appid = excluded.appid,
+                            name = excluded.name,
+                            size_str = excluded.size_str,
+                            size_bytes = excluded.size_bytes,
+                            dl_str = excluded.dl_str,
+                            is_dlc = excluded.is_dlc,
+                            oslist = excluded.oslist,
+                            updated_at = excluded.updated_at
+                    """, (
+                        str(dep_id),
+                        str(appid),
+                        info.get("name", ""),
+                        info.get("size_str", ""),
+                        info.get("size_bytes", 0),
+                        info.get("dl_str", ""),
+                        1 if info.get("is_dlc") else 0,
+                        info.get("oslist"),
+                        now
+                    ))
+                self.conn.commit()
+                logger.info(f"[DBManager] Saved {len(enrichments)} depot enrichments for App {appid}")
+        except Exception as e:
+            logger.error(f"[DBManager] Failed to save depot enrichments for {appid}: {e}")
+
+    def get_depot_enrichments(self, appid: str) -> Dict[str, dict]:
+        """Returns cached depot enrichments for an appid, or empty dict if none."""
+        if not self.conn:
+            return {}
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS depot_enrichments (
+                        depot_id TEXT PRIMARY KEY,
+                        appid TEXT,
+                        name TEXT,
+                        size_str TEXT,
+                        size_bytes INTEGER,
+                        dl_str TEXT,
+                        is_dlc INTEGER,
+                        oslist TEXT,
+                        updated_at INTEGER
+                    )
+                """)
+                cur.execute("""
+                    SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist
+                    FROM depot_enrichments
+                    WHERE appid = ?
+                """, (str(appid),))
+                rows = cur.fetchall()
+                results = {}
+                for r in rows:
+                    results[str(r[0])] = {
+                        "depot_id": str(r[0]),
+                        "name": r[1],
+                        "size_str": r[2],
+                        "size_bytes": r[3] or 0,
+                        "dl_str": r[4],
+                        "is_dlc": bool(r[5]),
+                        "oslist": r[6]
+                    }
+                return results
+        except Exception as e:
+            logger.debug(f"[DBManager] Failed to read depot enrichments for {appid}: {e}")
+            return {}
