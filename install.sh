@@ -107,7 +107,7 @@ get_latest_github_version() {
     fi
 
     if [ -z "$LATEST_URL" ]; then
-        LATEST_URL="https://github.com/niwia/ASSella/releases/latest/download/ASSella.AppImage"
+        LATEST_URL="https://github.com/niwia/ASSella/releases/download/v2.6.3/ASSella.AppImage"
     fi
 }
 
