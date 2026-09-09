@@ -83,7 +83,7 @@ class StatusPagerWidget(QFrame):
     def _handle_broadcast(self, message: str, duration: int, level: str) -> None:
         """Display high-priority broadcast announcement and lock status bar for specified duration."""
         self._broadcast_active = True
-        formatted = f"📢 {message}".upper()
+        formatted = message.upper()
         self.last_msg = formatted
         self.label.setText(formatted)
 
