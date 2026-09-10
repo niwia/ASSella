@@ -1,5 +1,5 @@
 {
-  "active": true,
+  "active": false,
   "message": "Hubcap game updates api is down",
   "duration": 15,
   "level": "warning"
