@@ -70,3 +70,29 @@ def get_jumpscare_gif(filename: str) -> str:
         return str(user_path)
     return ""
 
+
+def is_valid_download_directory(path: str) -> bool:
+    """Validates that a directory path is usable as a download/Steam library location.
+    
+    Rejects empty paths, non-existent directories, and transient system/mount directories
+    such as /tmp, /var/tmp, AppImage mount directories, /proc, /dev, etc.
+    """
+    if not path or not isinstance(path, str):
+        return False
+    clean = path.strip()
+    if not clean:
+        return False
+    try:
+        p = Path(clean).expanduser().resolve()
+        if not p.is_dir():
+            return False
+        real_str = str(p)
+        if real_str in ("/tmp", "/var/tmp", "/proc", "/sys", "/dev"):
+            return False
+        if real_str.startswith(("/tmp/", "/var/tmp/", "/proc/", "/sys/", "/dev/")):
+            return False
+        return True
+    except Exception:
+        return False
+
+

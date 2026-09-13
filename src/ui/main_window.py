@@ -1128,6 +1128,11 @@ class MainWindow(QMainWindow):
             pass
         
         def run_boot_checks():
+            try:
+                from utils.slssteam_integration import check_slssteam_binary_is_latest
+                check_slssteam_binary_is_latest()
+            except Exception as e:
+                logger.debug(f"SLS binary boot version check skipped/failed: {e}")
             run_boot_update_check()
             run_boot_config_check()
 
@@ -1807,7 +1812,7 @@ class MainWindow(QMainWindow):
         # 1. Hubcap API Stats
         hubcap_api_lbl = QLabel("Hubcap:")
         hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
-        self.hubcap_api_value = QLabel("API: --/-- | --/-- | --/--")
+        self.hubcap_api_value = QLabel("API: --/-- | Single: --/--")
         self.hubcap_api_value.setStyleSheet(row_item_style)
         hubcap_api_item = QHBoxLayout()
         hubcap_api_item.setSpacing(4)
@@ -1847,7 +1852,21 @@ class MainWindow(QMainWindow):
         steam_conn_item.addWidget(self.steam_conn_value)
         row1_layout.addLayout(steam_conn_item)
 
-        # 5. SteamDB Solver Status (Right next to Steam) - only visible if Byparr is installed
+        # 5. Overall System & SLS Health Status (lies after steam status thing but before steamdb status)
+        health_lbl = QLabel("Health:")
+        health_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
+        self.health_status_value = QLabel("Checking...")
+        self.health_status_value.setStyleSheet(self._get_status_style("neutral"))
+        self.health_status_value.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.health_status_value.setToolTip("System & SLSsteam Health Status. Click to open Health settings.")
+        self.health_status_value.mousePressEvent = lambda e: self.open_settings(initial_tab="Health")
+        health_item = QHBoxLayout()
+        health_item.setSpacing(4)
+        health_item.addWidget(health_lbl)
+        health_item.addWidget(self.health_status_value)
+        row1_layout.addLayout(health_item)
+
+        # 6. SteamDB Solver Status (Right next to Health) - only visible if Byparr is installed
         self.steamdb_container = QWidget()
         self.steamdb_container.setStyleSheet("background: transparent; border: none;")
         self.steamdb_item = QHBoxLayout(self.steamdb_container)
@@ -2196,6 +2215,65 @@ class MainWindow(QMainWindow):
                 self.steam_conn_value.setText("Offline")
                 self.steam_conn_value.setStyleSheet(self._get_status_style("error"))
 
+        # Health Visor Status (SLS binary + version + config + SLS API)
+        if hasattr(self, "health_status_value") and self.health_status_value:
+            try:
+                import utils.assfixer as assfixer
+                from utils.slssteam_integration import check_slssteam_binary_is_latest
+
+                sls_detected = sls_paths.get("detected", False)
+                ver_res = check_slssteam_binary_is_latest()
+                ver_status = ver_res.get("status", "error")
+                version_ok = (ver_status == "up_to_date")
+
+                cfg_boot_status = getattr(assfixer, "boot_status", None)
+                config_ok = (cfg_boot_status == "optimal")
+
+                sls_api_enabled = self.settings.value("experimental_acf_independent", False, type=bool) if self.settings else False
+                sls_api_active = sls_api_enabled and is_slssteam_process_active()
+
+                if cfg_boot_status in ("checking", None) or ver_status == "checking":
+                    self.health_status_value.setText("Checking...")
+                    self.health_status_value.setStyleSheet(self._get_status_style("neutral"))
+                    self.health_status_value.setToolTip("Checking System & SLS Health status...")
+                elif sls_detected and version_ok and config_ok and sls_api_active:
+                    self.health_status_value.setText("Good")
+                    self.health_status_value.setStyleSheet(self._get_status_style("success"))
+                    self.health_status_value.setToolTip(
+                        "Health: Good\n"
+                        "• SLSsteam Binary: Detected\n"
+                        f"• SLSsteam Version: Up to date ({ver_res.get('release_tag', '')})\n"
+                        "• SLS Config: Optimal\n"
+                        "• SLS Native API: Active\n\n"
+                        "Click to open Health settings."
+                    )
+                else:
+                    issues = []
+                    if not sls_detected:
+                        issues.append("SLSsteam binary not found")
+                    elif not version_ok:
+                        tag = ver_res.get("release_tag", "")
+                        issues.append(f"SLSsteam update available ({tag})" if tag else "SLSsteam outdated")
+                    if not config_ok:
+                        issues.append("SLS config needs repair/resync")
+                    if not sls_api_active:
+                        if not sls_api_enabled:
+                            issues.append("SLS Native API disabled in settings")
+                        elif not is_slssteam_process_active():
+                            if not is_steam_process_running():
+                                issues.append("Steam not running (SLS not injected)")
+                            else:
+                                issues.append("SLS process not injected into Steam")
+
+                    self.health_status_value.setText("Attention" if issues else "Checking...")
+                    self.health_status_value.setStyleSheet(self._get_status_style("warning"))
+                    tooltip = "Health: Attention required\n" + "\n".join(f"• {iss}" for iss in issues) + "\n\nClick to open Health settings."
+                    self.health_status_value.setToolTip(tooltip)
+            except Exception as e:
+                logger.debug(f"Error updating Health visor status: {e}")
+                self.health_status_value.setText("Checking...")
+                self.health_status_value.setStyleSheet(self._get_status_style("neutral"))
+
 
 
 
@@ -2433,12 +2511,7 @@ class MainWindow(QMainWindow):
         usage = stats.get("daily_usage", 0)
         limit = stats.get("daily_limit", 55)
 
-        # 2. Bundle generation (Full Game / Updates)
-        bundle_info = gen_usage.get("bundle", {}) if isinstance(gen_usage, dict) else {}
-        b_usage = bundle_info.get("usage", 0)
-        b_limit = bundle_info.get("limit", 100)
-
-        # 3. Single depot generation
+        # 2. Single depot generation
         single_info = gen_usage.get("single", {}) if isinstance(gen_usage, dict) else {}
         s_usage = single_info.get("usage", 0)
         s_limit = single_info.get("limit", 1500)
@@ -2467,11 +2540,10 @@ class MainWindow(QMainWindow):
         else:
             expiry_text = "Never"
 
-        quota_str = f"API: {usage}/{limit} | {b_usage}/{b_limit} | {s_usage}/{s_limit}"
+        quota_str = f"API: {usage}/{limit} | Single: {s_usage}/{s_limit}"
         tooltip_str = (
             f"Hubcap API Quotas & Limits:\n"
             f"• API / Daily Manifests: {usage} / {limit}\n"
-            f"• App Bundle Generations: {b_usage} / {b_limit}\n"
             f"• Single Depot Generations: {s_usage} / {s_limit}\n"
             f"• API Key Expiry: {expiry_text}"
         )
@@ -2670,6 +2742,10 @@ class MainWindow(QMainWindow):
                                             parsed_data.get("header_url"),
                                             self,
                                             selected_depots=prev_selected,
+                                            is_single_depot=(len(depots) == 1),
+                                            missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
+                                            missing_depots_info=parsed_data.get("missing_depots_info"),
+                                            refetched_depots=parsed_data.get("refetched_depots"),
                                         )
                                         if depot_dialog.exec():
                                             result_holder[0] = depot_dialog.get_selected_depots()

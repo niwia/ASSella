@@ -683,24 +683,31 @@ class DownloadDepotsTask(QObject):
                     except Exception as e:
                         self.progress.emit(f"Warning: Failed to copy local depotcache manifest: {e}")
 
-            # Fallback 2: if manifest is missing or empty, download and extract it from Hubcap API
+            # Fallback 2: if manifest is missing or empty, generate single manifest directly (1,500/day pool) or fallback to bundle
             if not os.path.exists(manifest_file_path) or os.path.getsize(manifest_file_path) == 0:
-                self.progress.emit(f"Manifest file {os.path.basename(manifest_file_path)} is missing/invalid. Requesting fallback download from Hubcap...")
+                self.progress.emit(f"Manifest file {os.path.basename(manifest_file_path)} is missing/invalid. Requesting single manifest generation from Hubcap...")
                 try:
                     from core import morrenus_api
-                    import zipfile
-                    
-                    app_id = str(game_data["appid"])
-                    target_branch = game_data.get("branch") or settings.value(f"selected_branch/{app_id}", "public", type=str)
-                    fpath, err = morrenus_api.download_manifest(app_id, target_branch)
-                    if fpath and os.path.exists(fpath):
-                        with zipfile.ZipFile(fpath, "r") as zip_ref:
-                            for item_name in zip_ref.namelist():
-                                if item_name.endswith(".manifest"):
-                                    dest_item_path = os.path.join(manifest_dir, os.path.basename(item_name))
-                                    with open(dest_item_path, "wb") as mf:
-                                        mf.write(zip_ref.read(item_name))
-                                    self.progress.emit(f"Successfully extracted fallback manifest: {os.path.basename(dest_item_path)}")
+                    manifest_bytes, gen_err = morrenus_api.generate_single_manifest(depot_id, manifest_id)
+                    if manifest_bytes:
+                        os.makedirs(os.path.dirname(manifest_file_path), exist_ok=True)
+                        with open(manifest_file_path, "wb") as mf:
+                            mf.write(manifest_bytes)
+                        self.progress.emit(f"Successfully generated single manifest: {os.path.basename(manifest_file_path)}")
+                    else:
+                        logger.warning(f"Single manifest generation failed ({gen_err}). Falling back to bundle download...")
+                        import zipfile
+                        app_id = str(game_data["appid"])
+                        target_branch = game_data.get("branch") or settings.value(f"selected_branch/{app_id}", "public", type=str)
+                        fpath, err = morrenus_api.download_manifest(app_id, target_branch)
+                        if fpath and os.path.exists(fpath):
+                            with zipfile.ZipFile(fpath, "r") as zip_ref:
+                                for item_name in zip_ref.namelist():
+                                    if item_name.endswith(".manifest"):
+                                        dest_item_path = os.path.join(manifest_dir, os.path.basename(item_name))
+                                        with open(dest_item_path, "wb") as mf:
+                                            mf.write(zip_ref.read(item_name))
+                                        self.progress.emit(f"Successfully extracted fallback manifest: {os.path.basename(dest_item_path)}")
                 except Exception as e:
                     self.progress.emit(f"Warning: Failed to fetch fallback manifest from Hubcap: {e}")
 

@@ -46,6 +46,17 @@ def get_settings() -> QSettings:
             _settings_local.instance.setValue("workshop_max_downloads", 4)
             _settings_local.instance.setValue("use_lancache", True)
             _settings_local.instance.sync()
+
+        # Sanitize default_download_directory (e.g. if transient /tmp was left behind)
+        try:
+            from utils.paths import is_valid_download_directory
+            cur_dl = _settings_local.instance.value("default_download_directory", "", type=str)
+            if cur_dl and not is_valid_download_directory(cur_dl):
+                _settings_local.instance.setValue("default_download_directory", "")
+                _settings_local.instance.sync()
+        except Exception:
+            pass
+
     return _settings_local.instance
 
 

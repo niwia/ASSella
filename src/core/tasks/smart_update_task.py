@@ -37,11 +37,10 @@ logger = logging.getLogger(__name__)
 
 class SmartUpdateTask(QObject):
     """
-    Assembles a complete game_data dict for an update/install using a smart tiered strategy:
-      1. Single Manifest API (/generate/manifest) for single-depot games or delta updates (1,500/day pool)
-      2. Bundle Manifest API (/generate/appmanifest) for multi-depot games (100/day pool)
-      3. Multi-Single Fallback loop if bundle generation fails or is rate-limited
-      4. Classic Full Zip Fallback (/manifest/{appid}) if cloud generation fails (55/day pool)
+    Assembles a complete game_data dict for an update/install using a smart strategy:
+      1. Local Cache Check (Tier 0): Reuses existing exact matching manifest GIDs if present
+      2. Single Depot Manifest API (/generate/manifest) for all target depots (1,500/day pool)
+      3. Classic Full Zip Fallback (/manifests/{appid}) if cloud generation fails (55/day pool)
 
     Signals:
         progress(str)            — Human-readable step log (shown in main window pager)
@@ -254,116 +253,75 @@ class SmartUpdateTask(QObject):
             except Exception as e:
                 logger.debug(f"[SmartUpdate] Tier 0 cache check error: {e}")
 
-        # If Tier 0 did not satisfy all target depots, proceed with remote generation tiers
+        # If Tier 0 did not satisfy all target depots, proceed with remote generation
         if not manifest_mapping or not zip_bytes:
-            if needed_count == 1:
-                # ── PATH 1: Single Depot Target ──
-                # Tier 1A: Try Single Manifest API (1,500/day pool)
-                depot_id, gid = next(iter(target_depots.items()))
-                self.progress.emit(
-                    f"[Smart Update] Step 4/4: Single-depot target ({depot_id}) — fetching via /generate/manifest..."
-                )
-                logger.info(
-                    f"[SmartUpdate] Tier 1A: Attempting single manifest generation for AppID {self.appid}, "
-                    f"Depot {depot_id}, GID {gid} (1,500/day pool)..."
-                )
-                raw_bytes, s_err = morrenus_api.generate_single_manifest(depot_id, gid)
-                if raw_bytes and not s_err:
-                    logger.info(f"[SmartUpdate] Tier 1A SUCCESS: Single manifest generated for Depot {depot_id} ({len(raw_bytes)} bytes)")
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                        zf.writestr(f"{depot_id}_{gid}.manifest", raw_bytes)
-                    zip_bytes = zip_buffer
-                    manifest_mapping[depot_id] = gid
-                else:
-                    # Tier 1B: Fallback to Bundle Generation (100/day pool)
-                    logger.warning(
-                        f"[SmartUpdate] Tier 1A failed ({s_err}) — "
-                        f"Tier 1B: Falling back to bundle generation for AppID {self.appid} (100/day pool)..."
+            if needed_count >= 1:
+                # ── Primary Remote Path: Single Depot Generation Loop (1,500/day pool) ──
+                if needed_count == 1:
+                    depot_id, gid = next(iter(target_depots.items()))
+                    self.progress.emit(
+                        f"[Smart Update] Step 4/4: Single-depot target ({depot_id}) — fetching via /generate/manifest..."
                     )
-                    self.progress.emit(f"[Smart Update] Single manifest failed ({s_err}) — trying bundle generation...")
-                    bundle_bytes, b_err = morrenus_api.generate_bundle_manifest(self.appid, branch=self.branch)
-                    if bundle_bytes and not b_err:
-                        logger.info(f"[SmartUpdate] Tier 1B SUCCESS: Bundle manifest generated for AppID {self.appid}")
-                        zip_bytes = io.BytesIO(bundle_bytes)
-                        manifest_mapping = self._extract_manifest_mapping_from_zip(zip_bytes)
-                    else:
-                        # Tier 1C: Fallback to Classic Full Zip Download (55/day pool)
-                        logger.warning(
-                            f"[SmartUpdate] Tier 1B also failed ({b_err}) — "
-                            "falling back to classic full zip download..."
-                        )
-                        reason = f"Generation endpoints failed for AppID {self.appid}: {b_err or s_err}"
-                        self.needs_full_zip.emit(reason)
-                        return
-
-            elif needed_count >= 2:
-                # ── PATH 2: Multi-Depot Target ──
-                # Tier 2A: Try Bundle Generation (100/day pool, single roundtrip for all depots)
-                self.progress.emit(
-                    f"[Smart Update] Step 4/4: Multi-depot target ({needed_count} depots) — fetching via /generate/appmanifest..."
-                )
-                logger.info(
-                    f"[SmartUpdate] Tier 2A: Attempting bundle generation for AppID {self.appid}, "
-                    f"branch='{self.branch}' ({needed_count} depots)..."
-                )
-                bundle_bytes, b_err = morrenus_api.generate_bundle_manifest(self.appid, branch=self.branch)
-                if bundle_bytes and not b_err:
-                    logger.info(f"[SmartUpdate] Tier 2A SUCCESS: Bundle manifest generated for AppID {self.appid}")
-                    zip_bytes = io.BytesIO(bundle_bytes)
-                    manifest_mapping = self._extract_manifest_mapping_from_zip(zip_bytes)
+                    logger.info(
+                        f"[SmartUpdate] Attempting single manifest generation for AppID {self.appid}, "
+                        f"Depot {depot_id}, GID {gid} (1,500/day pool)..."
+                    )
                 else:
-                    # Tier 2B: Fallback to Multi-Single Generation Loop (1,500/day pool)
+                    self.progress.emit(
+                        f"[Smart Update] Step 4/4: Fetching {needed_count} depot manifest(s) via /generate/manifest..."
+                    )
+                    logger.info(
+                        f"[SmartUpdate] Attempting single manifest generation loop for AppID {self.appid} "
+                        f"({needed_count} depots, 1,500/day pool)..."
+                    )
+
+                gen_zip_buffer = io.BytesIO()
+                gen_mapping = {}
+                all_singles_ok = True
+                fail_reason = ""
+
+                with zipfile.ZipFile(gen_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for d_id, d_gid in target_depots.items():
+                        logger.info(f"[SmartUpdate] Fetching Depot {d_id} (GID {d_gid}) via /generate/manifest...")
+                        raw_bytes, s_err = morrenus_api.generate_single_manifest(d_id, d_gid)
+                        if raw_bytes and not s_err:
+                            zf.writestr(f"{d_id}_{d_gid}.manifest", raw_bytes)
+                            gen_mapping[d_id] = d_gid
+                        else:
+                            fail_reason = s_err or f"Failed to generate manifest for depot {d_id}"
+                            logger.warning(f"[SmartUpdate] Single manifest failed for Depot {d_id}: {fail_reason}")
+                            all_singles_ok = False
+                            break
+
+                if all_singles_ok and len(gen_mapping) == needed_count:
+                    logger.info(f"[SmartUpdate] Manifest generation SUCCESS: Fetched all {needed_count} depot(s)!")
+                    zip_bytes = gen_zip_buffer
+                    manifest_mapping = gen_mapping
+                else:
+                    # Fallback to Classic Full Zip Download (55/day pool)
                     logger.warning(
-                        f"[SmartUpdate] Tier 2A failed ({b_err}) — "
-                        f"Tier 2B: Falling back to fetching all {needed_count} depots individually via /generate/manifest (1,500/day pool)..."
+                        f"[SmartUpdate] Single depot generation failed ({fail_reason}) — "
+                        "falling back to classic full zip download..."
                     )
                     self.progress.emit(
-                        f"[Smart Update] Bundle generation failed — attempting multi-single depot fetch ({needed_count} depots)..."
+                        "[Smart Update] Single depot generation failed — falling back to classic full zip download..."
                     )
-                    multi_zip_buffer = io.BytesIO()
-                    multi_mapping = {}
-                    all_singles_ok = True
-
-                    with zipfile.ZipFile(multi_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for d_id, d_gid in target_depots.items():
-                            logger.info(f"[SmartUpdate] Multi-single: Fetching Depot {d_id} (GID {d_gid})...")
-                            raw_bytes, s_err = morrenus_api.generate_single_manifest(d_id, d_gid)
-                            if raw_bytes and not s_err:
-                                zf.writestr(f"{d_id}_{d_gid}.manifest", raw_bytes)
-                                multi_mapping[d_id] = d_gid
-                            else:
-                                logger.error(f"[SmartUpdate] Multi-single failed for Depot {d_id}: {s_err}")
-                                all_singles_ok = False
-                                break
-
-                    if all_singles_ok and len(multi_mapping) == needed_count:
-                        logger.info(f"[SmartUpdate] Tier 2B SUCCESS: Multi-single fetch completed for all {needed_count} depots!")
-                        zip_bytes = multi_zip_buffer
-                        manifest_mapping = multi_mapping
-                    else:
-                        # Tier 2C: Fallback to Classic Full Zip Download (55/day pool)
-                        logger.warning(
-                            f"[SmartUpdate] Tier 2B failed — "
-                            "falling back to classic full zip download..."
-                        )
-                        reason = f"Bundle and multi-single generation failed for AppID {self.appid}: {b_err}"
-                        self.needs_full_zip.emit(reason)
-                        return
-
-            else:
-                # ── PATH 3: Unknown / No Target Depots in PICS -> Try Bundle Generation ──
-                self.progress.emit(
-                    f"[Smart Update] Step 4/4: Fetching live manifests from /generate/appmanifest/{self.appid}..."
-                )
-                bundle_bytes, b_err = morrenus_api.generate_bundle_manifest(self.appid, branch=self.branch)
-                if bundle_bytes and not b_err:
-                    zip_bytes = io.BytesIO(bundle_bytes)
-                    manifest_mapping = self._extract_manifest_mapping_from_zip(zip_bytes)
-                else:
-                    reason = f"Generate bundle failed for AppID {self.appid}: {b_err}"
+                    reason = f"Single depot generation failed for AppID {self.appid}: {fail_reason}"
                     self.needs_full_zip.emit(reason)
                     return
+
+            else:
+                # ── No target depots identified in PICS -> Direct Fallback to Classic Full Zip ──
+                logger.warning(
+                    f"[SmartUpdate] No target depots identified in PICS for AppID {self.appid} — "
+                    "falling back to classic full zip download..."
+                )
+                self.progress.emit(
+                    f"[Smart Update] Step 4/4: No PICS depot mapping — falling back to full zip download..."
+                )
+                reason = f"No target depot GIDs in PICS for AppID {self.appid}"
+                self.needs_full_zip.emit(reason)
+                return
 
         if not manifest_mapping or not zip_bytes:
             reason = f"Generate endpoint returned no manifest files for AppID {self.appid}"

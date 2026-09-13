@@ -17,6 +17,7 @@ import re
 import zipfile
 import logging
 import threading
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QMetaObject
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QFrame,
     QCheckBox,
+    QComboBox,
 )
 
 from ui.material_progress import MaterialSpinner
@@ -273,6 +275,49 @@ class ZipImportConfirmationDialog(QDialog):
         pin_layout.addWidget(self.pin_desc_lbl)
 
         self.confirm_layout.addWidget(self.pin_frame)
+
+        # Destination Library Frame
+        self.dest_frame = QFrame()
+        self.dest_frame.setStyleSheet("""
+            QFrame {
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+            }
+        """)
+        dest_layout = QHBoxLayout(self.dest_frame)
+        dest_layout.setContentsMargins(10, 6, 10, 6)
+        dest_layout.setSpacing(10)
+
+        dest_lbl = QLabel("Install Location:")
+        dest_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.85); font-size: 8.8pt; font-weight: 600; border: none; background: transparent;")
+        dest_layout.addWidget(dest_lbl)
+
+        self.dest_combo = QComboBox()
+        self.dest_combo.setFixedHeight(28)
+        self.dest_combo.setStyleSheet("""
+            QComboBox {
+                background-color: rgba(255, 255, 255, 0.07);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                padding: 2px 10px;
+                font-size: 8.5pt;
+                font-weight: 500;
+            }
+            QComboBox:hover {
+                border-color: rgba(255, 255, 255, 0.3);
+            }
+            QComboBox QAbstractItemView {
+                background-color: #1a1a24;
+                color: #FFFFFF;
+                selection-background-color: #4C8DF5;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+            }
+        """)
+        dest_layout.addWidget(self.dest_combo, 1)
+        self.confirm_layout.addWidget(self.dest_frame)
+
         self.confirm_layout.addStretch(1)
 
         # Bottom Button Row
@@ -390,16 +435,20 @@ class ZipImportConfirmationDialog(QDialog):
         settings = get_settings()
         installed_bid = str(settings.value(f"installed_buildid/{info['appid']}", "", type=str)).strip()
         installed_branch = str(settings.value(f"installed_branch/{info['appid']}", "public", type=str)).strip()
+        installed_lib_path = ""
 
-        # If not in settings, check if game is detected in Steam library by GameManager
-        if not installed_bid and hasattr(self, "parent") and self.parent():
+        # Check if game is detected in Steam library by GameManager
+        if hasattr(self, "parent") and self.parent():
             gm = getattr(self.parent(), "game_manager", None)
-            if gm:
+            if gm and hasattr(gm, "get_game"):
                 installed_game = gm.get_game(info["appid"])
                 if installed_game:
-                    installed_bid = str(installed_game.get("buildid", "")).strip()
+                    if not installed_bid:
+                        installed_bid = str(installed_game.get("buildid", "")).strip()
                     if not game_name and installed_game.get("game_name"):
                         game_name = installed_game["game_name"]
+                    if installed_game.get("library_path"):
+                        installed_lib_path = installed_game["library_path"]
 
         # Look up in steam_headers.db ONLY for the game name (NEVER for installed status!)
         try:
@@ -415,6 +464,7 @@ class ZipImportConfirmationDialog(QDialog):
         info["game_name"] = game_name or f"App {info['appid']}"
         info["installed_buildid"] = installed_bid
         info["is_installed"] = bool(installed_bid)
+        info["library_path"] = installed_lib_path
 
         # SteamDB Scraping & Correlating (with robust timeout & fallback)
         try:
@@ -591,6 +641,77 @@ class ZipImportConfirmationDialog(QDialog):
         else:
             self.installed_status_lbl.setText("Currently Installed: <i>Not Installed</i>")
 
+        # Populate Destination Libraries
+        from core.steam_helpers import get_steam_libraries, find_steam_install
+        from utils.paths import is_valid_download_directory
+        import shutil
+
+        self.dest_combo.clear()
+        detected_libs = []
+        try:
+            raw_libs = get_steam_libraries() or []
+            for p in raw_libs:
+                if p and is_valid_download_directory(p):
+                    real_p = os.path.realpath(p)
+                    if real_p not in detected_libs:
+                        detected_libs.append(real_p)
+        except Exception:
+            pass
+
+        settings = get_settings()
+        def_dir = settings.value("default_download_directory", "", type=str)
+        if def_dir and is_valid_download_directory(def_dir):
+            real_def = os.path.realpath(def_dir)
+            if real_def not in detected_libs:
+                detected_libs.append(real_def)
+
+        steam_root = find_steam_install()
+        preselect_idx = 0
+        installed_lib = data.get("library_path")
+        real_installed = os.path.realpath(installed_lib) if (installed_lib and is_valid_download_directory(installed_lib)) else None
+
+        for idx, lib_path in enumerate(detected_libs):
+            p_obj = Path(lib_path)
+            try:
+                free_b = shutil.disk_usage(lib_path).free
+                if free_b >= 1024**4:
+                    free_str = f"{free_b / (1024**4):.1f} TB free"
+                elif free_b >= 1024**3:
+                    free_str = f"{free_b / (1024**3):.1f} GB free"
+                else:
+                    free_str = f"{free_b / (1024**2):.0f} MB free"
+            except Exception:
+                free_str = ""
+
+            p_lower = lib_path.lower()
+            if steam_root and os.path.realpath(lib_path) == os.path.realpath(steam_root):
+                drive_name = "Primary Drive"
+            elif "/.local/share/steam" in p_lower or "/.steam/steam" in p_lower:
+                drive_name = "Primary Drive"
+            elif "sdcard" in p_lower or "sd_card" in p_lower or "mmcblk" in p_lower or "/sd" in p_lower:
+                drive_name = "SD Card"
+            else:
+                drive_name = p_obj.name
+                if drive_name.lower() in ("steamlibrary", "steamapps", "common") and len(p_obj.parts) > 1:
+                    drive_name = p_obj.parts[-2]
+
+            display_txt = f"{drive_name} ({lib_path})"
+            if free_str:
+                display_txt += f" — {free_str}"
+
+            self.dest_combo.addItem(display_txt, lib_path)
+
+            if real_installed and os.path.realpath(lib_path) == real_installed:
+                preselect_idx = idx
+            elif not real_installed and def_dir and os.path.realpath(lib_path) == os.path.realpath(def_dir):
+                preselect_idx = idx
+
+        if self.dest_combo.count() > 0:
+            self.dest_combo.setCurrentIndex(preselect_idx)
+            self.dest_frame.setVisible(True)
+        else:
+            self.dest_frame.setVisible(False)
+
         # Switch to confirmation page
         self.stack.setCurrentIndex(1)
 
@@ -600,6 +721,11 @@ class ZipImportConfirmationDialog(QDialog):
         ProcessZipTask pre-processes the package. This prevents the main window from
         prematurely flashing the download progress screen before DepotSelectionDialog opens!
         """
+        if self.dest_combo.count() > 0 and self.dest_combo.currentData():
+            chosen_lib = self.dest_combo.currentData()
+            self.result_data["library_path"] = chosen_lib
+            logger.info(f"[ZipConfirmDialog] User selected destination library: {chosen_lib}")
+
         self.loading_title.setText("Preparing Package...")
         self.loading_sub.setText("Resolving depots and branches for installation")
         self.loading_cancel_btn.setVisible(False)
@@ -610,6 +736,8 @@ class ZipImportConfirmationDialog(QDialog):
                 from core.tasks.process_zip_task import ProcessZipTask
                 task = ProcessZipTask()
                 game_data = task.run(self.zip_path)
+                if self.result_data.get("library_path"):
+                    game_data["library_path"] = self.result_data["library_path"]
                 self.processed_game_data = game_data
             except Exception as e:
                 logger.error(f"Error preparing package in confirmation dialog: {e}")
@@ -631,6 +759,8 @@ class ZipImportConfirmationDialog(QDialog):
             "patch_title": self.result_data.get("patch_title", ""),
             "game_name": self.result_data.get("game_name", ""),
         }
+        if self.result_data.get("library_path"):
+            meta["library_path"] = self.result_data["library_path"]
         if self.processed_game_data:
             meta["preprocessed_game_data"] = self.processed_game_data
         return meta

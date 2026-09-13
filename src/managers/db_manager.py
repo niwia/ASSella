@@ -207,6 +207,10 @@ class DatabaseManager:
                     )
                     del depots_data["branches"]
 
+                hasdepotsindlc = depots_data.pop("hasdepotsindlc", None)
+                listofdlc = depots_data.pop("listofdlc", None)
+                dlcs_expanded = depots_data.pop("dlcs_expanded", None)
+
                 full_header_url = _construct_full_url(row["header_path"])
 
                 return {
@@ -217,6 +221,9 @@ class DatabaseManager:
                     "depots": depots_data,
                     "buildid": buildid,
                     "branches": branches,
+                    "hasdepotsindlc": hasdepotsindlc,
+                    "listofdlc": listofdlc,
+                    "dlcs_expanded": dlcs_expanded,
                     "source": "database",
                 }
 
@@ -273,14 +280,98 @@ class DatabaseManager:
         return True
 
     def _perform_full_upsert(self, cur, appid, data, header_path, now):
-        name = data.get("name", f"App {appid}")
-        installdir = data.get("installdir")
-        depots_to_save = data.get("depots", {}).copy()
+        cur.execute(
+            "SELECT name, header_path, installdir, depots_json FROM apps WHERE appid = ?",
+            (appid,),
+        )
+        row = cur.fetchone()
 
+        existing_depots = {}
+        existing_branches = None
+        existing_name = None
+        existing_header = None
+        existing_installdir = None
+        existing_hasdepotsindlc = None
+        existing_listofdlc = None
+        existing_dlcs_expanded = None
+
+        if row:
+            existing_name = row["name"]
+            existing_header = row["header_path"]
+            existing_installdir = row["installdir"]
+            if row["depots_json"]:
+                decompressed = self._decompress_depots(row["depots_json"], appid)
+                if isinstance(decompressed, dict):
+                    existing_branches = decompressed.pop("branches", None)
+                    existing_hasdepotsindlc = decompressed.pop("hasdepotsindlc", None)
+                    existing_listofdlc = decompressed.pop("listofdlc", None)
+                    existing_dlcs_expanded = decompressed.pop("dlcs_expanded", None)
+                    existing_depots = decompressed
+
+        # Preserve existing metadata if incoming data doesn't provide it
+        name = data.get("name") or existing_name or f"App {appid}"
+        installdir = data.get("installdir") or existing_installdir
+        final_header = header_path or existing_header
+
+        # Merge depots (only include digit keys in depots)
+        incoming_depots = data.get("depots")
+        if incoming_depots and isinstance(incoming_depots, dict):
+            for d_id, d_val in incoming_depots.items():
+                if str(d_id).isdigit():
+                    existing_depots[str(d_id)] = d_val
+        depots_to_save = existing_depots
+
+        # Preserve / merge DLC expansion flags
+        if "hasdepotsindlc" in data:
+            depots_to_save["hasdepotsindlc"] = data["hasdepotsindlc"]
+        elif existing_hasdepotsindlc is not None:
+            depots_to_save["hasdepotsindlc"] = existing_hasdepotsindlc
+
+        if "listofdlc" in data:
+            depots_to_save["listofdlc"] = data["listofdlc"]
+        elif existing_listofdlc is not None:
+            depots_to_save["listofdlc"] = existing_listofdlc
+
+        if "dlcs_expanded" in data:
+            depots_to_save["dlcs_expanded"] = data["dlcs_expanded"]
+        elif existing_dlcs_expanded is not None:
+            depots_to_save["dlcs_expanded"] = existing_dlcs_expanded
+
+        # Check if Steam reports a new buildid for public branch
+        incoming_buildid = None
+        if data.get("buildid"):
+            incoming_buildid = str(data["buildid"]).strip()
+        elif isinstance(data.get("branches"), dict):
+            incoming_buildid = str(data["branches"].get("public", {}).get("buildid") or "").strip()
+
+        old_buildid = None
+        if isinstance(existing_branches, dict):
+            old_buildid = str(existing_branches.get("public", {}).get("buildid") or "").strip()
+
+        if old_buildid and incoming_buildid and old_buildid != incoming_buildid:
+            logger.info(
+                f"[db_manager] BuildID changed for AppID {appid}: {old_buildid} -> {incoming_buildid}. "
+                f"Clearing dlcs_expanded to trigger fresh DLC expansion."
+            )
+            if "dlcs_expanded" not in data:
+                depots_to_save["dlcs_expanded"] = False
+
+        # Merge branches
         if data.get("branches"):
-            depots_to_save["branches"] = data["branches"]
+            merged_branches = existing_branches if isinstance(existing_branches, dict) else {}
+            if isinstance(data["branches"], dict):
+                merged_branches.update(data["branches"])
+                depots_to_save["branches"] = merged_branches
+            else:
+                depots_to_save["branches"] = data["branches"]
         elif data.get("buildid"):
-            depots_to_save["branches"] = {"public": {"buildid": data["buildid"]}}
+            merged_branches = existing_branches if isinstance(existing_branches, dict) else {}
+            pub = merged_branches.get("public", {}) if isinstance(merged_branches.get("public"), dict) else {}
+            pub["buildid"] = data["buildid"]
+            merged_branches["public"] = pub
+            depots_to_save["branches"] = merged_branches
+        elif existing_branches:
+            depots_to_save["branches"] = existing_branches
 
         depots_json_str = json.dumps(depots_to_save)
         depots_compressed = self.cctx.compress(depots_json_str.encode("utf-8"))
@@ -291,7 +382,7 @@ class DatabaseManager:
             (appid, name, header_path, installdir, depots_json, last_updated)
             VALUES (?, ?, ?, ?, ?, ?)
         """,
-            (appid, name, header_path, installdir, depots_compressed, now),
+            (appid, name, final_header, installdir, depots_compressed, now),
         )
         self.conn.commit()
 

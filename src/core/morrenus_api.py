@@ -22,11 +22,15 @@ MAX_SEARCH_LIMIT = 100
 
 # Error messages for specific HTTP status codes
 API_ERROR_MESSAGES = {
+    400: "Bad Request. The request parameters were invalid.",
     401: "Invalid or missing API key. Please check your credentials in Settings.",
     403: "Access denied. Your account may be blocked or the App ID is not accessible.",
-    404: "Game not found in library. The App ID may be incorrect or not available.",
+    404: "Manifest not found on Hubcap. The App ID may be incorrect, unavailable on the server, or belongs to a DLC/depot rather than the base game.",
     429: "Daily API limit exceeded. Please try again later.",
-    500: "Server error. The manifest may be corrupted or temporarily unavailable.",
+    500: "Server error. The manifest may be corrupted or temporarily unavailable on Hubcap.",
+    502: "Bad Gateway. Hubcap server is temporarily unreachable.",
+    503: "Service Unavailable. Hubcap server is temporarily offline or undergoing maintenance.",
+    504: "Gateway Timeout. Hubcap server took too long to respond.",
 }
 
 
@@ -80,26 +84,41 @@ def _handle_request_exception(e: Exception, context: str) -> str:
     error_str = str(e).lower()
 
     if isinstance(e, requests.exceptions.HTTPError):
-        response = e.response
-        status_code = response.status_code if response else "N/A"
+        response = getattr(e, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code is None:
+            for code in (404, 401, 403, 400, 429, 500, 502, 503, 504):
+                if str(code) in error_str:
+                    status_code = code
+                    break
 
         # Return mapped user-friendly error if exists
         if isinstance(status_code, int) and status_code in API_ERROR_MESSAGES:
             return API_ERROR_MESSAGES[status_code]
 
-        # Try to get detail from API response
+        # Try to get detail from API response if JSON
         try:
-            if response:
-                error_detail = response.json().get("detail", response.text)
-                return f"API Error ({status_code}): {error_detail}"
-        except ValueError:
+            if response is not None:
+                content_type = response.headers.get("content-type", "")
+                if "application/json" in content_type:
+                    error_detail = response.json().get("detail")
+                    if error_detail:
+                        return f"API Error ({status_code or 'Unknown'}): {error_detail}"
+        except Exception:
             pass
-        return f"API Error ({status_code})"
+
+        if status_code and status_code != "N/A":
+            return f"API Error ({status_code})"
+        return f"HTTP Request Failed: {e}"
+
+    if "404" in error_str or "not found" in error_str:
+        return API_ERROR_MESSAGES[404]
 
     if "ssl" in error_str or "wrong_version_number" in error_str:
         return "SSL connection failed. Check proxy/firewall settings."
 
     return f"Request Failed: {e}"
+
 
 
 def _make_json_request(
@@ -291,30 +310,13 @@ def generate_bundle_manifest(
     app_id: Union[str, int], branch: str = "public"
 ) -> Tuple[Optional[bytes], Optional[str]]:
     """
-    Generates an app manifest bundle (.zip containing all depot manifests) via Hubcap API (/generate/appmanifest).
-    Uses the 100/day bundle quota pool.
-    Returns (zip_bytes, None) on success, or (None, error_message) on failure.
+    [DEPRECATED] Generates an app manifest bundle via Hubcap API (/generate/appmanifest).
+    The upstream bundle endpoint has been decommissioned. Use generate_single_manifest instead.
     """
-    headers = _get_headers()
-    if not headers:
-        return None, "API Key is not set. Please set it in Settings."
-
-    url = f"{BASE_URL}/generate/appmanifest/{app_id}"
-    if branch and branch != "public":
-        url += f"?branch={branch}"
-    else:
-        url += "?branch=public"
-
-    try:
-        from utils.isp_bypass import execute_hubcap_request
-        response = execute_hubcap_request(
-            get_session(), "GET", url, headers=headers, stream=True, timeout=60
-        )
-        response.raise_for_status()
-        return response.content, None
-    except Exception as e:
-        err = _handle_request_exception(e, f"Bundle manifest generate (AppID {app_id}, branch {branch})")
-        return None, err
+    logger.warning(
+        f"generate_bundle_manifest called for AppID {app_id}, but the bundle API endpoint is deprecated upstream."
+    )
+    return None, "Hubcap bundle API is deprecated upstream; use generate_single_manifest"
 
 
 def check_health() -> Dict:

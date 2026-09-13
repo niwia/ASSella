@@ -340,14 +340,29 @@ class TaskManager(QObject):
                 if acf_installed and isinstance(acf_installed, list):
                     saved_selection = [str(d) for d in acf_installed]
 
+        from utils.paths import is_valid_download_directory
         auto_skip_single_choice = self.settings.value(
             "auto_skip_single_choice", False, type=bool
         )
-        if auto_skip_single_choice and len(depots) == 1:
+        default_dl = self.settings.value("default_download_directory", "", type=str)
+        has_default_dl = bool(default_dl and is_valid_download_directory(default_dl))
+        missing_depots = (self.game_data or {}).get("missing_depots_from_hubcap") or []
+        is_single = (len(depots) == 1)
+
+        # Show 3-second countdown timer ONLY if single depot AND auto_skip is enabled AND a default download directory is set!
+        # If user chose "Ask Every Time" (has_default_dl is False), always open minimal depot selection directly so they can choose their drive.
+        show_timer = (is_single and auto_skip_single_choice and has_default_dl)
+
+        if show_timer:
             from ui.dialogs.fetchmanifest import SingleDepotTimerDialog
-            from PyQt6.QtWidgets import QDialog
-            dlg = SingleDepotTimerDialog(self.main_window, "Single Depot Option", "Game has only one depot.\n\nProceed to download and add it to queue?", seconds=3)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
+            dlg = SingleDepotTimerDialog(
+                self.main_window,
+                "Single Depot Option",
+                "Game has only one depot.\n\nProceed to download and add it to queue?",
+                seconds=3,
+            )
+            res = dlg.exec()
+            if res == SingleDepotTimerDialog.ACTION_YES:
                 selected_depots = list(depots.keys())
                 if self.game_data:
                     self.game_data["selected_depots_list"] = selected_depots
@@ -364,12 +379,17 @@ class TaskManager(QObject):
                         )
                     except Exception as e:
                         logger.warning(f"Failed to cache single-depot selection: {e}")
-                single_dest = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path")
+                single_dest = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path") or default_dl
                 self._start_download_with_destination(selected_depots, single_dest)
+                return
+            elif res == SingleDepotTimerDialog.ACTION_MANUAL:
+                # User selected Manual: continue below to open minimal DepotSelectionDialog
+                pass
             else:
                 self.job_finished()
-            return
+                return
 
+        pref_lib = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path")
         self.main_window.ui_state.depot_dialog = DepotSelectionDialog(
             game_data["appid"],
             game_data["game_name"],
@@ -377,6 +397,11 @@ class TaskManager(QObject):
             game_data.get("header_url"),
             self.main_window,
             selected_depots=saved_selection,
+            is_single_depot=is_single,
+            missing_hubcap_depots=missing_depots,
+            missing_depots_info=(self.game_data or {}).get("missing_depots_info"),
+            library_path=pref_lib,
+            refetched_depots=(self.game_data or {}).get("refetched_depots"),
         )
 
         if self.main_window.ui_state.depot_dialog.exec():
@@ -427,15 +452,16 @@ class TaskManager(QObject):
             self.job_finished()
 
     def _get_destination_path(self):
+        from utils.paths import is_valid_download_directory
         current_job_metadata = self.current_job_metadata or {}
         existing_library_path = current_job_metadata.get("library_path") or (self.game_data or {}).get("library_path")
-        if existing_library_path and os.path.isdir(existing_library_path):
+        if existing_library_path and is_valid_download_directory(existing_library_path):
             if is_slssteam_mode_enabled():
                 self._handle_slssteam_mode()
             return existing_library_path
 
         default_dl_dir = self.settings.value("default_download_directory", "")
-        if default_dl_dir and os.path.isdir(default_dl_dir):
+        if default_dl_dir and is_valid_download_directory(default_dl_dir):
             if is_slssteam_mode_enabled():
                 self._handle_slssteam_mode()
             return default_dl_dir

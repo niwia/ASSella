@@ -2102,6 +2102,9 @@ class GameLibraryDialog(QDialog):
                                     parsed_data.get("header_url"),
                                     self.main_window,
                                     selected_depots=cached_selected,
+                                    is_single_depot=(len(depots) == 1),
+                                    missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
+                                    missing_depots_info=parsed_data.get("missing_depots_info"),
                                 )
                                 if depot_dialog.exec():
                                     result_holder[0] = depot_dialog.get_selected_depots()
@@ -2845,6 +2848,9 @@ class GameLibraryDialog(QDialog):
                         parsed_data.get("header_url"),
                         self.main_window,
                         selected_depots=cached_selected,
+                        is_single_depot=(len(depots) == 1),
+                        missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
+                        missing_depots_info=parsed_data.get("missing_depots_info"),
                     )
                     if depot_dialog.exec():
                         selected_depots = depot_dialog.get_selected_depots()
@@ -3285,7 +3291,10 @@ class GameLibraryDialog(QDialog):
                     depots,
                     parsed_data.get("header_url"),
                     self,
-                    selected_depots=selected_depots
+                    selected_depots=selected_depots,
+                    is_single_depot=(len(depots) == 1),
+                    missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
+                    missing_depots_info=parsed_data.get("missing_depots_info"),
                 )
                 if depot_dialog.exec():
                     chosen = depot_dialog.get_selected_depots()

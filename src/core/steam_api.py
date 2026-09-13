@@ -205,7 +205,7 @@ CACHE_EXPIRATION_SECONDS = 86400
 
 import concurrent.futures
 
-def fetch_steamcmd_info(app_id: str) -> dict:
+def fetch_steamcmd_info(app_id: str, include_header: bool = True) -> dict:
     """
     Fetch app metadata directly from SteamCMD REST API (https://api.steamcmd.net/v1/info/:id).
     Fast, stateless HTTP request with no socket or gevent overhead.
@@ -227,7 +227,7 @@ def fetch_steamcmd_info(app_id: str) -> dict:
 
                         depot_info = {}
                         for depot_id, depot_data in depots_raw.items():
-                            if not isinstance(depot_data, dict):
+                            if not str(depot_id).isdigit() or not isinstance(depot_data, dict):
                                 continue
                             config = depot_data.get("config", {})
                             manifests = depot_data.get("manifests", {})
@@ -237,12 +237,18 @@ def fetch_steamcmd_info(app_id: str) -> dict:
                                 if isinstance(manifest_public, dict)
                                 else manifest_public
                             )
-                            depot_info[depot_id] = {
+                            depot_size = None
+                            if isinstance(manifest_public, dict) and manifest_public.get("size"):
+                                depot_size = manifest_public["size"]
+                            elif depot_data.get("maxsize"):
+                                depot_size = depot_data["maxsize"]
+
+                            depot_info[str(depot_id)] = {
                                 "name": depot_data.get("name"),
                                 "oslist": config.get("oslist"),
                                 "language": config.get("language"),
                                 "steamdeck": config.get("steamdeck") == "1",
-                                "size": None,
+                                "size": depot_size,
                                 "manifest_id": manifest_id,
                                 "manifests": depot_data.get("manifests"),
                             }
@@ -252,9 +258,22 @@ def fetch_steamcmd_info(app_id: str) -> dict:
                         time_updated = public_branch.get("timeupdated") if isinstance(public_branch, dict) else None
                         app_name = app_data.get("common", {}).get("name")
                         installdir = app_data.get("config", {}).get("installdir")
-                        header_url = ImageFetcher.get_header_image_url(int(appid_str)) if appid_str.isdigit() else None
+                        header_url = None
+                        if include_header and appid_str.isdigit():
+                            try:
+                                header_url = ImageFetcher.get_header_image_url(int(appid_str))
+                            except Exception:
+                                header_url = f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{appid_str}/header.jpg"
+
+                        has_depots_in_dlc = depots_raw.get("hasdepotsindlc") in (1, "1", True)
+                        listofdlc = (
+                            app_data.get("extended", {}).get("listofdlc")
+                            or app_data.get("common", {}).get("listofdlc")
+                            or app_data.get("listofdlc")
+                        )
 
                         return {
+                            "appid": appid_str,
                             "depots": depot_info,
                             "branches": branches_raw,
                             "installdir": installdir,
@@ -262,6 +281,10 @@ def fetch_steamcmd_info(app_id: str) -> dict:
                             "buildid": build_id,
                             "timeupdated": time_updated,
                             "name": app_name,
+                            "type": app_data.get("common", {}).get("type"),
+                            "parent": app_data.get("common", {}).get("parent"),
+                            "hasdepotsindlc": has_depots_in_dlc,
+                            "listofdlc": listofdlc,
                         }
             else:
                 logger.debug(f"SteamCMD API returned HTTP {res.status_code} for AppID {appid_str} (attempt {attempt+1}/{max_retries})")
@@ -278,6 +301,7 @@ def batched_fetch_steamcmd_info(
     app_ids: List[str],
     max_workers: int = 50,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    include_header: bool = True,
 ) -> Dict[str, dict]:
     """
     Fetch app info for multiple AppIDs concurrently using SteamCMD REST API.
@@ -294,7 +318,7 @@ def batched_fetch_steamcmd_info(
     lock = threading.Lock()
 
     def _worker(appid_str):
-        return appid_str, fetch_steamcmd_info(appid_str)
+        return appid_str, fetch_steamcmd_info(appid_str, include_header=include_header)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, total)) as executor:
         futures = [executor.submit(_worker, str(aid)) for aid in app_ids]
@@ -317,10 +341,87 @@ def batched_fetch_steamcmd_info(
     return results
 
 
-def get_depot_info_from_api(app_id, access_token=None):
-    # 1. Try to get complete info from DB first
+def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
+    """
+    If the app uses Steam's `hasdepotsindlc: 1` architecture (or has unexpanded DLC depots),
+    fetches the child DLC AppIDs via batched SteamCMD REST API and merges their depots
+    into `app_info["depots"]`.
+    """
+    if not app_info or not isinstance(app_info, dict):
+        return app_info
+
+    if app_info.get("dlcs_expanded"):
+        return app_info
+
+    has_depots_in_dlc = app_info.get("hasdepotsindlc") in (1, "1", True)
+    listofdlc = app_info.get("listofdlc")
+
+    if not (has_depots_in_dlc and listofdlc):
+        app_info["dlcs_expanded"] = True
+        return app_info
+
+    # Extract DLC AppIDs
+    dlc_ids = []
+    if isinstance(listofdlc, str):
+        dlc_ids = [x.strip() for x in listofdlc.split(",") if x.strip().isdigit()]
+    elif isinstance(listofdlc, list):
+        dlc_ids = [str(x) for x in listofdlc if str(x).isdigit()]
+    elif isinstance(listofdlc, int):
+        dlc_ids = [str(listofdlc)]
+
+    if not dlc_ids:
+        app_info["dlcs_expanded"] = True
+        return app_info
+
+    logger.info(
+        f"[SteamAPI] App {app_info.get('appid') or app_info.get('name')} has hasdepotsindlc=1. "
+        f"Batch-fetching {len(dlc_ids)} child DLC(s)..."
+    )
+
+    dlc_results = batched_fetch_steamcmd_info(dlc_ids, max_workers=max_workers, include_header=False)
+
+    base_depots = app_info.setdefault("depots", {})
+    added_count = 0
+
+    for dlc_id_str, dlc_data in dlc_results.items():
+        if not isinstance(dlc_data, dict):
+            continue
+        dlc_name = dlc_data.get("name")
+        dlc_depots = dlc_data.get("depots", {})
+        if not isinstance(dlc_depots, dict):
+            continue
+
+        for d_id, d_info in dlc_depots.items():
+            d_id_str = str(d_id)
+            if not d_id_str.isdigit():
+                continue
+            if not isinstance(d_info, dict):
+                continue
+
+            merged_info = dict(d_info)
+            if not merged_info.get("name") and dlc_name:
+                merged_info["name"] = f"{dlc_name} - Depot {d_id_str}"
+
+            if d_id_str not in base_depots:
+                base_depots[d_id_str] = merged_info
+                added_count += 1
+            else:
+                for k, v in merged_info.items():
+                    if v is not None and (base_depots[d_id_str].get(k) is None or base_depots[d_id_str].get(k) == ""):
+                        base_depots[d_id_str][k] = v
+
+    logger.info(
+        f"[SteamAPI] Expanded {added_count} DLC depot(s) from {len(dlc_results)} DLC(s). "
+        f"Total depots now: {len(base_depots)}"
+    )
+    app_info["dlcs_expanded"] = True
+    return app_info
+
+
+def get_depot_info_from_api(app_id, access_token=None, force_refresh=False):
+    # 1. Try to get complete info from DB first (unless force_refresh is requested)
     db = DatabaseManager()
-    db_data = db.get_app_info(app_id)
+    db_data = db.get_app_info(app_id) if not force_refresh else None
 
     has_valid_name = False
     if db_data and db_data.get("name"):
@@ -332,6 +433,9 @@ def get_depot_info_from_api(app_id, access_token=None):
             has_valid_name = True
 
     if db_data and db_data.get("depots") and has_valid_name:
+        if db_data.get("hasdepotsindlc") and not db_data.get("dlcs_expanded"):
+            db_data = expand_dlc_depots(db_data)
+            db.upsert_app_info(app_id, db_data)
         logger.info(f"Loaded AppID {app_id} from database.")
         return db_data
 
@@ -396,6 +500,7 @@ def get_depot_info_from_api(app_id, access_token=None):
         final_data["name"] = web_api_data["name"]
 
     if final_data:
+        final_data = expand_dlc_depots(final_data)
         db.upsert_app_info(app_id, final_data)
 
     return final_data
@@ -492,7 +597,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
 
             depots = app_data.get("depots", {})
             for depot_id, depot_data in depots.items():
-                if depot_id in ("branches", "workshopdepots", "branches_public") or not isinstance(depot_data, dict):
+                if not str(depot_id).isdigit() or not isinstance(depot_data, dict):
                     continue
                 config = depot_data.get("config", {})
                 manifests = depot_data.get("manifests", {})
@@ -511,7 +616,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
                     f"Depot {depot_id}: Found raw size from API: {size_str} (Type: {type(size_str)})"
                 )
                 logger.debug(f"Depot {depot_id}: Found manifest_id: {manifest_id}")
-                depot_info[depot_id] = {
+                depot_info[str(depot_id)] = {
                     "name": depot_data.get("name"),
                     "oslist": config.get("oslist"),
                     "language": config.get("language"),
@@ -520,13 +625,25 @@ def _fetch_with_steam_client(app_id, access_token=None):
                     "manifest_id": manifest_id,
                     "manifests": manifests,
                 }
+        has_depots_in_dlc = app_data.get("depots", {}).get("hasdepotsindlc") in (1, "1", True)
+        listofdlc = (
+            app_data.get("extended", {}).get("listofdlc")
+            or app_data.get("common", {}).get("listofdlc")
+            or app_data.get("listofdlc")
+        )
+
         api_data = {
+            "appid": str(int_app_id),
             "depots": depot_info,
             "installdir": installdir,
             "header_url": header_url,
             "buildid": build_id,
             "name": app_name,
             "branches": open_branches,
+            "type": common_data.get("type"),
+            "parent": common_data.get("parent"),
+            "hasdepotsindlc": has_depots_in_dlc,
+            "listofdlc": listofdlc,
         }
         if api_data and (
             api_data.get("depots") or api_data.get("buildid") or api_data.get("name")

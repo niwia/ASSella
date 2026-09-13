@@ -256,6 +256,34 @@ class ProcessZipTask:
                             f"{_appid_for_cache}: {_dkm_err}"
                         )
 
+                # Also discover standalone manifests on disk belonging to this app's depots
+                from pathlib import Path
+                known_app_depots = set(game_data.get("depots", {}).keys()) | set(game_data.get("manifests", {}).keys())
+                if DepotKeyManager and _appid_for_cache:
+                    try:
+                        known_app_depots.update(DepotKeyManager().get_depot_keys(_appid_for_cache).keys())
+                    except Exception:
+                        pass
+
+                standalone_dirs = [
+                    Path(tempfile.gettempdir()) / "mistwalker_manifests",
+                    Path(get_base_path()) / "manifests",
+                ]
+                for s_dir in standalone_dirs:
+                    if s_dir.exists():
+                        for mf_file in s_dir.glob("*.manifest"):
+                            parts = mf_file.stem.split("_")
+                            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                                did, mid = parts[0], parts[1]
+                                if did in known_app_depots:
+                                    if did not in game_data.get("manifests", {}):
+                                        game_data.setdefault("manifests", {})[did] = mid
+                                    if mf_file.name not in manifest_files:
+                                        try:
+                                            manifest_files[mf_file.name] = mf_file.read_bytes()
+                                        except Exception:
+                                            pass
+
                 if game_data.get("dlcs"):
                     enriched_dlcs = {}
                     for dlc_id, lua_desc in game_data["dlcs"].items():
@@ -291,6 +319,28 @@ class ProcessZipTask:
                                 logger.warning(f"[ProcessZipTask] Failed to reconstruct depots from cache: {_recon_err}")
 
                 unfiltered_depots = game_data.get("depots", {})
+
+                # Supplement depots from depot_keys.db for any depots not in the current LUA (e.g. auto-fetched or updated depots)
+                _cur_appid = game_data.get("appid")
+                if DepotKeyManager and _cur_appid:
+                    try:
+                        _dkm = DepotKeyManager()
+                        _cached_keys = _dkm.get_depot_keys(_cur_appid)
+                        for did, k in _cached_keys.items():
+                            if str(did) != str(_cur_appid) and str(did) not in unfiltered_depots:
+                                desc = known_depot_descriptions.get(did, f"Depot {did}")
+                                unfiltered_depots[str(did)] = {"key": k, "desc": desc, "system": None}
+                                logger.info(f"[ProcessZipTask] Supplemented depot {did} from depot_keys.db")
+                    except Exception as _supp_err:
+                        logger.debug(f"[ProcessZipTask] Failed to supplement depots from depot_keys.db: {_supp_err}")
+
+                # Also supplement depots from any standalone manifests found on disk for this app
+                for s_did in list(game_data.get("manifests", {}).keys()):
+                    if str(s_did) != str(_cur_appid) and str(s_did) not in unfiltered_depots:
+                        desc = known_depot_descriptions.get(s_did, f"Depot {s_did}")
+                        unfiltered_depots[str(s_did)] = {"key": "", "desc": desc, "system": None}
+                        logger.info(f"[ProcessZipTask] Supplemented depot {s_did} from discovered standalone manifest")
+
                 if not unfiltered_depots:
                     logger.warning("LUA parsing did not identify any depots with keys.")
                 else:
@@ -323,6 +373,31 @@ class ProcessZipTask:
                             if game_data.get("appid")
                             else {}
                         )
+
+                        # If cached API info has unexpanded DLCs, or came from local DB and is missing depots from zip,
+                        # refresh Steam API with DLC expansion. (Avoid redundant refreshes if already fresh from network)
+                        if filtered_depots and api_data.get("depots"):
+                            api_d = api_data["depots"]
+                            missing_from_api = [
+                                did for did in filtered_depots
+                                if str(did) not in api_d and str(did) != str(game_data.get("appid"))
+                            ]
+                            should_refresh = False
+                            if api_data.get("hasdepotsindlc") and not api_data.get("dlcs_expanded"):
+                                should_refresh = True
+                            elif missing_from_api and api_data.get("source") == "database":
+                                should_refresh = True
+
+                            if should_refresh:
+                                logger.info(
+                                    f"[ProcessZipTask] Cached API info missing depots found in zip or unexpanded DLCs "
+                                    f"(missing={missing_from_api[:3]}). Refreshing Steam API with DLC expansion..."
+                                )
+                                fresh_api = get_depot_info_from_api(
+                                    game_data["appid"], game_data.get("app_token"), force_refresh=True
+                                )
+                                if fresh_api and fresh_api.get("depots"):
+                                    api_data = fresh_api
 
                         if api_data.get("installdir"):
                             game_data["installdir"] = api_data["installdir"]
@@ -459,16 +534,79 @@ class ProcessZipTask:
                                 "Could not retrieve supplementary details from Steam API."
                             )
                         else:
-                            missing_from_hubcap = [
-                                str(did) for did in api_details.keys()
-                                if str(did).isdigit() and str(did) not in filtered_depots and str(did) not in string_blacklist and str(did) != str(game_data.get("appid"))
-                            ]
+                            from utils.depot_utils import check_hubcap_vs_steam_depots
+                            available_depots = {
+                                str(did): game_data.get("manifests", {}).get(str(did))
+                                for did in filtered_depots
+                                if any(f.startswith(f"{did}_") for f in manifest_files)
+                            }
+                            depot_comp = check_hubcap_vs_steam_depots(
+                                available_depots,
+                                api_details,
+                                app_id=game_data.get("appid"),
+                                branch=game_data.get("branch", "public"),
+                            )
+                            missing_from_hubcap = list(depot_comp.get("missing_from_hubcap") or [])
+                            missing_depots_info = dict(depot_comp.get("missing_depots_info") or {})
+
+                            # Auto-fetch or discover any missing depots that have a manifest GID
+                            refetched_depots = list(game_data.get("refetched_depots") or [])
+                            for m_did, m_mid, m_name in depot_comp.get("missing_for_fetch", []):
+                                found_manifest = None
+                                # 1. Check if already on disk
+                                for s_dir in [Path(tempfile.gettempdir()) / "mistwalker_manifests", Path(get_base_path()) / "manifests"]:
+                                    cand = s_dir / f"{m_did}_{m_mid}.manifest"
+                                    if cand.exists():
+                                        try:
+                                            found_manifest = cand.read_bytes()
+                                            break
+                                        except Exception:
+                                            pass
+
+                                # 2. If not on disk, auto-fetch via single manifest API
+                                if not found_manifest:
+                                    try:
+                                        from core import morrenus_api
+                                        m_bytes, m_err = morrenus_api.generate_single_manifest(m_did, m_mid)
+                                        if m_bytes:
+                                            found_manifest = m_bytes
+                                            for s_dir in [Path(tempfile.gettempdir()) / "mistwalker_manifests", Path(get_base_path()) / "manifests"]:
+                                                try:
+                                                    s_dir.mkdir(parents=True, exist_ok=True)
+                                                    (s_dir / f"{m_did}_{m_mid}.manifest").write_bytes(m_bytes)
+                                                except Exception:
+                                                    pass
+                                        else:
+                                            is_404 = bool(
+                                                m_err
+                                                and ("404" in str(m_err) or "not found" in str(m_err).lower() or "unavailable" in str(m_err).lower())
+                                            )
+                                            missing_depots_info.setdefault(str(m_did), {})["hubcap_status"] = "not_found" if is_404 else "failed"
+                                            logger.info(f"[ProcessZipTask] Depot {m_did} fetch failed: status={'not_found' if is_404 else 'failed'} ({m_err})")
+                                    except Exception as fetch_ex:
+                                        logger.debug(f"[ProcessZipTask] Auto-fetch error for depot {m_did}: {fetch_ex}")
+
+                                if found_manifest:
+                                    manifest_files[f"{m_did}_{m_mid}.manifest"] = found_manifest
+                                    game_data.setdefault("manifests", {})[str(m_did)] = str(m_mid)
+                                    filtered_depots[str(m_did)] = {"key": "", "desc": m_name, "system": None}
+                                    refetched_depots.append(str(m_did))
+                                    if str(m_did) in missing_from_hubcap:
+                                        missing_from_hubcap.remove(str(m_did))
+                                    if str(m_did) in missing_depots_info:
+                                        del missing_depots_info[str(m_did)]
+                                    logger.info(f"[ProcessZipTask] Supplemented missing depot {m_did} ({m_name})")
+
+                            if refetched_depots:
+                                game_data["refetched_depots"] = refetched_depots
+
                             if missing_from_hubcap:
                                 logger.warning(
                                     f"[DepotCheck {game_data.get('appid')}] Hubcap manifest is missing "
                                     f"{len(missing_from_hubcap)} official depot(s) listed on Steam: {missing_from_hubcap}"
                                 )
                                 game_data["missing_depots_from_hubcap"] = missing_from_hubcap
+                                game_data["missing_depots_info"] = missing_depots_info
 
                         enriched_depots = {}
                         filter_soundtracks = get_settings().value("filter_soundtracks", True, type=bool)

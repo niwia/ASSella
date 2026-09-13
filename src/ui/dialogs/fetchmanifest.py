@@ -3,6 +3,7 @@ import math
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict
 
 from PyQt6.QtCore import QSize, Qt, QTimer, QRectF
@@ -63,11 +64,15 @@ SEARCH_PLACEHOLDERS = (
 
 
 class SingleDepotTimerDialog(QDialog):
-    """A Material 3 styled confirmation dialog with a 3-second auto-proceed countdown timer."""
+    """A Material 3 styled confirmation dialog with a 3-second auto-proceed countdown timer and manual options."""
+    ACTION_NO = 0
+    ACTION_YES = 1
+    ACTION_MANUAL = 2
+
     def __init__(self, parent=None, title="Single Depot Option", message="Game has only one depot.\n\nProceed to download and add it to queue?", seconds=3):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setFixedSize(380, 160)
+        self.setFixedSize(410, 165)
         self.seconds = seconds
         
         from utils.settings import get_settings
@@ -88,7 +93,7 @@ class SingleDepotTimerDialog(QDialog):
         
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 16)
-        lay.setSpacing(12)
+        lay.setSpacing(14)
         
         msg_lbl = QLabel(message)
         msg_lbl.setWordWrap(True)
@@ -96,7 +101,7 @@ class SingleDepotTimerDialog(QDialog):
         
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_row.setSpacing(10)
+        btn_row.setSpacing(8)
         btn_row.addStretch()
         
         self.yes_btn = QPushButton(f"✓ Yes ({self.seconds})")
@@ -109,33 +114,54 @@ class SingleDepotTimerDialog(QDialog):
                 border: none;
                 border-radius: 8px;
                 font-weight: bold;
-                padding: 0 16px;
+                padding: 0 14px;
             }}
             QPushButton:hover {{
                 opacity: 0.9;
             }}
         """)
-        self.yes_btn.clicked.connect(self.accept)
+        self.yes_btn.clicked.connect(self._on_yes_clicked)
         
+        self.manual_btn = QPushButton("⚙ Manual")
+        self.manual_btn.setFixedHeight(32)
+        self.manual_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.manual_btn.setToolTip("Open minimal depot selection to choose download drive or custom files")
+        self.manual_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 255, 255, 0.08);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 8px;
+                font-weight: bold;
+                padding: 0 14px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.16);
+            }
+        """)
+        self.manual_btn.clicked.connect(self._on_manual_clicked)
+
         self.no_btn = QPushButton("✕ No")
         self.no_btn.setFixedHeight(32)
         self.no_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.no_btn.setStyleSheet("""
             QPushButton {
-                background: rgba(255, 255, 255, 0.08);
-                color: #FFFFFF;
+                background: rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.75);
                 border: 1px solid rgba(255, 255, 255, 0.12);
                 border-radius: 8px;
                 font-weight: bold;
-                padding: 0 16px;
+                padding: 0 14px;
             }
             QPushButton:hover {
-                background: rgba(255, 255, 255, 0.14);
+                background: rgba(255, 255, 255, 0.12);
+                color: #FFFFFF;
             }
         """)
-        self.no_btn.clicked.connect(self.reject)
+        self.no_btn.clicked.connect(self._on_no_clicked)
         
         btn_row.addWidget(self.yes_btn)
+        btn_row.addWidget(self.manual_btn)
         btn_row.addWidget(self.no_btn)
         lay.addLayout(btn_row)
         
@@ -144,22 +170,35 @@ class SingleDepotTimerDialog(QDialog):
         self.timer.timeout.connect(self._on_tick)
         self.timer.start()
 
+    def _on_yes_clicked(self):
+        self.timer.stop()
+        self.done(self.ACTION_YES)
+
+    def _on_manual_clicked(self):
+        self.timer.stop()
+        self.done(self.ACTION_MANUAL)
+
+    def _on_no_clicked(self):
+        self.timer.stop()
+        self.done(self.ACTION_NO)
+
     def _on_tick(self):
         self.seconds -= 1
         if self.seconds <= 0:
             self.timer.stop()
-            self.accept()
+            self.done(self.ACTION_YES)
         else:
             self.yes_btn.setText(f"✓ Yes ({self.seconds})")
 
 
 class SearchItemWidget(QWidget):
     """Custom widget for displaying polished search results — styled like the game library cards."""
-    def __init__(self, name: str, app_id: str, in_library: bool, parent=None):
+    def __init__(self, name: str, app_id: str, in_library: bool, is_cached: bool = False, parent=None):
         super().__init__(parent)
         self.name = name
         self.app_id = app_id
         self.in_library = in_library
+        self.is_cached = is_cached
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 1, 16, 1)
@@ -209,31 +248,44 @@ class SearchItemWidget(QWidget):
         info_col.addStretch(1)
 
         # Bottom: AppID + Denuvo status row
-        meta_row = QHBoxLayout()
-        meta_row.setSpacing(6)
-        meta_row.setContentsMargins(0, 0, 0, 0)
+        self.meta_row = QHBoxLayout()
+        self.meta_row.setSpacing(6)
+        self.meta_row.setContentsMargins(0, 0, 0, 0)
 
         self.appid_lbl = QLabel(f"App ID: {app_id}")
         self.appid_lbl.setStyleSheet("font-size: 11px; color: rgba(255,255,255,0.50);")
-        meta_row.addWidget(self.appid_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.meta_row.addWidget(self.appid_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.denuvo_lbl = QLabel()
         self.denuvo_lbl.hide()
         self.denuvo_lbl.setStyleSheet("font-size: 11px; font-weight: bold;")
-        meta_row.addWidget(self.denuvo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.meta_row.addWidget(self.denuvo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
         if in_library:
             self.in_lib_lbl = QLabel("•  In Library")
             self.in_lib_lbl.setStyleSheet("font-size: 11px; color: #81C784; font-weight: bold;")
-            meta_row.addWidget(self.in_lib_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+            self.meta_row.addWidget(self.in_lib_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        meta_row.addStretch()
-        info_col.addLayout(meta_row)
+        if is_cached:
+            self.cached_lbl = QLabel("•  Cached")
+            self.cached_lbl.setStyleSheet("font-size: 11px; color: #4FC3F7; font-weight: bold;")
+            self.meta_row.addWidget(self.cached_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.meta_row.addStretch()
+        info_col.addLayout(self.meta_row)
 
         layout.addLayout(info_col, 1)
 
         # Populate ratings/badges immediately (in-memory, instant for cached games)
         self.update_ratings()
+
+    def set_cached(self, cached: bool = True):
+        self.is_cached = cached
+        if not hasattr(self, "cached_lbl"):
+            self.cached_lbl = QLabel("•  Cached")
+            self.cached_lbl.setStyleSheet("font-size: 11px; color: #4FC3F7; font-weight: bold;")
+            self.meta_row.insertWidget(self.meta_row.count() - 1, self.cached_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.cached_lbl.setVisible(cached)
 
     def update_ratings(self) -> None:
         """Update Denuvo and ProtonDB badges dynamically."""
@@ -416,6 +468,7 @@ class FetchManifestDialog(QDialog):
         self._active_image_fetchers = {}
         self._pending_image_timers = []
         self._search_generation = 0
+        self._cached_app_ids = self._scan_cached_app_ids()
 
         self._origins_movie = None
         if self.settings and self.settings.value("remember_origins", False, type=bool):
@@ -441,6 +494,51 @@ class FetchManifestDialog(QDialog):
         if self.parent():
             from ui.dialogs.dialog_raiser import DialogRaiser
             DialogRaiser(self.parent(), self)
+
+    def _scan_cached_app_ids(self) -> set:
+        """Scan disk for cached manifest zips and lua files."""
+        cached = set()
+        try:
+            from utils.helpers import get_base_path
+            base = Path(get_base_path())
+            hubcap_dir = base / "hubcap_manifests"
+            if hubcap_dir.exists():
+                for fname in os.listdir(hubcap_dir):
+                    m = re.match(r"^accela_fetch_(\d+)", fname)
+                    if m:
+                        cached.add(m.group(1))
+            lua_dir = base / "cached_luas"
+            if lua_dir.exists():
+                for fname in os.listdir(lua_dir):
+                    m = re.match(r"^(\d+)\.lua$", fname)
+                    if m:
+                        cached.add(m.group(1))
+        except Exception as e:
+            logger.debug(f"[FetchManifest] Error scanning cached appids: {e}")
+        return cached
+
+    def _is_app_cached(self, app_id: str) -> bool:
+        if not app_id:
+            return False
+        aid = str(app_id).strip()
+        if not aid.isdigit():
+            return False
+        if hasattr(self, "_cached_app_ids") and aid in self._cached_app_ids:
+            return True
+        try:
+            from utils.helpers import get_base_path
+            base = Path(get_base_path())
+            if any((base / "hubcap_manifests").glob(f"accela_fetch_{aid}*.zip")):
+                if hasattr(self, "_cached_app_ids"):
+                    self._cached_app_ids.add(aid)
+                return True
+            if (base / "cached_luas" / f"{aid}.lua").exists():
+                if hasattr(self, "_cached_app_ids"):
+                    self._cached_app_ids.add(aid)
+                return True
+        except Exception:
+            pass
+        return False
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -870,8 +968,14 @@ class FetchManifestDialog(QDialog):
         self.status_label.setText(f"Searching for '{query}'…")
         self._set_loading_active(True)
         worker = self.task_runner.run(self._search_and_filter_results, query)
-        worker.finished.connect(lambda res, g=gen: self.on_search_finished(res, g))
-        worker.error.connect(self.on_task_error)
+        worker.finished.connect(lambda res, g=gen: self.on_search_finished(res, g, is_live=True))
+        worker.error.connect(self._on_live_search_error)
+
+    def _on_live_search_error(self, error_info):
+        """Silently handles background live-search errors without interrupting typing."""
+        self._set_loading_active(False)
+        self._toggle_inputs(True)
+        self.status_label.setText("Search error. Press Enter to retry.")
 
     def on_search(self):
         # Cancel any active background update checks to free up the Steam connection
@@ -1077,7 +1181,7 @@ class FetchManifestDialog(QDialog):
 
         return False
 
-    def on_search_finished(self, results, gen: int = 0):
+    def on_search_finished(self, results, gen: int = 0, is_live: bool = False):
         # Ignore stale search results from previous queries
         if gen and gen != self._search_generation:
             logger.debug(f"Ignoring stale search results (gen {gen} != current {self._search_generation})")
@@ -1087,6 +1191,9 @@ class FetchManifestDialog(QDialog):
         self._set_loading_active(False)
 
         if "error" in results:
+            if is_live:
+                self.status_label.setText("No results found")
+                return
             self._handle_error(results["error"])
             return
 
@@ -1179,13 +1286,15 @@ class FetchManifestDialog(QDialog):
             if self.parent_window.game_manager.get_game(app_id) is not None:
                 in_library = True
 
+        is_cached = self._is_app_cached(app_id)
+
         item = QListWidgetItem()
         item.setSizeHint(QSize(0, 98))
 
         item.setData(Qt.ItemDataRole.UserRole, app_id)
         self.results_list.addItem(item)
 
-        widget = SearchItemWidget(name, app_id, in_library, parent=self)
+        widget = SearchItemWidget(name, app_id, in_library, is_cached=is_cached, parent=self)
         self.results_list.setItemWidget(item, widget)
 
         if delay_fetch:
@@ -1286,6 +1395,7 @@ class FetchManifestDialog(QDialog):
         If up to date, returns (cached_path, None).
         Otherwise, downloads the manifest via morrenus_api.download_manifest and returns the result.
         """
+        self._current_fetching_appid = str(app_id)
         try:
             import os
             import zipfile
@@ -1302,6 +1412,23 @@ class FetchManifestDialog(QDialog):
 
             if cached_path.exists():
                 logger.info(f"Checking updates for cached manifest {app_id} (Branch: {branch})")
+
+                # 0. Check Hubcap server freshness (free endpoint, 0 quota)
+                try:
+                    status_res = morrenus_api.get_manifest_status(app_id)
+                    if isinstance(status_res, dict) and status_res.get("status") == "available":
+                        hubcap_size = status_res.get("file_size")
+                        local_size = cached_path.stat().st_size
+                        if hubcap_size and isinstance(hubcap_size, int) and hubcap_size > 0:
+                            if hubcap_size != local_size:
+                                logger.info(
+                                    f"Hubcap manifest bundle size differs (server: {hubcap_size}, local: {local_size}). "
+                                    f"Redownloading refreshed bundle for {app_id}."
+                                )
+                                return morrenus_api.download_manifest(app_id, branch=branch)
+                except Exception as status_err:
+                    logger.debug(f"Hubcap status check error (non-fatal): {status_err}")
+
                 # 1. Parse the zip to find the manifests inside it and the app token
                 local_manifests = {}
                 app_token = None
@@ -1318,7 +1445,7 @@ class FetchManifestDialog(QDialog):
                             except Exception as e:
                                 logger.debug(f"Failed to read LUA from cached zip: {e}")
 
-                        # Find manifest files
+                        # Find manifest files inside the zip
                         manifest_files = [
                             os.path.basename(f)
                             for f in zip_ref.namelist()
@@ -1331,6 +1458,28 @@ class FetchManifestDialog(QDialog):
                 except Exception as e:
                     logger.warning(f"Failed to parse cached zip {cached_path}: {e}. Will redownload.")
                     return morrenus_api.download_manifest(app_id, branch=branch)
+
+                # Also scan standalone manifests stored outside the zip for this app
+                import tempfile
+                from managers.depot_key_manager import DepotKeyManager
+                known_app_depots = set(local_manifests.keys())
+                try:
+                    known_app_depots.update(DepotKeyManager().get_depot_keys(app_id).keys())
+                except Exception:
+                    pass
+
+                standalone_dirs = [
+                    Path(tempfile.gettempdir()) / "mistwalker_manifests",
+                    Path(get_base_path()) / "manifests",
+                ]
+                for s_dir in standalone_dirs:
+                    if s_dir.exists():
+                        for mf_file in s_dir.glob("*.manifest"):
+                            parts = mf_file.stem.split("_")
+                            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                                did, mid = parts[0], parts[1]
+                                if did in known_app_depots:
+                                    local_manifests[did] = mid
 
                 if not local_manifests:
                     logger.warning(f"No manifests found in cached zip {cached_path}. Will redownload.")
@@ -1350,14 +1499,22 @@ class FetchManifestDialog(QDialog):
                         logger.info(f"Querying Steam API for fresh AppID {app_id} info...")
                         from core.steam_api import get_depot_info_from_api
                         steam_client_data = get_depot_info_from_api(app_id, app_token)
-                        
-                        if steam_client_data:
-                            # Update database with the latest info
-                            try:
-                                db.upsert_app_info(app_id, steam_client_data)
-                            except Exception as db_err:
-                                logger.debug(f"Failed to update database with fresh app info: {db_err}")
-                            
+
+                    # Check if cached data needs DLC expansion or is missing depots present in local_manifests
+                    if steam_client_data:
+                        cached_depots = steam_client_data.get("depots", {})
+                        needs_refresh = False
+                        if local_manifests and any(str(ldid) not in cached_depots for ldid in local_manifests):
+                            needs_refresh = True
+                        elif steam_client_data.get("hasdepotsindlc") and not steam_client_data.get("dlcs_expanded"):
+                            needs_refresh = True
+                        if needs_refresh:
+                            logger.info(f"Cache for AppID {app_id} missing depots present in local manifests or unexpanded DLCs. Refreshing...")
+                            from core.steam_api import get_depot_info_from_api
+                            fresh = get_depot_info_from_api(app_id, app_token, force_refresh=True)
+                            if fresh and fresh.get("depots"):
+                                steam_client_data = fresh
+
                     api_depots = steam_client_data.get("depots", {}) if steam_client_data else {}
                 except BaseException as e:
                     logger.error(f"Failed to fetch depot info for {app_id}: {e}")
@@ -1369,24 +1526,71 @@ class FetchManifestDialog(QDialog):
                     logger.info(f"Could not check Steam API for updates. Reusing cached manifest for {app_id}.")
                     return str(cached_path), None
 
-                # 3. Compare local manifests with API manifests
-                is_up_to_date = True
-                for depot_id, local_manifest_id in local_manifests.items():
-                    if depot_id in api_depots:
-                        current_manifest_id = api_depots[depot_id].get("manifest_id")
-                        if current_manifest_id and local_manifest_id != current_manifest_id:
-                            logger.info(
-                                f"Update detected for depot {depot_id} of app {app_id}: "
-                                f"cached={local_manifest_id}, current={current_manifest_id}"
-                            )
-                            is_up_to_date = False
-                            break
+                # 3. Consolidated Depot Check via depot_utils
+                from utils.depot_utils import check_hubcap_vs_steam_depots
+                depot_check = check_hubcap_vs_steam_depots(
+                    local_manifests,
+                    api_depots,
+                    app_id=app_id,
+                    branch=branch,
+                )
 
-                if is_up_to_date:
-                    logger.info(f"Cached manifest for {app_id} is up-to-date. Using cache.")
-                    return str(cached_path), None
-                else:
-                    logger.info(f"Cached manifest for {app_id} is stale. Redownloading.")
+                if not depot_check.get("is_up_to_date", True):
+                    logger.info(
+                        f"Cached manifest for {app_id} has stale depots: {depot_check.get('stale_depots')}. Redownloading."
+                    )
+                    return morrenus_api.download_manifest(app_id, branch=branch)
+
+                # 4. Bidirectional Auto-Fetch for official depots missing from cache
+                refetched_depots = []
+                missing_depots_info_patch = {}
+
+                if depot_check.get("missing_for_fetch"):
+                    missing_for_fetch = depot_check["missing_for_fetch"]
+                    logger.info(
+                        f"Detected {len(missing_for_fetch)} official depot(s) missing from cache for {app_id}: {missing_for_fetch}"
+                    )
+                    from managers.depot_key_manager import DepotKeyManager
+                    dkm = DepotKeyManager()
+                    cached_keys = dkm.get_depot_keys(app_id)
+
+                    for missing_did, missing_mid, depot_name in missing_for_fetch:
+                        logger.info(
+                            f"Auto-fetching missing depot {missing_did} ({depot_name}) via single manifest API..."
+                        )
+                        manifest_bytes, gen_err = morrenus_api.generate_single_manifest(missing_did, missing_mid)
+                        if manifest_bytes:
+                            # 1. Write to /tmp/mistwalker_manifests for current session/depotcache
+                            tmp_manifest_dir = Path(tempfile.gettempdir()) / "mistwalker_manifests"
+                            tmp_manifest_dir.mkdir(parents=True, exist_ok=True)
+                            (tmp_manifest_dir / f"{missing_did}_{missing_mid}.manifest").write_bytes(manifest_bytes)
+
+                            # 2. Write to persistent ~/.local/share/ACCELA/manifests
+                            persistent_manifest_dir = Path(get_base_path()) / "manifests"
+                            persistent_manifest_dir.mkdir(parents=True, exist_ok=True)
+                            (persistent_manifest_dir / f"{missing_did}_{missing_mid}.manifest").write_bytes(manifest_bytes)
+
+                            local_manifests[str(missing_did)] = str(missing_mid)
+                            refetched_depots.append(str(missing_did))
+                            logger.info(
+                                f"Successfully fetched and saved missing manifest {missing_did}_{missing_mid}.manifest"
+                            )
+                        else:
+                            is_404 = bool(
+                                gen_err
+                                and ("404" in str(gen_err) or "not found" in str(gen_err).lower() or "unavailable" in str(gen_err).lower())
+                            )
+                            status_tag = "not_found" if is_404 else "failed"
+                            missing_depots_info_patch[str(missing_did)] = {"hubcap_status": status_tag}
+                            logger.warning(
+                                f"Could not auto-generate missing manifest for depot {missing_did}: {gen_err} (status={status_tag})"
+                            )
+
+                self._last_refetched_depots = refetched_depots
+                self._last_missing_depots_info_patch = missing_depots_info_patch
+
+                logger.info(f"Cached manifest for {app_id} is up-to-date. Using cache.")
+                return str(cached_path), None
             else:
                 logger.info(f"No cached manifest found for {app_id}. Downloading.")
 
@@ -1488,6 +1692,10 @@ class FetchManifestDialog(QDialog):
             return
 
         logger.info(f"Manifest downloaded: {filepath}")
+        if filepath:
+            m = re.search(r"accela_fetch_(\d+)", str(filepath))
+            if m and hasattr(self, "_cached_app_ids"):
+                self._cached_app_ids.add(m.group(1))
         
         branch = getattr(self, "_current_selected_branch", "public")
         metadata = {"branch": branch}
@@ -1518,21 +1726,37 @@ class FetchManifestDialog(QDialog):
         if parsed_data and parsed_data.get("depots"):
             from ui.dialogs.depotselection import DepotSelectionDialog
             from utils.settings import get_settings
+            from utils.paths import is_valid_download_directory
             settings = get_settings()
             auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+            default_dl = settings.value("default_download_directory", "", type=str)
+            has_default_dl = bool(default_dl and is_valid_download_directory(default_dl))
             depots = parsed_data.get("depots")
             appid = str(parsed_data.get("appid", ""))
+            missing_depots = parsed_data.get("missing_depots_from_hubcap") or []
             
             selected_depots = None
-            if auto_skip and len(depots) == 1:
+            is_single = (len(depots) == 1)
+
+            show_timer = (is_single and auto_skip and has_default_dl)
+            open_dialog = False
+
+            if show_timer:
                 dlg = SingleDepotTimerDialog(self, "Single Depot Option", "Game has only one depot.\n\nProceed to download and add it to queue?", seconds=3)
-                if dlg.exec() == QDialog.DialogCode.Accepted:
+                res = dlg.exec()
+                if res == SingleDepotTimerDialog.ACTION_YES:
                     selected_depots = list(depots.keys())
+                    metadata["library_path"] = default_dl
+                elif res == SingleDepotTimerDialog.ACTION_MANUAL:
+                    open_dialog = True
                 else:
                     logger.info("User cancelled single-depot download from search window.")
                     self.status_label.setText("Download cancelled.")
                     return
             else:
+                open_dialog = True
+
+            if open_dialog:
                 saved_selection = None
                 if appid:
                     raw = settings.value(f"depot_selection/{appid}", "", type=str)
@@ -1544,6 +1768,15 @@ class FetchManifestDialog(QDialog):
                         except Exception:
                             pass
 
+                combined_missing_info = dict(parsed_data.get("missing_depots_info") or {})
+                if hasattr(self, "_last_missing_depots_info_patch") and self._last_missing_depots_info_patch:
+                    for p_did, p_val in self._last_missing_depots_info_patch.items():
+                        combined_missing_info.setdefault(str(p_did), {}).update(p_val)
+
+                combined_refetched = list(set(
+                    (parsed_data.get("refetched_depots") or []) + getattr(self, "_last_refetched_depots", [])
+                ))
+
                 depot_dialog = DepotSelectionDialog(
                     parsed_data["appid"],
                     parsed_data.get("game_name", ""),
@@ -1551,6 +1784,11 @@ class FetchManifestDialog(QDialog):
                     parsed_data.get("header_url"),
                     self.parent_window,
                     selected_depots=saved_selection,
+                    is_single_depot=is_single,
+                    missing_hubcap_depots=missing_depots,
+                    missing_depots_info=combined_missing_info,
+                    library_path=metadata.get("library_path"),
+                    refetched_depots=combined_refetched,
                 )
                 if depot_dialog.exec():
                     selected_depots = depot_dialog.get_selected_depots()

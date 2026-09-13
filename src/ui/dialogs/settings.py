@@ -169,17 +169,13 @@ class MorrenusStatsWidget(QWidget):
         c1, self.daily_title_lbl, self.daily_val_lbl, self.daily_usage_bar = self._create_stat_bar("Daily API Usage (Manifests):")
         main_layout.addLayout(c1)
 
-        # 2. Bundle Generation / Updates Quota
-        c2, self.bundle_title_lbl, self.bundle_val_lbl, self.bundle_bar = self._create_stat_bar("Bundle Generation / Updates Quota:")
+        # 2. Single Generation Quota
+        c2, self.single_title_lbl, self.single_val_lbl, self.single_bar = self._create_stat_bar("Single Generation Quota:")
         main_layout.addLayout(c2)
 
         # 3. Workshop Generation Quota
         c3, self.workshop_title_lbl, self.workshop_val_lbl, self.workshop_bar = self._create_stat_bar("Workshop Generation Quota:")
         main_layout.addLayout(c3)
-
-        # 4. Single Generation Quota
-        c4, self.single_title_lbl, self.single_val_lbl, self.single_bar = self._create_stat_bar("Single Generation:")
-        main_layout.addLayout(c4)
 
         # Bottom status row (Account Status on left, Steam Gen Service on right)
         status_bottom_row = QHBoxLayout()
@@ -240,12 +236,10 @@ class MorrenusStatsWidget(QWidget):
         self.account_status_lbl.setStyleSheet("font-size: 8pt; color: #e57373;")
         self.daily_val_lbl.setText("Error")
         self.daily_usage_bar.setValue(0)
-        self.bundle_val_lbl.setText("Error")
-        self.bundle_bar.setValue(0)
-        self.workshop_val_lbl.setText("Error")
-        self.workshop_bar.setValue(0)
         self.single_val_lbl.setText("Error")
         self.single_bar.setValue(0)
+        self.workshop_val_lbl.setText("Error")
+        self.workshop_bar.setValue(0)
         self.steam_service_lbl.setText("● Steam Gen Service: --")
         self.steam_service_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.5);")
 
@@ -286,14 +280,14 @@ class MorrenusStatsWidget(QWidget):
 
         # 2. Generation usage limits
         if gen_usage and not gen_usage.get("error"):
-            bundle = gen_usage.get("bundle", {})
-            b_usage = MorrenusStatsWidget._parse_int(bundle.get("usage", 0))
-            b_limit = MorrenusStatsWidget._parse_int(bundle.get("limit", 100))
-            if b_limit <= 0:
-                b_limit = 100
-            self.bundle_bar.setRange(0, b_limit)
-            self.bundle_bar.setValue(b_usage)
-            self.bundle_val_lbl.setText(f"{b_usage} / {b_limit}")
+            single = gen_usage.get("single", {})
+            s_usage = MorrenusStatsWidget._parse_int(single.get("usage", 0))
+            s_limit = MorrenusStatsWidget._parse_int(single.get("limit", 1500))
+            if s_limit <= 0:
+                s_limit = 1500
+            self.single_bar.setRange(0, s_limit)
+            self.single_bar.setValue(s_usage)
+            self.single_val_lbl.setText(f"{s_usage} / {s_limit}")
 
             workshop = gen_usage.get("workshop", {})
             w_usage = MorrenusStatsWidget._parse_int(workshop.get("usage", 0))
@@ -304,15 +298,6 @@ class MorrenusStatsWidget(QWidget):
             self.workshop_bar.setValue(w_usage)
             self.workshop_val_lbl.setText(f"{w_usage} / {w_limit}")
 
-            single = gen_usage.get("single", {})
-            s_usage = MorrenusStatsWidget._parse_int(single.get("usage", 0))
-            s_limit = MorrenusStatsWidget._parse_int(single.get("limit", 1500))
-            if s_limit <= 0:
-                s_limit = 1500
-            self.single_bar.setRange(0, s_limit)
-            self.single_bar.setValue(s_usage)
-            self.single_val_lbl.setText(f"{s_usage} / {s_limit}")
-
             ready = gen_usage.get("steam_service_ready", True)
             if ready:
                 self.steam_service_lbl.setText("● Steam Gen Service: Ready")
@@ -321,9 +306,8 @@ class MorrenusStatsWidget(QWidget):
                 self.steam_service_lbl.setText("● Steam Gen Service: Offline")
                 self.steam_service_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('error', '#e57373')};")
         else:
-            self.bundle_val_lbl.setText("--")
-            self.workshop_val_lbl.setText("--")
             self.single_val_lbl.setText("--")
+            self.workshop_val_lbl.setText("--")
             self.steam_service_lbl.setText("● Steam Gen Service: --")
             self.steam_service_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.5);")
 
@@ -496,6 +480,70 @@ class WindowsDepotWarningDialog(QDialog):
     def closeEvent(self, event):
         self.timer.stop()
         super().closeEvent(event)
+
+
+class HealthStatusTile(QPushButton):
+    """Clean interactive status tile button used in the Health tab dashboard."""
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(68)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(3)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.title_lbl = QLabel(title)
+        self.title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_lbl.setStyleSheet("font-size: 8.5pt; font-weight: 600; color: rgba(255, 255, 255, 0.65); border: none; background: transparent;")
+        self.title_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(self.title_lbl)
+
+        self.status_lbl = QLabel("Checking...")
+        self.status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_lbl.setStyleSheet("font-size: 10.5pt; font-weight: bold; color: #FFFFFF; border: none; background: transparent;")
+        self.status_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(self.status_lbl)
+
+        self.set_state("neutral", "Checking...")
+
+    def set_state(self, state: str, text: str):
+        self.status_lbl.setText(text)
+        if state == "ok":
+            bg = "rgba(76, 175, 80, 0.12)"
+            border = "rgba(76, 175, 80, 0.45)"
+            color = "#81C784"
+            hover_bg = "rgba(76, 175, 80, 0.22)"
+        elif state == "warn":
+            bg = "rgba(255, 152, 0, 0.12)"
+            border = "rgba(255, 152, 0, 0.45)"
+            color = "#FFB74D"
+            hover_bg = "rgba(255, 152, 0, 0.22)"
+        elif state == "error":
+            bg = "rgba(244, 67, 54, 0.12)"
+            border = "rgba(244, 67, 54, 0.45)"
+            color = "#E57373"
+            hover_bg = "rgba(244, 67, 54, 0.22)"
+        else:
+            bg = "rgba(255, 255, 255, 0.04)"
+            border = "rgba(255, 255, 255, 0.15)"
+            color = "rgba(255, 255, 255, 0.7)"
+            hover_bg = "rgba(255, 255, 255, 0.08)"
+
+        self.status_lbl.setStyleSheet(f"font-size: 10.5pt; font-weight: bold; color: {color}; border: none; background: transparent;")
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {bg};
+                border: 1px solid {border};
+                border-radius: 8px;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_bg};
+                border-color: {color};
+            }}
+        """)
 
 
 class SettingsDialog(QDialog):
@@ -1340,9 +1388,13 @@ class SettingsDialog(QDialog):
 
         self.dl_location_combo.addItem("Custom Folder...", "custom")
 
+        from utils.paths import is_valid_download_directory
+
         # Load saved value (default is "Ask Every Time" / "")
         current_val = self.settings.value("default_download_directory", "")
-        if not current_val:
+        if not current_val or not is_valid_download_directory(current_val):
+            if current_val:
+                self.settings.setValue("default_download_directory", "")
             self.dl_location_combo.setCurrentIndex(0)
         elif current_val in detected_libs:
             idx = self.dl_location_combo.findData(current_val)
@@ -1356,7 +1408,7 @@ class SettingsDialog(QDialog):
             data = self.dl_location_combo.itemData(index)
             if data == "custom":
                 path = QFileDialog.getExistingDirectory(self, "Select Custom Download Location")
-                if path:
+                if path and is_valid_download_directory(path):
                     existing_idx = self.dl_location_combo.findData(path)
                     if existing_idx >= 0:
                         self.dl_location_combo.setCurrentIndex(existing_idx)
@@ -1364,6 +1416,13 @@ class SettingsDialog(QDialog):
                         insert_pos = self.dl_location_combo.count() - 1
                         self.dl_location_combo.insertItem(insert_pos, _fmt_path(path), path)
                         self.dl_location_combo.setCurrentIndex(insert_pos)
+                elif path:
+                    QMessageBox.warning(
+                        self,
+                        "Invalid Location",
+                        "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
+                    )
+                    self.dl_location_combo.setCurrentIndex(0)
                 else:
                     self.dl_location_combo.setCurrentIndex(0)
 
@@ -1814,8 +1873,65 @@ class SettingsDialog(QDialog):
 
 
 
+    def _create_rec_setting_row(self, title: str, desc: str, checkbox: QCheckBox) -> QWidget:
+        row = QWidget()
+        row.setObjectName("rec_setting_row")
+        row.setStyleSheet("""
+            QWidget#rec_setting_row {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.07);
+                border-radius: 8px;
+            }
+            QWidget#rec_setting_row:hover {
+                background-color: rgba(255, 255, 255, 0.06);
+                border-color: rgba(255, 255, 255, 0.16);
+            }
+        """)
+        h = QHBoxLayout(row)
+        h.setContentsMargins(14, 8, 14, 8)
+        h.setSpacing(12)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+
+        t_lbl = QLabel(title)
+        t_lbl.setStyleSheet("font-size: 9.5pt; font-weight: 600; color: #FFFFFF; border: none; background: transparent;")
+        d_lbl = QLabel(desc)
+        d_lbl.setStyleSheet("font-size: 8.2pt; color: rgba(255, 255, 255, 0.55); border: none; background: transparent;")
+        d_lbl.setWordWrap(True)
+
+        col.addWidget(t_lbl)
+        col.addWidget(d_lbl)
+        h.addLayout(col, 1)
+
+        checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        checkbox.setStyleSheet("""
+            QCheckBox {
+                spacing: 0px;
+                border: none;
+                background: transparent;
+            }
+            QCheckBox::indicator {
+                width: 20px;
+                height: 20px;
+                border-radius: 5px;
+                border: 1px solid rgba(255, 255, 255, 0.25);
+                background: rgba(255, 255, 255, 0.05);
+            }
+            QCheckBox::indicator:hover {
+                border-color: rgba(255, 255, 255, 0.45);
+                background: rgba(255, 255, 255, 0.1);
+            }
+            QCheckBox::indicator:checked {
+                background-color: #81C784;
+                border: 1px solid #81C784;
+            }
+        """)
+        h.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignVCenter)
+        return row
+
     def _create_health_tab(self) -> None:
-        """Create the consolidated Health settings tab combining SLS status, ASSfixer, SLS inheritance, and TWP."""
+        """Create the consolidated Health settings tab combining SLS status, SLS config, and Recommended Settings."""
         tab = QWidget()
         self.health_tab = tab
 
@@ -1831,52 +1947,37 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
 
-        # ── 1. SLSsteam & System Health ────────────────────────────────────
+        # ── 1. SLSsteam Status (3-Button Status Row) ────────────────────────
         sls_card, sls_layout = self._create_card_frame("System & SLSsteam Status")
 
-        # Binary Status Row
-        row_bin = QHBoxLayout()
-        bin_lbl = QLabel("SLSsteam Binary")
-        bin_lbl.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.85); font-weight: 500;")
-        row_bin.addWidget(bin_lbl)
-        row_bin.addStretch()
+        tiles_row = QHBoxLayout()
+        tiles_row.setContentsMargins(0, 4, 0, 4)
+        tiles_row.setSpacing(12)
 
-        self.health_sls_bin_btn = QPushButton("Checking...")
-        self.health_sls_bin_btn.setEnabled(False)
-        self._style_health_pill(self.health_sls_bin_btn, "neutral")
-        row_bin.addWidget(self.health_sls_bin_btn)
+        self.health_sls_bin_btn = HealthStatusTile("SLSsteam Binary")
+        self.health_sls_bin_btn.clicked.connect(self._on_sls_bin_tile_clicked)
+        tiles_row.addWidget(self.health_sls_bin_btn, 1)
 
-        self.health_sls_ver_btn = QPushButton("Checking...")
-        self.health_sls_ver_btn.setEnabled(False)
-        self._style_health_pill(self.health_sls_ver_btn, "neutral")
-        row_bin.addWidget(self.health_sls_ver_btn)
-        sls_layout.addLayout(row_bin)
+        self.health_sls_ver_btn = HealthStatusTile("Version")
+        self.health_sls_ver_btn.clicked.connect(self._on_sls_version_tile_clicked)
+        tiles_row.addWidget(self.health_sls_ver_btn, 1)
 
-        self.health_sls_bin_hint = QLabel("")
-        self.health_sls_bin_hint.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8pt; margin-left: 2px;")
-        self.health_sls_bin_hint.setWordWrap(True)
-        sls_layout.addWidget(self.health_sls_bin_hint)
+        self.health_sls_proc_btn = HealthStatusTile("SLS Process")
+        self.health_sls_proc_btn.clicked.connect(self._refresh_health_tab_status)
+        tiles_row.addWidget(self.health_sls_proc_btn, 1)
 
-        # Process Status Row
-        row_proc = QHBoxLayout()
-        proc_lbl = QLabel("SLSsteam Process")
-        proc_lbl.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.85); font-weight: 500;")
-        row_proc.addWidget(proc_lbl)
-        row_proc.addStretch()
+        sls_layout.addLayout(tiles_row)
 
-        self.health_sls_proc_btn = QPushButton("Checking...")
-        self.health_sls_proc_btn.setEnabled(False)
-        self._style_health_pill(self.health_sls_proc_btn, "neutral")
-        row_proc.addWidget(self.health_sls_proc_btn)
-        sls_layout.addLayout(row_proc)
+        # Binary Path & Refresh Row below all 3 buttons
+        path_row = QHBoxLayout()
+        path_row.setContentsMargins(2, 6, 2, 2)
+        path_row.setSpacing(10)
 
-        self.health_sls_proc_hint = QLabel("")
-        self.health_sls_proc_hint.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8pt; margin-left: 2px;")
-        self.health_sls_proc_hint.setWordWrap(True)
-        sls_layout.addWidget(self.health_sls_proc_hint)
+        self.health_sls_path_lbl = QLabel("Binary Path: Checking...")
+        self.health_sls_path_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8.5pt; font-family: monospace; border: none; background: transparent;")
+        self.health_sls_path_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        path_row.addWidget(self.health_sls_path_lbl, 1)
 
-        # Refresh row
-        refresh_row = QHBoxLayout()
         self.health_refresh_btn = QPushButton("Refresh Status")
         self.health_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.health_refresh_btn.setStyleSheet(f"""
@@ -1895,20 +1996,19 @@ class SettingsDialog(QDialog):
             }}
         """)
         self.health_refresh_btn.clicked.connect(self._refresh_health_tab_status)
-        refresh_row.addWidget(self.health_refresh_btn)
-        refresh_row.addStretch()
-        sls_layout.addLayout(refresh_row)
+        path_row.addWidget(self.health_refresh_btn, 0)
 
+        sls_layout.addLayout(path_row)
         layout.addWidget(sls_card)
 
-        # ── 2. ASSfixer (Linux/Steam Deck) ────────────────────────────────
+        # ── 2. SLS Config (Linux/Steam Deck) ──────────────────────────────
         if sys.platform == "linux":
-            assfixer_card, assfixer_layout = self._create_card_frame("ASSfixer")
+            sls_cfg_card, sls_cfg_layout = self._create_card_frame("SLS Config")
 
-            assfixer_desc = QLabel("Validate and synchronize ~/.config/SLSsteam/config.yaml against upstream template.")
-            assfixer_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
-            assfixer_desc.setWordWrap(True)
-            assfixer_layout.addWidget(assfixer_desc)
+            sls_cfg_desc = QLabel("Validate and synchronize ~/.config/SLSsteam/config.yaml against upstream template, or manage ID inheritance.")
+            sls_cfg_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+            sls_cfg_desc.setWordWrap(True)
+            sls_cfg_layout.addWidget(sls_cfg_desc)
 
             btn_row = QHBoxLayout()
             btn_row.setContentsMargins(0, 4, 0, 4)
@@ -1951,7 +2051,6 @@ class SettingsDialog(QDialog):
             self.assfixer_restore_btn = QPushButton("Restore Backup")
             self.assfixer_restore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.assfixer_restore_btn.setStyleSheet(btn_style)
-
             try:
                 from utils.assfixer import has_config_backup
                 self.assfixer_restore_btn.setEnabled(has_config_backup())
@@ -1960,131 +2059,116 @@ class SettingsDialog(QDialog):
             self.assfixer_restore_btn.clicked.connect(self._run_assfixer_restore)
             btn_row.addWidget(self.assfixer_restore_btn)
 
+            self.sls_inh_btn = QPushButton("Inheritance")
+            self.sls_inh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.sls_inh_btn.setStyleSheet(btn_style)
+            self.sls_inh_btn.clicked.connect(self._open_sls_inheritance_dialog)
+            self.sls_inh_btn.hide()  # Only shown if orphan configs or unmanaged installs are detected
+            btn_row.addWidget(self.sls_inh_btn)
+
             btn_row.addStretch()
-            assfixer_layout.addLayout(btn_row)
+            sls_cfg_layout.addLayout(btn_row)
 
             self.assfixer_status_lbl = QLabel("")
             self.assfixer_status_lbl.setStyleSheet("color: #a9b1d6; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
             self.assfixer_status_lbl.setWordWrap(True)
             self.assfixer_status_lbl.hide()
-            assfixer_layout.addWidget(self.assfixer_status_lbl)
+            sls_cfg_layout.addWidget(self.assfixer_status_lbl)
 
-            layout.addWidget(assfixer_card)
+            layout.addWidget(sls_cfg_card)
 
-        # ── 3. SLS Inheritance Card ───────────────────────────────────────
-        if sys.platform == "linux":
-            sls_inh_card, sls_inh_layout = self._create_card_frame("SLS Inheritance")
+        # ── 3. Recommended Settings (Glowup) ──────────────────────────────
+        rec_card, rec_layout = self._create_card_frame("")
+        rec_header_row = QHBoxLayout()
+        rec_header_row.setContentsMargins(0, 0, 0, 2)
+        rec_title_lbl = QLabel("Recommended Settings")
+        rec_title_lbl.setStyleSheet(f"font-size: 10pt; font-weight: bold; color: {self.accent_color}; border: none; background: transparent;")
+        rec_header_row.addWidget(rec_title_lbl)
+        rec_header_row.addStretch()
 
-            sls_inh_desc = QLabel("Manage orphan configs, external installations, and ownership mapping.")
-            sls_inh_desc.setStyleSheet(
-                "color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;"
-            )
-            sls_inh_desc.setWordWrap(True)
-            sls_inh_layout.addWidget(sls_inh_desc)
+        self.rec_score_badge = QLabel("● Checking...")
+        self.rec_score_badge.setStyleSheet("font-size: 8.5pt; font-weight: bold; color: #81C784; background: rgba(76, 175, 80, 0.12); border: 1px solid rgba(76, 175, 80, 0.35); border-radius: 6px; padding: 2px 10px;")
+        rec_header_row.addWidget(self.rec_score_badge)
+        rec_layout.addLayout(rec_header_row)
 
-            sls_inh_row = QHBoxLayout()
-            sls_inh_row.setContentsMargins(0, 4, 0, 4)
-            sls_inh_row.setSpacing(10)
+        rec_desc = QLabel("Essential settings recommended for the optimal ASSella workflow.")
+        rec_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent; margin-bottom: 4px;")
+        rec_desc.setWordWrap(True)
+        rec_layout.addWidget(rec_desc)
 
-            self.sls_inh_btn = QPushButton("Manage SLS Inheritance")
-            self.sls_inh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.sls_inh_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(255, 255, 255, 0.08);
-                    border: 1px solid rgba(255, 255, 255, 0.18);
-                    border-radius: 8px;
-                    color: #FFFFFF;
-                    padding: 7px 16px;
-                    font-size: 9.5pt;
-                    font-weight: 500;
-                }
-                QPushButton:hover {
-                    background-color: rgba(255, 255, 255, 0.16);
-                    border-color: rgba(255, 255, 255, 0.32);
-                }
-            """)
-            self.sls_inh_btn.clicked.connect(self._open_sls_inheritance_dialog)
-            sls_inh_row.addWidget(self.sls_inh_btn)
-            sls_inh_row.addStretch()
-            sls_inh_layout.addLayout(sls_inh_row)
-
-            layout.addWidget(sls_inh_card)
-
-        # ── 4. Training Wheels Protocol (Recommended Settings) ─────────────
-        twp_card, twp_layout = self._create_card_frame("Training Wheels Protocol")
-
-        twp_desc = QLabel("Essential settings recommended for the optimal ASSella workflow.")
-        twp_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
-        twp_desc.setWordWrap(True)
-        twp_layout.addWidget(twp_desc)
-
-        self.twp_chk_smart = QCheckBox("Smart Depot Selection (Reuse previously chosen depots on update)")
+        # Checkboxes
+        self.twp_chk_smart = QCheckBox()
         self.twp_chk_smart.setChecked(self.settings.value("smart_depot_selection", True, type=bool))
-        twp_layout.addWidget(self.twp_chk_smart)
+        self.twp_chk_smart.toggled.connect(self._on_rec_setting_toggled)
+        rec_layout.addWidget(self._create_rec_setting_row(
+            "Smart Depot Selection",
+            "Automatically reuse previously chosen depots on update",
+            self.twp_chk_smart
+        ))
 
-        self.twp_chk_gateway = QCheckBox("Hubcap Gateway: Auto (Smart fallback routing to bypass throttling)")
+        self.twp_chk_gateway = QCheckBox()
         self.twp_chk_gateway.setChecked(self.settings.value("isp_bypass_mode", "auto", type=str) == "auto")
-        twp_layout.addWidget(self.twp_chk_gateway)
+        self.twp_chk_gateway.toggled.connect(self._on_rec_setting_toggled)
+        rec_layout.addWidget(self._create_rec_setting_row(
+            "Hubcap Gateway (Auto)",
+            "Smart fallback routing to bypass ISP throttling and rate limits",
+            self.twp_chk_gateway
+        ))
 
-        self.twp_chk_sls_api = QCheckBox("SLSsteam Native API (Native ACF generation and automated registration)")
+        self.twp_chk_sls_api = QCheckBox()
         self.twp_chk_sls_api.setChecked(self.settings.value("experimental_acf_independent", False, type=bool))
-        twp_layout.addWidget(self.twp_chk_sls_api)
+        self.twp_chk_sls_api.toggled.connect(self._on_rec_setting_toggled)
+        rec_layout.addWidget(self._create_rec_setting_row(
+            "SLSsteam Native API",
+            "Native ACF generation and automated Steam game registration",
+            self.twp_chk_sls_api
+        ))
 
-        self.twp_chk_achievements = QCheckBox("Disable Legacy Achievement Generation (Accelerate manifest downloads)")
+        self.twp_chk_achievements = QCheckBox()
         self.twp_chk_achievements.setChecked(not self.settings.value("generate_achievements", True, type=bool))
-        twp_layout.addWidget(self.twp_chk_achievements)
+        self.twp_chk_achievements.toggled.connect(self._on_rec_setting_toggled)
+        rec_layout.addWidget(self._create_rec_setting_row(
+            "Skip achievement generation",
+            "Skip legacy achievement schema generation to accelerate downloads",
+            self.twp_chk_achievements
+        ))
 
-        self.twp_chk_macos = QCheckBox("Hide macOS & Android Depots (Filter platform clutter from queues)")
+        self.twp_chk_macos = QCheckBox()
         self.twp_chk_macos.setChecked(self.settings.value("hide_macos_depots", False, type=bool))
-        twp_layout.addWidget(self.twp_chk_macos)
-
-        twp_btn_row = QHBoxLayout()
-        twp_btn_row.setContentsMargins(0, 8, 0, 4)
-        twp_btn_row.setSpacing(10)
+        self.twp_chk_macos.toggled.connect(self._on_rec_setting_toggled)
+        rec_layout.addWidget(self._create_rec_setting_row(
+            "Hide Platform Clutter",
+            "Filter out unnecessary macOS & Android depots from download queues",
+            self.twp_chk_macos
+        ))
 
         self.health_apply_rec_btn = QPushButton("Apply Recommended Settings")
         self.health_apply_rec_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.health_apply_rec_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.health_apply_rec_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.accent_color};
                 color: #000000;
                 border: none;
                 border-radius: 8px;
-                padding: 8px 16px;
+                padding: 10px 20px;
                 font-size: 9.5pt;
                 font-weight: bold;
+                margin-top: 6px;
             }}
             QPushButton:hover {{
                 background-color: #FFFFFF;
             }}
+            QPushButton:disabled {{
+                background-color: rgba(255, 255, 255, 0.05) !important;
+                border: 1px solid rgba(255, 255, 255, 0.1) !important;
+                color: rgba(255, 255, 255, 0.28) !important;
+            }}
         """)
         self.health_apply_rec_btn.clicked.connect(self._apply_health_recommended_settings)
-        twp_btn_row.addWidget(self.health_apply_rec_btn)
+        rec_layout.addWidget(self.health_apply_rec_btn)
 
-        self.health_launch_wizard_btn = QPushButton("Open Setup Wizard")
-        self.health_launch_wizard_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.health_launch_wizard_btn.setStyleSheet("""
-            QPushButton {{
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.18);
-                border-radius: 8px;
-                color: #FFFFFF;
-                padding: 8px 16px;
-                font-size: 9.5pt;
-                font-weight: 500;
-            }}
-            QPushButton:hover {{
-                background-color: rgba(255, 255, 255, 0.16);
-                border-color: rgba(255, 255, 255, 0.32);
-            }}
-        """)
-        self.health_launch_wizard_btn.clicked.connect(self._run_training_wheels)
-        twp_btn_row.addWidget(self.health_launch_wizard_btn)
-
-        twp_btn_row.addStretch()
-        twp_layout.addLayout(twp_btn_row)
-
-        layout.addWidget(twp_card)
+        layout.addWidget(rec_card)
 
         layout.addStretch()
         scroll.setWidget(container)
@@ -2242,8 +2326,11 @@ class SettingsDialog(QDialog):
         if hasattr(self, "health_tab") and self.health_tab and self.tab_widget:
             self.tab_widget.setCurrentWidget(self.health_tab)
 
-    def _style_health_pill(self, btn: QPushButton, state: str = "neutral", text: Optional[str] = None) -> None:
-        if text:
+    def _style_health_pill(self, btn: Any, state: str = "neutral", text: Optional[str] = None) -> None:
+        if hasattr(btn, "set_state"):
+            btn.set_state(state, text or "")
+            return
+        if text and hasattr(btn, "setText"):
             btn.setText(text)
         if state == "ok":
             bg = "rgba(158, 206, 106, 0.15)"
@@ -2293,30 +2380,28 @@ class SettingsDialog(QDialog):
         steam_running = is_steam_process_running()
         sls_active = is_slssteam_process_active()
 
-        # Binary Detection
+        # 1. SLSsteam Binary
         if installed:
-            self._style_health_pill(self.health_sls_bin_btn, "ok", "Detected")
-            self.health_sls_bin_hint.setText(f"Binary path: {so_path}")
+            self.health_sls_bin_btn.set_state("ok", "Detected")
+            if hasattr(self, "health_sls_path_lbl") and self.health_sls_path_lbl:
+                self.health_sls_path_lbl.setText(f"Binary Path: {so_path}")
         else:
-            self._style_health_pill(self.health_sls_bin_btn, "error", "Not Detected")
-            self.health_sls_bin_hint.setText("SLSsteam binary not found. Install it via Settings → SLS.")
+            self.health_sls_bin_btn.set_state("error", "Not Detected")
+            if hasattr(self, "health_sls_path_lbl") and self.health_sls_path_lbl:
+                self.health_sls_path_lbl.setText("Binary Path: Not detected")
 
-        # Process Check
+        # 2. SLS Process
         if not steam_running:
-            self._style_health_pill(self.health_sls_proc_btn, "warn", "Steam Not Running")
-            self.health_sls_proc_hint.setText("Launch Steam first. SLSsteam only injects into the Steam process.")
+            self.health_sls_proc_btn.set_state("neutral", "Inactive")
         elif sls_active:
-            self._style_health_pill(self.health_sls_proc_btn, "ok", "Active (Injected)")
-            self.health_sls_proc_hint.setText("Steam is running and SLSsteam is actively loaded in memory.")
+            self.health_sls_proc_btn.set_state("ok", "Active")
         else:
-            self._style_health_pill(self.health_sls_proc_btn, "error", "Not Injected" if installed else "Not Installed")
-            if installed:
-                self.health_sls_proc_hint.setText("Steam is running but SLSsteam is not loaded. Restart Steam or verify your setup.")
-            else:
-                self.health_sls_proc_hint.setText("SLSsteam is not installed.")
+            self.health_sls_proc_btn.set_state("warn" if installed else "neutral", "Inactive")
 
-        # Version Check (Async)
-        self._style_health_pill(self.health_sls_ver_btn, "neutral", "Checking Version...")
+        # 3. Version Check (Async)
+        if hasattr(self.health_sls_ver_btn, "title_lbl"):
+            self.health_sls_ver_btn.title_lbl.setText("Version")
+        self.health_sls_ver_btn.set_state("neutral", "Checking...")
 
         def _ver_worker():
             try:
@@ -2329,28 +2414,155 @@ class SettingsDialog(QDialog):
         import threading
         threading.Thread(target=_ver_worker, daemon=True).start()
 
+        # 4. Check SLS Inheritance orphans in background (only show button if issues detected)
+        if hasattr(self, "sls_inh_btn") and self.sls_inh_btn:
+            def _inh_worker():
+                try:
+                    from ui.dialogs.sls_inheritance import scan_sls_orphans
+                    orphans = scan_sls_orphans()
+                    count = len(orphans)
+                except Exception:
+                    count = 0
+
+                def _apply_inh_visibility():
+                    if hasattr(self, "sls_inh_btn") and self.sls_inh_btn:
+                        if count > 0:
+                            self.sls_inh_btn.setText(f"Inheritance ({count})")
+                            self.sls_inh_btn.show()
+                        else:
+                            self.sls_inh_btn.hide()
+
+                QTimer.singleShot(0, _apply_inh_visibility)
+
+            threading.Thread(target=_inh_worker, daemon=True).start()
+
+        # Update recommended settings score badge
+        self._update_rec_score_badge()
+
     @pyqtSlot(dict)
     def _handle_sls_version_check_done(self, result: dict) -> None:
         if not hasattr(self, "health_sls_ver_btn") or not self.health_sls_ver_btn:
             return
 
         status = result.get("status", "error")
-        tag = result.get("release_tag") or "unknown"
+        tag = result.get("release_tag") or ""
         if status == "up_to_date":
-            self._style_health_pill(self.health_sls_ver_btn, "ok", f"Up to Date ({tag})")
+            if hasattr(self.health_sls_ver_btn, "title_lbl"):
+                self.health_sls_ver_btn.title_lbl.setText(tag if tag else "SLSsteam Version")
+            self.health_sls_ver_btn.set_state("ok", "Up to date!")
         elif status == "outdated":
-            self._style_health_pill(self.health_sls_ver_btn, "warn", f"Outdated (Latest: {tag})")
+            if hasattr(self.health_sls_ver_btn, "title_lbl"):
+                self.health_sls_ver_btn.title_lbl.setText(tag if tag else "SLSsteam Version")
+            self.health_sls_ver_btn.set_state("warn", "Update!")
         elif status == "no_local":
-            self._style_health_pill(self.health_sls_ver_btn, "neutral", "Not Installed")
+            if hasattr(self.health_sls_ver_btn, "title_lbl"):
+                self.health_sls_ver_btn.title_lbl.setText("Version")
+            self.health_sls_ver_btn.set_state("neutral", "Not Installed")
         else:
-            self._style_health_pill(self.health_sls_ver_btn, "neutral", "Version Unknown")
+            if hasattr(self.health_sls_ver_btn, "title_lbl"):
+                self.health_sls_ver_btn.title_lbl.setText("Version")
+            self.health_sls_ver_btn.set_state("neutral", "Unknown")
+
+    def _on_sls_bin_tile_clicked(self) -> None:
+        """Clicking SLSsteam Binary tile opens SLS tab if missing or refreshes status."""
+        from ui.dialogs.settings_sls import get_sls_paths
+        installed = get_sls_paths().get("detected", False)
+        if not installed and hasattr(self, "tab_widget") and self.tab_widget:
+            for i in range(self.tab_widget.count()):
+                if self.tab_widget.tabText(i) == "SLS":
+                    self.tab_widget.setCurrentIndex(i)
+                    return
+        self._refresh_health_tab_status()
+
+    def _on_sls_version_tile_clicked(self) -> None:
+        """Clicking Version tile prompts update if outdated or triggers fresh check."""
+        current_status = getattr(self.health_sls_ver_btn, "status_lbl", None)
+        status_text = current_status.text() if current_status else ""
+        if "Update!" in status_text and hasattr(self, "tab_widget") and self.tab_widget:
+            reply = QMessageBox.question(
+                self,
+                "SLSsteam Update Available",
+                "A newer SLSsteam build is available. Switch to the SLS tab to install or update?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                for i in range(self.tab_widget.count()):
+                    if self.tab_widget.tabText(i) == "SLS":
+                        self.tab_widget.setCurrentIndex(i)
+                        return
+
+        if hasattr(self.health_sls_ver_btn, "title_lbl"):
+            self.health_sls_ver_btn.title_lbl.setText("Version")
+        self.health_sls_ver_btn.set_state("neutral", "Checking...")
+
+        def _ver_worker():
+            try:
+                from utils.slssteam_integration import check_slssteam_binary_is_latest
+                res = check_slssteam_binary_is_latest(force_refresh=True)
+            except Exception as e:
+                res = {"status": "error", "error": str(e)}
+            self.sls_version_check_signal.emit(res)
+
+        import threading
+        threading.Thread(target=_ver_worker, daemon=True).start()
+
+    def _on_rec_setting_toggled(self) -> None:
+        """Handle live toggling of any recommended setting checkbox."""
+        self._update_rec_score_badge()
+
+    def _update_rec_score_badge(self) -> None:
+        """Update the badge showing how many recommended settings are currently active."""
+        if not hasattr(self, "rec_score_badge") or not self.rec_score_badge:
+            return
+        chk_list = [
+            getattr(self, "twp_chk_smart", None),
+            getattr(self, "twp_chk_gateway", None),
+            getattr(self, "twp_chk_sls_api", None),
+            getattr(self, "twp_chk_achievements", None),
+            getattr(self, "twp_chk_macos", None),
+        ]
+        active_count = sum(1 for chk in chk_list if chk and chk.isChecked())
+        total = len(chk_list)
+        if active_count == total:
+            self.rec_score_badge.setText(f"● {active_count}/{total} Optimal")
+            self.rec_score_badge.setStyleSheet(
+                "font-size: 8.5pt; font-weight: bold; color: #81C784; "
+                "background: rgba(76, 175, 80, 0.12); "
+                "border: 1px solid rgba(76, 175, 80, 0.35); "
+                "border-radius: 6px; padding: 2px 10px;"
+            )
+            if hasattr(self, "health_apply_rec_btn") and self.health_apply_rec_btn:
+                self.health_apply_rec_btn.setEnabled(False)
+                self.health_apply_rec_btn.setToolTip("All recommended settings are already applied.")
+        else:
+            self.rec_score_badge.setText(f"● {active_count}/{total} Recommended")
+            self.rec_score_badge.setStyleSheet(
+                "font-size: 8.5pt; font-weight: bold; color: #FFB74D; "
+                "background: rgba(255, 152, 0, 0.12); "
+                "border: 1px solid rgba(255, 152, 0, 0.35); "
+                "border-radius: 6px; padding: 2px 10px;"
+            )
+            if hasattr(self, "health_apply_rec_btn") and self.health_apply_rec_btn:
+                self.health_apply_rec_btn.setEnabled(True)
+                self.health_apply_rec_btn.setToolTip("Click to apply all recommended settings.")
 
     def _apply_health_recommended_settings(self) -> None:
-        """Apply recommended workflow settings from Health tab to QSettings and other UI controls."""
-        self.settings.setValue("smart_depot_selection", self.twp_chk_smart.isChecked())
-        if self.twp_chk_gateway.isChecked():
-            self.settings.setValue("isp_bypass_mode", "auto")
-            self.settings.setValue("isp_bypass_hubcap", True)
+        """Apply all recommended workflow settings from Health tab and synchronize UI."""
+        if hasattr(self, "twp_chk_smart") and self.twp_chk_smart:
+            self.twp_chk_smart.setChecked(True)
+        if hasattr(self, "twp_chk_gateway") and self.twp_chk_gateway:
+            self.twp_chk_gateway.setChecked(True)
+        if hasattr(self, "twp_chk_sls_api") and self.twp_chk_sls_api:
+            self.twp_chk_sls_api.setChecked(True)
+        if hasattr(self, "twp_chk_achievements") and self.twp_chk_achievements:
+            self.twp_chk_achievements.setChecked(True)
+        if hasattr(self, "twp_chk_macos") and self.twp_chk_macos:
+            self.twp_chk_macos.setChecked(True)
+
+        self.settings.setValue("smart_depot_selection", True)
+        self.settings.setValue("isp_bypass_mode", "auto")
+        self.settings.setValue("isp_bypass_hubcap", True)
 
         try:
             from ui.dialogs.settings_sls import get_sls_paths
@@ -2358,32 +2570,33 @@ class SettingsDialog(QDialog):
         except Exception:
             sls_detected = False
 
-        if self.twp_chk_sls_api.isChecked() and sls_detected:
+        if sls_detected:
             self.settings.setValue("experimental_acf_independent", True)
             self.settings.setValue("sls_config_management", True)
 
-        self.settings.setValue("generate_achievements", not self.twp_chk_achievements.isChecked())
-        self.settings.setValue("hide_macos_depots", self.twp_chk_macos.isChecked())
-        self.settings.setValue("hide_android_depots", self.twp_chk_macos.isChecked())
+        self.settings.setValue("generate_achievements", False)
+        self.settings.setValue("hide_macos_depots", True)
+        self.settings.setValue("hide_android_depots", True)
         self.settings.setValue("assella_twp_seen", True)
         self.settings.sync()
 
         # Synchronize other tabs if loaded
         if hasattr(self, "smart_depot_selection_checkbox") and self.smart_depot_selection_checkbox:
-            self.smart_depot_selection_checkbox.setChecked(self.twp_chk_smart.isChecked())
-        if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo and self.twp_chk_gateway.isChecked():
+            self.smart_depot_selection_checkbox.setChecked(True)
+        if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo:
             idx = self.isp_gateway_combo.findData("auto")
             if idx >= 0:
                 self.isp_gateway_combo.setCurrentIndex(idx)
         if hasattr(self, "experimental_acf_independent_checkbox") and self.experimental_acf_independent_checkbox:
-            self.experimental_acf_independent_checkbox.setChecked(self.twp_chk_sls_api.isChecked() and sls_detected)
+            self.experimental_acf_independent_checkbox.setChecked(sls_detected)
         if hasattr(self, "achievements_checkbox") and self.achievements_checkbox:
-            self.achievements_checkbox.setChecked(not self.twp_chk_achievements.isChecked())
+            self.achievements_checkbox.setChecked(False)
         if hasattr(self, "hide_macos_depots_checkbox") and self.hide_macos_depots_checkbox:
-            self.hide_macos_depots_checkbox.setChecked(self.twp_chk_macos.isChecked())
+            self.hide_macos_depots_checkbox.setChecked(True)
         if hasattr(self, "hide_android_depots_checkbox") and self.hide_android_depots_checkbox:
-            self.hide_android_depots_checkbox.setChecked(self.twp_chk_macos.isChecked())
+            self.hide_android_depots_checkbox.setChecked(True)
 
+        self._update_rec_score_badge()
         QMessageBox.information(self, "Settings Applied", "Recommended workflow settings applied successfully!")
 
     # ── ASSella Manager helpers ───────────────────────────────────────────

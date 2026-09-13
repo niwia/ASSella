@@ -360,49 +360,51 @@ class ImportManager:
     def _fetch_via_generate(
         self, appid: str, branch: str = "public"
     ) -> Tuple[Optional[str], Optional[str]]:
-        """Fetch manifest-only zip via /generate/appmanifest endpoint."""
+        """Fetch manifest-only zip via single manifest generation for depots in the imported lua."""
         try:
-            from core.morrenus_api import get_session, BASE_URL
+            from core import morrenus_api
 
-            try:
-                from utils.isp_bypass import execute_hubcap_request
-            except ImportError:
-                execute_hubcap_request = None
+            lua_path = self._lua_dir / f"{appid}.lua"
+            parsed = self.parse_lua_file(lua_path) if lua_path.exists() else None
+            manifest_gids = parsed.get("manifest_gids", {}) if parsed else {}
 
-            settings = get_settings()
-            api_key = settings.value("morrenus_api_key", "", type=str)
-            if not api_key:
-                return None, "Hubcap API key is not set. Please set it in Settings."
+            if not manifest_gids:
+                logger.info(f"[ImportManager] No manifest GIDs in lua for {appid} — falling back to full manifest API")
+                return self._fetch_via_manifest(appid, branch)
 
-            headers = {"Authorization": f"Bearer {api_key}"}
-            url = f"{BASE_URL}/generate/appmanifest/{appid}?branch={branch}"
-            logger.info(f"[ImportManager] GET {url}")
+            import io
+            import zipfile
 
-            if execute_hubcap_request:
-                resp = execute_hubcap_request(
-                    get_session(), "GET", url, headers=headers, stream=True, timeout=60
-                )
-            else:
-                import requests
-                resp = requests.get(url, headers=headers, stream=True, timeout=60, verify=False)
+            zip_buffer = io.BytesIO()
+            all_ok = True
 
-            resp.raise_for_status()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for d_id, d_gid in manifest_gids.items():
+                    raw_bytes, s_err = morrenus_api.generate_single_manifest(d_id, d_gid)
+                    if raw_bytes and not s_err:
+                        zf.writestr(f"{d_id}_{d_gid}.manifest", raw_bytes)
+                    else:
+                        logger.warning(f"[ImportManager] Single manifest generate failed for depot {d_id}: {s_err}")
+                        all_ok = False
+                        break
 
-            # Save the zip
+            if not all_ok:
+                logger.warning(f"[ImportManager] Falling back to full manifest API for AppID {appid}")
+                return self._fetch_via_manifest(appid, branch)
+
             self._manifests_dir.mkdir(parents=True, exist_ok=True)
             if branch and branch != "public":
                 save_path = self._manifests_dir / f"accela_fetch_{appid}_branch_{branch}.zip"
             else:
                 save_path = self._manifests_dir / f"accela_fetch_{appid}.zip"
 
-            save_path.write_bytes(resp.content)
-            logger.info(f"[ImportManager] Saved generate zip to {save_path}")
+            save_path.write_bytes(zip_buffer.getvalue())
+            logger.info(f"[ImportManager] Saved generated manifest zip to {save_path}")
             return str(save_path), None
 
         except Exception as e:
-            error_msg = f"Generate API failed for AppID {appid}: {e}"
-            logger.error(f"[ImportManager] {error_msg}")
-            return None, error_msg
+            logger.warning(f"[ImportManager] Generate failed for AppID {appid} ({e}) — falling back to full manifest API")
+            return self._fetch_via_manifest(appid, branch)
 
     def _fetch_via_manifest(
         self, appid: str, branch: str = "public"
