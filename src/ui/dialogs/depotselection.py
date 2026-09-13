@@ -268,12 +268,27 @@ class ConfigTableWidgetItem(QTableWidgetItem):
 class DepotSelectionDialog(QDialog):
     _depots_enriched_signal = pyqtSignal(dict)
 
+    def __new__(cls, *args, **kwargs):
+        if cls is not DepotSelectionDialog:
+            return super().__new__(cls)
+
+        is_single = kwargs.get("is_single_depot", False)
+        depots = kwargs.get("depots")
+        if depots is None and len(args) >= 3:
+            depots = args[2]
+
+        if is_single or (isinstance(depots, dict) and len(depots) == 1):
+            from ui.dialogs.single_depot_dialog import SingleDepotSelectionDialog
+            return SingleDepotSelectionDialog(*args, **kwargs)
+
+        return super().__new__(cls)
+
     def __init__(
         self,
         app_id,
         game_name,
         depots,
-        header_url,
+        header_url=None,
         parent=None,
         selected_depots=None,
         show_storage=True,

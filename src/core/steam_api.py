@@ -558,6 +558,8 @@ def _fetch_with_steam_client(app_id, access_token=None):
         header_url = None
         build_id = None
         app_name = None
+        open_branches = {}
+        common_data = {}
 
         if app_data:
             common_data = app_data.get("common", {})

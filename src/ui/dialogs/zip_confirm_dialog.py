@@ -32,6 +32,8 @@ from PyQt6.QtWidgets import (
     QFrame,
     QCheckBox,
     QComboBox,
+    QRadioButton,
+    QButtonGroup,
 )
 
 from ui.material_progress import MaterialSpinner
@@ -64,7 +66,7 @@ class ZipImportConfirmationDialog(QDialog):
         self.processed_game_data: Optional[Dict[str, Any]] = None
 
         self.setWindowTitle("Import Package Inspection")
-        self.setFixedSize(510, 380)
+        self.setFixedSize(520, 520)
         self.setSizeGripEnabled(False)
         self.setStyleSheet(f"""
             QDialog {{
@@ -230,6 +232,93 @@ class ZipImportConfirmationDialog(QDialog):
         card_layout.addWidget(self.installed_status_lbl)
 
         self.confirm_layout.addWidget(self.details_card)
+
+        # ── Build Selection Frame (Offers choice between Manifest Build vs Latest Live Build) ──
+        self.build_selection_frame = QFrame()
+        self.build_selection_frame.setObjectName("build_selection_frame")
+        self.build_selection_frame.setStyleSheet("""
+            QFrame#build_selection_frame {
+                background-color: rgba(255, 255, 255, 0.025);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+            }
+        """)
+        bs_layout = QVBoxLayout(self.build_selection_frame)
+        bs_layout.setContentsMargins(12, 8, 12, 8)
+        bs_layout.setSpacing(4)
+
+        self.bs_title = QLabel("Choose Version to Download:")
+        self.bs_title.setStyleSheet("color: #FFFFFF; font-size: 8.8pt; font-weight: bold; border: none; background: transparent;")
+        bs_layout.addWidget(self.bs_title)
+
+        self.build_group = QButtonGroup(self)
+
+        # Radio 1: Manifest Build
+        self.radio_manifest_build = QRadioButton("Use Imported Manifest Build")
+        self.radio_manifest_build.setChecked(True)
+        self.radio_manifest_build.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.radio_manifest_build.setStyleSheet(f"""
+            QRadioButton {{
+                color: #FFFFFF;
+                font-size: 8.8pt;
+                font-weight: 600;
+                spacing: 8px;
+                background: transparent;
+                border: none;
+            }}
+            QRadioButton::indicator {{
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                background: rgba(255, 255, 255, 0.05);
+            }}
+            QRadioButton::indicator:checked {{
+                background: {self.accent_color};
+                border: 1px solid {self.accent_color};
+            }}
+        """)
+        self.build_group.addButton(self.radio_manifest_build)
+        bs_layout.addWidget(self.radio_manifest_build)
+
+        self.manifest_build_sub = QLabel("Historical version from dropped manifest")
+        self.manifest_build_sub.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 7.8pt; border: none; background: transparent; margin-left: 23px;")
+        bs_layout.addWidget(self.manifest_build_sub)
+
+        # Radio 2: Latest Live Build
+        self.radio_latest_build = QRadioButton("Use Latest Live Build")
+        self.radio_latest_build.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.radio_latest_build.setStyleSheet(f"""
+            QRadioButton {{
+                color: #FFFFFF;
+                font-size: 8.8pt;
+                font-weight: 600;
+                spacing: 8px;
+                background: transparent;
+                border: none;
+            }}
+            QRadioButton::indicator {{
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                background: rgba(255, 255, 255, 0.05);
+            }}
+            QRadioButton::indicator:checked {{
+                background: {self.accent_color};
+                border: 1px solid {self.accent_color};
+            }}
+        """)
+        self.build_group.addButton(self.radio_latest_build)
+        bs_layout.addWidget(self.radio_latest_build)
+
+        self.latest_build_sub = QLabel("Current release on Steam")
+        self.latest_build_sub.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 7.8pt; border: none; background: transparent; margin-left: 23px;")
+        bs_layout.addWidget(self.latest_build_sub)
+
+        self.radio_manifest_build.toggled.connect(self._on_build_selection_changed)
+
+        self.confirm_layout.addWidget(self.build_selection_frame)
 
         # Pin Build Tile
         self.pin_frame = QFrame()
@@ -421,12 +510,38 @@ class ZipImportConfirmationDialog(QDialog):
         except Exception as e:
             logger.error(f"Error reading zip for inspection: {e}")
 
-        # Fallback AppID from zip filename
+        # Resolve parent AppID:
+        # 1. From extracted manifest depot ID (ground truth)
+        if (not appid or appid in ("0", "unknown")) and extracted_manifests:
+            try:
+                from utils.manifest_resolver import resolve_appid_from_depot
+                first_depot = next(iter(extracted_manifests.keys()))
+                resolved_aid, resolved_name = resolve_appid_from_depot(first_depot)
+                if resolved_aid:
+                    appid = resolved_aid
+                    if resolved_name and not game_name:
+                        game_name = resolved_name
+            except Exception as _res_err:
+                logger.debug(f"[ZipConfirmDialog] Depot-to-AppID resolution error: {_res_err}")
+
+        # 2. Fallback AppID from zip filename (only for accela_fetch_<id> or pure digits <id>.zip)
         if not appid:
             fn = os.path.basename(zip_path)
-            m_fn = re.search(r"(\d{4,9})", fn)
+            m_fn = re.search(r"accela_fetch_(\d+)", fn) or re.match(r"^(\d{4,9})\.zip$", fn)
             if m_fn:
                 appid = m_fn.group(1)
+
+        # Ensure depot keys & acquire latest live manifests from Hubcap if needed
+        latest_bundle_manifests = {}
+        if appid and appid not in ("0", "unknown"):
+            try:
+                from utils.manifest_resolver import ensure_depot_keys_for_app
+                first_depot = next(iter(extracted_manifests.keys())) if extracted_manifests else None
+                keys, token, latest_bundle_manifests = ensure_depot_keys_for_app(appid, first_depot)
+                info["has_depot_keys"] = bool(keys)
+                info["latest_bundle_manifests"] = latest_bundle_manifests
+            except Exception as _k_err:
+                logger.debug(f"[ZipConfirmDialog] Depot keys check error: {_k_err}")
 
         info["appid"] = appid or "0"
         info["manifest_count"] = len(extracted_manifests)
@@ -641,6 +756,36 @@ class ZipImportConfirmationDialog(QDialog):
         else:
             self.installed_status_lbl.setText("Currently Installed: <i>Not Installed</i>")
 
+        # Configure Build Selection Frame
+        imported_bid = data.get("imported_buildid")
+        live_bid = data.get("live_buildid")
+        versions_behind = data.get("versions_behind", 0)
+        has_different_builds = (imported_bid and live_bid and imported_bid != live_bid) or (versions_behind > 0)
+
+        if has_different_builds:
+            self.build_selection_frame.setVisible(True)
+            # Manifest option
+            m_text = f"Use Imported Manifest Build ({imported_bid or 'Historical'})"
+            self.radio_manifest_build.setText(m_text)
+            sub_text = f"Released: {data.get('patch_date', 'Earlier Release')}"
+            if versions_behind > 0:
+                sub_text += f" • {versions_behind} patch(es) behind current release"
+            self.manifest_build_sub.setText(sub_text)
+
+            # Latest live option
+            l_text = f"Use Latest Live Build ({live_bid or 'Current'})"
+            self.radio_latest_build.setText(l_text)
+            self.latest_build_sub.setText(f"Current live release on Steam • {data.get('live_date', 'Latest')}")
+
+            # Pre-select based on intent
+            if versions_behind > 0 or intent == "Rollback":
+                self.radio_manifest_build.setChecked(True)
+                self.pin_checkbox.setChecked(True)
+            else:
+                self.radio_latest_build.setChecked(True)
+        else:
+            self.build_selection_frame.setVisible(False)
+
         # Populate Destination Libraries
         from core.steam_helpers import get_steam_libraries, find_steam_install
         from utils.paths import is_valid_download_directory
@@ -715,6 +860,18 @@ class ZipImportConfirmationDialog(QDialog):
         # Switch to confirmation page
         self.stack.setCurrentIndex(1)
 
+    def _on_build_selection_changed(self, manifest_checked: Optional[bool] = None):
+        if manifest_checked is None:
+            manifest_checked = self.radio_manifest_build.isChecked()
+        if manifest_checked:
+            intent = self.result_data.get("intent", "Rollback")
+            if intent == "Rollback":
+                self.pin_checkbox.setChecked(True)
+            self.proceed_btn.setText("Proceed with Manifest Build")
+        else:
+            self.pin_checkbox.setChecked(False)
+            self.proceed_btn.setText("Proceed with Latest Build")
+
     def _on_proceed_clicked(self):
         """
         When user clicks proceed: show a loading state within this dialog while
@@ -735,7 +892,8 @@ class ZipImportConfirmationDialog(QDialog):
             try:
                 from core.tasks.process_zip_task import ProcessZipTask
                 task = ProcessZipTask()
-                game_data = task.run(self.zip_path)
+                task_meta = self.get_metadata()
+                game_data = task.run(self.zip_path, metadata=task_meta)
                 if self.result_data.get("library_path"):
                     game_data["library_path"] = self.result_data["library_path"]
                 self.processed_game_data = game_data
@@ -751,13 +909,28 @@ class ZipImportConfirmationDialog(QDialog):
         """
         Returns metadata to attach to the queued job.
         """
+        use_latest = False
+        if (
+            hasattr(self, "radio_latest_build")
+            and self.radio_latest_build.isChecked()
+            and hasattr(self, "build_selection_frame")
+            and not self.build_selection_frame.isHidden()
+        ):
+            use_latest = True
+
+        chosen_bid = self.result_data.get("live_buildid", "") if use_latest else self.result_data.get("imported_buildid", "")
+        if not chosen_bid:
+            chosen_bid = self.result_data.get("imported_buildid", "") or self.result_data.get("live_buildid", "")
+
         meta = {
             "pin_build": self.pin_checkbox.isChecked(),
-            "buildid": self.result_data.get("imported_buildid", ""),
+            "use_latest_build": use_latest,
+            "buildid": chosen_bid,
             "branch": self.result_data.get("branch", "public"),
-            "is_rollback": self.result_data.get("intent") == "Rollback",
+            "is_rollback": (not use_latest) and (self.result_data.get("intent") == "Rollback"),
             "patch_title": self.result_data.get("patch_title", ""),
             "game_name": self.result_data.get("game_name", ""),
+            "appid": self.result_data.get("appid", "0"),
         }
         if self.result_data.get("library_path"):
             meta["library_path"] = self.result_data["library_path"]

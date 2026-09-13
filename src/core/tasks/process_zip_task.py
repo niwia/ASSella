@@ -165,8 +165,9 @@ class ProcessZipTask:
             logger.error(f"Failed to extract/configure app token: {e}", exc_info=True)
             return None
 
-    def run(self, zip_path):
+    def run(self, zip_path, metadata=None):
         logger.info(f"Starting zip processing task for: {zip_path}")
+        metadata = metadata or {}
 
         try:
             known_depot_descriptions = parse_depots_ini()
@@ -295,11 +296,55 @@ class ProcessZipTask:
                 if not lua_content:
                     fn = os.path.basename(zip_path)
                     match = re.search(r"accela_fetch_(\d+)", fn)
-                    if match:
-                        inferred_appid = match.group(1)
+                    inferred_appid = match.group(1) if match else None
+
+                    # If not in filename, check metadata or resolve from manifest depot ID
+                    if not inferred_appid and metadata:
+                        inferred_appid = metadata.get("appid")
+                    if not inferred_appid and game_data.get("manifests"):
+                        try:
+                            from utils.manifest_resolver import resolve_appid_from_depot
+                            first_did = next(iter(game_data["manifests"].keys()))
+                            resolved_aid, resolved_name = resolve_appid_from_depot(first_did)
+                            if resolved_aid:
+                                inferred_appid = resolved_aid
+                                if resolved_name and not game_data.get("game_name"):
+                                    game_data["game_name"] = resolved_name
+                        except Exception as _res_err:
+                            logger.debug(f"[ProcessZipTask] Depot resolution failed: {_res_err}")
+
+                    if inferred_appid and inferred_appid not in ("0", "unknown"):
                         game_data["appid"] = inferred_appid
-                        logger.info(f"[ProcessZipTask] Inferred AppID {inferred_appid} from zip filename {fn}")
-                        if DepotKeyManager:
+                        logger.info(f"[ProcessZipTask] Inferred AppID {inferred_appid} from manifest/depot info")
+
+                        # Ensure depot keys & latest live manifests are fetched if missing
+                        d_keys = {}
+                        d_token = None
+                        latest_mfs = {}
+                        try:
+                            from utils.manifest_resolver import ensure_depot_keys_for_app
+                            first_did = next(iter(game_data.get("manifests", {}).keys())) if game_data.get("manifests") else None
+                            d_keys, d_token, latest_mfs = ensure_depot_keys_for_app(inferred_appid, first_did)
+                            if d_token and not game_data.get("app_token"):
+                                game_data["app_token"] = d_token
+                        except Exception as _k_err:
+                            logger.debug(f"[ProcessZipTask] Failed to ensure depot keys: {_k_err}")
+
+                        # Check user build preference: Latest Live Build vs Dropped Manifest Build
+                        if metadata and metadata.get("use_latest_build") and latest_mfs:
+                            logger.info(f"[ProcessZipTask] User chose Latest Live Build; switching manifests to {len(latest_mfs)} latest manifests.")
+                            game_data["manifests"] = dict(latest_mfs)
+
+                        if d_keys:
+                            depots_map = {}
+                            for did, k in d_keys.items():
+                                if str(did) == str(inferred_appid):
+                                    continue
+                                desc = known_depot_descriptions.get(did, f"Depot {did}")
+                                depots_map[did] = {"key": k, "desc": desc, "system": None}
+                            game_data["depots"] = depots_map
+                            logger.info(f"[ProcessZipTask] Reconstructed {len(depots_map)} depot(s) with keys for AppID {inferred_appid}")
+                        elif DepotKeyManager:
                             try:
                                 _dkm = DepotKeyManager()
                                 cached_keys = _dkm.get_depot_keys(inferred_appid)
@@ -317,6 +362,15 @@ class ProcessZipTask:
                                     logger.info(f"[ProcessZipTask] Reconstructed {len(depots_map)} depot(s) from depot_keys.db for AppID {inferred_appid}")
                             except Exception as _recon_err:
                                 logger.warning(f"[ProcessZipTask] Failed to reconstruct depots from cache: {_recon_err}")
+
+                # Copy additional metadata if available
+                if metadata:
+                    if metadata.get("game_name") and not game_data.get("game_name"):
+                        game_data["game_name"] = metadata["game_name"]
+                    if metadata.get("buildid"):
+                        game_data["buildid"] = metadata["buildid"]
+                    if metadata.get("is_rollback"):
+                        game_data["_is_rollback"] = metadata["is_rollback"]
 
                 unfiltered_depots = game_data.get("depots", {})
 
