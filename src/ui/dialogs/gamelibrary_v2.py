@@ -997,7 +997,12 @@ class GameDetailsDialogV2(QDialog):
 
         bottom_tiles_layout.addWidget(sls_container, 1)
 
-        # EOS Proxy Tile
+        # Netsock Tile (visible only when EOS is not detected)
+        self.netsock_tile = MaterialTile("Netsock", "Inactive", self, is_toggle=True)
+        self.netsock_tile.setVisible(False)
+        bottom_tiles_layout.addWidget(self.netsock_tile, 1)
+
+        # EOS Proxy Tile (visible only when EOS is detected)
         self.eos_tile = MaterialTile("EOS Proxy", "Inactive", self, is_toggle=True)
         self.eos_tile.setVisible(False)
         bottom_tiles_layout.addWidget(self.eos_tile, 1)
@@ -1964,47 +1969,130 @@ class GameDetailsDialogV2(QDialog):
     def _update_eos_btn_state(self):
         from utils.dlc_helpers import is_dlc_only_mode
         if is_dlc_only_mode(self.appid):
-            self.eos_tile.setEnabled(False)
-            self.eos_tile.setToolTip("Not available in DLC-Only mode")
+            if hasattr(self, "eos_tile") and self.eos_tile:
+                self.eos_tile.setEnabled(False)
+                self.eos_tile.setToolTip("Not available in DLC-Only mode")
+            if hasattr(self, "netsock_tile") and self.netsock_tile:
+                self.netsock_tile.setEnabled(False)
+                self.netsock_tile.setToolTip("Not available in DLC-Only mode")
             return
 
-        # Phase 1: File Detection & Hash-based State Resolution
         install_path = self.game_data.get("install_path")
         if not install_path or not os.path.exists(install_path):
-            self.eos_tile.setVisible(False)
+            if hasattr(self, "eos_tile") and self.eos_tile:
+                self.eos_tile.setVisible(False)
+            if hasattr(self, "netsock_tile") and self.netsock_tile:
+                self.netsock_tile.setVisible(False)
             return
 
         from utils.eos_detector import EOSDetector
         status = EOSDetector.get_proxy_status(install_path)
-
-        if status == "none":
-            self.eos_tile.setVisible(False)
-            return
-
-        # Phase 2: SLSonline Dependency Check & Status Handling
-        self.eos_tile.setVisible(True)
         is_sls_active = self.sls_tile.isChecked() if hasattr(self, "sls_tile") else False
 
-        if status == "active":
-            # Proxy is currently applied and hash matches -> Active state
-            self.eos_tile.setEnabled(True)  # Allow removing proxy regardless of SLS state
-            self.eos_tile.update_state(True, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
-            self.eos_tile.setToolTip("Epic Online Services proxy is active. Click to remove proxy and restore original DLL.")
-        elif status == "stale":
-            # Game was updated: .yes exists, but .dll was replaced with unpatched version -> Warning state
-            self.eos_tile.setEnabled(True)
-            self.eos_tile.update_state(True, self.accent_color, active_sub="Reapply Proxy", inactive_sub="Reapply Proxy", custom_color="#F59E0B")
-            self.eos_tile.setToolTip("Game was updated with unpatched EOS binaries. Click to reapply Epic Online Services proxy.")
-        else:
-            # Proxy is not applied (original DLL present)
-            if not is_sls_active:
-                self.eos_tile.setEnabled(False)
-                self.eos_tile.update_state(False, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable SLSonline")
-                self.eos_tile.setToolTip("Activate SLSonline first to enable EOS Proxy.")
-            else:
+        if status != "none":
+            # EOS detected: show EOS Proxy tile, hide Netsock tile completely
+            if hasattr(self, "eos_tile") and self.eos_tile:
+                self.eos_tile.setVisible(True)
+            if hasattr(self, "netsock_tile") and self.netsock_tile:
+                self.netsock_tile.setVisible(False)
+
+            if status == "active":
                 self.eos_tile.setEnabled(True)
-                self.eos_tile.update_state(False, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
-                self.eos_tile.setToolTip("Apply Epic Online Services proxy DLL.")
+                self.eos_tile.update_state(True, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
+                self.eos_tile.setToolTip("Epic Online Services proxy is active. Click to remove proxy and restore original DLL.")
+            elif status == "stale":
+                self.eos_tile.setEnabled(True)
+                self.eos_tile.update_state(True, self.accent_color, active_sub="Reapply Proxy", inactive_sub="Reapply Proxy", custom_color="#F59E0B")
+                self.eos_tile.setToolTip("Game was updated with unpatched EOS binaries. Click to reapply Epic Online Services proxy.")
+            else:
+                if not is_sls_active:
+                    self.eos_tile.setEnabled(False)
+                    self.eos_tile.update_state(False, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable SLSonline")
+                    self.eos_tile.setToolTip("Activate SLSonline first to enable EOS Proxy.")
+                else:
+                    self.eos_tile.setEnabled(True)
+                    self.eos_tile.update_state(False, self.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
+                    self.eos_tile.setToolTip("Apply Epic Online Services proxy DLL.")
+        else:
+            # No EOS detected: hide EOS Proxy tile, show Netsock tile
+            if hasattr(self, "eos_tile") and self.eos_tile:
+                self.eos_tile.setVisible(False)
+            if hasattr(self, "netsock_tile") and self.netsock_tile:
+                self.netsock_tile.setVisible(True)
+
+                from utils.yaml_config_manager import get_user_config_path, get_launch_option
+                cfg_path = get_user_config_path()
+                cur_opt = get_launch_option(cfg_path, str(self.appid)) if cfg_path.exists() else None
+                is_netsock_configured = bool(cur_opt and "netsock.so" in cur_opt)
+
+                if not is_sls_active:
+                    self.netsock_tile.setEnabled(False)
+                    self.netsock_tile.setChecked(False)
+                    self.netsock_tile.update_state(False, self.accent_color, active_sub="Active", inactive_sub="Enable SLSonline")
+                    self.netsock_tile.setToolTip("Activate SLSonline first to enable Netsock.")
+                else:
+                    self.netsock_tile.setEnabled(True)
+                    self.netsock_tile.setChecked(is_netsock_configured)
+                    self.netsock_tile.update_state(
+                        is_netsock_configured,
+                        self.accent_color,
+                        active_sub="Active",
+                        inactive_sub="Inactive"
+                    )
+                    if is_netsock_configured:
+                        self.netsock_tile.setToolTip("Netsock LD_AUDIT patch active for multiplayer sockets. Click to disable.")
+                    else:
+                        self.netsock_tile.setToolTip("Enable Netsock LD_AUDIT patch for Steam Networking Sockets.")
+
+    def _on_netsock_btn_clicked(self):
+        from utils.yaml_config_manager import (
+            get_user_config_path, get_launch_option, add_launch_option,
+            remove_launch_option, ensure_netsock_binary, get_netsock_so_launch_path
+        )
+        config = get_user_config_path()
+        if not config.exists():
+            return
+
+        cur_opt = get_launch_option(config, str(self.appid))
+        is_currently_active = bool(cur_opt and "netsock.so" in cur_opt)
+
+        if not is_currently_active:
+            # User wants to enable Netsock: show EAC warning
+            reply = QMessageBox.warning(
+                self,
+                "Netsock Compatibility Warning",
+                "Netsock injects via LD_AUDIT for Steam Networking Sockets multiplayer.\n\n"
+                "⚠️ Notice: This may not work with Easy Anti-Cheat (EAC) games or titles with strict anti-cheat.\n\n"
+                "Do you want to enable Netsock for this game?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self.netsock_tile.setChecked(False)
+                self.netsock_tile.update_state(False, self.accent_color, active_sub="Active", inactive_sub="Inactive")
+                return
+
+            ensure_netsock_binary()
+            launch_path = get_netsock_so_launch_path()
+            cmd = f'"env LD_AUDIT=\\"{launch_path}\\" %command%"'
+            if add_launch_option(config, str(self.appid), cmd):
+                self.netsock_tile.setChecked(True)
+                self.netsock_tile.update_state(True, self.accent_color, active_sub="Active", inactive_sub="Inactive")
+                self.netsock_tile.setToolTip("Netsock LD_AUDIT patch active. Click to disable.")
+                QMessageBox.information(self, "Netsock Enabled", "Netsock multiplayer patch has been enabled for this game.")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to write LaunchOptions to config.yaml.")
+                self.netsock_tile.setChecked(False)
+                self.netsock_tile.update_state(False, self.accent_color, active_sub="Active", inactive_sub="Inactive")
+        else:
+            # User wants to disable Netsock
+            if remove_launch_option(config, str(self.appid)):
+                self.netsock_tile.setChecked(False)
+                self.netsock_tile.update_state(False, self.accent_color, active_sub="Active", inactive_sub="Inactive")
+                self.netsock_tile.setToolTip("Enable Netsock LD_AUDIT patch for Steam Networking Sockets.")
+                QMessageBox.information(self, "Netsock Disabled", "Netsock multiplayer patch has been removed for this game.")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to remove LaunchOptions from config.yaml.")
 
     def _on_eos_btn_clicked(self):
         install_path = self.game_data.get("install_path")
@@ -2048,48 +2136,11 @@ class GameDetailsDialogV2(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to toggle EOS Proxy:\n{e}")
 
         self._update_eos_btn_state()
-        if hasattr(self, "sls_tile"):
-            self._sync_slsonline_launch_options(self.sls_tile.isChecked())
-
-    def _sync_slsonline_launch_options(self, checked: bool):
-        """Synchronize netsock.so LaunchOptions in SLSsteam config.yaml.
-
-        Netsock LD_AUDIT is written only when SLSonline is checked AND EOS proxy is NOT active.
-        If unchecked or EOS proxy is active, the LaunchOptions line is cleanly removed.
-        """
-        if not is_slssteam_config_management_enabled() or str(self.appid) in ("0", "N/A", "unknown", "480"):
-            return
-
-        try:
-            from utils.yaml_config_manager import (
-                get_user_config_path, add_launch_option, remove_launch_option,
-                ensure_netsock_binary, get_netsock_so_launch_path
-            )
-            from utils.eos_detector import EOSDetector
-
-            config = get_user_config_path()
-            if not config.exists():
-                return
-
-            install_path = self.game_data.get("install_path")
-            eos_active = False
-            if install_path and os.path.exists(install_path):
-                status = EOSDetector.get_proxy_status(install_path)
-                eos_active = (status == "active")
-
-            if checked and not eos_active:
-                ensure_netsock_binary()
-                launch_path = get_netsock_so_launch_path()
-                cmd = f'"env LD_AUDIT=\\"{launch_path}\\" %command%"'
-                add_launch_option(config, str(self.appid), cmd)
-            else:
-                remove_launch_option(config, str(self.appid))
-        except Exception as e:
-            logger.error(f"Failed to sync LaunchOptions for {self.appid}: {e}", exc_info=True)
 
     def _init_slsonline_logic(self):
-        # Connect action
+        # Connect actions
         self.eos_tile.clicked.connect(self._on_eos_btn_clicked)
+        self.netsock_tile.clicked.connect(self._on_netsock_btn_clicked)
 
         if is_slssteam_config_management_enabled() and self.appid not in ("0", "N/A", "unknown", "480"):
             config = get_user_config_path()
@@ -2120,19 +2171,16 @@ class GameDetailsDialogV2(QDialog):
                     _apply_split_style(True)
                     self.sls_input.setText(existing)
                     self.sls_input_container.setVisible(True)
-                    self._sync_slsonline_launch_options(True)
                 else:
                     self.sls_tile.setChecked(False)
                     _apply_split_style(False)
                     self.sls_input.setText("480")
                     self.sls_input_container.setVisible(False)
-                    self._sync_slsonline_launch_options(False)
                 self.sls_tile.blockSignals(False)
 
                 def _tog(checked):
                     _apply_split_style(checked)
                     self.sls_input_container.setVisible(checked)
-                    self._update_eos_btn_state()
                     fid = self.sls_input.text().strip() or "480"
                     name = self.game_data.get("game_name", "Unknown")
                     if checked:
@@ -2144,7 +2192,12 @@ class GameDetailsDialogV2(QDialog):
                         cur = get_fake_appid(config, self.appid)
                         if cur:
                             remove_fake_app_id(config, self.appid, cur)
-                    self._sync_slsonline_launch_options(checked)
+                        # When SLSonline is disabled, automatically wipe LaunchOptions
+                        from utils.yaml_config_manager import remove_launch_option
+                        remove_launch_option(config, str(self.appid))
+                        if hasattr(self, "netsock_tile"):
+                            self.netsock_tile.setChecked(False)
+                    self._update_eos_btn_state()
 
                 def _fin():
                     if self.sls_tile.isChecked():
@@ -2163,7 +2216,7 @@ class GameDetailsDialogV2(QDialog):
             self.sls_tile.update_state(False, self.accent_color)
             self.sls_input.setEnabled(False)
 
-        # Update EOS Proxy tile state AFTER sls_tile state has been restored
+        # Update tile visibility and state
         self._update_eos_btn_state()
 
         # Check DLC-only mode for SLS and EOS Proxy
