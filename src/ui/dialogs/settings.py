@@ -1200,59 +1200,7 @@ class SettingsDialog(QDialog):
         provider_layout.addWidget(self.update_provider_combo)
         assella_lay.addLayout(provider_layout)
 
-        # Clear Update & Build ID Cache Row
-        cache_layout = QHBoxLayout()
-        cache_desc = QLabel("Update & Build ID Cache:")
-        cache_desc.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
-        cache_desc.setToolTip("Clears local caches so game build IDs, branches, and update statuses are queried fresh from Steam.")
-        self.clear_update_cache_btn = QPushButton("Clear Cache")
-        self.clear_update_cache_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear_update_cache_btn.setToolTip("Purges cached build IDs, branch manifests, and update status entries.")
-        self.clear_update_cache_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                border-radius: 6px;
-                padding: 4px 14px;
-                color: #FFFFFF;
-                font-size: 9pt;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background: rgba(255, 255, 255, 0.16);
-                border-color: rgba(255, 255, 255, 0.35);
-            }
-        """)
-        self.clear_update_cache_btn.clicked.connect(self._on_clear_update_cache_clicked)
-        cache_layout.addWidget(cache_desc)
-        cache_layout.addStretch(1)
-        cache_layout.addWidget(self.clear_update_cache_btn)
-        assella_lay.addLayout(cache_layout)
-
         layout.addWidget(assella_card)
-
-        # ── Health & Setup Guide ──────────────────────────────────────
-        twp_btn = QPushButton("Health & Setup Guide")
-        twp_btn.setToolTip("Open the Health tab to check system status, repair config, and configure recommended settings.")
-        twp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        twp_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 8px;
-                padding: 10px 16px;
-                color: #FFFFFF;
-                font-size: 9.5pt;
-                font-weight: 500;
-                text-align: center;
-            }}
-            QPushButton:hover {{
-                background: rgba(255, 255, 255, 0.1);
-                border-color: {self.accent_color};
-            }}
-        """)
-        twp_btn.clicked.connect(self._open_health_tab)
-        layout.addWidget(twp_btn)
 
         layout.addStretch()
 
@@ -1646,6 +1594,36 @@ class SettingsDialog(QDialog):
             show_description=False,
         )
         adv_layout.addWidget(self.auto_skip_single_choice_checkbox)
+
+        # Clear Update & Build ID Cache Row
+        cache_layout = QHBoxLayout()
+        cache_layout.setContentsMargins(0, 6, 0, 2)
+        cache_desc = QLabel("Update & Build ID Cache:")
+        cache_desc.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        cache_desc.setToolTip("Clears local caches so game build IDs, branches, and update statuses are queried fresh from Steam.")
+        self.clear_update_cache_btn = QPushButton("Clear Cache")
+        self.clear_update_cache_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_update_cache_btn.setToolTip("Purges cached build IDs, branch manifests, and update status entries.")
+        self.clear_update_cache_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 6px;
+                padding: 4px 14px;
+                color: #FFFFFF;
+                font-size: 9pt;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.16);
+                border-color: rgba(255, 255, 255, 0.35);
+            }
+        """)
+        self.clear_update_cache_btn.clicked.connect(self._on_clear_update_cache_clicked)
+        cache_layout.addWidget(cache_desc)
+        cache_layout.addStretch(1)
+        cache_layout.addWidget(self.clear_update_cache_btn)
+        adv_layout.addLayout(cache_layout)
 
         layout.addWidget(adv_card)
 
