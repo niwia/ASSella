@@ -417,6 +417,60 @@ def _remove_matching_entry(
         return False
 
 
+def _remove_entry_from_section(
+    config_path: Path,
+    section_name: str,
+    pattern: re.Pattern,
+    success_message: str,
+    error_message: str,
+) -> bool:
+    """Remove a matching line only within a specific top-level YAML section."""
+    try:
+        content = _read_config_content(config_path)
+        if content is None:
+            return False
+
+        section_pattern = re.compile(rf"^{re.escape(section_name)}:\s*(?:#.*)?$", re.MULTILINE)
+        sec_match = section_pattern.search(content)
+        if not sec_match:
+            return False
+
+        section_start = sec_match.end()
+        if section_start < len(content) and content[section_start] == "\n":
+            section_start += 1
+        after_section = content[section_start:]
+        next_key_pattern = re.compile(r"^[A-Za-z0-9_]+:", re.MULTILINE)
+        next_match = next_key_pattern.search(after_section)
+        section_end = section_start + next_match.start() if next_match else len(content)
+        section_content = content[section_start:section_end]
+
+        match = pattern.search(section_content)
+        if not match:
+            return False
+
+        abs_match_start = section_start + match.start()
+        abs_match_end = section_start + match.end()
+
+        line_start = content.rfind("\n", 0, abs_match_start) + 1
+        if line_start < 0:
+            line_start = 0
+        line_end = content.find("\n", abs_match_end)
+        if line_end == -1:
+            line_end = len(content)
+        elif line_end < len(content) and content[line_end] == "\n":
+            line_end += 1
+
+        new_content = content[:line_start] + content[line_end:]
+        if not _atomic_write(config_path, new_content):
+            return False
+
+        logger.info(success_message)
+        return True
+    except OSError as e:
+        logger.error(error_message.format(e=e), exc_info=True)
+        return False
+
+
 def _fix_additional_apps_indentation(content: str) -> Tuple[str, bool]:
     """Fix indentation of AdditionalApps list items."""
     # Find AdditionalApps section
@@ -623,8 +677,9 @@ def remove_additional_app(config_path: Path, app_id: str) -> bool:
     app_id_pattern = re.compile(
         rf"^\s*-\s*{re.escape(app_id)}\s*(?:#.*)?$", re.MULTILINE
     )
-    return _remove_matching_entry(
+    return _remove_entry_from_section(
         config_path,
+        "AdditionalApps",
         app_id_pattern,
         f"Removed AppID '{app_id}' from AdditionalApps in {config_path}",
         f"Failed to remove AppID '{app_id}': {{e}}",
@@ -972,8 +1027,9 @@ def remove_app_token(config_path: Path, app_id: str) -> bool:
         rf"^\s*{re.escape(app_id)}\s*:\s*\S+" r"(?:\s*#.*)?$",
         re.MULTILINE,
     )
-    return _remove_matching_entry(
+    return _remove_entry_from_section(
         config_path,
+        "AppTokens",
         app_id_pattern,
         f"Removed AppID '{app_id}' from AppTokens in {config_path}",
         f"Failed to remove AppToken for '{app_id}': {{e}}",
@@ -1169,8 +1225,9 @@ def remove_fake_app_id(config_path: Path, app_id: str, fake_appid: str = "") -> 
             rf"^\s*{re.escape(app_id)}\s*:\s*\S+" r"(?:\s*#.*)?$",
             re.MULTILINE,
         )
-    return _remove_matching_entry(
+    return _remove_entry_from_section(
         config_path,
+        "FakeAppIds",
         app_id_pattern,
         f"Removed AppID '{app_id}' from FakeAppIds in {config_path}",
         f"Failed to remove FakeAppId '{app_id}': {{e}}",
@@ -1674,8 +1731,9 @@ def remove_launch_option(config_path: Path, app_id: str) -> bool:
         rf"^\s*{re.escape(str(app_id))}\s*:.*$",
         re.MULTILINE
     )
-    return _remove_matching_entry(
+    return _remove_entry_from_section(
         config_path,
+        "LaunchOptions",
         app_id_pattern,
         f"Removed AppID '{app_id}' from LaunchOptions in {config_path}",
         f"Failed to remove LaunchOptions for AppID '{app_id}': {{e}}"
