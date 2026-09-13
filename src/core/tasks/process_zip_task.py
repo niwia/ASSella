@@ -662,6 +662,32 @@ class ProcessZipTask:
                                 game_data["missing_depots_from_hubcap"] = missing_from_hubcap
                                 game_data["missing_depots_info"] = missing_depots_info
 
+                                # Persist the missing depots to DB so future update-checks can
+                                # use /contents (0 quota) to detect if Hubcap has added them back
+                                _depots_to_track = []
+                                for _m_did in missing_from_hubcap:
+                                    _m_info = missing_depots_info.get(str(_m_did), {})
+                                    # Only track if we have a manifest_id to re-fetch with later
+                                    _m_mid = None
+                                    for _fetch_did, _fetch_mid, _fetch_name in depot_comp.get("missing_for_fetch", []):
+                                        if str(_fetch_did) == str(_m_did):
+                                            _m_mid = str(_fetch_mid)
+                                            break
+                                    if _m_mid:
+                                        _depots_to_track.append({
+                                            "depot_id": str(_m_did),
+                                            "manifest_id": _m_mid,
+                                            "depot_name": _m_info.get("name") or f"Depot {_m_did}",
+                                        })
+                                if _depots_to_track:
+                                    try:
+                                        from managers.db_manager import DatabaseManager
+                                        DatabaseManager().upsert_missing_hubcap_depots(
+                                            str(game_data.get("appid", "")), _depots_to_track
+                                        )
+                                    except Exception as _dbe:
+                                        logger.debug(f"[ProcessZipTask] Failed to persist missing depots to DB: {_dbe}")
+
                         enriched_depots = {}
                         filter_soundtracks = get_settings().value("filter_soundtracks", True, type=bool)
                         db_enrichments = {}

@@ -1545,14 +1545,82 @@ class FetchManifestDialog(QDialog):
                 refetched_depots = []
                 missing_depots_info_patch = {}
 
-                if depot_check.get("missing_for_fetch"):
-                    missing_for_fetch = depot_check["missing_for_fetch"]
+                # --- Phase A: Check if any *previously tracked* missing depots have
+                #     been added back by Hubcap since the last attempt.
+                #     We use the free /contents endpoint (0 quota) as a pre-flight
+                #     so we only call /generate when we know Hubcap has the depot.
+                try:
+                    from managers.db_manager import DatabaseManager
+                    _db = DatabaseManager()
+                    tracked_missing = _db.get_missing_hubcap_depots(str(app_id))
+                except Exception:
+                    tracked_missing = []
+
+                if tracked_missing:
                     logger.info(
-                        f"Detected {len(missing_for_fetch)} official depot(s) missing from cache for {app_id}: {missing_for_fetch}"
+                        f"[MissingDepot] {len(tracked_missing)} previously-tracked missing depot(s) for App {app_id}. "
+                        f"Checking /contents to see if any have returned..."
                     )
-                    from managers.depot_key_manager import DepotKeyManager
-                    dkm = DepotKeyManager()
-                    cached_keys = dkm.get_depot_keys(app_id)
+                    try:
+                        contents_data = morrenus_api.get_manifest_contents(app_id, branch=branch)
+                        hubcap_depot_ids = contents_data.get("depot_ids", set()) if isinstance(contents_data, dict) and "error" not in contents_data else set()
+                    except Exception as _ce:
+                        logger.warning(f"[MissingDepot] /contents check failed for {app_id}: {_ce}")
+                        hubcap_depot_ids = set()
+
+                    for tracked in tracked_missing:
+                        t_did = tracked["depot_id"]
+                        t_mid = tracked["manifest_id"]
+                        t_name = tracked.get("depot_name") or f"Depot {t_did}"
+
+                        if t_did in hubcap_depot_ids:
+                            # Hubcap now has this depot — generate it (guaranteed to succeed)
+                            logger.info(
+                                f"[MissingDepot] Depot {t_did} is back in Hubcap bundle! Fetching via generate..."
+                            )
+                            manifest_bytes, gen_err = morrenus_api.generate_single_manifest(t_did, t_mid)
+                            if manifest_bytes:
+                                tmp_manifest_dir = Path(tempfile.gettempdir()) / "mistwalker_manifests"
+                                tmp_manifest_dir.mkdir(parents=True, exist_ok=True)
+                                (tmp_manifest_dir / f"{t_did}_{t_mid}.manifest").write_bytes(manifest_bytes)
+
+                                persistent_manifest_dir = Path(get_base_path()) / "manifests"
+                                persistent_manifest_dir.mkdir(parents=True, exist_ok=True)
+                                (persistent_manifest_dir / f"{t_did}_{t_mid}.manifest").write_bytes(manifest_bytes)
+
+                                local_manifests[str(t_did)] = str(t_mid)
+                                refetched_depots.append(str(t_did))
+
+                                # Clear it from the DB — it's recovered
+                                try:
+                                    _db.clear_missing_hubcap_depot(str(app_id), t_did)
+                                except Exception:
+                                    pass
+
+                                logger.info(f"[MissingDepot] ✓ Recovered depot {t_did} ({t_name}) and cleared from tracking.")
+                            else:
+                                # Generate failed despite /contents saying it's there — keep tracked
+                                missing_depots_info_patch[str(t_did)] = {"hubcap_status": "failed"}
+                                logger.warning(f"[MissingDepot] /contents says depot {t_did} exists but generate failed: {gen_err}")
+                        else:
+                            # Still missing from Hubcap — don't waste quota, just note it
+                            missing_depots_info_patch[str(t_did)] = {"hubcap_status": "not_found"}
+                            logger.debug(f"[MissingDepot] Depot {t_did} still absent from Hubcap bundle. Skipping generate.")
+
+                # --- Phase B: Newly detected missing depots (from this run's depot check).
+                #     Filter out any that are already in the DB (already tracked) to avoid
+                #     double-fetching. For new ones, try /generate directly.
+                newly_missing_to_persist = []
+                if depot_check.get("missing_for_fetch"):
+                    already_tracked_ids = {t["depot_id"] for t in tracked_missing}
+                    missing_for_fetch = [
+                        entry for entry in depot_check["missing_for_fetch"]
+                        if entry[0] not in already_tracked_ids
+                    ]
+                    if missing_for_fetch:
+                        logger.info(
+                            f"Detected {len(missing_for_fetch)} NEW official depot(s) missing from cache for {app_id}: {missing_for_fetch}"
+                        )
 
                     for missing_did, missing_mid, depot_name in missing_for_fetch:
                         logger.info(
@@ -1585,6 +1653,20 @@ class FetchManifestDialog(QDialog):
                             logger.warning(
                                 f"Could not auto-generate missing manifest for depot {missing_did}: {gen_err} (status={status_tag})"
                             )
+                            # Persist this newly discovered missing depot to DB for future /contents rechecks
+                            newly_missing_to_persist.append({
+                                "depot_id": str(missing_did),
+                                "manifest_id": str(missing_mid),
+                                "depot_name": depot_name,
+                            })
+
+                # Persist any newly-discovered-and-failed missing depots to DB
+                if newly_missing_to_persist:
+                    try:
+                        from managers.db_manager import DatabaseManager
+                        DatabaseManager().upsert_missing_hubcap_depots(str(app_id), newly_missing_to_persist)
+                    except Exception as _dbe:
+                        logger.debug(f"[MissingDepot] Failed to persist missing depots to DB: {_dbe}")
 
                 self._last_refetched_depots = refetched_depots
                 self._last_missing_depots_info_patch = missing_depots_info_patch

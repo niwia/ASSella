@@ -419,3 +419,33 @@ def get_manifest_status(app_id: str) -> Dict:
     """
     logger.info(f"Fetching manifest status for app {app_id}")
     return _make_json_request("GET", f"/status/{app_id}")
+
+
+def get_manifest_contents(app_id: Union[str, int], branch: str = "public") -> Dict:
+    """
+    Calls /api/v1/manifest/{app_id}/contents to fetch the list of depot/manifest IDs
+    currently bundled in Hubcap's ZIP for this app.
+
+    This endpoint is FREE (zero generation quota) and fast — use it as a cheap
+    pre-flight check before committing to the quota-consuming /generate/manifest call.
+
+    Returns a dict with:
+        - zip_exists (bool): True if a bundle ZIP exists for this app.
+        - manifest_count (int): Number of manifests in the bundle.
+        - manifests (list[dict]): Each entry has "depot_id" and "manifest_id".
+        - depot_ids (set[str]): Convenience set of depot IDs Hubcap currently has.
+        - error (str, optional): Present on failure.
+    """
+    params = {}
+    if branch and branch != "public":
+        params["branch"] = branch
+
+    logger.info(f"Fetching manifest contents for app {app_id} (branch={branch})")
+    data = _make_json_request("GET", f"/manifest/{app_id}/contents", params=params or None)
+
+    if isinstance(data, dict) and "error" not in data:
+        # Build a convenience set of depot_ids for O(1) membership checks
+        manifests = data.get("manifests") or []
+        data["depot_ids"] = {str(m.get("depot_id", "")) for m in manifests if m.get("depot_id")}
+
+    return data

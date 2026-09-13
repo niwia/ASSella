@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, List
 
 # Handle optional compression dependency
 try:
@@ -520,3 +520,119 @@ class DatabaseManager:
         except Exception as e:
             logger.debug(f"[DBManager] Failed to read depot enrichments for {appid}: {e}")
             return {}
+
+    # ── Missing Hubcap Depot Tracking ────────────────────────────────────────
+
+    def _ensure_missing_depots_table(self, cur):
+        """Creates the missing_hubcap_depots table if it doesn't exist yet."""
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS missing_hubcap_depots (
+                appid TEXT NOT NULL,
+                depot_id TEXT NOT NULL,
+                manifest_id TEXT NOT NULL,
+                depot_name TEXT,
+                first_seen INTEGER,
+                PRIMARY KEY (appid, depot_id)
+            )
+        """)
+
+    def upsert_missing_hubcap_depots(self, appid: str, depots: List[Dict[str, str]]) -> None:
+        """
+        Persists a list of depots that Hubcap could not provide for a given appid.
+
+        Each dict in `depots` should have:
+            - depot_id (str, required)
+            - manifest_id (str, required)
+            - depot_name (str, optional)
+
+        Uses INSERT OR IGNORE so that first_seen is preserved for records that
+        already exist (i.e. we don't clobber the timestamp on repeated failures).
+        """
+        if not depots or not self.conn:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_missing_depots_table(cur)
+                now = int(time.time())
+                for entry in depots:
+                    depot_id = str(entry.get("depot_id", "")).strip()
+                    manifest_id = str(entry.get("manifest_id", "")).strip()
+                    if not depot_id or not manifest_id:
+                        continue
+                    cur.execute("""
+                        INSERT OR IGNORE INTO missing_hubcap_depots
+                            (appid, depot_id, manifest_id, depot_name, first_seen)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (str(appid), depot_id, manifest_id, entry.get("depot_name"), now))
+                self.conn.commit()
+                logger.info(f"[DBManager] Tracked {len(depots)} missing Hubcap depot(s) for App {appid}")
+        except Exception as e:
+            logger.error(f"[DBManager] Failed to persist missing depots for {appid}: {e}")
+
+    def get_missing_hubcap_depots(self, appid: str) -> List[Dict[str, str]]:
+        """
+        Returns the list of depots that were previously found missing from Hubcap
+        for the given appid.
+
+        Each returned dict has:
+            - depot_id (str)
+            - manifest_id (str)
+            - depot_name (str or None)
+            - first_seen (int)
+        """
+        if not self.conn:
+            return []
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_missing_depots_table(cur)
+                cur.execute("""
+                    SELECT depot_id, manifest_id, depot_name, first_seen
+                    FROM missing_hubcap_depots
+                    WHERE appid = ?
+                    ORDER BY first_seen ASC
+                """, (str(appid),))
+                return [
+                    {
+                        "depot_id": str(r[0]),
+                        "manifest_id": str(r[1]),
+                        "depot_name": r[2],
+                        "first_seen": r[3],
+                    }
+                    for r in cur.fetchall()
+                ]
+        except Exception as e:
+            logger.debug(f"[DBManager] Failed to read missing depots for {appid}: {e}")
+            return []
+
+    def clear_missing_hubcap_depot(self, appid: str, depot_id: str) -> None:
+        """Removes a single depot from the missing-depot tracking table (i.e. it's been recovered)."""
+        if not self.conn:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_missing_depots_table(cur)
+                cur.execute(
+                    "DELETE FROM missing_hubcap_depots WHERE appid = ? AND depot_id = ?",
+                    (str(appid), str(depot_id)),
+                )
+                self.conn.commit()
+                logger.info(f"[DBManager] Cleared recovered depot {depot_id} from missing-depot list for App {appid}")
+        except Exception as e:
+            logger.error(f"[DBManager] Failed to clear missing depot {depot_id} for {appid}: {e}")
+
+    def clear_all_missing_hubcap_depots(self, appid: str) -> None:
+        """Removes all missing-depot records for an appid (e.g. after a full re-download succeeds)."""
+        if not self.conn:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_missing_depots_table(cur)
+                cur.execute("DELETE FROM missing_hubcap_depots WHERE appid = ?", (str(appid),))
+                self.conn.commit()
+                logger.info(f"[DBManager] Cleared all missing-depot records for App {appid}")
+        except Exception as e:
+            logger.error(f"[DBManager] Failed to clear all missing depots for {appid}: {e}")
