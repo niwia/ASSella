@@ -409,9 +409,13 @@ def _write_appid_to_config(appid: str, game_name: str = "") -> bool:
 
 
 def _remove_appid_from_config(appid: str) -> bool:
-    """Remove appid from SLSsteam config.yaml AdditionalApps in-place."""
-    from utils.yaml_config_manager import get_user_config_path, remove_additional_app
+    """Remove appid from SLSsteam config.yaml AdditionalApps and LaunchOptions in-place."""
+    from utils.yaml_config_manager import get_user_config_path, remove_additional_app, remove_launch_option
     config_path = get_user_config_path()
+    try:
+        remove_launch_option(config_path, str(appid))
+    except Exception:
+        pass
     return remove_additional_app(config_path, str(appid))
 
 

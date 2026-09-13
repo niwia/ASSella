@@ -3071,15 +3071,17 @@ class GameLibraryDialog(QDialog):
                 remove_additional_app,
                 remove_fake_app_id,
                 remove_app_token,
+                remove_launch_option,
             )
             config_path = get_user_config_path()
             if config_path.exists():
                 remove_additional_app(config_path, appid)
                 remove_fake_app_id(config_path, appid)
                 remove_app_token(config_path, appid)
+                remove_launch_option(config_path, appid)
                 from utils.yaml_config_manager import remove_dlc_data
                 remove_dlc_data(config_path, str(appid))
-                logger.info(f"I bought the game: Removed AppID {appid} from SLS AdditionalApps, FakeAppIds, AppTokens, and DlcData")
+                logger.info(f"I bought the game: Removed AppID {appid} from SLS AdditionalApps, FakeAppIds, AppTokens, LaunchOptions, and DlcData")
 
             import platform
             if platform.system() == "Linux":

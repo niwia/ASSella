@@ -1462,3 +1462,224 @@ def clean_denuvo_games_section(config_path: Path) -> bool:
     return False
 
 
+# ── LaunchOptions & netsock.so for Online Play ──────────────────────────────
+
+def get_netsock_tools_dir() -> Path:
+    """Return the tools/netsock directory for the active Steam/SLS environment."""
+    try:
+        from core.steam_helpers import get_steam_env
+        env = get_steam_env()
+        return env.sls_config_dir / "tools" / "netsock"
+    except Exception:
+        return Path.home() / ".config" / "SLSsteam" / "tools" / "netsock"
+
+
+def find_existing_netsock_so() -> Optional[Path]:
+    """Search candidate locations across distros and Flatpak for an existing netsock.so."""
+    home = Path.home()
+    candidates: List[Path] = []
+
+    # 1. Active environment sls_config_dir and sls_install_dir
+    try:
+        from core.steam_helpers import get_steam_env
+        env = get_steam_env()
+        candidates.append(env.sls_config_dir / "tools" / "netsock" / "netsock.so")
+        candidates.append(env.sls_install_dir / "tools" / "netsock" / "netsock.so")
+    except Exception:
+        pass
+
+    # 2. Native XDG / standard paths
+    xdg_cfg = os.environ.get("XDG_CONFIG_HOME", "")
+    if xdg_cfg and Path(xdg_cfg).is_absolute():
+        candidates.append(Path(xdg_cfg) / "SLSsteam" / "tools" / "netsock" / "netsock.so")
+    candidates.append(home / ".config" / "SLSsteam" / "tools" / "netsock" / "netsock.so")
+    candidates.append(home / ".local" / "share" / "SLSsteam" / "tools" / "netsock" / "netsock.so")
+
+    # 3. Flatpak paths
+    flatpak_base = home / ".var" / "app" / "com.valvesoftware.Steam"
+    candidates.append(flatpak_base / ".config" / "SLSsteam" / "tools" / "netsock" / "netsock.so")
+    candidates.append(flatpak_base / ".local" / "share" / "SLSsteam" / "tools" / "netsock" / "netsock.so")
+
+    for cand in candidates:
+        if cand.is_file() and cand.stat().st_size > 0:
+            return cand
+    return None
+
+
+def get_netsock_so_launch_path() -> str:
+    """Return the path to netsock.so to use inside Steam LaunchOptions.
+
+    Inside Steam runtime (both Native and inside Flatpak sandbox), ~/.config/SLSsteam
+    is mapped to the SLS config directory.
+    """
+    xdg_cfg = os.environ.get("XDG_CONFIG_HOME", "")
+    if xdg_cfg and Path(xdg_cfg).is_absolute():
+        return str(Path(xdg_cfg) / "SLSsteam" / "tools" / "netsock" / "netsock.so")
+    return str(Path.home() / ".config" / "SLSsteam" / "tools" / "netsock" / "netsock.so")
+
+
+def ensure_netsock_binary(log_cb=None) -> bool:
+    """Check if netsock.so is present; if missing, download fix.so from upstream GitHub releases.
+
+    Ensures netsock.so is available in the target tools/netsock/ directory.
+    Also syncs to ~/.config/SLSsteam/tools/netsock/netsock.so if in Flatpak.
+    """
+    target_dir = get_netsock_tools_dir()
+    target_so = target_dir / "netsock.so"
+
+    # 1. Check if already present in target or existing candidate paths
+    existing = find_existing_netsock_so()
+    if existing and existing.is_file() and existing.stat().st_size > 0:
+        if existing != target_so:
+            try:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(existing, target_so)
+                os.chmod(target_so, 0o755)
+            except Exception as e:
+                logger.warning(f"Could not copy existing netsock.so to target: {e}")
+        return True
+
+    # 2. Missing: download from GitHub release
+    try:
+        import urllib.request
+        target_dir.mkdir(parents=True, exist_ok=True)
+        msg = "Downloading latest netsock.so from GitHub..."
+        if log_cb:
+            log_cb(msg)
+        logger.info(msg)
+
+        url = "https://github.com/yesyes0649/steamnetsock-patch/releases/download/latest/fix.so"
+        req = urllib.request.Request(url, headers={"User-Agent": "ASSella/2.6.5"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+
+        if data:
+            target_so.write_bytes(data)
+            os.chmod(target_so, 0o755)
+            logger.info(f"Successfully downloaded netsock.so ({len(data)} bytes) to {target_so}")
+
+            # Also ensure ~/.config/SLSsteam/tools/netsock/netsock.so exists for Flatpak / host parity
+            native_so = Path.home() / ".config" / "SLSsteam" / "tools" / "netsock" / "netsock.so"
+            if native_so != target_so and not native_so.exists():
+                try:
+                    native_so.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(target_so, native_so)
+                    os.chmod(native_so, 0o755)
+                except Exception:
+                    pass
+            return True
+        return False
+    except Exception as exc:
+        err = f"Failed to download netsock fix.so: {exc}"
+        if log_cb:
+            log_cb(err)
+        logger.error(err)
+        return False
+
+
+def get_launch_option(config_path: Path, app_id: str) -> Optional[str]:
+    """Get the launch option command for a specific AppID from LaunchOptions: in config.yaml."""
+    content = _read_config_content(config_path)
+    if not content:
+        return None
+
+    launch_opts_pattern = re.compile(r"^LaunchOptions:\s*$", re.MULTILINE)
+    match = launch_opts_pattern.search(content)
+    if not match:
+        return None
+
+    section_start = match.end()
+    after_section = content[section_start:]
+    next_key_pattern = re.compile(r"^[A-Za-z0-9_]+:", re.MULTILINE)
+    next_match = next_key_pattern.search(after_section)
+    section_end = section_start + next_match.start() if next_match else len(content)
+    section_content = content[section_start:section_end]
+
+    entry_pattern = re.compile(
+        rf"^\s*{re.escape(str(app_id))}\s*:\s*(.+)$",
+        re.MULTILINE
+    )
+    m = entry_pattern.search(section_content)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def add_launch_option(config_path: Path, app_id: str, command: str) -> bool:
+    """Add or replace an AppID entry in the LaunchOptions section of SLSsteam config.yaml."""
+    try:
+        content = _get_config_content_if_enabled(config_path)
+        if content is _CONFIG_DISABLED:
+            return False
+        if content is None:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            entry = f"LaunchOptions:\n  {app_id}: {command}\n"
+            return _atomic_write(config_path, entry)
+
+        launch_opts_pattern = re.compile(r"^LaunchOptions:\s*$", re.MULTILINE)
+        match = launch_opts_pattern.search(content)
+
+        if match:
+            section_start = match.end()
+            if section_start < len(content) and content[section_start] == "\n":
+                section_start += 1
+            after_section = content[section_start:]
+            next_key_pattern = re.compile(r"^[A-Za-z0-9_]+:", re.MULTILINE)
+            next_match = next_key_pattern.search(after_section)
+            section_end = section_start + next_match.start() if next_match else len(content)
+            section_content = content[section_start:section_end]
+
+            app_id_line_pattern = re.compile(
+                rf"^([ \t]*){re.escape(str(app_id))}\s*:.*$",
+                re.MULTILINE
+            )
+            existing_m = app_id_line_pattern.search(section_content)
+            if existing_m:
+                new_line = f"  {app_id}: {command}"
+                new_section = (
+                    section_content[:existing_m.start()]
+                    + new_line
+                    + section_content[existing_m.end():]
+                )
+                new_content = content[:section_start] + new_section + content[section_end:]
+            else:
+                lines = section_content.split("\n")
+                last_idx = -1
+                for i, l in enumerate(lines):
+                    s = l.strip()
+                    if s and not s.startswith("#"):
+                        last_idx = i
+
+                new_line = f"  {app_id}: {command}\n"
+                if last_idx >= 0:
+                    pos = section_start + sum(len(lines[k]) + 1 for k in range(last_idx + 1))
+                    new_content = content[:pos] + new_line + content[pos:]
+                else:
+                    new_content = content[:section_start] + new_line + content[section_start:]
+        else:
+            new_content = content.rstrip() + f"\n\nLaunchOptions:\n  {app_id}: {command}\n"
+
+        if _atomic_write(config_path, new_content):
+            logger.info(f"Added LaunchOptions for AppID '{app_id}' in {config_path}")
+            return True
+        return False
+    except OSError as e:
+        logger.error(f"Failed to add LaunchOptions for '{app_id}': {e}", exc_info=True)
+        return False
+
+
+def remove_launch_option(config_path: Path, app_id: str) -> bool:
+    """Remove an AppID entry from the LaunchOptions section in SLSsteam config.yaml."""
+    app_id_pattern = re.compile(
+        rf"^\s*{re.escape(str(app_id))}\s*:.*$",
+        re.MULTILINE
+    )
+    return _remove_matching_entry(
+        config_path,
+        app_id_pattern,
+        f"Removed AppID '{app_id}' from LaunchOptions in {config_path}",
+        f"Failed to remove LaunchOptions for AppID '{app_id}': {{e}}"
+    )
+
+
+

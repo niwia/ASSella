@@ -2048,6 +2048,44 @@ class GameDetailsDialogV2(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to toggle EOS Proxy:\n{e}")
 
         self._update_eos_btn_state()
+        if hasattr(self, "sls_tile"):
+            self._sync_slsonline_launch_options(self.sls_tile.isChecked())
+
+    def _sync_slsonline_launch_options(self, checked: bool):
+        """Synchronize netsock.so LaunchOptions in SLSsteam config.yaml.
+
+        Netsock LD_AUDIT is written only when SLSonline is checked AND EOS proxy is NOT active.
+        If unchecked or EOS proxy is active, the LaunchOptions line is cleanly removed.
+        """
+        if not is_slssteam_config_management_enabled() or str(self.appid) in ("0", "N/A", "unknown", "480"):
+            return
+
+        try:
+            from utils.yaml_config_manager import (
+                get_user_config_path, add_launch_option, remove_launch_option,
+                ensure_netsock_binary, get_netsock_so_launch_path
+            )
+            from utils.eos_detector import EOSDetector
+
+            config = get_user_config_path()
+            if not config.exists():
+                return
+
+            install_path = self.game_data.get("install_path")
+            eos_active = False
+            if install_path and os.path.exists(install_path):
+                status = EOSDetector.get_proxy_status(install_path)
+                eos_active = (status == "active")
+
+            if checked and not eos_active:
+                ensure_netsock_binary()
+                launch_path = get_netsock_so_launch_path()
+                cmd = f'"env LD_AUDIT=\\"{launch_path}\\" %command%"'
+                add_launch_option(config, str(self.appid), cmd)
+            else:
+                remove_launch_option(config, str(self.appid))
+        except Exception as e:
+            logger.error(f"Failed to sync LaunchOptions for {self.appid}: {e}", exc_info=True)
 
     def _init_slsonline_logic(self):
         # Connect action
@@ -2082,11 +2120,13 @@ class GameDetailsDialogV2(QDialog):
                     _apply_split_style(True)
                     self.sls_input.setText(existing)
                     self.sls_input_container.setVisible(True)
+                    self._sync_slsonline_launch_options(True)
                 else:
                     self.sls_tile.setChecked(False)
                     _apply_split_style(False)
                     self.sls_input.setText("480")
                     self.sls_input_container.setVisible(False)
+                    self._sync_slsonline_launch_options(False)
                 self.sls_tile.blockSignals(False)
 
                 def _tog(checked):
@@ -2104,6 +2144,7 @@ class GameDetailsDialogV2(QDialog):
                         cur = get_fake_appid(config, self.appid)
                         if cur:
                             remove_fake_app_id(config, self.appid, cur)
+                    self._sync_slsonline_launch_options(checked)
 
                 def _fin():
                     if self.sls_tile.isChecked():

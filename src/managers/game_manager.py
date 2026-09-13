@@ -1645,9 +1645,11 @@ class GameManager(QObject):
                                 pass
                     else:
                         remove_additional_app(config_path, str(appid))
-                    from utils.yaml_config_manager import remove_dlc_data
+                    from utils.yaml_config_manager import remove_dlc_data, remove_launch_option, remove_fake_app_id
                     remove_dlc_data(config_path, str(appid))
-                    logger.info(f"Removed appid entries and DlcData from SLS config")
+                    remove_launch_option(config_path, str(appid))
+                    remove_fake_app_id(config_path, str(appid))
+                    logger.info(f"Removed appid entries, DlcData, LaunchOptions, and FakeAppIds from SLS config")
             elif platform.system() == "Windows" and not is_dlc_only:
                 self._remove_windows_game_data(appid, game_data)
 
