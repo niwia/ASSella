@@ -111,8 +111,8 @@ class ProgressButton(QPushButton):
             span = 90 + abs(cycle - 90) * 2
             
             painter.save()
-            pen_color = getattr(self, "_spinner_color", None) or accent
-            if not pen_color.isValid():
+            pen_color = getattr(self, "_spinner_color", None)
+            if not pen_color or not pen_color.isValid():
                 pen_color = QColor("#FFFFFF")
             pen = QPen(pen_color)
             pen.setWidth(2)

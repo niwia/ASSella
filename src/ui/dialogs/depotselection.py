@@ -319,6 +319,8 @@ class DepotSelectionDialog(QDialog):
         self.branch = str(branch or "public")
         self.branches = dict(branches or {"public": {}})
         self.current_build_id = str(current_build_id or "").strip()
+        if not self.current_build_id:
+            self.current_build_id = self._resolve_local_buildid()
         if not self.current_build_id and self.depots:
             for d_data in self.depots.values():
                 if isinstance(d_data, dict) and d_data.get("buildid"):
@@ -1053,8 +1055,10 @@ class DepotSelectionDialog(QDialog):
             for d_data in self.depots.values()
             if isinstance(d_data, dict)
         )
-        if needs_enrichment and self.app_id and str(self.app_id) not in ("0", "N/A", "unknown"):
+        if (needs_enrichment or self._dlc_only_mode) and self.app_id and str(self.app_id) not in ("0", "N/A", "unknown"):
             self._start_enrichment_async()
+            if self._dlc_only_mode:
+                self._apply_dlc_auto_selection()
 
     def _refresh_missing_depots_banner(self):
         """Updates the missing / refetched depots notice banner colors and formatted text."""
@@ -1296,19 +1300,40 @@ class DepotSelectionDialog(QDialog):
                 if info.get("is_dlc"):
                     d_data["is_dlc"] = True
 
-    def _start_enrichment_async(self):
-        """Asynchronously queries SteamDB / Store API to enrich any generic or sizeless depots."""
+    def _start_enrichment_async(self, force: bool = False):
+        """Asynchronously queries DB / SteamDB / Store API to enrich any generic or sizeless depots."""
+        if not self.app_id or str(self.app_id) in ("0", "N/A", "unknown"):
+            return
+
+        # 1. Fast local SQLite cache check (0ms)
+        try:
+            from managers.db_manager import DatabaseManager
+            db = DatabaseManager()
+            cached_enrichments = db.get_depot_enrichments(str(self.app_id))
+            if cached_enrichments:
+                self._depots_enriched_signal.emit(cached_enrichments)
+                if not force:
+                    return
+        except Exception as e:
+            logger.debug(f"[DepotSelection] DB cache enrichment lookup error: {e}")
+
         import threading
 
         def _worker():
             try:
-                from core.steamdb_scraper import ByparrManager
-                if not ByparrManager.is_running():
-                    return
-                from core.steamdb_scraper import SteamDBScraper
+                from core.steamdb_scraper import ByparrManager, SteamDBScraper
                 from managers.db_manager import DatabaseManager
                 scraper = SteamDBScraper()
-                depots_info = scraper.get_app_depots(str(self.app_id))
+                depots_info = {}
+
+                # Try SteamDB via Byparr if running
+                if ByparrManager.is_running():
+                    depots_info = scraper.get_app_depots(str(self.app_id))
+
+                # Fast fallback: if SteamDB returned empty or Byparr is not running, query Steam Store API
+                if not depots_info:
+                    depots_info = scraper._fetch_depots_fallback_steam_store(str(self.app_id))
+
                 if depots_info:
                     db = DatabaseManager()
                     db.save_depot_enrichments(str(self.app_id), depots_info)
@@ -1362,6 +1387,108 @@ class DepotSelectionDialog(QDialog):
                             size_item.setText(info["size_str"])
                             if hasattr(size_item, "sort_value"):
                                 size_item.sort_value = int(info.get("size_bytes") or 0)
+
+        if getattr(self, "_dlc_only_mode", False):
+            self._apply_dlc_auto_selection()
+
+    def _apply_dlc_auto_selection(self):
+        """
+        Auto-selects DLC depots when DLC-only mode is active.
+        Rules:
+        1. Non-DLC (base game / redist) depots are unchecked.
+        2. If DLC depots exist for both Windows and Linux, do NOT auto-select (leave unchecked).
+        3. If total DLC count >= 64, auto-select ALL DLC depots (bypass the >1KB condition).
+        4. If total DLC count < 64, auto-select DLC depots with size > 1024 bytes (skip stubs <= 1KB).
+        """
+        if not getattr(self, "_dlc_only_mode", False):
+            return
+
+        from utils.dlc_helpers import is_base_game_main_depot
+
+        dlc_depot_ids = set()
+        has_win_dlc = False
+        has_linux_dlc = False
+
+        for i in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(i, 0)
+            if not id_item:
+                continue
+            role = id_item.data(Qt.ItemDataRole.UserRole + 2)
+            if role in ("missing", "expander"):
+                continue
+            depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
+            d_data = self.depots.get(depot_id) or self.depots.get(int(depot_id) if depot_id.isdigit() else 0) or {}
+
+            desc = str(d_data.get("desc") or d_data.get("name") or "")
+            cfg_item = self.table_widget.item(i, 1)
+            cfg_text = cfg_item.text() if cfg_item else ""
+
+            is_dlc = (
+                d_data.get("is_dlc", False)
+                or "[dlc]" in desc.lower()
+                or "[dlc]" in cfg_text.lower()
+                or bool(re.search(r"\bDLC\s+\d+", desc, re.IGNORECASE))
+                or bool(re.search(r"\bDLC\s+\d+", cfg_text, re.IGNORECASE))
+                or bool(d_data.get("dlcappid"))
+            )
+
+            if is_base_game_main_depot(depot_id, desc, str(self.app_id)):
+                is_dlc = False
+
+            if is_dlc:
+                dlc_depot_ids.add(depot_id)
+                oslist = (d_data.get("oslist") or "").lower()
+                if not oslist and "[windows" in cfg_text.lower():
+                    oslist = "windows"
+                elif not oslist and "[linux" in cfg_text.lower():
+                    oslist = "linux"
+
+                if "windows" in oslist:
+                    has_win_dlc = True
+                if "linux" in oslist:
+                    has_linux_dlc = True
+
+        os_conflict = (has_win_dlc and has_linux_dlc)
+        if os_conflict:
+            logger.info(
+                f"[DepotSelection] App {self.app_id}: DLC depots detected for both Windows and Linux — "
+                "bypassing auto-selection so user can pick target platform manually."
+            )
+
+        total_dlcs = len(dlc_depot_ids)
+        bypass_size_limit = (total_dlcs >= 64)
+
+        self.table_widget.blockSignals(True)
+        for i in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(i, 0)
+            if not id_item:
+                continue
+            role = id_item.data(Qt.ItemDataRole.UserRole + 2)
+            if role in ("missing", "expander"):
+                continue
+            depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
+            d_data = self.depots.get(depot_id) or self.depots.get(int(depot_id) if depot_id.isdigit() else 0) or {}
+
+            if depot_id in dlc_depot_ids:
+                if os_conflict:
+                    id_item.setCheckState(Qt.CheckState.Unchecked)
+                elif bypass_size_limit:
+                    id_item.setCheckState(Qt.CheckState.Checked)
+                else:
+                    raw_size = int(d_data.get("size") or 0)
+                    if not raw_size:
+                        size_item = self.table_widget.item(i, 2)
+                        raw_size = getattr(size_item, "sort_value", 0) or 0
+
+                    if 0 < raw_size <= 1024:
+                        id_item.setCheckState(Qt.CheckState.Unchecked)
+                    else:
+                        id_item.setCheckState(Qt.CheckState.Checked)
+            else:
+                id_item.setCheckState(Qt.CheckState.Unchecked)
+
+        self.table_widget.blockSignals(False)
+        self.anchor_row = -1
 
     def _setup_storage_buttons(self, layout: QHBoxLayout) -> None:
         import shutil
@@ -1805,11 +1932,25 @@ class DepotSelectionDialog(QDialog):
             """)
 
     def _on_dlc_only_toggled(self) -> None:
-        """Toggle DLC Only mode and persist the setting."""
-        self._dlc_only_mode = self._dlc_only_btn.isChecked()
+        """Toggle DLC Only mode, show 3-second lockout warning, and auto-select DLC depots."""
+        new_state = self._dlc_only_btn.isChecked()
+        if new_state:
+            try:
+                from ui.dialogs.dlc_warning_dialog import show_dlc_mode_warning
+                show_dlc_mode_warning(self)
+            except Exception as e:
+                logger.debug(f"DLC warning dialog error: {e}")
+
+        self._dlc_only_mode = new_state
         self._refresh_dlc_only_style()
         if self._settings:
             self._settings.setValue(f"dlc_only_mode/{self.app_id}", self._dlc_only_mode)
+
+        if self._dlc_only_mode:
+            self._start_enrichment_async(force=True)
+            self._apply_dlc_auto_selection()
+        else:
+            self._select_platform("windows")
 
     def get_dlc_only_mode(self) -> bool:
         """Returns whether DLC Only mode is enabled for this dialog."""
@@ -2009,6 +2150,36 @@ class DepotSelectionDialog(QDialog):
         if hasattr(self, "branch_combo") and self.branch_combo is not None:
             return self.branch_combo.currentText().strip()
         return getattr(self, "branch", "public") or "public"
+
+    def _resolve_local_buildid(self) -> str:
+        """Attempt to resolve installed build ID from local appmanifest or QSettings."""
+        aid = str(getattr(self, "app_id", "") or "").strip()
+        if not aid or aid in ("0", "N/A", "unknown"):
+            return ""
+        try:
+            from core.steam_helpers import get_steam_libraries
+            from pathlib import Path
+            import re
+            for lib in get_steam_libraries():
+                acf_path = Path(lib) / "steamapps" / f"appmanifest_{aid}.acf"
+                if acf_path.is_file():
+                    with open(acf_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    m = re.search(r'"buildid"\s+"([^"]+)"', content)
+                    if m and m.group(1).strip() and m.group(1).strip() != "0":
+                        return m.group(1).strip()
+        except Exception:
+            pass
+
+        try:
+            from utils.settings import get_settings
+            s = get_settings()
+            stored = str(s.value(f"installed_buildid/{aid}", "")).strip()
+            if stored and stored.isdigit() and stored != "0":
+                return stored
+        except Exception:
+            pass
+        return ""
 
     def get_selected_build(self) -> Optional[str]:
         return getattr(self, "_selected_build_id", None) or self.current_build_id

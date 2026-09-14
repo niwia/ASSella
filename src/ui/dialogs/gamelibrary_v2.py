@@ -1451,7 +1451,16 @@ class GameDetailsDialogV2(QDialog):
             self.validate_btn.setText("Refetch")
             set_btn_style(accent_hex)
         elif self.game_data.get("update_status") == "update_available":
-            self.validate_btn.setText("Download Update")
+            b_dict = getattr(self, "_branches_dict", {})
+            branch_bid = ""
+            if isinstance(b_dict, dict):
+                b_info = b_dict.get(sel_branch, {})
+                if isinstance(b_info, dict):
+                    branch_bid = str(b_info.get("buildid", ""))
+            if not branch_bid:
+                branch_bid = str(self.game_data.get("latest_buildid") or self.game_data.get("buildid") or "")
+            label = f"Download Update ({branch_bid})" if branch_bid else "Download Update"
+            self.validate_btn.setText(label)
             set_btn_style(accent_hex)
         else:
             self.validate_btn.setText("Verify Files")
@@ -1464,6 +1473,12 @@ class GameDetailsDialogV2(QDialog):
         self.validate_btn.set_loading(True)
         self.validate_btn.setEnabled(False)
         self.validate_btn.setToolTip("Task in progress...")
+        if "Update" in btn_text:
+            self.validate_btn.setText("Preparing Update...")
+        elif btn_text == "Refetch":
+            self.validate_btn.setText("Refetching...")
+        else:
+            self.validate_btn.setText("Verifying...")
 
         if btn_text == "Refetch":
             self.parent_window._fetch_game_manifest(
@@ -1920,6 +1935,12 @@ class GameDetailsDialogV2(QDialog):
         self.parent_window._uninstall_game(gd, self, {})
 
     def _on_dlc_only_toggled(self, state):
+        if state:
+            try:
+                from ui.dialogs.dlc_warning_dialog import show_dlc_mode_warning
+                show_dlc_mode_warning(self)
+            except Exception as e:
+                logger.debug(f"DLC warning dialog error: {e}")
         if hasattr(self, "dlc_tile") and self.dlc_tile:
             self.dlc_tile.update_state(state, self.accent_color)
         if self.settings:
@@ -2245,16 +2266,7 @@ class GameDetailsDialogV2(QDialog):
         sem_colors = get_semantic_colors(ac)
 
         if status == "update_available":
-            hubcap_needs_update = self.game_data.get("hubcap_needs_update", False)
-            hubcap_update_in_progress = self.game_data.get("hubcap_update_in_progress", False)
-            
-            if hubcap_needs_update or hubcap_update_in_progress:
-                reason = "Hubcap updating" if hubcap_update_in_progress else "Hubcap not ready"
-                title = f"UPDATE ({reason})"
-            else:
-                title = "UPDATE"
-            
-            self.status_tile.title_lbl.setText(title)
+            self.status_tile.title_lbl.setText("UPDATE")
             self.status_tile.sub_lbl.setText(sub)
             self.status_tile.update_state(True, sem_colors["warning"], active_sub=sub)
             self.status_tile.setEnabled(True)
@@ -2980,10 +2992,13 @@ class GameDetailsDialogV2(QDialog):
 
         if self.parent_window and hasattr(self.parent_window, "goldberg_check_complete") and self.parent_window.goldberg_check_complete:
             self.parent_window.goldberg_check_complete.connect(self._on_goldberg_check_complete)
-            self.finished.connect(
-                lambda: self.parent_window.goldberg_check_complete.disconnect(
-                    self._on_goldberg_check_complete)
-                if hasattr(self.parent_window, "goldberg_check_complete") and self.parent_window.goldberg_check_complete else None)
+            def _safe_disconnect_goldberg():
+                try:
+                    if hasattr(self.parent_window, "goldberg_check_complete") and self.parent_window.goldberg_check_complete:
+                        self.parent_window.goldberg_check_complete.disconnect(self._on_goldberg_check_complete)
+                except Exception:
+                    pass
+            self.finished.connect(_safe_disconnect_goldberg)
         if self.parent_window and hasattr(self.parent_window, "executor") and self.parent_window.executor:
             self.parent_window.executor.submit(self.parent_window._check_goldberg_async, path)
 
