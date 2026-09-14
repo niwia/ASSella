@@ -84,7 +84,7 @@ def _create_backup(config_path: Path) -> bool:
         if not config_path.exists():
             return False
 
-        backup_path = config_path.with_suffix(BACKUP_SUFFIX)
+        backup_path = config_path.with_name(config_path.name + BACKUP_SUFFIX)
 
         # Check if backup already exists and new file is smaller
         if backup_path.exists():
@@ -160,7 +160,7 @@ def ensure_slssteam_logging_enabled(config_path: Path) -> bool:
 
         # 1. Check for new bitmask format: "LogLevels: <value>"
         pattern_new = re.compile(
-            r"^(\s*)LogLevels\s*:\s*([^\r\n#]+)(.*)$",
+            r"^([ \t]*)LogLevels[ \t]*:[ \t]*([^\r\n#]+)(.*)$",
             re.MULTILINE,
         )
         match_new = pattern_new.search(content)
@@ -196,7 +196,7 @@ def ensure_slssteam_logging_enabled(config_path: Path) -> bool:
 
         # 2. Check for old enum format: "LogLevel: <value>"
         pattern_old = re.compile(
-            r"^(\s*)LogLevel\s*:\s*([^\r\n#]+)(.*)$",
+            r"^([ \t]*)LogLevel[ \t]*:[ \t]*([^\r\n#]+)(.*)$",
             re.MULTILINE,
         )
         match_old = pattern_old.search(content)
@@ -287,9 +287,9 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
 
         # Regex pattern to match the key with its current value
         pattern = re.compile(
-            r"^(\s*)"
+            r"^([ \t]*)"
             + re.escape(key)
-            + r"\s*:\s*(yes|no|true|false|Yes|No|True|False)\b",
+            + r"[ \t]*:[ \t]*(yes|no|true|false|Yes|No|True|False)\b",
             re.MULTILINE,
         )
 
@@ -360,11 +360,45 @@ def get_user_config_path() -> Path:
         return config_dir / "config.yaml"
 
 
+TOP_LEVEL_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_]+[ \t]*:", re.MULTILINE)
+
+
+def _get_section_bounds(content: str, section_name: str) -> Optional[Tuple[int, int, int]]:
+    """Return (header_start, content_start, section_end) for a top-level YAML section.
+
+    header_start: index of the first character of the section header line.
+    content_start: index of the first character after the newline of the header.
+    section_end: index of the start of the next top-level key line or EOF.
+    """
+    header_pattern = re.compile(
+        rf"^[ \t]*{re.escape(section_name)}[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+        re.MULTILINE,
+    )
+    match = header_pattern.search(content)
+    if not match:
+        return None
+
+    header_start = match.start()
+    content_start = match.end()
+    if content_start < len(content) and content[content_start] == "\r":
+        content_start += 1
+    if content_start < len(content) and content[content_start] == "\n":
+        content_start += 1
+
+    after_section = content[content_start:]
+    next_match = TOP_LEVEL_KEY_PATTERN.search(after_section)
+    section_end = (content_start + next_match.start()) if next_match else len(content)
+
+    return header_start, content_start, section_end
+
+
 def _get_section_start(content: str, pattern: re.Pattern) -> Optional[int]:
     match = pattern.search(content)
     if not match:
         return None
     section_start = match.end()
+    if section_start < len(content) and content[section_start] == "\r":
+        section_start += 1
     if section_start < len(content) and content[section_start] == "\n":
         section_start += 1
     return section_start
@@ -380,43 +414,6 @@ def _get_section_end(
     return len(content)
 
 
-def _remove_line_for_match(content: str, match: re.Match) -> str:
-    line_start = content.rfind("\n", 0, match.start()) + 1
-    if line_start == 0:
-        line_start = 0
-    line_end = content.find("\n", match.end())
-    if line_end == -1:
-        line_end = len(content)
-
-    if line_end < len(content) and content[line_end] == "\n":
-        line_end += 1
-
-    return content[:line_start] + content[line_end:]
-
-
-def _remove_matching_entry(
-    config_path: Path, pattern: re.Pattern, success_message: str, error_message: str
-) -> bool:
-    try:
-        content = _read_config_content(config_path)
-        if content is None:
-            return False
-
-        match = pattern.search(content)
-        if not match:
-            return False
-
-        new_content = _remove_line_for_match(content, match)
-        if not _atomic_write(config_path, new_content):
-            return False
-
-        logger.info(success_message)
-        return True
-    except OSError as e:
-        logger.error(error_message.format(e=e), exc_info=True)
-        return False
-
-
 def _remove_entry_from_section(
     config_path: Path,
     section_name: str,
@@ -424,44 +421,40 @@ def _remove_entry_from_section(
     success_message: str,
     error_message: str,
 ) -> bool:
-    """Remove a matching line only within a specific top-level YAML section."""
+    """Remove matching lines only within a specific top-level YAML section."""
     try:
         content = _read_config_content(config_path)
         if content is None:
             return False
 
-        section_pattern = re.compile(rf"^{re.escape(section_name)}:\s*(?:#.*)?$", re.MULTILINE)
-        sec_match = section_pattern.search(content)
-        if not sec_match:
+        removed = False
+        while True:
+            bounds = _get_section_bounds(content, section_name)
+            if not bounds:
+                break
+            _, content_start, section_end = bounds
+            section_content = content[content_start:section_end]
+            match = pattern.search(section_content)
+            if not match:
+                break
+
+            abs_match_start = content_start + match.start()
+            line_start = content.rfind("\n", 0, abs_match_start)
+            line_start = 0 if line_start == -1 else line_start + 1
+
+            line_end = content.find("\n", abs_match_start)
+            if line_end == -1:
+                line_end = len(content)
+            else:
+                line_end += 1
+
+            content = content[:line_start] + content[line_end:]
+            removed = True
+
+        if not removed:
             return False
 
-        section_start = sec_match.end()
-        if section_start < len(content) and content[section_start] == "\n":
-            section_start += 1
-        after_section = content[section_start:]
-        next_key_pattern = re.compile(r"^[A-Za-z0-9_]+:", re.MULTILINE)
-        next_match = next_key_pattern.search(after_section)
-        section_end = section_start + next_match.start() if next_match else len(content)
-        section_content = content[section_start:section_end]
-
-        match = pattern.search(section_content)
-        if not match:
-            return False
-
-        abs_match_start = section_start + match.start()
-        abs_match_end = section_start + match.end()
-
-        line_start = content.rfind("\n", 0, abs_match_start) + 1
-        if line_start < 0:
-            line_start = 0
-        line_end = content.find("\n", abs_match_end)
-        if line_end == -1:
-            line_end = len(content)
-        elif line_end < len(content) and content[line_end] == "\n":
-            line_end += 1
-
-        new_content = content[:line_start] + content[line_end:]
-        if not _atomic_write(config_path, new_content):
+        if not _atomic_write(config_path, content):
             return False
 
         logger.info(success_message)
@@ -473,28 +466,20 @@ def _remove_entry_from_section(
 
 def _fix_additional_apps_indentation(content: str) -> Tuple[str, bool]:
     """Fix indentation of AdditionalApps list items."""
-    # Find AdditionalApps section
-    additional_apps_pattern = re.compile(r"^AdditionalApps:\s*$", re.MULTILINE)
-    section_start = _get_section_start(content, additional_apps_pattern)
-    if section_start is None:
+    bounds = _get_section_bounds(content, "AdditionalApps")
+    if not bounds:
         return content, False
 
-    # Look for next top-level key
-    next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
-    section_end = _get_section_end(content, section_start, next_key_pattern)
+    _, content_start, section_end = bounds
+    section_content = content[content_start:section_end]
 
-    section_content = content[section_start:section_end]
-
-    # Pattern to find misaligned items: "- item" or "-item"
     misaligned_item_pattern = re.compile(
-        r"(^)(\s*)-(\s*)([^\n#]+?)(?=\s*(?:#|$))", re.MULTILINE
+        r"^[ \t]*-[ \t]*([^\r\n#]+?)(?=[ \t]*(?:#|$))", re.MULTILINE
     )
-
-    # Fix items by adding 2-space indentation
-    fixed_section = misaligned_item_pattern.sub(r"\1  - \4", section_content)
+    fixed_section = misaligned_item_pattern.sub(r"  - \1", section_content)
 
     if fixed_section != section_content:
-        fixed_content = content[:section_start] + fixed_section + content[section_end:]
+        fixed_content = content[:content_start] + fixed_section + content[section_end:]
         logger.debug("Fixed indentation of AdditionalApps list items")
         return fixed_content, True
 
@@ -503,51 +488,27 @@ def _fix_additional_apps_indentation(content: str) -> Tuple[str, bool]:
 
 def _get_app_tokens_section(content: str) -> str:
     """Extract the AppTokens section from YAML content."""
-    app_tokens_pattern = re.compile(r"^AppTokens:\s*$", re.MULTILINE)
-    section_start = _get_section_start(content, app_tokens_pattern)
-    if section_start is None:
+    bounds = _get_section_bounds(content, "AppTokens")
+    if not bounds:
         return ""
-
-    next_key_pattern = re.compile(r"^[A-Za-z][A-Za-z0-9]*:\s*$", re.MULTILINE)
-    section_end = _get_section_end(content, section_start, next_key_pattern)
-    return content[section_start:section_end]
+    _, content_start, section_end = bounds
+    return content[content_start:section_end]
 
 
 def _fix_app_tokens_indentation(content: str) -> Tuple[str, bool]:
     """Fix indentation of AppTokens entries to have 2-space indentation."""
-    app_tokens_pattern = re.compile(r"^AppTokens:\s*$", re.MULTILINE)
-    section_start = _get_section_start(content, app_tokens_pattern)
-    if section_start is None:
+    bounds = _get_section_bounds(content, "AppTokens")
+    if not bounds:
         return content, False
-    after_section = content[section_start:]
 
-    next_key_pattern = re.compile(r"^[A-Za-z][A-Za-z0-9]*:\s*$", re.MULTILINE)
-    next_match = next_key_pattern.search(after_section)
+    _, content_start, section_end = bounds
+    section_content = content[content_start:section_end]
 
-    # Find the last token entry to determine end of section
-    last_token_pattern = re.compile(r"^\s*\d+\s*:\s*[^\n]*$", re.MULTILINE)
-    last_token_matches = list(last_token_pattern.finditer(after_section))
-
-    if last_token_matches:
-        last_token_end = last_token_matches[-1].end()
-        newline_after_token = after_section.find("\n", last_token_end)
-        if newline_after_token != -1:
-            section_end = section_start + newline_after_token + 1
-        elif next_match:
-            section_end = section_start + next_match.start()
-        else:
-            section_end = len(content)
-    elif next_match:
-        section_end = section_start + next_match.start()
-    else:
-        section_end = len(content)
-
-    section_content = content[section_start:section_end]
-    token_pattern = re.compile(r"(^)(\s*)(\d+)(\s*:\s*[^\n]*)", re.MULTILINE)
-    fixed_section = token_pattern.sub(r"\1  \3\4", section_content)
+    token_pattern = re.compile(r"^[ \t]*(\d+[ \t]*:[^\r\n]*)", re.MULTILINE)
+    fixed_section = token_pattern.sub(r"  \1", section_content)
 
     if fixed_section != section_content:
-        fixed_content = content[:section_start] + fixed_section + content[section_end:]
+        fixed_content = content[:content_start] + fixed_section + content[section_end:]
         logger.debug("Fixed indentation of AppTokens entries")
         return fixed_content, True
 
@@ -592,38 +553,30 @@ def _init_config_with_app(config_path: Path, app_id: str, comment: str) -> bool:
 
 
 def _append_to_additional_apps(
-    content: str, app_id: str, comment: str, match: re.Match
+    content: str, app_id: str, comment: str, bounds: Tuple[int, int, int]
 ) -> str:
     """Append AppID to existing AdditionalApps section directly after the last list item."""
-    start_pos = match.end()
-    remaining = content[start_pos:]
-    lines = remaining.split("\n")
+    _, content_start, section_end = bounds
+    sec_content = content[content_start:section_end]
+    lines = sec_content.splitlines(keepends=True)
 
-    last_item_offset = 0
+    last_item_end_offset = 0
     curr_offset = 0
-
     for line in lines:
-        line_len = len(line) + 1  # includes \n
         stripped = line.strip()
         if stripped.startswith("-"):
-            last_item_offset = curr_offset + line_len
+            last_item_end_offset = curr_offset + len(line)
         elif stripped and not stripped.startswith("#") and not line.startswith(" ") and not line.startswith("\t"):
-            # Encountered a new top-level YAML section (e.g., DlcData:)
             break
-        curr_offset += line_len
+        curr_offset += len(line)
 
-    if last_item_offset == 0:
-        # AdditionalApps: was empty
-        insert_pos = start_pos
-        if not content[start_pos:].startswith("\n"):
-            new_entry = f"\n  - {app_id} # {comment}\n" if comment else f"\n  - {app_id}\n"
-        else:
-            new_entry = f"  - {app_id} # {comment}\n" if comment else f"  - {app_id}\n"
-        return content[:insert_pos] + new_entry + content[insert_pos:]
+    entry_line = f"  - {app_id} # {comment}\n" if comment else f"  - {app_id}\n"
+    if last_item_end_offset > 0:
+        insert_pos = content_start + last_item_end_offset
+    else:
+        insert_pos = content_start
 
-    insert_pos = start_pos + last_item_offset
-    new_entry = f"  - {app_id} # {comment}\n" if comment else f"  - {app_id}\n"
-    return content[:insert_pos] + new_entry + content[insert_pos:]
+    return content[:insert_pos] + entry_line + content[insert_pos:]
 
 
 def add_additional_app(config_path: Path, app_id: str, comment: str = "") -> bool:
@@ -635,28 +588,26 @@ def add_additional_app(config_path: Path, app_id: str, comment: str = "") -> boo
 
         fixed_content, _ = _fix_additional_apps_indentation(content)
 
-        # Check if AppID already exists
+        bounds = _get_section_bounds(fixed_content, "AdditionalApps")
         app_id_pattern = re.compile(
-            rf"^\s*-\s*{re.escape(app_id)}\s*(?:#.*)?$", re.MULTILINE
+            rf"^[ \t]*-[ \t]*{re.escape(app_id)}[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
         )
-        if app_id_pattern.search(fixed_content):
-            logger.debug(f"AppID '{app_id}' already exists in AdditionalApps")
-            return False
 
-        additional_apps_pattern = re.compile(r"^AdditionalApps:\s*$", re.MULTILINE)
-        match = additional_apps_pattern.search(fixed_content)
+        entry_line = f"  - {app_id} # {comment}\n" if comment else f"  - {app_id}\n"
 
-        if match:
+        if bounds:
+            _, content_start, section_end = bounds
+            sec_content = fixed_content[content_start:section_end]
+            if app_id_pattern.search(sec_content):
+                logger.debug(f"AppID '{app_id}' already exists in AdditionalApps")
+                return False
+
             new_content = _append_to_additional_apps(
-                fixed_content, app_id, comment, match
+                fixed_content, app_id, comment, bounds
             )
         else:
-            # Create new AdditionalApps section
-            if comment:
-                entry = f"AdditionalApps:\n  - {app_id} # {comment}\n"
-            else:
-                entry = f"AdditionalApps:\n  - {app_id}\n"
-            new_content = fixed_content + "\n" + entry
+            new_content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
 
         if not _atomic_write(config_path, new_content):
             return False
@@ -675,7 +626,8 @@ def add_additional_app(config_path: Path, app_id: str, comment: str = "") -> boo
 def remove_additional_app(config_path: Path, app_id: str) -> bool:
     """Remove an AppID from the AdditionalApps list."""
     app_id_pattern = re.compile(
-        rf"^\s*-\s*{re.escape(app_id)}\s*(?:#.*)?$", re.MULTILINE
+        rf"^[ \t]*-[ \t]*{re.escape(app_id)}[ \t]*(?:#[^\r\n]*)?$",
+        re.MULTILINE,
     )
     return _remove_entry_from_section(
         config_path,
@@ -687,8 +639,7 @@ def remove_additional_app(config_path: Path, app_id: str) -> bool:
 
 
 def replace_additional_app(config_path: Path, old_app_id: str, new_app_id: str, new_comment: str = "") -> bool:
-    """
-    Replace an existing AppID in AdditionalApps with a new AppID and optional comment.
+    """Replace an existing AppID in AdditionalApps with a new AppID and optional comment.
     Also migrates any DlcData or FakeAppIds entries if present.
     """
     content = _read_config_content(config_path)
@@ -700,32 +651,34 @@ def replace_additional_app(config_path: Path, old_app_id: str, new_app_id: str, 
     if not old_aid_str or not new_aid_str:
         return False
 
-    add_apps_match = re.search(r"^AdditionalApps:\s*$", content, re.MULTILINE)
-    if not add_apps_match:
+    bounds = _get_section_bounds(content, "AdditionalApps")
+    if not bounds:
         return False
 
-    start_idx = add_apps_match.end()
-    next_sec = re.search(r"^[A-Za-z0-9_]+:\s*", content[start_idx:], re.MULTILINE)
-    end_idx = start_idx + next_sec.start() if next_sec else len(content)
-
-    sec_content = content[start_idx:end_idx]
-    pattern = re.compile(rf"^[ \t]*-[ \t]*{re.escape(old_aid_str)}[ \t]*(?:#.*)?$", re.MULTILINE)
-    if not pattern.search(sec_content):
+    _, content_start, section_end = bounds
+    sec_content = content[content_start:section_end]
+    pattern = re.compile(rf"^[ \t]*-[ \t]*{re.escape(old_aid_str)}[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
+    match = pattern.search(sec_content)
+    if not match:
         logger.warning(f"AppID '{old_aid_str}' not found in AdditionalApps section of {config_path}")
         return False
 
+    # If new_comment not explicitly provided, preserve existing comment if any
+    if not new_comment:
+        m_comm = re.search(rf"^[ \t]*-[ \t]*{re.escape(old_aid_str)}[ \t]*#[ \t]*(.+)$", sec_content, re.MULTILINE)
+        if m_comm:
+            new_comment = m_comm.group(1).strip()
+
     replacement_line = f"  - {new_aid_str} # {new_comment}" if new_comment else f"  - {new_aid_str}"
     new_sec_content = pattern.sub(replacement_line, sec_content, count=1)
-    updated_content = content[:start_idx] + new_sec_content + content[end_idx:]
+    updated_content = content[:content_start] + new_sec_content + content[section_end:]
 
     # Migrate DlcData section key if present
-    dlc_match = re.search(r"^DlcData:[ \t]*$", updated_content, re.MULTILINE)
-    if dlc_match:
-        d_start = dlc_match.end()
-        d_next = re.search(r"^[A-Za-z0-9_]+:[ \t]*", updated_content[d_start:], re.MULTILINE)
-        d_end = d_start + d_next.start() if d_next else len(updated_content)
+    dlc_bounds = _get_section_bounds(updated_content, "DlcData")
+    if dlc_bounds:
+        _, d_start, d_end = dlc_bounds
         d_sec = updated_content[d_start:d_end]
-        d_pat = re.compile(rf"^[ \t]+{re.escape(old_aid_str)}:[ \t]*$", re.MULTILINE)
+        d_pat = re.compile(rf"^[ \t]+{re.escape(old_aid_str)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
         if d_pat.search(d_sec):
             new_d_sec = d_pat.sub(f"  {new_aid_str}:", d_sec, count=1)
             updated_content = updated_content[:d_start] + new_d_sec + updated_content[d_end:]
@@ -741,15 +694,14 @@ def get_additional_apps(config_path: Path) -> List[str]:
     content = _read_config_content(config_path)
     if not content:
         return []
-    match = re.search(r"^AdditionalApps:\s*$", content, re.MULTILINE)
-    if not match:
+    bounds = _get_section_bounds(content, "AdditionalApps")
+    if not bounds:
         return []
-    after = content[match.end() :]
-    next_top = re.search(r"^[A-Za-z0-9_]+:\s*", after, re.MULTILINE)
-    sec = after[: next_top.start()] if next_top else after
+    _, content_start, section_end = bounds
+    sec = content[content_start:section_end]
     results = []
     for line in sec.splitlines():
-        m = re.match(r"^\s*-\s*([0-9]+)", line)
+        m = re.match(r"^[ \t]*-[ \t]*([0-9]+)", line)
         if m:
             results.append(m.group(1))
     return results
@@ -774,10 +726,9 @@ def add_dlc_data_batch(
             return False
 
         parent_app_id = str(parent_app_id).strip()
-        dlc_data_pattern = re.compile(r"^DlcData:\s*$", re.MULTILINE)
-        match = dlc_data_pattern.search(content)
+        bounds = _get_section_bounds(content, "DlcData")
 
-        if not match:
+        if not bounds:
             # Create new DlcData section
             lines = ["DlcData:", f"  {parent_app_id}:"]
             for did, dname in dlc_dict.items():
@@ -787,17 +738,10 @@ def add_dlc_data_batch(
             new_content = content.rstrip() + "\n\n" + new_entry
             return _atomic_write(config_path, new_content)
 
-        dlc_data_end = match.end()
+        _, dlc_start, dlc_end = bounds
+        dlc_section = content[dlc_start:dlc_end]
 
-        # Find the end of DlcData section (next unindented top-level key or EOF)
-        after_dlcdata = content[dlc_data_end:]
-        next_top_level = re.search(r"^[A-Za-z0-9_]+:\s*", after_dlcdata, re.MULTILINE)
-        sec_end = (dlc_data_end + next_top_level.start()) if next_top_level else len(content)
-
-        dlc_section = content[dlc_data_end:sec_end]
-
-        # Check if parent_app_id already exists in DlcData section
-        parent_pattern = re.compile(rf"^  {re.escape(parent_app_id)}:\s*$", re.MULTILINE)
+        parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_app_id)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
         parent_match = parent_pattern.search(dlc_section)
 
         if not parent_match:
@@ -807,21 +751,25 @@ def add_dlc_data_batch(
                 cname = str(dname or f"DLC {did}").replace('"', '\\"')
                 lines.append(f'    {did}: "{cname}"')
             insert_text = "\n".join(lines) + "\n"
-            insert_pos = sec_end
+            insert_pos = dlc_end
             new_content = content[:insert_pos].rstrip() + "\n" + insert_text + "\n" + content[insert_pos:].lstrip("\n")
             return _atomic_write(config_path, new_content)
 
         # Parent exists in DlcData section.
-        # Find parent block boundary (up to next child '  \d+:' or end of DlcData section)
-        p_start = dlc_data_end + parent_match.end()
-        after_parent = content[p_start:sec_end]
-        next_parent = re.search(r"^  [0-9A-Za-z_]+:\s*$", after_parent, re.MULTILINE)
-        parent_end = (p_start + next_parent.start()) if next_parent else sec_end
+        p_start = dlc_start + parent_match.end()
+        if p_start < len(content) and content[p_start] == "\r":
+            p_start += 1
+        if p_start < len(content) and content[p_start] == "\n":
+            p_start += 1
+
+        p_after = content[p_start:dlc_end]
+        next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+        parent_end = (p_start + next_parent.start()) if next_parent else dlc_end
 
         parent_block = content[p_start:parent_end]
         new_dlc_lines = []
         for did, dname in dlc_dict.items():
-            check_pat = re.compile(rf'^\s*{re.escape(str(did))}:\s*"', re.MULTILINE)
+            check_pat = re.compile(rf'^[ \t]*{re.escape(str(did))}[ \t]*:[ \t]*"', re.MULTILINE)
             if not check_pat.search(parent_block):
                 cname = str(dname or f"DLC {did}").replace('"', '\\"')
                 new_dlc_lines.append(f'    {did}: "{cname}"')
@@ -848,30 +796,27 @@ def remove_dlc_data(
             return False
 
         parent_app_id = str(parent_app_id).strip()
-        dlc_data_pattern = re.compile(r"^DlcData:\s*$", re.MULTILINE)
-        match = dlc_data_pattern.search(content)
-        if not match:
+        bounds = _get_section_bounds(content, "DlcData")
+        if not bounds:
             return True
 
-        dlc_data_end = match.end()
-        after_dlcdata = content[dlc_data_end:]
-        next_top_level = re.search(r"^[A-Za-z0-9_]+:\s*", after_dlcdata, re.MULTILINE)
-        sec_end = (dlc_data_end + next_top_level.start()) if next_top_level else len(content)
-
-        dlc_section = content[dlc_data_end:sec_end]
-        parent_pattern = re.compile(rf"^  {re.escape(parent_app_id)}:\s*$", re.MULTILINE)
+        _, dlc_start, dlc_end = bounds
+        dlc_section = content[dlc_start:dlc_end]
+        parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_app_id)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
         parent_match = parent_pattern.search(dlc_section)
         if not parent_match:
             return True
 
-        p_line_start = dlc_data_end + parent_match.start()
-        p_after = content[dlc_data_end + parent_match.end() : sec_end]
-        next_parent = re.search(r"^  [0-9A-Za-z_]+:\s*$", p_after, re.MULTILINE)
-        p_block_end = (
-            dlc_data_end + parent_match.end() + next_parent.start()
-            if next_parent
-            else sec_end
-        )
+        p_line_start = dlc_start + parent_match.start()
+        p_start = dlc_start + parent_match.end()
+        if p_start < len(content) and content[p_start] == "\r":
+            p_start += 1
+        if p_start < len(content) and content[p_start] == "\n":
+            p_start += 1
+
+        p_after = content[p_start:dlc_end]
+        next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+        p_block_end = (p_start + next_parent.start()) if next_parent else dlc_end
 
         if dlc_id is None:
             # Remove entire parent section
@@ -880,12 +825,12 @@ def remove_dlc_data(
         else:
             # Remove specific DLC line
             dlc_pattern = re.compile(
-                rf"^\s*{re.escape(str(dlc_id))}:[^\n]*\n?", re.MULTILINE
+                rf"^[ \t]*{re.escape(str(dlc_id))}[ \t]*:[^\r\n]*\r?\n?", re.MULTILINE
             )
-            target_block = content[p_line_start:p_block_end]
+            target_block = content[p_start:p_block_end]
             new_block, count = dlc_pattern.subn("", target_block)
             if count > 0:
-                new_content = content[:p_line_start] + new_block + content[p_block_end:]
+                new_content = content[:p_start] + new_block + content[p_block_end:]
                 return _atomic_write(config_path, new_content)
             return True
 
@@ -902,30 +847,30 @@ def get_dlc_data(config_path: Path, parent_app_id: str) -> Dict[str, str]:
             return {}
 
         parent_app_id = str(parent_app_id).strip()
-        dlc_data_pattern = re.compile(r"^DlcData:\s*$", re.MULTILINE)
-        match = dlc_data_pattern.search(content)
-        if not match:
+        bounds = _get_section_bounds(content, "DlcData")
+        if not bounds:
             return {}
 
-        dlc_data_end = match.end()
-        after_dlcdata = content[dlc_data_end:]
-        next_top_level = re.search(r"^[A-Za-z0-9_]+:\s*", after_dlcdata, re.MULTILINE)
-        sec_end = (dlc_data_end + next_top_level.start()) if next_top_level else len(content)
-
-        dlc_section = content[dlc_data_end:sec_end]
-        parent_pattern = re.compile(rf"^  {re.escape(parent_app_id)}:\s*$", re.MULTILINE)
+        _, dlc_start, dlc_end = bounds
+        dlc_section = content[dlc_start:dlc_end]
+        parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_app_id)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
         parent_match = parent_pattern.search(dlc_section)
         if not parent_match:
             return {}
 
-        p_start = dlc_data_end + parent_match.end()
-        p_after = content[p_start:sec_end]
-        next_parent = re.search(r"^  [0-9A-Za-z_]+:\s*$", p_after, re.MULTILINE)
-        p_end = (p_start + next_parent.start()) if next_parent else sec_end
+        p_start = dlc_start + parent_match.end()
+        if p_start < len(content) and content[p_start] == "\r":
+            p_start += 1
+        if p_start < len(content) and content[p_start] == "\n":
+            p_start += 1
+
+        p_after = content[p_start:dlc_end]
+        next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+        p_end = (p_start + next_parent.start()) if next_parent else dlc_end
 
         result = {}
         for line in content[p_start:p_end].splitlines():
-            m = re.match(r'^\s*([0-9]+):\s*"(.*)"\s*$', line)
+            m = re.match(r'^[ \t]*([0-9]+)[ \t]*:[ \t]*"(.*)"[ \t]*(?:#[^\r\n]*)?$', line)
             if m:
                 result[m.group(1)] = m.group(2)
         return result
@@ -934,62 +879,91 @@ def get_dlc_data(config_path: Path, parent_app_id: str) -> Dict[str, str]:
 
 
 def add_app_token(config_path: Path, app_id: str, token: str) -> bool:
-    """Add an AppToken to the AppTokens section in SLSsteam config.yaml."""
+    """Add or update an AppToken in the AppTokens section in SLSsteam config.yaml."""
     try:
         content = _get_config_content_if_enabled(config_path)
         if content is _CONFIG_DISABLED or content is None:
             return False
 
-        app_tokens_pattern = re.compile(r"^AppTokens:\s*$", re.MULTILINE)
-        if not app_tokens_pattern.search(content):
-            new_entry = f"AppTokens:\n  {app_id}: {token}\n"
-            return _atomic_write(config_path, content + new_entry)
-
-        # Fix indentation FIRST
         fixed_content, _ = _fix_app_tokens_indentation(content)
         content = fixed_content
 
-        # Search for any existing entries for this app_id (with or without quotes)
+        app_id_str = str(app_id).strip()
+        token_str = str(token).strip()
+
+        bounds = _get_section_bounds(content, "AppTokens")
+        new_token_line = f"  {app_id_str}: {token_str}\n"
+
+        if not bounds:
+            new_content = content.rstrip() + f"\n\nAppTokens:\n{new_token_line}"
+            if _atomic_write(config_path, new_content):
+                logger.info(f"Added AppToken for '{app_id_str}' in new AppTokens section")
+                return True
+            return False
+
+        _, content_start, section_end = bounds
+        sec_content = content[content_start:section_end]
+
         dup_pattern = re.compile(
-            rf"^ {{2}}['\"]?{re.escape(app_id)}['\"]?\s*:\s*.*(?:\r?\n)?", re.MULTILINE
+            rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:#[^\r\n]*)?$",
+            re.MULTILINE,
         )
-        
-        matches = list(dup_pattern.finditer(content))
-        
+        matches = list(dup_pattern.finditer(sec_content))
+
         if len(matches) == 1:
-            match_val_pat = re.compile(
-                rf"^ {{2}}['\"]?{re.escape(app_id)}['\"]?\s*:\s*(.+)$", re.MULTILINE
-            )
-            m = match_val_pat.search(matches[0].group(0))
-            if m and m.group(1).strip() == token:
-                # Token matches exactly. No update needed.
+            existing_val = matches[0].group(1).strip().strip('"').strip("'")
+            if existing_val == token_str:
                 return False
 
-        # Remove all existing occurrences of this app_id
-        new_content = content
-        for m in reversed(matches):
-            new_content = new_content[:m.start()] + new_content[m.end():]
+        if matches:
+            while True:
+                b = _get_section_bounds(content, "AppTokens")
+                if not b:
+                    break
+                _, cs, se = b
+                sc = content[cs:se]
+                m = dup_pattern.search(sc)
+                if not m:
+                    break
+                abs_m_start = cs + m.start()
+                l_start = content.rfind("\n", 0, abs_m_start)
+                l_start = 0 if l_start == -1 else l_start + 1
+                l_end = content.find("\n", abs_m_start)
+                l_end = len(content) if l_end == -1 else l_end + 1
+                content = content[:l_start] + content[l_end:]
 
-        # Insert the single correct entry under AppTokens
-        tokens_start = new_content.find("AppTokens:")
-        if tokens_start != -1:
-            insert_pos = tokens_start + len("AppTokens:")
-            if insert_pos < len(new_content) and new_content[insert_pos] == "\n":
-                insert_pos += 1
-            elif insert_pos < len(new_content) and new_content[insert_pos] == "\r":
-                insert_pos += 2
-                
-            new_token_line = f"  {app_id}: {token}\n"
-            new_content = new_content[:insert_pos] + new_token_line + new_content[insert_pos:]
-            
-            if _atomic_write(config_path, new_content):
-                if len(matches) > 1:
-                    logger.info(f"Updated AppToken for '{app_id}' and removed duplicates")
-                elif len(matches) == 1:
-                    logger.info(f"Updated AppToken for '{app_id}'")
-                else:
-                    logger.info(f"Added AppToken for '{app_id}'")
-                return True
+        bounds = _get_section_bounds(content, "AppTokens")
+        if not bounds:
+            return False
+        _, content_start, section_end = bounds
+        sec_content = content[content_start:section_end]
+
+        lines = sec_content.splitlines(keepends=True)
+        last_item_end_offset = 0
+        curr_offset = 0
+        token_entry_pat = re.compile(r"^[ \t]*\d+[ \t]*:")
+        for line in lines:
+            if token_entry_pat.match(line):
+                last_item_end_offset = curr_offset + len(line)
+            elif line.strip() and not line.strip().startswith("#") and not line.startswith(" ") and not line.startswith("\t"):
+                break
+            curr_offset += len(line)
+
+        if last_item_end_offset > 0:
+            insert_pos = content_start + last_item_end_offset
+        else:
+            insert_pos = content_start
+
+        new_content = content[:insert_pos] + new_token_line + content[insert_pos:]
+
+        if _atomic_write(config_path, new_content):
+            if len(matches) > 1:
+                logger.info(f"Updated AppToken for '{app_id_str}' and removed duplicates")
+            elif len(matches) == 1:
+                logger.info(f"Updated AppToken for '{app_id_str}'")
+            else:
+                logger.info(f"Added AppToken for '{app_id_str}'")
+            return True
         return False
 
     except OSError as e:
@@ -1004,15 +978,25 @@ def get_app_tokens(config_path: Path) -> Dict[str, str]:
         if not config_path.exists():
             return tokens
 
-        with open(config_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = _read_config_content(config_path)
+        if not content:
+            return tokens
 
-        section_content = _get_app_tokens_section(content)
-        token_pattern = re.compile(r"^\s*(\d+)\s*:\s*(.+)$", re.MULTILINE)
+        bounds = _get_section_bounds(content, "AppTokens")
+        if not bounds:
+            return tokens
+
+        _, content_start, section_end = bounds
+        section_content = content[content_start:section_end]
+
+        token_pattern = re.compile(
+            r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*([^\r\n#]+)",
+            re.MULTILINE,
+        )
 
         for token_match in token_pattern.finditer(section_content):
             app_id = token_match.group(1).strip()
-            token = token_match.group(2).strip()
+            token = token_match.group(2).strip().strip('"').strip("'")
             tokens[app_id] = token
 
     except OSError as e:
@@ -1024,7 +1008,7 @@ def get_app_tokens(config_path: Path) -> Dict[str, str]:
 def remove_app_token(config_path: Path, app_id: str) -> bool:
     """Remove an AppID entry from the AppTokens section in SLSsteam config.yaml."""
     app_id_pattern = re.compile(
-        rf"^\s*{re.escape(app_id)}\s*:\s*\S+" r"(?:\s*#.*)?$",
+        rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:[ \t]*[^\r\n#]+[ \t]*(?:#[^\r\n]*)?$",
         re.MULTILINE,
     )
     return _remove_entry_from_section(
@@ -1044,31 +1028,19 @@ def get_fake_app_ids(config_path: Path, fake_appid: str = "") -> Set[str]:
         fake_appid = get_fake_appid_for_online()
 
     try:
-        if not config_path.exists():
+        content = _read_config_content(config_path)
+        if not content:
             return fake_app_ids
 
-        with open(config_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        fake_appids_pattern = re.compile(r"^FakeAppIds:\s*$", re.MULTILINE)
-        match = fake_appids_pattern.search(content)
-
-        if not match:
+        bounds = _get_section_bounds(content, "FakeAppIds")
+        if not bounds:
             return fake_app_ids
 
-        section_start = match.end()
-        after_section = content[section_start:]
-        next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
-        next_match = next_key_pattern.search(after_section)
-
-        if next_match:
-            section_end = section_start + next_match.start()
-        else:
-            section_end = len(content)
-
-        section_content = content[section_start:section_end]
+        _, content_start, section_end = bounds
+        section_content = content[content_start:section_end]
         entry_pattern = re.compile(
-            rf"^\s*(\d+)\s*:\s*{re.escape(fake_appid)}", re.MULTILINE
+            rf"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*{re.escape(fake_appid)}(?:[ \t]+#[^\r\n]*|[ \t]*)$",
+            re.MULTILINE,
         )
 
         for entry_match in entry_pattern.finditer(section_content):
@@ -1087,31 +1059,19 @@ def get_fake_app_ids(config_path: Path, fake_appid: str = "") -> Set[str]:
 def get_fake_appid(config_path: Path, app_id: str) -> Optional[str]:
     """Get the FakeAppId for a specific AppID from SLSsteam config.yaml."""
     try:
-        if not config_path.exists():
+        content = _read_config_content(config_path)
+        if not content:
             return None
 
-        with open(config_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        fake_appids_pattern = re.compile(r"^FakeAppIds:\s*$", re.MULTILINE)
-        match = fake_appids_pattern.search(content)
-
-        if not match:
+        bounds = _get_section_bounds(content, "FakeAppIds")
+        if not bounds:
             return None
 
-        section_start = match.end()
-        after_section = content[section_start:]
-        next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
-        next_match = next_key_pattern.search(after_section)
-
-        if next_match:
-            section_end = section_start + next_match.start()
-        else:
-            section_end = len(content)
-
-        section_content = content[section_start:section_end]
+        _, content_start, section_end = bounds
+        section_content = content[content_start:section_end]
         entry_pattern = re.compile(
-            rf"^\s*{re.escape(app_id)}\s*:\s*(\d+)", re.MULTILINE
+            rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:[ \t]*(\d+)",
+            re.MULTILINE,
         )
 
         entry_match = entry_pattern.search(section_content)
@@ -1152,54 +1112,45 @@ def add_fake_app_id(
                 entry += "\n"
             return _atomic_write(config_path, entry)
 
-        existing_pattern = re.compile(
-            rf"^\s*{re.escape(app_id)}\s*:\s*{re.escape(fake_appid)}",
-            re.MULTILINE,
-        )
+        bounds = _get_section_bounds(content, "FakeAppIds")
 
-        if existing_pattern.search(content):
-            return False
+        entry_line = f"  {app_id}: {fake_appid}"
+        if game_name:
+            entry_line += f"  # {game_name} -> {suffix}\n"
+        else:
+            entry_line += "\n"
 
-        fake_appids_pattern = re.compile(r"^FakeAppIds:\s*$", re.MULTILINE)
-        match = fake_appids_pattern.search(content)
+        if bounds:
+            _, content_start, section_end = bounds
+            section_content = content[content_start:section_end]
+            existing_pattern = re.compile(
+                rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:[ \t]*{re.escape(str(fake_appid))}(?:[ \t]+#[^\r\n]*|[ \t]*)$",
+                re.MULTILINE,
+            )
+            if existing_pattern.search(section_content):
+                return False
 
-        if match:
-            # Append to existing section
-            section_start = match.end()
-            if section_start < len(content) and content[section_start] == "\n":
-                section_start += 1
-            remaining = content[section_start:]
-            lines = remaining.split("\n")
-
-            last_entry_end = section_start
-            for i, line in enumerate(lines):
-                stripped = line.strip()
-                if stripped and stripped[0].isdigit():
-                    last_entry_end = section_start + sum(
-                        len(lines[j]) + 1 for j in range(i + 1)
-                    )
-                elif not stripped or stripped.startswith("#"):
-                    continue
+            lines = section_content.splitlines(keepends=True)
+            last_entry_end_offset = 0
+            curr_offset = 0
+            for line in lines:
+                s = line.strip()
+                if s and (s[0].isdigit() or s[0] in ('"', "'")):
+                    last_entry_end_offset = curr_offset + len(line)
+                elif not s or s.startswith("#"):
+                    pass
                 else:
                     break
-            else:
-                last_entry_end = len(content)
+                curr_offset += len(line)
 
-            insert_pos = last_entry_end
-            entry = f"  {app_id}: {fake_appid}"
-            if game_name:
-                entry += f"  # {game_name} -> {suffix}\n"
+            if last_entry_end_offset > 0:
+                insert_pos = content_start + last_entry_end_offset
             else:
-                entry += "\n"
+                insert_pos = content_start
 
-            new_content = content[:insert_pos] + entry + content[insert_pos:]
+            new_content = content[:insert_pos] + entry_line + content[insert_pos:]
         else:
-            entry = f"FakeAppIds:\n  {app_id}: {fake_appid}"
-            if game_name:
-                entry += f"  # {game_name} -> {suffix}\n"
-            else:
-                entry += "\n"
-            new_content = content + "\n" + entry
+            new_content = content.rstrip() + f"\n\nFakeAppIds:\n{entry_line}"
 
         if not _atomic_write(config_path, new_content):
             return False
@@ -1216,13 +1167,12 @@ def remove_fake_app_id(config_path: Path, app_id: str, fake_appid: str = "") -> 
     """Remove an AppID from the FakeAppIds list in SLSsteam config.yaml."""
     if fake_appid:
         app_id_pattern = re.compile(
-            rf"^\s*{re.escape(app_id)}\s*:\s*{re.escape(fake_appid)}" r"(?:\s*#.*)?$",
+            rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:[ \t]*{re.escape(str(fake_appid))}[ \t]*(?:#[^\r\n]*)?$",
             re.MULTILINE,
         )
     else:
-        # Match any fake_appid entry for this app_id
         app_id_pattern = re.compile(
-            rf"^\s*{re.escape(app_id)}\s*:\s*\S+" r"(?:\s*#.*)?$",
+            rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:[ \t]*[^\r\n#]+[ \t]*(?:#[^\r\n]*)?$",
             re.MULTILINE,
         )
     return _remove_entry_from_section(
@@ -1291,22 +1241,14 @@ def check_and_merge_fakeappid_db(config_path: Path) -> bool:
     except OSError as e:
         logger.error(f"Failed to read config file {config_path}: {e}")
         return False
-
-    # Find FakeAppIds section
-    fake_appids_pattern = re.compile(r"^FakeAppIds:\s*$", re.MULTILINE)
-    match = fake_appids_pattern.search(content)
+    bounds = _get_section_bounds(content, "FakeAppIds")
 
     # Let's collect existing FakeAppIds
     existing_fake_apps = {}
-    if match:
-        section_start = match.end()
-        after_section = content[section_start:]
-        next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
-        next_match = next_key_pattern.search(after_section)
-        section_end = section_start + next_match.start() if next_match else len(content)
-        section_content = content[section_start:section_end]
-        
-        entry_pattern = re.compile(r"^\s*(\d+)\s*:\s*(\d+)", re.MULTILINE)
+    if bounds:
+        _, content_start, section_end = bounds
+        section_content = content[content_start:section_end]
+        entry_pattern = re.compile(r"^[ \t]*(\d+)[ \t]*:[ \t]*(\d+)", re.MULTILINE)
         for m in entry_pattern.finditer(section_content):
             existing_fake_apps[m.group(1).strip()] = m.group(2).strip()
 
@@ -1328,15 +1270,10 @@ def check_and_merge_fakeappid_db(config_path: Path) -> bool:
         comment_suffix = f" # {comment}" if comment else ""
         insert_text += f"  {appid}: {fake_appid}{comment_suffix}\n"
 
-    new_content = ""
-    if match:
-        # Find where to insert. We insert right after "FakeAppIds:\n"
-        insert_pos = match.end()
-        if insert_pos < len(content) and content[insert_pos] == "\n":
-            insert_pos += 1
-        new_content = content[:insert_pos] + insert_text + content[insert_pos:]
+    if bounds:
+        _, content_start, section_end = bounds
+        new_content = content[:content_start] + insert_text + content[content_start:]
     else:
-        # Section doesn't exist, append it
         new_content = content.rstrip() + "\n\nFakeAppIds:\n" + insert_text
 
     # Write atomically
@@ -1384,43 +1321,40 @@ def clean_fakeappid_db(config_path: Path) -> bool:
         return False
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = _read_config_content(config_path)
+        if not content:
+            return False
     except OSError as e:
         logger.error(f"Failed to read config file {config_path}: {e}")
         return False
 
-    # Find FakeAppIds section
-    fake_appids_pattern = re.compile(r"^FakeAppIds:\s*$", re.MULTILINE)
-    match = fake_appids_pattern.search(content)
-    if not match:
+    bounds = _get_section_bounds(content, "FakeAppIds")
+    if not bounds:
         return False
 
-    section_start = match.end()
-    after_section = content[section_start:]
-    next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
-    next_match = next_key_pattern.search(after_section)
-    section_end = section_start + next_match.start() if next_match else len(content)
-    section_content = content[section_start:section_end]
+    _, content_start, section_end = bounds
+    section_content = content[content_start:section_end]
 
     # Rebuild section content, omitting any lines that match db_appids
     new_section_lines = []
     removed_count = 0
-    entry_pattern = re.compile(r"^\s*(\d+)\s*:")
-    for line in section_content.split("\n"):
+    entry_pattern = re.compile(r"^[ \t]*(\d+)[ \t]*:")
+    for line in section_content.splitlines():
         m = entry_pattern.match(line)
         if m:
             appid = m.group(1).strip()
             if appid in db_appids:
                 removed_count += 1
-                continue  # skip/remove this line
+                continue
         new_section_lines.append(line)
 
     if removed_count == 0:
         return False
 
     new_section_content = "\n".join(new_section_lines)
-    new_content = content[:section_start] + new_section_content + content[section_end:]
+    if new_section_content and not new_section_content.endswith("\n"):
+        new_section_content += "\n"
+    new_content = content[:content_start] + new_section_content + content[section_end:]
 
     _create_backup(config_path)
     if _atomic_write(config_path, new_content):
@@ -1438,44 +1372,39 @@ def get_denuvo_games(config_path: Path) -> Dict[str, List[str]]:
     if not config_path.exists():
         return {}
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = _read_config_content(config_path)
+        if not content:
+            return {}
+
+        bounds = _get_section_bounds(content, "DenuvoGames")
+        if not bounds:
+            return {}
+
+        _, content_start, section_end = bounds
+        section_content = content[content_start:section_end]
+
+        res = {}
+        current_steam_id = None
+
+        for line in section_content.splitlines():
+            line_strip = line.strip()
+            if not line_strip or line_strip.startswith("#"):
+                continue
+
+            steam_id_match = re.match(r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*$", line)
+            if steam_id_match:
+                current_steam_id = steam_id_match.group(1)
+                res[current_steam_id] = []
+                continue
+
+            appid_match = re.match(r"^[ \t]*-[ \t]*['\"]?(\d+)['\"]?[ \t]*(?:#[^\r\n]*)?$", line)
+            if appid_match and current_steam_id is not None:
+                res[current_steam_id].append(appid_match.group(1))
+
+        return res
     except OSError as e:
-        logger.error(f"Failed to read config file {config_path}: {e}")
+        logger.error(f"Failed to read DenuvoGames from {config_path}: {e}")
         return {}
-
-    # Find DenuvoGames section
-    denuvo_games_pattern = re.compile(r"^DenuvoGames:\s*$", re.MULTILINE)
-    match = denuvo_games_pattern.search(content)
-    if not match:
-        return {}
-
-    section_start = match.end()
-    after_section = content[section_start:]
-    next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
-    next_match = next_key_pattern.search(after_section)
-    section_end = section_start + next_match.start() if next_match else len(content)
-    section_content = content[section_start:section_end]
-
-    res = {}
-    current_steam_id = None
-
-    for line in section_content.split("\n"):
-        line_strip = line.strip()
-        if not line_strip or line_strip.startswith("#"):
-            continue
-
-        steam_id_match = re.match(r"^\s*['\"]?(\d+)['\"]?:\s*$", line)
-        if steam_id_match:
-            current_steam_id = steam_id_match.group(1)
-            res[current_steam_id] = []
-            continue
-
-        appid_match = re.match(r"^\s*-\s*['\"]?(\d+)['\"]?\s*(?:#.*)?$", line)
-        if appid_match and current_steam_id is not None:
-            res[current_steam_id].append(appid_match.group(1))
-
-    return res
 
 
 def save_denuvo_games(config_path: Path, steam_id: str, appids: List[str]) -> bool:
@@ -1491,32 +1420,26 @@ def clean_denuvo_games_section(config_path: Path) -> bool:
     if not config_path.exists():
         return False
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = _read_config_content(config_path)
+        if not content:
+            return False
+
+        bounds = _get_section_bounds(content, "DenuvoGames")
+        if not bounds:
+            return False
+
+        _, content_start, section_end = bounds
+        section_content = content[content_start:section_end]
+        if section_content.strip():
+            new_content = content[:content_start] + "\n" + content[section_end:]
+            _create_backup(config_path)
+            if _atomic_write(config_path, new_content):
+                logger.info(f"Successfully cleaned DenuvoGames block in {config_path}")
+                return True
+        return False
     except OSError as e:
-        logger.error(f"Failed to read config file {config_path}: {e}")
+        logger.error(f"Failed to clean DenuvoGames block in {config_path}: {e}")
         return False
-
-    denuvo_games_pattern = re.compile(r"^DenuvoGames:\s*$", re.MULTILINE)
-    match = denuvo_games_pattern.search(content)
-    if not match:
-        return False
-
-    section_start = match.end()
-    after_section = content[section_start:]
-    next_key_pattern = re.compile(r"^[A-Za-z]", re.MULTILINE)
-    next_match = next_key_pattern.search(after_section)
-    section_end = section_start + next_match.start() if next_match else len(content)
-
-    section_content = content[section_start:section_end]
-    # If there is content (indented keys or appids) under DenuvoGames, strip it
-    if section_content.strip():
-        new_content = content[:section_start] + "\n" + content[section_end:]
-        _create_backup(config_path)
-        if _atomic_write(config_path, new_content):
-            logger.info(f"Successfully cleaned DenuvoGames block in {config_path}")
-            return True
-    return False
 
 
 # ── LaunchOptions & netsock.so for Online Play ──────────────────────────────
@@ -1640,20 +1563,15 @@ def get_launch_option(config_path: Path, app_id: str) -> Optional[str]:
     if not content:
         return None
 
-    launch_opts_pattern = re.compile(r"^LaunchOptions:\s*$", re.MULTILINE)
-    match = launch_opts_pattern.search(content)
-    if not match:
+    bounds = _get_section_bounds(content, "LaunchOptions")
+    if not bounds:
         return None
 
-    section_start = match.end()
-    after_section = content[section_start:]
-    next_key_pattern = re.compile(r"^[A-Za-z0-9_]+:", re.MULTILINE)
-    next_match = next_key_pattern.search(after_section)
-    section_end = section_start + next_match.start() if next_match else len(content)
-    section_content = content[section_start:section_end]
+    _, content_start, section_end = bounds
+    section_content = content[content_start:section_end]
 
     entry_pattern = re.compile(
-        rf"^\s*{re.escape(str(app_id))}\s*:\s*(.+)$",
+        rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:[ \t]*(.+)$",
         re.MULTILINE
     )
     m = entry_pattern.search(section_content)
@@ -1673,48 +1591,42 @@ def add_launch_option(config_path: Path, app_id: str, command: str) -> bool:
             entry = f"LaunchOptions:\n  {app_id}: {command}\n"
             return _atomic_write(config_path, entry)
 
-        launch_opts_pattern = re.compile(r"^LaunchOptions:\s*$", re.MULTILINE)
-        match = launch_opts_pattern.search(content)
+        bounds = _get_section_bounds(content, "LaunchOptions")
+        new_line = f"  {app_id}: {command}\n"
 
-        if match:
-            section_start = match.end()
-            if section_start < len(content) and content[section_start] == "\n":
-                section_start += 1
-            after_section = content[section_start:]
-            next_key_pattern = re.compile(r"^[A-Za-z0-9_]+:", re.MULTILINE)
-            next_match = next_key_pattern.search(after_section)
-            section_end = section_start + next_match.start() if next_match else len(content)
-            section_content = content[section_start:section_end]
+        if bounds:
+            _, content_start, section_end = bounds
+            section_content = content[content_start:section_end]
 
             app_id_line_pattern = re.compile(
-                rf"^([ \t]*){re.escape(str(app_id))}\s*:.*$",
+                rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:.*$",
                 re.MULTILINE
             )
             existing_m = app_id_line_pattern.search(section_content)
             if existing_m:
-                new_line = f"  {app_id}: {command}"
-                new_section = (
-                    section_content[:existing_m.start()]
-                    + new_line
-                    + section_content[existing_m.end():]
-                )
-                new_content = content[:section_start] + new_section + content[section_end:]
+                abs_m_start = content_start + existing_m.start()
+                l_start = content.rfind("\n", 0, abs_m_start)
+                l_start = 0 if l_start == -1 else l_start + 1
+                l_end = content.find("\n", abs_m_start)
+                l_end = len(content) if l_end == -1 else l_end + 1
+                new_content = content[:l_start] + new_line + content[l_end:]
             else:
-                lines = section_content.split("\n")
-                last_idx = -1
-                for i, l in enumerate(lines):
-                    s = l.strip()
+                lines = section_content.splitlines(keepends=True)
+                last_idx_offset = 0
+                curr_offset = 0
+                for line in lines:
+                    s = line.strip()
                     if s and not s.startswith("#"):
-                        last_idx = i
+                        last_idx_offset = curr_offset + len(line)
+                    curr_offset += len(line)
 
-                new_line = f"  {app_id}: {command}\n"
-                if last_idx >= 0:
-                    pos = section_start + sum(len(lines[k]) + 1 for k in range(last_idx + 1))
-                    new_content = content[:pos] + new_line + content[pos:]
+                if last_idx_offset > 0:
+                    pos = content_start + last_idx_offset
                 else:
-                    new_content = content[:section_start] + new_line + content[section_start:]
+                    pos = content_start
+                new_content = content[:pos] + new_line + content[pos:]
         else:
-            new_content = content.rstrip() + f"\n\nLaunchOptions:\n  {app_id}: {command}\n"
+            new_content = content.rstrip() + f"\n\nLaunchOptions:\n{new_line}"
 
         if _atomic_write(config_path, new_content):
             logger.info(f"Added LaunchOptions for AppID '{app_id}' in {config_path}")
@@ -1728,7 +1640,7 @@ def add_launch_option(config_path: Path, app_id: str, command: str) -> bool:
 def remove_launch_option(config_path: Path, app_id: str) -> bool:
     """Remove an AppID entry from the LaunchOptions section in SLSsteam config.yaml."""
     app_id_pattern = re.compile(
-        rf"^\s*{re.escape(str(app_id))}\s*:.*$",
+        rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:.*$",
         re.MULTILINE
     )
     return _remove_entry_from_section(

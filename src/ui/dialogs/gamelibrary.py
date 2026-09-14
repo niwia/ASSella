@@ -553,16 +553,17 @@ class GameItemWidget(QWidget):
         tier = get_protondb_tier(appid)
 
         if not tier:
-            # Currently loading asynchronously
-            self.proton_badge.setText("LOADING")
+            # Currently loading asynchronously on the backend
+            self.proton_badge.setText("FETCHING...")
             self.proton_badge.setStyleSheet(
-                "color: #888888; "
-                "background-color: rgba(255, 255, 255, 0.05); "
-                "border: 1px solid rgba(255, 255, 255, 0.10); "
+                "color: #B0BEC5; "
+                "background-color: rgba(255, 255, 255, 0.08); "
+                "border: 1px solid rgba(255, 255, 255, 0.20); "
                 "border-radius: 4px; "
                 "padding: 1px 6px; "
                 "font-size: 9px; "
-                "font-weight: bold;"
+                "font-weight: bold; "
+                "letter-spacing: 0.5px;"
             )
             self.proton_badge.show()
             return
@@ -3151,21 +3152,71 @@ class GameLibraryDialog(QDialog):
             return
 
         acf = os.path.join(path, "steamapps", f"appmanifest_{appid}.acf")
-        if not os.path.exists(acf):
-            QMessageBox.warning(self, "Error", "Manifest file not found.")
-            return
+        acf_existed = os.path.exists(acf)
 
-        if not self._confirm_action(
-            "Confirm", "Remove manifest file? Steam will re-verify files."
-        ):
-            return
+        if acf_existed:
+            if not self._confirm_action(
+                "Confirm", "Remove manifest file? Steam will re-verify files."
+            ):
+                return
+            try:
+                os.remove(acf)
+            except Exception as e:
+                logger.warning(f"Could not remove manifest file {acf}: {e}")
+        else:
+            if not self._confirm_action(
+                "Confirm", "Manifest file is missing. Repair installation and register with Steam?"
+            ):
+                return
 
-        os.remove(acf)
-        QMessageBox.information(self, "Done", "Manifest removed.")
+        # Trigger SLSsteam install pipe and registration
         if sys.platform == "linux":
             try:
-                from utils.slssteam_integration import patch_acf_via_sls
-                patch_acf_via_sls(appid, library_path=path)
+                from utils.slssteam_integration import install_via_sls, _experimental_mode_enabled, patch_acf_via_sls
+                if _experimental_mode_enabled():
+                    install_via_sls(
+                        appid=appid,
+                        game_name=game_data.get("game_name", ""),
+                        library_path=path,
+                    )
+                else:
+                    patch_acf_via_sls(appid, library_path=path)
+            except Exception as sls_err:
+                logger.warning(f"SLS install error during fix for {appid}: {sls_err}")
+
+        # Fallback ACF generation if manifest still missing (e.g. Steam closed, watcher dead, or offline)
+        if not os.path.exists(acf):
+            try:
+                from utils.steam_manifest import write_acf_file
+                info = None
+                try:
+                    from core.steam_api import get_depot_info_from_api
+                    info = get_depot_info_from_api(appid)
+                except Exception:
+                    pass
+                target_info = info or game_data
+                write_acf_file(
+                    path,
+                    target_info,
+                    size_on_disk=game_data.get("size_on_disk", 0),
+                    include_depots=True,
+                    logger=logger,
+                )
+                logger.info(f"Fallback ACF generated during fix for {appid}")
+            except Exception as acf_err:
+                logger.warning(f"Fallback ACF generation failed during fix for {appid}: {acf_err}")
+
+        QMessageBox.information(
+            self,
+            "Done",
+            "Installation repaired. Steam will verify game files."
+            if not acf_existed
+            else "Manifest removed. Steam will re-verify files.",
+        )
+
+        if hasattr(self, "game_manager") and self.game_manager:
+            try:
+                self.game_manager.scan_steam_libraries_async()
             except Exception:
                 pass
 

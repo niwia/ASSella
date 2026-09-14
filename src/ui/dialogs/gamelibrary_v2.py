@@ -3086,7 +3086,7 @@ class GameDetailsDialogV2(QDialog):
         self.fix_btn = QPushButton("Fix Installation")
         self.fix_btn.setFixedHeight(36)
         self.fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.fix_btn.setToolTip("Removes local manifest (.acf) to force Steam verification.")
+        self.fix_btn.setToolTip("Repairs game installation and forces Steam verification.")
         self.fix_btn.setStyleSheet(f"""
             QPushButton {{
                 background: rgba(255, 255, 255, 0.05);
@@ -3898,7 +3898,7 @@ class GameDetailsDialogV2(QDialog):
             self.b_steamless.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
         if hasattr(self, "fix_btn") and self.fix_btn:
             self.fix_btn.setEnabled(True)
-            self.fix_btn.setToolTip("Removes local manifest (.acf) to force Steam verification.")
+            self.fix_btn.setToolTip("Repairs game installation and forces Steam verification.")
 
         if hasattr(self, "gb_apply_btn") and hasattr(self, "gb_remove_btn"):
             if applied:
@@ -4220,6 +4220,15 @@ class GameDetailsDialogV2(QDialog):
                     f"color: {p_color}; background-color: {p_bg}; border: 1px solid {p_border}; "
                     f"border-radius: 4px; padding: 1px 6px; "
                     f"font-size: 8pt; font-weight: bold; letter-spacing: 0.5px;"
+                )
+                self._proton_badge_lbl.show()
+            elif tier is None:
+                self._proton_badge_lbl.setText("FETCHING...")
+                self._proton_badge_lbl.setStyleSheet(
+                    "color: #B0BEC5; background-color: rgba(255, 255, 255, 0.08); "
+                    "border: 1px solid rgba(255, 255, 255, 0.20); "
+                    "border-radius: 4px; padding: 1px 6px; "
+                    "font-size: 8pt; font-weight: bold; letter-spacing: 0.5px;"
                 )
                 self._proton_badge_lbl.show()
             else:
