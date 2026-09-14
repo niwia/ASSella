@@ -181,8 +181,16 @@ class ActiveGameCard(QFrame):
                 self.pixmap = QPixmap(str(cache_path))
         self.update()
 
-    def set_sub_status(self, text: str):
+    def set_sub_status(self, text: str, is_warning: bool = False):
         self.sub_lbl.setText(text)
+        if is_warning:
+            self.sub_lbl.setStyleSheet(
+                "color: #FFB84D; font-size: 8.5pt; font-weight: bold; background: transparent; border: none;"
+            )
+        else:
+            self.sub_lbl.setStyleSheet(
+                "color: rgba(255, 255, 255, 0.65); font-size: 8.5pt; font-weight: 500; background: transparent; border: none;"
+            )
 
     def paintEvent(self, event):
         from PyQt6.QtGui import QPainter, QLinearGradient, QColor, QBrush, QPainterPath, QPen
@@ -951,6 +959,7 @@ class MainWindow(QMainWindow):
     """Main application window."""
 
     refresh_system_status_signal = pyqtSignal()
+    notify_sls_watcher_crashed_signal = pyqtSignal()
     # Signal used to safely invoke a callable on the main thread from a background thread.
     # Using a typed signal instead of Q_ARG(object, fn) avoids PyQt6 GIL/metatype crashes.
     _main_thread_callable = pyqtSignal(object)
@@ -958,6 +967,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.refresh_system_status_signal.connect(self.refresh_system_status)
+        self.notify_sls_watcher_crashed_signal.connect(self.notify_sls_filewatcher_crashed)
         self._main_thread_callable.connect(self._run_on_main_thread)
         self._steamdb_verified = False
         self._steamdb_check_running = False
@@ -1773,8 +1783,11 @@ class MainWindow(QMainWindow):
         class DropTextLabelWrapper:
             def __init__(self, pager):
                 self.pager = pager
-            def setText(self, text):
-                self.pager.set_status(text)
+            def setText(self, text, is_warning=False):
+                if is_warning:
+                    self.pager.show_warning(text)
+                else:
+                    self.pager.set_status(text)
             def setStyleSheet(self, style):
                 pass
 
@@ -2154,6 +2167,20 @@ class MainWindow(QMainWindow):
         return f"color: {c} !important; font-size: 11px; font-weight: bold; border: none; background: transparent;"
 
     @pyqtSlot()
+    def notify_sls_filewatcher_crashed(self) -> None:
+        """Update UI when SLSsteam filewatcher has crashed in Steam."""
+        warning_msg = "SLSsteam Filewatcher crashed in Steam . Restart Steam"
+        if hasattr(self, "status_pager") and self.status_pager:
+            self.status_pager.show_warning(warning_msg, 30)
+        elif hasattr(self, "drop_text_label") and self.drop_text_label:
+            self.drop_text_label.setText(warning_msg)
+
+        if hasattr(self, "active_game_card") and self.active_game_card:
+            self.active_game_card.set_sub_status(warning_msg, is_warning=True)
+
+        self.refresh_system_status()
+
+    @pyqtSlot()
     def refresh_system_status(self) -> None:
         """Refresh local Steam updates, SLS, and ASSella status labels."""
         if not hasattr(self, "steam_updates_value") or not self.steam_updates_value:
@@ -2178,7 +2205,11 @@ class MainWindow(QMainWindow):
         ignore_updater = self.settings.value("ignore_slssteam_updater", False, type=bool) if self.settings else False
 
         # --- SLS Detection & API Integration ---
-        from utils.slssteam_integration import is_slssteam_process_active, is_steam_process_running
+        from utils.slssteam_integration import (
+            is_slssteam_process_active,
+            is_steam_process_running,
+            is_sls_filewatcher_dead,
+        )
         sls_active = self.settings.value("experimental_acf_independent", False, type=bool) if self.settings else False
 
         # SLS Config Status (SLS Integration Status)
@@ -2208,12 +2239,22 @@ class MainWindow(QMainWindow):
         # Steam Client Process Status
         if hasattr(self, "steam_conn_value") and self.steam_conn_value:
             self.steam_conn_value.setEnabled(True)
-            if is_steam_process_running():
-                self.steam_conn_value.setText("Online")
-                self.steam_conn_value.setStyleSheet(self._get_status_style("success"))
-            else:
+            if not is_steam_process_running():
                 self.steam_conn_value.setText("Offline")
                 self.steam_conn_value.setStyleSheet(self._get_status_style("error"))
+                self.steam_conn_value.setToolTip("Steam client is not running.")
+            elif is_sls_filewatcher_dead():
+                self.steam_conn_value.setText("Restart")
+                self.steam_conn_value.setStyleSheet(self._get_status_style("warning"))
+                self.steam_conn_value.setToolTip(
+                    "Steam: Restart required\n"
+                    "• SLSsteam file watcher has crashed in Steam.\n"
+                    "• Restart Steam to reload game configs and licenses."
+                )
+            else:
+                self.steam_conn_value.setText("Online")
+                self.steam_conn_value.setStyleSheet(self._get_status_style("success"))
+                self.steam_conn_value.setToolTip("Steam client is running normally.")
 
         # Health Visor Status (SLS binary + version + config + SLS API)
         if hasattr(self, "health_status_value") and self.health_status_value:
@@ -2231,12 +2272,13 @@ class MainWindow(QMainWindow):
 
                 sls_api_enabled = self.settings.value("experimental_acf_independent", False, type=bool) if self.settings else False
                 sls_api_active = sls_api_enabled and is_slssteam_process_active()
+                watcher_dead = is_sls_filewatcher_dead()
 
                 if cfg_boot_status in ("checking", None) or ver_status == "checking":
                     self.health_status_value.setText("Checking...")
                     self.health_status_value.setStyleSheet(self._get_status_style("neutral"))
                     self.health_status_value.setToolTip("Checking System & SLS Health status...")
-                elif sls_detected and version_ok and config_ok and sls_api_active:
+                elif sls_detected and version_ok and config_ok and sls_api_active and not watcher_dead:
                     self.health_status_value.setText("Good")
                     self.health_status_value.setStyleSheet(self._get_status_style("success"))
                     self.health_status_value.setToolTip(
@@ -2264,6 +2306,8 @@ class MainWindow(QMainWindow):
                                 issues.append("Steam not running (SLS not injected)")
                             else:
                                 issues.append("SLS process not injected into Steam")
+                    if watcher_dead:
+                        issues.append("SLS filewatcher crashed (Restart Steam)")
 
                     self.health_status_value.setText("Attention" if issues else "Checking...")
                     self.health_status_value.setStyleSheet(self._get_status_style("warning"))

@@ -26,6 +26,7 @@ class StatusPagerWidget(QFrame):
         self.setFixedHeight(36)
         self.last_msg = "SYSTEM READY · DRAG AND DROP ZIP TO INSTALL"
         self._broadcast_active = False
+        self._critical_warning_active = False
 
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(15, 0, 15, 0)
@@ -82,12 +83,14 @@ class StatusPagerWidget(QFrame):
     @pyqtSlot(str, int, str)
     def _handle_broadcast(self, message: str, duration: int, level: str) -> None:
         """Display high-priority broadcast announcement and lock status bar for specified duration."""
+        if self._critical_warning_active and level not in ("critical", "emergency"):
+            return
         self._broadcast_active = True
         formatted = message.upper()
         self.last_msg = formatted
         self.label.setText(formatted)
 
-        if level in ("warn", "warning", "error"):
+        if level in ("warn", "warning", "error", "critical"):
             self.label.setStyleSheet("color: #FFB84D; font-size: 12px; font-weight: bold; border: none; background: transparent;")
 
         # Automatically expire after duration (defaults to 15s)
@@ -95,16 +98,32 @@ class StatusPagerWidget(QFrame):
 
     def _on_broadcast_expired(self) -> None:
         """Revert broadcast back to regular log stream and default styling."""
+        self._critical_warning_active = False
         self._broadcast_active = False
         self.update_style()
         self.set_status("SYSTEM READY · DRAG AND DROP ZIP TO INSTALL", force=True)
 
-    def set_status(self, message: str, force: bool = False) -> None:
+    def set_status(self, message: str, force: bool = False, is_warning: bool = False) -> None:
         """Programmatically set the status message on the pager."""
         if self._broadcast_active and not force:
             return
         self.last_msg = message.upper()
         self.label.setText(self.last_msg)
+        if is_warning:
+            self.label.setStyleSheet("color: #FFB84D; font-size: 12px; font-weight: bold; border: none; background: transparent;")
+        elif not self._broadcast_active:
+            self.update_style()
+
+    @pyqtSlot(str)
+    def show_warning_str(self, message: str) -> None:
+        """Display a prominent warning status locked for 30 seconds."""
+        self.show_warning(message, 30)
+
+    @pyqtSlot(str, int)
+    def show_warning(self, message: str, duration: int = 30) -> None:
+        """Display a prominent warning status locked for duration seconds."""
+        self._critical_warning_active = True
+        self._handle_broadcast(message, duration, "critical")
 
     @pyqtSlot(str)
     def on_new_log(self, raw_msg: str) -> None:
@@ -163,15 +182,22 @@ class StatusPagerWidget(QFrame):
         if any(kw in msg_lower for kw in interesting_keywords):
             # Clean up prefix like "[INFO] " or "[WARNING] "
             cleaned = msg
+            is_warn_log = False
             if cleaned.startswith("[") and "]" in cleaned:
                 idx = cleaned.find("]")
+                prefix = cleaned[1:idx].upper()
+                if "WARN" in prefix or "ERROR" in prefix:
+                    is_warn_log = True
                 cleaned = cleaned[idx + 1 :].strip()
+
+            if "crashed" in cleaned.lower() or "filewatcher" in cleaned.lower():
+                is_warn_log = True
 
             # Limit length to keep it single-line
             if len(cleaned) > 90:
                 cleaned = cleaned[:87] + "..."
 
-            self.set_status(cleaned)
+            self.set_status(cleaned, is_warning=is_warn_log)
 
     def update_style(self) -> None:
         """Apply theme color choices to the LCD container and text."""

@@ -271,9 +271,27 @@ class TaskManager(QObject):
                 for k, v in game_data.items():
                     if k in ("manifests", "depots"):
                         continue
-                    if v and (k not in merged or not merged[k]):
+                    if k not in merged or merged[k] is None:
                         merged[k] = v
             game_data = merged
+
+            if "manifest_overrides" in merged and merged["manifest_overrides"]:
+                overrides = merged["manifest_overrides"]
+                if isinstance(overrides, dict) and overrides:
+                    if "manifests" not in game_data:
+                        game_data["manifests"] = {}
+                    for d_id, m_id in overrides.items():
+                        game_data["manifests"][str(d_id)] = str(m_id)
+                        if "depots" in game_data and str(d_id) in game_data["depots"]:
+                            if isinstance(game_data["depots"][str(d_id)], dict):
+                                game_data["depots"][str(d_id)]["manifest_id"] = str(m_id)
+                    logger.info(f"[TaskManager] Applied manifest overrides: {overrides}")
+
+            if merged.get("pin_build"):
+                pinned_bid = merged.get("pinned_build_id") or merged.get("buildid")
+                if pinned_bid:
+                    game_data["buildid"] = str(pinned_bid)
+                    game_data["_is_rollback"] = True
 
         self.game_data = game_data
 
@@ -1193,6 +1211,7 @@ class TaskManager(QObject):
                 _experimental_mode_enabled,
                 _is_slssteam_available,
                 warn_sls_unavailable,
+                is_sls_filewatcher_dead,
             )
             if _experimental_mode_enabled():
                 is_pinned = False
@@ -1212,8 +1231,13 @@ class TaskManager(QObject):
                 else:
                     logger.info("ACF-Independent Mode is active. Delegating manifest creation to Steam natively.")
 
-                    # Precondition check: warn the user if SLSsteam is not running
-                    if not _is_slssteam_available():
+                    # Precondition check: warn the user if SLSsteam filewatcher is dead or SLSsteam is not running
+                    if is_sls_filewatcher_dead():
+                        warning_msg = "SLSsteam Filewatcher crashed in Steam . Restart Steam"
+                        self.progress.emit(f"⚠️ WARNING: {warning_msg}")
+                        if hasattr(self.main_window, "notify_sls_watcher_crashed_signal"):
+                            self.main_window.notify_sls_watcher_crashed_signal.emit()
+                    elif not _is_slssteam_available():
                         warning_msg = warn_sls_unavailable(context="post-install")
                         # Emit as a visible warning in the task progress output
                         self.progress.emit(f"⚠️ WARNING: {warning_msg}")
@@ -1227,6 +1251,7 @@ class TaskManager(QObject):
                             appid=str(appid),
                             game_name=self.game_data.get("game_name", ""),
                             library_path=self.current_dest_path or "",
+                            main_window=self.main_window,
                         )
                     return
         except Exception as e:
