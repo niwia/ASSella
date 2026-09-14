@@ -697,7 +697,7 @@ class DownloadDepotsTask(QObject):
                     else:
                         logger.warning(f"Single manifest generation failed ({gen_err}). Falling back to bundle download...")
                         import zipfile
-                        app_id = str(game_data["appid"])
+                        app_id = appid_str
                         target_branch = game_data.get("branch") or settings.value(f"selected_branch/{app_id}", "public", type=str)
                         fpath, err = morrenus_api.download_manifest(app_id, target_branch)
                         if fpath and os.path.exists(fpath):
@@ -715,7 +715,7 @@ class DownloadDepotsTask(QObject):
                 dotnet_cmd,
                 dll_path,
                 "-app",
-                str(game_data["appid"]),
+                appid_str,
                 "-depot",
                 str(depot_id),
                 "-manifest",
@@ -732,7 +732,7 @@ class DownloadDepotsTask(QObject):
             ]
 
             # Check selected branch
-            target_branch = game_data.get("branch") or settings.value(f"selected_branch/{game_data['appid']}", "public", type=str)
+            target_branch = game_data.get("branch") or settings.value(f"selected_branch/{appid_str}", "public", type=str)
             if target_branch and target_branch != "public":
                 cmd_args.extend(["-branch", str(target_branch)])
 

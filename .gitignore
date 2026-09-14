@@ -34,6 +34,7 @@ gifs/
 scripts/*
 !scripts/setup_byparr.sh
 prerelease_check.py
+scratch/
 
 # ── OS junk ─────────────────────────────────────────────────────────────────
 .DS_Store

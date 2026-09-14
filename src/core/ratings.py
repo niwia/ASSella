@@ -334,9 +334,17 @@ def get_protondb_tier(appid: str) -> Optional[str]:
         _enqueue_fetch(appid)
         return entry.get("tier", "unknown")
 
-    # Cache miss: queue fetch, caller gets None → badge stays hidden for now
+    # Cache miss: queue fetch, caller gets None → badge indicates fetching
     _enqueue_fetch(appid)
     return None
+
+
+def is_protondb_fetching(appid: str) -> bool:
+    """Return True if a ProtonDB fetch for *appid* is currently queued or in-flight."""
+    if not appid or not str(appid).isdigit():
+        return False
+    with _queued_lock:
+        return str(appid) in _queued_appids
 
 
 def _enqueue_fetch(appid: str) -> None:

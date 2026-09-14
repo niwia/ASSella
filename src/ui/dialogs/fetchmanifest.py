@@ -4,7 +4,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QSize, Qt, QTimer, QRectF
 from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter, QBrush, QLinearGradient, QPen, QMovie
@@ -314,8 +314,11 @@ class SearchItemWidget(QWidget):
             else:
                 self.denuvo_lbl.hide()
 
-            # Minimal ProtonDB badge
-            proton_tier = get_protondb_tier(self.app_id)
+            # Minimal ProtonDB badge (read cached value without queuing network fetch)
+            from core.ratings import _load_protondb_cache, is_protondb_fetching
+            proton_cache = _load_protondb_cache()
+            c_entry = proton_cache.get(str(self.app_id))
+            proton_tier = c_entry.get("tier") if isinstance(c_entry, dict) else None
             _tier_map = {
                 "platinum": ("PLATINUM", "#90CAF9", "rgba(33, 150, 243, 0.15)", "rgba(144, 202, 249, 0.30)"),
                 "gold":     ("GOLD",     "#FFE082", "rgba(255, 193, 7, 0.15)",   "rgba(255, 224, 130, 0.30)"),
@@ -325,6 +328,7 @@ class SearchItemWidget(QWidget):
                 "native":   ("NATIVE",   "#A5D6A7", "rgba(76, 175, 80, 0.15)",   "rgba(165, 214, 167, 0.30)"),
             }
             if proton_tier and proton_tier in _tier_map:
+                self._is_fetching_proton = False
                 text, color, bg, border = _tier_map[proton_tier]
                 self.proton_badge.setText(text)
                 self.proton_badge.setStyleSheet(
@@ -332,10 +336,30 @@ class SearchItemWidget(QWidget):
                     f"border-radius: 4px; padding: 1px 6px; font-size: 9px; font-weight: bold; letter-spacing: 0.5px;"
                 )
                 self.proton_badge.show()
+            elif getattr(self, "_is_fetching_proton", False) or is_protondb_fetching(str(self.app_id)):
+                self.set_proton_fetching()
             else:
+                self._is_fetching_proton = False
                 self.proton_badge.hide()
         except Exception:
             pass
+
+    def set_proton_fetching(self) -> None:
+        """Display 'FETCHING...' badge while resolving rating in parallel."""
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self):
+                return
+        except Exception:
+            pass
+        self._is_fetching_proton = True
+        self.proton_badge.setText("FETCHING...")
+        self.proton_badge.setStyleSheet(
+            "color: #B0BEC5; background-color: rgba(255, 255, 255, 0.08); "
+            "border: 1px solid rgba(255, 255, 255, 0.20); "
+            "border-radius: 4px; padding: 1px 6px; font-size: 9px; font-weight: bold; letter-spacing: 0.5px;"
+        )
+        self.proton_badge.show()
 
     def set_image(self, pixmap: QPixmap) -> None:
         if pixmap and not pixmap.isNull():
@@ -700,6 +724,8 @@ class FetchManifestDialog(QDialog):
         self.results_list.setIconSize(QSize(230, 108))
         self.results_list.setSpacing(5)
         self.results_list.itemDoubleClicked.connect(self.on_item_double_clicked)
+        self.results_list.itemClicked.connect(self._on_item_clicked)
+        self.results_list.currentItemChanged.connect(lambda cur, _prev: self._on_item_clicked(cur) if cur else None)
         games_layout.addWidget(self.results_list)
 
 
@@ -1722,6 +1748,7 @@ class FetchManifestDialog(QDialog):
                 self.status_label.setText("Fetch cancelled.")
                 return
 
+        self._discovered_branches = branches or {"public": {}}
         self._current_selected_branch = selected_branch
         self.settings.setValue(f"selected_branch/{app_id}", selected_branch)
         self._toggle_inputs(False)
@@ -1732,7 +1759,51 @@ class FetchManifestDialog(QDialog):
         worker.finished.connect(self.on_download_finished)
         worker.error.connect(self.on_task_error)
 
+    def _on_item_clicked(self, item):
+        if not item:
+            return
+        app_id = item.data(Qt.ItemDataRole.UserRole)
+        if not app_id:
+            return
+        widget = self.results_list.itemWidget(item)
+        if not widget or not hasattr(widget, "set_proton_fetching"):
+            return
+
+        from core.ratings import _load_protondb_cache
+        cache = _load_protondb_cache()
+        if str(app_id) in cache:
+            widget.update_ratings()
+            return
+
+        widget.set_proton_fetching()
+
+        def _worker():
+            try:
+                import requests
+                from core.ratings import _save_protondb_entry
+                url = f"https://www.protondb.com/api/v1/reports/summaries/{app_id}.json"
+                resp = requests.get(url, timeout=10)
+                tier = "unknown"
+                ok = False
+                if resp.status_code == 200:
+                    tier = resp.json().get("tier", "unknown").lower()
+                    ok = True
+                _save_protondb_entry(str(app_id), tier, ok)
+            except Exception as e:
+                logger.debug(f"ProtonDB on-demand fetch failed for {app_id}: {e}")
+
+            from PyQt6.QtCore import QTimer
+            def _finish(w=widget):
+                if w:
+                    w._is_fetching_proton = False
+                    w.update_ratings()
+            QTimer.singleShot(0, _finish)
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
     def on_item_double_clicked(self, item):
+        self._on_item_clicked(item)
         # Cancel any active background update checks to free up the Steam connection
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
             try:
@@ -1859,29 +1930,65 @@ class FetchManifestDialog(QDialog):
                     (parsed_data.get("refetched_depots") or []) + getattr(self, "_last_refetched_depots", [])
                 ))
 
+                branches_dict = getattr(self, "_discovered_branches", None) or {"public": {}}
+                current_bid = parsed_data.get("buildid") or ""
+
                 depot_dialog = DepotSelectionDialog(
                     parsed_data["appid"],
                     parsed_data.get("game_name", ""),
                     depots,
                     parsed_data.get("header_url"),
-                    self.parent_window,
+                    self,
                     selected_depots=saved_selection,
                     is_single_depot=is_single,
                     missing_hubcap_depots=missing_depots,
                     missing_depots_info=combined_missing_info,
                     library_path=metadata.get("library_path"),
                     refetched_depots=combined_refetched,
+                    branch=branch,
+                    branches=branches_dict,
+                    current_build_id=current_bid,
                 )
-                if depot_dialog.exec():
-                    selected_depots = depot_dialog.get_selected_depots()
-                    selected_storage = depot_dialog.get_selected_storage()
-                    if selected_storage:
-                        metadata["library_path"] = selected_storage
+                depot_dialog.raise_()
+                depot_dialog.activateWindow()
+
+                depot_res = depot_dialog.exec()
+                if not depot_res:
+                    logger.info("User cancelled depot selection.")
+                    self.status_label.setText("Download cancelled.")
+                    return
+
+                selected_depots = depot_dialog.get_selected_depots()
+                selected_storage = depot_dialog.get_selected_storage()
+                if selected_storage:
+                    metadata["library_path"] = selected_storage
+
+                chosen_branch = depot_dialog.get_selected_branch() if hasattr(depot_dialog, "get_selected_branch") else None
+                if chosen_branch:
+                    metadata["branch"] = chosen_branch
+                    self.settings.setValue(f"selected_branch/{appid}", chosen_branch)
+
+                if hasattr(depot_dialog, "is_build_pinned") and depot_dialog.is_build_pinned():
+                    pinned_bid = depot_dialog.get_selected_build()
+                    metadata["pin_build"] = True
+                    metadata["pinned_build_id"] = pinned_bid
+                    metadata["buildid"] = pinned_bid
+                    metadata["is_rollback"] = True
+                    if appid:
+                        self.settings.setValue(f"pin_build/{appid}", True)
+                        logger.info(f"Pinned build {pinned_bid} for AppID {appid} in fetchmanifest")
+
+                if hasattr(depot_dialog, "get_manifest_overrides"):
+                    overrides = depot_dialog.get_manifest_overrides()
+                    if overrides:
+                        metadata["manifest_overrides"] = overrides
             
             if selected_depots:
                 metadata["selected_depots_list"] = selected_depots
                 metadata["game_name"] = parsed_data.get("game_name", "")
                 if appid:
+                    metadata["appid"] = str(appid)
+                    metadata["app_id"] = str(appid)
                     try:
                         import json
                         settings.setValue(

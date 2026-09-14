@@ -4,6 +4,7 @@ import os
 import tempfile
 import subprocess
 from pathlib import Path
+from typing import Optional, List, Dict, Any, Tuple
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QColor
@@ -297,6 +298,10 @@ class DepotSelectionDialog(QDialog):
         missing_depots_info=None,
         library_path=None,
         refetched_depots=None,
+        branch="public",
+        branches=None,
+        current_build_id="",
+        **kwargs,
     ):
         super().__init__(parent)
         self._depots_enriched_signal.connect(self._on_depots_enriched)
@@ -311,6 +316,17 @@ class DepotSelectionDialog(QDialog):
         self.is_single_depot = is_single_depot
         self.preferred_library_path = library_path
         self.refetched_depots = [str(d) for d in (refetched_depots or []) if str(d).strip()]
+        self.branch = str(branch or "public")
+        self.branches = dict(branches or {"public": {}})
+        self.current_build_id = str(current_build_id or "").strip()
+        if not self.current_build_id and self.depots:
+            for d_data in self.depots.values():
+                if isinstance(d_data, dict) and d_data.get("buildid"):
+                    self.current_build_id = str(d_data["buildid"]).strip()
+                    break
+        self._selected_build_id = self.current_build_id
+        self._is_build_pinned = False
+        self._manifest_overrides: Dict[str, str] = {}
         self.missing_depots_nudge_frame = None
         self.missing_depots_text_lbl = None
 
@@ -396,13 +412,88 @@ class DepotSelectionDialog(QDialog):
         )
         self.title_label = QLabel(display_title)
         self.title_label.setStyleSheet("font-size: 13pt; font-weight: bold; color: #FFFFFF;")
-
-        sub_text = "Choose download destination and options" if self.is_single_depot else "Select depots and configurations to download"
-        self.subtitle_label = QLabel(sub_text)
-        self.subtitle_label.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.588);")
-
         title_layout.addWidget(self.title_label)
-        title_layout.addWidget(self.subtitle_label)
+
+        # --- Branch & Builds Row ---
+        controls_row = QHBoxLayout()
+        controls_row.setSpacing(8)
+        controls_row.setContentsMargins(0, 4, 0, 0)
+
+        # Check saved branch if not explicitly given
+        if not self.branch or self.branch == "public":
+            try:
+                from utils.settings import get_settings
+                saved_b = get_settings().value(f"selected_branch/{self.app_id}", "", type=str)
+                if saved_b:
+                    self.branch = saved_b
+            except Exception:
+                pass
+
+        branch_list = sorted(self.branches.keys(), key=lambda k: (0 if k == "public" else 1, k)) if self.branches else ["public"]
+        if "public" not in branch_list:
+            branch_list.insert(0, "public")
+        if self.branch and self.branch not in branch_list:
+            branch_list.append(self.branch)
+
+        has_other_branches = any(b.lower() != "public" for b in branch_list)
+
+        if has_other_branches:
+            branch_lbl = QLabel("Branch:")
+            branch_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.7);")
+            controls_row.addWidget(branch_lbl)
+
+            self.branch_combo = QComboBox()
+            self.branch_combo.setFixedHeight(28)
+            self.branch_combo.setMinimumWidth(110)
+            self.branch_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: rgba(255, 255, 255, 0.06);
+                    border: 1px solid rgba(255, 255, 255, 0.16);
+                    border-radius: 6px;
+                    color: #FFFFFF;
+                    padding: 2px 10px;
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                }}
+                QComboBox:hover {{
+                    border-color: rgba(255, 255, 255, 0.3);
+                    background-color: rgba(255, 255, 255, 0.10);
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: 18px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: #1a1c23;
+                    color: #FFFFFF;
+                    selection-background-color: {self.accent_color};
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                }}
+            """)
+            self.branch_combo.addItems(branch_list)
+            if self.branch in branch_list:
+                self.branch_combo.setCurrentText(self.branch)
+            self.branch_combo.currentTextChanged.connect(self._on_branch_changed)
+            controls_row.addWidget(self.branch_combo)
+        else:
+            self.branch_combo = None
+            branch_lbl = QLabel(f"Branch: <b style='color: #FFFFFF;'>{self.branch or 'public'}</b>")
+            branch_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.7);")
+            controls_row.addWidget(branch_lbl)
+
+        controls_row.addSpacing(4)
+
+        display_bid = self.current_build_id or "Latest"
+        self.builds_btn = QPushButton(f"Build: {display_bid}")
+        self.builds_btn.setFixedHeight(28)
+        self.builds_btn.setMinimumWidth(110)
+        self.builds_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_build_btn_style()
+        self.builds_btn.clicked.connect(self._on_builds_clicked)
+        controls_row.addWidget(self.builds_btn)
+
+        controls_row.addStretch()
+        title_layout.addLayout(controls_row)
 
         header_layout.addLayout(title_layout)
         header_layout.addStretch()
@@ -1913,6 +2004,123 @@ class DepotSelectionDialog(QDialog):
     def get_selected_storage(self) -> str:
         """Returns the selected storage destination path, or None."""
         return self.selected_storage_path
+
+    def get_selected_branch(self) -> str:
+        if hasattr(self, "branch_combo") and self.branch_combo is not None:
+            return self.branch_combo.currentText().strip()
+        return getattr(self, "branch", "public") or "public"
+
+    def get_selected_build(self) -> Optional[str]:
+        return getattr(self, "_selected_build_id", None) or self.current_build_id
+
+    def is_build_pinned(self) -> bool:
+        return getattr(self, "_is_build_pinned", False)
+
+    def get_manifest_overrides(self) -> Dict[str, str]:
+        return getattr(self, "_manifest_overrides", {})
+
+    def _on_branch_changed(self, new_branch: str):
+        if not new_branch:
+            return
+        self.branch = new_branch
+        b_info = self.branches.get(new_branch)
+        if isinstance(b_info, dict) and b_info.get("buildid"):
+            new_bid = str(b_info["buildid"]).strip()
+            if new_bid:
+                self.current_build_id = new_bid
+                self._selected_build_id = new_bid
+                self.builds_btn.setText(f"Build: {new_bid}")
+                self._is_build_pinned = False
+                self._update_build_btn_style()
+
+    def _update_build_btn_style(self):
+        if getattr(self, "_is_build_pinned", False):
+            self.builds_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border: 1px solid {self.accent_color};
+                    border-radius: 6px;
+                    color: {self.accent_color};
+                    font-size: 8.5pt;
+                    font-weight: bold;
+                    padding: 2px 10px;
+                }}
+                QPushButton:hover {{
+                    background-color: rgba(255, 255, 255, 0.14);
+                }}
+            """)
+        else:
+            self.builds_btn.setStyleSheet("""
+                QPushButton {{
+                    background-color: rgba(255, 255, 255, 0.06);
+                    border: 1px solid rgba(255, 255, 255, 0.16);
+                    border-radius: 6px;
+                    color: #FFFFFF;
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                    padding: 2px 10px;
+                }}
+                QPushButton:hover {{
+                    background-color: rgba(255, 255, 255, 0.12);
+                    border-color: rgba(255, 255, 255, 0.3);
+                }}
+            """)
+
+    def _apply_build_selection(self, selected_bid: str, patch_depots: dict):
+        if not selected_bid:
+            return
+        self._selected_build_id = selected_bid
+        self.builds_btn.setText(f"Build: {selected_bid}")
+        if self.current_build_id and selected_bid == self.current_build_id:
+            self._is_build_pinned = False
+        else:
+            self._is_build_pinned = True
+        self._update_build_btn_style()
+
+        if patch_depots:
+            for did, info in patch_depots.items():
+                mid = info.get("manifest_id") if isinstance(info, dict) else str(info)
+                if mid:
+                    self._manifest_overrides[str(did)] = str(mid)
+                    if str(did) in self.depots and isinstance(self.depots[str(did)], dict):
+                        self.depots[str(did)]["manifest_id"] = str(mid)
+                    logger.info(f"[DepotSelection] Overrode depot {did} manifest to {mid} for build {selected_bid}")
+
+    def _on_builds_clicked(self):
+        from core.steamdb_scraper import ByparrManager
+        has_byparr = ByparrManager.find_byparr_dir() is not None
+
+        first_depot = next(iter(self.depots.keys())) if self.depots else str(self.app_id)
+
+        if not has_byparr:
+            from ui.dialogs.manual_manifest_dialog import ManualManifestDialog
+            dlg = ManualManifestDialog(
+                parent=self,
+                app_id=self.app_id,
+                game_name=self.game_name,
+                depots_dict=self.depots,
+                default_depot_id=first_depot,
+                current_build_id=self.current_build_id,
+                accent_color=self.accent_color,
+            )
+            if dlg.exec():
+                selected_bid, patch_depots = dlg.get_selected_build()
+                self._apply_build_selection(selected_bid, patch_depots)
+        else:
+            from ui.dialogs.build_selection_dialog import BuildSelectionDialog
+            dlg = BuildSelectionDialog(
+                parent=self,
+                app_id=self.app_id,
+                game_name=self.game_name,
+                current_build_id=self.current_build_id,
+                accent_color=self.accent_color,
+                depots_dict=self.depots,
+                default_depot_id=first_depot,
+            )
+            if dlg.exec():
+                selected_bid, patch_depots = dlg.get_selected_build()
+                self._apply_build_selection(selected_bid, patch_depots)
+
 
     def closeEvent(self, a0):
         """Ensure image fetch is cleaned up when dialog closes."""
