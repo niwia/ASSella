@@ -1025,8 +1025,8 @@ class GameManager(QObject):
             if not acf_size_available and meta_data:
                 if "game_name" in meta_data and not game_data.get("game_name"):
                     game_data["game_name"] = meta_data["game_name"]
-                if "buildid" in meta_data:
-                    game_data["buildid"] = meta_data["buildid"]
+                if meta_data.get("buildid"):
+                    game_data["buildid"] = str(meta_data["buildid"]).strip()
                 if "last_updated" in meta_data:
                     game_data["last_updated"] = meta_data["last_updated"]
                 if meta_data.get("size_on_disk", 0) > 0:

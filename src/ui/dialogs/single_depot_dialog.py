@@ -102,6 +102,8 @@ class SingleDepotSelectionDialog(QDialog):
         self.branch = str(branch or "public")
         self.branches = dict(branches or {"public": {}})
         self.current_build_id = str(current_build_id or self.single_depot_data.get("buildid") or "").strip()
+        if not self.current_build_id:
+            self.current_build_id = self._resolve_local_buildid()
         self._selected_build_id = self.current_build_id
         self._is_build_pinned = False
         self._manifest_overrides: Dict[str, str] = {}
@@ -794,6 +796,36 @@ class SingleDepotSelectionDialog(QDialog):
         if getattr(self, "branch_combo", None) is not None:
             return self.branch_combo.currentText().strip()
         return getattr(self, "branch", "public") or "public"
+
+    def _resolve_local_buildid(self) -> str:
+        """Attempt to resolve installed build ID from local appmanifest or QSettings."""
+        aid = str(getattr(self, "app_id", "") or "").strip()
+        if not aid or aid in ("0", "N/A", "unknown"):
+            return ""
+        try:
+            from core.steam_helpers import get_steam_libraries
+            from pathlib import Path
+            import re
+            for lib in get_steam_libraries():
+                acf_path = Path(lib) / "steamapps" / f"appmanifest_{aid}.acf"
+                if acf_path.is_file():
+                    with open(acf_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    m = re.search(r'"buildid"\s+"([^"]+)"', content)
+                    if m and m.group(1).strip() and m.group(1).strip() != "0":
+                        return m.group(1).strip()
+        except Exception:
+            pass
+
+        try:
+            from utils.settings import get_settings
+            s = get_settings()
+            stored = str(s.value(f"installed_buildid/{aid}", "")).strip()
+            if stored and stored.isdigit() and stored != "0":
+                return stored
+        except Exception:
+            pass
+        return ""
 
     def get_selected_build(self) -> Optional[str]:
         return getattr(self, "_selected_build_id", None) or self.current_build_id

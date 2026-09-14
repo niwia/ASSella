@@ -140,7 +140,7 @@ class SmartUpdateTask(QObject):
         self.progress.emit(f"[Smart Update] Step 2/4: Fetching live PICS data from Steam...")
         t0 = time.time()
         try:
-            pics_data = get_depot_info_from_api(int(self.appid))
+            pics_data = get_depot_info_from_api(int(self.appid), force_refresh=True)
         except Exception as e:
             logger.error(f"[SmartUpdate] PICS fetch failed for AppID {self.appid}: {e}")
             self.progress.emit(f"[Smart Update] ERROR: PICS fetch failed — {e}")

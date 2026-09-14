@@ -2106,6 +2106,7 @@ class GameLibraryDialog(QDialog):
                                     is_single_depot=(len(depots) == 1),
                                     missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
                                     missing_depots_info=parsed_data.get("missing_depots_info"),
+                                    current_build_id=str(game_data.get("buildid") or "").strip() if isinstance(game_data, dict) else "",
                                 )
                                 if depot_dialog.exec():
                                     result_holder[0] = depot_dialog.get_selected_depots()
@@ -2406,10 +2407,7 @@ class GameLibraryDialog(QDialog):
             if download_only:
                 game_data = game_data.copy()
                 game_data["_download_only"] = True
-            if status == "update_available" and not download_only:
-                self._check_hubcap_status_first(app_id, game_data, dialog, branch=branch)
-            else:
-                self._handle_download_manifest(app_id, name, game_data, dialog, branch=branch)
+            self._handle_download_manifest(app_id, name, game_data, dialog, branch=branch)
         else:
             if not download_only:
                 # For rollback builds, mark game data so we don't clear update_available
@@ -2852,6 +2850,7 @@ class GameLibraryDialog(QDialog):
                         is_single_depot=(len(depots) == 1),
                         missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
                         missing_depots_info=parsed_data.get("missing_depots_info"),
+                        current_build_id=str(game_info.get("buildid") or "").strip() if isinstance(game_info, dict) else "",
                     )
                     if depot_dialog.exec():
                         selected_depots = depot_dialog.get_selected_depots()
@@ -3348,6 +3347,7 @@ class GameLibraryDialog(QDialog):
                     is_single_depot=(len(depots) == 1),
                     missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
                     missing_depots_info=parsed_data.get("missing_depots_info"),
+                    current_build_id=str(game_data.get("buildid") or "").strip() if isinstance(game_data, dict) else "",
                 )
                 if depot_dialog.exec():
                     chosen = depot_dialog.get_selected_depots()

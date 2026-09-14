@@ -216,8 +216,9 @@ class TaskManager(QObject):
             if hasattr(st, "dl_text_2_0") and st.dl_text_2_0:
                 st.dl_text_2_0.setText("Extracting Manifest Files")
             game_name = (metadata or {}).get("game_name") or os.path.basename(zip_path)
+            appid_val = str((metadata or {}).get("appid") or "")
             st.set_stage_status("download", "in_progress")
-            st.show_active_job(game_name)
+            st.show_active_job(game_name, appid=appid_val)
 
         if self.main_window:
             self.main_window.progress_bar.setVisible(True)
@@ -636,8 +637,9 @@ class TaskManager(QObject):
             if hasattr(st, "dl_text_2_0") and st.dl_text_2_0:
                 st.dl_text_2_0.setText(action_noun)
             game_name = self.game_data.get("game_name", "Game")
+            appid_val = str(self.game_data.get("appid") or "")
             st.set_stage_status("download", "in_progress")
-            st.show_active_job(game_name)
+            st.show_active_job(game_name, appid=appid_val)
 
         self.main_window.progress_bar.setVisible(True)
         self.main_window.progress_bar.setValue(0)

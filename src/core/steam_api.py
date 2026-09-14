@@ -432,7 +432,14 @@ def get_depot_info_from_api(app_id, access_token=None, force_refresh=False):
         if not is_generic:
             has_valid_name = True
 
-    if db_data and db_data.get("depots") and has_valid_name:
+    has_manifest_gids = False
+    if db_data and db_data.get("depots"):
+        for d in db_data["depots"].values():
+            if isinstance(d, dict) and (d.get("manifest_id") or d.get("manifests")):
+                has_manifest_gids = True
+                break
+
+    if db_data and db_data.get("depots") and has_valid_name and has_manifest_gids:
         if db_data.get("hasdepotsindlc") and not db_data.get("dlcs_expanded"):
             db_data = expand_dlc_depots(db_data)
             db.upsert_app_info(app_id, db_data)

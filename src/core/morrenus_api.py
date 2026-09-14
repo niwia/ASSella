@@ -306,19 +306,6 @@ def generate_single_manifest(
         return None, err
 
 
-def generate_bundle_manifest(
-    app_id: Union[str, int], branch: str = "public"
-) -> Tuple[Optional[bytes], Optional[str]]:
-    """
-    [DEPRECATED] Generates an app manifest bundle via Hubcap API (/generate/appmanifest).
-    The upstream bundle endpoint has been decommissioned. Use generate_single_manifest instead.
-    """
-    logger.warning(
-        f"generate_bundle_manifest called for AppID {app_id}, but the bundle API endpoint is deprecated upstream."
-    )
-    return None, "Hubcap bundle API is deprecated upstream; use generate_single_manifest"
-
-
 def check_health() -> Dict:
     """
     Checks if the Hubcab API is healthy using the ISP bypass pipeline,
@@ -336,18 +323,30 @@ def check_health() -> Dict:
         return {"status": "unhealthy", "error": error_msg}
 
 
-def download_manifest(app_id, branch: str = "public") -> Tuple[Optional[str], Optional[str]]:
+def download_manifest(
+    app_id, branch: str = "public", force_update: bool = True
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Downloads a manifest zip through the ISP bypass pipeline.
+    Always attempts with ?force_update=true by default to trigger a server-side
+    refresh before serving. If that fails (e.g. server error), automatically falls
+    back to standard download without force_update as a resilient safety net.
     Returns (filepath, None) on success, or (None, error_message) on failure.
     """
     headers = _get_headers()
     if not headers:
         return None, "API Key is not set. Please set it in Settings."
 
-    url = f"{BASE_URL}/manifest/{app_id}"
-    if branch and branch != "public":
-        url += f"?branch={branch}"
+    def _build_url(with_force_update: bool) -> str:
+        url = f"{BASE_URL}/manifest/{app_id}"
+        query_parts = []
+        if branch and branch != "public":
+            query_parts.append(f"branch={branch}")
+        if with_force_update:
+            query_parts.append("force_update=true")
+        if query_parts:
+            url += "?" + "&".join(query_parts)
+        return url
 
     manifests_dir = Path(get_base_path()) / "hubcap_manifests"
     manifests_dir.mkdir(parents=True, exist_ok=True)
@@ -356,12 +355,11 @@ def download_manifest(app_id, branch: str = "public") -> Tuple[Optional[str], Op
     else:
         save_path = manifests_dir / f"accela_fetch_{app_id}.zip"
 
-    logger.info(f"Downloading manifest {app_id} to {save_path}")
+    logger.info(f"Downloading manifest {app_id} to {save_path} (force_update={force_update})")
 
     # Backup previous manifest if setting is enabled and old buildid differs
     try:
         settings = get_settings()
-        # Force save_old_manifests to False to disable backup behavior
         save_old_manifests = False
         if save_path.exists() and settings and save_old_manifests:
             old_buildid = settings.value(f"fetched_buildid/{app_id}", "", type=str) if settings else ""
@@ -375,7 +373,6 @@ def download_manifest(app_id, branch: str = "public") -> Tuple[Optional[str], Op
                 except OSError as e:
                     logger.warning(f"Failed to backup old manifest: {e}")
 
-                # Cleanup older backups to respect the limit
                 limit = settings.value("max_old_manifests", 3, type=int)
                 backups = list(manifests_dir.glob(f"accela_fetch_{app_id}_*.zip"))
                 if len(backups) > limit:
@@ -390,25 +387,50 @@ def download_manifest(app_id, branch: str = "public") -> Tuple[Optional[str], Op
     except Exception as e:
         logger.warning(f"Error during manifest backup routine: {e}")
 
+    # Primary attempt (with force_update if enabled)
+    from utils.isp_bypass import execute_hubcap_request
+    primary_url = _build_url(force_update)
     try:
-        from utils.isp_bypass import execute_hubcap_request
         r = execute_hubcap_request(
-            get_session(), "GET", url, headers=headers, stream=True, timeout=60
+            get_session(), "GET", primary_url, headers=headers, stream=True, timeout=60
         )
         r.raise_for_status()
         with open(save_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
         return str(save_path), None
+    except Exception as primary_err:
+        logger.warning(
+            f"Download manifest with force_update={force_update} failed for {app_id}: {primary_err}"
+        )
+        # If force_update was attempted and failed, try standard fallback without force_update
+        if force_update:
+            logger.info(f"Retrying download for {app_id} using standard endpoint (force_update=False)...")
+            fallback_url = _build_url(False)
+            try:
+                r = execute_hubcap_request(
+                    get_session(), "GET", fallback_url, headers=headers, stream=True, timeout=60
+                )
+                r.raise_for_status()
+                with open(save_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                return str(save_path), None
+            except Exception as fallback_err:
+                if save_path.exists():
+                    try:
+                        os.remove(save_path)
+                    except OSError:
+                        pass
+                error_msg = _handle_request_exception(fallback_err, f"Download {app_id} (fallback)")
+                return None, error_msg
 
-    except Exception as e:
-        # Cleanup partial download
         if save_path.exists():
             try:
                 os.remove(save_path)
             except OSError:
                 pass
-        error_msg = _handle_request_exception(e, f"Download {app_id}")
+        error_msg = _handle_request_exception(primary_err, f"Download {app_id}")
         return None, error_msg
 
 

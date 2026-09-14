@@ -144,7 +144,7 @@ class ActiveGameCard(QFrame):
         self.accent_color = "#C06C84"
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setMinimumHeight(70)
+        self.setMinimumHeight(84)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 12, 16, 12)
@@ -157,6 +157,14 @@ class ActiveGameCard(QFrame):
         )
         self.title_lbl.setWordWrap(True)
         lay.addWidget(self.title_lbl)
+
+        self.version_lbl = QLabel("")
+        self.version_lbl.setStyleSheet(
+            "font-size: 8.5pt; color: rgba(255, 255, 255, 0.85); background: transparent; border: none;"
+        )
+        self.version_lbl.setWordWrap(True)
+        self.version_lbl.hide()
+        lay.addWidget(self.version_lbl)
 
         self.sub_lbl = QLabel("Downloading game files...")
         self.sub_lbl.setStyleSheet(
@@ -171,6 +179,8 @@ class ActiveGameCard(QFrame):
         if accent_color:
             self.accent_color = accent_color
         self.title_lbl.setText(self.game_name)
+        self.version_lbl.setText("")
+        self.version_lbl.hide()
 
         from utils.image_fetcher import ImageFetcher
         from PyQt6.QtGui import QPixmap
@@ -180,6 +190,119 @@ class ActiveGameCard(QFrame):
             if cache_path.exists():
                 self.pixmap = QPixmap(str(cache_path))
         self.update()
+
+    def set_version_info(self, installed_build: str = "", target_build: str = "", appid: str = ""):
+        """Displays version trajectory (installed -> target) with dates cleanly formatted under the build IDs."""
+        aid = appid or self.appid
+        installed_bid = str(installed_build or "").strip()
+        target_bid = str(target_build or "").strip()
+
+        if installed_bid.lower() in ("0", "none", "unknown", "n/a"):
+            installed_bid = ""
+        if target_bid.lower() in ("0", "none", "unknown", "n/a"):
+            target_bid = ""
+
+        if not installed_bid and not target_bid:
+            self.version_lbl.setText("")
+            self.version_lbl.hide()
+            return
+
+        build_lookup = {}
+        if aid and str(aid).isdigit() and int(aid) > 0:
+            try:
+                from core.steamdb_scraper import SteamDBBuildsCache
+                cache = SteamDBBuildsCache()
+                builds = cache.get_builds(int(aid)) or []
+                for b in builds:
+                    bid_key = str(b.get("buildid", "")).strip()
+                    if bid_key:
+                        build_lookup[bid_key] = b
+            except Exception as e:
+                logger.debug(f"[ActiveGameCard] Could not load SteamDB cache for {aid}: {e}")
+
+        def _get_build_date(bid: str) -> str:
+            if not bid:
+                return ""
+            entry = build_lookup.get(bid)
+            if entry and entry.get("date"):
+                return str(entry["date"]).strip()
+            # If not in SteamDB cache, try PICS branches timeupdated
+            if aid and str(aid).isdigit() and int(aid) > 0:
+                try:
+                    from core.steam_api import get_depot_info_from_api
+                    from datetime import datetime, timezone
+                    p_info = get_depot_info_from_api(int(aid))
+                    if p_info and "branches" in p_info:
+                        for b_data in p_info["branches"].values():
+                            if isinstance(b_data, dict) and str(b_data.get("buildid")) == str(bid):
+                                tu = b_data.get("timeupdated")
+                                if tu:
+                                    return datetime.fromtimestamp(int(tu), tz=timezone.utc).strftime("%-d %B %Y")
+                except Exception:
+                    pass
+            return ""
+
+        from_date = _get_build_date(installed_bid)
+        to_date = _get_build_date(target_bid)
+
+        ac = self.accent_color or "#C06C84"
+        arrow_html = f' <span style="color: {ac}; font-weight: bold; font-size: 9pt;">➔</span> '
+
+        if installed_bid and target_bid and installed_bid != target_bid:
+            build_line = (
+                f'<span style="color: rgba(255, 255, 255, 0.85); font-weight: 700; font-size: 9.5pt;">{installed_bid}</span>'
+                f'{arrow_html}'
+                f'<span style="color: #FFFFFF; font-weight: 700; font-size: 9.5pt;">{target_bid}</span>'
+            )
+            if from_date and to_date:
+                date_line = (
+                    f'<span style="color: rgba(255, 255, 255, 0.55); font-size: 7.5pt;">{from_date}</span>'
+                    f'<span style="color: rgba(255, 255, 255, 0.3); font-size: 7.5pt;"> ➔ </span>'
+                    f'<span style="color: rgba(255, 255, 255, 0.75); font-size: 7.5pt;">{to_date}</span>'
+                )
+                html = f"{build_line}<br/>{date_line}"
+                tip = f"Updating:\nFrom: Build {installed_bid} ({from_date})\nTo: Build {target_bid} ({to_date})"
+            elif to_date:
+                date_line = f'<span style="color: rgba(255, 255, 255, 0.65); font-size: 7.5pt;">Target released: {to_date}</span>'
+                html = f"{build_line}<br/>{date_line}"
+                tip = f"Updating: Build {installed_bid} ➔ Build {target_bid} ({to_date})"
+            elif from_date:
+                date_line = f'<span style="color: rgba(255, 255, 255, 0.65); font-size: 7.5pt;">Installed: {from_date}</span>'
+                html = f"{build_line}<br/>{date_line}"
+                tip = f"Updating: Build {installed_bid} ({from_date}) ➔ Build {target_bid}"
+            else:
+                html = build_line
+                tip = f"Updating: Build {installed_bid} ➔ Build {target_bid}"
+
+        elif target_bid:
+            build_line = (
+                f'<span style="color: rgba(255, 255, 255, 0.75); font-size: 8.5pt;">Target Build: </span>'
+                f'<span style="color: #FFFFFF; font-weight: 700; font-size: 9.5pt;">{target_bid}</span>'
+            )
+            if to_date:
+                date_line = f'<span style="color: rgba(255, 255, 255, 0.65); font-size: 7.5pt;">Released: {to_date}</span>'
+                html = f"{build_line}<br/>{date_line}"
+                tip = f"Target Build: {target_bid} ({to_date})"
+            else:
+                html = build_line
+                tip = f"Target Build: {target_bid}"
+
+        else:
+            build_line = (
+                f'<span style="color: rgba(255, 255, 255, 0.75); font-size: 8.5pt;">Installed Build: </span>'
+                f'<span style="color: #FFFFFF; font-weight: 700; font-size: 9.5pt;">{installed_bid}</span>'
+            )
+            if from_date:
+                date_line = f'<span style="color: rgba(255, 255, 255, 0.65); font-size: 7.5pt;">Installed: {from_date}</span>'
+                html = f"{build_line}<br/>{date_line}"
+                tip = f"Installed Build: {installed_bid} ({from_date})"
+            else:
+                html = build_line
+                tip = f"Installed Build: {installed_bid}"
+
+        self.version_lbl.setText(html)
+        self.version_lbl.setToolTip(tip)
+        self.version_lbl.show()
 
     def set_sub_status(self, text: str, is_warning: bool = False):
         self.sub_lbl.setText(text)
@@ -867,6 +990,75 @@ class SimplifiedTerminalWidget(QWidget):
         accent = getattr(self.main_window, "accent_color", "#C06C84") or "#C06C84"
         if hasattr(self, "active_game_card") and self.active_game_card:
             self.active_game_card.set_game(appid, game_name, accent)
+
+            # Resolve installed and target build IDs
+            installed_bid = ""
+            target_bid = ""
+
+            tm = getattr(self.main_window, "task_manager", None)
+            gd = getattr(tm, "game_data", {}) or {} if tm else {}
+            meta = getattr(tm, "current_job_metadata", {}) or {} if tm else {}
+
+            target_candidates = [
+                meta.get("pinned_build_id"),
+                meta.get("target_buildid"),
+                meta.get("buildid"),
+                gd.get("target_buildid"),
+                gd.get("branch_buildid"),
+                gd.get("buildid"),
+            ]
+            for cand in target_candidates:
+                if cand and str(cand).isdigit() and str(cand) != "0":
+                    target_bid = str(cand).strip()
+                    break
+
+            installed_candidates = [
+                meta.get("installed_buildid"),
+                meta.get("current_buildid"),
+                gd.get("installed_buildid"),
+            ]
+            for cand in installed_candidates:
+                if cand and str(cand).isdigit() and str(cand) != "0":
+                    installed_bid = str(cand).strip()
+                    break
+
+            if not installed_bid and appid and appid not in ("0", "unknown", "N/A", "Workshop"):
+                settings = getattr(self.main_window, "settings", None)
+                if settings:
+                    branch = meta.get("branch") or gd.get("branch") or "public"
+                    if branch and branch != "public":
+                        saved = settings.value(f"installed_buildid/{appid}/{branch}", "", type=str)
+                        if saved and str(saved).isdigit() and str(saved) != "0":
+                            installed_bid = str(saved).strip()
+                    if not installed_bid:
+                        saved = settings.value(f"installed_buildid/{appid}", "", type=str)
+                        if saved and str(saved).isdigit() and str(saved) != "0":
+                            installed_bid = str(saved).strip()
+
+                if not installed_bid:
+                    gm = getattr(self.main_window, "game_manager", None)
+                    if gm and hasattr(gm, "games") and isinstance(gm.games, dict):
+                        g_info = gm.games.get(str(appid))
+                        if g_info and isinstance(g_info, dict):
+                            g_bid = g_info.get("buildid")
+                            if g_bid and str(g_bid).isdigit() and str(g_bid) != "0":
+                                installed_bid = str(g_bid).strip()
+
+                if not installed_bid:
+                    try:
+                        from core.steam_helpers import get_steam_libraries
+                        for lib in get_steam_libraries():
+                            acf_p = os.path.join(lib, "steamapps", f"appmanifest_{appid}.acf")
+                            if os.path.exists(acf_p):
+                                with open(acf_p, "r", encoding="utf-8", errors="ignore") as f:
+                                    m = re.search(r'"buildid"\s+"([^"]+)"', f.read())
+                                    if m and m.group(1).isdigit() and m.group(1) != "0":
+                                        installed_bid = m.group(1).strip()
+                                        break
+                    except Exception:
+                        pass
+
+            self.active_game_card.set_version_info(installed_bid, target_bid, appid)
 
         self.layout.setCurrentIndex(1)
         # Hide FABs while active — they live inside panel_mid (idle-only view)

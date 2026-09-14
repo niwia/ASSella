@@ -100,6 +100,7 @@ class StatusPagerWidget(QFrame):
         """Revert broadcast back to regular log stream and default styling."""
         self._critical_warning_active = False
         self._broadcast_active = False
+        self.label.setStyleSheet("")
         self.update_style()
         self.set_status("SYSTEM READY · DRAG AND DROP ZIP TO INSTALL", force=True)
 
@@ -112,6 +113,7 @@ class StatusPagerWidget(QFrame):
         if is_warning:
             self.label.setStyleSheet("color: #FFB84D; font-size: 12px; font-weight: bold; border: none; background: transparent;")
         elif not self._broadcast_active:
+            self.label.setStyleSheet("")
             self.update_style()
 
     @pyqtSlot(str)
