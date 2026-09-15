@@ -3025,6 +3025,10 @@ class GameLibraryDialog(QDialog):
             # Wipe SLS only: remove from config + .DepotDownloader, leave files intact
             if c_wipe_sls_only:
                 success, err = self._wipe_sls_only(game_data)
+                if success and self.game_manager:
+                    appid = str(game_data.get("appid", ""))
+                    if appid:
+                        self.game_manager.remove_game(appid)
             else:
                 success, err = self.game_manager.uninstall_game(
                     game_data, remove_compatdata=c_data, remove_saves=c_saves,
@@ -3059,12 +3063,59 @@ class GameLibraryDialog(QDialog):
         saves, achievements, and Proton prefix 100% intact.
         """
         import shutil
+        import re
         from pathlib import Path
-        appid = str(game_data.get("appid", ""))
+        appid = str(game_data.get("appid", "")).strip()
         install_path = game_data.get("install_path", "")
         errors = []
 
-        # 1. SLSsteam config cleanups (AdditionalApps, FakeAppIds, AppTokens)
+        # 1. Discover all associated DLC AppIDs and Depot IDs
+        target_ids = {appid} if appid and appid not in ("0", "N/A", "unknown") else set()
+        dlc_ids = set()
+        depot_ids = set()
+
+        try:
+            from utils.yaml_config_manager import get_user_config_path, get_dlc_data
+            cfg_p = get_user_config_path()
+            if cfg_p.exists() and appid:
+                sls_dlcs = get_dlc_data(cfg_p, appid)
+                if sls_dlcs:
+                    for d_id in sls_dlcs.keys():
+                        if str(d_id).strip().isdigit():
+                            dlc_ids.add(str(d_id).strip())
+        except Exception as e:
+            logger.debug(f"Could not read DlcData for AppID {appid}: {e}")
+
+        try:
+            from utils.dlc_helpers import get_all_dlcs_for_app
+            known_dlcs = get_all_dlcs_for_app(appid, game_data, allow_network=True)
+            if known_dlcs:
+                for d_entry in known_dlcs:
+                    did = str(d_entry.get("dlc_appid", "")).strip()
+                    if did.isdigit():
+                        dlc_ids.add(did)
+        except Exception as e:
+            logger.debug(f"Could not fetch known DLCs for AppID {appid}: {e}")
+
+        try:
+            from utils.helpers import get_base_path
+            depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+            if depot_file.exists():
+                for line in depot_file.read_text().splitlines():
+                    parts = line.split(":")
+                    if parts and parts[0].strip().isdigit():
+                        depot_ids.add(parts[0].strip())
+        except Exception as e:
+            logger.debug(f"Could not read depot IDs from {appid}.depot: {e}")
+
+        target_ids.update(dlc_ids)
+        target_ids.update(depot_ids)
+        target_ids.discard("")
+        target_ids.discard("0")
+        target_ids.discard("N/A")
+        target_ids.discard("unknown")
+
+        # 2. SLSsteam config cleanups
         try:
             from utils.yaml_config_manager import (
                 get_user_config_path,
@@ -3072,29 +3123,60 @@ class GameLibraryDialog(QDialog):
                 remove_fake_app_id,
                 remove_app_token,
                 remove_launch_option,
+                remove_dlc_data,
+                _remove_entry_from_section,
             )
             config_path = get_user_config_path()
             if config_path.exists():
-                remove_additional_app(config_path, appid)
-                remove_fake_app_id(config_path, appid)
-                remove_app_token(config_path, appid)
-                remove_launch_option(config_path, appid)
-                from utils.yaml_config_manager import remove_dlc_data
-                remove_dlc_data(config_path, str(appid))
-                logger.info(f"I bought the game: Removed AppID {appid} from SLS AdditionalApps, FakeAppIds, AppTokens, LaunchOptions, and DlcData")
+                for tid in target_ids:
+                    remove_additional_app(config_path, tid)
+                    remove_fake_app_id(config_path, tid)
+                    remove_app_token(config_path, tid)
+                    remove_launch_option(config_path, tid)
+
+                if appid:
+                    remove_dlc_data(config_path, appid)
+
+                for sec in (
+                    "GameTitles",
+                    "ManifestIds",
+                    "DepotBlacklist",
+                    "CDKeys",
+                    "FakeOffline",
+                    "SubscriptionTimestamps",
+                    "DenuvoGames",
+                ):
+                    for tid in target_ids:
+                        pattern = re.compile(
+                            rf"^[ \t]*['\"]?{re.escape(str(tid))}['\"]?[ \t]*(?::|$)[\s\S]*?$",
+                            re.MULTILINE,
+                        )
+                        _remove_entry_from_section(
+                            config_path,
+                            sec,
+                            pattern,
+                            f"Removed {tid} from {sec}",
+                            f"Failed to remove {tid} from {sec}: {{e}}",
+                        )
+
+                logger.info(
+                    f"I bought the game: Removed AppID {appid} and related IDs {target_ids} from SLS config"
+                )
 
             import platform
             if platform.system() == "Linux":
                 try:
                     from core.steam_helpers import slssteam_api_send
-                    slssteam_api_send(f"uninstall|{appid}")
+                    for aid in ({appid} | dlc_ids):
+                        if aid and aid.isdigit():
+                            slssteam_api_send(f"uninstall|{aid}")
                 except Exception as api_err:
                     logger.warning(f"Failed to send SLSsteam uninstall API trigger: {api_err}")
         except Exception as e:
             logger.error(f"Error cleaning SLS config for {appid}: {e}", exc_info=True)
             errors.append(f"SLS config: {e}")
 
-        # 2. Restore original EOS binaries and remove EOS proxy (if applied)
+        # 3. Restore original EOS binaries and remove EOS proxy (if applied)
         if install_path and os.path.isdir(install_path):
             try:
                 from utils.eos_detector import EOSDetector
@@ -3106,38 +3188,88 @@ class GameLibraryDialog(QDialog):
                 logger.error(f"Error removing EOS proxy for {appid}: {e}", exc_info=True)
                 errors.append(f"EOS proxy: {e}")
 
-        # 3. Remove .DepotDownloader folder (leave game files intact)
+        # 4. Restore Goldberg emulator backups (if applied)
         if install_path and os.path.isdir(install_path):
-            ddm = os.path.join(install_path, ".DepotDownloader")
-            if os.path.exists(ddm):
-                try:
-                    shutil.rmtree(ddm)
-                    logger.info(f"I bought the game: Removed .DepotDownloader from {install_path}")
-                except Exception as e:
-                    logger.error(f"Error removing .DepotDownloader: {e}")
-                    errors.append(f".DepotDownloader: {e}")
+            try:
+                if GameLibraryDialog._is_goldberg_applied(install_path):
+                    for root, _, files in os.walk(install_path):
+                        if any(f.lower().endswith((".dll.valve", ".so.valve")) for f in files):
+                            st_dir = os.path.join(root, "steam_settings")
+                            if os.path.isdir(st_dir):
+                                shutil.rmtree(st_dir, ignore_errors=True)
+                            aid_txt = os.path.join(root, "steam_appid.txt")
+                            if os.path.exists(aid_txt):
+                                try:
+                                    os.remove(aid_txt)
+                                except Exception:
+                                    pass
+                            for fname in files:
+                                if fname.lower().endswith((".dll.valve", ".so.valve")):
+                                    orig_name = fname[:-6]
+                                    bak_path = os.path.join(root, fname)
+                                    orig_path = os.path.join(root, orig_name)
+                                    if os.path.exists(orig_path):
+                                        try:
+                                            os.remove(orig_path)
+                                        except Exception:
+                                            pass
+                                    try:
+                                        os.rename(bak_path, orig_path)
+                                        logger.info(f"I bought the game: Restored Goldberg backup {orig_name} in {root}")
+                                    except Exception as r_err:
+                                        logger.warning(f"Failed to restore {bak_path}: {r_err}")
+            except Exception as gb_err:
+                logger.error(f"Error restoring Goldberg backups for {appid}: {gb_err}")
+                errors.append(f"Goldberg restore: {gb_err}")
 
-        # 4. Remove .depot tracking file
+        # 5. Remove .DepotDownloader and .ACCELA folders (leave game files intact)
+        if install_path and os.path.isdir(install_path):
+            for marker_name in (".DepotDownloader", ".ACCELA"):
+                marker_path = os.path.join(install_path, marker_name)
+                if os.path.exists(marker_path):
+                    try:
+                        shutil.rmtree(marker_path)
+                        logger.info(f"I bought the game: Removed {marker_name} from {install_path}")
+                    except Exception as e:
+                        logger.error(f"Error removing {marker_name}: {e}")
+                        errors.append(f"{marker_name}: {e}")
+
+        # 6. Remove .depot tracking file and custom depot definitions
         try:
             from utils.helpers import get_base_path
             depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
             if depot_file.exists():
                 depot_file.unlink()
                 logger.info(f"I bought the game: Removed depot file {depot_file}")
+            custom_depot = Path(get_base_path()) / "depots" / f"{appid}_custom.json"
+            if custom_depot.exists():
+                custom_depot.unlink()
         except Exception as e:
-            logger.error(f"Error removing depot file for {appid}: {e}")
+            logger.error(f"Error removing depot files for {appid}: {e}")
             errors.append(f".depot tracking: {e}")
 
-        # 5. Clean up ACCELA settings / cached flags for this appid
+        # 7. Clear QSettings branch, build, and manifest cache keys
         try:
             from utils.settings import get_settings
             settings = get_settings()
-            settings.remove(f"fetched_buildid/{appid}")
-            settings.remove(f"manifest_is_fresh/{appid}")
-            settings.remove(f"latest_steam_manifest_id/{appid}")
-            settings.remove(f"dlc_only_mode/{appid}")
-        except Exception as e:
-            logger.debug(f"Non-critical settings cleanup error for {appid}: {e}")
+            for tid in target_ids:
+                for key in (
+                    f"manifest_is_fresh/{tid}",
+                    f"fetched_manifest_id/{tid}",
+                    f"latest_steam_manifest_id/{tid}",
+                    f"installed_branch/{tid}",
+                    f"selected_branch/{tid}",
+                    f"installed_buildid/{tid}",
+                    f"fetched_buildid/{tid}",
+                    f"pin_build/{tid}",
+                    f"exclude_from_update_all/{tid}",
+                    f"auto_update_manifest/{tid}",
+                    f"dlc_only_mode/{tid}",
+                    f"depot_selection/{tid}",
+                ):
+                    settings.remove(key)
+        except Exception as _set_err:
+            logger.debug(f"Failed to clear settings keys for appid {appid}: {_set_err}")
 
         if errors:
             return False, "; ".join(errors)

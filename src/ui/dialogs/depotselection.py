@@ -543,6 +543,21 @@ class DepotSelectionDialog(QDialog):
             if self._settings else False
         )
 
+        # Check if saved depot selections exist from previous sessions
+        if self.selected_depots is None and self._settings:
+            saved_val = self._settings.value(f"depot_selection/{self.app_id}", "", type=str)
+            if saved_val:
+                try:
+                    import json
+                    saved_data = json.loads(saved_val)
+                    if saved_data.get("selected"):
+                        self.selected_depots = saved_data["selected"]
+                except Exception:
+                    pass
+
+        self._has_saved_selection = bool(self.selected_depots is not None and len(self.selected_depots) > 0)
+        self._user_interacted = False
+
         content_widget = QVBoxLayout()
         content_widget.setContentsMargins(10, 0, 10, 0)
 
@@ -1057,7 +1072,7 @@ class DepotSelectionDialog(QDialog):
         )
         if (needs_enrichment or self._dlc_only_mode) and self.app_id and str(self.app_id) not in ("0", "N/A", "unknown"):
             self._start_enrichment_async()
-            if self._dlc_only_mode:
+            if self._dlc_only_mode and not self._has_saved_selection and not self._user_interacted:
                 self._apply_dlc_auto_selection()
 
     def _refresh_missing_depots_banner(self):
@@ -1388,7 +1403,7 @@ class DepotSelectionDialog(QDialog):
                             if hasattr(size_item, "sort_value"):
                                 size_item.sort_value = int(info.get("size_bytes") or 0)
 
-        if getattr(self, "_dlc_only_mode", False):
+        if getattr(self, "_dlc_only_mode", False) and not getattr(self, "_has_saved_selection", False) and not getattr(self, "_user_interacted", False):
             self._apply_dlc_auto_selection()
 
     def _apply_dlc_auto_selection(self):
@@ -1401,6 +1416,8 @@ class DepotSelectionDialog(QDialog):
         4. If total DLC count < 64, auto-select DLC depots with size > 1024 bytes (skip stubs <= 1KB).
         """
         if not getattr(self, "_dlc_only_mode", False):
+            return
+        if getattr(self, "_has_saved_selection", False) or getattr(self, "_user_interacted", False):
             return
 
         from utils.dlc_helpers import is_base_game_main_depot
@@ -1728,6 +1745,8 @@ class DepotSelectionDialog(QDialog):
 
         # Toggle the checkbox in the first column
         id_item.setCheckState(new_state)
+        self._user_interacted = True
+        self._has_saved_selection = True
 
         if modifiers == Qt.KeyboardModifier.ShiftModifier:
             if self.anchor_row == -1:
@@ -1751,6 +1770,8 @@ class DepotSelectionDialog(QDialog):
             self.anchor_row = row
 
     def _toggle_all_checkboxes(self, check=True):
+        self._user_interacted = True
+        self._has_saved_selection = True
         state = Qt.CheckState.Checked if check else Qt.CheckState.Unchecked
         self.table_widget.blockSignals(True)
         for i in range(self.table_widget.rowCount()):
@@ -1768,6 +1789,8 @@ class DepotSelectionDialog(QDialog):
 
     def _select_platform(self, platform: str):
         """Smart select depots matching a platform (linux/windows), including shared depots and filtering out bonus media/32-bit."""
+        self._user_interacted = True
+        self._has_saved_selection = True
         smart_depots = set(get_smart_default_depots(self.depots, target_platform=platform))
 
         self.table_widget.blockSignals(True)
@@ -1948,7 +1971,8 @@ class DepotSelectionDialog(QDialog):
 
         if self._dlc_only_mode:
             self._start_enrichment_async(force=True)
-            self._apply_dlc_auto_selection()
+            if not getattr(self, "_has_saved_selection", False) and not getattr(self, "_user_interacted", False):
+                self._apply_dlc_auto_selection()
         else:
             self._select_platform("windows")
 
