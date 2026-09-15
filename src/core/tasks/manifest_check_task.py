@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from utils.branch_helpers import resolve_branch_manifest_gid
 from utils.helpers import get_base_path
 from utils.settings import get_settings
 
@@ -484,7 +485,8 @@ class ManifestCheckTask(QObject):
         Check if a game has an update available using pre-fetched batched data.
 
         This method uses the results from a batched API call to determine if a game
-        has an update, comparing the saved manifest ID with the current public manifest ID.
+        has an update, comparing the saved manifest ID with the current manifest ID on the
+        branch the user has selected for the game (selected_branch/{appid}, default public).
 
         Args:
             game_data: Dictionary containing game information
@@ -557,7 +559,8 @@ class ManifestCheckTask(QObject):
             # Branch build IDs can increment for metadata-only pushes that don't
             # change depot content, so we never short-circuit on build ID alone.
             settings = get_settings()
-            selected_branch = settings.value(f"selected_branch/{appid}", "public", type=str)
+            from core.morrenus_api import get_selected_branch
+            selected_branch = get_selected_branch(appid)
             branch_info = steam_client_data.get("branches", {}).get(selected_branch, {})
             branch_buildid = str(branch_info.get("buildid", "")) if isinstance(branch_info, dict) else ""
             
@@ -631,6 +634,10 @@ class ManifestCheckTask(QObject):
                 try:
                     # 1. Try in base game depots
                     depots = steam_client_data.get("depots", {})
+                    # Depots owned by the base app must resolve on the selected branch;
+                    # depots that live in a DLC app (hasdepotsindlc) usually only carry
+                    # a "public" entry, so those may fall back to it.
+                    in_base_app = bool(depots) and saved_depot_id in depots
 
                     # 2. Try in DLC depots
                     if saved_depot_id not in depots:
@@ -684,14 +691,20 @@ class ManifestCheckTask(QObject):
                     current_manifest_id = None
                     if depots and saved_depot_id in depots:
                         depot_info = depots[saved_depot_id]
-                        if isinstance(depot_info, dict):
-                            branch_manifests = depot_info.get("manifests", {})
-                            if isinstance(branch_manifests, dict) and selected_branch in branch_manifests:
-                                branch_manifest_entry = branch_manifests[selected_branch]
-                                if isinstance(branch_manifest_entry, dict):
-                                    current_manifest_id = str(branch_manifest_entry.get("gid", ""))
-                            if not current_manifest_id:
-                                current_manifest_id = str(depot_info.get("manifest_id") or "")
+                        current_manifest_id = resolve_branch_manifest_gid(
+                            depot_info, selected_branch, allow_public_fallback=not in_base_app
+                        )
+                        if not current_manifest_id and in_base_app and selected_branch != "public":
+                            # The depot has no manifest on this branch, i.e. it is not part of
+                            # the branch's build. Comparing it against the public GID would
+                            # produce a false "update available" that pulls the public build.
+                            reason_msg = (
+                                f"Depot {saved_depot_id} has no manifest on branch '{selected_branch}' "
+                                f"(not part of this branch's build); skipping"
+                            )
+                            reasons.append(reason_msg)
+                            logger.debug(f"[UpdateCheck {appid}] {reason_msg}")
+                            continue
 
                     # 3. Fallback: Parse from cached Hubcap LUA file.
                     #    IMPORTANT: Only use if the LUA cache is fresh enough (≤7 days).
@@ -744,7 +757,7 @@ class ManifestCheckTask(QObject):
                             any_update_available = True
                             _depot_diffs.append((saved_depot_id, saved_manifest_id, current_manifest_id))
                     else:
-                        reason_msg = f"Steam API returned no public manifest_id for depot {saved_depot_id}"
+                        reason_msg = f"Steam API returned no manifest_id for depot {saved_depot_id} on branch '{selected_branch}'"
                         reasons.append(reason_msg)
                         logger.debug(f"[UpdateCheck {appid}] {reason_msg}")
                     
@@ -769,7 +782,7 @@ class ManifestCheckTask(QObject):
             if all_cannot_determine:
                 diag_meta["reason"] = "no_manifest_resolved"
                 logger.info(
-                    f"[UpdateCheck {appid}] Update status: cannot_determine. Reason: None of the {len(saved_depots)} saved depot(s) ({list(saved_depots.keys())}) resolved to a public manifest ID from Steam API data. Details: {'; '.join(reasons)}"
+                    f"[UpdateCheck {appid}] Update status: cannot_determine. Reason: None of the {len(saved_depots)} saved depot(s) ({list(saved_depots.keys())}) resolved to a manifest ID on branch '{selected_branch}' from Steam API data. Details: {'; '.join(reasons)}"
                 )
                 return "cannot_determine"
             diag_meta["reason"] = "manifests_match"

@@ -284,7 +284,8 @@ class ImportManager:
                 logger.info(f"[ImportManager] Injected AppToken for AppID {appid}")
 
         # Step 3: Check for existing manifest zip
-        sel_b = get_settings().value(f"selected_branch/{appid}", "public", type=str)
+        from core.morrenus_api import get_selected_branch
+        sel_b = get_selected_branch(appid)
         zip_path = self._find_manifest_zip(appid, branch=sel_b)
         if zip_path:
             logger.info(f"[ImportManager] Found existing manifest zip: {zip_path}")

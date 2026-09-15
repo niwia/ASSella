@@ -1256,6 +1256,8 @@ class GameDetailsDialogV2(QDialog):
         try:
             if not branches_dict or not isinstance(branches_dict, dict):
                 branches_dict = {"public": {"buildid": str(self.game_data.get("buildid") or "")}}
+            # Copy: the incoming dict may be a shared cache object (DB / steam_api branch cache)
+            branches_dict = dict(branches_dict)
             self._branches_dict = branches_dict
             self.branch_combo.blockSignals(True)
             self.branch_combo.clear()
@@ -1267,6 +1269,22 @@ class GameDetailsDialogV2(QDialog):
             saved_branch = self.settings.value(f"selected_branch/{self.appid}", "", type=str)
             if not saved_branch or (installed_branch and installed_branch != "public" and saved_branch == "public"):
                 saved_branch = installed_branch or "public"
+
+            # Never drop the branch the user is on. A cached/partial/failed branch
+            # lookup often yields only {"public": ...}; selecting index 0 here would
+            # persist selected_branch="public" (via _on_branch_combo_changed) and the
+            # next update would silently install the public build over a beta.
+            if saved_branch and saved_branch not in branches_dict:
+                installed_bid = self.settings.value(
+                    f"installed_buildid/{self.appid}/{saved_branch}",
+                    self.settings.value(f"installed_buildid/{self.appid}", "", type=str),
+                    type=str)
+                branches_dict[saved_branch] = {"buildid": installed_bid or ""}
+                sorted_keys.append(saved_branch)
+                logger.info(
+                    f"Branch '{saved_branch}' for {self.appid} not in fetched branch list "
+                    f"({list(branches_dict.keys())}); keeping user's selection."
+                )
             select_idx = 0
 
             for idx, b_name in enumerate(sorted_keys):
@@ -1281,8 +1299,10 @@ class GameDetailsDialogV2(QDialog):
         except Exception as e:
             logger.error(f"Error in _on_branches_loaded: {e}", exc_info=True)
             self.branch_combo.clear()
+            # Fall back to the saved branch, not "public", so the selection survives errors
+            fallback_branch = self.settings.value(f"selected_branch/{self.appid}", "", type=str) or "public"
             installed_bid = self.settings.value(f"installed_buildid/{self.appid}", str(self.game_data.get("buildid") or ""))
-            self.branch_combo.addItem(f"public ({installed_bid})" if installed_bid else "public", "public")
+            self.branch_combo.addItem(f"{fallback_branch} ({installed_bid})" if installed_bid else fallback_branch, fallback_branch)
         finally:
             self.branch_combo.blockSignals(False)
             try:
@@ -4028,7 +4048,8 @@ class GameDetailsDialogV2(QDialog):
     def _get_manifest_age(self):
         if self.appid in ("0", "N/A", "unknown"):
             return "N/A"
-        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{self.appid}.zip"
+        from core.morrenus_api import get_manifest_zip_path, get_selected_branch
+        fpath = get_manifest_zip_path(self.appid, get_selected_branch(self.appid))
         if fpath.exists():
             try:
                 return self._format_time_diff(fpath.stat().st_mtime)
@@ -4122,19 +4143,28 @@ class GameDetailsDialogV2(QDialog):
             if self.settings:
                 self.settings.setValue(f"exclude_from_update_all/{self.appid}", True)
             
-            # Smart copy/duplicate default manifest zip to specific zip
+            # Smart copy/duplicate the installed branch's manifest zip to specific zip.
+            # The pinned snapshot must come from the bundle of the branch that is
+            # actually installed — copying the public bundle for a beta install would
+            # make "Verify" on a pinned build reinstall public files.
             try:
-                from utils.helpers import get_base_path
+                from core.morrenus_api import get_manifest_zip_path
                 manifests_dir = get_base_path() / "hubcap_manifests"
                 installed_bid = self.settings.value(f"installed_buildid/{self.appid}", "") if self.settings else ""
+                installed_branch = self.settings.value(f"installed_branch/{self.appid}", "public", type=str) if self.settings else "public"
                 if installed_bid:
                     specific_zip = manifests_dir / f"accela_fetch_{self.appid}_build_{installed_bid}.zip"
                     if not specific_zip.exists():
-                        default_zip = manifests_dir / f"accela_fetch_{self.appid}.zip"
+                        default_zip = get_manifest_zip_path(self.appid, installed_branch)
                         if default_zip.exists():
                             import shutil
                             shutil.copy(default_zip, specific_zip)
-                            logger.info(f"Duplicated general manifest zip {default_zip.name} to {specific_zip.name} on pin build activation.")
+                            logger.info(f"Duplicated {default_zip.name} (branch '{installed_branch}') to {specific_zip.name} on pin build activation.")
+                        else:
+                            logger.warning(
+                                f"Pin build: no cached bundle for branch '{installed_branch}' ({default_zip.name}); "
+                                f"no pinned snapshot created."
+                            )
             except Exception as e:
                 logger.warning(f"Failed to duplicate manifest zip on pin build activation: {e}")
         else:

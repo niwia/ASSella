@@ -391,9 +391,9 @@ class GameItemWidget(QWidget):
         if self.parent_dialog and hasattr(self.parent_dialog, "_manifest_mtimes"):
             last_updated = self.parent_dialog._manifest_mtimes.get(appid)
 
-        if last_updated is None:
-            from utils.helpers import get_base_path
-            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+        if last_updated is None and morrenus_api:
+            # Look at the bundle for the branch this game is actually on
+            fpath = morrenus_api.get_manifest_zip_path(appid, morrenus_api.get_selected_branch(appid))
             if fpath.exists():
                 try:
                     last_updated = fpath.stat().st_mtime
@@ -2013,14 +2013,17 @@ class GameLibraryDialog(QDialog):
             name = game_data.get("game_name", "Unknown")
             update_status = game_data.get("update_status")
 
-            from utils.helpers import get_base_path
             from core import morrenus_api as _api
             from utils.settings import get_settings
             settings = get_settings()
 
+            # Honor the branch the user selected for this game (beta installs must
+            # not be refreshed from the public bundle).
+            branch = _api.get_selected_branch(appid)
+
             # Check local cache first
             local_path = None
-            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+            fpath = _api.get_manifest_zip_path(appid, branch)
             is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
 
             if fpath.exists() and (update_status != "update_available" or is_fresh):
@@ -2028,9 +2031,9 @@ class GameLibraryDialog(QDialog):
 
             if not local_path:
                 # Download manifest
-                fpath, error = _api.download_manifest(appid)
+                fpath, error = _api.download_manifest(appid, branch=branch)
                 if error or not fpath:
-                    logger.warning(f"Batch queue: manifest download failed for {name}: {error}")
+                    logger.warning(f"Batch queue: manifest download failed for {name} (branch={branch}): {error}")
                     return False
                 local_path = str(fpath)
                 # Manifest is fresh now
@@ -2050,6 +2053,7 @@ class GameLibraryDialog(QDialog):
                 "library_path": game_data.get("library_path"),
                 "install_path": game_data.get("install_path"),
                 "game_name": name,
+                "branch": branch,
             }
 
             if parsed_data and parsed_data.get("depots"):
@@ -2326,11 +2330,20 @@ class GameLibraryDialog(QDialog):
 
     # --- Actions ---
 
-    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog = None, download_only: bool = False, local_path_override: str = None, branch: str = "public") -> None:
-        """Trigger background manifest download and show progress."""
+    def _fetch_game_manifest(self, game_data: dict, dialog: QDialog = None, download_only: bool = False, local_path_override: str = None, branch: str = None) -> None:
+        """Trigger background manifest download and show progress.
+
+        `branch` is the Steam branch to fetch. When omitted (e.g. the "Verify Game
+        Files" context-menu action) it resolves to the branch the user has selected
+        for this game — never to "public" — so a beta install is not silently
+        replaced by the public build.
+        """
         api_key = self.settings.value("morrenus_api_key", "", type=str).strip()
         if not api_key:
             QMessageBox.critical(self, "API Key Missing", "Please configure your Hubcap API key in Settings before downloading updates/manifests.")
+            return
+        if not morrenus_api:
+            QMessageBox.critical(self, "Error", "API module missing.")
             return
 
         app_id = str(game_data.get("appid"))
@@ -2348,19 +2361,21 @@ class GameLibraryDialog(QDialog):
         name = game_data.get("game_name", "Unknown")
         status = game_data.get("update_status")
 
+        # Resolve the branch: explicit argument > the user's saved selection for this game
+        if not branch:
+            branch = morrenus_api.get_selected_branch(app_id)
+        logger.info(f"Fetching manifest for {name} ({app_id}) on branch '{branch}'")
+
         # Persist selected branch and attach to game_data
         game_data = dict(game_data)
-        game_data["branch"] = branch or "public"
-        self.settings.setValue(f"selected_branch/{app_id}", branch or "public")
+        game_data["branch"] = branch
+        self.settings.setValue(f"selected_branch/{app_id}", branch)
 
         # Flag rollback so downstream won't mark manifest as fresh
         is_rollback = local_path_override is not None
 
         # ── Local zip path (for Verify or Rollback) ─────────────────────────
-        if branch and branch != "public":
-            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{app_id}_branch_{branch}.zip"
-        else:
-            fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{app_id}.zip"
+        fpath = morrenus_api.get_manifest_zip_path(app_id, branch)
         is_fresh = self.settings.value(f"manifest_is_fresh/{app_id}", False, type=bool)
 
         local_path = None
@@ -2440,16 +2455,8 @@ class GameLibraryDialog(QDialog):
             # Merge essential fields from original game_data (install_path, etc.) into assembled data
             merged = dict(game_data)
             merged.update(assembled_game_data)
-            # Write a temp zip placeholder so _submit_job can find a path
-            import io, zipfile, tempfile, os
-            tmp_dir = get_base_path() / "hubcap_manifests"
-            if assembled_game_data.get("zip_path"):
-                tmp_path = assembled_game_data["zip_path"]
-            elif branch and branch != "public":
-                tmp_path = str(tmp_dir / f"accela_fetch_{app_id}_branch_{branch}.zip")
-            else:
-                tmp_path = str(tmp_dir / f"accela_fetch_{app_id}.zip")
             # The SmartUpdateTask already saved the zip; submit with that path
+            tmp_path = assembled_game_data.get("zip_path") or str(morrenus_api.get_manifest_zip_path(app_id, branch))
             self._submit_job(tmp_path, merged, dialog)
             self.settings.setValue(f"manifest_is_fresh/{app_id}", True)
             if assembled_game_data.get("buildid"):
@@ -2459,8 +2466,8 @@ class GameLibraryDialog(QDialog):
 
         def on_needs_full_zip(reason: str):
             logger.warning(f"[Smart Update] {name} ({app_id}) needs full zip: {reason}")
-            # Fall back to classic path transparently
-            self._handle_download_manifest(app_id, name, game_data, dialog)
+            # Fall back to classic path transparently — on the same branch
+            self._handle_download_manifest(app_id, name, game_data, dialog, branch=branch)
             if runner in self._smart_runners:
                 self._smart_runners.remove(runner)
 
@@ -2468,7 +2475,7 @@ class GameLibraryDialog(QDialog):
             logger.error(f"[Smart Update] Error for {name} ({app_id}): {err_msg}")
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Smart Update Failed", f"Smart update failed for {name}:\n{err_msg}\n\nFalling back to classic fetch.")
-            self._handle_download_manifest(app_id, name, game_data, dialog)
+            self._handle_download_manifest(app_id, name, game_data, dialog, branch=branch)
             if runner in self._smart_runners:
                 self._smart_runners.remove(runner)
 
@@ -2480,11 +2487,19 @@ class GameLibraryDialog(QDialog):
         runner.run(task.run)
 
 
-    def _handle_download_manifest(self, app_id, name, game_data, dialog, branch: str = "public"):
-        """Logic separated to flatten nesting in fetch_game_manifest."""
+    def _handle_download_manifest(self, app_id, name, game_data, dialog, branch: str = None):
+        """Logic separated to flatten nesting in fetch_game_manifest.
+
+        `branch` falls back to the branch already attached to game_data (set by
+        _fetch_game_manifest) and then to the user's saved selection, so no caller
+        can accidentally pull the public bundle for a beta install.
+        """
         if not morrenus_api:
             QMessageBox.critical(self, "Error", "API module missing.")
             return
+
+        if not branch:
+            branch = game_data.get("branch") or morrenus_api.get_selected_branch(app_id)
 
         download_only = game_data.get("_download_only", False)
 
@@ -3392,8 +3407,8 @@ class GameLibraryDialog(QDialog):
                 depot_names = []
                 for d_id in selected:
                     desc = descriptions.get(d_id, "")
-                    if not desc:
-                        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+                    if not desc and morrenus_api:
+                        fpath = morrenus_api.get_manifest_zip_path(appid, morrenus_api.get_selected_branch(appid))
                         if fpath.exists():
                              try:
                                  from core.tasks.process_zip_task import ProcessZipTask
@@ -3432,9 +3447,15 @@ class GameLibraryDialog(QDialog):
             QMessageBox.warning(self, "Error", "Invalid App ID.")
             return
 
+        if not morrenus_api:
+            QMessageBox.critical(self, "Error", "API module missing.")
+            return
+
         name = game_data.get("game_name", "Unknown")
-        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
-        
+        # Configure depots against the bundle of the branch this game is on
+        branch = morrenus_api.get_selected_branch(appid)
+        fpath = morrenus_api.get_manifest_zip_path(appid, branch)
+
         if fpath.exists():
             self._show_depot_selection_dialog(str(fpath), game_data)
         else:
@@ -3446,7 +3467,7 @@ class GameLibraryDialog(QDialog):
             self._download_progress_dialog.show()
 
             self._configure_depots_after_download = game_data
-            self.executor.submit(self._download_manifest_async, appid, game_data)
+            self.executor.submit(self._download_manifest_async, appid, game_data, branch)
 
     def _show_depot_selection_dialog(self, filepath: str, game_data: dict) -> None:
         try:

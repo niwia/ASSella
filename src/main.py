@@ -20,7 +20,7 @@ from utils.yaml_config_manager import (
 )
 from utils.version import app_version
 from core.steam_helpers import fix_greenluma_offline_mode
-from core.morrenus_api import download_manifest
+from core.morrenus_api import download_manifest, get_selected_branch
 from utils.helpers import create_font_from_settings
 
 
@@ -311,10 +311,11 @@ def main():
             def threaded_manifest_download(appid):
                 """Background thread to handle network I/O."""
                 try:
+                    branch = get_selected_branch(appid)
                     logger.info(
-                        f"Downloading manifest for AppID {appid} (Background Thread)"
+                        f"Downloading manifest for AppID {appid} on branch '{branch}' (Background Thread)"
                     )
-                    zip_file, error = download_manifest(appid)
+                    zip_file, error = download_manifest(appid, branch=branch)
                     if error:
                         logger.error(f"Failed to download manifest: {error}")
                         return

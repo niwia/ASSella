@@ -24,6 +24,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from managers.depot_key_manager import DepotKeyManager
 from core.steam_api import get_depot_info_from_api
 from core import morrenus_api
+from utils.branch_helpers import resolve_branch_manifest_gid
 from utils.helpers import get_base_path
 from utils.settings import get_settings
 
@@ -62,18 +63,13 @@ class SmartUpdateTask(QObject):
 
     @staticmethod
     def _extract_manifest_gid(manifests_dict: Optional[dict], branch: str = "public") -> Optional[str]:
-        """Extracts the manifest GID for a given branch from PICS manifests dict."""
-        if not isinstance(manifests_dict, dict):
-            return None
-        entry = manifests_dict.get(branch)
-        if entry is None and branch != "public":
-            entry = manifests_dict.get("public")
-        if isinstance(entry, dict):
-            gid = entry.get("gid")
-            return str(gid) if gid else None
-        elif isinstance(entry, (str, int)):
-            return str(entry)
-        return None
+        """Extracts the manifest GID for a given branch from PICS manifests dict.
+
+        No public fallback for beta branches: a depot without an entry for the
+        branch is not part of that branch's build, and substituting the public
+        GID would assemble a "branch" bundle that actually installs public files.
+        """
+        return resolve_branch_manifest_gid({"manifests": manifests_dict}, branch)
 
     @staticmethod
     def _extract_manifest_mapping_from_zip(zip_bytes: io.BytesIO) -> dict:
@@ -218,6 +214,11 @@ class SmartUpdateTask(QObject):
                 gid = self._extract_manifest_gid(manifests_dict, self.branch)
                 if gid:
                     target_depots[depot_id_str] = gid
+                elif self.branch != "public" and isinstance(manifests_dict, dict) and "public" in manifests_dict:
+                    logger.info(
+                        f"[SmartUpdate] Depot {depot_id_str} has no manifest on branch '{self.branch}' "
+                        f"(only {sorted(manifests_dict.keys())}); it is not part of this branch's build and will be skipped."
+                    )
 
         needed_count = len(target_depots)
         logger.info(
@@ -231,11 +232,7 @@ class SmartUpdateTask(QObject):
 
         # ── TIER 0: Local GID Cache Check (Instant 0s start with 0 API calls) ──
         # Check if an existing local zip already contains all needed target manifests with exact matching GIDs
-        manifests_dir = get_base_path() / "hubcap_manifests"
-        if self.branch and self.branch != "public":
-            potential_zip = manifests_dir / f"accela_fetch_{self.appid}_branch_{self.branch}.zip"
-        else:
-            potential_zip = manifests_dir / f"accela_fetch_{self.appid}.zip"
+        potential_zip = morrenus_api.get_manifest_zip_path(self.appid, self.branch)
 
         if potential_zip.exists() and needed_count > 0:
             try:
@@ -370,11 +367,7 @@ class SmartUpdateTask(QObject):
                     depot_info["oslist"] = pics_depot["oslist"]
             enriched_depots[depot_id] = depot_info
 
-        manifests_dir = get_base_path() / "hubcap_manifests"
-        if self.branch and self.branch != "public":
-            save_path = manifests_dir / f"accela_fetch_{self.appid}_branch_{self.branch}.zip"
-        else:
-            save_path = manifests_dir / f"accela_fetch_{self.appid}.zip"
+        save_path = morrenus_api.get_manifest_zip_path(self.appid, self.branch)
 
         game_data = {
             "appid": self.appid,
@@ -409,12 +402,7 @@ class SmartUpdateTask(QObject):
         Old manifest backup is currently disabled — only the latest is kept.
         """
         try:
-            manifests_dir = get_base_path() / "hubcap_manifests"
-            manifests_dir.mkdir(parents=True, exist_ok=True)
-            if self.branch and self.branch != "public":
-                save_path = manifests_dir / f"accela_fetch_{self.appid}_branch_{self.branch}.zip"
-            else:
-                save_path = manifests_dir / f"accela_fetch_{self.appid}.zip"
+            save_path = morrenus_api.get_manifest_zip_path(self.appid, self.branch)
 
             # Old manifest backup disabled — just overwrite
             if save_path.exists():

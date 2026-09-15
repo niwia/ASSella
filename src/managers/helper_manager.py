@@ -8,7 +8,7 @@ import re
 import logging
 from typing import List, Dict, Any, Optional
 
-from core.morrenus_api import download_manifest
+from core.morrenus_api import download_manifest, get_selected_branch
 from core.tasks.process_zip_task import ProcessZipTask
 from core.tasks.download_depots_task import DownloadDepotsTask
 from managers.cli_manager import CLITaskManager
@@ -24,9 +24,10 @@ def run_headless_helper(app_id: int, logger: logging.Logger):
     logger.info(f"Starting automated helper update for AppID: {app_id}")
     logger.info(f"==================================================")
 
-    # 1. Download manifest ZIP
-    logger.info("Downloading manifest ZIP from Hubcap API...")
-    zip_path, error = download_manifest(str(app_id))
+    # 1. Download manifest ZIP for the branch the user has selected for this game
+    branch = get_selected_branch(app_id)
+    logger.info(f"Downloading manifest ZIP from Hubcap API (branch: {branch})...")
+    zip_path, error = download_manifest(str(app_id), branch=branch)
     if error:
         logger.error(f"Failed to download manifest: {error}")
         sys.exit(1)

@@ -698,7 +698,7 @@ class DownloadDepotsTask(QObject):
                         logger.warning(f"Single manifest generation failed ({gen_err}). Falling back to bundle download...")
                         import zipfile
                         app_id = appid_str
-                        target_branch = game_data.get("branch") or settings.value(f"selected_branch/{app_id}", "public", type=str)
+                        target_branch = game_data.get("branch") or morrenus_api.get_selected_branch(app_id)
                         fpath, err = morrenus_api.download_manifest(app_id, target_branch)
                         if fpath and os.path.exists(fpath):
                             with zipfile.ZipFile(fpath, "r") as zip_ref:
@@ -731,8 +731,9 @@ class DownloadDepotsTask(QObject):
                 "-validate",
             ]
 
-            # Check selected branch
-            target_branch = game_data.get("branch") or settings.value(f"selected_branch/{appid_str}", "public", type=str)
+            # Check selected branch (falls back to the installed ACF betakey, then public)
+            from core.morrenus_api import get_selected_branch
+            target_branch = game_data.get("branch") or get_selected_branch(appid_str)
             if target_branch and target_branch != "public":
                 cmd_args.extend(["-branch", str(target_branch)])
 
