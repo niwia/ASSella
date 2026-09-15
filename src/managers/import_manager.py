@@ -424,13 +424,18 @@ class ImportManager:
     # ─────────────────────────────────────────────────────────────
 
     def _find_manifest_zip(self, appid: str, branch: str = "public") -> Optional[Path]:
-        """Find the primary manifest zip for an appid."""
+        """Find the manifest zip for an appid on the given branch.
+
+        A public bundle is never returned for a non-public branch: it carries the
+        public manifest GIDs, and treating it as "ready" would install the public
+        build under the beta label. The caller falls through to the API path,
+        which assembles a real branch bundle.
+        """
         if not self._manifests_dir.exists():
             return None
         if branch and branch != "public":
             branch_zip = self._manifests_dir / f"accela_fetch_{appid}_branch_{branch}.zip"
-            if branch_zip.exists():
-                return branch_zip
+            return branch_zip if branch_zip.exists() else None
         primary = self._manifests_dir / f"accela_fetch_{appid}.zip"
         if primary.exists():
             return primary

@@ -403,6 +403,10 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
                 merged_info["name"] = f"{dlc_name} - Depot {d_id_str}"
 
             if d_id_str not in base_depots:
+                # Mark the origin: DLC apps normally carry no beta branches of their
+                # own, so branch-aware lookups may fall back to their public manifest.
+                # Only for depots the base app does not list itself.
+                merged_info["from_dlc_app"] = dlc_id_str
                 base_depots[d_id_str] = merged_info
                 added_count += 1
             else:
