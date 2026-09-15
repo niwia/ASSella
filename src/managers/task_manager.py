@@ -232,7 +232,7 @@ class TaskManager(QObject):
         self.is_awaiting_zip_task_stop = True
         self.zip_task_runner.cleanup_complete.connect(self._on_zip_task_stopped)
 
-        worker = self.zip_task_runner.run(self.zip_task.run, zip_path)
+        worker = self.zip_task_runner.run(self.zip_task.run, zip_path, self.current_job_metadata)
         worker.finished.connect(self._on_zip_processed)
         worker.error.connect(self._handle_task_error)
 

@@ -1863,7 +1863,7 @@ class FetchManifestDialog(QDialog):
             try:
                 from core.tasks.process_zip_task import ProcessZipTask
                 zip_task = ProcessZipTask()
-                return zip_task.run(filepath)
+                return zip_task.run(filepath, metadata=metadata)
             except Exception as e:
                 logger.warning(f"Failed to pre-parse zip for depot selection: {e}", exc_info=True)
                 return None

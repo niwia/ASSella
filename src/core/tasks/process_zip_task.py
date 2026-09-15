@@ -371,6 +371,9 @@ class ProcessZipTask:
                         game_data["buildid"] = metadata["buildid"]
                     if metadata.get("is_rollback"):
                         game_data["_is_rollback"] = metadata["is_rollback"]
+                    if metadata.get("manifest_overrides"):
+                        game_data.setdefault("manifests", {}).update(metadata["manifest_overrides"])
+                        logger.info(f"[ProcessZipTask] Applied metadata manifest overrides: {metadata['manifest_overrides']}")
 
                 unfiltered_depots = game_data.get("depots", {})
 
@@ -548,7 +551,24 @@ class ProcessZipTask:
                                 except Exception as _smart_err:
                                     logger.debug(f"Smart branch manifest matching failed: {_smart_err}")
 
-                            if matched_branch:
+                            # Check if caller/user requested a specific non-public branch
+                            from core.morrenus_api import get_selected_branch
+                            user_requested_branch = (
+                                (metadata.get("branch") if metadata else None)
+                                or get_selected_branch(game_data["appid"])
+                            )
+                            if user_requested_branch and user_requested_branch != "public":
+                                game_data["branch"] = user_requested_branch
+                                logger.info(
+                                    f"[ProcessZipTask] Preserving requested non-public branch: '{user_requested_branch}' "
+                                    f"(overriding ZIP matched branch '{matched_branch or 'public'}')"
+                                )
+                                # Update buildid from branch info if available
+                                b_info = api_data.get("branches", {}).get(user_requested_branch)
+                                if isinstance(b_info, dict) and b_info.get("buildid"):
+                                    game_data["buildid"] = str(b_info["buildid"])
+                                    logger.info(f"[ProcessZipTask] Updated buildid to branch build: {game_data['buildid']}")
+                            elif matched_branch:
                                 game_data["branch"] = matched_branch
                             elif not game_data.get("branch"):
                                 # 2. Fallback to Steam PICS buildid matching
@@ -564,7 +584,6 @@ class ProcessZipTask:
                             # If still no branch resolved, fall back to what the user currently has selected in the UI, else "public"
                             if not game_data.get("branch"):
                                 try:
-                                    from core.morrenus_api import get_selected_branch
                                     sel_b = get_selected_branch(game_data['appid'])
                                     game_data["branch"] = sel_b
                                     logger.info(f"[ProcessZipTask] Branch fallback to currently selected UI branch: '{sel_b}'")
@@ -747,6 +766,10 @@ class ProcessZipTask:
 
                                 final_depot_data["oslist"] = details.get("oslist")
                                 final_depot_data["language"] = details.get("language")
+                                if details.get("manifests"):
+                                    final_depot_data["manifests"] = details["manifests"]
+                                if details.get("manifest_id"):
+                                    final_depot_data["manifest_id"] = str(details["manifest_id"])
                             else:
                                 final_description = base_description
 

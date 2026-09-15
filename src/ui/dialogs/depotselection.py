@@ -473,9 +473,9 @@ class DepotSelectionDialog(QDialog):
                 }}
             """)
             self.branch_combo.addItems(branch_list)
+            self.branch_combo.currentTextChanged.connect(self._on_branch_changed)
             if self.branch in branch_list:
                 self.branch_combo.setCurrentText(self.branch)
-            self.branch_combo.currentTextChanged.connect(self._on_branch_changed)
             controls_row.addWidget(self.branch_combo)
         else:
             self.branch_combo = None
@@ -493,6 +493,9 @@ class DepotSelectionDialog(QDialog):
         self._update_build_btn_style()
         self.builds_btn.clicked.connect(self._on_builds_clicked)
         controls_row.addWidget(self.builds_btn)
+
+        if self.branch and self.branch != "public":
+            self._on_branch_changed(self.branch)
 
         controls_row.addStretch()
         title_layout.addLayout(controls_row)
@@ -2219,14 +2222,59 @@ class DepotSelectionDialog(QDialog):
             return
         self.branch = new_branch
         b_info = self.branches.get(new_branch)
+        new_bid = ""
         if isinstance(b_info, dict) and b_info.get("buildid"):
             new_bid = str(b_info["buildid"]).strip()
             if new_bid:
                 self.current_build_id = new_bid
                 self._selected_build_id = new_bid
-                self.builds_btn.setText(f"Build: {new_bid}")
-                self._is_build_pinned = False
-                self._update_build_btn_style()
+                if hasattr(self, "builds_btn") and self.builds_btn is not None:
+                    self.builds_btn.setText(f"Build: {new_bid}")
+
+        self._is_build_pinned = (new_branch != "public")
+        if hasattr(self, "builds_btn") and self.builds_btn is not None:
+            self._update_build_btn_style()
+
+        # Update manifest overrides for the selected branch
+        from utils.branch_helpers import resolve_branch_manifest_gid
+        self._manifest_overrides.clear()
+
+        depots_source = self.depots
+        has_branch_manifests = any(
+            isinstance(d, dict) and "manifests" in d for d in self.depots.values()
+        )
+        if not has_branch_manifests and self.app_id:
+            try:
+                from core.steam_api import get_depot_info_from_api
+                pics_info = get_depot_info_from_api(self.app_id)
+                if pics_info and pics_info.get("depots"):
+                    depots_source = pics_info["depots"]
+                    for did, d_data in depots_source.items():
+                        if str(did) in self.depots and isinstance(self.depots[str(did)], dict):
+                            if "manifests" in d_data:
+                                self.depots[str(did)]["manifests"] = d_data["manifests"]
+            except Exception as e:
+                logger.debug(f"[DepotSelection] Could not fetch PICS depot info for branch manifests: {e}")
+
+        if new_branch != "public":
+            for did, d_info in depots_source.items():
+                if str(did) == str(self.app_id):
+                    continue
+                gid = resolve_branch_manifest_gid(d_info, new_branch)
+                if gid:
+                    self._manifest_overrides[str(did)] = str(gid)
+                    if str(did) in self.depots and isinstance(self.depots[str(did)], dict):
+                        self.depots[str(did)]["manifest_id"] = str(gid)
+            logger.info(f"[DepotSelection] Branch '{new_branch}' (Build {new_bid}) manifest overrides: {self._manifest_overrides}")
+        else:
+            for did, d_info in depots_source.items():
+                if str(did) == str(self.app_id):
+                    continue
+                gid = resolve_branch_manifest_gid(d_info, "public")
+                if gid:
+                    if str(did) in self.depots and isinstance(self.depots[str(did)], dict):
+                        self.depots[str(did)]["manifest_id"] = str(gid)
+            logger.info(f"[DepotSelection] Switched to public branch (Build {new_bid})")
 
     def _update_build_btn_style(self):
         if getattr(self, "_is_build_pinned", False):

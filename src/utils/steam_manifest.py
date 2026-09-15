@@ -38,10 +38,8 @@ def _build_platform_config(
     all_depots: Dict[str, Any],
     log_proton: bool,
     logger,
+    branch: Optional[str] = None,
 ) -> str:
-    if sys.platform != "linux":
-        return _EMPTY_PLATFORM_CONFIG
-
     downloading_windows_depots = False
     downloading_linux_depots = False
 
@@ -55,15 +53,24 @@ def _build_platform_config(
         elif platform == "linux":
             downloading_linux_depots = True
 
-    if downloading_windows_depots:
+    user_config_lines = []
+    if sys.platform == "linux" and downloading_windows_depots:
         if log_proton and logger:
             logger.info("Windows depots on Linux - adding Proton configuration")
-        return (
-            '\t"UserConfig"\n'
-            "\t{\n"
-            '\t\t"platform_override_dest"\t\t"linux"\n'
-            '\t\t"platform_override_source"\t\t"windows"\n'
-            "\t}\n"
+        user_config_lines.append('\t\t"platform_override_dest"\t\t"linux"')
+        user_config_lines.append('\t\t"platform_override_source"\t\t"windows"')
+
+    if branch and branch != "public":
+        user_config_lines.append(f'\t\t"betakey"\t\t"{branch}"')
+
+    sections = []
+    if user_config_lines:
+        sections.append(
+            '\t"UserConfig"\n\t{\n' + "\n".join(user_config_lines) + "\n\t}"
+        )
+
+    if sys.platform == "linux" and downloading_windows_depots:
+        sections.append(
             '\t"MountedConfig"\n'
             "\t{\n"
             '\t\t"platform_override_dest"\t\t"linux"\n'
@@ -71,10 +78,7 @@ def _build_platform_config(
             "\t}"
         )
 
-    if downloading_linux_depots:
-        return _EMPTY_PLATFORM_CONFIG
-
-    return _EMPTY_PLATFORM_CONFIG
+    return "\n".join(sections) if sections else _EMPTY_PLATFORM_CONFIG
 
 
 def _build_depots_content(
@@ -110,9 +114,15 @@ def _get_active_steam_id() -> str:
             if os.path.exists(loginusers_path):
                 with open(loginusers_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
-                m = re.search(r'"(7656119\d+)"', content)
-                if m:
-                    return m.group(1)
+                    # Find MostRecent user block: "7656119xxxxxxxx" { ... "MostRecent" "1" ... }
+                    users = re.findall(r'"(\d{17})"\s*\{([^}]+)\}', content, re.DOTALL)
+                    for steamid, block in users:
+                        if '"MostRecent"\t\t"1"' in block or '"mostrecent"\t\t"1"' in block:
+                            return steamid
+                    # Fallback to first 17-digit SteamID found
+                    m = re.search(r'"(\d{17})"', content)
+                    if m:
+                        return m.group(1)
     except Exception:
         pass
     return "76561199083839651"
@@ -132,9 +142,10 @@ def build_acf_content(
     all_manifests = game_data.get("manifests", {})
     all_depots = game_data.get("depots", {})
     steam_id = _get_active_steam_id()
+    branch = game_data.get("branch")
 
     platform_config = _build_platform_config(
-        selected_depots, all_depots, log_proton, logger
+        selected_depots, all_depots, log_proton, logger, branch=branch
     )
     depots_content = _build_depots_content(selected_depots, all_manifests, all_depots)
 
