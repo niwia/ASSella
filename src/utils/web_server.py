@@ -336,17 +336,17 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         try:
             from core import morrenus_api as _api
             from core.tasks.process_zip_task import ProcessZipTask
-            from utils.helpers import get_base_path
 
-            manifests_dir = Path(get_base_path()) / "hubcap_manifests"
-            save_path = manifests_dir / f"accela_fetch_{appid}.zip"
+            # Use the bundle for the branch the user selected for this game
+            branch = _api.get_selected_branch(appid)
+            save_path = _api.get_manifest_zip_path(appid, branch)
 
             if save_path.exists():
                 logger.info(f"Web UI: Using cached manifest ZIP for AppID {appid} at {save_path}")
                 local_path = str(save_path)
             else:
-                logger.info(f"Web UI: Preparing download (downloading manifest) for AppID {appid}...")
-                fpath, error = _api.download_manifest(appid)
+                logger.info(f"Web UI: Preparing download (downloading manifest) for AppID {appid} (branch={branch})...")
+                fpath, error = _api.download_manifest(appid, branch=branch)
                 if error or not fpath:
                     self._set_headers(status=500)
                     self.wfile.write(json.dumps({"error": error or "Failed to download manifest"}).encode("utf-8"))
@@ -485,17 +485,17 @@ class WebServerManager:
         try:
             from core import morrenus_api as _api
             from core.tasks.process_zip_task import ProcessZipTask
-            from utils.helpers import get_base_path
 
+            # Use the bundle for the branch the user selected for this game
+            branch = _api.get_selected_branch(appid)
             if not local_path:
-                manifests_dir = Path(get_base_path()) / "hubcap_manifests"
-                save_path = manifests_dir / f"accela_fetch_{appid}.zip"
+                save_path = _api.get_manifest_zip_path(appid, branch)
                 if save_path.exists():
                     logger.info(f"Web UI: Using cached manifest ZIP for AppID {appid} at {save_path}")
                     local_path = str(save_path)
                 else:
-                    logger.info(f"Web UI: Starting manifest download for AppID {appid}...")
-                    fpath, error = _api.download_manifest(appid)
+                    logger.info(f"Web UI: Starting manifest download for AppID {appid} (branch={branch})...")
+                    fpath, error = _api.download_manifest(appid, branch=branch)
                     if error or not fpath:
                         logger.warning(f"Web UI: manifest download failed for {appid}: {error}")
                         return
@@ -537,6 +537,7 @@ class WebServerManager:
                 "install_path": game.get("install_path") if game else "",
                 "game_name": game.get("game_name") if game else parsed_data.get("game_name", f"App {appid}"),
                 "selected_depots_list": selected_depots,
+                "branch": branch,
                 "from_web_ui": True,
             }
 

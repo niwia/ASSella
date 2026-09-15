@@ -564,7 +564,8 @@ class ProcessZipTask:
                             # If still no branch resolved, fall back to what the user currently has selected in the UI, else "public"
                             if not game_data.get("branch"):
                                 try:
-                                    sel_b = get_settings().value(f"selected_branch/{game_data['appid']}", "public", type=str)
+                                    from core.morrenus_api import get_selected_branch
+                                    sel_b = get_selected_branch(game_data['appid'])
                                     game_data["branch"] = sel_b
                                     logger.info(f"[ProcessZipTask] Branch fallback to currently selected UI branch: '{sel_b}'")
                                 except Exception:

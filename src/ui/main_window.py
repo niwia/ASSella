@@ -2846,7 +2846,6 @@ class MainWindow(QMainWindow):
 
         def _do_update_all():
             from pathlib import Path
-            from utils.helpers import get_base_path
             from core import morrenus_api as _api
             from utils.settings import get_settings
             from core.tasks.process_zip_task import ProcessZipTask
@@ -2863,12 +2862,8 @@ class MainWindow(QMainWindow):
                 update_status = game_data.get("update_status")
                 try:
                     local_path = None
-                    branch = settings.value(f"selected_branch/{appid}", "public", type=str)
-
-                    if branch and branch != "public":
-                        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}_branch_{branch}.zip"
-                    else:
-                        fpath = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+                    branch = _api.get_selected_branch(appid)
+                    fpath = _api.get_manifest_zip_path(appid, branch)
 
                     is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
                     if fpath.exists() and (update_status != "update_available" or is_fresh):
@@ -2932,6 +2927,7 @@ class MainWindow(QMainWindow):
                         "library_path": game_data.get("library_path"),
                         "install_path": game_data.get("install_path"),
                         "game_name": name,
+                        "branch": branch,
                     }
 
                     if parsed_data and parsed_data.get("depots"):

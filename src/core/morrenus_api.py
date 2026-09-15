@@ -323,6 +323,46 @@ def check_health() -> Dict:
         return {"status": "unhealthy", "error": error_msg}
 
 
+def get_selected_branch(app_id) -> str:
+    """
+    Returns the branch to fetch for this app:
+      1. selected_branch/{app_id} — what the user picked in the UI, when set.
+      2. installed_branch/{app_id} — the ACF "betakey" of the current install,
+         for games the user never opened the branch selector for.
+      3. "public".
+
+    Every fetch/update path that does not receive an explicit branch must go
+    through this so a game installed on a beta branch is never silently
+    refreshed from the public branch.
+    """
+    try:
+        settings = get_settings()
+        if settings:
+            selected = (settings.value(f"selected_branch/{app_id}", "", type=str) or "").strip()
+            if selected:
+                return selected
+            installed = (settings.value(f"installed_branch/{app_id}", "", type=str) or "").strip()
+            if installed:
+                return installed
+    except Exception as e:
+        logger.debug(f"Could not read selected branch for {app_id}: {e}")
+    return "public"
+
+
+def get_manifest_zip_path(app_id, branch: str = "public") -> Path:
+    """
+    Returns the local cache path of the Hubcap bundle for an app/branch pair:
+      hubcap_manifests/accela_fetch_{app_id}.zip                 (public)
+      hubcap_manifests/accela_fetch_{app_id}_branch_{branch}.zip (any other branch)
+    The hubcap_manifests directory is created if missing.
+    """
+    manifests_dir = Path(get_base_path()) / "hubcap_manifests"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    if branch and branch != "public":
+        return manifests_dir / f"accela_fetch_{app_id}_branch_{branch}.zip"
+    return manifests_dir / f"accela_fetch_{app_id}.zip"
+
+
 def download_manifest(
     app_id, branch: str = "public", force_update: bool = True
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -337,10 +377,12 @@ def download_manifest(
     if not headers:
         return None, "API Key is not set. Please set it in Settings."
 
+    branch = branch or "public"
+
     def _build_url(with_force_update: bool) -> str:
         url = f"{BASE_URL}/manifest/{app_id}"
         query_parts = []
-        if branch and branch != "public":
+        if branch != "public":
             query_parts.append(f"branch={branch}")
         if with_force_update:
             query_parts.append("force_update=true")
@@ -348,14 +390,10 @@ def download_manifest(
             url += "?" + "&".join(query_parts)
         return url
 
-    manifests_dir = Path(get_base_path()) / "hubcap_manifests"
-    manifests_dir.mkdir(parents=True, exist_ok=True)
-    if branch and branch != "public":
-        save_path = manifests_dir / f"accela_fetch_{app_id}_branch_{branch}.zip"
-    else:
-        save_path = manifests_dir / f"accela_fetch_{app_id}.zip"
+    save_path = get_manifest_zip_path(app_id, branch)
+    manifests_dir = save_path.parent
 
-    logger.info(f"Downloading manifest {app_id} to {save_path} (force_update={force_update})")
+    logger.info(f"Downloading manifest {app_id} (branch={branch}) to {save_path} (force_update={force_update})")
 
     # Backup previous manifest if setting is enabled and old buildid differs
     try:
@@ -438,6 +476,9 @@ def get_manifest_status(app_id: str) -> Dict:
     """
     Calls /api/v1/status/{app_id} to check Hubcap's manifest freshness.
     Returns dict with keys: status, needs_update, update_in_progress, file_modified, error
+
+    NOTE: this endpoint has no branch parameter — it describes the PUBLIC bundle
+    only. Do not use its needs_update / file_size to judge a beta-branch bundle.
     """
     logger.info(f"Fetching manifest status for app {app_id}")
     return _make_json_request("GET", f"/status/{app_id}")

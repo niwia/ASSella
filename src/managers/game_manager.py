@@ -2010,8 +2010,11 @@ class GameManager(QObject):
         if not appid_str.isdigit():
             return []
 
-        manifests_dir = Path(get_base_path()) / "hubcap_manifests"
-        manifest_zip = manifests_dir / f"accela_fetch_{appid_str}.zip"
+        # Prefer the bundle of the branch the game is on; fall back to the public one
+        from core import morrenus_api
+        manifest_zip = morrenus_api.get_manifest_zip_path(appid_str, morrenus_api.get_selected_branch(appid_str))
+        if not manifest_zip.exists():
+            manifest_zip = morrenus_api.get_manifest_zip_path(appid_str, "public")
         if not manifest_zip.exists():
             return []
 

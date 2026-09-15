@@ -1439,9 +1439,12 @@ class FetchManifestDialog(QDialog):
             if cached_path.exists():
                 logger.info(f"Checking updates for cached manifest {app_id} (Branch: {branch})")
 
-                # 0. Check Hubcap server freshness (free endpoint, 0 quota)
+                # 0. Check Hubcap server freshness (free endpoint, 0 quota).
+                #    /status/{app_id} only describes the PUBLIC bundle, so the size
+                #    comparison is meaningless for a branch zip (it would always differ
+                #    and force a pointless re-download every time).
                 try:
-                    status_res = morrenus_api.get_manifest_status(app_id)
+                    status_res = morrenus_api.get_manifest_status(app_id) if (not branch or branch == "public") else None
                     if isinstance(status_res, dict) and status_res.get("status") == "available":
                         hubcap_size = status_res.get("file_size")
                         local_size = cached_path.stat().st_size

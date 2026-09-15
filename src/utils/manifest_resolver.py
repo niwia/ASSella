@@ -225,8 +225,12 @@ def ensure_depot_keys_for_app(appid: str, depot_id: Optional[str] = None) -> Tup
         try:
             from core import morrenus_api
             from core.tasks.process_zip_task import ProcessZipTask
-            logger.info(f"[ManifestResolver] Requesting manifest bundle from Hubcap for AppID {appid} to acquire depot keys & live manifests...")
-            zip_path, err = morrenus_api.download_manifest(appid)
+            # Depot keys are branch-independent, but the "latest manifests" returned to
+            # callers (e.g. the "Latest Live Build" import option) must be the ones for
+            # the branch the user has selected for this game, not public.
+            branch = morrenus_api.get_selected_branch(appid)
+            logger.info(f"[ManifestResolver] Requesting manifest bundle from Hubcap for AppID {appid} (branch={branch}) to acquire depot keys & live manifests...")
+            zip_path, err = morrenus_api.download_manifest(appid, branch=branch)
             if zip_path and os.path.exists(zip_path):
                 with zipfile.ZipFile(zip_path, "r") as zf:
                     lua_files = [f for f in zf.namelist() if f.endswith(".lua")]
