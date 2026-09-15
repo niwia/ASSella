@@ -5,6 +5,8 @@ depot_utils.py — Consolidated utility for comparing and validating Hubcap mani
 import logging
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+from utils.branch_helpers import resolve_branch_manifest_gid
+
 logger = logging.getLogger(__name__)
 
 NON_DEPOT_KEYS = {
@@ -23,41 +25,30 @@ except Exception:
     BLACKLISTED_DEPOTS = set()
 
 
-def get_depot_manifest_gid(d_info: Any, branch: str = "public") -> Optional[str]:
+def get_depot_manifest_gid(d_info: Any, branch: str = "public", allow_public_fallback: bool = False) -> Optional[str]:
     """
     Extracts the manifest GID for a given branch from a Steam depot info dictionary.
+
+    The branch entry (``manifests[branch]``) always wins. ``manifest_id`` is the
+    PUBLIC GID, so it is only used for the public branch or when
+    ``allow_public_fallback`` is set (depots that live in a DLC app, which carry
+    no beta branches of their own). A base-app depot with no manifest on the
+    branch returns None — it is not part of that branch's build.
     """
-    if not isinstance(d_info, dict):
-        return None
+    return resolve_branch_manifest_gid(d_info, branch, allow_public_fallback=allow_public_fallback)
 
-    # 1. Direct manifest_id
-    mid = d_info.get("manifest_id")
-    if mid is not None and str(mid).strip():
-        return str(mid).strip()
 
-    # 2. Manifests dictionary for branch
+def _is_not_in_branch(d_info: Any, branch: str) -> bool:
+    """True when Steam lists manifests for this depot but none for `branch`
+    (and the depot is not a DLC-app depot that may use public)."""
+    if branch == "public" or not isinstance(d_info, dict):
+        return False
     manifests = d_info.get("manifests")
-    if isinstance(manifests, dict):
-        b_key = branch if branch else "public"
-        branch_entry = manifests.get(b_key)
-        if isinstance(branch_entry, dict):
-            gid = branch_entry.get("gid")
-            if gid is not None and str(gid).strip():
-                return str(gid).strip()
-        elif isinstance(branch_entry, (str, int)) and str(branch_entry).strip():
-            return str(branch_entry).strip()
-
-        # Fallback to public if specific branch not found
-        if b_key != "public" and "public" in manifests:
-            pub_entry = manifests["public"]
-            if isinstance(pub_entry, dict):
-                gid = pub_entry.get("gid")
-                if gid is not None and str(gid).strip():
-                    return str(gid).strip()
-            elif isinstance(pub_entry, (str, int)) and str(pub_entry).strip():
-                return str(pub_entry).strip()
-
-    return None
+    if not isinstance(manifests, dict) or not manifests:
+        return False
+    if d_info.get("from_dlc_app"):
+        return False
+    return branch not in manifests
 
 
 def check_hubcap_vs_steam_depots(
@@ -119,7 +110,9 @@ def check_hubcap_vs_steam_depots(
                 continue
             dinfo = api_depots.get(did) or api_depots.get(int(did))
             if dinfo and isinstance(dinfo, dict):
-                current_mid = get_depot_manifest_gid(dinfo, branch=b_key)
+                current_mid = get_depot_manifest_gid(
+                    dinfo, branch=b_key, allow_public_fallback=bool(dinfo.get("from_dlc_app"))
+                )
                 if current_mid and str(local_mid) != str(current_mid):
                     dname = dinfo.get("name") or f"Depot {did}"
                     logger.info(
@@ -149,8 +142,14 @@ def check_hubcap_vs_steam_depots(
                 continue
             if did_str in local_manifest_map:
                 continue
+            if _is_not_in_branch(dinfo, b_key):
+                # Not shipped on this branch at all — not "missing from Hubcap".
+                continue
 
-            current_mid = get_depot_manifest_gid(dinfo, branch=b_key)
+            current_mid = get_depot_manifest_gid(
+                dinfo, branch=b_key,
+                allow_public_fallback=bool(dinfo.get("from_dlc_app")) if isinstance(dinfo, dict) else False,
+            )
             dname = dinfo.get("name") or f"Depot {did_str}" if isinstance(dinfo, dict) else f"Depot {did_str}"
 
             missing_from_hubcap.append(did_str)

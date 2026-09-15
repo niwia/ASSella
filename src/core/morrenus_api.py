@@ -367,7 +367,16 @@ def download_manifest(
     app_id, branch: str = "public", force_update: bool = True
 ) -> Tuple[Optional[str], Optional[str]]:
     """
-    Downloads a manifest zip through the ISP bypass pipeline.
+    Downloads the Hubcap bundle for an app through the ISP bypass pipeline.
+
+    Hubcap's /manifest/{app_id} has NO branch parameter: it always serves the
+    public bundle (lua with depot keys + public depot manifests). The public
+    bundle is always saved to accela_fetch_{app_id}.zip. For any other branch the
+    branch bundle is then assembled client-side (see core.branch_bundle): branch
+    manifest GIDs come from Steam PICS and each differing manifest is fetched by
+    GID via /generate/manifest. The result is saved to
+    accela_fetch_{app_id}_branch_{branch}.zip and returned instead.
+
     Always attempts with ?force_update=true by default to trigger a server-side
     refresh before serving. If that fails (e.g. server error), automatically falls
     back to standard download without force_update as a resilient safety net.
@@ -381,32 +390,31 @@ def download_manifest(
 
     def _build_url(with_force_update: bool) -> str:
         url = f"{BASE_URL}/manifest/{app_id}"
-        query_parts = []
-        if branch != "public":
-            query_parts.append(f"branch={branch}")
         if with_force_update:
-            query_parts.append("force_update=true")
-        if query_parts:
-            url += "?" + "&".join(query_parts)
+            url += "?force_update=true"
         return url
 
-    save_path = get_manifest_zip_path(app_id, branch)
-    manifests_dir = save_path.parent
+    # The server only has public bundles — always cache it under the public name.
+    public_path = get_manifest_zip_path(app_id, "public")
+    manifests_dir = public_path.parent
 
-    logger.info(f"Downloading manifest {app_id} (branch={branch}) to {save_path} (force_update={force_update})")
+    logger.info(
+        f"Downloading public manifest bundle {app_id} to {public_path} "
+        f"(force_update={force_update}, target branch={branch})"
+    )
 
     # Backup previous manifest if setting is enabled and old buildid differs
     try:
         settings = get_settings()
         save_old_manifests = False
-        if save_path.exists() and settings and save_old_manifests:
+        if public_path.exists() and settings and save_old_manifests:
             old_buildid = settings.value(f"fetched_buildid/{app_id}", "", type=str) if settings else ""
             if old_buildid:
                 backup_path = manifests_dir / f"accela_fetch_{app_id}_build_{old_buildid}.zip"
                 try:
                     if backup_path.exists():
                         backup_path.unlink()
-                    os.rename(save_path, backup_path)
+                    os.rename(public_path, backup_path)
                     logger.info(f"Backed up previous manifest (build {old_buildid}) to {backup_path.name}")
                 except OSError as e:
                     logger.warning(f"Failed to backup old manifest: {e}")
@@ -425,51 +433,52 @@ def download_manifest(
     except Exception as e:
         logger.warning(f"Error during manifest backup routine: {e}")
 
-    # Primary attempt (with force_update if enabled)
     from utils.isp_bypass import execute_hubcap_request
-    primary_url = _build_url(force_update)
-    try:
+
+    def _stream_to_file(url: str) -> None:
         r = execute_hubcap_request(
-            get_session(), "GET", primary_url, headers=headers, stream=True, timeout=60
+            get_session(), "GET", url, headers=headers, stream=True, timeout=60
         )
         r.raise_for_status()
-        with open(save_path, "wb") as f:
+        with open(public_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
-        return str(save_path), None
+
+    def _cleanup_partial() -> None:
+        if public_path.exists():
+            try:
+                os.remove(public_path)
+            except OSError:
+                pass
+
+    # Primary attempt (with force_update if enabled), then the standard endpoint
+    try:
+        _stream_to_file(_build_url(force_update))
     except Exception as primary_err:
         logger.warning(
             f"Download manifest with force_update={force_update} failed for {app_id}: {primary_err}"
         )
-        # If force_update was attempted and failed, try standard fallback without force_update
-        if force_update:
-            logger.info(f"Retrying download for {app_id} using standard endpoint (force_update=False)...")
-            fallback_url = _build_url(False)
-            try:
-                r = execute_hubcap_request(
-                    get_session(), "GET", fallback_url, headers=headers, stream=True, timeout=60
-                )
-                r.raise_for_status()
-                with open(save_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                return str(save_path), None
-            except Exception as fallback_err:
-                if save_path.exists():
-                    try:
-                        os.remove(save_path)
-                    except OSError:
-                        pass
-                error_msg = _handle_request_exception(fallback_err, f"Download {app_id} (fallback)")
-                return None, error_msg
+        if not force_update:
+            _cleanup_partial()
+            return None, _handle_request_exception(primary_err, f"Download {app_id}")
+        logger.info(f"Retrying download for {app_id} using standard endpoint (force_update=False)...")
+        try:
+            _stream_to_file(_build_url(False))
+        except Exception as fallback_err:
+            _cleanup_partial()
+            return None, _handle_request_exception(fallback_err, f"Download {app_id} (fallback)")
 
-        if save_path.exists():
-            try:
-                os.remove(save_path)
-            except OSError:
-                pass
-        error_msg = _handle_request_exception(primary_err, f"Download {app_id}")
-        return None, error_msg
+    if branch == "public":
+        return str(public_path), None
+
+    # Beta branch: assemble the branch bundle from the public one + PICS + /generate/manifest
+    from core.branch_bundle import build_branch_bundle
+    branch_path = get_manifest_zip_path(app_id, branch)
+    zip_path, err = build_branch_bundle(app_id, branch, public_path, branch_path)
+    if err:
+        logger.error(f"Branch bundle assembly failed for {app_id} '{branch}': {err}")
+        return None, err
+    return zip_path, None
 
 
 def get_manifest_status(app_id: str) -> Dict:
@@ -492,6 +501,11 @@ def get_manifest_contents(app_id: Union[str, int], branch: str = "public") -> Di
     This endpoint is FREE (zero generation quota) and fast — use it as a cheap
     pre-flight check before committing to the quota-consuming /generate/manifest call.
 
+    NOTE: like /manifest/{app_id}, this endpoint has no branch parameter and always
+    describes the PUBLIC bundle (the response's "branch" is always "public"). The
+    `branch` argument is accepted for call-site symmetry only — the depot *set* is
+    what callers use, and it is the same across branches in practice.
+
     Returns a dict with:
         - zip_exists (bool): True if a bundle ZIP exists for this app.
         - manifest_count (int): Number of manifests in the bundle.
@@ -499,12 +513,8 @@ def get_manifest_contents(app_id: Union[str, int], branch: str = "public") -> Di
         - depot_ids (set[str]): Convenience set of depot IDs Hubcap currently has.
         - error (str, optional): Present on failure.
     """
-    params = {}
-    if branch and branch != "public":
-        params["branch"] = branch
-
-    logger.info(f"Fetching manifest contents for app {app_id} (branch={branch})")
-    data = _make_json_request("GET", f"/manifest/{app_id}/contents", params=params or None)
+    logger.info(f"Fetching manifest contents for app {app_id} (public bundle; requested branch={branch})")
+    data = _make_json_request("GET", f"/manifest/{app_id}/contents")
 
     if isinstance(data, dict) and "error" not in data:
         # Build a convenience set of depot_ids for O(1) membership checks

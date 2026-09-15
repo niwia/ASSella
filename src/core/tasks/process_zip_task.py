@@ -590,6 +590,35 @@ class ProcessZipTask:
                                 except Exception:
                                     game_data["branch"] = "public"
 
+                            # Branch build ID: api_data["buildid"] is always the PUBLIC build.
+                            # For any other branch use that branch's own build so the
+                            # installed/fetched build stamps and the rollback flag are right.
+                            resolved_branch = game_data.get("branch") or "public"
+                            branches_map = api_data.get("branches")
+                            if isinstance(branches_map, dict):
+                                game_data["branches"] = branches_map
+                            branch_live_bid = ""
+                            if resolved_branch != "public" and isinstance(branches_map, dict):
+                                b_entry = branches_map.get(resolved_branch)
+                                if isinstance(b_entry, dict):
+                                    branch_live_bid = str(b_entry.get("buildid") or "")
+                            if branch_live_bid:
+                                if steamdb_matched_bid:
+                                    # Re-evaluate the rollback flag against the branch build
+                                    # (it was computed against the public build above).
+                                    if not (metadata or {}).get("is_rollback"):
+                                        game_data["_is_rollback"] = bool(
+                                            steamdb_matched_bid.isdigit() and branch_live_bid.isdigit()
+                                            and int(steamdb_matched_bid) < int(branch_live_bid)
+                                        )
+                                else:
+                                    game_data["buildid"] = branch_live_bid
+                                get_settings().setValue(f"fetched_buildid/{game_data['appid']}", branch_live_bid)
+                                logger.info(
+                                    f"[ProcessZipTask] Branch '{resolved_branch}' live buildid: {branch_live_bid} "
+                                    f"(public: {api_data.get('buildid')}); package buildid={game_data.get('buildid')}"
+                                )
+
                         if api_data.get("header_url"):
                             game_data["header_url"] = api_data["header_url"]
                         if not game_data.get("game_name") and api_data.get("name"):
