@@ -4178,6 +4178,9 @@ class GameDetailsDialogV2(QDialog):
             if self.parent_window and hasattr(self.parent_window, "_update_pending_updates_ui"):
                 self.parent_window._update_pending_updates_ui()
 
+            # Immedately trigger check update for this game
+            self._on_status_btn_clicked()
+
         self._update_validate_button()
 
     def _reconstruct_manifests_from_depotcache(self):

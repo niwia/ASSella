@@ -1821,8 +1821,18 @@ class TaskManager(QObject):
                 continue
 
     def _copy_goldberg_common_files(self, target_dir: str, goldberg_src: Path):
-        """Copy steam_settings folder."""
-        src_settings = goldberg_src / "steam_settings"
+        """Copy steam_settings folder.
+        Checks for custom user template in ~/.local/share/ACCELA/steam_settings,
+        otherwise falls back to bundled Goldberg steam_settings.
+        """
+        from utils.helpers import get_base_path
+        user_custom_settings = Path(get_base_path()) / "steam_settings"
+        if user_custom_settings.exists() and user_custom_settings.is_dir():
+            src_settings = user_custom_settings
+            logger.info(f"Using custom Goldberg steam_settings from {user_custom_settings}")
+        else:
+            src_settings = goldberg_src / "steam_settings"
+
         if src_settings.exists():
             dst_settings = os.path.join(target_dir, "steam_settings")
             if os.path.exists(dst_settings):

@@ -586,6 +586,7 @@ class SettingsDialog(QDialog):
         self.filter_search_blacklist_checkbox = None
         self.hide_macos_depots_checkbox = None
         self.hide_android_depots_checkbox = None
+        self.show_hidden_depots_selector_checkbox = None
         self.achievements_checkbox = None
         self.auto_apply_goldberg_checkbox = None
         self.sls_mode_checkbox = None
@@ -1234,7 +1235,7 @@ class SettingsDialog(QDialog):
         self.tab_widget.addTab(tab, "ASSella")
 
     def _create_downloads_tab(self) -> None:
-        """Create the Downloads settings tab with General and Hide/unhide depots sub-tabs."""
+        """Create the Downloads settings tab with General and Depot selection sub-tabs."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -1431,7 +1432,7 @@ class SettingsDialog(QDialog):
         gen_layout.addStretch()
         dl_subtabs.addTab(general_widget, "General")
 
-        # ── Subtab 2: Hide/unhide depots ──
+        # ── Subtab 2: Depot selection ──
         hide_widget = QWidget()
         hide_layout = QVBoxLayout(hide_widget)
         hide_layout.setContentsMargins(0, 8, 0, 0)
@@ -1569,8 +1570,21 @@ class SettingsDialog(QDialog):
 
         hide_card_lay.addLayout(grid)
         hide_layout.addWidget(hide_card)
+
+        # ── Card 2: Depot Selection Dialog Display ──
+        sel_card, sel_card_lay = self._create_card_frame("Depot Selection Dialog Display")
+        self.show_hidden_depots_selector_checkbox = create_checkbox_setting(
+            "Show Hidden Depots section by default",
+            "show_hidden_depots_in_selector",
+            False,
+            self,
+            "When enabled, the '▾ Hidden Depots' dropdown expander and filtered depots are visible by default in the depot selection window.",
+        )
+        sel_card_lay.addWidget(self.show_hidden_depots_selector_checkbox)
+        hide_layout.addWidget(sel_card)
+
         hide_layout.addStretch()
-        dl_subtabs.addTab(hide_widget, "Hide/unhide depots")
+        dl_subtabs.addTab(hide_widget, "Depot selection")
 
         layout.addWidget(dl_subtabs)
         self.tab_widget.addTab(tab, "Downloads")
@@ -3579,6 +3593,11 @@ class SettingsDialog(QDialog):
         if hasattr(self, "hide_android_depots_checkbox") and self.hide_android_depots_checkbox is not None:
             try:
                 self.settings.setValue("hide_android_depots", self.hide_android_depots_checkbox.isChecked())
+            except RuntimeError:
+                pass
+        if hasattr(self, "show_hidden_depots_selector_checkbox") and self.show_hidden_depots_selector_checkbox is not None:
+            try:
+                self.settings.setValue("show_hidden_depots_in_selector", self.show_hidden_depots_selector_checkbox.isChecked())
             except RuntimeError:
                 pass
         if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo is not None:
