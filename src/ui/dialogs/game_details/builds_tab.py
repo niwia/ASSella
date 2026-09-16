@@ -74,8 +74,18 @@ def init_builds_tab(dialog) -> None:
     manual_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
     manual_layout.setSpacing(10)
 
-    manual_center_btn = QPushButton("Manual")
-    manual_center_btn.setFixedSize(140, 36)
+    manual_title = QLabel("SteamDB Build History Unavailable")
+    manual_title.setStyleSheet("font-size: 10.5pt; font-weight: bold; color: rgba(255, 255, 255, 0.85);")
+    manual_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    manual_layout.addWidget(manual_title)
+
+    manual_sub = QLabel("Automated patch history requires the Byparr solver.\nYou can still roll back to a specific version or download a manifest manually:")
+    manual_sub.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.5);")
+    manual_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    manual_layout.addWidget(manual_sub)
+
+    manual_center_btn = QPushButton("Manual Rollback / Manifest")
+    manual_center_btn.setFixedSize(210, 36)
     manual_center_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     from utils.color_utils import get_best_foreground_color
     dl_fg = get_best_foreground_color(dialog.accent_color)
@@ -105,8 +115,9 @@ def init_builds_tab(dialog) -> None:
 
     page_layout.addWidget(dialog.builds_center_stack, 1)
 
-    # ── Bottom 3-button bar (equal width) ──
-    bottom_row = QHBoxLayout()
+    # ── Bottom 3-button bar (wrapped in builds_bottom_bar) ──
+    dialog.builds_bottom_bar = QWidget()
+    bottom_row = QHBoxLayout(dialog.builds_bottom_bar)
     bottom_row.setContentsMargins(0, 4, 0, 0)
     bottom_row.setSpacing(8)
 
@@ -153,7 +164,14 @@ def init_builds_tab(dialog) -> None:
     bottom_row.addWidget(dialog.builds_refresh_btn)
     bottom_row.addWidget(dialog.builds_manual_btn)
     bottom_row.addWidget(dialog.builds_download_btn)
-    page_layout.addLayout(bottom_row)
+    page_layout.addWidget(dialog.builds_bottom_bar)
+
+    try:
+        from core.steamdb_scraper import ByparrManager
+        has_byparr = ByparrManager.find_byparr_dir() is not None
+    except Exception:
+        has_byparr = False
+    dialog.builds_bottom_bar.setVisible(has_byparr)
 
     dialog.stacked.addWidget(builds_page)
 
@@ -332,6 +350,8 @@ def fetch_steamdb_builds_async(dialog) -> None:
 
 
 def on_builds_loaded(dialog, builds: list) -> None:
+    from core.steamdb_scraper import ByparrManager
+    has_byparr = ByparrManager.find_byparr_dir() is not None
     dialog.builds_refresh_btn.setText("⟳  Refresh")
     dialog.builds_refresh_btn.setEnabled(True)
     dialog.builds_refresh_btn.setToolTip("")
@@ -340,21 +360,33 @@ def on_builds_loaded(dialog, builds: list) -> None:
         dialog.builds_cache.save_builds(aid, builds)
         populate_builds_cards(dialog, builds)
         dialog.builds_center_stack.setCurrentIndex(1)
+        if hasattr(dialog, "builds_bottom_bar") and dialog.builds_bottom_bar:
+            dialog.builds_bottom_bar.setVisible(True)
     elif dialog.builds_cards_layout.count() > 1:
         dialog.builds_center_stack.setCurrentIndex(1)
+        if hasattr(dialog, "builds_bottom_bar") and dialog.builds_bottom_bar:
+            dialog.builds_bottom_bar.setVisible(True)
     else:
         dialog.builds_center_stack.setCurrentIndex(2)
+        if hasattr(dialog, "builds_bottom_bar") and dialog.builds_bottom_bar:
+            dialog.builds_bottom_bar.setVisible(has_byparr)
 
 
 def on_builds_error(dialog, err_msg: str) -> None:
+    from core.steamdb_scraper import ByparrManager
+    has_byparr = ByparrManager.find_byparr_dir() is not None
     dialog.builds_refresh_btn.setText("⟳  Refresh")
     dialog.builds_refresh_btn.setEnabled(True)
     if dialog.builds_cards_layout.count() > 1:
         dialog.builds_center_stack.setCurrentIndex(1)
         dialog.builds_refresh_btn.setToolTip(f"Build history currently unavailable. Showing cached builds.\n(Error: {err_msg})")
+        if hasattr(dialog, "builds_bottom_bar") and dialog.builds_bottom_bar:
+            dialog.builds_bottom_bar.setVisible(True)
     else:
         dialog.builds_center_stack.setCurrentIndex(2)
         dialog.builds_refresh_btn.setToolTip(f"Build history unavailable: {err_msg}")
+        if hasattr(dialog, "builds_bottom_bar") and dialog.builds_bottom_bar:
+            dialog.builds_bottom_bar.setVisible(has_byparr)
 
 
 def get_build_action_label(dialog, build_id: str) -> str:

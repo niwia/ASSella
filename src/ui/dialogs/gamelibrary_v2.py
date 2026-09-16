@@ -124,6 +124,7 @@ class GameDetailsDialogV2(QDialog):
     build_depots_loaded = pyqtSignal(str, dict)
     build_depots_error = pyqtSignal(str)
     workshop_check_finished = pyqtSignal(bool)
+    manifest_fetch_completed = pyqtSignal(str, str, str, str, str, str, object)
 
     # Rollback toggle: set False to use the old 65px hero layout
     USE_V2_HERO = True
@@ -146,6 +147,7 @@ class GameDetailsDialogV2(QDialog):
         self.build_depots_loaded.connect(self._on_build_depots_loaded)
         self.build_depots_error.connect(self._on_build_depots_error)
         self.workshop_check_finished.connect(self._on_workshop_check_finished)
+        self.manifest_fetch_completed.connect(self._on_manifest_fetch_completed)
 
         self.accent_color = getattr(parent, "accent_color", "#a1c9fd")
         self.background_color = getattr(parent, "background_color", "#111318")
@@ -171,16 +173,21 @@ class GameDetailsDialogV2(QDialog):
         self._cached_builds, self._cache_age = self.builds_cache.get_builds_with_age(aid)
         self._builds_fetch_requested = False
 
-        if self._cached_builds:
+        try:
+            from core.steamdb_scraper import ByparrManager
+            has_byparr = ByparrManager.find_byparr_dir() is not None
+        except Exception:
+            has_byparr = False
+
+        if self._cached_builds and has_byparr:
             self._populate_builds_cards(self._cached_builds)
             self.builds_center_stack.setCurrentIndex(1)
+            if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
+                self.builds_bottom_bar.setVisible(True)
         else:
-            try:
-                from core.steamdb_scraper import ByparrManager
-                has_byparr = ByparrManager.find_byparr_dir() is not None
-            except Exception:
-                has_byparr = False
             self.builds_center_stack.setCurrentIndex(0 if has_byparr else 2)
+            if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
+                self.builds_bottom_bar.setVisible(has_byparr)
 
         if self.parent():
             from ui.dialogs.dialog_raiser import DialogRaiser
@@ -436,13 +443,19 @@ class GameDetailsDialogV2(QDialog):
         except Exception:
             has_byparr = False
 
+        if not has_byparr:
+            self.builds_center_stack.setCurrentIndex(2)
+            if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
+                self.builds_bottom_bar.setVisible(False)
+            return
+
+        if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
+            self.builds_bottom_bar.setVisible(True)
+
         if not getattr(self, "_cached_builds", None):
-            if has_byparr:
-                self.builds_center_stack.setCurrentIndex(0)
-                self._fetch_steamdb_builds_async()
-            else:
-                self.builds_center_stack.setCurrentIndex(2)
-        elif has_byparr and (self._cache_age < 0 or self._cache_age >= CACHE_FRESH_SECONDS):
+            self.builds_center_stack.setCurrentIndex(0)
+            self._fetch_steamdb_builds_async()
+        elif self._cache_age < 0 or self._cache_age >= CACHE_FRESH_SECONDS:
             self._fetch_steamdb_builds_async()
 
     def _ensure_workshop_loaded(self):
@@ -543,6 +556,7 @@ class GameDetailsDialogV2(QDialog):
     def _trigger_rollback_job(self, depot_id: str, build_id: str, manifest_id: str, pin_build: bool = True):
         trigger_rollback_job(self, depot_id, build_id, manifest_id, pin_build)
 
+    @pyqtSlot(str, str, str, str, str, str, object)
     def _on_manifest_fetch_completed(
         self, error_msg, src_manifest_path_str, manifest_filename, depot_id, build_id, manifest_id, progress_dialog
     ):

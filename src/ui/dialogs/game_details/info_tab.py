@@ -827,18 +827,29 @@ def trigger_rollback_job(dialog, depot_id: str, build_id: str, manifest_id: str,
             logger.error(f"Error generating manifest from Hubcap: {e}", exc_info=True)
             error_msg = str(e)
 
-        QMetaObject.invokeMethod(
-            dialog,
-            "_on_manifest_fetch_completed",
-            Qt.ConnectionType.QueuedConnection,
-            Q_ARG(str, error_msg or ""),
-            Q_ARG(str, str(src_manifest_path)),
-            Q_ARG(str, manifest_filename),
-            Q_ARG(str, str(depot_id)),
-            Q_ARG(str, str(build_id)),
-            Q_ARG(str, str(manifest_id)),
-            Q_ARG(object, progress)
-        )
+        if hasattr(dialog, "manifest_fetch_completed"):
+            dialog.manifest_fetch_completed.emit(
+                error_msg or "",
+                str(src_manifest_path),
+                manifest_filename,
+                str(depot_id),
+                str(build_id),
+                str(manifest_id),
+                progress
+            )
+        else:
+            QMetaObject.invokeMethod(
+                dialog,
+                "_on_manifest_fetch_completed",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, error_msg or ""),
+                Q_ARG(str, str(src_manifest_path)),
+                Q_ARG(str, manifest_filename),
+                Q_ARG(str, str(depot_id)),
+                Q_ARG(str, str(build_id)),
+                Q_ARG(str, str(manifest_id)),
+                Q_ARG(object, progress)
+            )
 
     threading.Thread(target=_fetch_thread, daemon=True).start()
 
