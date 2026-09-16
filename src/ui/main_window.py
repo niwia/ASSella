@@ -2080,7 +2080,7 @@ class MainWindow(QMainWindow):
 
         self.steamdb_lbl = QLabel("SteamDB:")
         self.steamdb_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
-        self.steamdb_status_value = QLabel("Offline")
+        self.steamdb_status_value = QLabel("Checking...")
         self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
         self.steamdb_item.addWidget(self.steamdb_lbl)
         self.steamdb_item.addWidget(self.steamdb_status_value)
@@ -2599,6 +2599,10 @@ class MainWindow(QMainWindow):
             return
 
         self._steamdb_check_running = True
+        if hasattr(self, "steamdb_status_value") and self.steamdb_status_value:
+            self.steamdb_status_value.setText("Checking...")
+            self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
+            self.steamdb_status_value.setToolTip("Verifying Byparr solver and SteamDB connection...")
 
         def _worker():
             try:
