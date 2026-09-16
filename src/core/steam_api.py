@@ -5,6 +5,8 @@ import os
 import tempfile
 import re
 import time
+import socket
+import select
 import threading
 import queue
 from typing import Optional, Dict, List, Tuple, Callable
@@ -13,6 +15,12 @@ from utils.image_fetcher import ImageFetcher
 from managers.db_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+try:
+    import gevent.timeout
+    GeventTimeout = gevent.timeout.Timeout
+except Exception:
+    GeventTimeout = ()
 
 # Exponential backoff config for batched requests
 BACKOFF_BASE = 1.0
@@ -74,28 +82,73 @@ class _SteamClientWorker(threading.Thread):
         self.client = None
         self._started_evt = threading.Event()
 
+    def _is_alive(self) -> bool:
+        """Checks whether the client is connected and the underlying socket has not been closed remotely."""
+        if not self.client or not getattr(self.client, "connected", False) or not getattr(self.client, "logged_on", False):
+            return False
+        conn = getattr(self.client, "connection", None)
+        sock = getattr(conn, "socket", None)
+        if sock is None:
+            return False
+        try:
+            r, _, _ = select.select([sock], [], [], 0)
+            if r:
+                peek = sock.recv(1, socket.MSG_PEEK)
+                if not peek:
+                    return False
+        except Exception:
+            return False
+        return True
+
+    def _setup_client(self):
+        """Initializes a fresh SteamClient and attaches immediate abort on disconnect."""
+        if self.client:
+            try:
+                self.client.disconnect()
+            except Exception:
+                pass
+        self.client = SteamClient()
+
+        def _on_disconnect(*args):
+            # Abort any waiting EventEmitter listeners immediately so wait_event does not hang
+            callbacks = getattr(self.client, "_EventEmitter__callbacks", {})
+            for ev in list(callbacks.keys()):
+                for listener in list(callbacks[ev].keys()):
+                    if hasattr(listener, "set_exception"):
+                        try:
+                            listener.set_exception(ConnectionError("Steam connection closed"))
+                        except Exception:
+                            pass
+
+        self.client.on("disconnected", _on_disconnect)
+
+    def _connect_and_login(self, max_retries: int = 2, timeout: int = 8) -> bool:
+        """Connects and anonymously logs into Valve CM servers."""
+        self._setup_client()
+        try:
+            connected = self.client.connect(retry=max_retries)
+            if connected and getattr(self.client, "connected", False):
+                self.client.anonymous_login()
+                login_ok = self.client.wait_event("logged_on", timeout=timeout)
+                if login_ok is not None:
+                    logger.debug("SteamClientWorker connected & logged on anonymously.")
+                    return True
+                else:
+                    logger.warning("SteamClientWorker: timed out waiting for logged_on")
+            else:
+                logger.warning("SteamClientWorker: failed to connect to Valve CM servers.")
+        except Exception as e:
+            logger.error(f"SteamClientWorker connect error: {e}")
+        return False
+
     def run(self):
         if not SteamClient:
             self._started_evt.set()
             return
         try:
             logger.debug("SteamClientWorker starting & initializing SteamClient...")
-            self.client = SteamClient()
-            connected = self.client.connect(retry=3)  # try up to 3 CM servers before giving up
-            if connected and getattr(self.client, "connected", False):
-                self.client.anonymous_login()
-                # Block until Valve CM sends the actual LogOnResponse (not just the call returning).
-                login_ok = self.client.wait_event("logged_on", timeout=10)
-                if login_ok is None:
-                    logger.error("SteamClientWorker: timed out waiting for logged_on event")
-                else:
-                    logger.debug("SteamClientWorker connected & logged on anonymously.")
-            else:
-                logger.warning("SteamClientWorker: failed to connect to Valve CM servers.")
-        except Exception as e:
-            logger.error(f"SteamClientWorker initial connect error: {e}")
+            self._connect_and_login(max_retries=3, timeout=10)
         finally:
-            # Signal readiness only AFTER login is confirmed (or failed)
             self._started_evt.set()
 
         while True:
@@ -104,62 +157,36 @@ class _SteamClientWorker(threading.Thread):
                 break
             func_name, args, kwargs, reply_q = item
             try:
-                if not self.client or not getattr(self.client, "connected", False) or not getattr(self.client, "logged_on", False):
-                    logger.info("SteamClientWorker: connection lost or idle, reconnecting to Valve CM...")
-                    if self.client is None:
-                        self.client = SteamClient()
-                    reconnected = False
-                    try:
-                        connected = self.client.connect(retry=3)
-                        if connected and getattr(self.client, "connected", False):
-                            self.client.anonymous_login()
-                            # Wait for login before firing the queued query
-                            login_ok = self.client.wait_event("logged_on", timeout=10)
-                            if login_ok is not None:
-                                reconnected = True
-                                logger.info("SteamClientWorker reconnected & logged on successfully.")
-                            else:
-                                logger.error("SteamClientWorker: reconnect timed out waiting for logged_on")
-                        else:
-                            logger.warning("SteamClientWorker: reconnect failed to connect to Valve CM servers.")
-                    except Exception as rec_err:
-                        logger.error(f"SteamClientWorker reconnect error: {rec_err}")
-
-                    if not reconnected:
-                        # Don't fire the query on a still-dead client — signal failure immediately
+                if not self._is_alive():
+                    logger.info("SteamClientWorker: connection closed or idle, reconnecting...")
+                    if not self._connect_and_login(max_retries=2, timeout=8):
                         reply_q.put((False, ConnectionError("SteamClient reconnect failed; skipping query")))
-                        self.q.task_done()
                         continue
 
                 # Run query with automatic single retry on mid-query disconnect
                 try:
                     res = getattr(self.client, func_name)(*args, **kwargs)
-                except Exception as call_err:
-                    if not getattr(self.client, "connected", False) or not getattr(self.client, "logged_on", False):
-                        logger.warning(f"SteamClientWorker disconnected during {func_name} ({call_err}), reconnecting to retry...")
-                        try:
-                            if self.client.connect(retry=3):
-                                self.client.anonymous_login()
-                                if self.client.wait_event("logged_on", timeout=10) is not None:
-                                    logger.info(f"SteamClientWorker reconnected, retrying {func_name}...")
-                                    res = getattr(self.client, func_name)(*args, **kwargs)
-                                else:
-                                    raise call_err
-                            else:
-                                raise call_err
-                        except Exception:
+                except (Exception, GeventTimeout) as call_err:
+                    if not self._is_alive():
+                        logger.warning(
+                            f"SteamClientWorker disconnected during {func_name} ({call_err}), reconnecting to retry..."
+                        )
+                        if self._connect_and_login(max_retries=2, timeout=8):
+                            logger.info(f"SteamClientWorker reconnected, retrying {func_name}...")
+                            res = getattr(self.client, func_name)(*args, **kwargs)
+                        else:
                             raise call_err
                     else:
                         raise call_err
 
                 reply_q.put((True, res))
-            except Exception as e:
+            except (Exception, GeventTimeout) as e:
                 logger.error(f"SteamClientWorker task error ({func_name}): {e}")
                 reply_q.put((False, e))
             finally:
                 self.q.task_done()
 
-    def execute(self, func_name, *args, timeout=30, **kwargs):
+    def execute(self, func_name, *args, timeout=15, **kwargs):
         # Wait up to 10s for initial worker thread readiness
         if not self._started_evt.wait(timeout=10):
             raise TimeoutError("SteamClientWorker startup timed out")
@@ -544,7 +571,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
             request_list = [int_app_id]
 
         worker = get_steam_worker()
-        result = worker.execute("get_product_info", apps=request_list, timeout=25)
+        result = worker.execute("get_product_info", apps=request_list, timeout=12, auto_access_tokens=False)
         # Only write the debug dump when DEBUG logging is explicitly enabled
         if logger.isEnabledFor(logging.DEBUG):
             debug_dump_path = os.path.join(
@@ -583,61 +610,69 @@ def _fetch_with_steam_client(app_id, access_token=None):
                 logger.debug(f"Found header image URL: {header_url}")
 
             open_branches = {}
-            try:
-                all_branches = app_data.get("depots", {}).get("branches", {})
-                if isinstance(all_branches, dict):
-                    for b_name, b_info in all_branches.items():
-                        if isinstance(b_info, dict):
-                            if b_info.get("pwdrequired") != "1":
-                                open_branches[b_name] = {
-                                    "buildid": str(b_info.get("buildid", "")),
-                                    "timeupdated": str(b_info.get("timeupdated", ""))
-                                }
-                build_id = (
-                    app_data.get("depots", {})
-                    .get("branches", {})
-                    .get("public", {})
-                    .get("buildid")
-                )
-                if build_id:
-                    logger.info(f"Found public buildid: {build_id}")
-                else:
-                    logger.warning(
-                        "Could not find public buildid in steam.client response."
+            branches_data = (
+                app_data.get("depots", {}).get("branches", {})
+                if isinstance(app_data.get("depots"), dict)
+                else {}
+            )
+            if isinstance(branches_data, dict):
+                for branch_name, branch_dict in branches_data.items():
+                    if isinstance(branch_dict, dict) and branch_dict.get("pwdrequired") != "1":
+                        open_branches[branch_name] = {
+                            "buildid": branch_dict.get("buildid"),
+                            "timeupdated": branch_dict.get("timeupdated"),
+                            "description": branch_dict.get("description", ""),
+                        }
+            public_branch = (
+                app_data.get("depots", {})
+                .get("branches", {})
+                .get("public", {})
+            )
+            build_id = public_branch.get("buildid")
+            if build_id:
+                logger.info(f"Found public buildid: {build_id}")
+            else:
+                logger.warning("Public buildid not found.")
+
+            depots_data = app_data.get("depots", {})
+            for key, value in depots_data.items():
+                if key.isdigit() and isinstance(value, dict):
+                    depot_id = key
+                    depot_name = value.get("name")
+                    oslist = value.get("config", {}).get("oslist")
+
+                    # Handle manifests dictionary
+                    manifests_dict = value.get("manifests", {})
+                    manifest_id = None
+                    if isinstance(manifests_dict, dict):
+                        public_manifest = manifests_dict.get("public")
+                        if isinstance(public_manifest, dict):
+                            manifest_id = public_manifest.get("gid")
+                        elif isinstance(public_manifest, (str, int)):
+                            manifest_id = str(public_manifest)
+
+                    # Also store the raw manifests dictionary for branch resolution
+                    raw_manifests = manifests_dict if isinstance(manifests_dict, dict) else {}
+
+                    # Extract raw size directly from API
+                    raw_size = value.get("maxsize")
+                    logger.debug(
+                        f"Depot {depot_id}: Found raw size from API: {raw_size} (Type: {type(raw_size)})"
                     )
-            except Exception as e:
-                logger.error(f"Error parsing buildid: {e}")
+                    logger.debug(
+                        f"Depot {depot_id}: Found manifest_id: {manifest_id}"
+                    )
 
-            depots = app_data.get("depots", {})
-            for depot_id, depot_data in depots.items():
-                if not str(depot_id).isdigit() or not isinstance(depot_data, dict):
-                    continue
-                config = depot_data.get("config", {})
-                manifests = depot_data.get("manifests", {})
-                manifest_public = manifests.get("public", {})
+                    depot_info[depot_id] = {
+                        "name": depot_name,
+                        "oslist": oslist,
+                        "language": None,
+                        "steamdeck": False,
+                        "size": raw_size,
+                        "manifest_id": manifest_id,
+                        "manifests": raw_manifests,
+                    }
 
-                # Handle both dict and simple formats for manifest data
-                if isinstance(manifest_public, dict):
-                    manifest_id = manifest_public.get("gid")
-                    size_str = manifest_public.get("size")
-                else:
-                    # Simple format where the value IS the manifest ID
-                    manifest_id = manifest_public
-                    size_str = None
-
-                logger.debug(
-                    f"Depot {depot_id}: Found raw size from API: {size_str} (Type: {type(size_str)})"
-                )
-                logger.debug(f"Depot {depot_id}: Found manifest_id: {manifest_id}")
-                depot_info[str(depot_id)] = {
-                    "name": depot_data.get("name"),
-                    "oslist": config.get("oslist"),
-                    "language": config.get("language"),
-                    "steamdeck": config.get("steamdeck") == "1",
-                    "size": size_str,
-                    "manifest_id": manifest_id,
-                    "manifests": manifests,
-                }
         has_depots_in_dlc = app_data.get("depots", {}).get("hasdepotsindlc") in (1, "1", True)
         listofdlc = (
             app_data.get("extended", {}).get("listofdlc")
@@ -647,11 +682,11 @@ def _fetch_with_steam_client(app_id, access_token=None):
 
         api_data = {
             "appid": str(int_app_id),
+            "name": app_name,
             "depots": depot_info,
             "installdir": installdir,
             "header_url": header_url,
             "buildid": build_id,
-            "name": app_name,
             "branches": open_branches,
             "type": common_data.get("type"),
             "parent": common_data.get("parent"),
@@ -665,6 +700,11 @@ def _fetch_with_steam_client(app_id, access_token=None):
             return api_data
         else:
             logger.warning("steam.client fetch returned no meaningful data.")
+    except (TimeoutError, ConnectionError) as e:
+        logger.warning(
+            f"Steam PICS fetch unavailable ({e}); falling back to alternative providers."
+        )
+        return {}
     except BaseException as e:
         logger.error(
             f"An unexpected error occurred in _fetch_with_steam_client: {e}",
@@ -822,7 +862,7 @@ def batched_get_product_info(
         for attempt in range(max_batch_retries):
             try:
                 worker = get_steam_worker()
-                result = worker.execute("get_product_info", apps=request_list, timeout=request_timeout)
+                result = worker.execute("get_product_info", apps=request_list, timeout=request_timeout, auto_access_tokens=False)
 
                 # Process results
                 if result and isinstance(result, dict):

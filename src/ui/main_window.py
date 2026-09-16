@@ -2860,10 +2860,12 @@ class MainWindow(QMainWindow):
             queued = 0
             skipped_names = []
 
-            for game_data in updateable_games:
+            for idx, game_data in enumerate(updateable_games):
                 appid = str(game_data.get("appid", "0"))
                 name = format_game_display_name(game_data)
                 update_status = game_data.get("update_status")
+                self._set_update_all_btn_preparing(idx, total, current_name=name)
+                logger.info(f"[Update All] Preparing {name} ({idx + 1}/{total})...")
                 try:
                     local_path = None
                     branch = _api.get_selected_branch(appid)
@@ -2887,6 +2889,7 @@ class MainWindow(QMainWindow):
                             parsed_data = assembled
 
                         task.finished.connect(on_finished)
+                        task.progress.connect(lambda msg: logger.info(f"[Update All] {msg}"))
                         try:
                             task.run()
                         except Exception as e:
@@ -3061,7 +3064,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Error executing on main thread: {e}", exc_info=True)
 
-    def _set_update_all_btn_preparing(self, done: int, total: int) -> None:
+    def _set_update_all_btn_preparing(self, done: int, total: int, current_name: str = "") -> None:
         """Thread-safe: update the Update All button to show preparation progress."""
         import threading
         if threading.current_thread() is not threading.main_thread():
@@ -3071,19 +3074,25 @@ class MainWindow(QMainWindow):
                 Qt.ConnectionType.QueuedConnection,
                 Q_ARG(int, done),
                 Q_ARG(int, total),
+                Q_ARG(str, current_name),
             )
         else:
-            self._set_update_all_btn_preparing_slot(done, total)
+            self._set_update_all_btn_preparing_slot(done, total, current_name)
 
     @pyqtSlot(int, int)
-    def _set_update_all_btn_preparing_slot(self, done: int, total: int) -> None:
+    @pyqtSlot(int, int, str)
+    def _set_update_all_btn_preparing_slot(self, done: int, total: int, current_name: str = "") -> None:
         """Main-thread slot: update the Update All button text to show preparation progress."""
         try:
             ui = getattr(self, "ui_state", None)
             btn = getattr(ui, "update_all_btn", None) if ui else None
             if btn:
                 if done < total:
-                    btn.setText(f" Preparing... ({done}/{total})")
+                    if current_name:
+                        short_name = current_name if len(current_name) <= 16 else f"{current_name[:13]}..."
+                        btn.setText(f" Preparing {short_name} ({done + 1}/{total})...")
+                    else:
+                        btn.setText(f" Preparing... ({done}/{total})")
                 else:
                     btn.setText(f" Queued ({done}/{total})")
                 btn.setEnabled(False)
