@@ -125,6 +125,14 @@ class SettingsDialog(QDialog):
             type=str,
         )
         self._original_titlebar_position = self.settings.value("titlebar_position", "bottom", type=str)
+        self._original_accent_color = self.settings.value("accent_color", "#C06C84", type=str)
+        self._original_background_color = self.settings.value("background_color", "#000000", type=str)
+        self._original_font = self.settings.value("font", "TrixieCyrG-Plain", type=str)
+        self._original_font_size = self.settings.value("font-size", 10, type=int)
+        self._original_font_style = self.settings.value("font-style", "Normal", type=str)
+        self._original_material_preset = self.settings.value("material_preset", "ocean", type=str)
+        self._original_update_interval = self.settings.value("update_check_interval_minutes", 45, type=int)
+        self._original_experimental_acf = self.settings.value("experimental_acf_independent", False, type=bool)
 
         logger.debug("Opening SettingsDialog.")
         self._setup_ui()
@@ -367,8 +375,6 @@ class SettingsDialog(QDialog):
     def _create_dialog_buttons(self) -> None:
         """Create standard Ok/Cancel buttons."""
         buttons = create_standard_buttons(self.accept, self.reject)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
         self.main_layout.addWidget(buttons)
 
     # ── Signal Handlers & Delegation Slots ────────────────────────────────
@@ -578,9 +584,11 @@ class SettingsDialog(QDialog):
         if hasattr(self, "steam_username_input") and self.steam_username_input is not None:
             self.settings.setValue("steam_username", self.steam_username_input.text().strip())
         if hasattr(self, "steam_password_input") and self.steam_password_input is not None:
-            from utils.helpers import encrypt_string
-            encrypted_pass = encrypt_string(self.steam_password_input.text())
-            self.settings.setValue("steam_password", encrypted_pass)
+            new_pass = self.steam_password_input.text()
+            if new_pass != getattr(self, "_original_steam_password", None):
+                from utils.helpers import encrypt_string
+                encrypted_pass = encrypt_string(new_pass)
+                self.settings.setValue("steam_password", encrypted_pass)
         if hasattr(self, "log_level_combo") and self.log_level_combo is not None:
             self.settings.setValue("log_filter_level", self.log_level_combo.currentText())
         if hasattr(self, "log_category_combo") and self.log_category_combo is not None:
@@ -716,11 +724,14 @@ class SettingsDialog(QDialog):
                 self.main_window.toggle_web_server(True, port=new_port)
 
         if hasattr(self, "update_interval_slider") and self.update_interval_slider:
+            new_interval = self.update_interval_slider.value() * 5
+            old_interval = getattr(self, "_original_update_interval", None)
             self.settings.setValue(
-                "update_check_interval_minutes", self.update_interval_slider.value() * 5
+                "update_check_interval_minutes", new_interval
             )
-            if self.main_window and hasattr(self.main_window, "apply_update_timer_settings"):
-                self.main_window.apply_update_timer_settings()
+            if old_interval is None or new_interval != old_interval:
+                if self.main_window and hasattr(self.main_window, "apply_update_timer_settings"):
+                    self.main_window.apply_update_timer_settings()
 
         if hasattr(self, "check_updates_on_boot_checkbox") and self.check_updates_on_boot_checkbox is not None:
             self.settings.setValue(
@@ -787,8 +798,9 @@ class SettingsDialog(QDialog):
 
         if hasattr(self, "experimental_acf_independent_checkbox") and self.experimental_acf_independent_checkbox is not None:
             is_enabled = self.experimental_acf_independent_checkbox.isChecked()
+            old_acf = getattr(self, "_original_experimental_acf", None)
             self.settings.setValue("experimental_acf_independent", is_enabled)
-            if is_enabled:
+            if is_enabled and (old_acf is None or is_enabled != old_acf):
                 try:
                     from utils.yaml_config_manager import ensure_slssteam_prerequisites
                     ensure_slssteam_prerequisites()

@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QApplication
 from utils.paths import Paths
 
 logger = logging.getLogger(__name__)
+_fonts_registered: bool = False
 
 
 def normal_palette_colors(
@@ -385,21 +386,24 @@ def apply_font(
     Prioritizes Open Sans (or Google Sans) from local ACCELA fonts directory
     if user hasn't specified a custom font override.
     """
-    # ── Auto-register bundled & local fonts into QFontDatabase ──
-    from utils.helpers import get_base_path
-    base_fonts = get_base_path() / "fonts"
-    candidate_font_files = [
-        Paths.resource("fonts/OpenSans-Regular.ttf"),
-        Paths.resource("fonts/OpenSans-Bold.ttf"),
-        Paths.resource("fonts/GoogleSans-Regular.ttf"),
-        base_fonts / "Opensans" / "static" / "OpenSans-Regular.ttf",
-        base_fonts / "Opensans" / "OpenSans-VariableFont_wdth,wght.ttf",
-        base_fonts / "Google_Sans" / "static" / "GoogleSans-Regular.ttf",
-        base_fonts / "Google_Sans" / "GoogleSans-VariableFont_GRAD,opsz,wght.ttf",
-    ]
-    for fp in candidate_font_files:
-        if fp and Path(fp).exists():
-            QFontDatabase.addApplicationFont(str(fp))
+    # ── Auto-register bundled & local fonts into QFontDatabase (once per process) ──
+    global _fonts_registered
+    if not _fonts_registered:
+        from utils.helpers import get_base_path
+        base_fonts = get_base_path() / "fonts"
+        candidate_font_files = [
+            Paths.resource("fonts/OpenSans-Regular.ttf"),
+            Paths.resource("fonts/OpenSans-Bold.ttf"),
+            Paths.resource("fonts/GoogleSans-Regular.ttf"),
+            base_fonts / "Opensans" / "static" / "OpenSans-Regular.ttf",
+            base_fonts / "Opensans" / "OpenSans-VariableFont_wdth,wght.ttf",
+            base_fonts / "Google_Sans" / "static" / "GoogleSans-Regular.ttf",
+            base_fonts / "Google_Sans" / "GoogleSans-VariableFont_GRAD,opsz,wght.ttf",
+        ]
+        for fp in candidate_font_files:
+            if fp and Path(fp).exists():
+                QFontDatabase.addApplicationFont(str(fp))
+        _fonts_registered = True
 
     # Case 1: Specific font file provided
     if font_file:

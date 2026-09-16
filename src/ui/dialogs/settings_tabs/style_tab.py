@@ -290,7 +290,8 @@ def save_style_settings(dialog) -> bool:
 
     dialog.settings.setValue("user_accent_color", u_accent)
     dialog.settings.setValue("user_background_color", u_bg)
-    if hasattr(dialog, "preset_combo"):
+    preset_type = "ocean"
+    if hasattr(dialog, "preset_combo") and dialog.preset_combo is not None:
         preset_type = dialog.preset_combo.itemData(dialog.preset_combo.currentIndex())
         dialog.settings.setValue("material_preset", preset_type)
 
@@ -326,21 +327,39 @@ def save_style_settings(dialog) -> bool:
 
     if hasattr(dialog, "simplify_denuvo_status_checkbox") and dialog.simplify_denuvo_status_checkbox is not None:
         simplify = dialog.simplify_denuvo_status_checkbox.isChecked()
+        old_simplify = getattr(dialog, "_original_simplify_denuvo_status", None)
         dialog.settings.setValue("simplify_denuvo_status", simplify)
 
-        from ui.dialogs.gamelibrary import GameItemWidget
-        from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
-        from ui.dialogs.fetchmanifest import SearchItemWidget
-        for w in QApplication.instance().allWidgets():
-            if isinstance(w, GameItemWidget):
-                w.update_denuvo_badge()
-                w.update_proton_badge()
-            elif isinstance(w, GameDetailsDialogV2):
-                w.update_title()
-            elif isinstance(w, SearchItemWidget):
-                w.update_ratings()
+        if old_simplify is None or simplify != old_simplify:
+            from ui.dialogs.gamelibrary import GameItemWidget
+            from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+            from ui.dialogs.fetchmanifest import SearchItemWidget
+            for w in QApplication.instance().allWidgets():
+                if isinstance(w, GameItemWidget):
+                    w.update_denuvo_badge()
+                    w.update_proton_badge()
+                elif isinstance(w, GameDetailsDialogV2):
+                    w.update_title()
+                elif isinstance(w, SearchItemWidget):
+                    w.update_ratings()
 
-    if dialog.main_window and hasattr(dialog.main_window, "ui_state"):
+    orig_accent = getattr(dialog, "_original_accent_color", None)
+    orig_bg = getattr(dialog, "_original_background_color", None)
+    orig_font = getattr(dialog, "_original_font", None)
+    orig_font_size = getattr(dialog, "_original_font_size", None)
+    orig_font_style = getattr(dialog, "_original_font_style", None)
+    orig_preset = getattr(dialog, "_original_material_preset", None)
+
+    style_changed = (
+        (orig_accent is not None and applied_accent.lower() != orig_accent.lower())
+        or (orig_bg is not None and applied_bg.lower() != orig_bg.lower())
+        or (orig_font is not None and dialog.current_font.family() != orig_font)
+        or (orig_font_size is not None and dialog.current_font.pointSize() != orig_font_size)
+        or (orig_font_style is not None and style != orig_font_style)
+        or (orig_preset is not None and preset_type != orig_preset)
+    )
+
+    if style_changed and dialog.main_window and hasattr(dialog.main_window, "ui_state"):
         dialog.main_window.ui_state.apply_style_settings()
 
     return True
