@@ -20,9 +20,86 @@ NON_DEPOT_KEYS = {
 
 try:
     from ui.assets import DEPOT_BLACKLIST
-    BLACKLISTED_DEPOTS = {str(d) for d in DEPOT_BLACKLIST}
+    BLACKLISTED_DEPOTS = {str(d) for d in DEPOT_BLACKLIST} | {"228980", "1034630"}
 except Exception:
-    BLACKLISTED_DEPOTS = set()
+    BLACKLISTED_DEPOTS = {"228980", "1034630"}
+
+REDIST_NAME_KEYWORDS = (
+    "directx",
+    "vc redist",
+    "vcredist",
+    "visual c++",
+    "dotnet",
+    ".net framework",
+    ".net core",
+    "openal",
+    "physx",
+    "installscript",
+    "prerequisites",
+    "redistributable",
+    "steamworks shared",
+)
+
+
+def is_redist_or_dependency(dinfo: Any, did_str: str) -> bool:
+    """True if depot is a redistributable, system package, or external dependency."""
+    if did_str in BLACKLISTED_DEPOTS:
+        return True
+    if isinstance(dinfo, dict):
+        if str(dinfo.get("sharedinstall")).strip().lower() in ("1", "true", "yes"):
+            return True
+        if dinfo.get("system") in (1, "1", True):
+            return True
+        depot_from_app = str(dinfo.get("depotfromapp") or "").strip()
+        if depot_from_app and (depot_from_app in BLACKLISTED_DEPOTS or depot_from_app in ("228980", "1034630")):
+            return True
+        dname = (dinfo.get("name") or "").lower()
+        if any(kw in dname for kw in REDIST_NAME_KEYWORDS):
+            return True
+    return False
+
+
+def is_zero_byte_depot(dinfo: Any, branch: str = "public") -> bool:
+    """True if depot size is explicitly 0 or contains no files/manifest data."""
+    if not isinstance(dinfo, dict):
+        return False
+    size = dinfo.get("size")
+    download = dinfo.get("download")
+    manifests = dinfo.get("manifests")
+    if isinstance(manifests, dict):
+        b_entry = manifests.get(branch) or manifests.get("public")
+        if isinstance(b_entry, dict):
+            if "size" in b_entry and b_entry["size"] is not None:
+                size = b_entry["size"]
+            if "download" in b_entry and b_entry["download"] is not None:
+                download = b_entry["download"]
+    for s_val in (size, download):
+        if s_val is not None:
+            try:
+                s_int = int(str(s_val).strip())
+                if s_int == 0:
+                    return True
+                if s_int > 0:
+                    return False
+            except (ValueError, TypeError):
+                pass
+    if not manifests and size is None and download is None:
+        return True
+    return False
+
+
+def is_os_filtered(dinfo: Any, hide_macos: bool, hide_android: bool) -> bool:
+    """True if depot OS matches an OS category the user opted to filter out."""
+    if not isinstance(dinfo, dict):
+        return False
+    os_val = str(dinfo.get("oslist") or "").strip().lower()
+    if not os_val:
+        return False
+    if hide_macos and os_val in ("macos", "macosx"):
+        return True
+    if hide_android and os_val == "android":
+        return True
+    return False
 
 
 def get_depot_manifest_gid(d_info: Any, branch: str = "public", allow_public_fallback: bool = False) -> Optional[str]:
@@ -60,6 +137,12 @@ def check_hubcap_vs_steam_depots(
     """
     Compares Hubcap/local depots against official Steam API depots for an app and branch.
 
+    Applies strict filtering:
+      - Excludes dependencies & redistributables (DirectX, VC++, .NET, etc.).
+      - Excludes 0-byte/empty placeholder depots.
+      - Excludes platform depots the user has opted to hide (macOS / Android).
+      - If the game has <= 1 relevant content depot on this branch, skips missing checks completely.
+
     Args:
         zip_depots: Dict of {depot_id: manifest_id} or {depot_id: lua_data},
                     or a list/set of depot IDs.
@@ -79,6 +162,16 @@ def check_hubcap_vs_steam_depots(
     app_id_str = str(app_id).strip() if app_id is not None else ""
     b_key = branch if branch else "public"
 
+    # User OS preferences
+    try:
+        from utils.settings import get_settings
+        settings = get_settings()
+        hide_macos = settings.value("hide_macos_depots", True, type=bool)
+        hide_android = settings.value("hide_android_depots", True, type=bool)
+    except Exception:
+        hide_macos = True
+        hide_android = True
+
     # Normalize zip_depots into a dict mapping depot_id -> manifest_id (if available)
     local_manifest_map: Dict[str, Optional[str]] = {}
     if isinstance(zip_depots, dict):
@@ -86,7 +179,6 @@ def check_hubcap_vs_steam_depots(
             did_str = str(k).strip()
             if not did_str.isdigit() or (app_id_str and did_str == app_id_str):
                 continue
-            # v might be a string manifest_id, int, or dict
             if isinstance(v, (str, int)):
                 local_manifest_map[did_str] = str(v).strip()
             elif isinstance(v, dict):
@@ -126,44 +218,69 @@ def check_hubcap_vs_steam_depots(
                         "name": dname,
                     })
 
-    # 2. Bidirectional check: find official depots on Steam missing from zip/cache
-    missing_from_hubcap: List[str] = []
-    missing_depots_info: Dict[str, Any] = {}
-    missing_for_fetch: List[Tuple[str, str, str]] = []
+    # Extra in hubcap (present locally, but not on Steam)
+    extra_in_hubcap: List[str] = []
+    if isinstance(api_depots, dict) and api_depots:
+        for did in local_manifest_map:
+            if did not in api_depots and (not did.isdigit() or int(did) not in api_depots):
+                extra_in_hubcap.append(did)
 
+    # 2. Gather all relevant content depots on Steam for this branch
+    relevant_content_depots: List[Tuple[str, Dict[str, Any], str]] = []
     if isinstance(api_depots, dict):
         for did_key, dinfo in api_depots.items():
             did_str = str(did_key).strip()
-            if not did_str.isdigit():
-                continue
-            if did_str in NON_DEPOT_KEYS or did_str in BLACKLISTED_DEPOTS:
+            if not did_str.isdigit() or did_str in NON_DEPOT_KEYS:
                 continue
             if app_id_str and did_str == app_id_str:
                 continue
-            if did_str in local_manifest_map:
+            if is_redist_or_dependency(dinfo, did_str):
+                continue
+            if is_zero_byte_depot(dinfo, branch=b_key):
+                continue
+            if is_os_filtered(dinfo, hide_macos, hide_android):
                 continue
             if _is_not_in_branch(dinfo, b_key):
-                # Not shipped on this branch at all — not "missing from Hubcap".
                 continue
 
             current_mid = get_depot_manifest_gid(
                 dinfo, branch=b_key,
                 allow_public_fallback=bool(dinfo.get("from_dlc_app")) if isinstance(dinfo, dict) else False,
             )
-            dname = dinfo.get("name") or f"Depot {did_str}" if isinstance(dinfo, dict) else f"Depot {did_str}"
+            if not current_mid:
+                continue
 
-            missing_from_hubcap.append(did_str)
-            missing_depots_info[did_str] = dict(dinfo) if isinstance(dinfo, dict) else {}
+            relevant_content_depots.append((did_str, dict(dinfo) if isinstance(dinfo, dict) else {}, str(current_mid)))
 
-            if current_mid:
-                missing_for_fetch.append((did_str, str(current_mid), dname))
+    # 3. Single-depot / logical single-depot rule:
+    # If the game only has <= 1 relevant content depot (or none), and Hubcap provided content,
+    # skip missing depot reporting completely to avoid false positives.
+    if len(relevant_content_depots) <= 1:
+        logger.debug(
+            f"[depot_utils] App {app_id_str or 'unknown'} has <= 1 relevant content depot ({len(relevant_content_depots)}). "
+            f"Skipping missing depot check."
+        )
+        return {
+            "is_up_to_date": is_up_to_date,
+            "stale_depots": stale_depots,
+            "missing_from_hubcap": [],
+            "missing_depots_info": {},
+            "missing_for_fetch": [],
+            "extra_in_hubcap": extra_in_hubcap,
+        }
 
-    # 3. Extra in hubcap (present locally, but not on Steam)
-    extra_in_hubcap: List[str] = []
-    if isinstance(api_depots, dict) and api_depots:
-        for did in local_manifest_map:
-            if did not in api_depots and (not did.isdigit() or int(did) not in api_depots):
-                extra_in_hubcap.append(did)
+    # 4. Multi-depot game: identify missing content depots
+    missing_from_hubcap: List[str] = []
+    missing_depots_info: Dict[str, Any] = {}
+    missing_for_fetch: List[Tuple[str, str, str]] = []
+
+    for did_str, dinfo, current_mid in relevant_content_depots:
+        if did_str in local_manifest_map:
+            continue
+        dname = dinfo.get("name") or f"Depot {did_str}"
+        missing_from_hubcap.append(did_str)
+        missing_depots_info[did_str] = dinfo
+        missing_for_fetch.append((did_str, current_mid, dname))
 
     return {
         "is_up_to_date": is_up_to_date,

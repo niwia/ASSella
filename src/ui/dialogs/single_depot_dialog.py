@@ -266,11 +266,7 @@ class SingleDepotSelectionDialog(QDialog):
 
         main_layout.addLayout(header_layout)
 
-        # --- 2. Notice Banner (if any refetched / missing depots) ---
-        if self.missing_hubcap_depots or self.refetched_depots:
-            self._build_nudge_banner(main_layout)
-
-        # --- 3. Compact Single Depot Card ---
+        # --- 2. Compact Single Depot Card ---
         card_frame = QFrame()
         card_frame.setObjectName("single_depot_card")
         card_frame.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -453,44 +449,6 @@ class SingleDepotSelectionDialog(QDialog):
             except (ValueError, TypeError):
                 pass
         return str(d_data.get("size_str") or "0.00 B")
-
-    def _build_nudge_banner(self, layout):
-        has_missing = bool(self.missing_hubcap_depots)
-        has_refetched = bool(self.refetched_depots)
-
-        if not has_missing and not has_refetched:
-            return
-
-        nudge_frame = QFrame()
-        nudge_frame.setObjectName("missing_depots_nudge")
-        self.missing_depots_nudge_frame = nudge_frame
-
-        border_color = "rgba(76, 175, 80, 0.45)" if (has_refetched and not has_missing) else "rgba(255, 193, 7, 0.35)"
-        bg_color = "rgba(76, 175, 80, 0.08)" if (has_refetched and not has_missing) else "rgba(255, 193, 7, 0.06)"
-
-        nudge_frame.setStyleSheet(f"""
-            QFrame#missing_depots_nudge {{
-                background-color: {bg_color};
-                border: 1px solid {border_color};
-                border-radius: 6px;
-            }}
-        """)
-
-        nudge_layout = QHBoxLayout(nudge_frame)
-        nudge_layout.setContentsMargins(10, 4, 10, 4)
-        nudge_layout.setSpacing(6)
-
-        text_lbl = QLabel()
-        text_lbl.setWordWrap(True)
-        text_lbl.setStyleSheet("border: none; background: transparent; font-size: 8.5pt; color: #FFFFFF;")
-        
-        if has_refetched and not has_missing:
-            text_lbl.setText("<b><span style='color: #4CAF50;'>Depot Refetched:</span></b> Depot manifest refetched from Hubcap!")
-        else:
-            text_lbl.setText("<b><span style='color: #FFC107;'>Missing Depot:</span></b> Manifest is not cached in Hubcap server.")
-
-        nudge_layout.addWidget(text_lbl, 1)
-        layout.addWidget(nudge_frame)
 
     def _setup_storage_buttons(self, layout: QHBoxLayout) -> None:
         import shutil

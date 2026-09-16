@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QAbstractItemView,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QSizePolicy,
 )
@@ -362,20 +363,24 @@ class DepotSelectionDialog(QDialog):
         try:
             from utils.settings import get_settings
             settings = get_settings()
+            self._settings = settings
             self._hide_macos = settings.value("hide_macos_depots", True, type=bool)
             self._hide_android = settings.value("hide_android_depots", True, type=bool)
             self._filter_soundtracks = settings.value("filter_soundtracks", True, type=bool)
             self._hide_artbooks = settings.value("hide_artbooks_depots", True, type=bool)
             self._hide_demos = settings.value("hide_demos_depots", True, type=bool)
             self._hide_tools = settings.value("hide_tools_depots", True, type=bool)
+            self._show_hidden_depots = settings.value("show_hidden_depots_in_selector", False, type=bool)
             self.accent_color = settings.value("accent_color", "#C06C84", type=str)
         except Exception:
+            self._settings = None
             self._hide_macos = True
             self._hide_android = True
             self._filter_soundtracks = True
             self._hide_artbooks = True
             self._hide_demos = True
             self._hide_tools = True
+            self._show_hidden_depots = False
             self.accent_color = "#C06C84"
 
         # Dynamically generate solid dark container color for selection background
@@ -494,6 +499,17 @@ class DepotSelectionDialog(QDialog):
         self.builds_btn.clicked.connect(self._on_builds_clicked)
         controls_row.addWidget(self.builds_btn)
 
+        if not self.is_single_depot:
+            controls_row.addSpacing(10)
+            self.show_hidden_chk = QCheckBox("Show Hidden Depots")
+            self.show_hidden_chk.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.show_hidden_chk.setChecked(self._show_hidden_depots)
+            self.show_hidden_chk.toggled.connect(self._on_show_hidden_toggled)
+            self.show_hidden_chk.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.8);")
+            controls_row.addWidget(self.show_hidden_chk)
+        else:
+            self.show_hidden_chk = None
+
         if self.branch and self.branch != "public":
             self._on_branch_changed(self.branch)
 
@@ -505,42 +521,15 @@ class DepotSelectionDialog(QDialog):
 
         layout.addLayout(header_layout)
 
-        # Smarter Notice Banner: Clean notification banner with colored minimal frame
-        if self.missing_hubcap_depots or self.refetched_depots:
-            if self.missing_hubcap_depots:
-                self._resolve_missing_depots_info()
-
-            from PyQt6.QtWidgets import QFrame
-            nudge_frame = QFrame()
-            nudge_frame.setObjectName("missing_depots_nudge")
-            self.missing_depots_nudge_frame = nudge_frame
-
-            nudge_layout = QHBoxLayout(nudge_frame)
-            nudge_layout.setContentsMargins(12, 5, 12, 5)
-            nudge_layout.setSpacing(6)
-
-            text_lbl = QLabel()
-            text_lbl.setWordWrap(True)
-            text_lbl.setStyleSheet("border: none; background: transparent; font-size: 9pt; line-height: 125%;")
-            nudge_layout.addWidget(text_lbl, 1)
-            self.missing_depots_text_lbl = text_lbl
-
-            self._refresh_missing_depots_banner()
-
-            nudge_wrapper = QHBoxLayout()
-            nudge_wrapper.setContentsMargins(10, 0, 10, 0)
-            nudge_wrapper.addWidget(nudge_frame)
-            layout.addLayout(nudge_wrapper)
+        # Resolve missing depots info if needed (table will show them at bottom in greyscale)
+        if self.missing_hubcap_depots:
+            self._resolve_missing_depots_info()
 
         layout.addSpacing(5)
 
         self._fetch_header_image(app_id)
 
         # Load DLC-only mode state
-        try:
-            self._settings = settings if settings is not None else get_settings()
-        except Exception:
-            self._settings = None
         self._dlc_only_mode = (
             self._settings.value(f"dlc_only_mode/{self.app_id}", False, type=bool)
             if self._settings else False
@@ -628,330 +617,9 @@ class DepotSelectionDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
 
-        def get_sort_key(depot_item):
-            _depot_id, data = depot_item
-
-            os_val = data.get("oslist")
-            if os_val is None:
-                os_str = "zzzz"
-            else:
-                os_str = os_val.lower()
-
-            os_priority = 4
-
-            if os_str == "windows":
-                os_priority = 1
-            elif os_str == "linux":
-                os_priority = 2
-            elif "all" in os_str:
-                os_priority = 3
-            elif os_str == "macosx" or os_str == "macos":
-                os_priority = 5
-
-            desc_str = data.get("desc", "").lower()
-            lang_val = data.get("language")
-
-            lang_priority = 3
-            lang_sort_key = lang_val.lower() if lang_val else "zzzz"
-
-            is_no_language = (
-                lang_val is None
-                and "english" not in desc_str
-                and "japanese" not in desc_str
-            )
-
-            if "english" in desc_str:
-                lang_priority = 1
-                lang_sort_key = lang_val.lower() if lang_val else "english"
-            elif is_no_language:
-                lang_priority = 1
-                lang_sort_key = "english"
-            elif "japanese" in desc_str:
-                lang_priority = 2
-                lang_sort_key = "japanese"
-
-            final_key = (os_priority, lang_priority, lang_sort_key)
-            logger.debug(
-                f"Depot {_depot_id}: OS='{os_val}', Lang='{lang_val}', Desc='{data.get('desc', '')}'"
-            )
-            logger.debug(
-                f"    -> Key: {final_key} (OS_Prio: {os_priority}, Lang_Prio: {lang_priority}, Lang_Key: '{lang_sort_key}')"
-            )
-
-            return final_key
-
-        logger.debug("--- Starting Depot Sort ---")
-        sorted_depots = sorted(self.depots.items(), key=get_sort_key)
-        logger.debug("--- Depot Sort Finished ---")
-
-        # Separate depots into active (displayed) vs hidden (expandable)
-        active_depots = []
-        hidden_depots = []
-
-        for depot_id, depot_data in sorted_depots:
-            is_hidden = False
-            if self._hide_macos and _depot_is_macos(depot_data):
-                is_hidden = True
-            elif self._hide_android and _depot_is_android(depot_data):
-                is_hidden = True
-            elif getattr(self, "_filter_soundtracks", True):
-                desc_l = (depot_data.get("desc") or "").lower()
-                name_l = (depot_data.get("name") or "").lower()
-                if "soundtrack" in desc_l or "soundtrack" in name_l or "[ost]" in desc_l or " ost" in desc_l:
-                    is_hidden = True
-            if not is_hidden and getattr(self, "_hide_artbooks", True):
-                desc_l = (depot_data.get("desc") or "").lower()
-                name_l = (depot_data.get("name") or "").lower()
-                if "artbook" in desc_l or "artbook" in name_l or "wallpaper" in desc_l or "extra content" in desc_l:
-                    is_hidden = True
-            if not is_hidden and getattr(self, "_hide_demos", True):
-                desc_l = (depot_data.get("desc") or "").lower()
-                name_l = (depot_data.get("name") or "").lower()
-                if "demo" in desc_l or "trial" in desc_l or "playtest" in desc_l:
-                    is_hidden = True
-            if not is_hidden and getattr(self, "_hide_tools", True):
-                desc_l = (depot_data.get("desc") or "").lower()
-                name_l = (depot_data.get("name") or "").lower()
-                if "dedicated server" in desc_l or "editor" in desc_l or "sdk" in desc_l or " tool" in desc_l:
-                    is_hidden = True
-
-            if is_hidden:
-                hidden_depots.append((depot_id, depot_data))
-            else:
-                active_depots.append((depot_id, depot_data))
-
-        # Fallback if all depots were filtered out
-        if not active_depots and hidden_depots:
-            active_depots = hidden_depots
-            hidden_depots = []
-
-        total_rows = len(active_depots) + len(self.missing_hubcap_depots)
-        if hidden_depots:
-            total_rows += 1 + len(hidden_depots)
-        self.table_widget.setRowCount(total_rows)
-
-        # Determine initial selection: if selected_depots is provided, use it; otherwise compute smart defaults
-        if self.selected_depots is not None:
-            pre_selected_set = set(str(d) for d in self.selected_depots)
-        else:
-            pre_selected_set = set(get_smart_default_depots(self.depots, target_platform="linux"))
-
-        def _build_config_text(d_id, d_data, is_first=False):
-            original_desc = d_data.get("desc", "")
-            original_desc = re.sub(
-                r"\s*-\s*Depot\s*" + re.escape(str(d_id)),
-                "",
-                original_desc,
-                flags=re.IGNORECASE,
-            )
-            tags = ""
-            base_desc = original_desc.strip()
-            tags_match = re.match(r"^((?:\[.*?]\s*)*)(.*)", original_desc)
-            if tags_match:
-                tags = tags_match.group(1).strip()
-                base_desc = tags_match.group(2).strip()
-
-            is_generic_fallback = bool(
-                re.fullmatch(r"Depot \d+", base_desc, re.IGNORECASE)
-            )
-
-            if is_first:
-                if is_generic_fallback:
-                    final_desc = f"{self.game_name}".strip()
-                else:
-                    final_desc = base_desc
-            else:
-                if is_generic_fallback:
-                    final_desc = ""
-                else:
-                    final_desc = base_desc
-
-            is_dlc = d_data.get("is_dlc", False) or "[dlc]" in original_desc.lower()
-            final_desc = re.sub(r"^DLC\s+\d+\s*-?\s*", "", final_desc, flags=re.IGNORECASE).strip()
-            if not final_desc and d_data.get("name"):
-                final_desc = d_data["name"]
-
-            oslist = (d_data.get("oslist") or "").lower()
-            os_tag = ""
-            if is_dlc:
-                os_tag = "[DLC]"
-            elif oslist == "windows":
-                os_tag = "[Windows]"
-            elif oslist == "linux":
-                os_tag = "[Linux]"
-            elif oslist in ("macos", "macosx"):
-                os_tag = "[macOS]"
-            elif "windows" in oslist and "linux" in oslist:
-                os_tag = "[Windows, Linux]"
-            elif "all" in oslist:
-                os_tag = "[All]"
-
-            display_tags = tags if tags else os_tag
-            if display_tags:
-                cfg_text = f"{display_tags}  {final_desc}".strip()
-            else:
-                cfg_text = final_desc.strip()
-
-            if not cfg_text or cfg_text == display_tags.strip():
-                cfg_text = f"{display_tags}  Depot {d_id}".strip() if display_tags else f"Depot {d_id}"
-
-            return cfg_text
-
-        row_idx = 0
-        is_first_depot = True
-
-        # 1. Tier 0: Populate Active Depots
-        for depot_id, depot_data in active_depots:
-            config_text = _build_config_text(depot_id, depot_data, is_first=is_first_depot)
-            is_first_depot = False
-
-            size_str = ""
-            if depot_data.get("size"):
-                try:
-                    size_bytes = int(depot_data["size"])
-                    size_str = format_size(size_bytes)
-                except (ValueError, TypeError):
-                    size_str = "0.00 B"
-            elif depot_data.get("size_str"):
-                size_str = depot_data["size_str"]
-
-            id_val = int(depot_id) if str(depot_id).isdigit() else 0
-            id_item = NumericTableWidgetItem(str(depot_id), id_val, tier=0)
-            id_item.setData(Qt.ItemDataRole.UserRole, str(depot_id))
-            id_item.setData(Qt.ItemDataRole.UserRole + 1, str(depot_id))
-            id_item.setData(Qt.ItemDataRole.UserRole + 2, "normal")
-
-            is_checked = True if self.is_single_depot else (str(depot_id) in pre_selected_set)
-            id_item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
-            id_item.setFlags(id_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsUserCheckable)
-
-            if str(depot_id) in getattr(self, "refetched_depots", []):
-                config_text = f"[Refetched]  {config_text}"
-
-            config_item = ConfigTableWidgetItem(config_text, tier=0)
-            config_item.setFlags(config_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-
-            raw_size = int(depot_data.get("size") or 0)
-            size_item = NumericTableWidgetItem(size_str, raw_size, tier=0)
-            size_item.setFlags(size_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-
-            self.table_widget.setItem(row_idx, 0, id_item)
-            self.table_widget.setItem(row_idx, 1, config_item)
-            self.table_widget.setItem(row_idx, 2, size_item)
-            row_idx += 1
-
-        # 2. Tier 1: Populate Missing Depots from Hubcap (Darker Greyscale, Untoggleable)
-        darker_grey = QColor(135, 135, 135)
-        for did in self.missing_hubcap_depots:
-            minfo = self.missing_depots_info.get(did, {})
-            mname = minfo.get("name")
-            mraw_size = int(minfo.get("size") or 0)
-            msize_str = format_size(mraw_size)
-            hubcap_status = minfo.get("hubcap_status")
-            if hubcap_status in ("not_found", "404"):
-                tag = "[Unavailable on Hubcap (404)]"
-            else:
-                tag = "[Missing from Hubcap]"
-
-            if mname:
-                mconfig_text = f"{tag}  {mname}"
-            else:
-                mconfig_text = f"{tag}  Depot {did}"
-
-            mid_val = int(did) if str(did).isdigit() else 0
-            mid_item = NumericTableWidgetItem(str(did), mid_val, tier=1)
-            mid_item.setData(Qt.ItemDataRole.UserRole, str(did))
-            mid_item.setData(Qt.ItemDataRole.UserRole + 1, str(did))
-            mid_item.setData(Qt.ItemDataRole.UserRole + 2, "missing")
-            mid_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            mid_item.setForeground(darker_grey)
-
-            mconfig_item = ConfigTableWidgetItem(mconfig_text, tier=1)
-            mconfig_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            mconfig_item.setForeground(darker_grey)
-
-            msize_item = NumericTableWidgetItem(msize_str, mraw_size, tier=1)
-            msize_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            msize_item.setForeground(darker_grey)
-
-            self.table_widget.setItem(row_idx, 0, mid_item)
-            self.table_widget.setItem(row_idx, 1, mconfig_item)
-            self.table_widget.setItem(row_idx, 2, msize_item)
-            row_idx += 1
-
-        # 3. Tier 2 & 3: Populate Hidden Depots (Expander + Hidden Rows in Brighter Greyscale)
-        brighter_grey = QColor(195, 195, 195)
         self._hidden_depots_expanded = False
-        if hidden_depots:
-            # Expander row (Tier 2)
-            exp_id = NumericTableWidgetItem("▾", 0, tier=2)
-            exp_id.setData(Qt.ItemDataRole.UserRole, "__expander__")
-            exp_id.setData(Qt.ItemDataRole.UserRole + 2, "expander")
-            exp_id.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            exp_id.setForeground(brighter_grey)
-            font_id = exp_id.font()
-            font_id.setBold(True)
-            exp_id.setFont(font_id)
+        self._populate_table()
 
-            exp_cfg = ConfigTableWidgetItem(f"Hidden Depots ({len(hidden_depots)})", tier=2)
-            exp_cfg.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            exp_cfg.setForeground(brighter_grey)
-            font_cfg = exp_cfg.font()
-            font_cfg.setBold(True)
-            exp_cfg.setFont(font_cfg)
-
-            exp_size = NumericTableWidgetItem("[Click to expand]", 0, tier=2)
-            exp_size.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            exp_size.setForeground(brighter_grey)
-            font_size = exp_size.font()
-            font_size.setItalic(True)
-            exp_size.setFont(font_size)
-
-            self.table_widget.setItem(row_idx, 0, exp_id)
-            self.table_widget.setItem(row_idx, 1, exp_cfg)
-            self.table_widget.setItem(row_idx, 2, exp_size)
-            row_idx += 1
-
-            # Hidden depot rows (Tier 3)
-            for depot_id, depot_data in hidden_depots:
-                hconfig_text = _build_config_text(depot_id, depot_data, is_first=False)
-                hsize_str = ""
-                if depot_data.get("size"):
-                    try:
-                        hsize_bytes = int(depot_data["size"])
-                        hsize_str = format_size(hsize_bytes)
-                    except (ValueError, TypeError):
-                        hsize_str = "0.00 B"
-                elif depot_data.get("size_str"):
-                    hsize_str = depot_data["size_str"]
-
-                hid_val = int(depot_id) if str(depot_id).isdigit() else 0
-                hid_item = NumericTableWidgetItem(str(depot_id), hid_val, tier=3)
-                hid_item.setData(Qt.ItemDataRole.UserRole, str(depot_id))
-                hid_item.setData(Qt.ItemDataRole.UserRole + 1, str(depot_id))
-                hid_item.setData(Qt.ItemDataRole.UserRole + 2, "hidden_depot")
-                hid_item.setCheckState(Qt.CheckState.Unchecked)
-                hid_item.setFlags(hid_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsUserCheckable)
-                hid_item.setForeground(brighter_grey)
-
-                hconfig_item = ConfigTableWidgetItem(hconfig_text, tier=3)
-                hconfig_item.setFlags(hconfig_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                hconfig_item.setForeground(brighter_grey)
-
-                hraw_size = int(depot_data.get("size") or 0)
-                hsize_item = NumericTableWidgetItem(hsize_str, hraw_size, tier=3)
-                hsize_item.setFlags(hsize_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                hsize_item.setForeground(brighter_grey)
-
-                self.table_widget.setItem(row_idx, 0, hid_item)
-                self.table_widget.setItem(row_idx, 1, hconfig_item)
-                self.table_widget.setItem(row_idx, 2, hsize_item)
-                self.table_widget.setRowHidden(row_idx, True)
-                row_idx += 1
-
-        self.table_widget.setRowCount(row_idx)
-        self.table_widget.setSortingEnabled(True)
- 
         # Makes list widget update stylesheets for the items
         QApplication.processEvents()
  
@@ -1078,111 +746,333 @@ class DepotSelectionDialog(QDialog):
             if self._dlc_only_mode and not self._has_saved_selection and not self._user_interacted:
                 self._apply_dlc_auto_selection()
 
-    def _refresh_missing_depots_banner(self):
-        """Updates the missing / refetched depots notice banner colors and formatted text."""
-        if not self.missing_depots_nudge_frame or not self.missing_depots_text_lbl:
-            return
+    def _on_show_hidden_toggled(self, checked: bool):
+        self._show_hidden_depots = checked
+        if hasattr(self, "_settings") and self._settings:
+            self._settings.setValue("show_hidden_depots_in_selector", checked)
+        self.selected_depots = self.get_selected_depots()
+        self._populate_table()
 
-        has_missing = bool(self.missing_hubcap_depots)
-        has_refetched = bool(getattr(self, "refetched_depots", None))
+    def _populate_table(self):
+        self.table_widget.setSortingEnabled(False)
+        self.table_widget.clearContents()
 
-        if not has_missing and not has_refetched:
-            self.missing_depots_nudge_frame.setVisible(False)
-            return
+        def get_sort_key(depot_item):
+            _depot_id, data = depot_item
 
-        self.missing_depots_nudge_frame.setVisible(True)
+            os_val = data.get("oslist")
+            if os_val is None:
+                os_str = "zzzz"
+            else:
+                os_str = os_val.lower()
 
-        if has_refetched and not has_missing:
-            border_color = "rgba(76, 175, 80, 0.45)"
-            bg_color = "rgba(76, 175, 80, 0.08)"
-        elif has_refetched and has_missing:
-            border_color = "rgba(0, 188, 212, 0.45)"
-            bg_color = "rgba(0, 188, 212, 0.08)"
-        else:
-            has_sized_depots = any(
-                int(self.missing_depots_info.get(d, {}).get("size") or 0) > 0
-                for d in self.missing_hubcap_depots
+            os_priority = 4
+
+            if os_str == "windows":
+                os_priority = 1
+            elif os_str == "linux":
+                os_priority = 2
+            elif "all" in os_str:
+                os_priority = 3
+            elif os_str == "macosx" or os_str == "macos":
+                os_priority = 5
+
+            desc_str = data.get("desc", "").lower()
+            lang_val = data.get("language")
+
+            lang_priority = 3
+            lang_sort_key = lang_val.lower() if lang_val else "zzzz"
+
+            is_no_language = (
+                lang_val is None
+                and "english" not in desc_str
+                and "japanese" not in desc_str
             )
-            if has_sized_depots:
-                border_color = "rgba(255, 140, 0, 0.45)"
-                bg_color = "rgba(255, 140, 0, 0.08)"
+
+            if "english" in desc_str:
+                lang_priority = 1
+                lang_sort_key = lang_val.lower() if lang_val else "english"
+            elif is_no_language:
+                lang_priority = 1
+                lang_sort_key = "english"
+            elif "japanese" in desc_str:
+                lang_priority = 2
+                lang_sort_key = "japanese"
+
+            final_key = (os_priority, lang_priority, lang_sort_key)
+            return final_key
+
+        sorted_depots = sorted(self.depots.items(), key=get_sort_key)
+
+        # Separate depots into active (displayed) vs hidden (expandable)
+        active_depots = []
+        hidden_depots = []
+
+        for depot_id, depot_data in sorted_depots:
+            is_hidden = False
+            if self._hide_macos and _depot_is_macos(depot_data):
+                is_hidden = True
+            elif self._hide_android and _depot_is_android(depot_data):
+                is_hidden = True
+            elif getattr(self, "_filter_soundtracks", True):
+                desc_l = (depot_data.get("desc") or "").lower()
+                name_l = (depot_data.get("name") or "").lower()
+                if "soundtrack" in desc_l or "soundtrack" in name_l or "[ost]" in desc_l or " ost" in desc_l:
+                    is_hidden = True
+            if not is_hidden and getattr(self, "_hide_artbooks", True):
+                desc_l = (depot_data.get("desc") or "").lower()
+                name_l = (depot_data.get("name") or "").lower()
+                if "artbook" in desc_l or "artbook" in name_l or "wallpaper" in desc_l or "extra content" in desc_l:
+                    is_hidden = True
+            if not is_hidden and getattr(self, "_hide_demos", True):
+                desc_l = (depot_data.get("desc") or "").lower()
+                name_l = (depot_data.get("name") or "").lower()
+                if "demo" in desc_l or "trial" in desc_l or "playtest" in desc_l:
+                    is_hidden = True
+            if not is_hidden and getattr(self, "_hide_tools", True):
+                desc_l = (depot_data.get("desc") or "").lower()
+                name_l = (depot_data.get("name") or "").lower()
+                if "dedicated server" in desc_l or "editor" in desc_l or "sdk" in desc_l or " tool" in desc_l:
+                    is_hidden = True
+
+            if is_hidden:
+                hidden_depots.append((depot_id, depot_data))
             else:
-                border_color = "rgba(255, 193, 7, 0.35)"
-                bg_color = "rgba(255, 193, 7, 0.06)"
+                active_depots.append((depot_id, depot_data))
 
-        self.missing_depots_nudge_frame.setStyleSheet(f"""
-            QFrame#missing_depots_nudge {{
-                background-color: {bg_color};
-                border: 1px solid {border_color};
-                border-radius: 6px;
-            }}
-        """)
+        # Fallback if all depots were filtered out
+        if not active_depots and hidden_depots:
+            active_depots = hidden_depots
+            hidden_depots = []
 
-        sections_html = []
+        # Determine initial selection: if selected_depots is provided, use it; otherwise compute smart defaults
+        if self.selected_depots is not None:
+            pre_selected_set = set(str(d) for d in self.selected_depots)
+        else:
+            pre_selected_set = set(get_smart_default_depots(self.depots, target_platform="linux"))
 
-        def _fmt_name(raw_name: str) -> str:
-            if not raw_name:
-                return ""
-            clean = re.sub(r"^\[.*?\]\s*", "", str(raw_name)).strip()
-            if not clean:
-                return ""
-            return clean[:10] + "..." if len(clean) > 10 else clean
+        def _build_config_text(d_id, d_data, is_first=False):
+            original_desc = d_data.get("desc", "")
+            original_desc = re.sub(
+                r"\s*-\s*Depot\s*" + re.escape(str(d_id)),
+                "",
+                original_desc,
+                flags=re.IGNORECASE,
+            )
+            tags = ""
+            base_desc = original_desc.strip()
+            tags_match = re.match(r"^((?:\[.*?]\s*)*)(.*)", original_desc)
+            if tags_match:
+                tags = tags_match.group(1).strip()
+                base_desc = tags_match.group(2).strip()
 
-        # 1. Refetched depots section
-        if has_refetched:
-            if len(self.refetched_depots) == 1:
-                did = self.refetched_depots[0]
-                dinfo = self.depots.get(did) or self.depots.get(int(did)) or self.missing_depots_info.get(did, {})
-                dname = _fmt_name(dinfo.get("name") or dinfo.get("desc"))
-                name_str = f" - {dname}" if dname else ""
-                raw_size = int(dinfo.get("size") or 0)
-                sz_str = format_size(raw_size) if raw_size > 0 else "0 B"
-                sections_html.append(
-                    f"<b><span style='color: #4CAF50;'>Depot Refetched:</span></b> Depot {did}{name_str} ({sz_str}) refetched from Hubcap!"
-                )
+            is_generic_fallback = bool(
+                re.fullmatch(r"Depot \d+", base_desc, re.IGNORECASE)
+            )
+
+            if is_first:
+                if is_generic_fallback:
+                    final_desc = f"{self.game_name}".strip()
+                else:
+                    final_desc = base_desc
             else:
-                r_depots = list(self.refetched_depots)
-                r_list = ", ".join(r_depots) if len(r_depots) <= 4 else ", ".join(r_depots[:3]) + ", etc."
-                total_sz = sum(
-                    int((self.depots.get(d) or self.depots.get(int(d)) or self.missing_depots_info.get(d, {})).get("size") or 0)
-                    for d in r_depots
-                )
-                sz_str = format_size(total_sz) if total_sz > 0 else "0 B"
-                sections_html.append(
-                    f"<b><span style='color: #4CAF50;'>Depots Refetched:</span></b> {r_list} ({sz_str}) refetched from Hubcap!"
-                )
+                if is_generic_fallback:
+                    final_desc = ""
+                else:
+                    final_desc = base_desc
 
-        # 2. Missing depots section
-        if has_missing:
-            if len(self.missing_hubcap_depots) == 1:
-                did = self.missing_hubcap_depots[0]
-                dinfo = self.missing_depots_info.get(did, {})
-                dname = _fmt_name(dinfo.get("name") or dinfo.get("desc"))
-                name_str = f" - {dname}" if dname else ""
-                raw_size = int(dinfo.get("size") or 0)
-                sz_str = format_size(raw_size) if raw_size > 0 else "0 B"
-                suffix = "but it should not matter (0kb depot)" if raw_size == 0 else "contact hubcap server!"
-                m_accent = "#FFB300" if raw_size > 0 else "#FFC107"
-                sections_html.append(
-                    f"<b><span style='color: {m_accent};'>Missing depot:</span></b> {did}{name_str} ({sz_str}) is not cached in hubcap, {suffix}"
-                )
+            is_dlc = d_data.get("is_dlc", False) or "[dlc]" in original_desc.lower()
+            final_desc = re.sub(r"^DLC\s+\d+\s*-?\s*", "", final_desc, flags=re.IGNORECASE).strip()
+            if not final_desc and d_data.get("name"):
+                final_desc = d_data["name"]
+
+            oslist = (d_data.get("oslist") or "").lower()
+            os_tag = ""
+            if is_dlc:
+                os_tag = "[DLC]"
+            elif oslist == "windows":
+                os_tag = "[Windows]"
+            elif oslist == "linux":
+                os_tag = "[Linux]"
+            elif oslist in ("macos", "macosx"):
+                os_tag = "[macOS]"
+            elif "windows" in oslist and "linux" in oslist:
+                os_tag = "[Windows, Linux]"
+            elif "all" in oslist:
+                os_tag = "[All]"
+
+            display_tags = tags if tags else os_tag
+            if display_tags:
+                cfg_text = f"{display_tags}  {final_desc}".strip()
             else:
-                m_depots = list(self.missing_hubcap_depots)
-                m_list = ", ".join(m_depots) if len(m_depots) <= 4 else ", ".join(m_depots[:3]) + ", etc."
-                total_sz = sum(int(self.missing_depots_info.get(d, {}).get("size") or 0) for d in m_depots)
-                sz_str = format_size(total_sz) if total_sz > 0 else "0 B"
-                suffix = "but it should not matter (0kb depots)" if total_sz == 0 else "contact hubcap server!"
-                m_accent = "#FFB300" if total_sz > 0 else "#FFC107"
-                sections_html.append(
-                    f"<b><span style='color: {m_accent};'>Missing depots:</span></b> {m_list} ({sz_str}) is not cached in hubcap, {suffix}"
-                )
+                cfg_text = final_desc.strip()
 
-        full_html = (
-            f"<div style='color: rgba(255, 255, 255, 0.90); font-size: 9pt; line-height: 125%;'>"
-            + "<br>".join(sections_html)
-            + "</div>"
-        )
-        self.missing_depots_text_lbl.setText(full_html)
+            if not cfg_text or cfg_text == display_tags.strip():
+                cfg_text = f"{display_tags}  Depot {d_id}".strip() if display_tags else f"Depot {d_id}"
+
+            return cfg_text
+
+        include_hidden = getattr(self, "_show_hidden_depots", False) and bool(hidden_depots)
+        total_rows = len(active_depots) + len(self.missing_hubcap_depots)
+        if include_hidden:
+            total_rows += 1 + len(hidden_depots)
+        self.table_widget.setRowCount(total_rows)
+
+        row_idx = 0
+        is_first_depot = True
+
+        # 1. Tier 0: Populate Active Depots
+        for depot_id, depot_data in active_depots:
+            config_text = _build_config_text(depot_id, depot_data, is_first=is_first_depot)
+            is_first_depot = False
+
+            size_str = ""
+            if depot_data.get("size"):
+                try:
+                    size_bytes = int(depot_data["size"])
+                    size_str = format_size(size_bytes)
+                except (ValueError, TypeError):
+                    size_str = "0.00 B"
+            elif depot_data.get("size_str"):
+                size_str = depot_data["size_str"]
+
+            id_val = int(depot_id) if str(depot_id).isdigit() else 0
+            id_item = NumericTableWidgetItem(str(depot_id), id_val, tier=0)
+            id_item.setData(Qt.ItemDataRole.UserRole, str(depot_id))
+            id_item.setData(Qt.ItemDataRole.UserRole + 1, str(depot_id))
+            id_item.setData(Qt.ItemDataRole.UserRole + 2, "normal")
+
+            is_checked = True if self.is_single_depot else (str(depot_id) in pre_selected_set)
+            id_item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
+            id_item.setFlags(id_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsUserCheckable)
+
+            if str(depot_id) in getattr(self, "refetched_depots", []):
+                config_text = f"[Refetched]  {config_text}"
+
+            config_item = ConfigTableWidgetItem(config_text, tier=0)
+            config_item.setFlags(config_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+            raw_size = int(depot_data.get("size") or 0)
+            size_item = NumericTableWidgetItem(size_str, raw_size, tier=0)
+            size_item.setFlags(size_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+            self.table_widget.setItem(row_idx, 0, id_item)
+            self.table_widget.setItem(row_idx, 1, config_item)
+            self.table_widget.setItem(row_idx, 2, size_item)
+            row_idx += 1
+
+        # 2. Tier 1: Populate Missing Depots from Hubcap (Darker Greyscale, Completely Untoggleable & Unclickable)
+        darker_grey = QColor(135, 135, 135)
+        for did in self.missing_hubcap_depots:
+            minfo = self.missing_depots_info.get(did, {})
+            mname = minfo.get("name")
+            mraw_size = int(minfo.get("size") or 0)
+            msize_str = format_size(mraw_size)
+            hubcap_status = minfo.get("hubcap_status")
+            if hubcap_status in ("not_found", "404"):
+                tag = "[Unavailable on Hubcap (404)]"
+            else:
+                tag = "[Missing from Hubcap]"
+
+            if mname:
+                mconfig_text = f"{tag}  {mname}"
+            else:
+                mconfig_text = f"{tag}  Depot {did}"
+
+            mid_val = int(did) if str(did).isdigit() else 0
+            mid_item = NumericTableWidgetItem(str(did), mid_val, tier=1)
+            mid_item.setData(Qt.ItemDataRole.UserRole, str(did))
+            mid_item.setData(Qt.ItemDataRole.UserRole + 1, str(did))
+            mid_item.setData(Qt.ItemDataRole.UserRole + 2, "missing")
+            mid_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            mid_item.setForeground(darker_grey)
+
+            mconfig_item = ConfigTableWidgetItem(mconfig_text, tier=1)
+            mconfig_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            mconfig_item.setForeground(darker_grey)
+
+            msize_item = NumericTableWidgetItem(msize_str, mraw_size, tier=1)
+            msize_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            msize_item.setForeground(darker_grey)
+
+            self.table_widget.setItem(row_idx, 0, mid_item)
+            self.table_widget.setItem(row_idx, 1, mconfig_item)
+            self.table_widget.setItem(row_idx, 2, msize_item)
+            row_idx += 1
+
+        # 3. Tier 2 & 3: Populate Hidden Depots if enabled (Expander + Hidden Rows)
+        brighter_grey = QColor(195, 195, 195)
+        if include_hidden:
+            is_expanded = getattr(self, "_hidden_depots_expanded", False)
+            exp_id = NumericTableWidgetItem("▴" if is_expanded else "▾", 0, tier=2)
+            exp_id.setData(Qt.ItemDataRole.UserRole, "__expander__")
+            exp_id.setData(Qt.ItemDataRole.UserRole + 2, "expander")
+            exp_id.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            exp_id.setForeground(brighter_grey)
+            font_id = exp_id.font()
+            font_id.setBold(True)
+            exp_id.setFont(font_id)
+
+            exp_cfg = ConfigTableWidgetItem(f"Hidden Depots ({len(hidden_depots)})", tier=2)
+            exp_cfg.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            exp_cfg.setForeground(brighter_grey)
+            font_cfg = exp_cfg.font()
+            font_cfg.setBold(True)
+            exp_cfg.setFont(font_cfg)
+
+            action_text = "[Click to collapse]" if is_expanded else "[Click to expand]"
+            exp_size = NumericTableWidgetItem(action_text, 0, tier=2)
+            exp_size.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            exp_size.setForeground(brighter_grey)
+            font_size = exp_size.font()
+            font_size.setItalic(True)
+            exp_size.setFont(font_size)
+
+            self.table_widget.setItem(row_idx, 0, exp_id)
+            self.table_widget.setItem(row_idx, 1, exp_cfg)
+            self.table_widget.setItem(row_idx, 2, exp_size)
+            row_idx += 1
+
+            # Hidden depot rows (Tier 3)
+            for depot_id, depot_data in hidden_depots:
+                hconfig_text = _build_config_text(depot_id, depot_data, is_first=False)
+                hsize_str = ""
+                if depot_data.get("size"):
+                    try:
+                        hsize_bytes = int(depot_data["size"])
+                        hsize_str = format_size(hsize_bytes)
+                    except (ValueError, TypeError):
+                        hsize_str = "0.00 B"
+                elif depot_data.get("size_str"):
+                    hsize_str = depot_data["size_str"]
+
+                hid_val = int(depot_id) if str(depot_id).isdigit() else 0
+                hid_item = NumericTableWidgetItem(str(depot_id), hid_val, tier=3)
+                hid_item.setData(Qt.ItemDataRole.UserRole, str(depot_id))
+                hid_item.setData(Qt.ItemDataRole.UserRole + 1, str(depot_id))
+                hid_item.setData(Qt.ItemDataRole.UserRole + 2, "hidden_depot")
+                is_h_checked = str(depot_id) in pre_selected_set
+                hid_item.setCheckState(Qt.CheckState.Checked if is_h_checked else Qt.CheckState.Unchecked)
+                hid_item.setFlags(hid_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsUserCheckable)
+                hid_item.setForeground(brighter_grey)
+
+                hconfig_item = ConfigTableWidgetItem(hconfig_text, tier=3)
+                hconfig_item.setFlags(hconfig_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                hconfig_item.setForeground(brighter_grey)
+
+                hraw_size = int(depot_data.get("size") or 0)
+                hsize_item = NumericTableWidgetItem(hsize_str, hraw_size, tier=3)
+                hsize_item.setFlags(hsize_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                hsize_item.setForeground(brighter_grey)
+
+                self.table_widget.setItem(row_idx, 0, hid_item)
+                self.table_widget.setItem(row_idx, 1, hconfig_item)
+                self.table_widget.setItem(row_idx, 2, hsize_item)
+                self.table_widget.setRowHidden(row_idx, not is_expanded)
+                row_idx += 1
+
+        self.table_widget.setRowCount(row_idx)
+        self.table_widget.setSortingEnabled(True)
 
     def _resolve_missing_depots_info(self):
         """Resolves metadata (name, size, oslist) for missing_hubcap_depots (fast local DB first, async network)."""
@@ -1264,7 +1154,6 @@ class DepotSelectionDialog(QDialog):
 
     def _on_missing_depots_updated(self):
         """Called on the main thread when async steamcmd metadata resolution finishes."""
-        self._refresh_missing_depots_banner()
         if hasattr(self, "table_widget") and self.table_widget:
             for row in range(self.table_widget.rowCount()):
                 id_item = self.table_widget.item(row, 0)
