@@ -20,6 +20,7 @@ from utils.settings import get_settings
 from utils.version import app_version
 from .assets import (
     BOOK_SVG,
+    DISCORD_SVG,
     GEAR_SVG,
     MAXIMIZE,
     MINIMIZE,
@@ -181,6 +182,11 @@ class BottomTitleBar(QFrame):
         )
         layout.addWidget(self.settings_button)
 
+        self.discord_button = self._create_svg_button(
+            DISCORD_SVG, self._open_discord, "Join Discord (Hubcap's Manifest)"
+        )
+        layout.addWidget(self.discord_button)
+
         self.minimize_button = self._create_svg_button(
             MINIMIZE, self._minimize_window, "Minimize"
         )
@@ -273,6 +279,7 @@ class BottomTitleBar(QFrame):
             self.search_button,
             self.game_library_button,
             self.settings_button,
+            self.discord_button,
             self.close_button,
         ]
 
@@ -291,6 +298,7 @@ class BottomTitleBar(QFrame):
             (self.search_button, SEARCH_SVG),
             (self.game_library_button, BOOK_SVG),
             (self.settings_button, GEAR_SVG),
+            (self.discord_button, DISCORD_SVG),
             (self.close_button, POWER_SVG),
         ]
 
@@ -419,6 +427,13 @@ class BottomTitleBar(QFrame):
     def _close_window(self) -> None:
         """Close the window."""
         self.parent_window.close()
+
+    def _open_discord(self) -> None:
+        """Open the Hubcaps Manifest Discord server."""
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl("https://discord.gg/hubcapsmanifest"))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press for window movement."""
