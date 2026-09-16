@@ -96,6 +96,11 @@ from ui.dialogs.game_details.tools_tab import (
     handle_move_dlc_to_dlcdata,
 )
 
+from ui.dialogs.game_details.shsah_reborn import (
+    init_achievements_tab,
+    ensure_achievements_loaded,
+)
+
 from ui.dialogs.game_details.workshop_tab import (
     init_workshop_tab,
     scan_workshop_mods_async,
@@ -349,11 +354,13 @@ class GameDetailsDialogV2(QDialog):
             ("Info", 0),
             ("Builds", 1),
             ("Tools", 2),
-            ("Workshop", 3),
-            ("Tickets", 4),
+            ("Achievements", 3),
+            ("Workshop", 4),
+            ("Tickets", 5),
         ]
-        self.ws_page_index = 3
-        self._tickets_tab_index = 4
+        self.achievements_page_index = 3
+        self.ws_page_index = 4
+        self._tickets_tab_index = 5
 
         for label, idx in self._pages_info:
             btn = QPushButton(label)
@@ -394,6 +401,7 @@ class GameDetailsDialogV2(QDialog):
         self._init_info_tab()
         self._init_builds_tab()
         self._init_tools_tab()
+        self._init_achievements_tab()
         self._init_workshop_tab()
         self._init_tickets_tab()
         root.addWidget(self.stacked, 1)
@@ -429,6 +437,8 @@ class GameDetailsDialogV2(QDialog):
 
         if index == 1:
             self._ensure_builds_loaded()
+        elif hasattr(self, "achievements_page_index") and index == self.achievements_page_index:
+            self._ensure_achievements_loaded()
         elif hasattr(self, "ws_page_index") and index == self.ws_page_index:
             self._ensure_workshop_loaded()
 
@@ -680,6 +690,15 @@ class GameDetailsDialogV2(QDialog):
 
     def _handle_move_dlc_to_dlcdata(self):
         handle_move_dlc_to_dlcdata(self)
+
+    # ──────────────────────────────────────────
+    #  Achievements Tab Delegations (SHSAH Reborn)
+    # ──────────────────────────────────────────
+    def _init_achievements_tab(self):
+        init_achievements_tab(self)
+
+    def _ensure_achievements_loaded(self):
+        ensure_achievements_loaded(self)
 
     # ──────────────────────────────────────────
     #  Workshop Tab Delegations

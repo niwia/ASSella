@@ -52,6 +52,11 @@ from ui.dialogs.game_details.workshop_tab import (
     update_workshop_items,
 )
 
+from ui.dialogs.game_details.shsah_reborn import (
+    init_achievements_tab,
+    ensure_achievements_loaded,
+)
+
 from ui.dialogs.game_details.tickets_tab import (
     init_tickets_tab,
     handle_ticket_file_import,
@@ -63,6 +68,8 @@ from ui.dialogs.game_details.tickets_tab import (
 )
 
 __all__ = [
+    "init_achievements_tab",
+    "ensure_achievements_loaded",
     "SwitchToggle",
     "CenteredComboBox",
     "HeroBanner",

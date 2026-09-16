@@ -183,7 +183,7 @@ class BottomTitleBar(QFrame):
         layout.addWidget(self.settings_button)
 
         self.discord_button = self._create_svg_button(
-            DISCORD_SVG, self._open_discord, "Join Discord (Hubcap's Manifest)"
+            DISCORD_SVG, self._open_discord, "Hubcap Manifest"
         )
         layout.addWidget(self.discord_button)
 
