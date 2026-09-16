@@ -123,6 +123,7 @@ class GameDetailsDialogV2(QDialog):
     builds_error = pyqtSignal(str)
     build_depots_loaded = pyqtSignal(str, dict)
     build_depots_error = pyqtSignal(str)
+    workshop_check_finished = pyqtSignal(bool)
 
     # Rollback toggle: set False to use the old 65px hero layout
     USE_V2_HERO = True
@@ -144,6 +145,7 @@ class GameDetailsDialogV2(QDialog):
         self.builds_error.connect(self._on_builds_error)
         self.build_depots_loaded.connect(self._on_build_depots_loaded)
         self.build_depots_error.connect(self._on_build_depots_error)
+        self.workshop_check_finished.connect(self._on_workshop_check_finished)
 
         self.accent_color = getattr(parent, "accent_color", "#a1c9fd")
         self.background_color = getattr(parent, "background_color", "#111318")
@@ -153,37 +155,32 @@ class GameDetailsDialogV2(QDialog):
         self.resize(580, 480)
         self.setModal(True)
 
-        # Check if game supports Steam Workshop in a resource-friendly way
-        from utils.workshop_helpers import check_game_has_workshop
-        self._has_workshop = check_game_has_workshop(self.appid, self.game_data)
+        # Check if game supports Steam Workshop fast (local & cached only on UI thread)
+        from utils.workshop_helpers import check_game_has_workshop, check_game_has_workshop_async
+        self._has_workshop = check_game_has_workshop(self.appid, self.game_data, allow_network=False)
 
         self._apply_stylesheet()
         self._setup_ui()
 
-        # Load initial cached builds and trigger background build check if Byparr is running
+        # If workshop status not confirmed yet, check Steam API in background
+        if not self._has_workshop:
+            check_game_has_workshop_async(self.appid, self.game_data, callback=self.workshop_check_finished.emit)
+
+        # Initial cached builds status for instant display (scraping is deferred until user clicks Builds tab)
         aid = int(self.appid) if self.appid.isdigit() else 0
-        cached_builds, cache_age = self.builds_cache.get_builds_with_age(aid)
-        CACHE_FRESH_SECONDS = 3600  # Don't re-scrape if under 1 hour old
+        self._cached_builds, self._cache_age = self.builds_cache.get_builds_with_age(aid)
+        self._builds_fetch_requested = False
 
-        try:
-            from core.steamdb_scraper import ByparrManager
-            has_byparr = ByparrManager.find_byparr_dir() is not None
-        except Exception:
-            has_byparr = False
-
-        if cached_builds:
-            self._populate_builds_cards(cached_builds)
+        if self._cached_builds:
+            self._populate_builds_cards(self._cached_builds)
             self.builds_center_stack.setCurrentIndex(1)
-            if has_byparr and (cache_age < 0 or cache_age >= CACHE_FRESH_SECONDS):
-                # Stale (or unknown age) — trigger quiet background refresh if Byparr is installed
-                QTimer.singleShot(250, self._fetch_steamdb_builds_async)
         else:
-            if has_byparr:
-                self.builds_center_stack.setCurrentIndex(0)
-                QTimer.singleShot(250, self._fetch_steamdb_builds_async)
-            else:
-                # Byparr not installed: immediately show Manual fallback view
-                self.builds_center_stack.setCurrentIndex(2)
+            try:
+                from core.steamdb_scraper import ByparrManager
+                has_byparr = ByparrManager.find_byparr_dir() is not None
+            except Exception:
+                has_byparr = False
+            self.builds_center_stack.setCurrentIndex(0 if has_byparr else 2)
 
         if self.parent():
             from ui.dialogs.dialog_raiser import DialogRaiser
@@ -193,9 +190,6 @@ class GameDetailsDialogV2(QDialog):
         main_win = parent.main_window if hasattr(parent, "main_window") else None
         if main_win and hasattr(main_win, "progress_bar"):
             main_win.progress_bar.valueChanged.connect(self._on_main_progress_changed)
-
-        if self._has_workshop:
-            self._scan_workshop_mods_async()
 
     def _on_main_progress_changed(self, value):
         try:
@@ -344,13 +338,15 @@ class GameDetailsDialogV2(QDialog):
         tab_bar_layout.setSpacing(0)
 
         self._tab_buttons = []
-        self._pages_info = [("Info", 0), ("Builds", 1), ("Tools", 2)]
-        p_idx = 3
-        if self._has_workshop:
-            self._pages_info.append(("Workshop", p_idx))
-            p_idx += 1
-        self._tickets_tab_index = p_idx
-        self._pages_info.append(("Tickets", p_idx))
+        self._pages_info = [
+            ("Info", 0),
+            ("Builds", 1),
+            ("Tools", 2),
+            ("Workshop", 3),
+            ("Tickets", 4),
+        ]
+        self.ws_page_index = 3
+        self._tickets_tab_index = 4
 
         for label, idx in self._pages_info:
             btn = QPushButton(label)
@@ -363,9 +359,8 @@ class GameDetailsDialogV2(QDialog):
             self._tab_buttons.append(btn)
             if label == "Workshop":
                 self.ws_tab_btn = btn
-                self.ws_page_index = idx
                 from utils.dlc_helpers import is_dlc_only_mode
-                if is_dlc_only_mode(self.appid):
+                if is_dlc_only_mode(self.appid) or not self._has_workshop:
                     btn.setVisible(False)
 
         tab_bar_layout.addStretch()
@@ -392,8 +387,7 @@ class GameDetailsDialogV2(QDialog):
         self._init_info_tab()
         self._init_builds_tab()
         self._init_tools_tab()
-        if self._has_workshop:
-            self._init_workshop_tab()
+        self._init_workshop_tab()
         self._init_tickets_tab()
         root.addWidget(self.stacked, 1)
 
@@ -425,6 +419,47 @@ class GameDetailsDialogV2(QDialog):
                     }}
                     QPushButton:hover {{ color: {self.accent_color}; }}
                 """)
+
+        if index == 1:
+            self._ensure_builds_loaded()
+        elif hasattr(self, "ws_page_index") and index == self.ws_page_index:
+            self._ensure_workshop_loaded()
+
+    def _ensure_builds_loaded(self):
+        if getattr(self, "_builds_fetch_requested", False):
+            return
+        self._builds_fetch_requested = True
+        CACHE_FRESH_SECONDS = 3600
+        try:
+            from core.steamdb_scraper import ByparrManager
+            has_byparr = ByparrManager.find_byparr_dir() is not None
+        except Exception:
+            has_byparr = False
+
+        if not getattr(self, "_cached_builds", None):
+            if has_byparr:
+                self.builds_center_stack.setCurrentIndex(0)
+                self._fetch_steamdb_builds_async()
+            else:
+                self.builds_center_stack.setCurrentIndex(2)
+        elif has_byparr and (self._cache_age < 0 or self._cache_age >= CACHE_FRESH_SECONDS):
+            self._fetch_steamdb_builds_async()
+
+    def _ensure_workshop_loaded(self):
+        if getattr(self, "_workshop_scanned", False):
+            return
+        self._workshop_scanned = True
+        self._scan_workshop_mods_async()
+
+    @pyqtSlot(bool)
+    def _on_workshop_check_finished(self, has_ws: bool):
+        from utils.dlc_helpers import is_dlc_only_mode
+        if is_dlc_only_mode(self.appid):
+            return
+        if has_ws:
+            self._has_workshop = True
+            if hasattr(self, "ws_tab_btn") and self.ws_tab_btn:
+                self.ws_tab_btn.setVisible(True)
 
     # ──────────────────────────────────────────
     #  Hero Header & Helpers Delegations

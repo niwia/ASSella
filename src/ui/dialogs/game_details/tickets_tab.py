@@ -172,7 +172,7 @@ def handle_ticket_file_import(dialog, file_path: str) -> None:
     ok, msg = import_ticket(file_path, dialog.appid)
     if ok:
         QMessageBox.information(dialog, "Ticket Imported", f"✓ {msg}")
-        dialog._switch_tab(getattr(dialog, "_tickets_tab_index", 3))
+        dialog._switch_tab(getattr(dialog, "_tickets_tab_index", 4))
     else:
         QMessageBox.critical(dialog, "Import Failed", msg)
 
@@ -187,7 +187,7 @@ def handle_ticket_text_import(dialog, raw_text: str) -> None:
     ok, msg = import_ticket(raw_text, dialog.appid)
     if ok:
         QMessageBox.information(dialog, "Ticket Imported", f"✓ {msg}")
-        dialog._switch_tab(getattr(dialog, "_tickets_tab_index", 3))
+        dialog._switch_tab(getattr(dialog, "_tickets_tab_index", 4))
     else:
         QMessageBox.critical(dialog, "Import Failed", msg)
 
@@ -243,6 +243,6 @@ def delete_installed_ticket(dialog) -> None:
         ok, msg = remove_ticket(dialog.appid)
         if ok:
             QMessageBox.information(dialog, "Ticket Removed", f"✓ {msg}")
-            dialog._switch_tab(getattr(dialog, "_tickets_tab_index", 3))
+            dialog._switch_tab(getattr(dialog, "_tickets_tab_index", 4))
         else:
             QMessageBox.critical(dialog, "Removal Failed", msg)

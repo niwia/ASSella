@@ -343,7 +343,7 @@ def init_info_tab(dialog) -> None:
     dialog._uninstall_inner.setSpacing(6)
     dialog._uninstall_content = QVBoxLayout()
     dialog._uninstall_inner.addLayout(dialog._uninstall_content)
-    build_uninstall_panel(dialog)
+    dialog._uninstall_panel_built = False
 
     footer_layout.addWidget(dialog._uninstall_panel)
     info_tab_layout.addWidget(dialog.footer_widget)
@@ -1039,6 +1039,7 @@ def build_uninstall_panel(dialog) -> None:
                 dialog.game_data, dialog, {
                     key: cb.isChecked() for key, cb in getattr(dialog, "_uninstall_opts", {}).items()
                 }))
+        dialog._uninstall_panel_built = True
 
 
 def do_standard_uninstall(dialog) -> None:
@@ -1057,6 +1058,8 @@ def do_standard_uninstall(dialog) -> None:
 
 def toggle_uninstall_panel(dialog) -> None:
     dialog._uninstall_expanded = not dialog._uninstall_expanded
+    if dialog._uninstall_expanded and not getattr(dialog, "_uninstall_panel_built", False):
+        build_uninstall_panel(dialog)
     dialog._uninstall_panel.setVisible(dialog._uninstall_expanded)
     if hasattr(dialog, "_adv_uninstall_btn") and dialog._adv_uninstall_btn:
         dialog._adv_uninstall_btn.setChecked(dialog._uninstall_expanded)
@@ -1101,7 +1104,10 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
                 )
         except Exception as e:
             logger.debug(f"DLC sync error: {e}")
-    build_uninstall_panel(dialog)
+    if getattr(dialog, "_uninstall_expanded", False):
+        build_uninstall_panel(dialog)
+    else:
+        dialog._uninstall_panel_built = False
     dialog._refresh_drm_emulation_state()
     dialog.update_title()
 
@@ -1126,8 +1132,7 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
             dialog.sls_input.setEnabled(True)
         update_eos_btn_state(dialog)
         if hasattr(dialog, "ws_tab_btn") and dialog.ws_tab_btn:
-            from utils.workshop_helpers import check_game_has_workshop
-            if check_game_has_workshop(dialog.appid, dialog.game_data):
+            if getattr(dialog, "_has_workshop", False):
                 dialog.ws_tab_btn.setVisible(True)
 
 

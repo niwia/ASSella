@@ -2,8 +2,9 @@ import os
 import re
 import shutil
 import logging
+import threading
 import requests
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -120,14 +121,14 @@ def delete_workshop_item(appid: str, wid: str, mod_path: str) -> bool:
     return success
 
 
-def check_game_has_workshop(appid: str, game_data: Optional[dict] = None) -> bool:
+def check_game_has_workshop(appid: str, game_data: Optional[dict] = None, allow_network: bool = True) -> bool:
     """Check if a game has Steam Workshop support.
     Checks:
     0. DLC-only mode: games in DLC-only mode never show workshop
     1. Local filesystem for workshop content or appworkshop manifest
     2. Cached result from QSettings
     3. game_data depots metadata for 'workshopdepots'
-    4. Steam store API categories (category 30 = Workshop)
+    4. Steam store API categories (category 30 = Workshop) [only if allow_network=True]
     """
     if not appid or str(appid) in ("0", "N/A", "unknown"):
         return False
@@ -177,6 +178,9 @@ def check_game_has_workshop(appid: str, game_data: Optional[dict] = None) -> boo
                 settings.setValue(f"has_workshop/{appid_str}", True)
             return True
 
+    if not allow_network:
+        return False
+
     # 4. Check Steam Store categories (Category 30 = Steam Workshop)
     try:
         url = f"https://store.steampowered.com/api/appdetails?appids={appid_str}&filters=categories"
@@ -193,6 +197,28 @@ def check_game_has_workshop(appid: str, game_data: Optional[dict] = None) -> boo
         logger.debug(f"Could not check workshop support for appid {appid_str}: {e}")
 
     return False
+
+
+def check_game_has_workshop_async(
+    appid: str,
+    game_data: Optional[dict] = None,
+    callback: Optional[Callable[[bool], None]] = None,
+) -> threading.Thread:
+    """Perform workshop check asynchronously in a background daemon thread and invoke callback(bool)."""
+    def _worker():
+        try:
+            res = bool(check_game_has_workshop(appid, game_data=game_data, allow_network=True))
+        except Exception:
+            res = False
+        if callback:
+            try:
+                callback(res)
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    return thread
 
 
 def extract_workshop_id(raw: str) -> Optional[str]:

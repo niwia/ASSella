@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 class EOSDetector:
     """Class to detect and manage Epic Online Services (EOS) proxy usage for a Steam game."""
 
+    _bundled_proxy_hash_cache: Optional[str] = None
+
     @staticmethod
     def get_file_sha256(file_path: Union[str, Path]) -> Optional[str]:
         """Calculate SHA-256 hash of a file."""
@@ -39,6 +41,8 @@ class EOSDetector:
     def get_proxy_dll_hash(cls, proxy_src_path: Optional[Union[str, Path]] = None) -> Optional[str]:
         """Get the SHA-256 hash of the bundled proxy DLL."""
         if proxy_src_path is None:
+            if cls._bundled_proxy_hash_cache is not None:
+                return cls._bundled_proxy_hash_cache
             try:
                 from utils.paths import Paths
                 proxy_src_path = Paths.deps("EOSSDK-Win64-Shipping.dll")
@@ -49,23 +53,37 @@ class EOSDetector:
         if not src_path.exists():
             return None
 
-        return cls.get_file_sha256(src_path)
+        h = cls.get_file_sha256(src_path)
+        if proxy_src_path is None or str(proxy_src_path).endswith("deps/EOSSDK-Win64-Shipping.dll"):
+            cls._bundled_proxy_hash_cache = h
+        return h
 
     @staticmethod
-    def get_eos_dll_paths(game_directory: Union[str, Path]) -> List[Path]:
+    def get_eos_dll_paths(game_directory: Union[str, Path], max_depth: int = 4) -> List[Path]:
         """Find all instances of EOSSDK-Win64-Shipping.dll or EOSSDK-Win64-Shipping.yes in the game folder."""
         dir_path = Path(game_directory)
         found_paths = []
         if not dir_path.exists() or not dir_path.is_dir():
             return found_paths
 
+        PRUNE_DIRS = {
+            ".depotdownloader", "__pycache__", "content", "paks", "pak", "assets",
+            "sound", "sounds", "audio", "music", "media", "video", "videos", "movies",
+            "textures", "cache", "saves", "screenshots", "shadercache", "streamingassets",
+            "node_modules", ".git"
+        }
+
+        base_depth = len(dir_path.parts)
         try:
-            # Walk directory looking for specific filenames
-            for root, _, files in os.walk(dir_path):
-                # Skip .DepotDownloader folder staging files
-                parts = Path(root).parts
-                if ".DepotDownloader" in parts:
+            for root, dirs, files in os.walk(dir_path):
+                rel_depth = len(Path(root).parts) - base_depth
+                if rel_depth >= max_depth:
+                    dirs[:] = []
                     continue
+
+                # Prune non-binary asset and cache directories in-place
+                dirs[:] = [d for d in dirs if d.lower() not in PRUNE_DIRS and not d.startswith(".")]
+
                 for file in files:
                     if file.lower() in ("eossdk-win64-shipping.dll", "eossdk-win64-shipping.yes"):
                         found_paths.append(Path(root) / file)
