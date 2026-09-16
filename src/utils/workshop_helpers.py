@@ -199,6 +199,67 @@ def check_game_has_workshop(appid: str, game_data: Optional[dict] = None, allow_
     return False
 
 
+def has_downloaded_workshop_content(appid: str) -> bool:
+    """Check if the local workshop folder has any downloaded content/mods for this appid."""
+    if not appid or str(appid) in ("0", "N/A", "unknown"):
+        return False
+    appid_str = str(appid).strip()
+    try:
+        from core.steam_helpers import get_steam_libraries
+        for lib in get_steam_libraries():
+            ws_dir = os.path.join(lib, "steamapps", "workshop", "content", appid_str)
+            if os.path.isdir(ws_dir):
+                try:
+                    entries = [e for e in os.listdir(ws_dir) if not e.startswith(".")]
+                    if entries:
+                        return True
+                except Exception:
+                    pass
+            acf_path = os.path.join(lib, "steamapps", "workshop", f"appworkshop_{appid_str}.acf")
+            if os.path.isfile(acf_path) and os.path.getsize(acf_path) > 0:
+                try:
+                    with open(acf_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    if '"WorkshopItemDetails"' in content and re.search(r'"\d+"\s*\{', content):
+                        return True
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.debug(f"Error checking local workshop content for {appid_str}: {e}")
+    return False
+
+
+def check_game_workshop_available_async(
+    appid: str,
+    game_data: Optional[dict] = None,
+    callback: Optional[Callable[[bool], None]] = None,
+) -> threading.Thread:
+    """Check if game both has Workshop support AND has downloaded workshop content.
+    Runs entirely in background daemon thread to avoid affecting dialog load time.
+    """
+    def _worker():
+        try:
+            # 1. Fast local check: does the game have downloaded workshop content?
+            has_content = has_downloaded_workshop_content(appid)
+            if not has_content:
+                if callback:
+                    callback(False)
+                return
+
+            # 2. Check if the game has workshop support
+            has_ws = check_game_has_workshop(appid, game_data=game_data, allow_network=True)
+            if callback:
+                callback(bool(has_content and has_ws))
+        except Exception as e:
+            logger.debug(f"Error in check_game_workshop_available_async: {e}")
+            if callback:
+                callback(False)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    return thread
+
+
 def check_game_has_workshop_async(
     appid: str,
     game_data: Optional[dict] = None,

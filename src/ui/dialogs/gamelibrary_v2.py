@@ -158,20 +158,19 @@ class GameDetailsDialogV2(QDialog):
         self.background_color = getattr(parent, "background_color", "#111318")
 
         self.setWindowTitle(f"{game_data.get('game_name', 'Game')} — Details")
-        self.setMinimumSize(540, 420)
-        self.resize(580, 480)
+        self.setMinimumSize(560, 440)
+        self.resize(620, 500)
         self.setModal(True)
 
-        # Check if game supports Steam Workshop fast (local & cached only on UI thread)
-        from utils.workshop_helpers import check_game_has_workshop, check_game_has_workshop_async
-        self._has_workshop = check_game_has_workshop(self.appid, self.game_data, allow_network=False)
+        # Workshop tab is shown only if game has workshop AND has downloaded content
+        self._has_workshop = False
 
         self._apply_stylesheet()
         self._setup_ui()
 
-        # If workshop status not confirmed yet, check Steam API in background
-        if not self._has_workshop:
-            check_game_has_workshop_async(self.appid, self.game_data, callback=self.workshop_check_finished.emit)
+        # Check workshop availability and downloaded content in background thread
+        from utils.workshop_helpers import check_game_workshop_available_async
+        check_game_workshop_available_async(self.appid, self.game_data, callback=self.workshop_check_finished.emit)
 
         # Initial cached builds status for instant display (scraping is deferred until user clicks Builds tab)
         aid = int(self.appid) if self.appid.isdigit() else 0
@@ -346,8 +345,8 @@ class GameDetailsDialogV2(QDialog):
             }
         """)
         tab_bar_layout = QHBoxLayout(tab_bar_frame)
-        tab_bar_layout.setContentsMargins(10, 0, 10, 0)
-        tab_bar_layout.setSpacing(0)
+        tab_bar_layout.setContentsMargins(8, 0, 8, 0)
+        tab_bar_layout.setSpacing(2)
 
         self._tab_buttons = []
         self._pages_info = [
@@ -367,7 +366,7 @@ class GameDetailsDialogV2(QDialog):
             btn.setFlat(True)
             btn.setCheckable(True)
             btn.setFixedHeight(30)
-            btn.setStyleSheet("border: none; border-radius: 0px; padding: 0px 16px; font-size: 9.5pt;")
+            btn.setStyleSheet("border: none; border-radius: 0px; padding: 0px 10px; font-size: 9pt;")
             btn.clicked.connect(lambda _c, i=idx: self._switch_tab(i))
             tab_bar_layout.addWidget(btn)
             self._tab_buttons.append(btn)
@@ -385,7 +384,7 @@ class GameDetailsDialogV2(QDialog):
         close_btn.setStyleSheet(f"""
             QPushButton {{
                 border: none; border-radius: 0;
-                padding: 0 10px; font-size: 9.5pt;
+                padding: 0 8px; font-size: 9pt;
                 color: rgba(255, 255, 255, 0.6);
             }}
             QPushButton:hover {{ color: {self.accent_color}; }}
@@ -419,7 +418,7 @@ class GameDetailsDialogV2(QDialog):
                     QPushButton {{
                         border: none; border-radius: 0;
                         border-bottom: 2px solid {self.accent_color};
-                        padding: 0px 16px; font-size: 9.5pt;
+                        padding: 0px 10px; font-size: 9pt;
                         color: {self.accent_color};
                         font-weight: bold;
                     }}
@@ -429,8 +428,8 @@ class GameDetailsDialogV2(QDialog):
                 btn.setStyleSheet(f"""
                     QPushButton {{
                         border: none; border-radius: 0;
-                        padding: 0px 16px; font-size: 9.5pt;
-                        color: rgba(255, 255, 255, 0.6);
+                        padding: 0px 10px; font-size: 9pt;
+                        color: rgba(255, 255, 255, 0.65);
                     }}
                     QPushButton:hover {{ color: {self.accent_color}; }}
                 """)
