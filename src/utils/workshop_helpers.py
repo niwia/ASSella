@@ -193,3 +193,28 @@ def check_game_has_workshop(appid: str, game_data: Optional[dict] = None) -> boo
         logger.debug(f"Could not check workshop support for appid {appid_str}: {e}")
 
     return False
+
+
+def extract_workshop_id(raw: str) -> Optional[str]:
+    """Extract Workshop PublishedFileId from a URL or raw ID string."""
+    raw = (raw or "").strip()
+    m = re.search(r"[?&]id=(\d+)", raw)
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"\d+", raw):
+        return raw
+    return None
+
+
+def parse_workshop_ids(text: str) -> List[str]:
+    """Extract a deduplicated list of valid Workshop IDs from a whitespace/comma-delimited text block."""
+    tokens = re.split(r"[\s,]+", text or "")
+    ids = []
+    for t in tokens:
+        t = t.strip()
+        if not t:
+            continue
+        wid = extract_workshop_id(t)
+        if wid:
+            ids.append(wid)
+    return list(dict.fromkeys(ids))

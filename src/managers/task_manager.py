@@ -373,7 +373,7 @@ class TaskManager(QObject):
         show_timer = (is_single and auto_skip_single_choice and has_default_dl)
 
         if show_timer:
-            from ui.dialogs.fetchmanifest import SingleDepotTimerDialog
+            from ui.dialogs.single_depot_timer_dialog import SingleDepotTimerDialog
             dlg = SingleDepotTimerDialog(
                 self.main_window,
                 "Single Depot Option",
