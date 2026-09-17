@@ -1097,10 +1097,16 @@ def do_dlc_uninstall(dialog) -> None:
 def on_dlc_only_toggled(dialog, state: bool) -> None:
     if state:
         try:
-            from ui.dialogs.dlc_warning_dialog import show_dlc_mode_warning
+            try:
+                from ui.dialogs.dlc_warning_dialog import show_dlc_mode_warning
+            except ImportError:
+                try:
+                    from ..dlc_warning_dialog import show_dlc_mode_warning
+                except ImportError:
+                    from dlc_warning_dialog import show_dlc_mode_warning
             show_dlc_mode_warning(dialog)
         except Exception as e:
-            logger.debug(f"DLC warning dialog error: {e}")
+            logger.warning(f"DLC warning dialog error: {e}")
     if hasattr(dialog, "dlc_tile") and dialog.dlc_tile:
         dialog.dlc_tile.update_state(state, dialog.accent_color)
     if dialog.settings:

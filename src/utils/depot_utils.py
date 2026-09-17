@@ -88,6 +88,46 @@ def is_zero_byte_depot(dinfo: Any, branch: str = "public") -> bool:
     return False
 
 
+def extract_depot_size(dinfo: Any, branch: str = "public") -> Optional[int]:
+    """Extract depot size in bytes from size, maxsize, or manifest entries."""
+    if not isinstance(dinfo, dict):
+        return None
+    for k in ("size", "maxsize"):
+        val = dinfo.get(k)
+        if val is not None:
+            try:
+                s_int = int(str(val).strip())
+                if s_int > 0:
+                    return s_int
+            except (ValueError, TypeError):
+                pass
+    manifests = dinfo.get("manifests")
+    if isinstance(manifests, dict):
+        b_entry = manifests.get(branch) or manifests.get("public")
+        if isinstance(b_entry, dict):
+            for s_key in ("size", "download"):
+                val = b_entry.get(s_key)
+                if val is not None:
+                    try:
+                        s_int = int(str(val).strip())
+                        if s_int > 0:
+                            return s_int
+                    except (ValueError, TypeError):
+                        pass
+        for m_val in manifests.values():
+            if isinstance(m_val, dict):
+                for s_key in ("size", "download"):
+                    val = m_val.get(s_key)
+                    if val is not None:
+                        try:
+                            s_int = int(str(val).strip())
+                            if s_int > 0:
+                                return s_int
+                        except (ValueError, TypeError):
+                            pass
+    return None
+
+
 def is_os_filtered(dinfo: Any, hide_macos: bool, hide_android: bool) -> bool:
     """True if depot OS matches an OS category the user opted to filter out."""
     if not isinstance(dinfo, dict):
@@ -278,6 +318,10 @@ def check_hubcap_vs_steam_depots(
         if did_str in local_manifest_map:
             continue
         dname = dinfo.get("name") or f"Depot {did_str}"
+        if not dinfo.get("size"):
+            extracted_sz = extract_depot_size(dinfo, branch=b_key)
+            if extracted_sz:
+                dinfo["size"] = extracted_sz
         missing_from_hubcap.append(did_str)
         missing_depots_info[did_str] = dinfo
         missing_for_fetch.append((did_str, current_mid, dname))

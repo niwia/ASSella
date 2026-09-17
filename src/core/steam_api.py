@@ -265,8 +265,8 @@ def fetch_steamcmd_info(app_id: str, include_header: bool = True) -> dict:
                                 else manifest_public
                             )
                             depot_size = None
-                            if isinstance(manifest_public, dict) and manifest_public.get("size"):
-                                depot_size = manifest_public["size"]
+                            if isinstance(manifest_public, dict) and (manifest_public.get("size") or manifest_public.get("download")):
+                                depot_size = manifest_public.get("size") or manifest_public.get("download")
                             elif depot_data.get("maxsize"):
                                 depot_size = depot_data["maxsize"]
 
@@ -654,8 +654,15 @@ def _fetch_with_steam_client(app_id, access_token=None):
                     # Also store the raw manifests dictionary for branch resolution
                     raw_manifests = manifests_dict if isinstance(manifests_dict, dict) else {}
 
-                    # Extract raw size directly from API
+                    # Extract raw size directly from API or manifest entries
                     raw_size = value.get("maxsize")
+                    if not raw_size and isinstance(public_manifest, dict):
+                        raw_size = public_manifest.get("size") or public_manifest.get("download")
+                    if not raw_size and isinstance(manifests_dict, dict):
+                        for m_entry in manifests_dict.values():
+                            if isinstance(m_entry, dict) and (m_entry.get("size") or m_entry.get("download")):
+                                raw_size = m_entry.get("size") or m_entry.get("download")
+                                break
                     logger.debug(
                         f"Depot {depot_id}: Found raw size from API: {raw_size} (Type: {type(raw_size)})"
                     )

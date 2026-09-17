@@ -31,6 +31,17 @@ from utils.image_fetcher import ImageFetcher
 from utils.settings import get_settings
 from ui.dialogs.dialog_helpers import create_standard_buttons
 
+try:
+    from ui.dialogs.dlc_warning_dialog import show_dlc_mode_warning
+except ImportError:
+    try:
+        from .dlc_warning_dialog import show_dlc_mode_warning
+    except ImportError:
+        try:
+            from dlc_warning_dialog import show_dlc_mode_warning
+        except ImportError:
+            show_dlc_mode_warning = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -638,7 +649,13 @@ class DepotSelectionDialog(QDialog):
             button_layout.setSpacing(4)
 
             linux_button = QPushButton("Linux")
-            linux_button.setToolTip("Smart select Linux installation (Native Linux if available, or Windows + shared for Proton; excludes media/32-bit)")
+            self.linux_button = linux_button
+            has_linux = self._has_native_linux_depots()
+            linux_button.setEnabled(has_linux)
+            if has_linux:
+                linux_button.setToolTip("Smart select Linux installation (Native Linux if available; excludes media/32-bit)")
+            else:
+                linux_button.setToolTip("No native Linux depots available for this game")
             linux_button.clicked.connect(lambda: self._select_platform("linux"))
             button_layout.addWidget(linux_button)
 
@@ -757,6 +774,22 @@ class DepotSelectionDialog(QDialog):
             self._settings.setValue("show_hidden_depots_in_selector", checked)
         self.selected_depots = self.get_selected_depots()
         self._populate_table()
+
+    def _has_native_linux_depots(self) -> bool:
+        """Check if any depot explicitly targets Linux."""
+        all_depot_dicts = []
+        if isinstance(self.depots, dict):
+            all_depot_dicts.extend(self.depots.values())
+        if hasattr(self, "missing_depots_info") and isinstance(self.missing_depots_info, dict):
+            all_depot_dicts.extend(self.missing_depots_info.values())
+        for d_data in all_depot_dicts:
+            if not isinstance(d_data, dict) or _depot_is_macos(d_data) or _depot_is_android(d_data):
+                continue
+            oslist = (d_data.get("oslist") or "").lower()
+            desc = (d_data.get("desc") or d_data.get("name") or "").lower()
+            if "linux" in oslist or "[linux]" in desc:
+                return True
+        return False
 
     def _populate_table(self):
         self.table_widget.setSortingEnabled(False)
@@ -932,6 +965,14 @@ class DepotSelectionDialog(QDialog):
             is_first_depot = False
 
             size_str = ""
+            if not depot_data.get("size") and isinstance(depot_data.get("manifests"), dict):
+                manifests = depot_data["manifests"]
+                b_entry = manifests.get(self.branch) or manifests.get("public")
+                if isinstance(b_entry, dict):
+                    raw_fb = b_entry.get("size") or b_entry.get("download")
+                    if raw_fb:
+                        depot_data["size"] = raw_fb
+
             if depot_data.get("size"):
                 try:
                     size_bytes = int(depot_data["size"])
@@ -972,7 +1013,17 @@ class DepotSelectionDialog(QDialog):
             minfo = self.missing_depots_info.get(did, {})
             mname = minfo.get("name")
             mraw_size = int(minfo.get("size") or 0)
-            msize_str = format_size(mraw_size)
+            if not mraw_size and isinstance(minfo.get("manifests"), dict):
+                manifests = minfo["manifests"]
+                b_entry = manifests.get(self.branch) or manifests.get("public")
+                if isinstance(b_entry, dict):
+                    mraw_size = int(b_entry.get("size") or b_entry.get("download") or 0)
+                if not mraw_size:
+                    for m_val in manifests.values():
+                        if isinstance(m_val, dict) and (m_val.get("size") or m_val.get("download")):
+                            mraw_size = int(m_val.get("size") or m_val.get("download") or 0)
+                            break
+            msize_str = format_size(mraw_size) if mraw_size > 0 else "0 B"
             hubcap_status = minfo.get("hubcap_status")
             if hubcap_status in ("not_found", "404"):
                 tag = "[Unavailable on Hubcap (404)]"
@@ -989,6 +1040,7 @@ class DepotSelectionDialog(QDialog):
             mid_item.setData(Qt.ItemDataRole.UserRole, str(did))
             mid_item.setData(Qt.ItemDataRole.UserRole + 1, str(did))
             mid_item.setData(Qt.ItemDataRole.UserRole + 2, "missing")
+            mid_item.setCheckState(Qt.CheckState.Unchecked)
             mid_item.setFlags(Qt.ItemFlag.NoItemFlags)
             mid_item.setForeground(darker_grey)
 
@@ -1110,8 +1162,20 @@ class DepotSelectionDialog(QDialog):
 
             if did_str in db_depots and isinstance(db_depots[did_str], dict):
                 src = db_depots[did_str]
-                if not info.get("size") and src.get("size"):
-                    info["size"] = src["size"]
+                if not info.get("size"):
+                    sz = src.get("size")
+                    if not sz and isinstance(src.get("manifests"), dict):
+                        manifests = src["manifests"]
+                        b_entry = manifests.get(self.branch) or manifests.get("public")
+                        if isinstance(b_entry, dict):
+                            sz = b_entry.get("size") or b_entry.get("download")
+                        if not sz:
+                            for m_val in manifests.values():
+                                if isinstance(m_val, dict) and (m_val.get("size") or m_val.get("download")):
+                                    sz = m_val.get("size") or m_val.get("download")
+                                    break
+                    if sz:
+                        info["size"] = sz
                 if not info.get("name") and src.get("name"):
                     info["name"] = src["name"]
                 if not info.get("oslist") and src.get("oslist"):
@@ -1167,6 +1231,16 @@ class DepotSelectionDialog(QDialog):
                     minfo = self.missing_depots_info.get(did, {})
                     mname = minfo.get("name")
                     mraw_size = int(minfo.get("size") or 0)
+                    if not mraw_size and isinstance(minfo.get("manifests"), dict):
+                        manifests = minfo["manifests"]
+                        b_entry = manifests.get(self.branch) or manifests.get("public")
+                        if isinstance(b_entry, dict):
+                            mraw_size = int(b_entry.get("size") or b_entry.get("download") or 0)
+                        if not mraw_size:
+                            for m_val in manifests.values():
+                                if isinstance(m_val, dict) and (m_val.get("size") or m_val.get("download")):
+                                    mraw_size = int(m_val.get("size") or m_val.get("download") or 0)
+                                    break
                     msize_str = format_size(mraw_size) if mraw_size > 0 else "0 B"
                     hubcap_status = minfo.get("hubcap_status")
                     if hubcap_status in ("not_found", "404"):
@@ -1183,34 +1257,49 @@ class DepotSelectionDialog(QDialog):
                         if hasattr(sz_item, "sort_value"):
                             sz_item.sort_value = mraw_size
 
+            if hasattr(self, "linux_button") and self.linux_button:
+                has_linux = self._has_native_linux_depots()
+                self.linux_button.setEnabled(has_linux)
+                if has_linux:
+                    self.linux_button.setToolTip("Smart select Linux installation (Native Linux if available; excludes media/32-bit)")
+                else:
+                    self.linux_button.setToolTip("No native Linux depots available for this game")
+
     def _apply_depot_enrichments(self, enrichments: dict):
         """Merges enriched metadata into self.depots dictionary."""
-        if not enrichments or not self.depots:
-            return
-        for did, info in enrichments.items():
-            if did in self.depots and isinstance(self.depots[did], dict):
-                d_data = self.depots[did]
-                curr_desc = str(d_data.get("desc") or "").strip()
-                is_generic = (
-                    not curr_desc
-                    or bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", curr_desc, re.IGNORECASE))
-                    or bool(re.match(r"^(?:\[.*?\]\s*)?DLC \d+$", curr_desc, re.IGNORECASE))
-                )
-                if is_generic and info.get("name"):
-                    if info.get("is_dlc"):
-                        d_data["desc"] = f"[DLC] {info['name']}"
-                    else:
-                        d_data["desc"] = info["name"]
-                    d_data["name"] = info["name"]
-
-                if (not d_data.get("size") or d_data.get("size") == 0) and info.get("size_bytes"):
-                    d_data["size"] = info["size_bytes"]
-                if info.get("size_str"):
-                    d_data["size_str"] = info["size_str"]
-                if info.get("oslist") and not d_data.get("oslist"):
-                    d_data["oslist"] = info["oslist"]
-                if info.get("is_dlc"):
-                    d_data["is_dlc"] = True
+        try:
+            if enrichments and self.depots:
+                for did, info in enrichments.items():
+                    if did in self.depots and isinstance(self.depots[did], dict):
+                        d_data = self.depots[did]
+                        curr_desc = str(d_data.get("desc") or "").strip()
+                        is_generic = (
+                            not curr_desc
+                            or bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", curr_desc, re.IGNORECASE))
+                            or bool(re.match(r"^(?:\[.*?\]\s*)?DLC \d+$", curr_desc, re.IGNORECASE))
+                        )
+                        if is_generic and info.get("name"):
+                            if info.get("is_dlc"):
+                                d_data["desc"] = f"[DLC] {info['name']}"
+                            else:
+                                d_data["desc"] = info["name"]
+                            d_data["name"] = info["name"]
+                        if (not d_data.get("size") or d_data.get("size") == 0) and info.get("size_bytes"):
+                            d_data["size"] = info["size_bytes"]
+                        if info.get("size_str"):
+                            d_data["size_str"] = info["size_str"]
+                        if info.get("oslist") and not d_data.get("oslist"):
+                            d_data["oslist"] = info["oslist"]
+                        if info.get("is_dlc"):
+                            d_data["is_dlc"] = True
+        finally:
+            if hasattr(self, "linux_button") and self.linux_button:
+                has_linux = self._has_native_linux_depots()
+                self.linux_button.setEnabled(has_linux)
+                if has_linux:
+                    self.linux_button.setToolTip("Smart select Linux installation (Native Linux if available; excludes media/32-bit)")
+                else:
+                    self.linux_button.setToolTip("No native Linux depots available for this game")
 
     def _start_enrichment_async(self, force: bool = False):
         """Asynchronously queries DB / SteamDB / Store API to enrich any generic or sizeless depots."""
@@ -1860,10 +1949,19 @@ class DepotSelectionDialog(QDialog):
         new_state = self._dlc_only_btn.isChecked()
         if new_state:
             try:
-                from ui.dialogs.dlc_warning_dialog import show_dlc_mode_warning
-                show_dlc_mode_warning(self)
+                warn_fn = show_dlc_mode_warning
+                if warn_fn is None:
+                    try:
+                        from ui.dialogs.dlc_warning_dialog import show_dlc_mode_warning as warn_fn
+                    except ImportError:
+                        try:
+                            from .dlc_warning_dialog import show_dlc_mode_warning as warn_fn
+                        except ImportError:
+                            from dlc_warning_dialog import show_dlc_mode_warning as warn_fn
+                if warn_fn:
+                    warn_fn(self)
             except Exception as e:
-                logger.debug(f"DLC warning dialog error: {e}")
+                logger.warning(f"DLC warning dialog error: {e}")
 
         self._dlc_only_mode = new_state
         self._refresh_dlc_only_style()
