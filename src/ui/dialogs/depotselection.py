@@ -255,6 +255,7 @@ class NumericTableWidgetItem(QTableWidgetItem):
         super().__init__(text)
         self.sort_value = sort_value
         self.tier = tier
+        self.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     def __lt__(self, other):
         if isinstance(other, NumericTableWidgetItem):
@@ -270,6 +271,7 @@ class ConfigTableWidgetItem(QTableWidgetItem):
     def __init__(self, text, tier=0):
         super().__init__(text)
         self.tier = tier
+        self.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     def __lt__(self, other):
         if isinstance(other, ConfigTableWidgetItem):
@@ -635,6 +637,7 @@ class DepotSelectionDialog(QDialog):
         self.table_widget = QTableWidget()
         self.table_widget.setColumnCount(3)
         self.table_widget.setHorizontalHeaderLabels(["ID", "Configuration", "Size"])
+        self.table_widget.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.table_widget.verticalHeader().setVisible(False)
         self.table_widget.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -662,8 +665,8 @@ class DepotSelectionDialog(QDialog):
                 color: #FFFFFF !important;
             }}
             QHeaderView::section {{
-                background-color: rgba(255, 255, 255, 0.031);
-                color: rgba(255, 255, 255, 0.235);
+                background-color: rgba(255, 255, 255, 0.04);
+                color: #FFFFFF;
                 padding: 6px 10px;
                 border: none;
                 font-size: 8.5pt;
@@ -691,8 +694,9 @@ class DepotSelectionDialog(QDialog):
         """)
 
         header = self.table_widget.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.table_widget.setColumnWidth(0, 110)
+        self.table_widget.setColumnWidth(0, 130)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
 
@@ -1201,6 +1205,46 @@ class DepotSelectionDialog(QDialog):
 
         self.table_widget.setRowCount(row_idx)
         self.table_widget.setSortingEnabled(True)
+        self._update_table_headers()
+
+    def _update_table_headers(self):
+        """Updates horizontal table header labels with selected/total depot counts and selected size."""
+        if not hasattr(self, "table_widget") or not self.table_widget:
+            return
+
+        total_count = 0
+        sel_count = 0
+        total_bytes = 0
+
+        for r in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(r, 0)
+            if not id_item:
+                continue
+            role = id_item.data(Qt.ItemDataRole.UserRole + 2)
+            if role == "expander":
+                continue
+
+            total_count += 1
+            if id_item.checkState() == Qt.CheckState.Checked:
+                sel_count += 1
+                size_item = self.table_widget.item(r, 2)
+                if size_item and hasattr(size_item, "sort_value"):
+                    total_bytes += int(size_item.sort_value or 0)
+
+        id_header = f"ID ({sel_count}/{total_count})"
+        config_header = "Configuration"
+        size_header = f"Size ({format_size(total_bytes)})"
+
+        for col, text in enumerate([id_header, config_header, size_header]):
+            h_item = self.table_widget.horizontalHeaderItem(col)
+            if not h_item:
+                h_item = QTableWidgetItem(text)
+                self.table_widget.setHorizontalHeaderItem(col, h_item)
+            else:
+                h_item.setText(text)
+            h_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        self.table_widget.resizeColumnToContents(2)
 
     def _resolve_missing_depots_info(self):
         """Resolves metadata (name, size, oslist) for missing_hubcap_depots (fast local DB first, async network)."""
@@ -1474,6 +1518,7 @@ class DepotSelectionDialog(QDialog):
 
         if hasattr(self, "linux_button") and self.linux_button:
             self.linux_button.setEnabled(self._has_native_linux_depots())
+        self._update_table_headers()
 
     def _is_manifest_on_disk(self, did: str, mid: str) -> bool:
         """Checks if the .manifest file is already saved in persistent or temporary manifests directory."""
@@ -1613,6 +1658,7 @@ class DepotSelectionDialog(QDialog):
                             if hasattr(size_item, "sort_value"):
                                 size_item.sort_value = int(info.get("size_bytes") or 0)
 
+        self._update_table_headers()
         if getattr(self, "_dlc_only_mode", False) and not getattr(self, "_has_saved_selection", False) and not getattr(self, "_user_interacted", False):
             self._apply_dlc_auto_selection()
 
@@ -1716,6 +1762,7 @@ class DepotSelectionDialog(QDialog):
 
         self.table_widget.blockSignals(False)
         self.anchor_row = -1
+        self._update_table_headers()
 
     def _setup_storage_buttons(self, layout: QHBoxLayout) -> None:
         import shutil
@@ -1983,6 +2030,8 @@ class DepotSelectionDialog(QDialog):
         else:
             self.anchor_row = row
 
+        self._update_table_headers()
+
     def _toggle_all_checkboxes(self, check=True):
         self._user_interacted = True
         self._has_saved_selection = True
@@ -2000,6 +2049,7 @@ class DepotSelectionDialog(QDialog):
         self.table_widget.blockSignals(False)
 
         self.anchor_row = -1
+        self._update_table_headers()
 
     def _select_platform(self, platform: str):
         """Smart select depots matching a platform (linux/windows), including shared depots and filtering out bonus media/32-bit."""
@@ -2022,6 +2072,7 @@ class DepotSelectionDialog(QDialog):
                 id_item.setCheckState(Qt.CheckState.Unchecked)
         self.table_widget.blockSignals(False)
         self.anchor_row = -1
+        self._update_table_headers()
 
     def _fetch_header_image(self, app_id):
         self._current_app_id = app_id
