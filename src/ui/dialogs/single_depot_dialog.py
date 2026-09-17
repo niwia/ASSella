@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QMessageBox,
     QApplication,
+    QSizePolicy,
 )
 
 from ui.dialogs.depotselection import format_size
@@ -67,9 +68,8 @@ class SingleDepotSelectionDialog(QDialog):
         self.is_single_depot = True
         self.preferred_library_path = library_path
         self.refetched_depots = [str(d) for d in (refetched_depots or []) if str(d).strip()]
-        self.missing_depots_nudge_frame = None
-        self.missing_depots_text_lbl = None
         self.selected_storage_path: Optional[str] = None
+        self._storage_overflow_combo = None
 
         if isinstance(missing_hubcap_depots, dict):
             if not missing_depots_info:
@@ -458,17 +458,25 @@ class SingleDepotSelectionDialog(QDialog):
         storage_paths = []
         def_dir = self._settings.value("default_download_directory", "", type=str) if self._settings else ""
         if def_dir and is_valid_download_directory(def_dir):
+            # Option A: User configured a custom/default download directory in Settings.
+            # Show ONLY this single configured storage path taking the full width.
             storage_paths.append(os.path.realpath(def_dir))
+        else:
+            # "Ask Every Time" / no default set: discover all valid Steam library paths
+            try:
+                raw_libs = get_steam_libraries() or []
+                for p in raw_libs:
+                    if p and is_valid_download_directory(p):
+                        real_p = os.path.realpath(p)
+                        if real_p not in storage_paths:
+                            storage_paths.append(real_p)
+            except Exception as e:
+                logger.warning(f"[SingleDepot] Error discovering Steam storage libraries: {e}")
 
-        try:
-            raw_libs = get_steam_libraries() or []
-            for p in raw_libs:
-                if p and is_valid_download_directory(p):
-                    real_p = os.path.realpath(p)
-                    if real_p not in storage_paths:
-                        storage_paths.append(real_p)
-        except Exception as e:
-            logger.warning(f"[SingleDepot] Error discovering Steam storage libraries: {e}")
+            if self.preferred_library_path and is_valid_download_directory(self.preferred_library_path):
+                real_pref = os.path.realpath(self.preferred_library_path)
+                if real_pref not in storage_paths:
+                    storage_paths.insert(0, real_pref)
 
         self._storage_paths = storage_paths
         self._storage_btn_group = QButtonGroup(self)
@@ -506,11 +514,11 @@ class SingleDepotSelectionDialog(QDialog):
                 label = p.name
                 if label.lower() in ("steamlibrary", "steamapps", "common") and len(p.parts) > 1:
                     label = p.parts[-2]
-                if len(label) > 14:
-                    label = label[:12] + "…"
+                if len(label) > 16:
+                    label = label[:14] + "…"
 
             tooltip = f"Storage: {path_str}" + (f"\nAvailable: {free_str}" if free_str else "")
-            return label, tooltip
+            return label, free_str, tooltip
 
         from utils.color_utils import get_best_foreground_color
         text_hex = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")
@@ -520,7 +528,7 @@ class SingleDepotSelectionDialog(QDialog):
                 color: rgba(255, 255, 255, 0.7);
                 border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 4px;
-                padding: 4px 10px;
+                padding: 4px 8px;
                 font-size: 8.5pt;
                 font-weight: 500;
             }}
@@ -536,26 +544,105 @@ class SingleDepotSelectionDialog(QDialog):
             }}
         """
 
-        max_direct_buttons = 2
-        direct_paths = storage_paths[:max_direct_buttons]
+        total_storages = len(storage_paths)
+        if total_storages <= 3:
+            direct_paths = storage_paths
+            overflow_paths = []
+        else:
+            direct_paths = storage_paths[:3]
+            overflow_paths = storage_paths[3:]
 
+        # Direct expanding storage buttons
         for i, spath in enumerate(direct_paths):
-            lbl_text, tip_text = _format_storage_info(spath)
-            btn = QPushButton(lbl_text)
+            label, free_str, tooltip = _format_storage_info(spath)
+            # When 1 or 2 storages, display free space on button; when 3+, display clean label with info in tooltip
+            btn_text = f"{label} ({free_str})" if (total_storages <= 2 and free_str) else label
+            btn = QPushButton(btn_text)
+            btn.setFixedHeight(28)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.setCheckable(True)
-            btn.setToolTip(tip_text)
+            btn.setToolTip(tooltip)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(btn_style)
 
             def _make_handler(target_path):
                 def _handler():
                     self.selected_storage_path = target_path
+                    if self._storage_overflow_combo:
+                        self._storage_overflow_combo.blockSignals(True)
+                        self._storage_overflow_combo.setCurrentIndex(0)
+                        self._storage_overflow_combo.blockSignals(False)
+                        self._set_overflow_combo_active(False)
                     logger.info(f"[SingleDepot] Storage library selected: {target_path}")
                 return _handler
 
             btn.clicked.connect(_make_handler(spath))
             self._storage_btn_group.addButton(btn, i)
-            layout.addWidget(btn)
+            layout.addWidget(btn, 1)
+
+        # Dropdown combo box for 4+ storages
+        if overflow_paths:
+            combo_style = f"""
+                QComboBox {{
+                    background-color: transparent;
+                    color: rgba(255, 255, 255, 0.7);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-size: 8.5pt;
+                    font-weight: 500;
+                }}
+                QComboBox:hover {{
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+                QComboBox[active="true"] {{
+                    background-color: {self.accent_color} !important;
+                    color: {text_hex} !important;
+                    border: 1px solid {self.accent_color} !important;
+                    font-weight: bold;
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: 14px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: #1a1c23;
+                    color: #FFFFFF;
+                    selection-background-color: {self.accent_color};
+                    selection-color: {text_hex};
+                    border: 1px solid rgba(255, 255, 255, 0.18);
+                    border-radius: 4px;
+                }}
+            """
+            combo = QComboBox()
+            combo.setFixedHeight(28)
+            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            combo.setStyleSheet(combo_style)
+            combo.setCursor(Qt.CursorShape.PointingHandCursor)
+            combo.addItem("More...", None)
+
+            for spath in overflow_paths:
+                label, free_str, tooltip = _format_storage_info(spath)
+                item_text = f"{label} ({free_str})" if free_str else label
+                combo.addItem(item_text, spath)
+
+            def _on_overflow_selected(index):
+                if index <= 0:
+                    return
+                target_path = combo.itemData(index)
+                if target_path:
+                    self.selected_storage_path = target_path
+                    self._storage_btn_group.setExclusive(False)
+                    for b in self._storage_btn_group.buttons():
+                        b.setChecked(False)
+                    self._storage_btn_group.setExclusive(True)
+                    self._set_overflow_combo_active(True)
+                    logger.info(f"[SingleDepot] Storage library selected via dropdown: {target_path}")
+
+            combo.currentIndexChanged.connect(_on_overflow_selected)
+            self._storage_overflow_combo = combo
+            layout.addWidget(combo, 1)
 
         # Pre-select priority: preferred -> default -> first
         real_pref = os.path.realpath(self.preferred_library_path) if self.preferred_library_path else ""
@@ -568,14 +655,27 @@ class SingleDepotSelectionDialog(QDialog):
             default_target = storage_paths[0]
 
         self.selected_storage_path = default_target
-        for i, spath in enumerate(direct_paths):
-            if spath == default_target:
-                btn = self._storage_btn_group.button(i)
-                if btn:
-                    btn.setChecked(True)
-                break
+        if default_target in direct_paths:
+            idx = direct_paths.index(default_target)
+            btn = self._storage_btn_group.button(idx)
+            if btn:
+                btn.setChecked(True)
+            if self._storage_overflow_combo:
+                self._set_overflow_combo_active(False)
+        elif self._storage_overflow_combo and default_target in overflow_paths:
+            c_idx = self._storage_overflow_combo.findData(default_target)
+            if c_idx > 0:
+                self._storage_overflow_combo.blockSignals(True)
+                self._storage_overflow_combo.setCurrentIndex(c_idx)
+                self._storage_overflow_combo.blockSignals(False)
+                self._set_overflow_combo_active(True)
 
-        layout.addStretch(1)
+    def _set_overflow_combo_active(self, active: bool) -> None:
+        if not self._storage_overflow_combo:
+            return
+        self._storage_overflow_combo.setProperty("active", "true" if active else "false")
+        self._storage_overflow_combo.style().unpolish(self._storage_overflow_combo)
+        self._storage_overflow_combo.style().polish(self._storage_overflow_combo)
 
     def _fetch_header_image(self, app_id):
         self._current_app_id = app_id

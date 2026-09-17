@@ -1105,7 +1105,7 @@ class FetchManifestDialog(QDialog):
             missing_depots = parsed_data.get("missing_depots_from_hubcap") or []
             
             selected_depots = None
-            is_single = (len(depots) == 1)
+            is_single = (len(depots) == 1 and not missing_depots)
 
             show_timer = (is_single and auto_skip and has_default_dl)
             open_dialog = False

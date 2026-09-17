@@ -10,7 +10,8 @@ import re
 import logging
 from typing import Dict, Optional, Tuple, Any
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QUrl, QSize
+from PyQt6.QtGui import QIcon, QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog,
     QWidget,
@@ -25,6 +26,8 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.color_utils import get_best_foreground_color
+from utils.paths import Paths
+from utils.settings import get_settings
 
 logger = logging.getLogger("ACCELA.manual_manifest")
 
@@ -57,11 +60,20 @@ class ManualManifestDialog(QDialog):
         self.current_build_id = str(current_build_id or "").strip()
         self.accent_color = accent_color
 
+        self._settings = get_settings()
+        self._remembered_build_id = ""
+        if self._settings and self.app_id:
+            try:
+                self._remembered_build_id = str(self._settings.value(f"manual_manifest/{self.app_id}/last_build_id", "") or "").strip()
+            except Exception:
+                self._remembered_build_id = ""
+
         self._selected_build_id = ""
         self._selected_patch_depots: Dict[str, Any] = {}
+        self._last_loaded_depot = ""
 
         self.setWindowTitle("Manual Manifest Override")
-        self.setFixedWidth(440)
+        self.setFixedWidth(460)
         self.setStyleSheet("""
             QDialog {
                 background-color: #12131a;
@@ -78,13 +90,49 @@ class ManualManifestDialog(QDialog):
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(12)
 
-        # Title & Subtitle
+        # Title & Subtitle with SteamDB Patchnotes Button
         header_layout = QVBoxLayout()
         header_layout.setSpacing(3)
 
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+
         title_lbl = QLabel("Manual Build & Manifest Override")
-        title_lbl.setStyleSheet("font-size: 11.5pt; font-weight: bold; color: #FFFFFF;")
-        header_layout.addWidget(title_lbl)
+        title_lbl.setStyleSheet("font-size: 11pt; font-weight: bold; color: #FFFFFF;")
+        title_row.addWidget(title_lbl)
+
+        title_row.addStretch(1)
+
+        steamdb_btn = QPushButton()
+        steamdb_btn.setFixedHeight(24)
+        steamdb_btn.setMinimumWidth(84)
+        steamdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        steamdb_btn.setToolTip("Open SteamDB Patch Notes in Browser")
+        icon_path = Paths.icon("steamdb-lockup.svg")
+        if not icon_path.exists():
+            icon_path = Paths.resource("steamdb-lockup.svg")
+        if icon_path.exists():
+            steamdb_btn.setIcon(QIcon(str(icon_path)))
+            steamdb_btn.setIconSize(QSize(78, 16))
+        else:
+            steamdb_btn.setText("SteamDB")
+
+        steamdb_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.07);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 4px;
+                padding: 2px 6px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.15);
+                border-color: rgba(255, 255, 255, 0.35);
+            }
+        """)
+        steamdb_btn.clicked.connect(self._open_steamdb_patchnotes)
+        title_row.addWidget(steamdb_btn)
+
+        header_layout.addLayout(title_row)
 
         sub_text = f"{self.game_name} ({self.app_id})" if self.app_id else self.game_name
         subtitle_lbl = QLabel(sub_text)
@@ -148,12 +196,16 @@ class ManualManifestDialog(QDialog):
                 d_desc = ""
                 if isinstance(dinfo, dict):
                     d_desc = dinfo.get("desc") or dinfo.get("name") or ""
-                label = f"{did} — {d_desc}" if d_desc else str(did)
+                # Strip repetitive "Depot {did}" or "[WINDOWS] Depot {did}"
+                cleaned_desc = re.sub(rf"^(?:\[.*?\]\s*)?Depot\s+{did}\b", "", str(d_desc), flags=re.IGNORECASE).strip()
+                cleaned_desc = re.sub(r"^[-—:\s]+", "", cleaned_desc).strip()
+                label = f"{did} — {cleaned_desc}" if cleaned_desc else str(did)
                 self.depot_combo.addItem(label, str(did))
                 if str(did) == self.default_depot_id:
                     sel_idx = idx
 
             self.depot_combo.setCurrentIndex(sel_idx)
+            self.depot_combo.currentIndexChanged.connect(self._on_depot_selection_changed)
             self.depot_input = None
             depot_section.addWidget(self.depot_combo)
         else:
@@ -162,6 +214,7 @@ class ManualManifestDialog(QDialog):
             self.depot_input.setStyleSheet(input_style)
             self.depot_input.setPlaceholderText("e.g. 2507001")
             self.depot_input.setText(self.default_depot_id or self.app_id)
+            self.depot_input.textChanged.connect(self._on_depot_text_changed)
             self.depot_combo = None
             depot_section.addWidget(self.depot_input)
 
@@ -196,6 +249,21 @@ class ManualManifestDialog(QDialog):
         layout.addLayout(bid_section)
 
         layout.addSpacing(4)
+
+        # Initialize values from settings or props
+        init_did = self._get_current_depot_id()
+        self._last_loaded_depot = init_did
+        if self._settings and self.app_id and init_did:
+            try:
+                saved_mid = str(self._settings.value(f"manual_manifest/{self.app_id}/{init_did}/manifest_id", "") or "").strip()
+                if saved_mid:
+                    self.manifest_input.setText(saved_mid)
+            except Exception:
+                pass
+
+        init_bid = self.current_build_id or self._remembered_build_id
+        if init_bid:
+            self.build_input.setText(init_bid)
 
         # Bottom Button Row
         btn_row = QHBoxLayout()
@@ -242,20 +310,52 @@ class ManualManifestDialog(QDialog):
 
         layout.addLayout(btn_row)
 
-    def _on_apply_clicked(self):
-        # Resolve depot ID
-        depot_id = ""
-        if self.depot_combo:
-            data = self.depot_combo.currentData()
-            if data:
-                depot_id = str(data).strip()
-            else:
-                txt = self.depot_combo.currentText().strip()
-                m = re.search(r"^\d+", txt)
-                depot_id = m.group(0) if m else txt
-        elif self.depot_input:
-            depot_id = self.depot_input.text().strip()
+    def _open_steamdb_patchnotes(self):
+        url = f"https://steamdb.info/app/{self.app_id}/patchnotes/" if self.app_id else "https://steamdb.info/"
+        QDesktopServices.openUrl(QUrl(url))
 
+    def _get_current_depot_id(self) -> str:
+        if self.depot_combo:
+            txt = self.depot_combo.currentText().strip()
+            m = re.match(r"^(\d+)", txt)
+            if m:
+                return m.group(1)
+            data = self.depot_combo.currentData()
+            if data and str(data).strip().isdigit():
+                return str(data).strip()
+            m_any = re.search(r"\b\d+\b", txt)
+            return m_any.group(0) if m_any else ""
+        elif self.depot_input:
+            txt = self.depot_input.text().strip()
+            m = re.match(r"^(\d+)", txt)
+            return m.group(1) if m else txt
+        return ""
+
+    def _on_depot_selection_changed(self, index: int):
+        self._load_saved_manifest_for_depot()
+
+    def _on_depot_text_changed(self, text: str):
+        self._load_saved_manifest_for_depot()
+
+    def _load_saved_manifest_for_depot(self):
+        did = self._get_current_depot_id()
+        if not did or did == self._last_loaded_depot:
+            return
+        self._last_loaded_depot = did
+        if not self._settings or not self.app_id:
+            return
+        try:
+            saved_mid = str(self._settings.value(f"manual_manifest/{self.app_id}/{did}/manifest_id", "") or "").strip()
+            if saved_mid:
+                self.manifest_input.setText(saved_mid)
+            else:
+                self.manifest_input.clear()
+        except Exception:
+            pass
+
+    def _on_apply_clicked(self):
+        # Resolve depot ID (strictly pure digits)
+        depot_id = self._get_current_depot_id()
         if not depot_id or not depot_id.isdigit():
             QMessageBox.warning(self, "Invalid Depot ID", "Please specify a valid numeric Depot ID.")
             return
@@ -266,10 +366,32 @@ class ManualManifestDialog(QDialog):
             QMessageBox.warning(self, "Invalid Manifest ID", "Please enter a valid numeric Steam Manifest ID.")
             return
 
+        # Verification safeguard: Steam Manifest IDs are 64-bit uints (~17-19 digits)
+        if len(manifest_id) < 15 or len(manifest_id) > 20:
+            res = QMessageBox.question(
+                self,
+                "Unusual Manifest ID Length",
+                f"The entered Manifest ID '{manifest_id}' is {len(manifest_id)} digits long.\n"
+                "Steam Manifest IDs are typically 17 to 19 digits.\n\nDo you want to proceed anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if res != QMessageBox.StandardButton.Yes:
+                return
+
         # Resolve build ID / tag
         build_id = self.build_input.text().strip()
         if not build_id:
             build_id = f"M-{manifest_id[-6:]}" if len(manifest_id) >= 6 else "Manual"
+
+        # Persist values in QSettings
+        if self._settings and self.app_id:
+            try:
+                self._settings.setValue(f"manual_manifest/{self.app_id}/{depot_id}/manifest_id", str(manifest_id))
+                if build_id:
+                    self._settings.setValue(f"manual_manifest/{self.app_id}/last_build_id", str(build_id))
+            except Exception as e:
+                logger.debug(f"[ManualManifest] Failed to persist settings: {e}")
 
         self._selected_build_id = build_id
         self._selected_patch_depots = {

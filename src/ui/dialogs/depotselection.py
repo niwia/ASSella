@@ -279,7 +279,14 @@ class DepotSelectionDialog(QDialog):
         if depots is None and len(args) >= 3:
             depots = args[2]
 
-        if is_single or (isinstance(depots, dict) and len(depots) == 1):
+        missing = kwargs.get("missing_hubcap_depots")
+        if missing is None and len(args) >= 9:
+            missing = args[8]
+
+        # Only route to SingleDepotSelectionDialog if there are NO missing depots from Hubcap.
+        # If DLCs/depots are missing, full DepotSelectionDialog MUST be shown so the user sees
+        # the greyed out missing depots and their statuses.
+        if not missing and (is_single or (isinstance(depots, dict) and len(depots) == 1)):
             from ui.dialogs.single_depot_dialog import SingleDepotSelectionDialog
             return SingleDepotSelectionDialog(*args, **kwargs)
 
@@ -330,8 +337,6 @@ class DepotSelectionDialog(QDialog):
         self._selected_build_id = self.current_build_id
         self._is_build_pinned = False
         self._manifest_overrides: Dict[str, str] = {}
-        self.missing_depots_nudge_frame = None
-        self.missing_depots_text_lbl = None
 
         if isinstance(missing_hubcap_depots, dict):
             if not missing_depots_info:
