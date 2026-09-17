@@ -6,8 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QColor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QRectF
+from PyQt6.QtGui import QPixmap, QColor, QPainter, QPen, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -25,6 +25,9 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QSizePolicy,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QStyle,
 )
 
 from utils.image_fetcher import ImageFetcher
@@ -278,6 +281,52 @@ class ConfigTableWidgetItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+class DepotCheckboxDelegate(QStyledItemDelegate):
+    def __init__(self, dialog: "DepotSelectionDialog"):
+        super().__init__(dialog)
+        self.dialog = dialog
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        widget = option.widget
+        style = widget.style() if widget else QApplication.style()
+
+        is_missing = (index.data(Qt.ItemDataRole.UserRole + 2) == "missing")
+        is_checking = getattr(self.dialog, "_is_checking_missing_contents", False)
+
+        if is_missing and is_checking:
+            style.drawPrimitive(QStyle.PrimitiveElement.PE_PanelItemViewItem, opt, painter, widget)
+            check_rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemCheckIndicator, opt, widget)
+            text_rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, opt, widget)
+
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            spinner_size = 14
+            sx = check_rect.x() + (check_rect.width() - spinner_size) / 2.0
+            sy = check_rect.y() + (check_rect.height() - spinner_size) / 2.0
+            rect = QRectF(sx, sy, spinner_size, spinner_size)
+
+            angle = getattr(self.dialog, "_spinner_angle", 0)
+            cycle = (angle // 2) % 180
+            span = 90 + abs(cycle - 90) * 2
+
+            pen = QPen(QColor(self.dialog.accent_color))
+            pen.setWidth(2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawArc(rect, int(angle * 16), int(span * 16))
+            painter.restore()
+
+            painter.save()
+            painter.setPen(QColor(135, 135, 135))
+            painter.setFont(opt.font)
+            style.drawItemText(painter, text_rect, opt.displayAlignment, opt.palette, True, opt.text)
+            painter.restore()
+        else:
+            super().paint(painter, option, index)
+
+
 class DepotSelectionDialog(QDialog):
     _depots_enriched_signal = pyqtSignal(dict)
 
@@ -349,6 +398,10 @@ class DepotSelectionDialog(QDialog):
         self._is_build_pinned = False
         self._manifest_overrides: Dict[str, str] = {}
         self._recovered_depots_map: Dict[str, str] = {}
+        self._is_checking_missing_contents = False
+        self._spinner_angle = 0
+        self._spinner_timer = QTimer(self)
+        self._spinner_timer.timeout.connect(self._on_spinner_tick)
 
         if isinstance(missing_hubcap_depots, dict):
             if not missing_depots_info:
@@ -356,6 +409,10 @@ class DepotSelectionDialog(QDialog):
             self.missing_hubcap_depots = [str(d) for d in missing_hubcap_depots.keys() if str(d).strip()]
         else:
             self.missing_hubcap_depots = [str(d) for d in (missing_hubcap_depots or []) if str(d).strip()]
+
+        if self.missing_hubcap_depots:
+            self._is_checking_missing_contents = True
+            self._spinner_timer.start(16)
 
         self.missing_depots_info = dict(missing_depots_info or {})
         self.selected_storage_path = None
@@ -634,6 +691,8 @@ class DepotSelectionDialog(QDialog):
         self.table_widget.setColumnWidth(0, 110)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+
+        self.table_widget.setItemDelegateForColumn(0, DepotCheckboxDelegate(self))
 
         self._hidden_depots_expanded = False
         self._populate_table()
@@ -1027,7 +1086,9 @@ class DepotSelectionDialog(QDialog):
                             break
             msize_str = format_size(mraw_size) if mraw_size > 0 else "0 B"
             hubcap_status = minfo.get("hubcap_status")
-            if hubcap_status in ("not_found", "404"):
+            if getattr(self, "_is_checking_missing_contents", False):
+                tag = "[Checking Hubcap...]"
+            elif hubcap_status in ("not_found", "404"):
                 tag = "[Unavailable on Hubcap (404)]"
             else:
                 tag = "[Missing from Hubcap]"
@@ -1048,7 +1109,10 @@ class DepotSelectionDialog(QDialog):
 
             mconfig_item = ConfigTableWidgetItem(mconfig_text, tier=1)
             mconfig_item.setFlags(Qt.ItemFlag.NoItemFlags)
-            mconfig_item.setForeground(darker_grey)
+            if getattr(self, "_is_checking_missing_contents", False):
+                mconfig_item.setForeground(QColor(self.accent_color))
+            else:
+                mconfig_item.setForeground(darker_grey)
 
             msize_item = NumericTableWidgetItem(msize_str, mraw_size, tier=1)
             msize_item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -1254,7 +1318,9 @@ class DepotSelectionDialog(QDialog):
                                     break
                     msize_str = format_size(mraw_size) if mraw_size > 0 else "0 B"
                     hubcap_status = minfo.get("hubcap_status")
-                    if hubcap_status in ("not_found", "404"):
+                    if getattr(self, "_is_checking_missing_contents", False):
+                        tag = "[Checking Hubcap...]"
+                    elif hubcap_status in ("not_found", "404"):
                         tag = "[Unavailable on Hubcap (404)]"
                     else:
                         tag = "[Missing from Hubcap]"
@@ -1262,6 +1328,8 @@ class DepotSelectionDialog(QDialog):
                     cfg_item = self.table_widget.item(row, 1)
                     if cfg_item:
                         cfg_item.setText(cfg_text)
+                        if getattr(self, "_is_checking_missing_contents", False):
+                            cfg_item.setForeground(QColor(self.accent_color))
                     sz_item = self.table_widget.item(row, 2)
                     if sz_item:
                         sz_item.setText(msize_str)
@@ -1276,10 +1344,20 @@ class DepotSelectionDialog(QDialog):
                 else:
                     self.linux_button.setToolTip("No native Linux depots available for this game")
 
+    def _on_spinner_tick(self):
+        """Advances the circular spinner animation angle and requests a redraw."""
+        self._spinner_angle = (self._spinner_angle + 6) % 360
+        if hasattr(self, "table_widget") and self.table_widget:
+            self.table_widget.viewport().update()
+
     def _check_missing_contents_async(self):
         """Asynchronously checks Hubcap /contents (0-quota) in the background to see if missing depots are now available."""
         if not self.missing_hubcap_depots:
             return
+
+        self._is_checking_missing_contents = True
+        if hasattr(self, "_spinner_timer") and not self._spinner_timer.isActive():
+            self._spinner_timer.start(16)
 
         import threading
         target_dids = list(self.missing_hubcap_depots)
@@ -1287,40 +1365,67 @@ class DepotSelectionDialog(QDialog):
         branch_str = str(self.branch or "public")
 
         def _worker():
+            recovered = {}
             try:
                 from core import morrenus_api
                 logger.debug(f"[DepotSelection] Checking /contents for App {app_id_str} in background...")
                 contents_data = morrenus_api.get_manifest_contents(app_id_str, branch=branch_str)
-                if not isinstance(contents_data, dict) or "error" in contents_data:
-                    return
+                if isinstance(contents_data, dict) and "error" not in contents_data:
+                    hubcap_depot_ids = contents_data.get("depot_ids", set())
+                    manifest_map = contents_data.get("manifest_map") or {}
+                    if not manifest_map and isinstance(contents_data.get("manifests"), list):
+                        manifest_map = {
+                            str(m["depot_id"]): str(m.get("manifest_id", ""))
+                            for m in contents_data["manifests"]
+                            if isinstance(m, dict) and m.get("depot_id")
+                        }
 
-                hubcap_depot_ids = contents_data.get("depot_ids", set())
-                manifest_map = contents_data.get("manifest_map") or {}
-                if not manifest_map and isinstance(contents_data.get("manifests"), list):
-                    manifest_map = {
-                        str(m["depot_id"]): str(m.get("manifest_id", ""))
-                        for m in contents_data["manifests"]
-                        if isinstance(m, dict) and m.get("depot_id")
-                    }
-
-                recovered = {}
-                for did in target_dids:
-                    did_str = str(did)
-                    if did_str in hubcap_depot_ids:
-                        mid = manifest_map.get(did_str)
-                        if not mid:
-                            info = self.missing_depots_info.get(did_str, {})
-                            mid = info.get("manifest_id") or info.get("gid")
-                        if mid:
-                            recovered[did_str] = str(mid)
-
-                if recovered:
-                    from PyQt6.QtCore import QTimer
-                    QTimer.singleShot(0, lambda: self._on_missing_depots_recovered(recovered))
+                    for did in target_dids:
+                        did_str = str(did)
+                        if did_str in hubcap_depot_ids:
+                            mid = manifest_map.get(did_str)
+                            if not mid:
+                                info = self.missing_depots_info.get(did_str, {})
+                                mid = info.get("manifest_id") or info.get("gid")
+                            if mid:
+                                recovered[did_str] = str(mid)
             except Exception as e:
                 logger.debug(f"[DepotSelection] Background /contents check error: {e}")
+            finally:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: self._on_missing_contents_check_finished(recovered))
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_missing_contents_check_finished(self, recovered: Dict[str, str]):
+        """Called when background /contents check finishes. Settles spinners into final disabled state."""
+        self._is_checking_missing_contents = False
+        if hasattr(self, "_spinner_timer") and self._spinner_timer.isActive():
+            self._spinner_timer.stop()
+
+        if recovered:
+            self._on_missing_depots_recovered(recovered)
+
+        if hasattr(self, "table_widget") and self.table_widget:
+            darker_grey = QColor(135, 135, 135)
+            for row in range(self.table_widget.rowCount()):
+                id_item = self.table_widget.item(row, 0)
+                if id_item and id_item.data(Qt.ItemDataRole.UserRole + 2) == "missing":
+                    did_str = str(id_item.data(Qt.ItemDataRole.UserRole))
+                    minfo = self.missing_depots_info.get(did_str, {})
+                    mname = minfo.get("name")
+                    hubcap_status = minfo.get("hubcap_status")
+                    tag = "[Unavailable on Hubcap (404)]" if hubcap_status in ("not_found", "404") else "[Missing from Hubcap]"
+                    cfg_text = f"{tag}  {mname}" if mname else f"{tag}  Depot {did_str}"
+
+                    config_item = self.table_widget.item(row, 1)
+                    if config_item:
+                        config_item.setText(cfg_text)
+                        config_item.setForeground(darker_grey)
+                        config_item.setToolTip("Checked Hubcap: not available on server yet")
+                    id_item.setToolTip("Checked Hubcap: not available on server yet")
+
+            self.table_widget.viewport().update()
 
     def _on_missing_depots_recovered(self, recovered_dict: Dict[str, str]):
         """Upgrades recovered depots from greyed-out missing to active selectable depots in the UI."""
@@ -1473,7 +1578,8 @@ class DepotSelectionDialog(QDialog):
                 if role == "missing":
                     curr_config = config_item.text().strip() if config_item else ""
                     if info.get("name") and "Depot " in curr_config:
-                        config_item.setText(f"[Missing from Hubcap]  {info['name']}")
+                        tag = "[Checking Hubcap...]" if getattr(self, "_is_checking_missing_contents", False) else "[Missing from Hubcap]"
+                        config_item.setText(f"{tag}  {info['name']}")
                 else:
                     curr_config = config_item.text().strip() if config_item else ""
                     clean_curr = re.sub(r"^\[.*?\]\s*", "", curr_config).strip()
@@ -2502,7 +2608,12 @@ class DepotSelectionDialog(QDialog):
 
 
     def closeEvent(self, a0):
-        """Ensure image fetch is cleaned up when dialog closes."""
+        """Ensure image fetch and animation timer are cleaned up when dialog closes."""
+        if hasattr(self, "_spinner_timer") and self._spinner_timer is not None:
+            try:
+                self._spinner_timer.stop()
+            except Exception:
+                pass
         if hasattr(self, "fetcher") and self.fetcher is not None:
             try:
                 self.fetcher.stop()
