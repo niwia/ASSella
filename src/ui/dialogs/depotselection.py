@@ -1412,17 +1412,19 @@ class DepotSelectionDialog(QDialog):
         storage_paths = []
         def_dir = self._settings.value("default_download_directory", "", type=str) if self._settings else ""
         if def_dir and is_valid_download_directory(def_dir):
+            # Option A: User configured a custom/default download directory in Settings.
+            # Show ONLY this single configured storage path taking the full width.
             storage_paths.append(os.path.realpath(def_dir))
-
-        try:
-            raw_libs = get_steam_libraries() or []
-            for p in raw_libs:
-                if p and is_valid_download_directory(p):
-                    real_p = os.path.realpath(p)
-                    if real_p not in storage_paths:
-                        storage_paths.append(real_p)
-        except Exception as e:
-            logger.warning(f"Error discovering Steam storage libraries: {e}")
+        else:
+            try:
+                raw_libs = get_steam_libraries() or []
+                for p in raw_libs:
+                    if p and is_valid_download_directory(p):
+                        real_p = os.path.realpath(p)
+                        if real_p not in storage_paths:
+                            storage_paths.append(real_p)
+            except Exception as e:
+                logger.warning(f"Error discovering Steam storage libraries: {e}")
 
         self._storage_paths = storage_paths
         self._storage_btn_group = QButtonGroup(self)
@@ -1460,11 +1462,11 @@ class DepotSelectionDialog(QDialog):
                 label = p.name
                 if label.lower() in ("steamlibrary", "steamapps", "common") and len(p.parts) > 1:
                     label = p.parts[-2]
-                if len(label) > 14:
-                    label = label[:12] + "…"
+                if len(label) > 16:
+                    label = label[:14] + "…"
 
             tooltip = f"Storage: {path_str}" + (f"\nAvailable: {free_str}" if free_str else "")
-            return label, tooltip
+            return label, free_str, tooltip
 
         def _get_storage_btn_style():
             from utils.color_utils import get_best_foreground_color
@@ -1475,7 +1477,7 @@ class DepotSelectionDialog(QDialog):
                     color: rgba(255, 255, 255, 0.7);
                     border: 1px solid rgba(255, 255, 255, 0.15);
                     border-radius: 4px;
-                    padding: 4px 10px;
+                    padding: 4px 8px;
                     font-size: 8.5pt;
                     font-weight: 500;
                 }}
@@ -1494,12 +1496,14 @@ class DepotSelectionDialog(QDialog):
         self._storage_buttons = {}
         self._more_storage_combo = None
 
-        max_direct_buttons = 3 if len(storage_paths) <= 3 else 2
+        total_storages = len(storage_paths)
+        max_direct_buttons = 3
 
-        for i in range(min(len(storage_paths), max_direct_buttons)):
+        for i in range(min(total_storages, max_direct_buttons)):
             spath = storage_paths[i]
-            lbl_text, tip_text = _format_storage_info(spath)
-            btn = QPushButton(lbl_text)
+            lbl_text, free_str, tip_text = _format_storage_info(spath)
+            btn_text = f"{lbl_text} ({free_str})" if (total_storages <= 2 and free_str) else lbl_text
+            btn = QPushButton(btn_text)
             btn.setCheckable(True)
             btn.setFixedHeight(28)
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
