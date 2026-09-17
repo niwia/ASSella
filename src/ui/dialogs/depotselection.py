@@ -311,7 +311,7 @@ class DepotCheckboxDelegate(QStyledItemDelegate):
             cycle = (angle // 2) % 180
             span = 90 + abs(cycle - 90) * 2
 
-            pen = QPen(QColor(self.dialog.accent_color))
+            pen = QPen(QColor(135, 135, 135))
             pen.setWidth(2)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
@@ -329,6 +329,8 @@ class DepotCheckboxDelegate(QStyledItemDelegate):
 
 class DepotSelectionDialog(QDialog):
     _depots_enriched_signal = pyqtSignal(dict)
+    _missing_contents_checked_signal = pyqtSignal(dict)
+    _missing_depots_updated_signal = pyqtSignal()
 
     def __new__(cls, *args, **kwargs):
         if cls is not DepotSelectionDialog:
@@ -373,6 +375,8 @@ class DepotSelectionDialog(QDialog):
     ):
         super().__init__(parent)
         self._depots_enriched_signal.connect(self._on_depots_enriched)
+        self._missing_contents_checked_signal.connect(self._on_missing_contents_check_finished)
+        self._missing_depots_updated_signal.connect(self._on_missing_depots_updated)
         self.setWindowTitle("Select Depots to Download")
         self.depots = depots or {}
         self.app_id = app_id
@@ -1087,11 +1091,9 @@ class DepotSelectionDialog(QDialog):
             msize_str = format_size(mraw_size) if mraw_size > 0 else "0 B"
             hubcap_status = minfo.get("hubcap_status")
             if getattr(self, "_is_checking_missing_contents", False):
-                tag = "[Checking Hubcap...]"
-            elif hubcap_status in ("not_found", "404"):
-                tag = "[Unavailable on Hubcap (404)]"
+                tag = "[Checking]"
             else:
-                tag = "[Missing from Hubcap]"
+                tag = "[Missing]"
 
             if mname:
                 mconfig_text = f"{tag}  {mname}"
@@ -1109,14 +1111,17 @@ class DepotSelectionDialog(QDialog):
 
             mconfig_item = ConfigTableWidgetItem(mconfig_text, tier=1)
             mconfig_item.setFlags(Qt.ItemFlag.NoItemFlags)
-            if getattr(self, "_is_checking_missing_contents", False):
-                mconfig_item.setForeground(QColor(self.accent_color))
-            else:
-                mconfig_item.setForeground(darker_grey)
+            mconfig_item.setForeground(darker_grey)
+            cfg_font = mconfig_item.font()
+            cfg_font.setItalic(True)
+            mconfig_item.setFont(cfg_font)
 
             msize_item = NumericTableWidgetItem(msize_str, mraw_size, tier=1)
             msize_item.setFlags(Qt.ItemFlag.NoItemFlags)
             msize_item.setForeground(darker_grey)
+            sz_font = msize_item.font()
+            sz_font.setItalic(True)
+            msize_item.setFont(sz_font)
 
             self.table_widget.setItem(row_idx, 0, mid_item)
             self.table_widget.setItem(row_idx, 1, mconfig_item)
@@ -1289,8 +1294,7 @@ class DepotSelectionDialog(QDialog):
                             info["size"] = scmd["size"]
                             updated = True
                 if updated:
-                    from PyQt6.QtCore import QTimer
-                    QTimer.singleShot(0, self._on_missing_depots_updated)
+                    self._missing_depots_updated_signal.emit()
             except Exception as e:
                 logger.debug(f"[DepotSelection] Async missing depots fetch error: {e}")
 
@@ -1317,22 +1321,22 @@ class DepotSelectionDialog(QDialog):
                                     mraw_size = int(m_val.get("size") or m_val.get("download") or 0)
                                     break
                     msize_str = format_size(mraw_size) if mraw_size > 0 else "0 B"
-                    hubcap_status = minfo.get("hubcap_status")
-                    if getattr(self, "_is_checking_missing_contents", False):
-                        tag = "[Checking Hubcap...]"
-                    elif hubcap_status in ("not_found", "404"):
-                        tag = "[Unavailable on Hubcap (404)]"
-                    else:
-                        tag = "[Missing from Hubcap]"
+                    tag = "[Checking]" if getattr(self, "_is_checking_missing_contents", False) else "[Missing]"
                     cfg_text = f"{tag}  {mname}" if mname else f"{tag}  Depot {did}"
                     cfg_item = self.table_widget.item(row, 1)
                     if cfg_item:
                         cfg_item.setText(cfg_text)
-                        if getattr(self, "_is_checking_missing_contents", False):
-                            cfg_item.setForeground(QColor(self.accent_color))
+                        cfg_item.setForeground(darker_grey)
+                        f = cfg_item.font()
+                        f.setItalic(True)
+                        cfg_item.setFont(f)
                     sz_item = self.table_widget.item(row, 2)
                     if sz_item:
                         sz_item.setText(msize_str)
+                        sz_item.setForeground(darker_grey)
+                        sf = sz_item.font()
+                        sf.setItalic(True)
+                        sz_item.setFont(sf)
                         if hasattr(sz_item, "sort_value"):
                             sz_item.sort_value = mraw_size
 
@@ -1392,8 +1396,7 @@ class DepotSelectionDialog(QDialog):
             except Exception as e:
                 logger.debug(f"[DepotSelection] Background /contents check error: {e}")
             finally:
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: self._on_missing_contents_check_finished(recovered))
+                self._missing_contents_checked_signal.emit(recovered)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1414,16 +1417,17 @@ class DepotSelectionDialog(QDialog):
                     did_str = str(id_item.data(Qt.ItemDataRole.UserRole))
                     minfo = self.missing_depots_info.get(did_str, {})
                     mname = minfo.get("name")
-                    hubcap_status = minfo.get("hubcap_status")
-                    tag = "[Unavailable on Hubcap (404)]" if hubcap_status in ("not_found", "404") else "[Missing from Hubcap]"
-                    cfg_text = f"{tag}  {mname}" if mname else f"{tag}  Depot {did_str}"
+                    cfg_text = f"[Missing]  {mname}" if mname else f"[Missing]  Depot {did_str}"
 
                     config_item = self.table_widget.item(row, 1)
                     if config_item:
                         config_item.setText(cfg_text)
                         config_item.setForeground(darker_grey)
-                        config_item.setToolTip("Checked Hubcap: not available on server yet")
-                    id_item.setToolTip("Checked Hubcap: not available on server yet")
+                        f = config_item.font()
+                        f.setItalic(True)
+                        config_item.setFont(f)
+                        config_item.setToolTip("Checked: not available on Hubcap yet")
+                    id_item.setToolTip("Checked: not available on Hubcap yet")
 
             self.table_widget.viewport().update()
 
@@ -1451,15 +1455,21 @@ class DepotSelectionDialog(QDialog):
 
                     if config_item:
                         txt = config_item.text()
-                        for prefix in ("[Missing from Hubcap]", "[Unavailable on Hubcap (404)]"):
+                        for prefix in ("[Checking]", "[Missing]", "[Missing from Hubcap]", "[Unavailable on Hubcap (404)]"):
                             txt = txt.replace(prefix, "").strip()
                         config_item.setText(f"[Recovered]  {txt}")
                         config_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
                         config_item.setForeground(QColor(255, 255, 255))
+                        f = config_item.font()
+                        f.setItalic(False)
+                        config_item.setFont(f)
 
                     if size_item:
                         size_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
                         size_item.setForeground(QColor(255, 255, 255))
+                        sf = size_item.font()
+                        sf.setItalic(False)
+                        size_item.setFont(sf)
                     break
 
         if hasattr(self, "linux_button") and self.linux_button:
@@ -1578,8 +1588,11 @@ class DepotSelectionDialog(QDialog):
                 if role == "missing":
                     curr_config = config_item.text().strip() if config_item else ""
                     if info.get("name") and "Depot " in curr_config:
-                        tag = "[Checking Hubcap...]" if getattr(self, "_is_checking_missing_contents", False) else "[Missing from Hubcap]"
+                        tag = "[Checking]" if getattr(self, "_is_checking_missing_contents", False) else "[Missing]"
                         config_item.setText(f"{tag}  {info['name']}")
+                        f = config_item.font()
+                        f.setItalic(True)
+                        config_item.setFont(f)
                 else:
                     curr_config = config_item.text().strip() if config_item else ""
                     clean_curr = re.sub(r"^\[.*?\]\s*", "", curr_config).strip()
