@@ -317,7 +317,19 @@ def check_hubcap_vs_steam_depots(
     for did_str, dinfo, current_mid in relevant_content_depots:
         if did_str in local_manifest_map:
             continue
-        dname = dinfo.get("name") or f"Depot {did_str}"
+        dname = dinfo.get("name")
+        if not dname or dname.lower().startswith("depot "):
+            try:
+                from core.ini_parser import parse_depots_ini
+                ini_names = parse_depots_ini()
+                if did_str in ini_names:
+                    dname = ini_names[did_str]
+            except Exception:
+                pass
+        if not dname:
+            dname = f"Depot {did_str}"
+        dinfo["name"] = dname
+
         if not dinfo.get("size"):
             extracted_sz = extract_depot_size(dinfo, branch=b_key)
             if extracted_sz:

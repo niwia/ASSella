@@ -3,6 +3,7 @@ import logging
 import os
 import ssl
 import threading
+import time
 from pathlib import Path
 from typing import Optional, Dict, List, Union, Tuple, Any
 
@@ -493,6 +494,9 @@ def get_manifest_status(app_id: str) -> Dict:
     return _make_json_request("GET", f"/status/{app_id}")
 
 
+_contents_cache: Dict[str, Tuple[float, Dict]] = {}
+
+
 def get_manifest_contents(app_id: Union[str, int], branch: str = "public") -> Dict:
     """
     Calls /api/v1/manifest/{app_id}/contents to fetch the list of depot/manifest IDs
@@ -511,14 +515,27 @@ def get_manifest_contents(app_id: Union[str, int], branch: str = "public") -> Di
         - manifest_count (int): Number of manifests in the bundle.
         - manifests (list[dict]): Each entry has "depot_id" and "manifest_id".
         - depot_ids (set[str]): Convenience set of depot IDs Hubcap currently has.
+        - manifest_map (dict[str, str]): Convenience mapping of depot_id -> manifest_id.
         - error (str, optional): Present on failure.
     """
+    cache_key = f"{app_id}_{branch}"
+    now = time.time()
+    if cache_key in _contents_cache:
+        cached_time, cached_val = _contents_cache[cache_key]
+        if (now - cached_time) < 60:
+            return dict(cached_val)
+
     logger.info(f"Fetching manifest contents for app {app_id} (public bundle; requested branch={branch})")
     data = _make_json_request("GET", f"/manifest/{app_id}/contents")
 
     if isinstance(data, dict) and "error" not in data:
-        # Build a convenience set of depot_ids for O(1) membership checks
         manifests = data.get("manifests") or []
-        data["depot_ids"] = {str(m.get("depot_id", "")) for m in manifests if m.get("depot_id")}
+        data["depot_ids"] = {str(m.get("depot_id", "")) for m in manifests if isinstance(m, dict) and m.get("depot_id")}
+        data["manifest_map"] = {
+            str(m["depot_id"]): str(m.get("manifest_id", ""))
+            for m in manifests
+            if isinstance(m, dict) and m.get("depot_id")
+        }
+        _contents_cache[cache_key] = (now, data)
 
     return data

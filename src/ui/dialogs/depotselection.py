@@ -1192,6 +1192,15 @@ class DepotSelectionDialog(QDialog):
                 if not info.get("oslist") and src.get("oslist"):
                     info["oslist"] = src["oslist"]
 
+            if not info.get("name"):
+                try:
+                    from core.ini_parser import parse_depots_ini
+                    ini_names = parse_depots_ini()
+                    if did_str in ini_names:
+                        info["name"] = ini_names[did_str]
+                except Exception:
+                    pass
+
             if not info.get("name") or not info.get("size"):
                 missing_to_fetch.append(did_str)
 
@@ -1286,7 +1295,13 @@ class DepotSelectionDialog(QDialog):
                     return
 
                 hubcap_depot_ids = contents_data.get("depot_ids", set())
-                manifest_map = contents_data.get("manifests", {})
+                manifest_map = contents_data.get("manifest_map") or {}
+                if not manifest_map and isinstance(contents_data.get("manifests"), list):
+                    manifest_map = {
+                        str(m["depot_id"]): str(m.get("manifest_id", ""))
+                        for m in contents_data["manifests"]
+                        if isinstance(m, dict) and m.get("depot_id")
+                    }
 
                 recovered = {}
                 for did in target_dids:
