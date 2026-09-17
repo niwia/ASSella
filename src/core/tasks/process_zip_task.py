@@ -652,11 +652,11 @@ class ProcessZipTask:
                             missing_from_hubcap = list(depot_comp.get("missing_from_hubcap") or [])
                             missing_depots_info = dict(depot_comp.get("missing_depots_info") or {})
 
-                            # Auto-fetch or discover any missing depots that have a manifest GID
+                            # Discover any missing depots that already have a manifest on disk
                             refetched_depots = list(game_data.get("refetched_depots") or [])
                             for m_did, m_mid, m_name in depot_comp.get("missing_for_fetch", []):
                                 found_manifest = None
-                                # 1. Check if already on disk
+                                # Check if already on disk (0ms)
                                 for s_dir in [Path(tempfile.gettempdir()) / "mistwalker_manifests", Path(get_base_path()) / "manifests"]:
                                     cand = s_dir / f"{m_did}_{m_mid}.manifest"
                                     if cand.exists():
@@ -665,29 +665,6 @@ class ProcessZipTask:
                                             break
                                         except Exception:
                                             pass
-
-                                # 2. If not on disk, auto-fetch via single manifest API
-                                if not found_manifest:
-                                    try:
-                                        from core import morrenus_api
-                                        m_bytes, m_err = morrenus_api.generate_single_manifest(m_did, m_mid)
-                                        if m_bytes:
-                                            found_manifest = m_bytes
-                                            for s_dir in [Path(tempfile.gettempdir()) / "mistwalker_manifests", Path(get_base_path()) / "manifests"]:
-                                                try:
-                                                    s_dir.mkdir(parents=True, exist_ok=True)
-                                                    (s_dir / f"{m_did}_{m_mid}.manifest").write_bytes(m_bytes)
-                                                except Exception:
-                                                    pass
-                                        else:
-                                            is_404 = bool(
-                                                m_err
-                                                and ("404" in str(m_err) or "not found" in str(m_err).lower() or "unavailable" in str(m_err).lower())
-                                            )
-                                            missing_depots_info.setdefault(str(m_did), {})["hubcap_status"] = "not_found" if is_404 else "failed"
-                                            logger.info(f"[ProcessZipTask] Depot {m_did} fetch failed: status={'not_found' if is_404 else 'failed'} ({m_err})")
-                                    except Exception as fetch_ex:
-                                        logger.debug(f"[ProcessZipTask] Auto-fetch error for depot {m_did}: {fetch_ex}")
 
                                 if found_manifest:
                                     manifest_files[f"{m_did}_{m_mid}.manifest"] = found_manifest
@@ -698,7 +675,9 @@ class ProcessZipTask:
                                         missing_from_hubcap.remove(str(m_did))
                                     if str(m_did) in missing_depots_info:
                                         del missing_depots_info[str(m_did)]
-                                    logger.info(f"[ProcessZipTask] Supplemented missing depot {m_did} ({m_name})")
+                                    logger.info(f"[ProcessZipTask] Supplemented missing depot {m_did} ({m_name}) from local disk cache")
+                                else:
+                                    missing_depots_info.setdefault(str(m_did), {})["hubcap_status"] = "missing"
 
                             if refetched_depots:
                                 game_data["refetched_depots"] = refetched_depots

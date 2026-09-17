@@ -917,7 +917,7 @@ class FetchManifestDialog(QDialog):
         """
         self._current_fetching_appid = str(app_id)
         res_tuple, refetched_depots, missing_depots_info_patch = verify_or_download_manifest(
-            app_id, branch=branch
+            app_id, branch=branch, discovered_branches=getattr(self, "_discovered_branches", None)
         )
         self._last_refetched_depots = refetched_depots
         self._last_missing_depots_info_patch = missing_depots_info_patch
@@ -1088,11 +1088,40 @@ class FetchManifestDialog(QDialog):
     def _on_parse_finished(self, parsed_data, filepath, branch, metadata):
         self._toggle_inputs(True)
         self._set_loading_active(False)
-        if parsed_data and parsed_data.get("appid"):
+
+        if not parsed_data or not parsed_data.get("depots"):
+            app_id = str(self._current_fetching_appid or (parsed_data and parsed_data.get("appid")) or "")
+            if not getattr(self, "_is_manifest_retry", False) and app_id:
+                logger.warning(
+                    f"[FetchManifest] Manifest data for App {app_id} was empty or unparseable ({filepath}). "
+                    "Deleting bad cache and retrying fresh full download from Hubcap..."
+                )
+                self._is_manifest_retry = True
+                try:
+                    if filepath and os.path.exists(filepath):
+                        os.remove(filepath)
+                except Exception as _del_err:
+                    logger.debug(f"Could not remove corrupt zip {filepath}: {_del_err}")
+
+                self.status_label.setText(f"Cached manifest was invalid. Re-downloading fresh bundle for App {app_id}...")
+                self._toggle_inputs(False)
+                self._set_loading_active(True)
+                worker = self.task_runner.run(self.check_and_download_manifest, app_id, branch)
+                worker.finished.connect(self.on_download_finished)
+                worker.error.connect(self.on_task_error)
+                return
+            else:
+                self._is_manifest_retry = False
+                logger.error(f"[FetchManifest] Failed to parse valid manifest data for {filepath}")
+                self.status_label.setText("Error: Could not retrieve valid depot manifests for game.")
+                return
+
+        self._is_manifest_retry = False
+        if parsed_data.get("appid"):
             appid = str(parsed_data["appid"])
             self.settings.setValue(f"selected_branch/{appid}", branch)
 
-        if parsed_data and parsed_data.get("depots"):
+        if parsed_data.get("depots"):
             from ui.dialogs.depotselection import DepotSelectionDialog
             from utils.settings import get_settings
             from utils.paths import is_valid_download_directory

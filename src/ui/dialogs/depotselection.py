@@ -348,6 +348,7 @@ class DepotSelectionDialog(QDialog):
         self._selected_build_id = self.current_build_id
         self._is_build_pinned = False
         self._manifest_overrides: Dict[str, str] = {}
+        self._recovered_depots_map: Dict[str, str] = {}
 
         if isinstance(missing_hubcap_depots, dict):
             if not missing_depots_info:
@@ -540,6 +541,7 @@ class DepotSelectionDialog(QDialog):
         # Resolve missing depots info if needed (table will show them at bottom in greyscale)
         if self.missing_hubcap_depots:
             self._resolve_missing_depots_info()
+            self._check_missing_contents_async()
 
         layout.addSpacing(5)
 
@@ -1264,6 +1266,94 @@ class DepotSelectionDialog(QDialog):
                     self.linux_button.setToolTip("Smart select Linux installation (Native Linux if available; excludes media/32-bit)")
                 else:
                     self.linux_button.setToolTip("No native Linux depots available for this game")
+
+    def _check_missing_contents_async(self):
+        """Asynchronously checks Hubcap /contents (0-quota) in the background to see if missing depots are now available."""
+        if not self.missing_hubcap_depots:
+            return
+
+        import threading
+        target_dids = list(self.missing_hubcap_depots)
+        app_id_str = str(self.app_id)
+        branch_str = str(self.branch or "public")
+
+        def _worker():
+            try:
+                from core import morrenus_api
+                logger.debug(f"[DepotSelection] Checking /contents for App {app_id_str} in background...")
+                contents_data = morrenus_api.get_manifest_contents(app_id_str, branch=branch_str)
+                if not isinstance(contents_data, dict) or "error" in contents_data:
+                    return
+
+                hubcap_depot_ids = contents_data.get("depot_ids", set())
+                manifest_map = contents_data.get("manifests", {})
+
+                recovered = {}
+                for did in target_dids:
+                    did_str = str(did)
+                    if did_str in hubcap_depot_ids:
+                        mid = manifest_map.get(did_str)
+                        if not mid:
+                            info = self.missing_depots_info.get(did_str, {})
+                            mid = info.get("manifest_id") or info.get("gid")
+                        if mid:
+                            recovered[did_str] = str(mid)
+
+                if recovered:
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda: self._on_missing_depots_recovered(recovered))
+            except Exception as e:
+                logger.debug(f"[DepotSelection] Background /contents check error: {e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_missing_depots_recovered(self, recovered_dict: Dict[str, str]):
+        """Upgrades recovered depots from greyed-out missing to active selectable depots in the UI."""
+        if not recovered_dict or not hasattr(self, "table_widget") or not self.table_widget:
+            return
+
+        logger.info(f"[DepotSelection] Upgrading {len(recovered_dict)} recovered depot(s) in UI: {list(recovered_dict.keys())}")
+        for did, mid in recovered_dict.items():
+            did_str = str(did)
+            self._recovered_depots_map[did_str] = str(mid)
+            if did_str in self.missing_hubcap_depots:
+                self.missing_hubcap_depots.remove(did_str)
+
+            for row in range(self.table_widget.rowCount()):
+                id_item = self.table_widget.item(row, 0)
+                if id_item and str(id_item.data(Qt.ItemDataRole.UserRole)) == did_str:
+                    config_item = self.table_widget.item(row, 1)
+                    size_item = self.table_widget.item(row, 2)
+
+                    id_item.setData(Qt.ItemDataRole.UserRole + 2, "normal")
+                    id_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                    id_item.setForeground(QColor(255, 255, 255))
+
+                    if config_item:
+                        txt = config_item.text()
+                        for prefix in ("[Missing from Hubcap]", "[Unavailable on Hubcap (404)]"):
+                            txt = txt.replace(prefix, "").strip()
+                        config_item.setText(f"[Recovered]  {txt}")
+                        config_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                        config_item.setForeground(QColor(255, 255, 255))
+
+                    if size_item:
+                        size_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                        size_item.setForeground(QColor(255, 255, 255))
+                    break
+
+        if hasattr(self, "linux_button") and self.linux_button:
+            self.linux_button.setEnabled(self._has_native_linux_depots())
+
+    def _is_manifest_on_disk(self, did: str, mid: str) -> bool:
+        """Checks if the .manifest file is already saved in persistent or temporary manifests directory."""
+        from pathlib import Path
+        import tempfile
+        from utils.helpers import get_base_path
+        for s_dir in [Path(tempfile.gettempdir()) / "mistwalker_manifests", Path(get_base_path()) / "manifests"]:
+            if (s_dir / f"{did}_{mid}.manifest").exists():
+                return True
+        return False
 
     def _apply_depot_enrichments(self, enrichments: dict):
         """Merges enriched metadata into self.depots dictionary."""
@@ -2147,6 +2237,41 @@ class DepotSelectionDialog(QDialog):
         self.dump_thread.start()
 
     def accept(self):
+        # 0. On-demand manifest generation for any selected recovered depots that lack files on disk
+        selected_for_check = self.get_selected_depots()
+        if hasattr(self, "_recovered_depots_map") and self._recovered_depots_map:
+            needs_gen = [
+                did for did in selected_for_check
+                if did in self._recovered_depots_map and not self._is_manifest_on_disk(did, self._recovered_depots_map[did])
+            ]
+            if needs_gen:
+                from PyQt6.QtWidgets import QProgressDialog
+                from pathlib import Path
+                import tempfile
+                from utils.helpers import get_base_path
+                from core import morrenus_api
+                progress = QProgressDialog(f"Generating manifest for {len(needs_gen)} recovered depot(s)...", None, 0, len(needs_gen), self)
+                progress.setWindowModality(Qt.WindowModality.WindowModal)
+                progress.show()
+                for idx, r_did in enumerate(needs_gen):
+                    r_mid = self._recovered_depots_map[r_did]
+                    progress.setValue(idx)
+                    progress.setLabelText(f"Generating manifest for depot {r_did}...")
+                    QApplication.processEvents()
+                    raw_bytes, g_err = morrenus_api.generate_single_manifest(r_did, r_mid)
+                    if raw_bytes:
+                        for s_dir in [Path(tempfile.gettempdir()) / "mistwalker_manifests", Path(get_base_path()) / "manifests"]:
+                            try:
+                                s_dir.mkdir(parents=True, exist_ok=True)
+                                (s_dir / f"{r_did}_{r_mid}.manifest").write_bytes(raw_bytes)
+                            except Exception:
+                                pass
+                        self._manifest_overrides[str(r_did)] = str(r_mid)
+                        logger.info(f"[DepotSelection] Generated manifest for recovered depot {r_did}_{r_mid}")
+                    else:
+                        logger.warning(f"[DepotSelection] Failed to generate manifest for recovered depot {r_did}: {g_err}")
+                progress.close()
+
         # 1. Validate depot selection
         selected_depots = self.get_selected_depots()
         if not selected_depots:
