@@ -3,7 +3,7 @@
 curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bash
 ```
 
-## 📋 Requirements
+## Requirements
 * **Headcrab (SLSsteam)**: Required to intercept and download depots:
   `curl -fsSL headcrab.pages.dev | bash`
 * **.NET 9 Runtime**: Automatically installed if missing, required for Steamless and DepotDownloader tools.
@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bas
 
 ---
 
-## ❄️ NixOS Compatibility
+## NixOS Compatibility
 
 NixOS does not use standard `/lib64/ld-linux-x86-64.so.2` dynamic linkers, which causes generic Linux AppImages to display `stub-ld` or missing `libzstd.so.1` warnings. NixOS users can run ASSella using any of the following methods:
 
