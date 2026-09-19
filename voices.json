@@ -227,26 +227,6 @@
         "1941541": "3121778726057603637"
       }
     },
-    "3017860": {
-      "game_name": "DOOM: The Dark Ages",
-      "aliases": [
-        "doom: tda",
-        "doom tda",
-        "the dark ages"
-      ],
-      "recommended_build_id": "23888600",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {
-        "3017862": "8197197764663749946",
-        "3017863": "5147735178128053244",
-        "3017864": "4051834565771554326",
-        "3017865": "6508691013012284956",
-        "3017866": "51450828051076476",
-        "3017867": "7418049215055797629",
-        "3017868": "7542505685871058323"
-      }
-    },
     "3357650": {
       "game_name": "Pragmata",
       "aliases": [
@@ -313,7 +293,7 @@
       }
     },
     "2215200": {
-      "game_name": "LEGO\u00ae Batman\u2122: Legacy of the Dark Knight",
+      "game_name": "LEGO: Legacy of the Dark Knight",
       "aliases": [
         "lego batman: lotdk",
         "lego batman lotdk"
