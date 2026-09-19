@@ -326,13 +326,5 @@
       }
     }
   },
-  "named_games": {
-    "007 first light": {
-      "game_name": "007 First Light",
-      "recommended_build_id": "23388781",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {}
-    }
-  }
+  "named_games": {}
 }
