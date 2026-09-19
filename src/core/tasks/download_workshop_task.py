@@ -110,32 +110,123 @@ class DownloadWorkshopTask(QObject):
                         current_key = None
         return result
 
+    def _get_steam_account_id(self) -> str:
+        loginusers_candidates = [
+            os.path.expanduser("~/.local/share/Steam/config/loginusers.vdf"),
+            os.path.expanduser("~/.steam/steam/config/loginusers.vdf"),
+            os.path.expanduser("~/.steam/root/config/loginusers.vdf"),
+        ]
+        for p in loginusers_candidates:
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    match = re.search(r'"(7656119[0-9]+)"', content)
+                    if match:
+                        steamid64 = int(match.group(1))
+                        return str(steamid64 - 76561197960265728)
+                except Exception:
+                    pass
+        return "0"
+
     def _write_acf(self, path: str, appid: str, items: dict):
         existing = {}
         root_meta = {}
+        now = str(int(time.time()))
+        account_id = self._get_steam_account_id()
+
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 raw = f.read()
             parsed = self._parse_acf_block(raw)
             aw = parsed.get("AppWorkshop", {})
-            root_meta = {k: v for k, v in aw.items() if k not in ("WorkshopItemsInstalled", "WorkshopItemDetails", "NeedsUpdate", "NeedsDownload") and isinstance(v, str)}
+            root_meta = {
+                k: v for k, v in aw.items()
+                if k not in ("WorkshopItemsInstalled", "WorkshopItemDetails", "NeedsUpdate", "NeedsDownload", "SizeOnDisk")
+                and isinstance(v, str)
+            }
             installed = aw.get("WorkshopItemsInstalled", {})
             details = aw.get("WorkshopItemDetails", {})
-            for wid, data in installed.items():
-                existing[wid] = {"size": data.get("size", "0"), "timeupdated": data.get("timeupdated", "0"), "manifest": data.get("manifest", ""), "timetouched": details.get(wid, {}).get("timetouched", "0"), "subscribedby": details.get(wid, {}).get("subscribedby", "0")}
+
+            for wid, d in details.items():
+                existing[wid] = {
+                    "size": str(installed.get(wid, {}).get("size", "0")),
+                    "timeupdated": str(d.get("timeupdated", now)),
+                    "manifest": str(d.get("manifest", installed.get(wid, {}).get("manifest", ""))),
+                    "timetouched": str(d.get("timetouched", now)) if str(d.get("timetouched", "0")) != "0" else now,
+                    "subscribedby": str(d.get("subscribedby") or account_id),
+                }
+
+            for wid, d in installed.items():
+                if wid not in existing:
+                    existing[wid] = {
+                        "size": str(d.get("size", "0")),
+                        "timeupdated": str(d.get("timeupdated", now)),
+                        "manifest": str(d.get("manifest", "")),
+                        "timetouched": now,
+                        "subscribedby": account_id,
+                    }
+                else:
+                    if d.get("size") and str(d.get("size")) != "0":
+                        existing[wid]["size"] = str(d["size"])
+                    if d.get("manifest"):
+                        existing[wid]["manifest"] = str(d["manifest"])
+
+        # Check existing content directories on disk if sizes are 0
+        content_parent = os.path.join(os.path.dirname(path), "content", appid)
+        if os.path.exists(content_parent):
+            for wid in existing:
+                if existing[wid]["size"] in ("0", ""):
+                    wid_dir = os.path.join(content_parent, wid)
+                    if os.path.exists(wid_dir):
+                        existing[wid]["size"] = str(self._get_dir_size(wid_dir))
+
         for wid, info in items.items():
-            existing[wid] = {"size": str(info["size"]), "timeupdated": str(info["timeupdated"]), "manifest": str(info["manifest"]), "timetouched": existing.get(wid, {}).get("timetouched", "0"), "subscribedby": existing.get(wid, {}).get("subscribedby", "0")}
-        
+            prev = existing.get(wid, {})
+            existing[wid] = {
+                "size": str(info.get("size", prev.get("size", "0"))),
+                "timeupdated": str(info.get("timeupdated", prev.get("timeupdated", now))),
+                "manifest": str(info.get("manifest", prev.get("manifest", ""))),
+                "timetouched": now,
+                "subscribedby": str(prev.get("subscribedby") or account_id),
+            }
+
+        total_size = sum(int(d["size"]) for d in existing.values() if str(d.get("size", "")).isdigit())
+
         def q(v): return f'"{v}"'
         lines = ['"AppWorkshop"', '{', f'\t"appid"\t\t{q(appid)}']
+        lines.append(f'\t"SizeOnDisk"\t\t{q(str(total_size))}')
+        lines.append('\t"NeedsUpdate"\t\t"0"')
+        lines.append('\t"NeedsDownload"\t\t"0"')
+        lines.append(f'\t"TimeLastUpdated"\t\t{q(now)}')
+
         for k, v in root_meta.items():
-            if k != "appid": lines.append(f'\t{q(k)}\t\t{q(v)}')
-        lines.extend(['\t"NeedsUpdate"\t\t"0"', '\t"NeedsDownload"\t\t"0"', '\t"WorkshopItemsInstalled"', '\t{'])
+            if k not in ("appid", "SizeOnDisk", "NeedsUpdate", "NeedsDownload", "TimeLastUpdated"):
+                lines.append(f'\t{q(k)}\t\t{q(v)}')
+
+        lines.extend(['\t"WorkshopItemsInstalled"', '\t{'])
         for wid, d in existing.items():
-            lines.extend([f'\t\t{q(wid)}', '\t\t{', f'\t\t\t"size"\t\t{q(d["size"])}', f'\t\t\t"timeupdated"\t\t{q(d["timeupdated"])}', f'\t\t\t"manifest"\t\t{q(d["manifest"])}', '\t\t}'])
+            lines.extend([
+                f'\t\t{q(wid)}',
+                '\t\t{',
+                f'\t\t\t"size"\t\t{q(d["size"])}',
+                f'\t\t\t"timeupdated"\t\t{q(d["timeupdated"])}',
+                f'\t\t\t"manifest"\t\t{q(d["manifest"])}',
+                '\t\t}'
+            ])
         lines.extend(['\t}', '\t"WorkshopItemDetails"', '\t{'])
         for wid, d in existing.items():
-            lines.extend([f'\t\t{q(wid)}', '\t\t{', f'\t\t\t"manifest"\t\t{q(d["manifest"])}', f'\t\t\t"timeupdated"\t\t{q(d["timeupdated"])}', f'\t\t\t"timetouched"\t\t{q(d["timetouched"])}', f'\t\t\t"subscribedby"\t\t{q(d["subscribedby"])}', f'\t\t\t"latest_timeupdated"\t\t{q(d["timeupdated"])}', f'\t\t\t"latest_manifest"\t\t{q(d["manifest"])}', '\t\t}'])
+            lines.extend([
+                f'\t\t{q(wid)}',
+                '\t\t{',
+                f'\t\t\t"manifest"\t\t{q(d["manifest"])}',
+                f'\t\t\t"timeupdated"\t\t{q(d["timeupdated"])}',
+                f'\t\t\t"timetouched"\t\t{q(d["timetouched"])}',
+                f'\t\t\t"subscribedby"\t\t{q(d["subscribedby"])}',
+                f'\t\t\t"latest_timeupdated"\t\t{q(d["timeupdated"])}',
+                f'\t\t\t"latest_manifest"\t\t{q(d["manifest"])}',
+                '\t\t}'
+            ])
         lines.extend(['\t}', '}'])
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
@@ -149,6 +240,19 @@ class DownloadWorkshopTask(QObject):
             self.log(f"  ✓ ACF updated → {acf_path}")
         except Exception as e:
             self.log(f"  ✗ Failed to update ACF: {e}")
+
+        # Game-specific local mod folder integrations (e.g. Ravenfield)
+        if appid == "636480":
+            try:
+                rf_mods_dir = os.path.join(dest_path, "steamapps", "common", "Ravenfield", "ravenfield_Data", "Mods")
+                if os.path.isdir(os.path.dirname(rf_mods_dir)):
+                    os.makedirs(rf_mods_dir, exist_ok=True)
+                    symlink_target = os.path.join(rf_mods_dir, wid)
+                    if not os.path.exists(symlink_target) and not os.path.islink(symlink_target):
+                        os.symlink(mod_dir, symlink_target)
+                        self.log(f"  ✓ Linked to Ravenfield Mods → {symlink_target}")
+            except Exception as e:
+                logger.warning(f"Failed to create Ravenfield Mods symlink: {e}")
 
     def run(self, workshop_data: Dict[str, Any]):
         wids = workshop_data["wids"]

@@ -90,15 +90,16 @@ class RecommendedBuildPromptDialog(QDialog):
 
         # ── Description ──
         desc_text = (
-            f'For playing with voices crack it is recommended you use the Buildid: '
-            f'<span style="color: {self.accent_color}; font-weight: bold;">{self.recommended_build_id}</span>'
+            f'For playing with voices38 crack : '
+            f'<span style="color: {self.accent_color}; font-weight: bold;">{self.recommended_build_id}</span><br>'
+            f'<span style="color: rgba(255, 255, 255, 0.55); font-size: 8.5pt;">Note: You will need to find and apply the crack yourself!</span>'
         )
         desc_lbl = QLabel(desc_text)
         desc_lbl.setWordWrap(True)
         desc_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         desc_lbl.setTextFormat(Qt.TextFormat.RichText)
         desc_lbl.setStyleSheet(
-            "color: rgba(255, 255, 255, 0.85); font-size: 9.5pt; line-height: 1.4; border: none; background: transparent; padding: 2px 8px;"
+            "color: rgba(255, 255, 255, 0.85); font-size: 9.5pt; line-height: 1.5; border: none; background: transparent; padding: 2px 8px;"
         )
         main_layout.addWidget(desc_lbl)
 
