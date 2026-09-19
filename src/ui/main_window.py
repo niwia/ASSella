@@ -3282,7 +3282,7 @@ class MainWindow(QMainWindow):
         def _parse_version(v_str: str) -> tuple:
             import re as _re
             v_str = v_str.lstrip('v').strip()
-            m = _re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[.-]?(dev|alpha|beta|rc|hotfix)(\d*)|\-([a-zA-Z0-9.]+))?$', v_str, _re.IGNORECASE)
+            m = _re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[.-]?(dev|alpha|beta|rc|hotfix|testing|canary)(\d*)|\-([a-zA-Z0-9.]+))?$', v_str, _re.IGNORECASE)
             if m:
                 major = int(m.group(1) or 0)
                 minor = int(m.group(2) or 0)
@@ -3290,7 +3290,7 @@ class MainWindow(QMainWindow):
                 pre_type = m.group(4) or ""
                 pre_num_str = m.group(5) or ""
                 pre_extra = m.group(6) or ""
-                pre_weights = {"hotfix": 1, "rc": -1, "beta": -2, "alpha": -3, "dev": -4}
+                pre_weights = {"hotfix": 1, "rc": -1, "beta": -2, "alpha": -3, "dev": -4, "testing": -4, "canary": -5}
                 if pre_type:
                     pre_val = pre_weights.get(pre_type.lower(), 1 if "hotfix" in pre_type.lower() else -4)
                     pre_num = int(pre_num_str) if pre_num_str else 1

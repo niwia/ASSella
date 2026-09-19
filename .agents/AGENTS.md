@@ -20,6 +20,8 @@ This file defines essential guidelines, build rules, versioning conventions, and
 - With every release, automatically increment the semantic version to the next version tag following the last release (e.g. `v2.5.7` following `v2.5.6`).
 - Ensure the local version (`src/res/version`) matches the new version tag pushed to GitHub.
 - GitHub release tags must be prefixed with `v` (e.g., `v2.5.7`).
+- **Canary Channel Versioning**: Development builds on the `canary` branch follow the format:
+  `3.0.0testingDDMMYYNNN` (e.g., `3.0.0testing200926001`), where `DDMMYY` is the current day, month, and 2-digit year (e.g., `200926` for September 20, 2026), and `NNN` is a 3-digit numerical counter incremented for each new AppImage build on that date.
 
 ### B. AppImage Binaries
 - The final production AppImage file is named exactly **`ASSella.AppImage`**.
