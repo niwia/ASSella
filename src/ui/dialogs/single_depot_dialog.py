@@ -61,7 +61,7 @@ class SingleDepotSelectionDialog(QDialog):
 
         self.app_id = str(app_id)
         self.game_name = game_name or "Unknown Game"
-        self.depots = dict(depots or {})
+        self.depots = {str(k): v for k, v in (depots or {}).items() if str(k) != str(app_id)}
         self.header_url = header_url
         self.selected_files: List[str] = []
         self.show_storage = show_storage

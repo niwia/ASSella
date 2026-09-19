@@ -85,27 +85,6 @@ def verify_or_download_manifest(
                     return dl_res, refetched_depots, missing_depots_info_patch
             except Exception as sz_err:
                 logger.debug(f"[ManifestFetcher] Size check error: {sz_err}")
-
-            # 0. Check Hubcap server freshness (free endpoint, 0 quota).
-            #    /status/{app_id} only describes the PUBLIC bundle, so size comparison is only for public.
-            #    Skip size comparison if bundle was synthesized from cached LUA or if targeted update is active.
-            if not is_synthesized_from_lua:
-                try:
-                    status_res = morrenus_api.get_manifest_status(app_id_str) if (not branch_str or branch_str == "public") else None
-                    if isinstance(status_res, dict) and status_res.get("status") == "available":
-                        hubcap_size = status_res.get("file_size")
-                        local_size = cached_path.stat().st_size
-                        if hubcap_size and isinstance(hubcap_size, int) and hubcap_size > 0:
-                            if hubcap_size != local_size:
-                                logger.info(
-                                    f"[ManifestFetcher] Hubcap manifest bundle size differs (server: {hubcap_size}, local: {local_size}). "
-                                    f"Redownloading refreshed bundle for {app_id_str}."
-                                )
-                                dl_res = morrenus_api.download_manifest(app_id_str, branch=branch_str, force_update=True)
-                                return dl_res, refetched_depots, missing_depots_info_patch
-                except Exception as status_err:
-                    logger.debug(f"[ManifestFetcher] Hubcap status check error (non-fatal): {status_err}")
-
             # 1. Parse the zip to find manifests inside it and app token
             local_manifests = {}
             app_token = None

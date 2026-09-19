@@ -380,8 +380,8 @@ class DepotSelectionDialog(QDialog):
         self._missing_contents_checked_signal.connect(self._on_missing_contents_check_finished)
         self._missing_depots_updated_signal.connect(self._on_missing_depots_updated)
         self.setWindowTitle("Select Depots to Download")
-        self.depots = depots or {}
         self.app_id = app_id
+        self.depots = {k: v for k, v in (depots or {}).items() if str(k) != str(app_id)}
         self.game_name = game_name
         self.header_url = header_url
         self.selected_depots = selected_depots
@@ -705,9 +705,6 @@ class DepotSelectionDialog(QDialog):
         self._hidden_depots_expanded = False
         self._populate_table()
 
-        # Makes list widget update stylesheets for the items
-        QApplication.processEvents()
- 
         content_widget.addWidget(self.table_widget)
  
         self.table_widget.cellClicked.connect(self.on_depot_cell_clicked)

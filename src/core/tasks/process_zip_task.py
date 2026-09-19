@@ -59,10 +59,6 @@ class ProcessZipTask:
             if len(args_list) > 2 and args_list[2].strip('"'):
                 main_app_key = args_list[2].strip('"')
                 game_data["app_key"] = main_app_key
-                game_data["depots"][app_id_val] = {
-                    "key": main_app_key,
-                    "desc": game_data["game_name"] or f"App {app_id_val}",
-                }
             for match in all_app_matches:
                 args_str = match.group(1).strip()
                 args = [arg.strip() for arg in args_str.split(",")]
@@ -347,6 +343,8 @@ class ProcessZipTask:
                             game_data["manifests"] = dict(latest_mfs)
 
                         if d_keys:
+                            if d_keys.get(str(inferred_appid)) and not game_data.get("app_key"):
+                                game_data["app_key"] = d_keys[str(inferred_appid)]
                             depots_map = {}
                             for did, k in d_keys.items():
                                 if str(did) == str(inferred_appid):
@@ -363,6 +361,8 @@ class ProcessZipTask:
                                 if cached_token:
                                     game_data["app_token"] = cached_token
                                 if cached_keys:
+                                    if cached_keys.get(str(inferred_appid)) and not game_data.get("app_key"):
+                                        game_data["app_key"] = cached_keys[str(inferred_appid)]
                                     depots_map = {}
                                     for did, k in cached_keys.items():
                                         if str(did) == str(inferred_appid):

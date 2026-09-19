@@ -1083,11 +1083,22 @@ class FetchManifestDialog(QDialog):
 
         self._parse_task_runner = TaskRunner(self)
         worker = self._parse_task_runner.run(_parse_task)
-        worker.finished.connect(lambda parsed_data: self._on_parse_finished(parsed_data, filepath, branch, metadata))
+        worker.finished.connect(
+            lambda parsed_data: QTimer.singleShot(
+                0, lambda: self._on_parse_finished(parsed_data, filepath, branch, metadata)
+            )
+        )
 
     def _on_parse_finished(self, parsed_data, filepath, branch, metadata):
         self._toggle_inputs(True)
         self._set_loading_active(False)
+
+        if parsed_data and parsed_data.get("depots") and parsed_data.get("appid"):
+            appid_str = str(parsed_data["appid"])
+            if appid_str in parsed_data["depots"]:
+                if not parsed_data.get("app_key") and parsed_data["depots"][appid_str].get("key"):
+                    parsed_data["app_key"] = parsed_data["depots"][appid_str]["key"]
+                del parsed_data["depots"][appid_str]
 
         if not parsed_data or not parsed_data.get("depots"):
             app_id = str(self._current_fetching_appid or (parsed_data and parsed_data.get("appid")) or "")
