@@ -1122,6 +1122,70 @@ class LibraryActionsMixin:
 
         is_rollback = local_path_override is not None
 
+        # Curated / Recommended Builds Check ("Voices")
+        if not download_only and not is_rollback:
+            try:
+                from managers.voices_manager import VoicesManager
+                vm = VoicesManager.get_instance()
+                rec = vm.get_recommendation(app_id, name)
+                if rec and rec.get("recommended_build_id"):
+                    rec_bid = str(rec["recommended_build_id"]).strip()
+                    current_bid = str(game_data.get("buildid") or "").strip()
+                    is_pinned = self.settings.value(f"pin_build/{app_id}", False, type=bool)
+                    if not is_pinned or (current_bid and current_bid != rec_bid):
+                        from ui.dialogs.recommended_build_dialog import (
+                            RecommendedBuildPromptDialog,
+                            ACTION_RECOMMENDED,
+                            ACTION_LATEST,
+                            ACTION_BROWSE,
+                        )
+                        accent = getattr(self, "accent_color", "#4c8df5")
+                        prompt = RecommendedBuildPromptDialog(
+                            parent=self,
+                            app_id=str(app_id),
+                            game_name=name,
+                            recommended_build_id=rec_bid,
+                            current_build_id=current_bid,
+                            reason=rec.get("reason", ""),
+                            accent_color=accent,
+                        )
+                        prompt.exec()
+                        action = prompt.get_action()
+                        if action == ACTION_RECOMMENDED:
+                            game_data["_pin_build"] = True
+                            game_data["_recommended_build_id"] = rec_bid
+                            game_data["_rec_depots"] = rec.get("depots", [])
+                            game_data["_rec_overrides"] = rec.get("manifest_overrides", {})
+                            logger.info(f"[LibraryActions] User chose recommended build {rec_bid} for {name} ({app_id})")
+                        elif action == ACTION_BROWSE:
+                            from ui.dialogs.build_selection_dialog import BuildSelectionDialog
+                            dlg = BuildSelectionDialog(
+                                parent=self,
+                                app_id=str(app_id),
+                                game_name=name,
+                                current_build_id=current_bid,
+                                accent_color=accent,
+                            )
+                            if dlg.exec():
+                                chosen_bid, patch_depots = dlg.get_selected_build()
+                                if chosen_bid:
+                                    game_data["_pin_build"] = True
+                                    game_data["_recommended_build_id"] = chosen_bid
+                                    game_data["_rec_depots"] = []
+                                    game_data["_rec_overrides"] = patch_depots
+                            else:
+                                if hasattr(self, "_active_fetches"):
+                                    self._active_fetches.discard(app_id)
+                                return
+                        elif action == ACTION_LATEST:
+                            logger.info(f"[LibraryActions] User chose latest manifest build for {name} ({app_id})")
+                        else:
+                            if hasattr(self, "_active_fetches"):
+                                self._active_fetches.discard(app_id)
+                            return
+            except Exception as _rec_err:
+                logger.warning(f"[LibraryActions] Error checking voices recommendation: {_rec_err}")
+
         # Local zip path (for Verify or Rollback)
         fpath = morrenus_api.get_manifest_zip_path(app_id, branch)
         is_fresh = self.settings.value(f"manifest_is_fresh/{app_id}", False, type=bool)
@@ -1555,11 +1619,56 @@ class LibraryActionsMixin:
                         missing_depots_info=parsed_data.get("missing_depots_info"),
                         current_build_id=str(game_info.get("buildid") or "").strip() if isinstance(game_info, dict) else "",
                     )
+
+                    # Apply recommended build selection if set
+                    if game_data.get("_recommended_build_id"):
+                        rec_bid = game_data["_recommended_build_id"]
+                        patch_depots = game_data.get("_rec_overrides") or {}
+                        if not patch_depots:
+                            try:
+                                from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
+                                cache = SteamDBBuildsCache()
+                                c_depots = cache.get_build_depots(rec_bid)
+                                if c_depots:
+                                    patch_depots = c_depots
+                                else:
+                                    patch_depots = SteamDBScraper().get_patch_depots(rec_bid) or {}
+                            except Exception as _e:
+                                logger.warning(f"Failed to resolve SteamDB depots for {rec_bid}: {_e}")
+                        depot_dialog._apply_build_selection(rec_bid, patch_depots)
+
                     if depot_dialog.exec():
                         selected_depots = depot_dialog.get_selected_depots()
                         selected_storage = depot_dialog.get_selected_storage()
                         if selected_storage:
                             metadata["library_path"] = selected_storage
+
+                        if hasattr(depot_dialog, "is_build_pinned") and depot_dialog.is_build_pinned():
+                            pinned_bid = depot_dialog.get_selected_build()
+                            metadata["pin_build"] = True
+                            metadata["pinned_build_id"] = pinned_bid
+                            metadata["buildid"] = pinned_bid
+                            metadata["is_rollback"] = True
+                            if appid:
+                                settings.setValue(f"pin_build/{appid}", True)
+                                logger.info(f"Pinned build {pinned_bid} for AppID {appid} in library actions")
+
+                        if hasattr(depot_dialog, "get_manifest_overrides"):
+                            overrides = depot_dialog.get_manifest_overrides()
+                            if overrides:
+                                metadata["manifest_overrides"] = overrides
+
+            if game_data.get("_pin_build"):
+                rec_bid = game_data.get("_recommended_build_id")
+                if rec_bid:
+                    metadata["pin_build"] = True
+                    metadata["pinned_build_id"] = rec_bid
+                    metadata["buildid"] = rec_bid
+                    metadata["is_rollback"] = True
+                    if appid:
+                        settings.setValue(f"pin_build/{appid}", True)
+                if game_data.get("_rec_overrides"):
+                    metadata.setdefault("manifest_overrides", {}).update(game_data["_rec_overrides"])
 
             if selected_depots:
                 metadata["selected_depots_list"] = selected_depots

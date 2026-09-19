@@ -81,6 +81,12 @@ def main():
     logger.info(f"ASSELA {app_version} starting...")
     logger.info("========================================")
 
+    try:
+        from managers.voices_manager import VoicesManager
+        VoicesManager.get_instance()
+    except Exception as e:
+        logger.warning(f"Error initializing VoicesManager: {e}")
+
     # Pre-scan for headless/helper mode to set environment variable before QApplication is created
     headless_mode = "--headless" in sys.argv or "--helper" in sys.argv or "-helper" in sys.argv or "--check-updates" in sys.argv
     if not headless_mode:

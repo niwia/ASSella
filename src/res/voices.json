@@ -1,0 +1,254 @@
+{
+  "version": 1,
+  "description": "ASSella Recommended & Tested Game Builds (Voices)",
+  "updated_at": "2026-09-19",
+  "games": {
+    "2161700": {
+      "game_name": "Persona 3 Reload",
+      "aliases": [
+        "p3r",
+        "persona 3"
+      ],
+      "recommended_build_id": "22672075",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "2358720": {
+      "game_name": "Black Myth: Wukong",
+      "aliases": [
+        "bm wukong",
+        "wukong",
+        "black myth"
+      ],
+      "recommended_build_id": "21393610",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "1693980": {
+      "game_name": "Dead Space",
+      "aliases": [
+        "dead space remake"
+      ],
+      "recommended_build_id": "10602756",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "1971870": {
+      "game_name": "Mortal Kombat 1",
+      "aliases": [
+        "mk1",
+        "mortal kombat"
+      ],
+      "recommended_build_id": "17941244",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "1237320": {
+      "game_name": "Sonic Frontiers",
+      "aliases": [
+        "sonic"
+      ],
+      "recommended_build_id": "16857613",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "2842040": {
+      "game_name": "Star Wars Outlaws",
+      "aliases": [
+        "star wars outlaw",
+        "outlaws"
+      ],
+      "recommended_build_id": "18870567",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "2840770": {
+      "game_name": "Avatar: Frontiers of Pandora",
+      "aliases": [
+        "avatar fop",
+        "frontiers of pandora"
+      ],
+      "recommended_build_id": "22429549",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "3035570": {
+      "game_name": "Assassin's Creed Mirage",
+      "aliases": [
+        "ac mirage",
+        "mirage"
+      ],
+      "recommended_build_id": "21164535",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "3159330": {
+      "game_name": "Assassin's Creed Shadows",
+      "aliases": [
+        "ac shadow",
+        "ac shadows"
+      ],
+      "recommended_build_id": "23475575",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "1222680": {
+      "game_name": "Need for Speed Heat",
+      "aliases": [
+        "nfs heat"
+      ],
+      "recommended_build_id": "10351341",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "1328660": {
+      "game_name": "Need for Speed: Hot Pursuit Remastered",
+      "aliases": [
+        "nfs: hot pursuit",
+        "nfs hot pursuit"
+      ],
+      "recommended_build_id": "10351285",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "1413480": {
+      "game_name": "Shin Megami Tensei III Nocturne HD Remaster",
+      "aliases": [
+        "smt 3",
+        "smt iii",
+        "nocturne"
+      ],
+      "recommended_build_id": "8135603",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "2751000": {
+      "game_name": "Prince of Persia: The Lost Crown",
+      "aliases": [
+        "pop: the lost crown",
+        "the lost crown"
+      ],
+      "recommended_build_id": "17528300",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "1941540": {
+      "game_name": "Mafia: The Old Country",
+      "aliases": [
+        "mafia: toc",
+        "mafia toc",
+        "the old country"
+      ],
+      "recommended_build_id": "20951841",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "3017860": {
+      "game_name": "DOOM: The Dark Ages",
+      "aliases": [
+        "doom: tda",
+        "doom tda",
+        "the dark ages"
+      ],
+      "recommended_build_id": "23888600",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "3357650": {
+      "game_name": "Pragmata",
+      "aliases": [
+        "pragmata"
+      ],
+      "recommended_build_id": "22357085",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "3489700": {
+      "game_name": "Stellar Blade",
+      "aliases": [
+        "stellar blade"
+      ],
+      "recommended_build_id": "19963153",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "3321460": {
+      "game_name": "Crimson Desert",
+      "aliases": [
+        "crimson dessert"
+      ],
+      "recommended_build_id": "24236217",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    }
+  },
+  "named_games": {
+    "007 first light": {
+      "game_name": "007 First Light",
+      "recommended_build_id": "23388781",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "re: requiem": {
+      "game_name": "RE: Requiem",
+      "recommended_build_id": "22277314",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "ac: bfr": {
+      "game_name": "AC: BFR",
+      "recommended_build_id": "24424450",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "lego batman: lotdk": {
+      "game_name": "Lego Batman: LOTDK",
+      "recommended_build_id": "23222834",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "re requiem": {
+      "game_name": "RE: Requiem",
+      "recommended_build_id": "22277314",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "ac bfr": {
+      "game_name": "AC: BFR",
+      "recommended_build_id": "24424450",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    },
+    "lego batman lotdk": {
+      "game_name": "Lego Batman: LOTDK",
+      "recommended_build_id": "23222834",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {}
+    }
+  }
+}

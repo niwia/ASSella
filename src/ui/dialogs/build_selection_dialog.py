@@ -62,6 +62,12 @@ class BuildSelectionDialog(QDialog):
         self._build_cards: List[Tuple[QFrame, dict]] = []
         self._builds_data: List[dict] = []
 
+        try:
+            from managers.voices_manager import VoicesManager
+            self.recommended_build_id = VoicesManager.get_instance().get_recommended_build_id(self.app_id, self.game_name) or ""
+        except Exception:
+            self.recommended_build_id = ""
+
         self.setWindowTitle(f"Build History — {self.game_name}")
         self.setMinimumSize(460, 380)
         self.resize(480, 400)
@@ -359,6 +365,16 @@ class BuildSelectionDialog(QDialog):
                 )
                 top_row.addWidget(curr_badge)
 
+            is_rec = bool(self.recommended_build_id and str(build_id) == str(self.recommended_build_id))
+            if is_rec:
+                rec_badge = QLabel("RECOMMENDED")
+                rec_badge.setStyleSheet(
+                    f"color: {self.accent_color}; background-color: rgba(76, 141, 245, 0.2); "
+                    f"border: 1px solid {self.accent_color}; border-radius: 4px; "
+                    "padding: 1px 6px; font-size: 8.5pt; font-weight: bold;"
+                )
+                top_row.addWidget(rec_badge)
+
             top_row.addStretch()
 
             if date_str:
@@ -380,8 +396,10 @@ class BuildSelectionDialog(QDialog):
             self.cards_layout.insertWidget(idx, card)
             self._build_cards.append((card, item))
 
-            # Auto-select the current build if it matches
-            if is_current and self._selected_build_idx == -1:
+            # Auto-select the recommended build if present, else current build
+            if is_rec and self._selected_build_idx == -1:
+                self._on_card_clicked(idx)
+            elif is_current and self._selected_build_idx == -1:
                 self._on_card_clicked(idx)
 
     def _on_card_clicked(self, idx: int):

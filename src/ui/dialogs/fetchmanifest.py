@@ -1197,6 +1197,61 @@ class FetchManifestDialog(QDialog):
                 depot_dialog.raise_()
                 depot_dialog.activateWindow()
 
+                # Curated / Recommended Builds Check ("Voices")
+                try:
+                    from managers.voices_manager import VoicesManager
+                    rec = VoicesManager.get_instance().get_recommendation(appid, parsed_data.get("game_name", ""))
+                    if rec and rec.get("recommended_build_id"):
+                        rec_bid = str(rec["recommended_build_id"]).strip()
+                        is_already_pinned = self.settings.value(f"pin_build/{appid}", False, type=bool)
+                        if not is_already_pinned or (current_bid and current_bid != rec_bid):
+                            from ui.dialogs.recommended_build_dialog import (
+                                RecommendedBuildPromptDialog,
+                                ACTION_RECOMMENDED,
+                                ACTION_LATEST,
+                                ACTION_BROWSE,
+                            )
+                            prompt = RecommendedBuildPromptDialog(
+                                parent=self,
+                                app_id=str(appid),
+                                game_name=parsed_data.get("game_name", ""),
+                                recommended_build_id=rec_bid,
+                                current_build_id=current_bid,
+                                reason=rec.get("reason", ""),
+                                accent_color=self.accent_color,
+                            )
+                            prompt.exec()
+                            action = prompt.get_action()
+                            if action == ACTION_RECOMMENDED:
+                                rec_overrides = rec.get("manifest_overrides", {})
+                                patch_depots = {}
+                                if rec_overrides:
+                                    patch_depots = {str(d): {"manifest_id": str(m)} for d, m in rec_overrides.items()}
+                                else:
+                                    try:
+                                        from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
+                                        cache = SteamDBBuildsCache()
+                                        c_depots = cache.get_build_depots(rec_bid)
+                                        if c_depots:
+                                            patch_depots = c_depots
+                                        else:
+                                            patch_depots = SteamDBScraper().get_patch_depots(rec_bid) or {}
+                                    except Exception as _e:
+                                        logger.warning(f"Failed to resolve SteamDB depots for {rec_bid}: {_e}")
+
+                                depot_dialog._apply_build_selection(rec_bid, patch_depots)
+                                logger.info(f"[FetchManifest] Applied recommended build {rec_bid} with {len(patch_depots)} manifest overrides")
+                            elif action == ACTION_BROWSE:
+                                depot_dialog._on_builds_clicked()
+                            elif action == ACTION_LATEST:
+                                logger.info(f"[FetchManifest] User chose latest manifest build for {appid}")
+                            else:
+                                logger.info(f"[FetchManifest] User cancelled at recommended build prompt for {appid}")
+                                self.status_label.setText("Download cancelled.")
+                                return
+                except Exception as _rec_err:
+                    logger.warning(f"[FetchManifest] Error checking voices recommendation: {_rec_err}")
+
                 depot_res = depot_dialog.exec()
                 if not depot_res:
                     logger.info("User cancelled depot selection.")
