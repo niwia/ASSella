@@ -32,10 +32,46 @@ def verify_or_download_manifest(
 
     try:
         manifests_dir = Path(get_base_path()) / "hubcap_manifests"
+        manifests_dir.mkdir(parents=True, exist_ok=True)
         if branch_str and branch_str != "public":
             cached_path = manifests_dir / f"accela_fetch_{app_id_str}_branch_{branch_str}.zip"
         else:
             cached_path = manifests_dir / f"accela_fetch_{app_id_str}.zip"
+
+        is_synthesized_from_lua = False
+        cached_lua_path = Path(get_base_path()) / "cached_luas" / f"{app_id_str}.lua"
+        if not cached_path.exists() and cached_lua_path.exists():
+            try:
+                logger.info(
+                    f"[ManifestFetcher] Found local cached LUA for AppID {app_id_str} ({cached_lua_path.name}). "
+                    "Constructing bundle from local cache to avoid redownloading..."
+                )
+                from core.tasks.process_zip_task import ProcessZipTask
+                lua_content = cached_lua_path.read_text(encoding="utf-8", errors="ignore")
+                parsed_gd: Dict[str, Any] = {}
+                ProcessZipTask._parse_lua(lua_content, parsed_gd)
+
+                with zipfile.ZipFile(cached_path, "w", zipfile.ZIP_DEFLATED) as zout:
+                    zout.write(cached_lua_path, arcname=cached_lua_path.name)
+                    # Include any standalone manifests that are already cached locally
+                    m_dirs = [
+                        Path(get_base_path()) / "manifests",
+                        Path(tempfile.gettempdir()) / "mistwalker_manifests",
+                    ]
+                    for d_id, m_id in (parsed_gd.get("manifests") or {}).items():
+                        for md in m_dirs:
+                            mf_file = md / f"{d_id}_{m_id}.manifest"
+                            if mf_file.exists():
+                                zout.write(mf_file, arcname=mf_file.name)
+                                break
+                is_synthesized_from_lua = True
+            except Exception as _synth_err:
+                logger.warning(f"[ManifestFetcher] Failed to construct bundle from cached lua: {_synth_err}")
+                if cached_path.exists():
+                    try:
+                        cached_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
         if cached_path.exists():
             logger.info(f"[ManifestFetcher] Checking updates for cached manifest {app_id_str} (Branch: {branch_str})")
@@ -52,21 +88,23 @@ def verify_or_download_manifest(
 
             # 0. Check Hubcap server freshness (free endpoint, 0 quota).
             #    /status/{app_id} only describes the PUBLIC bundle, so size comparison is only for public.
-            try:
-                status_res = morrenus_api.get_manifest_status(app_id_str) if (not branch_str or branch_str == "public") else None
-                if isinstance(status_res, dict) and status_res.get("status") == "available":
-                    hubcap_size = status_res.get("file_size")
-                    local_size = cached_path.stat().st_size
-                    if hubcap_size and isinstance(hubcap_size, int) and hubcap_size > 0:
-                        if hubcap_size != local_size:
-                            logger.info(
-                                f"[ManifestFetcher] Hubcap manifest bundle size differs (server: {hubcap_size}, local: {local_size}). "
-                                f"Redownloading refreshed bundle for {app_id_str}."
-                            )
-                            dl_res = morrenus_api.download_manifest(app_id_str, branch=branch_str, force_update=True)
-                            return dl_res, refetched_depots, missing_depots_info_patch
-            except Exception as status_err:
-                logger.debug(f"[ManifestFetcher] Hubcap status check error (non-fatal): {status_err}")
+            #    Skip size comparison if bundle was synthesized from cached LUA or if targeted update is active.
+            if not is_synthesized_from_lua:
+                try:
+                    status_res = morrenus_api.get_manifest_status(app_id_str) if (not branch_str or branch_str == "public") else None
+                    if isinstance(status_res, dict) and status_res.get("status") == "available":
+                        hubcap_size = status_res.get("file_size")
+                        local_size = cached_path.stat().st_size
+                        if hubcap_size and isinstance(hubcap_size, int) and hubcap_size > 0:
+                            if hubcap_size != local_size:
+                                logger.info(
+                                    f"[ManifestFetcher] Hubcap manifest bundle size differs (server: {hubcap_size}, local: {local_size}). "
+                                    f"Redownloading refreshed bundle for {app_id_str}."
+                                )
+                                dl_res = morrenus_api.download_manifest(app_id_str, branch=branch_str, force_update=True)
+                                return dl_res, refetched_depots, missing_depots_info_patch
+                except Exception as status_err:
+                    logger.debug(f"[ManifestFetcher] Hubcap status check error (non-fatal): {status_err}")
 
             # 1. Parse the zip to find manifests inside it and app token
             local_manifests = {}

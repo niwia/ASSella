@@ -42,9 +42,9 @@ class ProcessZipTask:
             first_app_args = first_app_match.group(1).strip()
 
             # Explicitly break down operation to help static analysis
-            args_list = first_app_args.split(",")
+            args_list = [arg.strip() for arg in first_app_args.split(",")]
             app_id_val = args_list[0]
-            game_data["appid"] = app_id_val.strip()
+            game_data["appid"] = app_id_val
 
             comment_part = first_app_match.group(2)
             game_name_match = re.search(r"--\s*(.*)", comment_part)
@@ -54,6 +54,15 @@ class ProcessZipTask:
 
             game_data["depots"] = {}
             game_data["dlcs"] = {}
+
+            # Capture main application decryption key if defined
+            if len(args_list) > 2 and args_list[2].strip('"'):
+                main_app_key = args_list[2].strip('"')
+                game_data["app_key"] = main_app_key
+                game_data["depots"][app_id_val] = {
+                    "key": main_app_key,
+                    "desc": game_data["game_name"] or f"App {app_id_val}",
+                }
             for match in all_app_matches:
                 args_str = match.group(1).strip()
                 args = [arg.strip() for arg in args_str.split(",")]
@@ -239,6 +248,8 @@ class ProcessZipTask:
                             for did, info in raw_depots.items()
                             if info.get("key")
                         }
+                        if game_data.get("app_key") and _appid_for_cache:
+                            _keys_to_save[str(_appid_for_cache)] = game_data["app_key"]
                         if _keys_to_save:
                             _dkm.save_depot_keys(_appid_for_cache, _keys_to_save, timestamp=lua_timestamp)
                             logger.info(

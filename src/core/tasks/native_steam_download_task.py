@@ -359,10 +359,11 @@ class NativeSteamDownloadTask(QObject):
     def _fetch_hubcap_keys(
         self, game_data: Dict[str, Any], appid: str
     ) -> Tuple[Dict[str, str], Dict[str, str]]:
-        """Fetch depot decryption keys and manifest GIDs."""
+        """Fetch depot decryption keys and manifest GIDs, prioritizing local cache and DB."""
         depot_keys: Dict[str, str] = {}
         manifest_gids: Dict[str, str] = {}
 
+        # 1. From game_data cache
         for depot_id, depot_info in (game_data.get("depots") or {}).items():
             if isinstance(depot_info, dict):
                 k = depot_info.get("key") or depot_info.get("decryption_key")
@@ -372,10 +373,44 @@ class NativeSteamDownloadTask(QObject):
                 if m:
                     manifest_gids[str(depot_id)] = str(m)
 
+        if game_data.get("app_key") and appid:
+            depot_keys[str(appid)] = game_data["app_key"]
+
+        # 2. From DepotKeyManager (SQLite)
+        try:
+            from managers.depot_key_manager import DepotKeyManager
+            dkm = DepotKeyManager.get_instance()
+            cached_dkm_keys = dkm.get_keys_for_app(appid)
+            if cached_dkm_keys:
+                for d, k in cached_dkm_keys.items():
+                    depot_keys.setdefault(str(d), k)
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] Error checking DepotKeyManager: {e}")
+
+        # 3. From cached_luas/{appid}.lua
+        try:
+            from utils.helpers import get_base_path
+            from core.tasks.process_zip_task import ProcessZipTask
+            cached_lua = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
+            if cached_lua.exists():
+                lua_txt = cached_lua.read_text(encoding="utf-8", errors="ignore")
+                parsed_gd: Dict[str, Any] = {}
+                ProcessZipTask._parse_lua(lua_txt, parsed_gd)
+                for d, info in (parsed_gd.get("depots") or {}).items():
+                    if isinstance(info, dict) and info.get("key"):
+                        depot_keys.setdefault(str(d), info["key"])
+                if parsed_gd.get("app_key"):
+                    depot_keys.setdefault(str(appid), parsed_gd["app_key"])
+                for d, gid in (parsed_gd.get("manifests") or {}).items():
+                    manifest_gids.setdefault(str(d), str(gid))
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] Error checking cached_luas: {e}")
+
         if depot_keys:
-            logger.info(f"[NativeSteamDL] Got {len(depot_keys)} keys from game_data cache")
+            logger.info(f"[NativeSteamDL] Retrieved {len(depot_keys)} keys from local cache / database")
             return depot_keys, manifest_gids
 
+        # 4. Fallback to Hubcap API download
         try:
             from core import morrenus_api
             from core.tasks.process_zip_task import ProcessZipTask
@@ -397,6 +432,8 @@ class NativeSteamDownloadTask(QObject):
                     for d, info in gd.get("depots", {}).items():
                         if isinstance(info, dict) and info.get("key"):
                             depot_keys[str(d)] = info["key"]
+                    if gd.get("app_key"):
+                        depot_keys[str(appid)] = gd["app_key"]
                     for d, gid in gd.get("manifests", {}).items():
                         manifest_gids[str(d)] = str(gid)
 
@@ -473,19 +510,20 @@ class NativeSteamDownloadTask(QObject):
         appid: str,
         game_name: str,
         depot_keys: Dict[str, str],
+        selected_depots: Optional[List[str]] = None,
     ) -> bool:
         """
-        Patch SLSsteam config.yaml atomically with:
+        Patch SLSsteam config.yaml in a single atomic write with:
           - Plugins: yes
           - AdditionalApps: [appid]
-          - AdditionalDepots: [depot_ids]
-          - DecryptionKeys: {depot: key}
+          - AdditionalDepots: [depot_ids] (selected or discovered)
+          - DecryptionKeys: {depot/app: key} (including main AppID key)
         """
         from utils.yaml_config_manager import (
             _atomic_write,
             _get_section_bounds,
-            add_additional_app,
-            update_yaml_boolean_value,
+            _fix_additional_apps_indentation,
+            _append_to_additional_apps,
         )
 
         if not config_path.exists():
@@ -499,31 +537,43 @@ class NativeSteamDownloadTask(QObject):
             self._config_backup_path = backup
             logger.info(f"[NativeSteamDL] Backed up config.yaml to {backup}")
 
-        # 1. Enable Plugins: yes
-        text = config_path.read_text(encoding="utf-8", errors="ignore")
-        if not re.search(r"^[ \t]*Plugins[ \t]*:[ \t]*(?:yes|true)\b", text, re.MULTILINE | re.IGNORECASE):
-            if re.search(r"^[ \t]*Plugins[ \t]*:", text, re.MULTILINE):
-                update_yaml_boolean_value(config_path, "Plugins", True)
+        content = config_path.read_text(encoding="utf-8", errors="ignore")
+
+        # 1. Enable Plugins: yes in-memory
+        if not re.search(r"^[ \t]*Plugins[ \t]*:[ \t]*(?:yes|true)\b", content, re.MULTILINE | re.IGNORECASE):
+            if re.search(r"^[ \t]*Plugins[ \t]*:", content, re.MULTILINE):
+                content = re.sub(r"^[ \t]*Plugins[ \t]*:.*$", "Plugins: yes", content, flags=re.MULTILINE)
             else:
-                text = "Plugins: yes\n" + text
-                _atomic_write(config_path, text)
+                content = "Plugins: yes\n" + content
 
-        # 2. Add AppID to AdditionalApps
-        add_additional_app(config_path, appid, game_name)
+        # 2. Add AppID to AdditionalApps in-memory
+        fixed_content, _ = _fix_additional_apps_indentation(content)
+        app_bounds = _get_section_bounds(fixed_content, "AdditionalApps")
+        app_id_pattern = re.compile(
+            rf"^[ \t]*-[ \t]*{re.escape(str(appid))}[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        entry_line = f"  - {appid} # {game_name}\n" if game_name else f"  - {appid}\n"
+        if app_bounds:
+            _, content_start, section_end = app_bounds
+            sec_content = fixed_content[content_start:section_end]
+            if not app_id_pattern.search(sec_content):
+                content = _append_to_additional_apps(fixed_content, str(appid), game_name, app_bounds)
+            else:
+                content = fixed_content
+        else:
+            content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
 
-        # 3. Format and inject AdditionalDepots and DecryptionKeys
-        depot_ids = [str(d) for d in depot_keys.keys()]
+        # 3. Format AdditionalDepots (depot IDs excluding main appid)
+        if selected_depots:
+            depot_ids = [str(d) for d in selected_depots if str(d) != str(appid)]
+        else:
+            depot_ids = [str(d) for d in depot_keys.keys() if str(d) != str(appid)]
+
         depot_lines = ["AdditionalDepots:"]
         for d in depot_ids:
             depot_lines.append(f"  - {d}")
         depot_block = "\n".join(depot_lines) + "\n"
-
-        key_lines = ["DecryptionKeys:"]
-        for d, k in depot_keys.items():
-            key_lines.append(f"  {d}: {k}")
-        key_block = "\n".join(key_lines) + "\n"
-
-        content = config_path.read_text(encoding="utf-8", errors="ignore")
 
         bounds_depots = _get_section_bounds(content, "AdditionalDepots")
         if bounds_depots:
@@ -531,17 +581,25 @@ class NativeSteamDownloadTask(QObject):
         else:
             content = content.rstrip() + "\n\n" + depot_block
 
+        # 4. Format DecryptionKeys (ALL keys including appid key)
+        key_lines = ["DecryptionKeys:"]
+        for d, k in depot_keys.items():
+            if k:
+                key_lines.append(f"  {d}: {k}")
+        key_block = "\n".join(key_lines) + "\n"
+
         bounds_keys = _get_section_bounds(content, "DecryptionKeys")
         if bounds_keys:
             content = content[: bounds_keys[0]] + key_block + content[bounds_keys[2] :]
         else:
             content = content.rstrip() + "\n\n" + key_block
 
+        # 5. Write atomically in a single pass to avoid multiple reload notifications
         if not _atomic_write(config_path, content):
             logger.error(f"[NativeSteamDL] Failed to atomic-write {config_path}")
             return False
 
-        logger.info(f"[NativeSteamDL] config.yaml successfully patched ({len(content)} chars)")
+        logger.info(f"[NativeSteamDL] config.yaml successfully patched in single pass ({len(content)} chars)")
         return True
 
     def _poll_license_unlocked(self, appid: str, start_offset: int, timeout_sec: float = 20.0) -> bool:

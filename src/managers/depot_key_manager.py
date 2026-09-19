@@ -58,9 +58,6 @@ class DepotKeyManager:
             with _lock:
                 conn = sqlite3.connect(str(self._db_path))
                 _init_db(conn)
-                # Purge any invalid entries where depot_id == appid
-                conn.execute("DELETE FROM depot_keys WHERE appid = depot_id")
-                conn.commit()
                 conn.close()
         except Exception as e:
             logger.error(f"[DepotKeyManager] Failed to init DB at {self._db_path}: {e}")
@@ -88,7 +85,7 @@ class DepotKeyManager:
             with _lock:
                 conn = self._connect()
                 for did, key in depot_keys.items():
-                    if not key or str(did) == str(appid):
+                    if not key:
                         continue
                     row = conn.execute("SELECT updated_at FROM depot_keys WHERE appid=? AND depot_id=?", (str(appid), str(did))).fetchone()
                     if row and row["updated_at"] >= now:
@@ -113,7 +110,7 @@ class DepotKeyManager:
                     "SELECT depot_id, aes_key FROM depot_keys WHERE appid=?", (str(appid),)
                 ).fetchall()
                 conn.close()
-            result = {row["depot_id"]: row["aes_key"] for row in rows if str(row["depot_id"]) != str(appid)}
+            result = {row["depot_id"]: row["aes_key"] for row in rows}
             if not result:
                 # Check for standalone LUA backup in cached_luas folder
                 result = self._recover_keys_from_lua_file(appid)
@@ -149,8 +146,7 @@ class DepotKeyManager:
             keys = {}
             for m in re.finditer(r'addappid\(\s*(\d+)\s*,\s*1\s*,\s*["\']([^"\']+)["\']', text, re.IGNORECASE):
                 did, k = m.group(1), m.group(2)
-                if str(did) != str(appid):
-                    keys[did] = k
+                keys[did] = k
             if keys:
                 mtime = int(target_file.stat().st_mtime)
                 self.save_depot_keys(appid, keys, timestamp=mtime)

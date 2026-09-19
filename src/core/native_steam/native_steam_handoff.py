@@ -160,17 +160,19 @@ def perform_steam_handoff(
     selected_depots: List[str],
     dest_path: str,
     progress_cb: Optional[Callable[[str], None]] = None,
+    auto_install: bool = False,
 ) -> Tuple[bool, str]:
     """
     Perform the complete handoff flow to the Steam client:
       1. Verify Steam + SLSsteam active.
-      2. Fetch depot keys & manifest GIDs.
+      2. Fetch depot keys & manifest GIDs (using cache / DB first).
       3. Resolve pinned manifests if applicable.
-      4. Patch config.yaml atomically.
+      4. Patch config.yaml atomically with AdditionalApps, AdditionalDepots, and DecryptionKeys.
       5. Deploy plugins.
       6. Wait for SLS license propagation.
       7. Remove stale stub ACF.
-      8. Signal Steam via install|<appid>|<library_index>.
+      8. If auto_install is True, signal Steam via install|<appid>|<library_index>.
+         If auto_install is False (default), unlock in Steam library and return.
     """
     def _emit(msg: str):
         logger.info(f"[SteamHandoff] {msg}")
@@ -208,36 +210,26 @@ def perform_steam_handoff(
         except OSError as e:
             logger.warning(f"[SteamHandoff] Error checking existing ACF: {e}")
 
+    # 3. Retrieve depot keys and manifest GIDs (cache-first via _fetch_hubcap_keys)
     from core.tasks.native_steam_download_task import NativeSteamDownloadTask
     task_helper = NativeSteamDownloadTask()
     depot_keys, manifest_gids = task_helper._fetch_hubcap_keys(game_data, appid)
-    if not depot_keys:
-        try:
-            from managers.depot_key_manager import DepotKeyManager
-            cached = DepotKeyManager.get_instance().get_keys_for_app(appid)
-            if cached:
-                depot_keys = {str(d): k for d, k in cached.items()}
-                logger.info(f"[SteamHandoff] Retrieved {len(depot_keys)} depot keys from DepotKeyManager")
-        except Exception as e:
-            logger.debug(f"[SteamHandoff] Error checking depot_key_manager: {e}")
 
     if not depot_keys:
         return False, f"No depot keys available for {game_name} ({appid})."
 
-    # Filter by selected depots if specified
-    if selected_depots:
-        active_keys = {d: k for d, k in depot_keys.items() if str(d) in [str(x) for x in selected_depots]}
-        if not active_keys:
-            active_keys = depot_keys
-    else:
-        active_keys = depot_keys
+    # Retain all keys (both main AppID key and all depots) in DecryptionKeys so Steam client
+    # and download.lua never fail with Missing Decryption Key / UpdateResult 8
+    active_keys = dict(depot_keys)
+    if game_data.get("app_key") and str(appid) not in active_keys:
+        active_keys[str(appid)] = game_data["app_key"]
 
     # 4. Check pinned manifests
     pinned_manifests = resolve_pinned_manifests(game_data, appid)
     if pinned_manifests:
         _emit(f"Pinning {len(pinned_manifests)} depot manifest(s) for build stability")
 
-    # 5. Patch config.yaml
+    # 5. Patch config.yaml atomically in a single pass
     config_path = sls_config_dir / "config.yaml"
     _emit("Patching SLSsteam config.yaml with game and depot keys...")
 
@@ -247,7 +239,9 @@ def perform_steam_handoff(
         sls_log = Path.home() / ".SLSsteam.log"
     log_offset = sls_log.stat().st_size if sls_log.exists() else 0
 
-    patch_ok = task_helper._patch_config(config_path, appid, game_name, active_keys)
+    patch_ok = task_helper._patch_config(
+        config_path, appid, game_name, active_keys, selected_depots=selected_depots
+    )
     if not patch_ok:
         return False, "Failed to patch SLSsteam config.yaml."
 
@@ -266,16 +260,23 @@ def perform_steam_handoff(
     task_helper._poll_license_unlocked(appid, log_offset, timeout_sec=15.0)
     time.sleep(1.5)
 
-    # 8. Send install to Steam API
-    library_index = resolve_library_index(dest_path)
-    _emit(f"Signalling Steam to install {game_name} into library folder {library_index}...")
-    sent = send_sls_api(f"install|{appid}|{library_index}")
-    if not sent:
-        return False, "Failed to send install command to /tmp/SLSsteam.API."
+    # 8. Send install to Steam API only if auto_install is requested
+    if auto_install:
+        library_index = resolve_library_index(dest_path)
+        _emit(f"Signalling Steam to install {game_name} into library folder {library_index}...")
+        sent = send_sls_api(f"install|{appid}|{library_index}")
+        if not sent:
+            return False, "Failed to send install command to /tmp/SLSsteam.API."
 
-    success_msg = (
-        f"Successfully handed off {game_name} ({appid}) to Steam! "
-        f"The download has been queued directly inside the Steam client."
-    )
+        success_msg = (
+            f"Successfully handed off {game_name} ({appid}) to Steam! "
+            f"The download has been queued directly inside the Steam client."
+        )
+    else:
+        success_msg = (
+            f"Successfully added {game_name} ({appid}) to Steam! "
+            f"The game and depot keys are unlocked in your Steam library, ready to install."
+        )
+
     _emit(success_msg)
     return True, success_msg

@@ -109,6 +109,12 @@ NUMERIC_VALUE_MAP_KEYS = {
     "ManifestIds", "DlcData",
 }
 
+# Known plugin keys (e.g. from download.lua plugin) that are valid extensions:
+KNOWN_PLUGIN_KEYS = {
+    "AdditionalDepots": TYPE_LIST,
+    "DecryptionKeys": TYPE_MAP,
+}
+
 IDLE_STATUS_KEY = "IdleStatus"
 
 # ──────────────────────────────────────────────────────────────
@@ -279,6 +285,7 @@ def infer_key_types(raw_hpp: str) -> dict:
 
         i += 1
 
+    key_types.update(KNOWN_PLUGIN_KEYS)
     return key_types
 
 
@@ -888,7 +895,7 @@ def validate_config(config_path: Path, key_types: dict) -> list:
         return issues
 
     for key in data:
-        if key_types and key not in key_types and key != IDLE_STATUS_KEY:
+        if key_types and key not in key_types and key != IDLE_STATUS_KEY and key not in KNOWN_PLUGIN_KEYS:
             issues.append(f"Key '{key}' not found in current upstream template (may have been removed)")
 
     return issues
@@ -981,6 +988,24 @@ def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
         elif ktype in (TYPE_MAP, TYPE_MAP_OF_LISTS) or (ktype == TYPE_UNKNOWN and isinstance(user_val, dict)):
             if isinstance(user_val, dict) and user_val:
                 out_lines.append(_render_map(user_val, key))
+
+    # Append any known plugin keys present in user_data that are not in the template
+    seen_template_keys = set()
+    for l in lines:
+        km = re.match(r'^([A-Za-z][A-Za-z0-9_]*)\s*:', l)
+        if km:
+            seen_template_keys.add(km.group(1))
+
+    for pkey, pktype in KNOWN_PLUGIN_KEYS.items():
+        if pkey in user_data and pkey not in seen_template_keys:
+            u_val = user_data[pkey]
+            if u_val:
+                out_lines.append("")
+                out_lines.append(f"{pkey}:")
+                if pktype == TYPE_LIST or isinstance(u_val, list):
+                    out_lines.append(_render_list(u_val))
+                elif pktype in (TYPE_MAP, TYPE_MAP_OF_LISTS) or isinstance(u_val, dict):
+                    out_lines.append(_render_map(u_val, pkey))
 
     return "\n".join(out_lines) + "\n"
 

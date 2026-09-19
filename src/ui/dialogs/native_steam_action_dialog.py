@@ -111,7 +111,7 @@ class NativeSteamActionDialog(QDialog):
 
         h_title = QLabel("Add to Steam and Hand Off")
         h_title.setStyleSheet("font-size: 10pt; font-weight: bold; color: #FFFFFF; background: transparent;")
-        h_sub = QLabel("Registers keys and signals Steam immediately. Steam client manages the queue.")
+        h_sub = QLabel("Registers game and depot keys in Steam library. Install manually in Steam whenever you want.")
         h_sub.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.65); background: transparent;")
         h_sub.setWordWrap(True)
         handoff_layout.addWidget(h_title)
