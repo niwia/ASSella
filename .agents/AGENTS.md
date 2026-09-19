@@ -24,9 +24,10 @@ This file defines essential guidelines, build rules, versioning conventions, and
 ### B. AppImage Binaries
 - The final production AppImage file is named exactly **`ASSella.AppImage`**.
 - The local development AppImage is named `ASSella.AppImage.dev`.
-- Rebuild command:
+- During active development and testing, ONLY build and modify `ASSella.AppImage.dev`. Never overwrite or change the stable `ASSella.AppImage`.
+- Rebuild command for development:
   ```bash
-  ARCH=x86_64 ./appimagetool --no-appstream squashfs-root ASSella.AppImage
+  ARCH=x86_64 /home/aiwin/.local/share/ACCELA/appimagetool squashfs-root /home/aiwin/.local/share/ACCELA/ASSella.AppImage.dev.new && mv -f /home/aiwin/.local/share/ACCELA/ASSella.AppImage.dev.new /home/aiwin/.local/share/ACCELA/ASSella.AppImage.dev
   ```
 
 ### C. Source Code Release Packaging
