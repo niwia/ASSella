@@ -564,30 +564,49 @@ class NativeSteamDownloadTask(QObject):
         else:
             content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
 
-        # 3. Format AdditionalDepots (depot IDs excluding main appid)
+        # 3. Format AdditionalDepots (merge with existing, depot IDs excluding main appid)
         if selected_depots:
-            depot_ids = [str(d) for d in selected_depots if str(d) != str(appid)]
+            new_depot_ids = [str(d) for d in selected_depots if str(d) != str(appid)]
         else:
-            depot_ids = [str(d) for d in depot_keys.keys() if str(d) != str(appid)]
+            new_depot_ids = [str(d) for d in depot_keys.keys() if str(d) != str(appid)]
+
+        all_depot_ids: List[str] = []
+        bounds_depots = _get_section_bounds(content, "AdditionalDepots")
+        if bounds_depots:
+            depots_text = content[bounds_depots[1] : bounds_depots[2]]
+            all_depot_ids = re.findall(r"^[ \t]*-[ \t]*(\d+)", depots_text, re.MULTILINE)
+        for d in new_depot_ids:
+            if d not in all_depot_ids:
+                all_depot_ids.append(d)
 
         depot_lines = ["AdditionalDepots:"]
-        for d in depot_ids:
+        for d in all_depot_ids:
             depot_lines.append(f"  - {d}")
         depot_block = "\n".join(depot_lines) + "\n"
 
-        bounds_depots = _get_section_bounds(content, "AdditionalDepots")
         if bounds_depots:
             content = content[: bounds_depots[0]] + depot_block + content[bounds_depots[2] :]
         else:
             content = content.rstrip() + "\n\n" + depot_block
 
-        # 4. Format DecryptionKeys (ALL keys including appid key)
-        key_lines = ["DecryptionKeys:"]
+        # 4. Format DecryptionKeys (merge with existing, all keys including appid key)
+        all_keys: Dict[str, str] = {}
+        bounds_keys = _get_section_bounds(content, "DecryptionKeys")
+        if bounds_keys:
+            keys_text = content[bounds_keys[1] : bounds_keys[2]]
+            for m in re.finditer(r"^[ \t]*(\d+)[ \t]*:[ \t]*([a-fA-F0-9]{64})", keys_text, re.MULTILINE):
+                all_keys[m.group(1)] = m.group(2)
         for d, k in depot_keys.items():
+            if k:
+                all_keys[str(d)] = str(k)
+
+        key_lines = ["DecryptionKeys:"]
+        for d, k in all_keys.items():
             if k:
                 key_lines.append(f"  {d}: {k}")
         key_block = "\n".join(key_lines) + "\n"
 
+        # Re-evaluate bounds since content changed after AdditionalDepots insertion
         bounds_keys = _get_section_bounds(content, "DecryptionKeys")
         if bounds_keys:
             content = content[: bounds_keys[0]] + key_block + content[bounds_keys[2] :]
@@ -796,30 +815,11 @@ class NativeSteamDownloadTask(QObject):
         """
         Clean up after a successful download:
         - Keep AppID in AdditionalApps (so the game stays unlocked).
-        - Remove AdditionalDepots and DecryptionKeys sections.
+        - Keep AdditionalDepots and DecryptionKeys (so Steam can decrypt and launch games).
         - Delete deployed Lua plugins.
         - Delete backup config file.
         """
         logger.info("[NativeSteamDL] Performing success cleanup...")
-        from utils.yaml_config_manager import _atomic_write, _get_section_bounds
-
-        try:
-            if config_path.exists():
-                content = config_path.read_text(encoding="utf-8", errors="ignore")
-                changed = False
-                bounds_keys = _get_section_bounds(content, "DecryptionKeys")
-                if bounds_keys:
-                    content = content[: bounds_keys[0]] + content[bounds_keys[2] :]
-                    changed = True
-                bounds_depots = _get_section_bounds(content, "AdditionalDepots")
-                if bounds_depots:
-                    content = content[: bounds_depots[0]] + content[bounds_depots[2] :]
-                    changed = True
-                if changed:
-                    _atomic_write(config_path, content)
-                    logger.info("[NativeSteamDL] Removed AdditionalDepots and DecryptionKeys from config.yaml")
-        except Exception as e:
-            logger.warning(f"[NativeSteamDL] Error removing keys from config: {e}")
 
         # Remove deployed plugins
         for p in self._deployed_plugins:
