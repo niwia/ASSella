@@ -70,6 +70,7 @@ from ui.dialogs.settings_tabs.webui_tab import (
     disable_boot,
     update_service_status,
 )
+from ui.dialogs.settings_tabs.vapor_tab import create_vapor_tab
 
 __all__ = [
     "MorrenusStatsWidget",
@@ -83,4 +84,5 @@ __all__ = [
     "create_tools_tab",
     "create_style_tab",
     "create_webui_tab",
+    "create_vapor_tab",
 ]

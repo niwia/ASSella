@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ==============================================================================
-#                      🚀 ASSella Installer & Manager Suite
+#                      ASSella Installer & Management Suite
 # ==============================================================================
 
 # Terminal Colors & Styling
@@ -32,7 +32,6 @@ detect_distro() {
     IS_CACHYOS=false
 
     if [ -f /etc/os-release ]; then
-        # Source os-release safely
         set +e
         . /etc/os-release
         set -e
@@ -52,6 +51,26 @@ detect_distro() {
     if [[ "$DISTRO_ID" == "cachyos" ]] || [[ "$DISTRO_NAME" == *"CachyOS"* ]]; then
         IS_CACHYOS=true
     fi
+}
+
+detect_distro_family() {
+    local family="unknown"
+    if [ "$IS_STEAM_DECK" = true ]; then
+        family="arch"
+    elif [ "$DISTRO_ID" = "bazzite" ]; then
+        family="bazzite"
+    elif [[ "$DISTRO_ID" == "fedora" || "$DISTRO_ID" == "rhel" || "$DISTRO_ID" == "centos" || "$DISTRO_ID" == "nobara" || "$DISTRO_LIKE" =~ "fedora" || "$DISTRO_LIKE" =~ "rhel" ]]; then
+        family="fedora"
+    elif [[ "$DISTRO_ID" == "debian" || "$DISTRO_ID" == "ubuntu" || "$DISTRO_ID" == "linuxmint" || "$DISTRO_ID" == "pop" || "$DISTRO_LIKE" =~ "debian" || "$DISTRO_LIKE" =~ "ubuntu" ]]; then
+        family="debian"
+    elif [[ "$DISTRO_ID" == "arch" || "$DISTRO_ID" == "cachyos" || "$DISTRO_ID" == "manjaro" || "$DISTRO_ID" == "endeavouros" || "$DISTRO_LIKE" =~ "arch" ]]; then
+        family="arch"
+    elif [[ "$DISTRO_ID" =~ opensuse || "$DISTRO_ID" =~ suse || "$DISTRO_LIKE" =~ opensuse || "$DISTRO_LIKE" =~ suse ]]; then
+        family="opensuse"
+    elif [[ "$DISTRO_ID" == "void" ]]; then
+        family="void"
+    fi
+    echo "$family"
 }
 
 check_fuse_status() {
@@ -93,13 +112,11 @@ get_latest_github_version() {
 
     REL_JSON=$(curl -s "https://api.github.com/repos/niwia/ASSella/releases" || true)
     if [ -n "$REL_JSON" ]; then
-        # Try to parse tag_name of first release
         TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4 || true)
         if [ -n "$TAG_NAME" ]; then
             LATEST_VER="$TAG_NAME"
         fi
 
-        # Find AppImage download URL
         DL_URL=$(echo "$REL_JSON" | grep -o '"browser_download_url": *"[^"]*ASSella\.AppImage"' | head -n 1 | cut -d '"' -f 4 || true)
         if [ -n "$DL_URL" ]; then
             LATEST_URL="$DL_URL"
@@ -112,12 +129,77 @@ get_latest_github_version() {
 }
 
 # ------------------------------------------------------------------------------
-#  2. Header & Status Display
+#  2. Automated Dependency Resolution (Adapted from fix-deps)
+# ------------------------------------------------------------------------------
+install_dependencies() {
+    local family
+    family=$(detect_distro_family)
+    echo -e "${YELLOW}[INFO] Checking system dependencies for ($family family)...${NC}"
+
+    if [ "$family" = "bazzite" ] || [ "$IS_NIXOS" = true ]; then
+        echo -e "${CYAN}[INFO] System is declarative/immutable ($DISTRO_NAME). Skipping automated package install.${NC}"
+        return 0
+    fi
+
+    local SUDO=""
+    if [ "$EUID" -ne 0 ]; then
+        if command -v sudo &>/dev/null; then
+            SUDO="sudo"
+        fi
+    fi
+
+    case "$family" in
+        arch)
+            local arch_pkgs="fuse2 python xcb-util-cursor libnotify git lib32-glibc lib32-openssl lib32-curl curl p7zip"
+            if [ -n "$SUDO" ]; then
+                echo -e "${CYAN}[INFO] Ensuring dependencies are installed via pacman...${NC}"
+                $SUDO pacman -Sy --needed --noconfirm $arch_pkgs 2>/dev/null || true
+            fi
+            ;;
+        debian)
+            if [ -n "$SUDO" ]; then
+                if command -v dpkg &>/dev/null && ! dpkg --print-foreign-architectures 2>/dev/null | grep -q i386; then
+                    $SUDO dpkg --add-architecture i386 2>/dev/null || true
+                    $SUDO apt-get update -qq 2>/dev/null || true
+                fi
+                local deb_pkgs="libfuse2 python3 python3-venv libxcb-cursor0 libnotify-bin git p7zip-full libc6:i386 libcurl4:i386 libssl3:i386"
+                echo -e "${CYAN}[INFO] Ensuring dependencies are installed via apt-get...${NC}"
+                $SUDO apt-get install -y -qq $deb_pkgs 2>/dev/null || true
+            fi
+            ;;
+        fedora)
+            if [ -n "$SUDO" ]; then
+                local fed_pkgs="fuse-libs python3 libxcb-cursor libnotify git p7zip p7zip-plugins libcurl.i686 openssl-libs.i686"
+                echo -e "${CYAN}[INFO] Ensuring dependencies are installed via dnf...${NC}"
+                $SUDO dnf install -y --setopt=install_weak_deps=False $fed_pkgs 2>/dev/null || true
+            fi
+            ;;
+        opensuse)
+            if [ -n "$SUDO" ]; then
+                local suse_pkgs="libfuse2 python3 libxcb-cursor0 libnotify-tools git p7zip-full glibc-32bit libcurl4-32bit libopenssl3-32bit"
+                echo -e "${CYAN}[INFO] Ensuring dependencies are installed via zypper...${NC}"
+                $SUDO zypper --non-interactive install -y $suse_pkgs 2>/dev/null || true
+            fi
+            ;;
+        void)
+            if [ -n "$SUDO" ]; then
+                echo -e "${CYAN}[INFO] Ensuring dependencies are installed via xbps-install...${NC}"
+                $SUDO xbps-install -y fuse python3 xcb-util-cursor libnotify git p7zip 2>/dev/null || true
+            fi
+            ;;
+        *)
+            echo -e "${YELLOW}[WARN] Unknown distro family. Please verify libfuse2 and 32-bit libraries are installed.${NC}"
+            ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+#  3. Header & Status Display
 # ------------------------------------------------------------------------------
 show_header() {
     clear
     echo -e "${CYAN}${BOLD}===================================================================${NC}"
-    echo -e "${GREEN}${BOLD}                 🚀 ASSella Installer & Manager Suite             ${NC}"
+    echo -e "${GREEN}${BOLD}                 ASSella Installer & Management Suite             ${NC}"
     echo -e "${CYAN}${BOLD}===================================================================${NC}"
     echo -e "  ${BOLD}OS Detected:${NC}      $DISTRO_NAME ($(uname -m))"
     if [ "$IS_STEAM_DECK" = true ]; then
@@ -128,7 +210,7 @@ show_header() {
     if [ "$HEADCRAB_INSTALLED" = true ]; then
         echo -e "  ${BOLD}Headcrab (SLS):${NC}   ${GREEN}Installed (~/.config/SLSsteam)${NC}"
     else
-        echo -e "  ${BOLD}Headcrab (SLS):${NC}   ${YELLOW}Not Detected (Required for depot downloads)${NC}"
+        echo -e "  ${BOLD}Headcrab (SLS):${NC}   ${YELLOW}Not Detected${NC}"
     fi
 
     # FUSE Status
@@ -147,7 +229,7 @@ show_header() {
 }
 
 # ------------------------------------------------------------------------------
-#  3. Distro-Specific Requirements Guide
+#  4. Distro-Specific Requirements Guide
 # ------------------------------------------------------------------------------
 pause_if_interactive() {
     if [ "${INTERACTIVE:-false}" = true ]; then
@@ -157,61 +239,39 @@ pause_if_interactive() {
 
 show_distro_guide() {
     show_header
-    echo -e "\n${YELLOW}${BOLD}=== 📋 Distro-Specific Setup & Requirements ===${NC}\n"
+    echo -e "\n${YELLOW}${BOLD}=== Distro-Specific Setup & Requirements ===${NC}\n"
 
     if [ "$IS_NIXOS" = true ]; then
-        echo -e "${CYAN}${BOLD}❄️ NixOS Installation Guide:${NC}"
+        echo -e "${CYAN}${BOLD}NixOS Installation Guide:${NC}"
         echo -e "NixOS does not use standard /lib64 glibc linkers out of the box."
         echo -e "ASSella automatically generates a launcher using ${GREEN}steam-run${NC} or ${GREEN}appimage-run${NC}.\n"
         echo -e "  ${BOLD}Command to launch directly:${NC}"
         echo -e "    ${GREEN}nix-shell -p steam-run --run 'steam-run ~/.local/share/ACCELA/ASSella.AppImage'${NC}\n"
         echo -e "  ${BOLD}Global fix (Optional):${NC} Add ${GREEN}programs.nix-ld.enable = true;${NC} in /etc/nixos/configuration.nix"
     elif [ "$IS_CACHYOS" = true ] || [[ "$DISTRO_ID" == "arch" ]] || [[ "$DISTRO_LIKE" == *"arch"* ]]; then
-        echo -e "${CYAN}${BOLD}⚡ CachyOS / Arch Linux Guide:${NC}"
+        echo -e "${CYAN}${BOLD}CachyOS / Arch Linux Guide:${NC}"
         echo -e "Arch-based distros require ${GREEN}fuse2${NC} to execute AppImages.\n"
         echo -e "  ${BOLD}Install command:${NC}"
         echo -e "    ${GREEN}sudo pacman -S fuse2${NC}"
     elif [[ "$DISTRO_ID" == "ubuntu" ]] || [[ "$DISTRO_ID" == "debian" ]] || [[ "$DISTRO_LIKE" == *"ubuntu"* ]]; then
-        echo -e "${CYAN}${BOLD}🐧 Ubuntu / Debian / Mint Guide:${NC}"
+        echo -e "${CYAN}${BOLD}Ubuntu / Debian / Mint Guide:${NC}"
         echo -e "Ubuntu 22.04+ requires ${GREEN}libfuse2${NC} for AppImages.\n"
         echo -e "  ${BOLD}Install command:${NC}"
         echo -e "    ${GREEN}sudo apt install -y libfuse2${NC}"
     elif [[ "$DISTRO_ID" == "fedora" ]] || [[ "$DISTRO_LIKE" == *"fedora"* ]]; then
-        echo -e "${CYAN}${BOLD}🎩 Fedora / RHEL Guide:${NC}"
+        echo -e "${CYAN}${BOLD}Fedora / RHEL Guide:${NC}"
         echo -e "  ${BOLD}Install command:${NC}"
         echo -e "    ${GREEN}sudo dnf install -y fuse-libs${NC}"
     elif [[ "$DISTRO_ID" == *"suse"* ]]; then
-        echo -e "${CYAN}${BOLD}🦎 openSUSE Guide:${NC}"
+        echo -e "${CYAN}${BOLD}openSUSE Guide:${NC}"
         echo -e "  ${BOLD}Install command:${NC}"
         echo -e "    ${GREEN}sudo zypper install libfuse2${NC}"
     else
-        echo -e "${CYAN}${BOLD}🐧 Generic Linux Guide:${NC}"
+        echo -e "${CYAN}${BOLD}Generic Linux Guide:${NC}"
         echo -e "Ensure ${GREEN}libfuse2${NC} or ${GREEN}fuse2${NC} package is installed on your system."
     fi
 
-    echo -e "\n${CYAN}${BOLD}-------------------------------------------------------------------${NC}"
-    echo -e "  ${BOLD}Headcrab (SLSsteam Daemon):${NC}"
-    echo -e "  Headcrab intercepts Steam depot requests to allow game downloads."
-    echo -e "  Install/Update one-liner: ${GREEN}curl -fsSL headcrab.pages.dev | bash${NC}"
-    echo -e "${CYAN}${BOLD}-------------------------------------------------------------------${NC}\n"
-
-    pause_if_interactive
-}
-
-# ------------------------------------------------------------------------------
-#  4. Headcrab (SLSsteam) Installer Runner
-# ------------------------------------------------------------------------------
-install_headcrab() {
-    echo -e "\n${YELLOW}[INFO] Running Headcrab (SLSsteam) installer script...${NC}"
-    echo -e "${GREEN}Executing: curl -fsSL headcrab.pages.dev | bash${NC}\n"
-    
-    if curl -fsSL headcrab.pages.dev | bash; then
-        echo -e "\n${GREEN}✓ Headcrab (SLSsteam) script executed successfully!${NC}"
-    else
-        echo -e "\n${RED}❌ Headcrab installation failed. Please check network connection.${NC}"
-    fi
-
-    check_headcrab_status
+    echo -e "\n${CYAN}${BOLD}-------------------------------------------------------------------${NC}\n"
     pause_if_interactive
 }
 
@@ -232,7 +292,7 @@ do_install() {
     get_latest_github_version
     echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER)...${NC}"
     if ! curl -fL -o "$INSTALL_DESTINATION/ASSella.AppImage" "$LATEST_URL"; then
-        echo -e "${RED}❌ Download failed! Please check your connection to GitHub.${NC}"
+        echo -e "${RED}[ERROR] Download failed! Please check your connection to GitHub.${NC}"
         pause_if_interactive
         return 1
     fi
@@ -296,9 +356,10 @@ EOL
         command -v gtk-update-icon-cache &>/dev/null && gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
     fi
 
-    # Warn about FUSE if missing
+    # Check FUSE
+    check_fuse_status
     if [ "$FUSE_INSTALLED" = false ] && [ "$IS_NIXOS" = false ]; then
-        echo -e "\n${RED}${BOLD}⚠️ WARNING: FUSE (libfuse.so.2) is not installed on your system!${NC}"
+        echo -e "\n${RED}${BOLD}[WARN] FUSE (libfuse.so.2) is not installed on your system!${NC}"
         if [ "$IS_CACHYOS" = true ] || [[ "$DISTRO_ID" == "arch" ]]; then
             echo -e "${YELLOW}Please run: sudo pacman -S fuse2${NC}"
         elif [[ "$DISTRO_ID" == "ubuntu" ]] || [[ "$DISTRO_ID" == "debian" ]]; then
@@ -309,7 +370,7 @@ EOL
     fi
 
     echo -e "\n${GREEN}${BOLD}=========================================${NC}"
-    echo -e "${GREEN}${BOLD}✓ ASSella has been installed & patched!  ${NC}"
+    echo -e "${GREEN}${BOLD}[OK] ASSella has been installed & patched!${NC}"
     echo -e "${GREEN}${BOLD}=========================================${NC}\n"
 
     get_local_version
@@ -327,7 +388,7 @@ do_restore_accela() {
         chmod +x "$INSTALL_DESTINATION/ACCELA.AppImage"
         echo -e "${GREEN}[INFO] Restored ACCELA.AppImage from backup.${NC}"
     else
-        echo -e "${YELLOW}[WARNING] No ACCELA.AppImage.bak found to restore.${NC}"
+        echo -e "${YELLOW}[WARN] No ACCELA.AppImage.bak found to restore.${NC}"
     fi
 
     if [ -f "$DESKTOP_ENTRY" ]; then
@@ -335,7 +396,7 @@ do_restore_accela() {
         echo -e "${GREEN}[INFO] Restored desktop entry name to ACCELA.${NC}"
     fi
 
-    echo -e "\n${GREEN}✓ ACCELA restoration complete!${NC}"
+    echo -e "\n${GREEN}[OK] ACCELA restoration complete!${NC}"
     pause_if_interactive
 }
 
@@ -343,7 +404,7 @@ do_restore_accela() {
 #  7. Clean Uninstall ASSella
 # ------------------------------------------------------------------------------
 do_uninstall() {
-    echo -e "\n${RED}${BOLD}=== 🗑️ ASSella Clean Uninstaller ===${NC}\n"
+    echo -e "\n${RED}${BOLD}=== ASSella Clean Uninstaller ===${NC}\n"
     if [ "${INTERACTIVE:-false}" = true ]; then
         read -p "Are you sure you want to uninstall ASSella? [y/N]: " confirm
         if [[ "$confirm" != "y" ]] && [[ "$confirm" != "Y" ]]; then
@@ -360,7 +421,6 @@ do_uninstall() {
     rm -f "$DESKTOP_ENTRY"
     rm -f "$ICON_PATH"
 
-    # Restore backup if available
     if [ -f "$INSTALL_DESTINATION/ACCELA.AppImage.bak" ]; then
         mv "$INSTALL_DESTINATION/ACCELA.AppImage.bak" "$INSTALL_DESTINATION/ACCELA.AppImage"
         echo -e "${GREEN}[INFO] Restored original ACCELA.AppImage backup.${NC}"
@@ -370,7 +430,7 @@ do_uninstall() {
         update-desktop-database "$(dirname "$DESKTOP_ENTRY")" 2>/dev/null || true
     fi
 
-    echo -e "\n${GREEN}✓ ASSella has been uninstalled.${NC}"
+    echo -e "\n${GREEN}[OK] ASSella has been uninstalled.${NC}"
     pause_if_interactive
 }
 
@@ -379,8 +439,8 @@ do_uninstall() {
 # ------------------------------------------------------------------------------
 run_diagnostics() {
     show_header
-    echo -e "\n${YELLOW}${BOLD}=== 🔍 ASSella Pre-Flight Diagnostics ===${NC}\n"
-    
+    echo -e "\n${YELLOW}${BOLD}=== ASSella Pre-Flight Diagnostics ===${NC}\n"
+
     echo -n "  1. Python 3: "
     if command -v python3 &>/dev/null; then
         echo -e "${GREEN}OK ($(python3 --version | cut -d' ' -f2))${NC}"
@@ -406,7 +466,7 @@ run_diagnostics() {
     if [ "$HEADCRAB_INSTALLED" = true ]; then
         echo -e "${GREEN}INSTALLED${NC}"
     else
-        echo -e "${YELLOW}NOT INSTALLED (Run option 3 to install)${NC}"
+        echo -e "${YELLOW}NOT INSTALLED${NC}"
     fi
 
     echo -n "  5. Desktop Shortcut: "
@@ -421,7 +481,7 @@ run_diagnostics() {
 }
 
 # ------------------------------------------------------------------------------
-#  9. Interactive Main Menu Loop
+#  9. Interactive Main Menu Loop (Optional)
 # ------------------------------------------------------------------------------
 interactive_menu() {
     INTERACTIVE=true
@@ -433,19 +493,19 @@ interactive_menu() {
 
     while true; do
         show_header
-        echo -e "  ${BOLD}[1]${NC} Install / Update ASSella (Recommended)"
+        echo -e "  ${BOLD}[1]${NC} Install / Update ASSella"
         echo -e "  ${BOLD}[2]${NC} Check for Updates & View Release Info"
-        echo -e "  ${BOLD}[3]${NC} Install / Update Headcrab (SLSsteam Daemon)"
-        echo -e "  ${BOLD}[4]${NC} View Distro-Specific Requirements Guide (CachyOS, NixOS, Arch...)"
-        echo -e "  ${BOLD}[5]${NC} Restore Original ACCELA (Revert Backup)"
-        echo -e "  ${BOLD}[6]${NC} Uninstall ASSella (Clean Files & Shortcuts)"
-        echo -e "  ${BOLD}[7]${NC} Run Pre-Flight Diagnostics"
-        echo -e "  ${BOLD}[8]${NC} Exit"
+        echo -e "  ${BOLD}[3]${NC} View Distro Requirements Guide"
+        echo -e "  ${BOLD}[4]${NC} Restore Original ACCELA (Revert Backup)"
+        echo -e "  ${BOLD}[5]${NC} Uninstall ASSella (Clean Files & Shortcuts)"
+        echo -e "  ${BOLD}[6]${NC} Run Pre-Flight Diagnostics"
+        echo -e "  ${BOLD}[7]${NC} Exit"
         echo -e "${CYAN}${BOLD}===================================================================${NC}"
-        read -p "Select option [1-8]: " choice
+        read -p "Select option [1-7]: " choice
 
         case "$choice" in
             1)
+                install_dependencies
                 do_install
                 read -p "Press Enter to continue..." dummy
                 ;;
@@ -460,21 +520,18 @@ interactive_menu() {
                 read -p "Press Enter to continue..." dummy
                 ;;
             3)
-                install_headcrab
-                ;;
-            4)
                 show_distro_guide
                 ;;
-            5)
+            4)
                 do_restore_accela
                 ;;
-            6)
+            5)
                 do_uninstall
                 ;;
-            7)
+            6)
                 run_diagnostics
                 ;;
-            8|q|Q)
+            7|q|Q)
                 echo "Exiting..."
                 exit 0
                 ;;
@@ -487,7 +544,7 @@ interactive_menu() {
 }
 
 # ------------------------------------------------------------------------------
-#  10. CLI Unattended Argument Handler
+#  10. CLI Execution Entry Point
 # ------------------------------------------------------------------------------
 main() {
     detect_distro
@@ -496,28 +553,30 @@ main() {
     get_local_version
 
     if [ $# -eq 0 ]; then
-        if [ -t 0 ]; then
-            interactive_menu
-        else
-            do_install
-        fi
+        install_dependencies
+        do_install
         exit 0
     fi
 
     case "$1" in
         --install|-i)
+            install_dependencies
             do_install
+            ;;
+        --deps)
+            install_dependencies
+            ;;
+        --menu|-m)
+            interactive_menu
             ;;
         --update|-u)
             get_latest_github_version
             if [ "$LOCAL_VER" != "$LATEST_VER" ]; then
+                install_dependencies
                 do_install
             else
                 echo -e "${GREEN}ASSella is already up to date ($LOCAL_VER).${NC}"
             fi
-            ;;
-        --headcrab)
-            install_headcrab
             ;;
         --restore)
             do_restore_accela
@@ -530,9 +589,11 @@ main() {
             echo "Usage: ./install.sh [OPTION]"
             echo ""
             echo "Options:"
-            echo "  --install, -i    Install or force update ASSella"
+            echo "  (no args)        Install dependencies and install/update ASSella automatically"
+            echo "  --install, -i    Install or force update ASSella with dependencies"
+            echo "  --deps           Install system dependencies only"
+            echo "  --menu, -m       Launch interactive maintenance menu"
             echo "  --update, -u     Check and update if a new release exists"
-            echo "  --headcrab       Install Headcrab (SLSsteam) daemon"
             echo "  --restore        Restore original ACCELA backup"
             echo "  --uninstall      Uninstall ASSella"
             echo "  --help, -h       Display this help message"

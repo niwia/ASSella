@@ -369,6 +369,21 @@ class TaskManager(QObject):
         missing_depots = (self.game_data or {}).get("missing_depots_from_hubcap") or []
         is_single = (len(depots) == 1)
 
+        enable_vapor = (
+            sys.platform == "linux"
+            and self.settings.value("enable_vapor", False, type=bool)
+        )
+        vapor_action = self.settings.value("vapor_default_download_action", "ask", type=str)
+        is_vapor_native = enable_vapor and (vapor_action == "native")
+
+        # In Vapor native mode with a single depot, immediately hand off without dialog or timer
+        if is_vapor_native and is_single:
+            selected_depots = list(depots.keys())
+            if self.game_data:
+                self.game_data["selected_depots_list"] = selected_depots
+            self._start_download_with_destination(selected_depots, "")
+            return
+
         # Show 3-second countdown timer ONLY if single depot AND auto_skip is enabled AND a default download directory is set!
         # If user chose "Ask Every Time" (has_default_dl is False), always open minimal depot selection directly so they can choose their drive.
         show_timer = (is_single and auto_skip_single_choice and has_default_dl)
@@ -410,6 +425,7 @@ class TaskManager(QObject):
                 return
 
         pref_lib = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path")
+        show_storage = not is_vapor_native
         self.main_window.ui_state.depot_dialog = DepotSelectionDialog(
             game_data["appid"],
             game_data["game_name"],
@@ -422,6 +438,7 @@ class TaskManager(QObject):
             missing_depots_info=(self.game_data or {}).get("missing_depots_info"),
             library_path=pref_lib,
             refetched_depots=(self.game_data or {}).get("refetched_depots"),
+            show_storage=show_storage,
         )
 
         if self.main_window.ui_state.depot_dialog.exec():
@@ -647,13 +664,30 @@ class TaskManager(QObject):
         self.main_window.speed_label.setVisible(True)
 
         # ── Choose download backend ──────────────────────────────────────────
-        use_native_steam = (
+        enable_vapor = (
             sys.platform == "linux"
-            and self.settings.value("use_native_steam_download", False, type=bool)
+            and self.settings.value("enable_vapor", False, type=bool)
         )
+        vapor_action = self.settings.value("vapor_default_download_action", "ask", type=str)
+        legacy_native = self.settings.value("use_native_steam_download", False, type=bool)
+
+        use_native_steam = False
+        action_mode = "ask"
+
+        if enable_vapor:
+            if vapor_action == "native":
+                use_native_steam = True
+                action_mode = "handoff"
+            elif vapor_action == "assella":
+                use_native_steam = False
+            else:  # "ask"
+                use_native_steam = True
+                action_mode = "ask"
+        elif legacy_native:
+            use_native_steam = True
+            action_mode = self.settings.value("native_steam_default_action", "ask", type=str)
 
         if use_native_steam:
-            action_mode = self.settings.value("native_steam_default_action", "ask", type=str)
             if action_mode == "ask":
                 from ui.dialogs.native_steam_action_dialog import (
                     NativeSteamActionDialog,
@@ -702,11 +736,13 @@ class TaskManager(QObject):
                         app.processEvents()
 
                 _update_handoff_progress(f"Handing off {game_name} to Steam...")
+                auto_inst = self.settings.value("vapor_start_download_immediately", True, type=bool)
                 ok, msg = perform_steam_handoff(
                     self.game_data,
                     selected_depots,
                     dest_path,
                     progress_cb=_update_handoff_progress,
+                    auto_install=auto_inst,
                 )
                 self._last_handoff_success = ok
                 self._is_handoff_job = True

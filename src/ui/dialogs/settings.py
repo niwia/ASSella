@@ -92,6 +92,10 @@ class SettingsDialog(QDialog):
         self.workshop_steam_checkbox = None
         self.workshop_max_dl_spinbox = None
         self.workshop_cell_id_input = None
+        self.enable_vapor_checkbox = None
+        self.vapor_download_action_combo = None
+        self.vapor_start_immediate_checkbox = None
+        self.vapor_depot_checklist_checkbox = None
         self.current_font = QFont()
         self.morrenus_stats_widget = None
         self.morrenus_tab_initialized = False
@@ -322,6 +326,7 @@ class SettingsDialog(QDialog):
         tabs.create_advanced_tab(self)
         tabs.create_morrenus_tab(self)
         create_sls_tab(self)
+        tabs.create_vapor_tab(self)
         tabs.create_health_tab(self)
         tabs.create_tools_tab(self)
         tabs.create_style_tab(self)

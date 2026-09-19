@@ -638,6 +638,7 @@ class GameManager(QObject):
         seen_paths = {game.get("install_path") for game in scanned_games}
 
         # Scan all installed Steam game directories in this library.
+        additional_apps = self._get_sls_additional_apps()
         try:
             # Use scandir for better error handling during concurrent modifications
             with os.scandir(common_path) as entries:
@@ -660,9 +661,16 @@ class GameManager(QObject):
                             continue
 
                         marker_path = self._get_accela_marker_path(game_path)
+                        is_vapor = False
+
                         if not marker_path:
-                            logger.debug(f"  Skipped non-ACCELA game: {game_name}")
-                            continue
+                            # Check if this game is unlocked via Vapor/SLSsteam AdditionalApps
+                            acf_entry = acf_cache.get(game_name) or acf_cache.get(game_name.lower())
+                            if acf_entry and str(acf_entry[1]) in additional_apps:
+                                is_vapor = True
+                            else:
+                                logger.debug(f"  Skipped non-ACCELA game: {game_name}")
+                                continue
 
                         game_data = self._collect_game_data(
                             game_path,
@@ -671,6 +679,7 @@ class GameManager(QObject):
                             steam_install_path,
                             marker_path=marker_path,
                             acf_cache=acf_cache,
+                            is_vapor=is_vapor,
                         )
                         if game_data:
                             scanned_games.append(game_data)
@@ -678,7 +687,7 @@ class GameManager(QObject):
                             games_found += 1
                             logger.debug(
                                 "  Found %s game: %s",
-                                "ACCELA" if marker_path else "Steam",
+                                "Vapor" if is_vapor else ("ACCELA" if marker_path else "Steam"),
                                 game_name,
                             )
                     except (OSError, FileNotFoundError, PermissionError):
@@ -760,6 +769,24 @@ class GameManager(QObject):
             if os.path.exists(marker_path):
                 return marker_path
         return None
+
+    @staticmethod
+    def _get_sls_additional_apps() -> set:
+        """Return set of AppIDs registered in SLSsteam's AdditionalApps."""
+        try:
+            from utils.yaml_config_manager import get_user_config_path
+            cfg_path = get_user_config_path()
+            if not cfg_path.exists():
+                return set()
+            with open(cfg_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            m = re.search(r"AdditionalApps:\s*\n((?:\s*-\s*\d+[^\n]*\n*)+)", content)
+            if not m:
+                return set()
+            return set(re.findall(r"^[ \t]*-[ \t]*(\d+)", m.group(1), re.MULTILINE))
+        except Exception as e:
+            logger.debug(f"Could not read SLSsteam AdditionalApps: {e}")
+            return set()
 
     @staticmethod
     def _fix_slssteam_config():
@@ -900,6 +927,7 @@ class GameManager(QObject):
         steam_path=None,
         marker_path=None,
         acf_cache=None,
+        is_vapor=False,
     ):
         """
         Collect game data from installation directory.
@@ -911,6 +939,7 @@ class GameManager(QObject):
 
             marker_path = marker_path or self._get_accela_marker_path(game_path)
             is_accela_install = bool(marker_path)
+            is_managed = is_accela_install or is_vapor
 
             # Try to read appmanifest to get AppID and other metadata
             appmanifest_path, appid = self._parse_acf_for_appid(library_path, game_name, acf_cache=acf_cache)
@@ -954,8 +983,9 @@ class GameManager(QObject):
                 "library_path": library_path,
                 "library_index": get_library_index(library_path, steam_path),
                 "size_on_disk": 0,  # Will be calculated below
-                "source": "ACCELA" if is_accela_install else "Steam",
-                "is_accela_install": is_accela_install,
+                "source": "Vapor" if is_vapor else ("ACCELA" if is_accela_install else "Steam"),
+                "is_accela_install": is_managed,
+                "is_vapor": is_vapor,
                 "depot_downloader_path": marker_path or "",
                 "accela_marker_path": marker_path or "",
                 "appmanifest_path": appmanifest_path or "",
