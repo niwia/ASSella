@@ -697,6 +697,36 @@ class GameManager(QObject):
         except OSError as e:
             logger.error(f"Error scanning {common_path}: {e}")
 
+        # Second pass: directly discover any game in SLSsteam AdditionalApps whose
+        # appmanifest resides in this library, verifying the installdir exists and has content.
+        for appid_str in additional_apps:
+            acf_info = acf_cache.get(f"appid:{appid_str}")
+            if not acf_info:
+                continue
+            manifest_path, installdir = acf_info
+            if not manifest_path.startswith(steamapps_path):
+                continue
+            game_path = os.path.join(common_path, installdir)
+            if game_path in seen_paths:
+                continue
+            if not os.path.isdir(game_path) or not self._has_game_content(game_path):
+                continue
+
+            game_data = self._collect_game_data(
+                game_path,
+                installdir,
+                library_path,
+                steam_install_path,
+                marker_path=None,
+                acf_cache=acf_cache,
+                is_vapor=True,
+            )
+            if game_data:
+                scanned_games.append(game_data)
+                seen_paths.add(game_path)
+                games_found += 1
+                logger.debug(f"  Found Vapor game via manifest lookup: {installdir} ({appid_str})")
+
         return games_found
 
     @staticmethod
@@ -706,7 +736,7 @@ class GameManager(QObject):
         (manifest_path, appid). This replaces the per-game ACF scan loop and
         reduces total file reads from O(N×M) to O(M).
         """
-        cache = {}  # { installdir_lower: (manifest_path, appid) }
+        cache = {}  # { installdir_lower: (manifest_path, appid), "appid:<id>": (manifest_path, installdir) }
         try:
             with os.scandir(steamapps_path) as entries:
                 for entry in entries:
@@ -723,6 +753,7 @@ class GameManager(QObject):
                             # Store both case-sensitive and lower-cased keys
                             cache[installdir] = (manifest_path, appid)
                             cache[installdir.lower()] = (manifest_path, appid)
+                            cache[f"appid:{appid}"] = (manifest_path, installdir)
                     except (OSError, IOError, PermissionError):
                         continue
         except OSError as e:

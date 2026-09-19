@@ -748,6 +748,8 @@ class TaskManager(QObject):
                 self._is_handoff_job = True
                 if ok:
                     logger.info(f"[TaskManager] Handoff complete: {msg}")
+                    if auto_inst and self.game_data and self.game_data.get("appid"):
+                        self._start_vapor_install_watcher(str(self.game_data.get("appid")))
                 else:
                     logger.error(f"[TaskManager] Handoff failed: {msg}")
 
@@ -887,6 +889,45 @@ class TaskManager(QObject):
         self.is_download_paused = False
         self.main_window.ui_state.set_download_controls_visible(True)
         self.main_window.ui_state.set_pause_button_text("Pause")
+
+    def _start_vapor_install_watcher(self, appid: str):
+        """
+        Spawn a background thread watching for Steam to complete downloading a Vapor game.
+        When Steam marks the game StateFlags=4 (Fully Installed) in appmanifest_<appid>.acf,
+        automatically trigger an async library scan so the game appears in the Library tab.
+        """
+        def _watch():
+            try:
+                from core.steam_helpers import get_steam_env
+                env = get_steam_env()
+                steamapps_dirs = [Path(p) for p in env.steamapps_paths if os.path.exists(p)]
+                # Poll every 3 seconds for up to 30 minutes (600 iterations)
+                for _ in range(600):
+                    time.sleep(3)
+                    for s_dir in steamapps_dirs:
+                        acf_path = s_dir / f"appmanifest_{appid}.acf"
+                        if acf_path.exists():
+                            try:
+                                text = acf_path.read_text(encoding="utf-8", errors="ignore")
+                                m = re.search(r'"StateFlags"\s+"(\d+)"', text)
+                                if m and m.group(1) == "4":
+                                    logger.info(
+                                        f"[VaporWatcher] Steam download completed for AppID {appid}. Refreshing library..."
+                                    )
+                                    if (
+                                        self.main_window
+                                        and hasattr(self.main_window, "game_manager")
+                                        and self.main_window.game_manager
+                                    ):
+                                        self.main_window.game_manager.scan_steam_libraries_async()
+                                    return
+                            except Exception:
+                                pass
+            except Exception as e:
+                logger.debug(f"[VaporWatcher] Error in watcher thread for AppID {appid}: {e}")
+
+        t = threading.Thread(target=_watch, daemon=True)
+        t.start()
 
     def _on_download_complete(self):
         """Handle download completion"""
