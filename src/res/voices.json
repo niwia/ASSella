@@ -208,47 +208,27 @@
       "depots": [],
       "manifest_overrides": {}
     },
-    "re: requiem": {
-      "game_name": "RE: Requiem",
+    "3764200": {
+      "game_name": "Resident Evil Requiem ",
       "recommended_build_id": "22277314",
       "reason": "Known stable and compatible build",
       "depots": [],
       "manifest_overrides": {}
     },
-    "ac: bfr": {
-      "game_name": "AC: BFR",
+    "3751950": {
+      "game_name": "Assassin's Creed Black Flag Resynced",
       "recommended_build_id": "24424450",
       "reason": "Known stable and compatible build",
       "depots": [],
       "manifest_overrides": {}
     },
-    "lego batman: lotdk": {
-      "game_name": "Lego Batman: LOTDK",
-      "recommended_build_id": "23222834",
+    "2215200": {
+      "game_name": "LEGO® Batman™: Legacy of the Dark Knight",
+      "recommended_build_id": "23314029",
       "reason": "Known stable and compatible build",
       "depots": [],
       "manifest_overrides": {}
     },
-    "re requiem": {
-      "game_name": "RE: Requiem",
-      "recommended_build_id": "22277314",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {}
-    },
-    "ac bfr": {
-      "game_name": "AC: BFR",
-      "recommended_build_id": "24424450",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {}
-    },
-    "lego batman lotdk": {
-      "game_name": "Lego Batman: LOTDK",
-      "recommended_build_id": "23222834",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {}
-    }
+   
   }
 }
