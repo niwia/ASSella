@@ -1011,6 +1011,8 @@ class SingleDepotSelectionDialog(QDialog):
         from core.steamdb_scraper import ByparrManager
         has_byparr = ByparrManager.find_byparr_dir() is not None
 
+        active_bid = getattr(self, "_selected_build_id", None) or self.current_build_id
+
         if not has_byparr:
             from ui.dialogs.manual_manifest_dialog import ManualManifestDialog
             dlg = ManualManifestDialog(
@@ -1019,7 +1021,7 @@ class SingleDepotSelectionDialog(QDialog):
                 game_name=self.game_name,
                 depots_dict=self.depots,
                 default_depot_id=self.single_depot_id,
-                current_build_id=self.current_build_id,
+                current_build_id=active_bid,
                 accent_color=self.accent_color,
             )
             if dlg.exec():
@@ -1031,7 +1033,7 @@ class SingleDepotSelectionDialog(QDialog):
                 parent=self,
                 app_id=self.app_id,
                 game_name=self.game_name,
-                current_build_id=self.current_build_id,
+                current_build_id=active_bid,
                 accent_color=self.accent_color,
                 depots_dict=self.depots,
                 default_depot_id=self.single_depot_id,

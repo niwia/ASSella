@@ -757,13 +757,19 @@ class DepotSelectionDialog(QDialog):
         file_sel_layout.addWidget(select_files_button)
 
         self._dlc_only_btn = QPushButton("DLC Only")
-        self._dlc_only_btn.setToolTip(
-            "Only select this if you own the base game separately.\n"
-            "Update checks will only compare the depots you select here."
-        )
-        self._dlc_only_btn.setCheckable(True)
-        self._dlc_only_btn.setChecked(self._dlc_only_mode)
-        self._dlc_only_btn.clicked.connect(self._on_dlc_only_toggled)
+        is_single_depot = len(self.depots) <= 1
+        if is_single_depot:
+            self._dlc_only_btn.setEnabled(False)
+            self._dlc_only_btn.setCheckable(False)
+            self._dlc_only_btn.setToolTip("DLC-Only mode is unavailable because this title only contains a single base depot.")
+        else:
+            self._dlc_only_btn.setToolTip(
+                "Only select this if you own the base game separately.\n"
+                "Update checks will only compare the depots you select here."
+            )
+            self._dlc_only_btn.setCheckable(True)
+            self._dlc_only_btn.setChecked(self._dlc_only_mode)
+            self._dlc_only_btn.clicked.connect(self._on_dlc_only_toggled)
         self._refresh_dlc_only_style()
         file_sel_layout.addWidget(self._dlc_only_btn)
 
@@ -2188,6 +2194,18 @@ class DepotSelectionDialog(QDialog):
 
     def _refresh_dlc_only_style(self) -> None:
         """Update the DLC Only button style to reflect its on/off state."""
+        if not self._dlc_only_btn.isEnabled():
+            self._dlc_only_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(255, 255, 255, 0.03) !important;
+                    color: rgba(255, 255, 255, 0.25) !important;
+                    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+                    border-radius: 4px;
+                    padding: 4px 10px;
+                }
+            """)
+            return
+
         active = self._dlc_only_btn.isChecked()
         from utils.color_utils import get_best_foreground_color
         if active:
@@ -2641,6 +2659,8 @@ class DepotSelectionDialog(QDialog):
 
         first_depot = next(iter(self.depots.keys())) if self.depots else str(self.app_id)
 
+        active_bid = getattr(self, "_selected_build_id", None) or self.current_build_id
+
         if not has_byparr:
             from ui.dialogs.manual_manifest_dialog import ManualManifestDialog
             dlg = ManualManifestDialog(
@@ -2649,7 +2669,7 @@ class DepotSelectionDialog(QDialog):
                 game_name=self.game_name,
                 depots_dict=self.depots,
                 default_depot_id=first_depot,
-                current_build_id=self.current_build_id,
+                current_build_id=active_bid,
                 accent_color=self.accent_color,
             )
             if dlg.exec():
@@ -2661,7 +2681,7 @@ class DepotSelectionDialog(QDialog):
                 parent=self,
                 app_id=self.app_id,
                 game_name=self.game_name,
-                current_build_id=self.current_build_id,
+                current_build_id=active_bid,
                 accent_color=self.accent_color,
                 depots_dict=self.depots,
                 default_depot_id=first_depot,

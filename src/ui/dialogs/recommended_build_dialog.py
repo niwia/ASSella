@@ -110,15 +110,16 @@ class RecommendedBuildPromptDialog(QDialog):
         fg_col = get_best_foreground_color(self.accent_color)
         btn_rec_text = f"Download Recommended (Build {self.recommended_build_id})"
         self.btn_rec = QPushButton(btn_rec_text)
+        self.btn_rec.setFixedHeight(36)
         self.btn_rec.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_rec.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.accent_color};
                 color: {fg_col};
-                font-weight: bold;
-                font-size: 9.5pt;
+                font-weight: 600;
+                font-size: 9pt;
                 border-radius: 8px;
-                padding: 10px 16px;
+                padding: 0 16px;
                 border: none;
             }}
             QPushButton:hover {{
@@ -137,47 +138,51 @@ class RecommendedBuildPromptDialog(QDialog):
         else:
             btn_latest_text = "Download Latest Version"
         self.btn_latest = QPushButton(btn_latest_text)
+        self.btn_latest.setFixedHeight(36)
         self.btn_latest.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_latest.setStyleSheet("""
-            QPushButton {{
+            QPushButton {
                 background-color: rgba(255, 255, 255, 0.08);
                 color: #FFFFFF;
                 font-size: 9pt;
+                font-weight: 600;
                 border-radius: 8px;
-                padding: 9px 16px;
+                padding: 0 16px;
                 border: 1px solid rgba(255, 255, 255, 0.15);
-            }}
-            QPushButton:hover {{
+            }
+            QPushButton:hover {
                 background-color: rgba(255, 255, 255, 0.14);
                 border-color: rgba(255, 255, 255, 0.25);
-            }}
-            QPushButton:pressed {{
+            }
+            QPushButton:pressed {
                 background-color: rgba(255, 255, 255, 0.18);
-            }}
+            }
         """)
         self.btn_latest.clicked.connect(self._on_latest)
         actions_layout.addWidget(self.btn_latest)
 
         # 3. Choose Another Build...
         self.btn_browse = QPushButton("Choose Another Build...")
+        self.btn_browse.setFixedHeight(36)
         self.btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_browse.setStyleSheet("""
-            QPushButton {{
+            QPushButton {
                 background-color: transparent;
                 color: rgba(255, 255, 255, 0.75);
                 font-size: 9pt;
+                font-weight: 600;
                 border-radius: 8px;
-                padding: 8px 16px;
+                padding: 0 16px;
                 border: 1px solid rgba(255, 255, 255, 0.12);
-            }}
-            QPushButton:hover {{
+            }
+            QPushButton:hover {
                 background-color: rgba(255, 255, 255, 0.06);
                 color: #FFFFFF;
                 border-color: rgba(255, 255, 255, 0.22);
-            }}
-            QPushButton:pressed {{
+            }
+            QPushButton:pressed {
                 background-color: rgba(255, 255, 255, 0.10);
-            }}
+            }
         """)
         self.btn_browse.clicked.connect(self._on_browse)
         actions_layout.addWidget(self.btn_browse)

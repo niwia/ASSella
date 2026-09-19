@@ -93,10 +93,19 @@ class DownloadDepotsTask(QObject):
             )
 
             if not commands:
-                self.progress.emit(
-                    "No valid download commands to execute. Task finished."
-                )
-                self.completed.emit()
+                if skipped_depots:
+                    err_msg = (
+                        f"Download aborted: Unable to obtain valid manifests for depot(s): {', '.join(skipped_depots)}. "
+                        "Please verify the depot ID or manifest ID, or choose another build."
+                    )
+                    logger.error(f"[DownloadDepotsTask] {err_msg}")
+                    self.progress.emit(f"ERROR: {err_msg}")
+                    self.error.emit((RuntimeError, err_msg, None))
+                else:
+                    self.progress.emit(
+                        "No valid download commands to execute. Task finished."
+                    )
+                    self.completed.emit()
                 return
 
             total_depots = len(commands)
@@ -710,6 +719,17 @@ class DownloadDepotsTask(QObject):
                                         self.progress.emit(f"Successfully extracted fallback manifest: {os.path.basename(dest_item_path)}")
                 except Exception as e:
                     self.progress.emit(f"Warning: Failed to fetch fallback manifest from Hubcap: {e}")
+
+            # Pre-download Sanity Check: Ensure valid non-empty manifest file exists on disk
+            if not os.path.exists(manifest_file_path) or os.path.getsize(manifest_file_path) == 0:
+                err_msg = (
+                    f"Manifest for Depot {depot_id} (Manifest ID: {manifest_id}) could not be retrieved from Hubcap or local cache. "
+                    f"The specified manifest ID or depot ID may be invalid or obsolete."
+                )
+                logger.error(f"[DownloadDepotsTask] {err_msg}")
+                self.progress.emit(f"ERROR: {err_msg}")
+                skipped_depots.append(str(depot_id))
+                continue
 
             cmd_args = [
                 dotnet_cmd,
