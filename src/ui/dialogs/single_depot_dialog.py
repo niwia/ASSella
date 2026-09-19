@@ -817,8 +817,7 @@ class SingleDepotSelectionDialog(QDialog):
                 self._depots_enriched_signal.emit(enriched)
 
         self._enrich_runner = TaskRunner(self)
-        worker = self._enrich_runner.run(_fetch)
-        worker.finished.connect(_on_done)
+        self._enrich_runner.run(_fetch, on_finished=_on_done)
 
     def _on_depots_enriched(self, enriched_depots: dict):
         if not enriched_depots:
