@@ -1,4 +1,29 @@
 {
+  "_comment": "ASSella Tested & Recommended Game Builds (Voices Catalog)",
+  "_instructions": {
+    "how_to_contribute": [
+      "1. To add or update a game, submit a Pull Request to the 'beta' branch on GitHub (niwia/ASSella).",
+      "2. Under 'games', add an entry keyed by the game's Steam AppID (found in the store URL: store.steampowered.com/app/<appid>).",
+      "3. Set 'recommended_build_id' to the tested Steam build ID (found on SteamDB patchnotes or build history: steamdb.info/app/<appid>/patchnotes).",
+      "4. Set 'reason' explaining why this build is recommended (e.g., 'Known stable build for current crack/bypass').",
+      "5. 'manifest_overrides' can contain depot_id -> manifest_id pairs. If left as {}, ASSella can auto-resolve them from SteamDB.",
+      "6. 'aliases' should contain common shorthand or abbreviations (e.g. ['p3r', 'persona 3']) for search matching.",
+      "7. If the game does not have an official Steam AppID yet, place it under 'named_games' keyed by its lowercase name."
+    ],
+    "example_entry": {
+      "game_name": "Example Game",
+      "aliases": [
+        "example",
+        "eg"
+      ],
+      "recommended_build_id": "12345678",
+      "reason": "Stable release compatible with current bypass",
+      "depots": [],
+      "manifest_overrides": {
+        "1234561": "9876543210123456789"
+      }
+    }
+  },
   "version": 1,
   "description": "ASSella Recommended & Tested Game Builds (Voices)",
   "updated_at": "2026-09-19",
@@ -12,7 +37,9 @@
       "recommended_build_id": "22672075",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "2161701": "8534679793765499772"
+      }
     },
     "2358720": {
       "game_name": "Black Myth: Wukong",
@@ -24,7 +51,9 @@
       "recommended_build_id": "21393610",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "2358721": "8329114521995004621"
+      }
     },
     "1693980": {
       "game_name": "Dead Space",
@@ -34,7 +63,9 @@
       "recommended_build_id": "10602756",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "1693981": "1038276949129655019"
+      }
     },
     "1971870": {
       "game_name": "Mortal Kombat 1",
@@ -45,7 +76,10 @@
       "recommended_build_id": "17941244",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "1971872": "8552604172369068290",
+        "1971874": "512005367846038723"
+      }
     },
     "1237320": {
       "game_name": "Sonic Frontiers",
@@ -55,7 +89,9 @@
       "recommended_build_id": "16857613",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "1237321": "2773324310090316887"
+      }
     },
     "2842040": {
       "game_name": "Star Wars Outlaws",
@@ -66,7 +102,16 @@
       "recommended_build_id": "18870567",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "2842041": "5039899775321241999",
+        "2842042": "8023630815732376815",
+        "2842043": "4839953097128885780",
+        "2842044": "7424665147348076845",
+        "2842045": "6353372299728446551",
+        "2842046": "7478173584789464744",
+        "3271130": "3969923851033101926",
+        "3541390": "6063451016620732592"
+      }
     },
     "2840770": {
       "game_name": "Avatar: Frontiers of Pandora",
@@ -77,7 +122,12 @@
       "recommended_build_id": "22429549",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "2840771": "1313257464760795001",
+        "3005000": "8047920361918511067",
+        "3005010": "7571111406504859758",
+        "3823590": "7216827091719275431"
+      }
     },
     "3035570": {
       "game_name": "Assassin's Creed Mirage",
@@ -88,7 +138,9 @@
       "recommended_build_id": "21164535",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "3035571": "7701461256988246108"
+      }
     },
     "3159330": {
       "game_name": "Assassin's Creed Shadows",
@@ -99,7 +151,15 @@
       "recommended_build_id": "23475575",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "3159331": "4595780502794590393",
+        "3159333": "8283686636322166472",
+        "3159334": "7350092371372350439",
+        "3159335": "1102932231740758169",
+        "3159336": "4931157239490777827",
+        "3159337": "175917902438003276",
+        "3159339": "1250764753963549068"
+      }
     },
     "1222680": {
       "game_name": "Need for Speed Heat",
@@ -109,7 +169,9 @@
       "recommended_build_id": "10351341",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "1222681": "4929521867669947405"
+      }
     },
     "1328660": {
       "game_name": "Need for Speed: Hot Pursuit Remastered",
@@ -120,7 +182,9 @@
       "recommended_build_id": "10351285",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "1328661": "1795149217869958414"
+      }
     },
     "1413480": {
       "game_name": "Shin Megami Tensei III Nocturne HD Remaster",
@@ -132,7 +196,9 @@
       "recommended_build_id": "8135603",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "1413481": "3756180068834100338"
+      }
     },
     "2751000": {
       "game_name": "Prince of Persia: The Lost Crown",
@@ -143,7 +209,9 @@
       "recommended_build_id": "17528300",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "2751001": "4409492711677428505"
+      }
     },
     "1941540": {
       "game_name": "Mafia: The Old Country",
@@ -155,7 +223,9 @@
       "recommended_build_id": "20951841",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "1941541": "3121778726057603637"
+      }
     },
     "3017860": {
       "game_name": "DOOM: The Dark Ages",
@@ -167,7 +237,15 @@
       "recommended_build_id": "23888600",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "3017862": "8197197764663749946",
+        "3017863": "5147735178128053244",
+        "3017864": "4051834565771554326",
+        "3017865": "6508691013012284956",
+        "3017866": "51450828051076476",
+        "3017867": "7418049215055797629",
+        "3017868": "7542505685871058323"
+      }
     },
     "3357650": {
       "game_name": "Pragmata",
@@ -187,7 +265,11 @@
       "recommended_build_id": "19963153",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "3489701": "2747626496734343426",
+        "3596180": "8344797041293440177",
+        "3596190": "6588499701851943951"
+      }
     },
     "3321460": {
       "game_name": "Crimson Desert",
@@ -197,55 +279,57 @@
       "recommended_build_id": "24236217",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "3321461": "3181503578355214830"
+      }
+    },
+    "3764200": {
+      "game_name": "Resident Evil Requiem",
+      "aliases": [
+        "re: requiem",
+        "re requiem"
+      ],
+      "recommended_build_id": "22277314",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {
+        "3764201": "9166256367562763038",
+        "3764202": "5539348548467948364",
+        "3764203": "651754783565368360",
+        "3764204": "2766110070372859116"
+      }
+    },
+    "3751950": {
+      "game_name": "Assassin's Creed Black Flag Resynced",
+      "aliases": [
+        "ac: bfr",
+        "ac bfr"
+      ],
+      "recommended_build_id": "24424450",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {
+        "3751951": "4397710407098141927"
+      }
+    },
+    "2215200": {
+      "game_name": "LEGO\u00ae Batman\u2122: Legacy of the Dark Knight",
+      "aliases": [
+        "lego batman: lotdk",
+        "lego batman lotdk"
+      ],
+      "recommended_build_id": "23314029",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {
+        "2215201": "8744395932724193069"
+      }
     }
   },
   "named_games": {
     "007 first light": {
       "game_name": "007 First Light",
       "recommended_build_id": "23388781",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {}
-    },
-    "re: requiem": {
-      "game_name": "RE: Requiem",
-      "recommended_build_id": "22277314",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {}
-    },
-    "ac: bfr": {
-      "game_name": "AC: BFR",
-      "recommended_build_id": "24424450",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {}
-    },
-    "lego batman: lotdk": {
-      "game_name": "Lego Batman: LOTDK",
-      "recommended_build_id": "23222834",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {}
-    },
-    "re requiem": {
-      "game_name": "RE: Requiem",
-      "recommended_build_id": "22277314",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {}
-    },
-    "ac bfr": {
-      "game_name": "AC: BFR",
-      "recommended_build_id": "24424450",
-      "reason": "Known stable and compatible build",
-      "depots": [],
-      "manifest_overrides": {}
-    },
-    "lego batman lotdk": {
-      "game_name": "Lego Batman: LOTDK",
-      "recommended_build_id": "23222834",
       "reason": "Known stable and compatible build",
       "depots": [],
       "manifest_overrides": {}
