@@ -56,6 +56,8 @@ class SettingsDialog(QDialog):
         self.auto_skip_single_choice_checkbox = None
         self.smart_depot_selection_checkbox = None
         self.use_lancache_checkbox = None
+        self.use_native_steam_dl_checkbox = None
+        self.native_steam_action_combo = None
         self.autofetch_manifests_checkbox = None
         self.smart_update_mode_checkbox = None
         self.refined_update_check_checkbox = None
@@ -628,6 +630,16 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "use_lancache",
                 self.use_lancache_checkbox.isChecked(),
+            )
+        if hasattr(self, "use_native_steam_dl_checkbox") and self.use_native_steam_dl_checkbox is not None:
+            self.settings.setValue(
+                "use_native_steam_download",
+                self.use_native_steam_dl_checkbox.isChecked(),
+            )
+        if hasattr(self, "native_steam_action_combo") and self.native_steam_action_combo is not None:
+            self.settings.setValue(
+                "native_steam_default_action",
+                self.native_steam_action_combo.currentData() or "ask",
             )
         if hasattr(self, "prompt_steam_restart_checkbox") and self.prompt_steam_restart_checkbox is not None:
             self.settings.setValue(

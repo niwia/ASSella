@@ -26,6 +26,7 @@ from core import steam_helpers
 from core.tasks.download_depots_task import DownloadDepotsTask
 from core.tasks.download_workshop_task import DownloadWorkshopTask
 from core.tasks.generate_achievements_task import GenerateAchievementsTask
+from core.tasks.native_steam_download_task import NativeSteamDownloadTask
 from core.tasks.process_zip_task import ProcessZipTask
 from core.tasks.steamless_task import SteamlessTask
 
@@ -645,7 +646,68 @@ class TaskManager(QObject):
         self.main_window.progress_bar.setValue(0)
         self.main_window.speed_label.setVisible(True)
 
-        self.download_task = DownloadDepotsTask()
+        # ── Choose download backend ──────────────────────────────────────────
+        use_native_steam = (
+            sys.platform == "linux"
+            and self.settings.value("use_native_steam_download", False, type=bool)
+        )
+
+        if use_native_steam:
+            action_mode = self.settings.value("native_steam_default_action", "ask", type=str)
+            if action_mode == "ask":
+                from ui.dialogs.native_steam_action_dialog import (
+                    NativeSteamActionDialog,
+                    ACTION_TRACK,
+                    ACTION_CANCEL,
+                )
+                appid_str = str(self.game_data.get("appid", ""))
+                game_title = self.game_data.get("game_name", f"App {appid_str}")
+                accent_c = getattr(self.main_window, "accent_color", "#6c5ce7")
+                dlg = NativeSteamActionDialog(
+                    parent=self.main_window,
+                    app_id=appid_str,
+                    game_name=game_title,
+                    accent_color=accent_c,
+                )
+                dlg.exec()
+                action = dlg.get_action()
+                if action == ACTION_CANCEL:
+                    logger.info("[TaskManager] User cancelled native Steam download action dialog")
+                    self.job_finished()
+                    return
+                if dlg.should_remember():
+                    saved_val = "track" if action == ACTION_TRACK else "handoff"
+                    self.settings.setValue("native_steam_default_action", saved_val)
+                    logger.info(f"[TaskManager] Remembered default native Steam action: {saved_val}")
+                chosen_action = "track" if action == ACTION_TRACK else "handoff"
+            else:
+                chosen_action = action_mode
+
+            if chosen_action == "handoff":
+                from core.native_steam.native_steam_handoff import perform_steam_handoff
+                logger.info("[TaskManager] Initiating instant Steam handoff")
+                self.progress.emit(f"Handing off {self.game_data.get('game_name', 'Game')} to Steam...")
+                ok, msg = perform_steam_handoff(
+                    self.game_data,
+                    selected_depots,
+                    dest_path,
+                    progress_cb=self.progress.emit,
+                )
+                if ok:
+                    self.progress.emit(f"Handoff complete: {msg}")
+                    if hasattr(self.main_window, "statusBar") and self.main_window.statusBar():
+                        self.main_window.statusBar().showMessage(msg, 6000)
+                else:
+                    self.progress.emit(f"Handoff failed: {msg}")
+                    logger.error(f"[TaskManager] Handoff failed: {msg}")
+
+                self.job_finished()
+                return
+            else:
+                logger.info("[TaskManager] Using monitored native Steam client download backend")
+                self.download_task = NativeSteamDownloadTask()
+        else:
+            self.download_task = DownloadDepotsTask()
         self.download_task.progress.connect(logger.info)
         self.download_task.progress_percentage.connect(
             self.main_window.progress_bar.setValue,
@@ -1202,6 +1264,18 @@ class TaskManager(QObject):
             write_accela_metadata(self.current_dest_path, self.game_data, size_on_disk)
         except Exception as e:
             logger.error(f"Failed to write metadata JSON file: {e}")
+
+        # If NativeSteamDownloadTask was used, Steam already natively generated the ACF
+        try:
+            from core.tasks.native_steam_download_task import NativeSteamDownloadTask
+            if isinstance(self.download_task, NativeSteamDownloadTask):
+                logger.info(
+                    f"Native Steam download backend was used for {appid} - "
+                    "Steam natively generated the manifest. Skipping custom ACF writing."
+                )
+                return
+        except Exception:
+            pass
 
         # 2. If ACF-Independent mode is active, delegate manifest creation entirely to Steam natively.
         #    Exception: pinned/older builds must use the fallback ACF writer so the pinned buildid

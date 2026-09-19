@@ -492,7 +492,7 @@ def _wait_for_sls_license(appid: str, log_offset: int) -> bool:
 
     Returns True if the license event was confirmed in the log.
     """
-    pattern = rf"(?:AppLicensesChanged callback invoked for {re.escape(str(appid))}|Unlocked {re.escape(str(appid))})"
+    pattern = rf"(?:AppLicensesChanged.*?\b{re.escape(str(appid))}\b|Unlocked.*?\b{re.escape(str(appid))}\b)"
     found = _poll_sls_log_for(
         pattern,
         timeout_seconds=MAX_CONFIG_WAIT_SECONDS,
