@@ -56,8 +56,6 @@ class SettingsDialog(QDialog):
         self.auto_skip_single_choice_checkbox = None
         self.smart_depot_selection_checkbox = None
         self.use_lancache_checkbox = None
-        self.use_native_steam_dl_checkbox = None
-        self.native_steam_action_combo = None
         self.autofetch_manifests_checkbox = None
         self.smart_update_mode_checkbox = None
         self.refined_update_check_checkbox = None
@@ -540,6 +538,7 @@ class SettingsDialog(QDialog):
                 self.service_poll_timer.stop()
             self._save_general_settings()
             self._save_download_settings()
+            self._save_vapor_settings()
             if not self._save_style_settings():
                 return
             self.settings.sync()
@@ -635,16 +634,6 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "use_lancache",
                 self.use_lancache_checkbox.isChecked(),
-            )
-        if hasattr(self, "use_native_steam_dl_checkbox") and self.use_native_steam_dl_checkbox is not None:
-            self.settings.setValue(
-                "use_native_steam_download",
-                self.use_native_steam_dl_checkbox.isChecked(),
-            )
-        if hasattr(self, "native_steam_action_combo") and self.native_steam_action_combo is not None:
-            self.settings.setValue(
-                "native_steam_default_action",
-                self.native_steam_action_combo.currentData() or "ask",
             )
         if hasattr(self, "prompt_steam_restart_checkbox") and self.prompt_steam_restart_checkbox is not None:
             self.settings.setValue(
@@ -823,6 +812,30 @@ class SettingsDialog(QDialog):
                     ensure_slssteam_prerequisites()
                 except Exception:
                     pass
+
+    def _save_vapor_settings(self) -> None:
+        """Save all Vapor (Beta) settings."""
+        if hasattr(self, "enable_vapor_checkbox") and self.enable_vapor_checkbox is not None:
+            val = self.enable_vapor_checkbox.isChecked()
+            self.settings.setValue("enable_vapor", val)
+            self.settings.setValue("use_native_steam_download", val)
+
+        if hasattr(self, "vapor_download_action_combo") and self.vapor_download_action_combo is not None:
+            action = self.vapor_download_action_combo.currentData() or "ask"
+            self.settings.setValue("vapor_default_download_action", action)
+            self.settings.setValue("native_steam_default_action", action)
+
+        if hasattr(self, "vapor_start_immediate_checkbox") and self.vapor_start_immediate_checkbox is not None:
+            self.settings.setValue(
+                "vapor_start_download_immediately",
+                self.vapor_start_immediate_checkbox.isChecked(),
+            )
+
+        if hasattr(self, "vapor_depot_checklist_checkbox") and self.vapor_depot_checklist_checkbox is not None:
+            self.settings.setValue(
+                "vapor_show_depot_checklist",
+                self.vapor_depot_checklist_checkbox.isChecked(),
+            )
 
     def _save_style_settings(self) -> bool:
         return tabs.save_style_settings(self)

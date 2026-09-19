@@ -87,64 +87,6 @@ def create_downloads_tab(dialog) -> QWidget:
     )
     dl_layout.addWidget(dialog.use_lancache_checkbox)
 
-    # ── Native Steam Download (Experimental) ──────────────────────────────
-    if sys.platform == "linux":
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: rgba(255,255,255,0.08); border: none; background: rgba(255,255,255,0.08); max-height: 1px;")
-        dl_layout.addWidget(sep)
-
-        dialog.use_native_steam_dl_checkbox = create_checkbox_setting(
-            "[Experimental] Use Steam Client Download instead of DDM",
-            "use_native_steam_download",
-            False,
-            dialog,
-            "When enabled, ASSella injects depot keys into SLSsteam and lets Steam download "
-            "game files directly from Valve CDN via download.lua hooks, instead of using "
-            "DepotDownloaderMod. Requires Steam to be running with SLSsteam active.",
-        )
-        dialog.use_native_steam_dl_checkbox.toggled.connect(
-            lambda checked: dialog.settings.setValue("use_native_steam_download", checked)
-        )
-        dl_layout.addWidget(dialog.use_native_steam_dl_checkbox)
-
-        # Action mode selection: Ask, Track, or Handoff
-        action_row = QHBoxLayout()
-        action_row.setContentsMargins(22, 2, 2, 2)
-        action_row.setSpacing(10)
-        action_lbl = QLabel("Default Action:")
-        action_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.8); font-size: 8.5pt; border: none; background: transparent;")
-        dialog.native_steam_action_combo = QComboBox()
-        dialog.native_steam_action_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        dialog.native_steam_action_combo.addItem("Ask Each Time", "ask")
-        dialog.native_steam_action_combo.addItem("Download and Track in ASSella", "track")
-        dialog.native_steam_action_combo.addItem("Add to Steam and Hand Off", "handoff")
-
-        saved_action = dialog.settings.value("native_steam_default_action", "ask", type=str)
-        act_idx = dialog.native_steam_action_combo.findData(saved_action)
-        if act_idx >= 0:
-            dialog.native_steam_action_combo.setCurrentIndex(act_idx)
-
-        dialog.native_steam_action_combo.currentIndexChanged.connect(
-            lambda i: dialog.settings.setValue(
-                "native_steam_default_action", dialog.native_steam_action_combo.currentData()
-            )
-        )
-        action_row.addWidget(action_lbl)
-        action_row.addWidget(dialog.native_steam_action_combo)
-        action_row.addStretch()
-        dl_layout.addLayout(action_row)
-
-        exp_note = QLabel(
-            "Requires: Steam + SLSsteam running | download.lua from enter-the-wired will be deployed automatically"
-        )
-        exp_note.setWordWrap(True)
-        exp_note.setStyleSheet(
-            "color: rgba(255,200,80,0.85); font-size: 8pt; border: none; "
-            "background: transparent; padding-left: 22px;"
-        )
-        dl_layout.addWidget(exp_note)
-
     dl_layout.addSpacing(8)
 
     # Inputs Grid for Download Settings (Download Location, Max Downloads)

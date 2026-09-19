@@ -29,19 +29,7 @@ def create_vapor_tab(dialog) -> QWidget:
     layout.setContentsMargins(16, 16, 16, 16)
     layout.setSpacing(16)
 
-    # -- 1. Header Banner Card --
-    header_card, header_layout = dialog._create_card_frame("Vapor (Beta) - Native Steam Suite")
-    header_desc = QLabel(
-        "Vapor integrates ASSella directly with the native Steam client and SLSsteam. "
-        "When enabled, game licenses, manifest versions, and depot decryption keys are injected "
-        "straight into your Steam client so you can download or manage games natively."
-    )
-    header_desc.setWordWrap(True)
-    header_desc.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9pt; line-height: 1.4;")
-    header_layout.addWidget(header_desc)
-    layout.addWidget(header_card)
-
-    # -- 2. General Configuration Card --
+    # -- 1. General Configuration Card --
     cfg_card, cfg_layout = dialog._create_card_frame("General Configuration")
 
     # Option 1: Master Enable/Disable Toggle
@@ -50,8 +38,14 @@ def create_vapor_tab(dialog) -> QWidget:
         "enable_vapor",
         False,
         dialog,
-        "Master toggle for the Vapor subsystem. When disabled, ASSella operates in classic mode "
-        "with standard downloaders. When enabled, native Steam options and library features become active.",
+        tooltip=None,
+        show_description=False,
+    )
+    dialog.enable_vapor_checkbox.toggled.connect(
+        lambda checked: (
+            dialog.settings.setValue("enable_vapor", checked),
+            dialog.settings.setValue("use_native_steam_download", checked),
+        )
     )
     cfg_layout.addWidget(dialog.enable_vapor_checkbox)
 
@@ -66,14 +60,9 @@ def create_vapor_tab(dialog) -> QWidget:
     act_row.setContentsMargins(4, 4, 4, 4)
     act_row.setSpacing(12)
 
-    act_label_col = QVBoxLayout()
     act_title = QLabel("Default Download Behavior")
     act_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9.5pt;")
-    act_desc = QLabel("Choose which download backend to use when initiating downloads:")
-    act_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
-    act_label_col.addWidget(act_title)
-    act_label_col.addWidget(act_desc)
-    act_row.addLayout(act_label_col, stretch=1)
+    act_row.addWidget(act_title, stretch=1)
 
     dialog.vapor_download_action_combo = QComboBox()
     dialog.vapor_download_action_combo.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -87,9 +76,15 @@ def create_vapor_tab(dialog) -> QWidget:
         dialog.vapor_download_action_combo.setCurrentIndex(cur_idx)
 
     dialog.vapor_download_action_combo.currentIndexChanged.connect(
-        lambda _i: dialog.settings.setValue(
-            "vapor_default_download_action",
-            dialog.vapor_download_action_combo.currentData(),
+        lambda _i: (
+            dialog.settings.setValue(
+                "vapor_default_download_action",
+                dialog.vapor_download_action_combo.currentData(),
+            ),
+            dialog.settings.setValue(
+                "native_steam_default_action",
+                dialog.vapor_download_action_combo.currentData(),
+            ),
         )
     )
     act_row.addWidget(dialog.vapor_download_action_combo)
@@ -107,11 +102,19 @@ def create_vapor_tab(dialog) -> QWidget:
         "vapor_start_download_immediately",
         True,
         dialog,
-        "When enabled, Steam automatically begins downloading files immediately upon handoff. "
-        "When disabled, the game is added to your Steam library with all licenses and decryption keys ready, "
-        "letting you press 'Install' in Steam whenever you want.",
+        tooltip=None,
+        show_description=False,
+    )
+    dialog.vapor_start_immediate_checkbox.toggled.connect(
+        lambda checked: dialog.settings.setValue("vapor_start_download_immediately", checked)
     )
     cfg_layout.addWidget(dialog.vapor_start_immediate_checkbox)
+
+    # Separator
+    sep3 = QFrame()
+    sep3.setFrameShape(QFrame.Shape.HLine)
+    sep3.setStyleSheet("color: rgba(255,255,255,0.08); border: none; background: rgba(255,255,255,0.08); max-height: 1px;")
+    cfg_layout.addWidget(sep3)
 
     # Option 4: Simplified Depot Selection for Vapor
     dialog.vapor_depot_checklist_checkbox = create_checkbox_setting(
@@ -119,14 +122,17 @@ def create_vapor_tab(dialog) -> QWidget:
         "vapor_show_depot_checklist",
         True,
         dialog,
-        "When enabled, games with multiple optional depots/DLCs show a lightweight checklist "
-        "allowing you to choose what to install. Steam manages drive storage automatically.",
+        tooltip=None,
+        show_description=False,
+    )
+    dialog.vapor_depot_checklist_checkbox.toggled.connect(
+        lambda checked: dialog.settings.setValue("vapor_show_depot_checklist", checked)
     )
     cfg_layout.addWidget(dialog.vapor_depot_checklist_checkbox)
 
     layout.addWidget(cfg_card)
 
-    # -- 3. Subsystem Health & Diagnostics Card --
+    # -- 2. Subsystem Status & Health Card --
     diag_card, diag_layout = dialog._create_card_frame("Subsystem Status & Health")
 
     from ui.dialogs.settings_sls import get_sls_paths
