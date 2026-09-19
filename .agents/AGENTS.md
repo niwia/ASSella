@@ -9,6 +9,7 @@ This file defines essential guidelines, build rules, versioning conventions, and
 - **No Hardcoded User Home Paths**: Never hardcode `/home/deck/` or `/home/<username>/`. Always use `os.path.expanduser("~")` or `Path.home()`.
 - **System Inode Preservation**: When modifying SLSsteam configuration files (`~/.config/SLSsteam/config.yaml`), write updates **in-place** (`open(..., "r+")` followed by `f.truncate()`) to preserve the file's system inode and prevent breaking SLSsteam's `inotify` file watcher.
 - **ACF-Independent Architecture**: ASSella writes and relies on local `metadata.json` files inside `{game_dir}/.DepotDownloader/`. Delegate `.acf` file creation/maintenance natively to Steam client via SLS config updates and `install|appid|0` named pipe signals.
+- **Pre-release Verification Suite**: Do not run `scripts/prerelease_check.py` or full pre-release test suites automatically after tasks or in the future. Only run them when explicitly requested by the user.
 
 ---
 
