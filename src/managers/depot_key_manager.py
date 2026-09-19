@@ -49,9 +49,20 @@ def _init_db(conn: sqlite3.Connection) -> None:
 class DepotKeyManager:
     """Thread-safe manager for depot AES keys and AppTokens."""
 
+    _instance = None
+
+    @classmethod
+    def get_instance(cls) -> "DepotKeyManager":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
     def __init__(self):
         self._db_path = _get_db_path()
         self._ensure_db()
+
+    def get_keys_for_app(self, appid: str) -> Dict[str, str]:
+        return self.get_depot_keys(appid)
 
     def _ensure_db(self) -> None:
         try:
