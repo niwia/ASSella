@@ -241,18 +241,7 @@ class DownloadWorkshopTask(QObject):
         except Exception as e:
             self.log(f"  ✗ Failed to update ACF: {e}")
 
-        # Game-specific local mod folder integrations (e.g. Ravenfield)
-        if appid == "636480":
-            try:
-                rf_mods_dir = os.path.join(dest_path, "steamapps", "common", "Ravenfield", "ravenfield_Data", "Mods")
-                if os.path.isdir(os.path.dirname(rf_mods_dir)):
-                    os.makedirs(rf_mods_dir, exist_ok=True)
-                    symlink_target = os.path.join(rf_mods_dir, wid)
-                    if not os.path.exists(symlink_target) and not os.path.islink(symlink_target):
-                        os.symlink(mod_dir, symlink_target)
-                        self.log(f"  ✓ Linked to Ravenfield Mods → {symlink_target}")
-            except Exception as e:
-                logger.warning(f"Failed to create Ravenfield Mods symlink: {e}")
+
 
     def run(self, workshop_data: Dict[str, Any]):
         wids = workshop_data["wids"]
