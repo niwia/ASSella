@@ -208,10 +208,18 @@ def perform_steam_handoff(
         except OSError as e:
             logger.warning(f"[SteamHandoff] Error checking existing ACF: {e}")
 
-    # 3. Fetch depot keys
     from core.tasks.native_steam_download_task import NativeSteamDownloadTask
     task_helper = NativeSteamDownloadTask()
     depot_keys, manifest_gids = task_helper._fetch_hubcap_keys(game_data, appid)
+    if not depot_keys:
+        try:
+            from managers.depot_key_manager import DepotKeyManager
+            cached = DepotKeyManager.get_instance().get_keys_for_app(appid)
+            if cached:
+                depot_keys = {str(d): k for d, k in cached.items()}
+                logger.info(f"[SteamHandoff] Retrieved {len(depot_keys)} depot keys from DepotKeyManager")
+        except Exception as e:
+            logger.debug(f"[SteamHandoff] Error checking depot_key_manager: {e}")
 
     if not depot_keys:
         return False, f"No depot keys available for {game_name} ({appid})."

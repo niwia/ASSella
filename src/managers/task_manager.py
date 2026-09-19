@@ -686,19 +686,33 @@ class TaskManager(QObject):
             if chosen_action == "handoff":
                 from core.native_steam.native_steam_handoff import perform_steam_handoff
                 logger.info("[TaskManager] Initiating instant Steam handoff")
-                self.progress.emit(f"Handing off {self.game_data.get('game_name', 'Game')} to Steam...")
+                game_name = self.game_data.get("game_name", "Game") if self.game_data else "Game"
+
+                def _update_handoff_progress(msg: str):
+                    logger.info(f"[Handoff] {msg}")
+                    if self.main_window and hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
+                        self.main_window.speed_label.setText(msg)
+                    if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                        st = self.main_window.simplified_terminal
+                        if hasattr(st, "active_game_card") and st.active_game_card:
+                            st.active_game_card.set_sub_status(msg)
+                    from PyQt6.QtWidgets import QApplication
+                    app = QApplication.instance()
+                    if app:
+                        app.processEvents()
+
+                _update_handoff_progress(f"Handing off {game_name} to Steam...")
                 ok, msg = perform_steam_handoff(
                     self.game_data,
                     selected_depots,
                     dest_path,
-                    progress_cb=self.progress.emit,
+                    progress_cb=_update_handoff_progress,
                 )
+                self._last_handoff_success = ok
+                self._is_handoff_job = True
                 if ok:
-                    self.progress.emit(f"Handoff complete: {msg}")
-                    if hasattr(self.main_window, "statusBar") and self.main_window.statusBar():
-                        self.main_window.statusBar().showMessage(msg, 6000)
+                    logger.info(f"[TaskManager] Handoff complete: {msg}")
                 else:
-                    self.progress.emit(f"Handoff failed: {msg}")
                     logger.error(f"[TaskManager] Handoff failed: {msg}")
 
                 self.job_finished()
@@ -1309,14 +1323,13 @@ class TaskManager(QObject):
 
                     # Precondition check: warn the user if SLSsteam filewatcher is dead or SLSsteam is not running
                     if is_sls_filewatcher_dead():
-                        warning_msg = "SLSsteam Filewatcher crashed in Steam . Restart Steam"
-                        self.progress.emit(f"⚠️ WARNING: {warning_msg}")
+                        warning_msg = "SLSsteam Filewatcher crashed in Steam. Restart Steam"
+                        logger.warning(f"WARNING: {warning_msg}")
                         if hasattr(self.main_window, "notify_sls_watcher_crashed_signal"):
                             self.main_window.notify_sls_watcher_crashed_signal.emit()
                     elif not _is_slssteam_available():
                         warning_msg = warn_sls_unavailable(context="post-install")
-                        # Emit as a visible warning in the task progress output
-                        self.progress.emit(f"⚠️ WARNING: {warning_msg}")
+                        logger.warning(f"WARNING: {warning_msg}")
 
                     job_type = self.game_data.get("job_type", "download") if self.game_data else "download"
                     if job_type == "verify":
@@ -2658,7 +2671,13 @@ class TaskManager(QObject):
         if self.game_data:
             self._last_installed_game = self.game_data.get("game_name", "Unknown")
 
-        ddm_ok = not self.is_cancelling
+        is_handoff = getattr(self, "_is_handoff_job", False)
+        if is_handoff:
+            ddm_ok = getattr(self, "_last_handoff_success", True)
+            self._last_handoff_success = None
+            self._is_handoff_job = False
+        else:
+            ddm_ok = not self.is_cancelling
 
         if not self._slscheevo_ran:
             slscheevo_ok = None
@@ -2679,6 +2698,8 @@ class TaskManager(QObject):
             slscheevo_ok=slscheevo_ok,
             steamless_ok=steamless_ok,
         )
+        if is_handoff and ddm_ok:
+            self._last_ddm_status_text = "Handed Off"
 
         # Record installation log entry for SimplifiedTerminalWidget
         if self.game_data:
@@ -2724,7 +2745,8 @@ class TaskManager(QObject):
                 "ach_status": ach_status,
                 "steamless_status": steamless_status,
                 "timestamp": time.time(),
-                "success": ddm_ok
+                "success": ddm_ok,
+                "handed_off": is_handoff,
             }
 
             # Add to simplified terminal

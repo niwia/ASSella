@@ -875,6 +875,8 @@ class SimplifiedTerminalWidget(QWidget):
                         dur_str = self._format_duration(entry.get("download_duration", 0))
                         speed_str = self._format_speed(entry.get("avg_speed", 0))
                         stat_text = f"<span style='color: #2ECC71;'>Success</span> • {size_str} in {dur_str} ({speed_str})"
+                    elif entry.get("handed_off"):
+                        stat_text = "<span style='color: #2ECC71;'>Handed off to Steam</span>"
                     else:
                         stat_text = "<span style='color: #2ECC71;'>Success</span> • Zip file"
 
