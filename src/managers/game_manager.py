@@ -563,6 +563,11 @@ class GameManager(QObject):
         # Thread-safe local list to collect scanned games
         scanned_games = []
 
+        # Resolve owned Steam AppIDs once per scan so we never treat legitimately owned
+        # Steam games as Vapor or ACCELA installs.
+        owned_steam_appids = self._get_owned_steam_appids()
+        additional_apps = self._get_sls_additional_apps()
+
         for library_path in steam_libraries:
             if self._scan_cancelled:
                 logger.info("Scan cancelled before scanning remaining libraries")
@@ -570,7 +575,14 @@ class GameManager(QObject):
             logger.info(f"Scanning library: {library_path}")
             scanned_libraries += 1
 
-            games_found += self._scan_library(library_path, steam_install_path, scanned_games, global_acf_cache=global_acf_cache)
+            games_found += self._scan_library(
+                library_path,
+                steam_install_path,
+                scanned_games,
+                global_acf_cache=global_acf_cache,
+                owned_appids=owned_steam_appids,
+                additional_apps=additional_apps,
+            )
 
         accela_games_found = sum(
             1 for game in scanned_games if game.get("is_accela_install")
@@ -617,7 +629,15 @@ class GameManager(QObject):
 
         return games_found
 
-    def _scan_library(self, library_path, steam_install_path, scanned_games, global_acf_cache=None):
+    def _scan_library(
+        self,
+        library_path,
+        steam_install_path,
+        scanned_games,
+        global_acf_cache=None,
+        owned_appids=None,
+        additional_apps=None,
+    ):
         """Scan a single Steam library for games."""
         games_found = 0
         steamapps_path = os.path.join(library_path, "steamapps")
@@ -637,8 +657,11 @@ class GameManager(QObject):
 
         seen_paths = {game.get("install_path") for game in scanned_games}
 
-        # Scan all installed Steam game directories in this library.
-        additional_apps = self._get_sls_additional_apps()
+        if additional_apps is None:
+            additional_apps = self._get_sls_additional_apps()
+        if owned_appids is None:
+            owned_appids = self._get_owned_steam_appids()
+
         try:
             # Use scandir for better error handling during concurrent modifications
             with os.scandir(common_path) as entries:
@@ -664,10 +687,18 @@ class GameManager(QObject):
                         is_vapor = False
 
                         if not marker_path:
-                            # Check if this game is unlocked via Vapor/SLSsteam AdditionalApps
+                            # Check if this game is unlocked via Vapor/SLSsteam AdditionalApps and not owned
                             acf_entry = acf_cache.get(game_name) or acf_cache.get(game_name.lower())
-                            if acf_entry and str(acf_entry[1]) in additional_apps:
-                                is_vapor = True
+                            if acf_entry:
+                                appid_str = str(acf_entry[1])
+                                if appid_str in owned_appids:
+                                    logger.debug(f"  Skipped owned Steam game: {game_name} ({appid_str})")
+                                    continue
+                                elif appid_str in additional_apps:
+                                    is_vapor = True
+                                else:
+                                    logger.debug(f"  Skipped non-ACCELA game: {game_name}")
+                                    continue
                             else:
                                 logger.debug(f"  Skipped non-ACCELA game: {game_name}")
                                 continue
@@ -698,8 +729,11 @@ class GameManager(QObject):
             logger.error(f"Error scanning {common_path}: {e}")
 
         # Second pass: directly discover any game in SLSsteam AdditionalApps whose
-        # appmanifest resides in this library, verifying the installdir exists and has content.
+        # appmanifest resides in this library, verifying the installdir exists and has content,
+        # skipping any legitimately owned Steam games.
         for appid_str in additional_apps:
+            if appid_str in owned_appids:
+                continue
             acf_info = acf_cache.get(f"appid:{appid_str}")
             if not acf_info:
                 continue
@@ -820,6 +854,16 @@ class GameManager(QObject):
             return set()
 
     @staticmethod
+    def _get_owned_steam_appids() -> set:
+        """Return set of AppIDs that the user legitimately owns on Steam (via localconfig.vdf apptickets)."""
+        try:
+            from core.steam_helpers import get_owned_steam_appids
+            return get_owned_steam_appids()
+        except Exception as e:
+            logger.debug(f"Could not read owned Steam AppIDs: {e}")
+            return set()
+
+    @staticmethod
     def _fix_slssteam_config():
         """
         Fix indentation of AdditionalApps entries in SLSsteam config.yaml.
@@ -849,6 +893,8 @@ class GameManager(QObject):
         added_count = 0
         for game in self.games:
             if not game.get("is_accela_install"):
+                continue
+            if game.get("is_vapor"):
                 continue
             appid = game.get("appid")
             game_name = game.get("game_name", "")

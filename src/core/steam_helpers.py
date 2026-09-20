@@ -267,6 +267,46 @@ def _find_steam_linux():
     return None
 
 
+def get_owned_steam_appids() -> set:
+    """Return set of AppIDs that the user legitimately owns on Steam (via localconfig.vdf apptickets)."""
+    owned = set()
+    home = Path.home()
+    candidates = [
+        home / ".local" / "share" / "Steam" / "userdata",
+        home / ".steam" / "steam" / "userdata",
+        home / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam" / "userdata",
+        home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam" / "userdata",
+    ]
+    try:
+        env = get_steam_env()
+        if env.steam_path:
+            p = Path(env.steam_path) / "userdata"
+            if p not in candidates:
+                candidates.append(p)
+    except Exception:
+        pass
+
+    for userdata_dir in candidates:
+        if not userdata_dir.is_dir():
+            continue
+        try:
+            for entry in userdata_dir.iterdir():
+                if entry.is_dir() and entry.name.isdigit():
+                    cfg = entry / "config" / "localconfig.vdf"
+                    if cfg.is_file():
+                        try:
+                            txt = cfg.read_text(encoding="utf-8", errors="ignore")
+                            m = re.search(r'"apptickets"\s*\{([^}]+)\}', txt)
+                            if m:
+                                owned.update(re.findall(r'"(\d+)"', m.group(1)))
+                        except Exception as e:
+                            logger.debug(f"Error reading apptickets from {cfg}: {e}")
+        except Exception as e:
+            logger.debug(f"Error iterating userdata dir {userdata_dir}: {e}")
+
+    return owned
+
+
 def parse_library_folders(vdf_path):
     library_paths = []
     try:
