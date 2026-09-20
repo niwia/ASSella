@@ -83,13 +83,24 @@ DEFAULT_CONFIG_PATH = (
     FLATPAK_CONFIG_PATH if FLATPAK_STEAM_INSTALL_DIR.exists() else NATIVE_CONFIG_PATH
 )
 
-# C++ source that embeds the YAML default template as a raw string literal.
+# Primary template is res/config.yaml (clean YAML), with fallback to src/config_default.hpp (C++ embedded).
 TEMPLATE_SOURCE_URL = (
+    "https://raw.githubusercontent.com/AceSLS/SLSsteam/main/res/config.yaml"
+)
+FALLBACK_TEMPLATE_SOURCE_URL = (
     "https://raw.githubusercontent.com/AceSLS/SLSsteam/main/src/config_default.hpp"
 )
 
 TEMPLATE_TIMEOUT  = 15   # seconds – GitHub raw file download
 STEAM_API_TIMEOUT =  5   # seconds – per-game name lookups (many in parallel)
+
+
+def extract_template_yaml(raw_text: str) -> str:
+    """Extract YAML text, whether downloaded directly from res/config.yaml or embedded in C++ header."""
+    if not raw_text:
+        return ""
+    m = re.search(r'R"\((.+?)\)"', raw_text, re.DOTALL)
+    return m.group(1) if m else raw_text
 
 # ──────────────────────────────────────────────────────────────
 # Key type constants
@@ -107,6 +118,12 @@ TYPE_UNKNOWN      = "unknown"       # auto-detected at parse time from user data
 NUMERIC_VALUE_MAP_KEYS = {
     "AppTokens", "FakeAppIds", "SubscriptionTimestamps",
     "ManifestIds", "DlcData",
+}
+
+# Known plugin keys (e.g. from download.lua plugin) that are valid extensions:
+KNOWN_PLUGIN_KEYS = {
+    "AdditionalDepots": TYPE_LIST,
+    "DecryptionKeys": TYPE_MAP,
 }
 
 IDLE_STATUS_KEY = "IdleStatus"
@@ -155,15 +172,23 @@ def _fetch_url(url: str, timeout: int) -> str:
 
 
 def fetch_template(url: str = TEMPLATE_SOURCE_URL) -> str:
-    """Download config_default.hpp and extract the embedded YAML template."""
+    """Download upstream template (YAML or C++ embedded) and return the YAML template."""
+    raw = None
     try:
         raw = _fetch_url(url, TEMPLATE_TIMEOUT)
     except Exception as exc:
-        raise RuntimeError(f"Failed to download template: {exc}")
-    m = re.search(r'static const char\* defaultConfig = R"\((.+?)\)";', raw, re.DOTALL)
-    if not m:
-        raise RuntimeError("Could not find YAML template in the downloaded C++ file.")
-    return m.group(1)
+        if url == TEMPLATE_SOURCE_URL and FALLBACK_TEMPLATE_SOURCE_URL:
+            logger.info(f"Primary template fetch failed ({exc}), trying fallback {FALLBACK_TEMPLATE_SOURCE_URL}...")
+            try:
+                raw = _fetch_url(FALLBACK_TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
+            except Exception as exc2:
+                raise RuntimeError(f"Failed to download template: {exc2}")
+        else:
+            raise RuntimeError(f"Failed to download template: {exc}")
+    tmpl = extract_template_yaml(raw)
+    if not tmpl:
+        raise RuntimeError("Could not find valid YAML template in downloaded content.")
+    return tmpl
 
 
 # ──────────────────────────────────────────────────────────────
@@ -222,9 +247,7 @@ def infer_key_types(raw_hpp: str) -> dict:
     Pass 2 — Template header comments: looks for commented-out example blocks.
     """
     comment_hints = _parse_commented_examples(raw_hpp)
-
-    m = re.search(r'static const char\* defaultConfig = R"\((.+?)\)";', raw_hpp, re.DOTALL)
-    template_yaml = m.group(1) if m else ""
+    template_yaml = extract_template_yaml(raw_hpp)
 
     key_types: dict[str, str] = {}
     lines = template_yaml.splitlines()
@@ -279,6 +302,7 @@ def infer_key_types(raw_hpp: str) -> dict:
 
         i += 1
 
+    key_types.update(KNOWN_PLUGIN_KEYS)
     return key_types
 
 
@@ -888,7 +912,7 @@ def validate_config(config_path: Path, key_types: dict) -> list:
         return issues
 
     for key in data:
-        if key_types and key not in key_types and key != IDLE_STATUS_KEY:
+        if key_types and key not in key_types and key != IDLE_STATUS_KEY and key not in KNOWN_PLUGIN_KEYS:
             issues.append(f"Key '{key}' not found in current upstream template (may have been removed)")
 
     return issues
@@ -982,6 +1006,24 @@ def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
             if isinstance(user_val, dict) and user_val:
                 out_lines.append(_render_map(user_val, key))
 
+    # Append any known plugin keys present in user_data that are not in the template
+    seen_template_keys = set()
+    for l in lines:
+        km = re.match(r'^([A-Za-z][A-Za-z0-9_]*)\s*:', l)
+        if km:
+            seen_template_keys.add(km.group(1))
+
+    for pkey, pktype in KNOWN_PLUGIN_KEYS.items():
+        if pkey in user_data and pkey not in seen_template_keys:
+            u_val = user_data[pkey]
+            if u_val:
+                out_lines.append("")
+                out_lines.append(f"{pkey}:")
+                if pktype == TYPE_LIST or isinstance(u_val, list):
+                    out_lines.append(_render_list(u_val))
+                elif pktype in (TYPE_MAP, TYPE_MAP_OF_LISTS) or isinstance(u_val, dict):
+                    out_lines.append(_render_map(u_val, pkey))
+
     return "\n".join(out_lines) + "\n"
 
 
@@ -1056,10 +1098,9 @@ def run_boot_config_check() -> None:
         try:
             raw_hpp = _fetch_url(TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
             key_types = infer_key_types(raw_hpp)
-            m_tmpl = re.search(r'static const char\* defaultConfig = R"\((.+?)\)";', raw_hpp, re.DOTALL)
-            if not m_tmpl:
+            template_yaml = extract_template_yaml(raw_hpp)
+            if not template_yaml:
                 raise ValueError("Template syntax changed.")
-            template_yaml = m_tmpl.group(1)
 
             config_text = config_path.read_text(encoding="utf-8")
             reader = SimpleYAMLReader(key_types, lenient=True)
@@ -1126,10 +1167,9 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
             logger.debug(f"Fetching upstream template from {TEMPLATE_SOURCE_URL} (timeout {TEMPLATE_TIMEOUT}s)...")
             raw_hpp = _fetch_url(TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
             key_types = infer_key_types(raw_hpp)
-            m_tmpl = re.search(r'static const char\* defaultConfig = R"\((.+?)\)";', raw_hpp, re.DOTALL)
-            if not m_tmpl:
-                raise ValueError("Could not extract default config from upstream C++ template.")
-            template_yaml = m_tmpl.group(1)
+            template_yaml = extract_template_yaml(raw_hpp)
+            if not template_yaml:
+                raise ValueError("Could not extract default config from upstream template.")
             logger.debug(f"Upstream template fetched successfully ({len(template_yaml)} chars, {len(key_types)} key types inferred).")
         except Exception as e:
             logger.warning(f"Network fetch failed for upstream template: {e}")
@@ -1201,11 +1241,9 @@ def repair_and_sync_config(config_path: Optional[Path] = None, online: bool = Tr
 
         if online:
             try:
-                raw_hpp = _fetch_url(TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
+                raw_hpp = _fetch_url(template_url, TEMPLATE_TIMEOUT)
                 key_types = infer_key_types(raw_hpp)
-                m = re.search(r'static const char\* defaultConfig = R"\((.+?)\)";', raw_hpp, re.DOTALL)
-                if m:
-                    template_yaml = m.group(1)
+                template_yaml = extract_template_yaml(raw_hpp)
             except Exception:
                 pass
 
@@ -1472,11 +1510,10 @@ def main() -> None:
 
     key_types = infer_key_types(raw_hpp)
 
-    m_tmpl = re.search(r'static const char\* defaultConfig = R"\((.+?)\)";', raw_hpp, re.DOTALL)
-    if not m_tmpl:
-        error("Could not find YAML template in the downloaded C++ file.")
+    template_yaml = extract_template_yaml(raw_hpp)
+    if not template_yaml:
+        error("Could not find YAML template in the downloaded template file.")
         sys.exit(1)
-    template_yaml = m_tmpl.group(1)
 
     ok(f"  Discovered {len(key_types)} top-level key(s) in upstream template.")
     unknown = [k for k, t in key_types.items() if t == TYPE_UNKNOWN]
