@@ -126,6 +126,69 @@ KNOWN_PLUGIN_KEYS = {
     "DecryptionKeys": TYPE_MAP,
 }
 
+def find_plugins_dir(config_path: Optional[Path] = None) -> Optional[Path]:
+    """Locate the SLSsteam plugins directory (native, flatpak, or adjacent to config)."""
+    if config_path:
+        adjacent = config_path.parent / "plugins"
+        if adjacent.is_dir():
+            return adjacent
+    if FLATPAK_STEAM_INSTALL_DIR.exists():
+        fp_dir = FLATPAK_CONFIG_PATH.parent / "plugins"
+        if fp_dir.is_dir():
+            return fp_dir
+    native_dir = NATIVE_CONFIG_PATH.parent / "plugins"
+    if native_dir.is_dir():
+        return native_dir
+    return None
+
+
+def discover_plugin_keys(plugins_dir: Optional[Path] = None) -> Dict[str, str]:
+    """Dynamically scan Lua plugins in plugins_dir to discover keys and types queried via SLS.config."""
+    if plugins_dir is None:
+        plugins_dir = find_plugins_dir()
+    if not plugins_dir or not plugins_dir.is_dir():
+        return {}
+
+    discovered: Dict[str, str] = {}
+    try:
+        for lua_file in plugins_dir.glob("*.lua"):
+            try:
+                content = lua_file.read_text(encoding="utf-8", errors="ignore")
+                # List methods: getIntList, getStringList, getList
+                for m in re.finditer(r'SLS\.config\s*:\s*(getIntList|getStringList|getList)\s*\(\s*["\']([A-Za-z0-9_]+)["\']', content):
+                    discovered[m.group(2)] = TYPE_LIST
+                # Scalar methods: getBool, getString, getInt, getFloat
+                for m in re.finditer(r'SLS\.config\s*:\s*(getBool|getString|getInt|getFloat)\s*\(\s*["\']([A-Za-z0-9_]+)["\']', content):
+                    discovered[m.group(2)] = TYPE_SCALAR
+                # Node / map methods: getNode
+                for m in re.finditer(r'SLS\.config\s*:\s*getNode\s*\(\s*["\']([A-Za-z0-9_]+)["\']', content):
+                    key_name = m.group(1)
+                    if "asPairList" in content:
+                        discovered[key_name] = TYPE_MAP
+                    else:
+                        discovered[key_name] = TYPE_UNKNOWN
+                # General fallback: SLS.config:someMethod("key") or SLS.config["key"]
+                for m in re.finditer(r'SLS\.config\s*[:\.\[]\s*["\']([A-Za-z0-9_]+)["\']', content):
+                    k = m.group(1)
+                    if k not in discovered:
+                        discovered[k] = TYPE_UNKNOWN
+            except Exception as e:
+                logger.debug(f"Error scanning plugin file {lua_file}: {e}")
+    except Exception as e:
+        logger.debug(f"Error discovering plugin keys in {plugins_dir}: {e}")
+
+    return discovered
+
+
+def get_effective_plugin_keys(config_path: Optional[Path] = None) -> Dict[str, str]:
+    """Return union of static fallback KNOWN_PLUGIN_KEYS and dynamically discovered plugin keys."""
+    keys = KNOWN_PLUGIN_KEYS.copy()
+    p_dir = find_plugins_dir(config_path)
+    if p_dir:
+        scanned = discover_plugin_keys(p_dir)
+        keys.update(scanned)
+    return keys
+
 IDLE_STATUS_KEY = "IdleStatus"
 
 # ──────────────────────────────────────────────────────────────
@@ -238,13 +301,14 @@ def _parse_commented_examples(raw_hpp: str) -> dict:
     return inferred
 
 
-def infer_key_types(raw_hpp: str) -> dict:
+def infer_key_types(raw_hpp: str, config_path: Optional[Path] = None) -> dict:
     """
     Auto-discover the type of every top-level config key without any external
     hints file. Uses two passes:
     Pass 1 — Template body: keys with non-empty defaults are detected as scalars;
               keys with indented children are detected as list/map/submap.
     Pass 2 — Template header comments: looks for commented-out example blocks.
+    Pass 3 — Plugin discovery: scans SLSsteam plugins directory for dynamically required keys.
     """
     comment_hints = _parse_commented_examples(raw_hpp)
     template_yaml = extract_template_yaml(raw_hpp)
@@ -302,7 +366,7 @@ def infer_key_types(raw_hpp: str) -> dict:
 
         i += 1
 
-    key_types.update(KNOWN_PLUGIN_KEYS)
+    key_types.update(get_effective_plugin_keys(config_path))
     return key_types
 
 
@@ -911,8 +975,9 @@ def validate_config(config_path: Path, key_types: dict) -> list:
         issues.append(f"Parse error: {exc}")
         return issues
 
+    plugin_keys = get_effective_plugin_keys(config_path)
     for key in data:
-        if key_types and key not in key_types and key != IDLE_STATUS_KEY and key not in KNOWN_PLUGIN_KEYS:
+        if key_types and key not in key_types and key != IDLE_STATUS_KEY and key not in plugin_keys:
             issues.append(f"Key '{key}' not found in current upstream template (may have been removed)")
 
     return issues
@@ -946,7 +1011,7 @@ def _render_submap(submap: dict, indent: str = "  ") -> str:
     return "\n".join(out)
 
 
-def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
+def merge_config(template_yaml: str, user_data: dict, key_types: dict, config_path: Optional[Path] = None) -> str:
     out_lines = []
     lines = template_yaml.splitlines()
     i = 0
@@ -1006,14 +1071,15 @@ def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
             if isinstance(user_val, dict) and user_val:
                 out_lines.append(_render_map(user_val, key))
 
-    # Append any known plugin keys present in user_data that are not in the template
+    # Append any known or dynamically discovered plugin keys present in user_data that are not in the template
     seen_template_keys = set()
     for l in lines:
         km = re.match(r'^([A-Za-z][A-Za-z0-9_]*)\s*:', l)
         if km:
             seen_template_keys.add(km.group(1))
 
-    for pkey, pktype in KNOWN_PLUGIN_KEYS.items():
+    effective_plugin_keys = get_effective_plugin_keys(config_path)
+    for pkey, pktype in effective_plugin_keys.items():
         if pkey in user_data and pkey not in seen_template_keys:
             u_val = user_data[pkey]
             if u_val:
@@ -1023,6 +1089,28 @@ def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
                     out_lines.append(_render_list(u_val))
                 elif pktype in (TYPE_MAP, TYPE_MAP_OF_LISTS) or isinstance(u_val, dict):
                     out_lines.append(_render_map(u_val, pkey))
+                elif isinstance(u_val, ConfigEntry):
+                    out_lines.append(f"  {u_val.val}")
+                else:
+                    out_lines.append(f"  {u_val}")
+
+    # Preserve any remaining unrecognized / custom user keys to prevent data loss
+    remaining_keys = [k for k in user_data if k not in seen_template_keys and k not in effective_plugin_keys and k != IDLE_STATUS_KEY]
+    if remaining_keys:
+        out_lines.append("")
+        out_lines.append("# Custom / Third-Party Settings (Preserved)")
+        for rkey in remaining_keys:
+            rval = user_data[rkey]
+            if rval:
+                out_lines.append(f"{rkey}:")
+                if isinstance(rval, list):
+                    out_lines.append(_render_list(rval))
+                elif isinstance(rval, dict):
+                    out_lines.append(_render_map(rval, rkey))
+                elif isinstance(rval, ConfigEntry):
+                    out_lines.append(f"  {rval.val}")
+                else:
+                    out_lines.append(f"  {rval}")
 
     return "\n".join(out_lines) + "\n"
 
@@ -1166,7 +1254,7 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
         try:
             logger.debug(f"Fetching upstream template from {TEMPLATE_SOURCE_URL} (timeout {TEMPLATE_TIMEOUT}s)...")
             raw_hpp = _fetch_url(TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
-            key_types = infer_key_types(raw_hpp)
+            key_types = infer_key_types(raw_hpp, config_path=config_path)
             template_yaml = extract_template_yaml(raw_hpp)
             if not template_yaml:
                 raise ValueError("Could not extract default config from upstream template.")
@@ -1259,7 +1347,7 @@ def repair_and_sync_config(config_path: Optional[Path] = None, online: bool = Tr
             return False, "Could not obtain a valid SLSsteam template.", None
 
         if not key_types:
-            key_types = infer_key_types(raw_hpp) if raw_hpp else {}
+            key_types = infer_key_types(raw_hpp, config_path=config_path) if raw_hpp else {}
 
         config_text = config_path.read_text(encoding="utf-8")
         reader = SimpleYAMLReader(key_types, lenient=True)
@@ -1272,7 +1360,7 @@ def repair_and_sync_config(config_path: Optional[Path] = None, online: bool = Tr
         new_keys = set(template_data) - set(old_data)
 
         # Merge
-        merged = merge_config(template_yaml, old_data, key_types)
+        merged = merge_config(template_yaml, old_data, key_types, config_path=config_path)
         bak_path = make_backup_with_rotation(config_path)
 
         # In-place write to preserve file inode for live SLS inotify
@@ -1508,7 +1596,7 @@ def main() -> None:
         error(f"Failed to fetch template: {exc}")
         sys.exit(1)
 
-    key_types = infer_key_types(raw_hpp)
+    key_types = infer_key_types(raw_hpp, config_path=config_path)
 
     template_yaml = extract_template_yaml(raw_hpp)
     if not template_yaml:
@@ -1576,8 +1664,9 @@ def main() -> None:
     # ── 3. Compare ───────────────────────────────────────────────
     print(f"{BOLD}[3/4] Comparing with upstream template…{RESET}")
     template_data = reader.parse(template_yaml)
+    plugin_keys   = get_effective_plugin_keys(config_path)
     new_keys      = set(template_data) - set(old_data)
-    removed_keys  = set(old_data)      - set(template_data)
+    removed_keys  = set(old_data)      - set(template_data) - set(plugin_keys)
     if new_keys:
         info(f"  New upstream key(s) — using defaults: {', '.join(sorted(new_keys))}")
     if removed_keys:
@@ -1588,7 +1677,7 @@ def main() -> None:
 
     # ── 4. Merge ─────────────────────────────────────────────────
     print(f"{BOLD}[4/4] Merging your values into new template…{RESET}")
-    merged = merge_config(template_yaml, old_data, key_types)
+    merged = merge_config(template_yaml, old_data, key_types, config_path=config_path)
 
     for key in key_types:
         old_val = old_data.get(key)
