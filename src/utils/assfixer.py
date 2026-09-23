@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 # Version
 # ──────────────────────────────────────────────────────────────
 
-VERSION = "3.2.2"
+VERSION = "3.2.3"
 
 boot_status = None
 boot_issues = []
