@@ -20,7 +20,7 @@ class JobQueueManager(QObject):
         self.steam_restart_prompt_pending = False
         self.is_showing_completion_dialog = False
 
-    def add_workshop_job(self, wids, api_key, max_downloads, cellid, steam_integration, dest_path):
+    def add_workshop_job(self, wids, api_key, max_downloads, cellid, steam_integration, dest_path, autostart: bool = True):
         """Add a Workshop job to the queue with descriptive name resolution"""
         display_name = f"Workshop Mod ({len(wids)} items)"
         parent_game_name = ""
@@ -64,17 +64,17 @@ class JobQueueManager(QObject):
             }
         }
         self.job_queue.append(job)
-        logger.info(f"Added new Workshop job '{display_name}' to queue with {len(wids)} items.")
+        logger.info(f"Added new Workshop job '{display_name}' to queue with {len(wids)} items (autostart={autostart}).")
 
         self._update_ui_state()
 
-        if not self.main_window.task_manager.is_processing:
+        if autostart and not self.main_window.task_manager.is_processing:
             logger.info("Not processing, starting new Workshop job from queue.")
             if hasattr(self.main_window, "log_output") and self.main_window.log_output:
                 self.main_window.log_output.clear()
             self._start_next_job()
         else:
-            logger.info("App is busy, Workshop job added to queue.")
+            logger.info(f"Workshop job added to queue without immediate execution (autostart={autostart}).")
 
     def add_job(self, file_path, metadata=None):
         """Add a job to the queue (Thread-Safe)"""

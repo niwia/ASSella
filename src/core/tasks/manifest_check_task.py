@@ -750,7 +750,25 @@ class ManifestCheckTask(QObject):
                             settings.setValue(f"latest_steam_timeupdated/{appid}", timeupdated)
 
                         # Compare manifest IDs
-                        if saved_manifest_id != current_manifest_id:
+                        actual_installed_mid = ManifestCheckTask._get_installed_depot_manifest(saved_depot_id, game_data)
+                        if not actual_installed_mid and isinstance(game_data.get("installed_depots"), dict):
+                            d_entry = game_data["installed_depots"].get(saved_depot_id)
+                            if isinstance(d_entry, dict):
+                                actual_installed_mid = str(d_entry.get("manifest", ""))
+                            elif d_entry:
+                                actual_installed_mid = str(d_entry)
+
+                        if actual_installed_mid and actual_installed_mid == current_manifest_id:
+                            # The files on disk are already at the current manifest.
+                            # Sync the .depot file so subsequent checks don't mismatch.
+                            saved_depots[saved_depot_id] = current_manifest_id
+                            try:
+                                with open(depot_file, "w") as df:
+                                    for s_did, s_mid in saved_depots.items():
+                                        df.write(f"{s_did}: {s_mid}\n")
+                            except Exception:
+                                pass
+                        elif saved_manifest_id != current_manifest_id:
                             logger.info(
                                 f"[UpdateCheck {appid}] Update available for depot {saved_depot_id} (branch '{selected_branch}'): saved={saved_manifest_id}, current={current_manifest_id}"
                             )

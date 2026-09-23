@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QSize, Qt, QTimer, QRectF
+from PyQt6.QtCore import QSize, Qt, QTimer, QRectF, pyqtSlot
 from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter, QBrush, QLinearGradient, QPen, QMovie
 from PyQt6.QtWidgets import (
     QDialog,
@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
     QSizePolicy,
+    QScrollArea,
 )
 
 
@@ -85,7 +86,7 @@ from utils.search_ranking import (
     _RESULT_META_KEYS,
     _RESULT_META_LIST_KEYS,
 )
-from utils.workshop_helpers import extract_workshop_id, parse_workshop_ids
+from utils.workshop_helpers import extract_workshop_id, parse_workshop_ids, detect_game_for_workshop_items, resolve_workshop_items_batch
 from core.manifest_fetcher import verify_or_download_manifest
 
 logger = logging.getLogger(__name__)
@@ -422,16 +423,12 @@ class FetchManifestDialog(QDialog):
         ws_card_lay.setContentsMargins(14, 14, 14, 14)
         ws_card_lay.setSpacing(8)
 
-        ws_title = QLabel("Workshop Batch Downloader")
-        ws_title.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {self.accent_color}; border: none; background: transparent;")
         ws_sub = QLabel("Paste Workshop item URLs or IDs below (one per line, or comma-separated):")
         ws_sub.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt; border: none; background: transparent;")
-
-        ws_card_lay.addWidget(ws_title)
         ws_card_lay.addWidget(ws_sub)
 
         self.ids_input = QTextEdit()
-        self.ids_input.setFixedHeight(120)
+        self.ids_input.setFixedHeight(68)
         self.ids_input.setPlaceholderText("e.g. https://steamcommunity.com/sharedfiles/filedetails/?id=3772598164\nor 3772598164, 12345678")
         self.ids_input.setStyleSheet(f"""
             QTextEdit {{
@@ -448,6 +445,35 @@ class FetchManifestDialog(QDialog):
         """)
         ws_card_lay.addWidget(self.ids_input)
 
+        # Dynamic entries list
+        self._workshop_entries = []
+
+        self.cards_scroll = QScrollArea()
+        self.cards_scroll.setFixedHeight(210)
+        self.cards_scroll.setWidgetResizable(True)
+        self.cards_scroll.setStyleSheet("""
+            QScrollArea {
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                background: rgba(0, 0, 0, 0.18);
+            }
+        """)
+        self.cards_container = QWidget()
+        self.cards_container.setStyleSheet("background: transparent;")
+        self.cards_layout = QVBoxLayout(self.cards_container)
+        self.cards_layout.setContentsMargins(8, 8, 8, 8)
+        self.cards_layout.setSpacing(6)
+        self.cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.cards_scroll.setWidget(self.cards_container)
+        ws_card_lay.addWidget(self.cards_scroll)
+
+        # Debounce timer for auto-detecting and parsing Workshop input
+        self._ws_detect_timer = QTimer(self)
+        self._ws_detect_timer.setSingleShot(True)
+        self._ws_detect_timer.setInterval(350)
+        self._ws_detect_timer.timeout.connect(self._process_pasted_workshop_ids)
+        self.ids_input.textChanged.connect(self._on_workshop_ids_changed)
+
         # Action Buttons
         btns_layout = QHBoxLayout()
         btns_layout.setContentsMargins(0, 4, 0, 0)
@@ -456,7 +482,7 @@ class FetchManifestDialog(QDialog):
         from utils.color_utils import get_best_foreground_color
         text_color = get_best_foreground_color(self.accent_color)
 
-        self.dl_btn = QPushButton("⬇ Download (Add to Queue)")
+        self.dl_btn = QPushButton("⬇ Download All (Add to Queue)")
         self.dl_btn.setFixedHeight(36)
         self.dl_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.dl_btn.setStyleSheet(f"""
@@ -479,14 +505,37 @@ class FetchManifestDialog(QDialog):
             }}
         """)
         self.dl_btn.clicked.connect(self._download_workshop)
-        
+
+        self.clear_btn = QPushButton("Clear All")
+        self.clear_btn.setFixedHeight(36)
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                color: rgba(255, 255, 255, 0.8);
+                font-size: 9pt;
+                font-weight: bold;
+                padding: 0 14px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.12);
+                color: #FFFFFF;
+            }
+        """)
+        self.clear_btn.clicked.connect(self._clear_all_workshop_entries)
+
         self.workshop_status_label = QLabel()
         self.workshop_status_label.setStyleSheet(f"color: {self.accent_color}; font-weight: bold; font-size: 8.5pt;")
 
         btns_layout.addWidget(self.dl_btn)
+        btns_layout.addWidget(self.clear_btn)
         btns_layout.addWidget(self.workshop_status_label)
         btns_layout.addStretch()
         ws_card_lay.addLayout(btns_layout)
+
+        self._render_workshop_cards()
 
         workshop_layout.addWidget(ws_card)
         workshop_layout.addStretch()
@@ -1359,15 +1408,283 @@ class FetchManifestDialog(QDialog):
             QMessageBox.warning(self, "No API Key", "Please enter your Hubcab API key in ACCELA Settings first.")
             return
 
+        if not self._workshop_entries and self.ids_input.toPlainText().strip():
+            self._process_pasted_workshop_ids()
+
+        if not self._workshop_entries:
+            QMessageBox.warning(self, "No Mods", "Please enter or paste at least one Workshop ID or URL.")
+            return
+
+        unqueued = [e for e in self._workshop_entries if not e.get("queued")]
+        if not unqueued:
+            QMessageBox.information(self, "Already Queued", "All items in the list have already been added to the queue.")
+            self.accept()
+            return
+
+        max_downloads = self.settings.value("workshop_max_downloads", 4, type=int) if self.settings else 4
+        cellid = self.settings.value("workshop_cell_id", "", type=str) if self.settings else ""
+        steam_integration = self.settings.value("workshop_steam_enabled", True, type=bool) if self.settings else True
+
+        # Group unqueued entries by dest_path
+        grouped_jobs = {}
+        uninstalled_chosen_dest = None
+
+        for entry in unqueued:
+            wid = entry["wid"]
+            dest_path = ""
+            if steam_integration:
+                if entry.get("installed") and entry.get("library_path") and os.path.exists(entry["library_path"]):
+                    dest_path = entry["library_path"]
+                else:
+                    if uninstalled_chosen_dest:
+                        dest_path = uninstalled_chosen_dest
+                    else:
+                        libraries = steam_helpers.get_steam_libraries()
+                        if libraries:
+                            dialog = SteamLibraryDialog(libraries, self)
+                            if dialog.exec():
+                                dest_path = dialog.get_selected_path()
+                                uninstalled_chosen_dest = dest_path
+                            else:
+                                continue
+                        else:
+                            dest_path = QFileDialog.getExistingDirectory(self, f"Select Steam Library Folder for {entry.get('game_name', 'Game')}")
+                            if dest_path:
+                                uninstalled_chosen_dest = dest_path
+                            else:
+                                continue
+            else:
+                dest_path = QFileDialog.getExistingDirectory(self, "Select Destination Folder")
+                if not dest_path:
+                    continue
+
+            if dest_path:
+                grouped_jobs.setdefault(dest_path, []).append(wid)
+                entry["queued"] = True
+
+        main_window = self.parent_window
+        if not (main_window and hasattr(main_window, "job_queue") and main_window.job_queue):
+            QMessageBox.critical(self, "Error", "Could not access the application job queue.")
+            return
+
+        queued_total = 0
+        for dpath, w_list in grouped_jobs.items():
+            main_window.job_queue.add_workshop_job(w_list, api_key, max_downloads, cellid, steam_integration, dpath, autostart=True)
+            queued_total += len(w_list)
+
+        if queued_total > 0:
+            QMessageBox.information(
+                self,
+                "Jobs Queued",
+                f"Successfully queued {queued_total} workshop mod(s) across {len(grouped_jobs)} library destination(s)."
+            )
+            self.accept()
+
+    def _on_workshop_ids_changed(self):
+        if hasattr(self, "_ws_detect_timer"):
+            self._ws_detect_timer.start()
+
+    def _process_pasted_workshop_ids(self):
         raw = self.ids_input.toPlainText().strip()
         if not raw:
-            QMessageBox.warning(self, "No IDs", "Please enter at least one Workshop ID or URL.")
             return
 
         wids = parse_workshop_ids(raw)
-        if not wids:
-            QMessageBox.warning(self, "No Valid IDs", "Could not parse any Workshop IDs from the input.")
+        existing_wids = {e["wid"] for e in self._workshop_entries}
+        new_wids = [w for w in wids if w not in existing_wids]
+
+        if not new_wids:
             return
+
+        self.ids_input.blockSignals(True)
+        self.ids_input.clear()
+        self.ids_input.blockSignals(False)
+
+        self.workshop_status_label.setText(f"Resolving {len(new_wids)} mod(s)...")
+
+        import threading
+        def _worker():
+            try:
+                resolved = resolve_workshop_items_batch(new_wids)
+            except Exception as e:
+                logger.debug(f"Error resolving workshop batch: {e}")
+                resolved = []
+
+            from PyQt6.QtCore import QMetaObject, Q_ARG
+            QMetaObject.invokeMethod(
+                self,
+                "_on_workshop_items_resolved",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(object, resolved),
+            )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @pyqtSlot(object)
+    def _on_workshop_items_resolved(self, resolved_items: list):
+        self.workshop_status_label.setText("")
+        if not resolved_items:
+            return
+
+        existing_wids = {e["wid"] for e in self._workshop_entries}
+        for item in resolved_items:
+            if item["wid"] not in existing_wids:
+                item["queued"] = False
+                self._workshop_entries.append(item)
+                existing_wids.add(item["wid"])
+
+        self._render_workshop_cards()
+
+    def _render_workshop_cards(self):
+        while self.cards_layout.count() > 0:
+            item = self.cards_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not self._workshop_entries:
+            empty_lbl = QLabel("Pasted workshop mods will appear here...")
+            empty_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 8.5pt; font-style: italic; padding: 10px;")
+            self.cards_layout.addWidget(empty_lbl)
+            self.cards_layout.addStretch()
+            return
+
+        for entry in self._workshop_entries:
+            wid = entry["wid"]
+            gname = entry.get("game_name", "Game")
+            title = entry.get("title", f"Workshop #{wid}")
+            installed = entry.get("installed", False)
+            lib_path = entry.get("library_path", "")
+            is_queued = entry.get("queued", False)
+
+            card = QFrame()
+            card.setObjectName("wsCardEntry")
+            card.setStyleSheet("""
+                QFrame#wsCardEntry {
+                    background: rgba(255, 255, 255, 0.04);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 8px;
+                }
+                QFrame#wsCardEntry:hover {
+                    background: rgba(255, 255, 255, 0.06);
+                    border-color: rgba(255, 255, 255, 0.14);
+                }
+            """)
+            card_lay = QHBoxLayout(card)
+            card_lay.setContentsMargins(10, 6, 10, 6)
+            card_lay.setSpacing(10)
+
+            # Left side: Game Name: Mod Name & Install Status (no check or warning icon)
+            if installed:
+                status_text = f"<span style='color: #10B981; font-size: 8pt;'>Installed in {lib_path}</span>"
+            else:
+                status_text = "<span style='color: #F59E0B; font-size: 8pt;'>Game not installed locally</span>"
+
+            info_lbl = QLabel(
+                f"<b style='color: #FFFFFF; font-size: 9pt;'>{gname}:</b> "
+                f"<span style='color: rgba(255, 255, 255, 0.9); font-size: 9pt;'>{title}</span><br>"
+                f"<span style='color: rgba(255, 255, 255, 0.5); font-size: 8pt;'>WID: {wid} • </span>{status_text}"
+            )
+            info_lbl.setStyleSheet("border: none; background: transparent;")
+            card_lay.addWidget(info_lbl, 1)
+
+            # Right side: Green + button and Red - button
+            btn_add = QPushButton("✓ Queued" if is_queued else "+")
+            btn_add.setFixedSize(65 if is_queued else 30, 30)
+            btn_add.setCursor(Qt.CursorShape.PointingHandCursor if not is_queued else Qt.CursorShape.ArrowCursor)
+            btn_add.setEnabled(not is_queued)
+            btn_add.setToolTip("Already added to download queue" if is_queued else "Add to queue (paused / won't start immediately)")
+            if is_queued:
+                btn_add.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(16, 185, 129, 0.2);
+                        border: 1px solid #10B981;
+                        border-radius: 6px;
+                        color: #10B981;
+                        font-size: 8pt;
+                        font-weight: bold;
+                    }
+                """)
+            else:
+                btn_add.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(16, 185, 129, 0.15);
+                        border: 1px solid rgba(16, 185, 129, 0.4);
+                        border-radius: 6px;
+                        color: #10B981;
+                        font-size: 13pt;
+                        font-weight: bold;
+                        padding-bottom: 2px;
+                    }
+                    QPushButton:hover {
+                        background: rgba(16, 185, 129, 0.3);
+                        border-color: #10B981;
+                    }
+                """)
+            btn_add.clicked.connect(lambda _c, e=entry, b=btn_add: self._on_single_add_clicked(e, b))
+            card_lay.addWidget(btn_add)
+
+            # Red - button (delete / remove)
+            btn_del = QPushButton("−")
+            btn_del.setFixedSize(30, 30)
+            btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_del.setToolTip("Remove mod from list")
+            btn_del.setStyleSheet("""
+                QPushButton {
+                    background: rgba(239, 68, 68, 0.15);
+                    border: 1px solid rgba(239, 68, 68, 0.4);
+                    border-radius: 6px;
+                    color: #EF4444;
+                    font-size: 13pt;
+                    font-weight: bold;
+                    padding-bottom: 2px;
+                }
+                QPushButton:hover {
+                    background: rgba(239, 68, 68, 0.3);
+                    border-color: #EF4444;
+                }
+            """)
+            btn_del.clicked.connect(lambda _c, w=wid: self._remove_workshop_entry(w))
+            card_lay.addWidget(btn_del)
+
+            self.cards_layout.addWidget(card)
+
+        self.cards_layout.addStretch()
+
+    def _on_single_add_clicked(self, entry, btn):
+        success = self._queue_single_workshop_entry(entry, autostart=False)
+        if success:
+            entry["queued"] = True
+            btn.setText("✓ Queued")
+            btn.setFixedSize(65, 30)
+            btn.setEnabled(False)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: rgba(16, 185, 129, 0.2);
+                    border: 1px solid #10B981;
+                    border-radius: 6px;
+                    color: #10B981;
+                    font-size: 8pt;
+                    font-weight: bold;
+                }
+            """)
+
+    def _remove_workshop_entry(self, wid: str):
+        self._workshop_entries = [e for e in self._workshop_entries if e["wid"] != wid]
+        self._render_workshop_cards()
+
+    def _clear_all_workshop_entries(self):
+        self._workshop_entries.clear()
+        self._render_workshop_cards()
+
+    def _queue_single_workshop_entry(self, entry, autostart=False):
+        api_key = self.settings.value("morrenus_api_key", "", type=str) if self.settings else ""
+        if not api_key:
+            QMessageBox.warning(self, "No API Key", "Please enter your Hubcab API key in ACCELA Settings first.")
+            return False
+
+        wid = entry.get("wid")
+        if not wid:
+            return False
 
         max_downloads = self.settings.value("workshop_max_downloads", 4, type=int) if self.settings else 4
         cellid = self.settings.value("workshop_cell_id", "", type=str) if self.settings else ""
@@ -1375,34 +1692,32 @@ class FetchManifestDialog(QDialog):
 
         dest_path = ""
         if steam_integration:
-            libraries = steam_helpers.get_steam_libraries()
-            if libraries:
-                auto_skip_single_choice = self.settings.value("auto_skip_single_choice", False, type=bool) if self.settings else False
-                if auto_skip_single_choice and len(libraries) == 1:
-                    dest_path = libraries[0]
-                else:
+            if entry.get("installed") and entry.get("library_path") and os.path.exists(entry["library_path"]):
+                dest_path = entry["library_path"]
+            else:
+                libraries = steam_helpers.get_steam_libraries()
+                if libraries:
                     dialog = SteamLibraryDialog(libraries, self)
                     if dialog.exec():
                         dest_path = dialog.get_selected_path()
                     else:
-                        return
-            else:
-                dest_path = QFileDialog.getExistingDirectory(self, "Select Steam Library Folder")
-                if not dest_path:
-                    return
+                        return False
+                else:
+                    dest_path = QFileDialog.getExistingDirectory(self, f"Select Steam Library Folder for {entry.get('game_name', 'Game')}")
+                    if not dest_path:
+                        return False
         else:
             dest_path = QFileDialog.getExistingDirectory(self, "Select Destination Folder")
             if not dest_path:
-                return
-
+                return False
 
         main_window = self.parent_window
         if main_window and hasattr(main_window, "job_queue") and main_window.job_queue:
-            main_window.job_queue.add_workshop_job(wids, api_key, max_downloads, cellid, steam_integration, dest_path)
-            QMessageBox.information(self, "Job Queued", f"Successfully added Workshop download job with {len(wids)} items to the queue.")
-            self.accept()
+            main_window.job_queue.add_workshop_job([wid], api_key, max_downloads, cellid, steam_integration, dest_path, autostart=autostart)
+            return True
         else:
             QMessageBox.critical(self, "Error", "Could not access the application job queue.")
+            return False
 
     def _rotate_placeholder(self) -> None:
         if not hasattr(self, "search_input") or not self.search_input:

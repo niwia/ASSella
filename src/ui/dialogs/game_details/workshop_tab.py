@@ -90,15 +90,36 @@ def scan_workshop_mods_async(dialog) -> None:
                                     except OSError:
                                         pass
                                     folder_mtime = item_dir.stat().st_mtime if item_dir.exists() else 0
-                                    mtime = max(mtimes, default=folder_mtime)
                                     local_mod_data.append({
                                         "wid": wid,
                                         "path": str(item_dir),
                                         "size": size,
-                                        "mtime": mtime,
+                                        "mtime": folder_mtime or max(mtimes, default=0),
+                                        "folder_mtime": folder_mtime,
                                     })
                             except OSError:
                                 pass
+
+                # Read appworkshop_<appid>.acf across libraries to get installed manifest & timeupdated
+                acf_installed_meta = {}
+                for lib in get_steam_libraries():
+                    acf_p = Path(lib) / "steamapps" / "workshop" / f"appworkshop_{dialog.appid}.acf"
+                    if acf_p.exists():
+                        try:
+                            content = acf_p.read_text(encoding="utf-8", errors="ignore")
+                            import vdf
+                            aw = vdf.loads(content).get("AppWorkshop", {})
+                            det = aw.get("WorkshopItemDetails", {})
+                            inst = aw.get("WorkshopItemsInstalled", {})
+                            for w_id in set(list(det.keys()) + list(inst.keys())):
+                                m_id = str(det.get(w_id, {}).get("manifest") or inst.get(w_id, {}).get("manifest") or "")
+                                t_up = int(det.get(w_id, {}).get("timeupdated") or inst.get(w_id, {}).get("timeupdated") or 0)
+                                acf_installed_meta[str(w_id)] = {
+                                    "manifest": m_id,
+                                    "timeupdated": t_up,
+                                }
+                        except Exception as acf_err:
+                            logger.debug(f"Error parsing workshop ACF {acf_p}: {acf_err}")
 
                 # Batch fetch real titles & updated timestamps from Steam API
                 api_details = fetch_workshop_details(wids) if wids else {}
@@ -109,8 +130,23 @@ def scan_workshop_mods_async(dialog) -> None:
                     raw_title = details.get("title") or f"Workshop Item #{wid}"
                     time_updated = details.get("time_updated", 0)
 
-                    # Update available if Steam updated time is newer than local folder mtime
-                    update_available = time_updated > 0 and time_updated > mod["mtime"] + 60
+                    installed_info = acf_installed_meta.get(wid, {})
+                    installed_manifest = installed_info.get("manifest", "")
+                    installed_time = installed_info.get("timeupdated", 0)
+
+                    remote_manifest = str(details.get("manifest", "") or "")
+
+                    # 1. Authoritative check: compare manifest GID if both are known
+                    if remote_manifest and installed_manifest:
+                        update_available = (remote_manifest != installed_manifest)
+                    # 2. Timestamp check: compare remote update timestamp against ACF recorded timestamp
+                    elif time_updated > 0 and installed_time > 0:
+                        update_available = (time_updated > installed_time)
+                    # 3. Fallback: folder modification time with generous margin (1 day)
+                    elif time_updated > 0 and mod.get("folder_mtime", 0) > 0:
+                        update_available = (time_updated > mod["folder_mtime"] + 86400)
+                    else:
+                        update_available = False
 
                     dt = datetime.fromtimestamp(mod["mtime"]) if mod["mtime"] > 0 else datetime.now()
                     date_str = dt.strftime("%m/%d/%Y")
@@ -183,6 +219,28 @@ def on_workshop_mods_scanned(dialog, ws_mods: list) -> None:
         """)
         btn_update_all.clicked.connect(lambda: update_workshop_items(dialog, outdated_wids))
         header_lay.addWidget(btn_update_all)
+
+    btn_fix = QPushButton("Fix Status")
+    btn_fix.setFixedHeight(28)
+    btn_fix.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn_fix.setToolTip("Repair workshop flags, fix 'Content Encrypted' errors, and synchronize manifests.")
+    btn_fix.setStyleSheet("""
+        QPushButton {
+            background: rgba(56, 189, 248, 0.15);
+            border: 1px solid rgba(56, 189, 248, 0.35);
+            border-radius: 6px;
+            color: #38BDF8;
+            font-size: 8.5pt;
+            font-weight: bold;
+            padding: 0 12px;
+        }
+        QPushButton:hover {
+            background: rgba(56, 189, 248, 0.25);
+            border-color: #38BDF8;
+        }
+    """)
+    btn_fix.clicked.connect(lambda: fix_workshop_flags_action(dialog))
+    header_lay.addWidget(btn_fix)
 
     btn_rescan = QPushButton("Refresh")
     btn_rescan.setFixedHeight(28)
@@ -428,3 +486,32 @@ def update_workshop_items(dialog, wids: List[str]) -> None:
             QMessageBox.warning(dialog, "Error", "Job queue manager not available.")
     except Exception as e:
         logger.error(f"Failed to queue workshop update: {e}")
+
+
+def fix_workshop_flags_action(dialog) -> None:
+    """Repair workshop ACF, base game appmanifest, and subscriptions to fix 'Content Encrypted' loops."""
+    from utils.workshop_helpers import repair_workshop_for_game
+
+    try:
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        res = repair_workshop_for_game(dialog.appid)
+        QApplication.restoreOverrideCursor()
+
+        if res.get("success"):
+            items_cnt = res.get("items_count", 0)
+            repaired_bg = res.get("repaired_base_game", False)
+            msg = f"Repaired workshop manifest for {items_cnt} mod(s)."
+            if repaired_bg:
+                msg += "\n• Synchronized base game AppManifest depots."
+            msg += "\n• NeedsDownload and NeedsUpdate flags reset to 0."
+            msg += "\n• UGC subscriptions list updated."
+            msg += "\n\nTip: If Steam was already open, restart Steam once to reload UGC cache."
+            QMessageBox.information(dialog, "Workshop Repaired", msg)
+            scan_workshop_mods_async(dialog)
+        else:
+            QMessageBox.warning(dialog, "Workshop Repair", f"Could not repair workshop: {res.get('error', 'Unknown error')}")
+    except Exception as e:
+        QApplication.restoreOverrideCursor()
+        logger.error(f"Error repairing workshop flags: {e}")
+        QMessageBox.critical(dialog, "Error", f"Failed to repair workshop: {e}")
+

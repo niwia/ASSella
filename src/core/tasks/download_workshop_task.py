@@ -1,10 +1,11 @@
 import os
 import re
+import shutil
 import subprocess
 import time
 import logging
 import requests
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -193,15 +194,42 @@ class DownloadWorkshopTask(QObject):
 
         total_size = sum(int(d["size"]) for d in existing.values() if str(d.get("size", "")).isdigit())
 
+        # Resolve LastBuildID from appmanifest if missing
+        last_buildid = root_meta.get("LastBuildID", "")
+        if not last_buildid:
+            try:
+                from core.steam_helpers import get_steam_libraries
+                search_dirs = [os.path.join(os.path.dirname(os.path.dirname(path)), "steamapps")]
+                for lib in get_steam_libraries():
+                    search_dirs.append(os.path.join(lib, "steamapps"))
+                for s_dir in search_dirs:
+                    acf_game = os.path.join(s_dir, f"appmanifest_{appid}.acf")
+                    if os.path.exists(acf_game):
+                        with open(acf_game, "r", encoding="utf-8", errors="ignore") as mf:
+                            m_content = mf.read()
+                        b_match = re.search(r'"buildid"\s+"([^"]+)"', m_content)
+                        if b_match:
+                            last_buildid = b_match.group(1).strip()
+                            break
+            except Exception:
+                pass
+
         def q(v): return f'"{v}"'
         lines = ['"AppWorkshop"', '{', f'\t"appid"\t\t{q(appid)}']
         lines.append(f'\t"SizeOnDisk"\t\t{q(str(total_size))}')
         lines.append('\t"NeedsUpdate"\t\t"0"')
         lines.append('\t"NeedsDownload"\t\t"0"')
         lines.append(f'\t"TimeLastUpdated"\t\t{q(now)}')
+        lines.append(f'\t"TimeLastFullCheck"\t\t{q(root_meta.get("TimeLastFullCheck", now))}')
+        lines.append(f'\t"TimeLastAppRan"\t\t{q(root_meta.get("TimeLastAppRan", "0"))}')
+        if last_buildid:
+            lines.append(f'\t"LastBuildID"\t\t{q(last_buildid)}')
 
         for k, v in root_meta.items():
-            if k not in ("appid", "SizeOnDisk", "NeedsUpdate", "NeedsDownload", "TimeLastUpdated"):
+            if k not in (
+                "appid", "SizeOnDisk", "NeedsUpdate", "NeedsDownload",
+                "TimeLastUpdated", "TimeLastFullCheck", "TimeLastAppRan", "LastBuildID"
+            ):
                 lines.append(f'\t{q(k)}\t\t{q(v)}')
 
         lines.extend(['\t"WorkshopItemsInstalled"', '\t{'])
@@ -223,20 +251,47 @@ class DownloadWorkshopTask(QObject):
                 f'\t\t\t"timeupdated"\t\t{q(d["timeupdated"])}',
                 f'\t\t\t"timetouched"\t\t{q(d["timetouched"])}',
                 f'\t\t\t"subscribedby"\t\t{q(d["subscribedby"])}',
-                f'\t\t\t"latest_timeupdated"\t\t{q(d["timeupdated"])}',
-                f'\t\t\t"latest_manifest"\t\t{q(d["manifest"])}',
+                f'\t\t\t"latest_timeupdated"\t\t{q(d.get("latest_timeupdated", d["timeupdated"]))}',
+                f'\t\t\t"latest_manifest"\t\t{q(d.get("latest_manifest", d["manifest"]))}',
                 '\t\t}'
             ])
         lines.extend(['\t}', '}'])
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
-    def apply_steam_integration(self, appid: str, wid: str, manifest_id: str, mod_dir: str, dest_path: str):
+    def apply_steam_integration(
+        self,
+        appid: str,
+        wid: str,
+        manifest_id: str,
+        mod_dir: str,
+        dest_path: str,
+        time_updated: Optional[int] = None,
+    ):
+        # 1. Copy workshop item manifest to Steam depotcache so Steam does not flag missing manifest
+        manifest_src = os.path.join(self.manifests_dir, f"{appid}_{manifest_id}.manifest")
+        if os.path.exists(manifest_src):
+            try:
+                from core.steam_helpers import find_steam_install
+                target_dirs = set()
+                if dest_path:
+                    target_dirs.add(os.path.join(dest_path, "depotcache"))
+                steam_root = find_steam_install()
+                if steam_root:
+                    target_dirs.add(os.path.join(steam_root, "depotcache"))
+                for t_dir in target_dirs:
+                    os.makedirs(t_dir, exist_ok=True)
+                    shutil.copy2(manifest_src, os.path.join(t_dir, f"{appid}_{manifest_id}.manifest"))
+                    self.log(f"  ✓ Copied workshop manifest to depotcache → {t_dir}")
+            except Exception as cache_err:
+                logger.debug(f"Failed to copy workshop manifest to depotcache: {cache_err}")
+
+        # 2. Update appworkshop_<appid>.acf
         acf_path = os.path.join(dest_path, "steamapps", "workshop", f"appworkshop_{appid}.acf")
         size = self._get_dir_size(mod_dir)
-        now = int(time.time())
+        item_time = int(time_updated) if (time_updated and int(time_updated) > 0) else int(time.time())
         try:
-            self._write_acf(acf_path, appid, {wid: {"size": size, "timeupdated": now, "manifest": manifest_id}})
+            self._write_acf(acf_path, appid, {wid: {"size": size, "timeupdated": item_time, "manifest": manifest_id}})
             self.log(f"  ✓ ACF updated → {acf_path}")
         except Exception as e:
             self.log(f"  ✗ Failed to update ACF: {e}")
@@ -348,7 +403,15 @@ class DownloadWorkshopTask(QObject):
 
             if steam_integration and dest_path:
                 self.log("  → Applying Steam integration...")
-                self.apply_steam_integration(appid, wid, manifest_id, out_dir, dest_path)
+                item_time = None
+                try:
+                    from utils.workshop_helpers import fetch_workshop_details
+                    w_det = fetch_workshop_details([wid])
+                    if wid in w_det and w_det[wid].get("time_updated"):
+                        item_time = int(w_det[wid]["time_updated"])
+                except Exception as det_err:
+                    logger.debug(f"Could not resolve time_updated for wid {wid}: {det_err}")
+                self.apply_steam_integration(appid, wid, manifest_id, out_dir, dest_path, time_updated=item_time)
 
         if not self._is_running:
             self.log("\n  ✗ Download task cancelled by user.")
