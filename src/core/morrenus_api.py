@@ -283,13 +283,29 @@ def get_all_hubcap_stats() -> Dict:
 
 
 def generate_single_manifest(
-    depot_id: Union[str, int], manifest_id: Union[str, int]
+    depot_id: Union[str, int],
+    manifest_id: Union[str, int],
+    depot_key: Optional[Union[str, bytes]] = None,
+    force_hubcap: bool = False,
 ) -> Tuple[Optional[bytes], Optional[str]]:
     """
-    Generates a single depot manifest directly from Steam via Hubcap API (/generate/manifest).
-    Uses the 1,500/day single manifest quota pool.
+    Generates a single depot manifest.
+    Primary: Vapor engine (direct Steam CDN via wudrm MRC).
+    Fallback: Hubcap API (/generate/manifest) using the 1,500/day pool.
     Returns (raw_manifest_bytes, None) on success, or (None, error_message) on failure.
     """
+    if not force_hubcap:
+        try:
+            from core import vapor
+            raw_bytes, err = vapor.generate_single_manifest(
+                depot_id, manifest_id, depot_key=depot_key, force_fallback=False
+            )
+            if raw_bytes and not err:
+                return raw_bytes, None
+            logger.info(f"Vapor engine failed for depot {depot_id} ({err}), falling back to Hubcap API...")
+        except Exception as e:
+            logger.warning(f"Vapor invocation exception for depot {depot_id}: {e}, falling back to Hubcap API")
+
     headers = _get_headers()
     if not headers:
         return None, "API Key is not set. Please set it in Settings."

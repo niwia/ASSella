@@ -29,7 +29,7 @@ class DownloadWorkshopTask(QObject):
         self.process: Optional[subprocess.Popen] = None
         self.ddm_exe = str(Paths.deps("DepotDownloader.dll"))
         self.manifests_dir = os.path.join(get_base_path(), "manifests")
-        self.keys_file = os.path.join(get_base_path(), "workshop_keys.txt")
+        self.keys_file = str(Paths.workshop_keys())
         os.makedirs(self.manifests_dir, exist_ok=True)
 
     @property
@@ -50,22 +50,16 @@ class DownloadWorkshopTask(QObject):
 
     def fetch_manifest(self, wid: str, api_key: str):
         try:
-            url = f"{BASE_URL}/generate/workshopmanifest/{wid}"
-            r = requests.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=30)
-            r.raise_for_status()
+            from core import vapor
+            result, err = vapor.fetch_workshop_manifest(wid, api_key=api_key, dest_dir=self.manifests_dir)
+            if result and not err:
+                return result
+            if err:
+                self.log(f"  ✗ Manifest request failed: {err}")
+            return None
         except Exception as e:
-            self.log(f"  ✗ Manifest request failed: {e}")
+            self.log(f"  ✗ Manifest request error: {e}")
             return None
-        appid = r.headers.get("X-App-Id")
-        manifest_id = r.headers.get("X-Manifest-Id")
-        depot_key = r.headers.get("X-Depot-Key")
-        if not appid or not manifest_id:
-            self.log("  ✗ Missing required headers in manifest response.")
-            return None
-        manifest_path = os.path.join(self.manifests_dir, f"{appid}_{manifest_id}.manifest")
-        with open(manifest_path, "wb") as f:
-            f.write(r.content)
-        return {"appid": appid, "manifest_id": manifest_id, "depot_key": depot_key, "manifest_path": manifest_path}
 
     def key_exists(self, appid: str):
         if not os.path.exists(self.keys_file): return False
@@ -75,6 +69,7 @@ class DownloadWorkshopTask(QObject):
         return False
 
     def save_key(self, appid: str, key: str):
+        os.makedirs(os.path.dirname(self.keys_file), exist_ok=True)
         with open(self.keys_file, "a", encoding="utf-8") as f:
             f.write(f"{appid};{key}\n")
 

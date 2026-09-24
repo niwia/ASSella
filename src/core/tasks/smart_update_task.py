@@ -257,19 +257,19 @@ class SmartUpdateTask(QObject):
                 if needed_count == 1:
                     depot_id, gid = next(iter(target_depots.items()))
                     self.progress.emit(
-                        f"[Smart Update] Step 4/4: Single-depot target ({depot_id}) — fetching via /generate/manifest..."
+                        f"[Smart Update] Step 4/4: Single-depot target ({depot_id}) — fetching via Vapor (Steam CDN)..."
                     )
                     logger.info(
                         f"[SmartUpdate] Attempting single manifest generation for AppID {self.appid}, "
-                        f"Depot {depot_id}, GID {gid} (1,500/day pool)..."
+                        f"Depot {depot_id}, GID {gid} via Vapor..."
                     )
                 else:
                     self.progress.emit(
-                        f"[Smart Update] Step 4/4: Fetching {needed_count} depot manifest(s) via /generate/manifest..."
+                        f"[Smart Update] Step 4/4: Fetching {needed_count} depot manifest(s) via Vapor (Steam CDN)..."
                     )
                     logger.info(
                         f"[SmartUpdate] Attempting single manifest generation loop for AppID {self.appid} "
-                        f"({needed_count} depots, 1,500/day pool)..."
+                        f"({needed_count} depots) via Vapor..."
                     )
 
                 gen_zip_buffer = io.BytesIO()
@@ -279,7 +279,7 @@ class SmartUpdateTask(QObject):
 
                 with zipfile.ZipFile(gen_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                     for d_id, d_gid in target_depots.items():
-                        logger.info(f"[SmartUpdate] Fetching Depot {d_id} (GID {d_gid}) via /generate/manifest...")
+                        logger.info(f"[SmartUpdate] Fetching Depot {d_id} (GID {d_gid}) via Vapor/Hubcap...")
                         raw_bytes, s_err = morrenus_api.generate_single_manifest(d_id, d_gid)
                         if raw_bytes and not s_err:
                             zf.writestr(f"{d_id}_{d_gid}.manifest", raw_bytes)
