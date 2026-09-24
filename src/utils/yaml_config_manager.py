@@ -111,12 +111,20 @@ def backup_config_on_startup(config_path: Path) -> bool:
 
 
 def _atomic_write(config_path: Path, content: str) -> bool:
-    """Write content to config file in-place to preserve inode and trigger inotify FileWatcher."""
+    """Write content to config file in-place to preserve inode and trigger inotify FileWatcher without empty-file window."""
     try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
+        if config_path.exists():
+            with open(config_path, "r+", encoding="utf-8") as f:
+                f.seek(0)
+                f.write(content)
+                f.truncate()
+                f.flush()
+                os.fsync(f.fileno())
+        else:
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
         return True
     except OSError as e:
         logger.error(f"Failed to write {config_path}: {e}", exc_info=True)
