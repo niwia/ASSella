@@ -541,6 +541,7 @@ DB_RELOCATED_FILES = {
     "workshop_cache.db",
     "steam_headers.db",
     "steamdb_builds.db",
+    "workshop_keys.txt",
 }
 
 
