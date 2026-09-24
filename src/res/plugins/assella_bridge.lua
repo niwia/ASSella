@@ -8,7 +8,7 @@ AssellaBridge.cmdPath = "/tmp/assella_cmd.json"
 
 local ffi = require("ffi")
 
-ffi.cdef[[
+pcall(ffi.cdef, [[
 	int socket(int domain, int type, int protocol);
 	int connect(int sockfd, const void *addr, unsigned int addrlen);
 	int close(int fd);
@@ -20,7 +20,7 @@ ffi.cdef[[
 		unsigned short sun_family;
 		char sun_path[108];
 	};
-]]
+]])
 
 local AF_UNIX = 1
 local SOCK_STREAM = 1

@@ -2069,6 +2069,82 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
         refresh_dlcdata_btn_text(dialog)
 
 
+def _ensure_acf_has_installed_depots(acf_path: str, appid: str, depot_ids: list, game_data: dict) -> None:
+    if not acf_path or not os.path.exists(acf_path):
+        return
+    try:
+        with open(acf_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+
+        has_depots = bool(re.search(r'"InstalledDepots"\s*\{[^}]*"\d+"', content))
+        needs_size = False
+        m_size = re.search(r'"SizeOnDisk"\s*"(\d+)"', content)
+        if m_size and m_size.group(1) == "0":
+            needs_size = True
+
+        if has_depots and not needs_size:
+            return
+
+        install_path = game_data.get("install_path")
+        if not install_path and game_data.get("library_path"):
+            folder_name = game_data.get("installdir") or game_data.get("game_name")
+            if folder_name:
+                cand_install = Path(game_data["library_path"]) / "steamapps" / "common" / folder_name
+                if cand_install.is_dir():
+                    install_path = str(cand_install)
+
+        actual_size = 0
+        if install_path and os.path.isdir(install_path):
+            try:
+                for root, _, files in os.walk(install_path):
+                    for file in files:
+                        try:
+                            actual_size += os.path.getsize(os.path.join(root, file))
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.warning(f"[VaporTransition] Error calculating size: {e}")
+
+        manifests = dict(game_data.get("manifests") or {})
+        try:
+            from managers.db_manager import DatabaseManager
+            db = DatabaseManager()
+            app_info = db.get_app_info(appid, bypass_expiration=True)
+            if app_info and app_info.get("depots"):
+                for did, dinfo in app_info["depots"].items():
+                    did_str = str(did)
+                    if did_str not in manifests and isinstance(dinfo, dict) and dinfo.get("manifests"):
+                        public_m = dinfo["manifests"].get("public")
+                        if public_m:
+                            manifests[did_str] = str(public_m)
+        except Exception:
+            pass
+
+        if not has_depots and depot_ids:
+            depots_lines = []
+            for did in depot_ids:
+                did_str = str(did)
+                if did_str == str(appid):
+                    continue
+                mgid = manifests.get(did_str) or "0"
+                dsize = actual_size if len(depot_ids) == 1 else (actual_size // max(1, len(depot_ids)))
+                depots_lines.append(
+                    f'\t\t"{did_str}"\n\t\t{{\n\t\t\t"manifest"\t\t"{mgid}"\n\t\t\t"size"\t\t"{dsize}"\n\t\t}}'
+                )
+            if depots_lines:
+                new_depots_block = '\t"InstalledDepots"\n\t{\n' + "\n".join(depots_lines) + '\n\t}'
+                content = re.sub(r'"InstalledDepots"\s*\{\s*\}', new_depots_block, content)
+
+        if needs_size and actual_size > 0:
+            content = re.sub(r'"SizeOnDisk"\s*"\d+"', f'"SizeOnDisk"\t\t"{actual_size}"', content)
+
+        with open(acf_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info(f"[VaporTransition] Updated ACF file at {acf_path} with InstalledDepots and SizeOnDisk")
+    except Exception as e:
+        logger.error(f"[VaporTransition] Failed to update ACF {acf_path}: {e}")
+
+
 def on_move_to_vapor_clicked(dialog) -> None:
     game_data = dialog.game_data
     appid = str(dialog.appid)
@@ -2189,6 +2265,14 @@ def on_move_to_vapor_clicked(dialog) -> None:
     game_data["source"] = "at0-m"
     game_data["update_status"] = "at0m"
 
+    # Ensure appmanifest InstalledDepots is populated for Steam native support
+    acf_path = game_data.get("appmanifest_path")
+    if not acf_path and game_data.get("library_path"):
+        cand = Path(game_data["library_path"]) / "steamapps" / f"appmanifest_{appid}.acf"
+        if cand.exists():
+            acf_path = str(cand)
+    _ensure_acf_has_installed_depots(acf_path, appid, depot_ids, game_data)
+
     QMessageBox.information(
         dialog,
         "Moved to plugin AT0-M",
@@ -2200,7 +2284,18 @@ def on_move_to_vapor_clicked(dialog) -> None:
     dialog.accept()
     parent = getattr(dialog, "parent_window", None)
     if parent:
-        if hasattr(parent, "refresh_games_list"):
+        gm = getattr(parent, "game_manager", None)
+        if gm:
+            g = gm.get_game(appid)
+            if g:
+                g["is_vapor"] = True
+                g["is_atom"] = True
+                g["is_plugin_game"] = True
+                g["source"] = "at0-m"
+                g["update_status"] = "at0m"
+        if hasattr(parent, "_refresh_game_list"):
+            parent._refresh_game_list()
+        elif hasattr(parent, "refresh_games_list"):
             parent.refresh_games_list()
         elif hasattr(parent, "refresh_library"):
             parent.refresh_library()
@@ -2312,7 +2407,18 @@ def on_remove_from_vapor_clicked(dialog) -> None:
     # 7. Close dialog and refresh parent
     dialog.accept()
     if parent:
-        if hasattr(parent, "refresh_games_list"):
+        gm = getattr(parent, "game_manager", None)
+        if gm:
+            g = gm.get_game(appid)
+            if g:
+                g["is_vapor"] = False
+                g["is_atom"] = False
+                g["is_plugin_game"] = False
+                g["source"] = "ACCELA"
+                g["update_status"] = "up_to_date"
+        if hasattr(parent, "_refresh_game_list"):
+            parent._refresh_game_list()
+        elif hasattr(parent, "refresh_games_list"):
             parent.refresh_games_list()
         elif hasattr(parent, "refresh_library"):
             parent.refresh_library()
