@@ -371,7 +371,7 @@ class TaskManager(QObject):
 
         enable_vapor = (
             sys.platform == "linux"
-            and self.settings.value("enable_vapor", False, type=bool)
+            and self.settings.value("enable_vapor", True, type=bool)
         )
         vapor_action = self.settings.value("vapor_default_download_action", "ask", type=str)
         is_vapor_native = enable_vapor and (vapor_action == "native")
@@ -666,10 +666,10 @@ class TaskManager(QObject):
         # ── Choose download backend ──────────────────────────────────────────
         enable_vapor = (
             sys.platform == "linux"
-            and self.settings.value("enable_vapor", False, type=bool)
+            and self.settings.value("enable_vapor", True, type=bool)
         )
         vapor_action = self.settings.value("vapor_default_download_action", "ask", type=str)
-        legacy_native = self.settings.value("use_native_steam_download", False, type=bool)
+        legacy_native = self.settings.value("use_native_steam_download", True, type=bool)
 
         use_native_steam = False
         action_mode = "ask"

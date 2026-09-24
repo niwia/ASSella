@@ -41,6 +41,7 @@ ffi.cdef[[
 	void Plat_Free(void*);
 
 	void* place_lua_hook(const int, const void*);
+	unsigned int sleep(unsigned int seconds);
 
 	typedef struct
 	{
@@ -250,6 +251,7 @@ Downloader.getManifestRequestCode = function(manifestId, try)
 
 	if tonumber(codeStr) == nil then
 		log.error("Invalid MRC response " .. codeStr)
+		ffi.C.sleep(1)
 		return Downloader.getManifestRequestCode(manifestId, try + 1)
 	end
 

@@ -815,22 +815,18 @@ class SettingsDialog(QDialog):
 
     def _save_vapor_settings(self) -> None:
         """Save all Vapor (Beta) settings."""
-        if hasattr(self, "enable_vapor_checkbox") and self.enable_vapor_checkbox is not None:
-            val = self.enable_vapor_checkbox.isChecked()
-            self.settings.setValue("enable_vapor", val)
-            self.settings.setValue("use_native_steam_download", val)
-            try:
-                from utils.yaml_config_manager import (
-                    get_user_config_path,
-                    update_yaml_boolean_value,
-                    deploy_all_sls_plugins,
-                )
-                cfg = get_user_config_path()
-                update_yaml_boolean_value(cfg, "Plugins", val)
-                if val:
-                    deploy_all_sls_plugins()
-            except Exception as e:
-                logger.warning(f"Error syncing SLS Plugins setting: {e}")
+        # Vapor & Native Steam are enabled by default
+        self.settings.setValue("enable_vapor", True)
+        self.settings.setValue("use_native_steam_download", True)
+        try:
+            from utils.yaml_config_manager import (
+                get_user_config_path,
+                update_yaml_boolean_value,
+            )
+            cfg = get_user_config_path()
+            update_yaml_boolean_value(cfg, "Plugins", True)
+        except Exception as e:
+            logger.debug(f"Error ensuring SLS Plugins setting: {e}")
 
         if hasattr(self, "vapor_disable_updates_checkbox") and self.vapor_disable_updates_checkbox is not None:
             val = self.vapor_disable_updates_checkbox.isChecked()
