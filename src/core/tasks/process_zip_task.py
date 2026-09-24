@@ -663,30 +663,88 @@ class ProcessZipTask:
                             missing_from_hubcap = list(depot_comp.get("missing_from_hubcap") or [])
                             missing_depots_info = dict(depot_comp.get("missing_depots_info") or {})
 
-                            # Discover any missing depots that already have a manifest on disk
+                            # Discover any missing depots that already have a manifest on disk, or fetch via Vapor
                             refetched_depots = list(game_data.get("refetched_depots") or [])
                             for m_did, m_mid, m_name in depot_comp.get("missing_for_fetch", []):
                                 found_manifest = None
-                                # Check if already on disk (0ms)
-                                for s_dir in [Path(tempfile.gettempdir()) / "mistwalker_manifests", Path(get_base_path()) / "manifests"]:
-                                    cand = s_dir / f"{m_did}_{m_mid}.manifest"
-                                    if cand.exists():
-                                        try:
-                                            found_manifest = cand.read_bytes()
-                                            break
-                                        except Exception:
-                                            pass
+                                actual_mid = str(m_mid) if m_mid else None
 
-                                if found_manifest:
-                                    manifest_files[f"{m_did}_{m_mid}.manifest"] = found_manifest
-                                    game_data.setdefault("manifests", {})[str(m_did)] = str(m_mid)
-                                    filtered_depots[str(m_did)] = {"key": "", "desc": m_name, "system": None}
+                                # Check if already on disk (0ms)
+                                for s_dir in [
+                                    Path(tempfile.gettempdir()) / "mistwalker_manifests",
+                                    Path(get_base_path()) / "manifests",
+                                ]:
+                                    if not s_dir.exists():
+                                        continue
+                                    if actual_mid:
+                                        cand = s_dir / f"{m_did}_{actual_mid}.manifest"
+                                        if cand.exists():
+                                            try:
+                                                found_manifest = cand.read_bytes()
+                                                break
+                                            except Exception:
+                                                pass
+                                    # Fallback: scan for any manifest matching this depot ID
+                                    for mf in s_dir.glob(f"{m_did}_*.manifest"):
+                                        parts = mf.stem.split("_")
+                                        if len(parts) == 2 and parts[1].isdigit():
+                                            try:
+                                                found_manifest = mf.read_bytes()
+                                                actual_mid = parts[1]
+                                                break
+                                            except Exception:
+                                                pass
+                                    if found_manifest:
+                                        break
+
+                                # Immediate Vapor fallback if not cached locally
+                                if not found_manifest and actual_mid:
+                                    try:
+                                        from core import morrenus_api
+                                        depot_key = (game_data.get("depots", {}).get(str(m_did)) or {}).get("key")
+                                        logger.info(
+                                            f"[ProcessZipTask] Depot {m_did} ({m_name}) missing from Hubcap bundle. "
+                                            f"Attempting immediate Vapor fallback (Steam CDN)..."
+                                        )
+                                        raw_bytes, g_err = morrenus_api.generate_single_manifest(
+                                            m_did, actual_mid, depot_key=depot_key
+                                        )
+                                        if raw_bytes and not g_err:
+                                            found_manifest = raw_bytes
+                                            for s_dir in [
+                                                Path(tempfile.gettempdir()) / "mistwalker_manifests",
+                                                Path(get_base_path()) / "manifests",
+                                            ]:
+                                                try:
+                                                    s_dir.mkdir(parents=True, exist_ok=True)
+                                                    (s_dir / f"{m_did}_{actual_mid}.manifest").write_bytes(raw_bytes)
+                                                except Exception:
+                                                    pass
+                                            logger.info(
+                                                f"[ProcessZipTask] Vapor successfully fetched missing manifest {m_did}_{actual_mid}"
+                                            )
+                                        else:
+                                            logger.warning(
+                                                f"[ProcessZipTask] Vapor fallback failed for depot {m_did}: {g_err}"
+                                            )
+                                    except Exception as _v_err:
+                                        logger.warning(
+                                            f"[ProcessZipTask] Error during Vapor fallback for depot {m_did}: {_v_err}"
+                                        )
+
+                                if found_manifest and actual_mid:
+                                    manifest_files[f"{m_did}_{actual_mid}.manifest"] = found_manifest
+                                    game_data.setdefault("manifests", {})[str(m_did)] = str(actual_mid)
+                                    if str(m_did) not in filtered_depots:
+                                        filtered_depots[str(m_did)] = {"key": "", "desc": m_name, "system": None}
                                     refetched_depots.append(str(m_did))
                                     if str(m_did) in missing_from_hubcap:
                                         missing_from_hubcap.remove(str(m_did))
                                     if str(m_did) in missing_depots_info:
                                         del missing_depots_info[str(m_did)]
-                                    logger.info(f"[ProcessZipTask] Supplemented missing depot {m_did} ({m_name}) from local disk cache")
+                                    logger.info(
+                                        f"[ProcessZipTask] Seamlessly integrated recovered depot {m_did} ({m_name}) with manifest {actual_mid}"
+                                    )
                                 else:
                                     missing_depots_info.setdefault(str(m_did), {})["hubcap_status"] = "missing"
 

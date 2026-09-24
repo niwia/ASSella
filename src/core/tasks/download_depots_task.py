@@ -651,8 +651,56 @@ class DownloadDepotsTask(QObject):
         depot_sizes = []
 
         for depot_id in selected_depots:
-            manifest_id = game_data["manifests"].get(depot_id)
+            depot_id_str = str(depot_id)
+            manifest_id = game_data.get("manifests", {}).get(depot_id_str)
+            if not manifest_id and depot_id_str.isdigit():
+                manifest_id = game_data.get("manifests", {}).get(int(depot_id_str))
+
+            # Fallback 1: check metadata manifest_overrides
             if not manifest_id:
+                manifest_id = (game_data.get("manifest_overrides") or {}).get(depot_id_str)
+
+            # Fallback 2: check if any {depot_id}_*.manifest exists on disk (manifest_dir, base manifests, depotcache)
+            if not manifest_id:
+                for search_dir in [
+                    manifest_dir,
+                    os.path.join(get_base_path(), "manifests"),
+                    os.path.join(dest_path, "depotcache"),
+                ]:
+                    if os.path.exists(search_dir):
+                        try:
+                            for fn in os.listdir(search_dir):
+                                if fn.startswith(f"{depot_id_str}_") and fn.endswith(".manifest"):
+                                    parts = fn[:-len(".manifest")].split("_")
+                                    if len(parts) == 2 and parts[1].isdigit():
+                                        manifest_id = parts[1]
+                                        logger.info(
+                                            f"[DownloadDepotsTask] Recovered manifest ID {manifest_id} for depot {depot_id_str} from disk ({fn})"
+                                        )
+                                        break
+                        except Exception as _disc_err:
+                            logger.debug(f"[DownloadDepotsTask] Error inspecting {search_dir}: {_disc_err}")
+                    if manifest_id:
+                        break
+
+            # Fallback 3: Live Steam PICS query for depot manifest GID
+            if not manifest_id and appid_str:
+                try:
+                    from core import steam_api
+                    app_depots = steam_api.get_app_depots(appid_str) or {}
+                    d_info = app_depots.get(depot_id_str) or app_depots.get(int(depot_id_str)) or {}
+                    from utils.depot_utils import get_depot_manifest_gid
+                    manifest_id = get_depot_manifest_gid(d_info, branch=game_data.get("branch", "public"))
+                    if manifest_id:
+                        logger.info(
+                            f"[DownloadDepotsTask] Recovered manifest ID {manifest_id} for depot {depot_id_str} from Steam PICS"
+                        )
+                except Exception as e:
+                    logger.warning(f"[DownloadDepotsTask] Failed Steam PICS lookup for depot {depot_id_str}: {e}")
+
+            if manifest_id:
+                game_data.setdefault("manifests", {})[depot_id_str] = str(manifest_id)
+            else:
                 self.progress.emit(
                     f"Warning: No manifest ID for depot {depot_id}. Skipping."
                 )
@@ -692,12 +740,15 @@ class DownloadDepotsTask(QObject):
                     except Exception as e:
                         self.progress.emit(f"Warning: Failed to copy local depotcache manifest: {e}")
 
-            # Fallback 2: if manifest is missing or empty, generate single manifest directly (1,500/day pool) or fallback to bundle
+            # Fallback 2: if manifest is missing or empty, generate single manifest directly via Vapor/Hubcap
             if not os.path.exists(manifest_file_path) or os.path.getsize(manifest_file_path) == 0:
-                self.progress.emit(f"Manifest file {os.path.basename(manifest_file_path)} is missing/invalid. Requesting single manifest generation from Hubcap...")
+                self.progress.emit(f"Manifest file {os.path.basename(manifest_file_path)} is missing/invalid. Requesting manifest via Vapor (Steam CDN) / Hubcap...")
                 try:
                     from core import morrenus_api
-                    manifest_bytes, gen_err = morrenus_api.generate_single_manifest(depot_id, manifest_id)
+                    depots_map = game_data.get("depots", {})
+                    d_info = depots_map.get(str(depot_id)) or depots_map.get(int(depot_id)) or {}
+                    depot_key = d_info.get("key") if isinstance(d_info, dict) else None
+                    manifest_bytes, gen_err = morrenus_api.generate_single_manifest(depot_id, manifest_id, depot_key=depot_key)
                     if manifest_bytes:
                         os.makedirs(os.path.dirname(manifest_file_path), exist_ok=True)
                         with open(manifest_file_path, "wb") as mf:
