@@ -57,6 +57,11 @@ class GameManager(QObject):
     game_hubcap_status_checked = pyqtSignal(str, bool, bool)  # (appid, needs_update, update_in_progress)
     update_check_progress = pyqtSignal(int, int)  # (current, total)
 
+    @pyqtSlot()
+    def _emit_library_updated(self) -> None:
+        """Main-thread slot: emit library_updated safely from worker threads."""
+        self.library_updated.emit()
+
     @pyqtSlot(int)
     def _emit_scan_signals(self, games_found: int) -> None:
         """Main-thread slot: emit library_updated and scan_complete after a background scan."""
@@ -76,6 +81,20 @@ class GameManager(QObject):
 
         # O(1) lookup: appid -> game dict reference
         self._games_by_appid: dict = {}
+
+        # Pending size calculations queue
+        self._pending_size_calculations = []
+
+        # Disk-backed games cache for instant boot and cached sizes
+        from utils.games_cache import get_games_cache
+        self.games_cache = get_games_cache()
+        cached_games = self.games_cache.get_games()
+        if cached_games:
+            self.games = self._get_sorted_games(cached_games)
+            self._games_by_appid = {
+                g["appid"]: g for g in self.games if g.get("appid") not in ("0", "N/A", "unknown", None)
+            }
+            logger.info("Loaded %d games from games cache on startup", len(self.games))
 
         # Manifest check task management
         self.manifest_check_task = None
@@ -106,6 +125,8 @@ class GameManager(QObject):
         # Sort the main games list
         self.games = self._get_sorted_games(self.games)
         self._apply_filters()
+        if hasattr(self, "games_cache"):
+            self.games_cache.save(self.games)
         self.library_updated.emit()
 
     def remove_game(self, game_id):
@@ -117,6 +138,8 @@ class GameManager(QObject):
         # Sort the main games list
         self.games = self._get_sorted_games(self.games)
         self._apply_filters()
+        if hasattr(self, "games_cache"):
+            self.games_cache.save(self.games)
         self.library_updated.emit()
 
     def get_game(self, game_id):
@@ -151,6 +174,8 @@ class GameManager(QObject):
                 self.games = self._get_sorted_games(self.games)
                 self.game_updated.emit(game_id)
                 self._apply_filters()
+                if hasattr(self, "games_cache"):
+                    self.games_cache.save(self.games)
                 self.library_updated.emit()
                 return True
         return False
@@ -618,6 +643,10 @@ class GameManager(QObject):
         }
         logger.debug(f"Rebuilt _games_by_appid with {len(self._games_by_appid)} entries")
 
+        # Save to disk cache
+        if hasattr(self, "games_cache"):
+            self.games_cache.save(self.games)
+
         # Fix SLSsteam config indentation if needed (before syncing)
         self._fix_slssteam_config()
 
@@ -626,6 +655,9 @@ class GameManager(QObject):
 
         # Sync missing apptokens from manifests
         self._sync_app_tokens_from_manifests()
+
+        # Calculate any pending sizes asynchronously in background
+        self._calculate_pending_sizes_async()
 
         # Emit signals on the main thread via QMetaObject.invokeMethod.
         # QTimer.singleShot called from a background thread does NOT schedule
@@ -641,6 +673,58 @@ class GameManager(QObject):
         )
 
         return games_found
+
+    def _calculate_pending_sizes_async(self):
+        """Calculate disk sizes asynchronously for games lacking SizeOnDisk in ACF or cache."""
+        if not getattr(self, "_pending_size_calculations", None):
+            return
+
+        pending = list(self._pending_size_calculations)
+        self._pending_size_calculations = []
+
+        def worker():
+            updated = False
+            for game_path, appid, game_name in pending:
+                if self._scan_cancelled:
+                    break
+                try:
+                    size = 0
+                    for dirpath, dirnames, filenames in os.walk(game_path):
+                        if self._scan_cancelled:
+                            break
+                        for filename in filenames:
+                            if self._scan_cancelled:
+                                break
+                            filepath = os.path.join(dirpath, filename)
+                            try:
+                                if os.path.isfile(filepath) or os.path.islink(filepath):
+                                    size += os.lstat(filepath).st_size
+                            except (OSError, FileNotFoundError, PermissionError):
+                                pass
+                    if size > 0:
+                        if hasattr(self, "games_cache"):
+                            self.games_cache.set_cached_size(game_path, size, appid)
+                        for g in self.games:
+                            if g.get("install_path") == game_path:
+                                g["size_on_disk"] = size
+                                updated = True
+                                break
+                except Exception as e:
+                    logger.debug(f"Error calculating size for {game_name}: {e}")
+
+            if updated:
+                if hasattr(self, "games_cache"):
+                    self.games_cache.save(self.games)
+                from PyQt6.QtCore import QMetaObject, Qt as _Qt
+                QMetaObject.invokeMethod(
+                    self,
+                    "_emit_library_updated",
+                    _Qt.ConnectionType.QueuedConnection,
+                )
+
+        import threading
+        t = threading.Thread(target=worker, daemon=True, name="SizeCalculator")
+        t.start()
 
     def _scan_library(
         self,
@@ -1177,32 +1261,43 @@ class GameManager(QObject):
                     game_data["size_on_disk"] = size_on_disk
                     logger.debug(f"Using ACCELA metadata SizeOnDisk for {game_name}: {size_on_disk} bytes")
 
-            # Only calculate size manually if ACF/metadata doesn't have a valid SizeOnDisk
+            # Check persistent games cache for size before falling back to manual calculation
+            if not acf_size_available and hasattr(self, "games_cache"):
+                cached_size = self.games_cache.get_cached_size(game_path, appid)
+                if cached_size and cached_size > 0:
+                    size_on_disk = cached_size
+                    acf_size_available = True
+                    game_data["size_on_disk"] = size_on_disk
+                    logger.debug(f"Using cached SizeOnDisk for {game_name}: {size_on_disk} bytes")
+
+            # Only calculate size manually if ACF/metadata/cache doesn't have a valid SizeOnDisk.
+            # To prevent blocking the scan on slow storage (SD cards, HDDs), defer to async calculation.
             if not acf_size_available:
-                logger.debug(
-                    f"ACF SizeOnDisk not available, calculating size manually for {game_name}"
-                )
-                try:
-                    for dirpath, dirnames, filenames in os.walk(game_path):
-                        if self._scan_cancelled:
-                            return None
-                        for filename in filenames:
+                if hasattr(self, "_pending_size_calculations") and self._pending_size_calculations is not None:
+                    game_data["size_on_disk"] = 0
+                    self._pending_size_calculations.append((game_path, appid, game_name))
+                else:
+                    logger.debug(
+                        f"ACF SizeOnDisk not available, calculating size manually for {game_name}"
+                    )
+                    try:
+                        for dirpath, dirnames, filenames in os.walk(game_path):
                             if self._scan_cancelled:
                                 return None
-                            filepath = os.path.join(dirpath, filename)
-                            try:
-                                # Use lstat to get file size without following symlinks
-                                # This avoids issues with broken symlinks
-                                if os.path.isfile(filepath) or os.path.islink(filepath):
-                                    size_on_disk += os.lstat(filepath).st_size
-                            except (OSError, FileNotFoundError, PermissionError):
-                                # Skip files that can't be accessed (broken symlinks, permission errors, etc.)
-                                pass
-                except OSError:
-                    pass
-
-            # Update the size in game_data
-            game_data["size_on_disk"] = size_on_disk
+                            for filename in filenames:
+                                if self._scan_cancelled:
+                                    return None
+                                filepath = os.path.join(dirpath, filename)
+                                try:
+                                    if os.path.isfile(filepath) or os.path.islink(filepath):
+                                        size_on_disk += os.lstat(filepath).st_size
+                                except (OSError, FileNotFoundError, PermissionError):
+                                    pass
+                    except OSError:
+                        pass
+                    game_data["size_on_disk"] = size_on_disk
+            else:
+                game_data["size_on_disk"] = size_on_disk
 
             # If this is a Vapor or Plugin-managed game, mark update_status as 'vapor' directly
             if is_vapor or is_plugin_game:

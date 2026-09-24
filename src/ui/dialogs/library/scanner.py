@@ -44,23 +44,12 @@ class LibraryScannerMixin:
     def _on_scan_complete(self, count: int) -> None:
         self.scan_button.setEnabled(True)
         self.scan_button.setText("Scan Libraries")
-
-        if count > 0:
-            # Update checks are triggered separately; wait for all_updates_checked signal
-            self._checking_updates = True
-            self.info_label.setText(
-                f"Found {count} game(s) — checking for updates..."
-            )
-            return
-
-        self.info_label.setText(f"Scan complete: Found {count} installed Steam game(s).")
         self._scanning = False
+        self.info_label.setText(f"Found {count} installed Steam game(s).")
         self._refresh_game_list()
 
     def _on_all_updates_checked(self) -> None:
-        """Called when the full batch update check finishes (replaces the 500ms polling loop)."""
-        if not self._checking_updates:
-            return
+        """Called when the full batch update check finishes."""
         self._checking_updates = False
         self._scanning = False
         self._refresh_game_list()
