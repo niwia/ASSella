@@ -497,9 +497,11 @@ class LibraryActionsMixin:
         )
 
         is_vapor_mode = bool(
-            game_data.get("is_vapor")
+            game_data.get("is_atom")
+            or game_data.get("is_vapor")
             or game_data.get("is_plugin_game")
-            or game_data.get("update_status") == "vapor"
+            or game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            or game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
         )
 
         verify_action = QAction("Verify Game Files", self)

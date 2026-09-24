@@ -375,10 +375,11 @@ class GameDetailsDialogV2(QDialog):
                 self.ws_tab_btn = btn
                 from utils.dlc_helpers import is_dlc_only_mode
                 is_vapor = bool(
-                    self.game_data.get("is_vapor")
+                    self.game_data.get("is_atom")
+                    or self.game_data.get("is_vapor")
                     or self.game_data.get("is_plugin_game")
-                    or self.game_data.get("update_status") == "vapor"
-                    or self.game_data.get("source") == "Vapor"
+                    or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+                    or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
                 )
                 if is_dlc_only_mode(self.appid) or not self._has_workshop or is_vapor:
                     btn.setVisible(False)
@@ -476,10 +477,11 @@ class GameDetailsDialogV2(QDialog):
 
     def _ensure_workshop_loaded(self):
         is_vapor = bool(
-            self.game_data.get("is_vapor")
+            self.game_data.get("is_atom")
+            or self.game_data.get("is_vapor")
             or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") == "vapor"
-            or self.game_data.get("source") == "Vapor"
+            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
         )
         if is_vapor:
             return
@@ -492,10 +494,11 @@ class GameDetailsDialogV2(QDialog):
     def _on_workshop_check_finished(self, has_ws: bool):
         from utils.dlc_helpers import is_dlc_only_mode
         is_vapor = bool(
-            self.game_data.get("is_vapor")
+            self.game_data.get("is_atom")
+            or self.game_data.get("is_vapor")
             or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") == "vapor"
-            or self.game_data.get("source") == "Vapor"
+            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
         )
         if is_dlc_only_mode(self.appid) or is_vapor:
             return
@@ -727,10 +730,11 @@ class GameDetailsDialogV2(QDialog):
     # ──────────────────────────────────────────
     def _init_workshop_tab(self):
         is_vapor = bool(
-            self.game_data.get("is_vapor")
+            self.game_data.get("is_atom")
+            or self.game_data.get("is_vapor")
             or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") == "vapor"
-            or self.game_data.get("source") == "Vapor"
+            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
         )
         if is_vapor:
             dummy = QWidget()

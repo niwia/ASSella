@@ -258,27 +258,37 @@ class GameItemWidget(QWidget):
         self.status_label = QLabel()
         self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         update_status = self.game_data.get("update_status", "cannot_determine")
-        if self.game_data.get("is_vapor") or self.game_data.get("is_plugin_game"):
-            update_status = "vapor"
+        if self.game_data.get("is_atom") or self.game_data.get("is_vapor") or self.game_data.get("is_plugin_game"):
+            update_status = "at0m"
 
-        status_map = {
-            "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
-            "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
-            "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
-            "vapor": ("Vapor", "#CE93D8", "rgba(206, 147, 216, 0.15)"),
-        }
-        text, color, bg_color = status_map.get(
-            update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
-        )
-        self.status_label.setText(text)
-        self.status_label.setStyleSheet(
-            f"color: {color}; "
-            f"background-color: {bg_color}; "
-            f"border-radius: 10px; "
-            f"padding: 3px 10px; "
-            f"font-size: 11px; "
-            f"font-weight: bold;"
-        )
+        is_at0m = update_status in ("vapor", "at0m", "at0-m")
+        if is_at0m:
+            self.status_label.setText("[AT0-M]")
+            self.status_label.setStyleSheet(
+                "color: #CE93D8; "
+                "background: transparent; "
+                "font-size: 11px; "
+                "font-weight: bold; "
+                "padding: 2px 2px;"
+            )
+        else:
+            status_map = {
+                "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
+                "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
+                "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+            }
+            text, color, bg_color = status_map.get(
+                update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
+            )
+            self.status_label.setText(text)
+            self.status_label.setStyleSheet(
+                f"color: {color}; "
+                f"background-color: {bg_color}; "
+                f"border-radius: 10px; "
+                f"padding: 3px 10px; "
+                f"font-size: 11px; "
+                f"font-weight: bold;"
+            )
         right_col.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignRight)
 
         # Pinned build label directly below the update status badge
@@ -405,32 +415,44 @@ class GameItemWidget(QWidget):
 
     def update_status(self, update_status: str) -> None:
         """Update update and manifest status labels in-place."""
-        if self.game_data.get("is_vapor") or self.game_data.get("is_plugin_game"):
-            update_status = "vapor"
+        if self.game_data.get("is_atom") or self.game_data.get("is_vapor") or self.game_data.get("is_plugin_game"):
+            update_status = "at0m"
 
         self.game_data["update_status"] = update_status
-        status_map = {
-            "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
-            "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
-            "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
-            "vapor": ("Vapor", "#CE93D8", "rgba(206, 147, 216, 0.15)"),
-        }
+        is_at0m = update_status in ("vapor", "at0m", "at0-m")
+        if is_at0m:
+            if hasattr(self, "status_label") and self.status_label:
+                self.status_label.setText("[AT0-M]")
+                self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+                self.status_label.setStyleSheet(
+                    "color: #CE93D8; "
+                    "background: transparent; "
+                    "font-size: 11px; "
+                    "font-weight: bold; "
+                    "padding: 2px 2px;"
+                )
+        else:
+            status_map = {
+                "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
+                "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
+                "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+            }
 
-        text, color, bg_color = status_map.get(
-            update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
-        )
-
-        if hasattr(self, "status_label") and self.status_label:
-            self.status_label.setText(text)
-            self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-            self.status_label.setStyleSheet(
-                f"color: {color}; "
-                f"background-color: {bg_color}; "
-                f"border-radius: 10px; "
-                f"padding: 3px 10px; "
-                f"font-size: 11px; "
-                f"font-weight: bold;"
+            text, color, bg_color = status_map.get(
+                update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
             )
+
+            if hasattr(self, "status_label") and self.status_label:
+                self.status_label.setText(text)
+                self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+                self.status_label.setStyleSheet(
+                    f"color: {color}; "
+                    f"background-color: {bg_color}; "
+                    f"border-radius: 10px; "
+                    f"padding: 3px 10px; "
+                    f"font-size: 11px; "
+                    f"font-weight: bold;"
+                )
 
         self.update_manifest_label()
         self.update_denuvo_badge()

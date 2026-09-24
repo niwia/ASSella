@@ -36,7 +36,8 @@ UPDATE_STATUS = {
     "UP_TO_DATE": "up_to_date",
     "CANNOT_DETERMINE": "cannot_determine",
     "CHECKING": "checking",  # While async update check is running
-    "VAPOR": "vapor",
+    "VAPOR": "at0m",
+    "AT0M": "at0m",
 }
 
 
@@ -266,9 +267,9 @@ class GameManager(QObject):
                 logger.debug(f"Skipping update check for actively downloading/queued appid={appid}")
                 continue
 
-            # Vapor / Plugin games bypass — Steam manages updates natively
-            if g.get("is_vapor") or g.get("is_plugin_game") or g.get("update_status") == UPDATE_STATUS["VAPOR"]:
-                logger.debug(f"Skipping update check for Vapor/Plugin game: {g.get('game_name')} ({appid})")
+            # Vapor / AT0-M / Plugin games bypass — Steam manages updates natively
+            if g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game") or g.get("update_status") in ("vapor", "at0m", "at0-m"):
+                logger.debug(f"Skipping update check for AT0-M/Plugin game: {g.get('game_name')} ({appid})")
                 continue
 
             # Pinned build bypass
@@ -332,11 +333,11 @@ class GameManager(QObject):
             logger.warning(f"check_single_game_update: appid {appid} not found")
             return
 
-        # Vapor / Plugin games bypass
-        if game.get("is_vapor") or game.get("is_plugin_game") or game.get("update_status") == UPDATE_STATUS["VAPOR"]:
-            logger.info(f"check_single_game_update: appid {appid} is a Vapor/Plugin game. Updates handled natively by Steam.")
-            game["update_status"] = UPDATE_STATUS["VAPOR"]
-            self.game_update_status_changed.emit(appid, UPDATE_STATUS["VAPOR"])
+        # AT0-M / Plugin games bypass
+        if game.get("is_atom") or game.get("is_vapor") or game.get("is_plugin_game") or game.get("update_status") in ("vapor", "at0m", "at0-m"):
+            logger.info(f"check_single_game_update: appid {appid} is an AT0-M/Plugin game. Updates handled natively by Steam.")
+            game["update_status"] = UPDATE_STATUS.get("AT0M", "at0m")
+            self.game_update_status_changed.emit(appid, UPDATE_STATUS.get("AT0M", "at0m"))
             return
 
         # Pinned build bypass
@@ -999,7 +1000,7 @@ class GameManager(QObject):
         for game in self.games:
             if not game.get("is_accela_install"):
                 continue
-            if game.get("is_vapor"):
+            if game.get("is_atom") or game.get("is_vapor"):
                 continue
             appid = game.get("appid")
             game_name = game.get("game_name", "")
@@ -1177,9 +1178,10 @@ class GameManager(QObject):
                 "library_path": library_path,
                 "library_index": get_library_index(library_path, steam_path),
                 "size_on_disk": 0,  # Will be calculated below
-                "source": "Plugin/Native" if is_plugin_game else ("Vapor" if is_vapor else ("ACCELA" if is_accela_install else "Steam")),
+                "source": "Plugin/Native" if is_plugin_game else ("at0-m" if is_vapor else ("ACCELA" if is_accela_install else "Steam")),
                 "is_accela_install": is_managed,
                 "is_vapor": is_vapor,
+                "is_atom": is_vapor,
                 "is_plugin_game": is_plugin_game,
                 "plugin_record": plugin_record or {},
                 "depot_downloader_path": marker_path or "",
@@ -1299,9 +1301,9 @@ class GameManager(QObject):
             else:
                 game_data["size_on_disk"] = size_on_disk
 
-            # If this is a Vapor or Plugin-managed game, mark update_status as 'vapor' directly
+            # If this is an AT0-M or Plugin-managed game, mark update_status as 'at0m' directly
             if is_vapor or is_plugin_game:
-                game_data["update_status"] = UPDATE_STATUS["VAPOR"]
+                game_data["update_status"] = UPDATE_STATUS.get("AT0M", "at0m")
                 return game_data
 
             # Set update status — restore from disk cache if available

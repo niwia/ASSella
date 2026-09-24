@@ -663,7 +663,7 @@ class ProcessZipTask:
                             missing_from_hubcap = list(depot_comp.get("missing_from_hubcap") or [])
                             missing_depots_info = dict(depot_comp.get("missing_depots_info") or {})
 
-                            # Discover any missing depots that already have a manifest on disk, or fetch via Vapor
+                            # Discover any missing depots that already have a manifest on disk, or fetch via at0-m
                             refetched_depots = list(game_data.get("refetched_depots") or [])
                             for m_did, m_mid, m_name in depot_comp.get("missing_for_fetch", []):
                                 found_manifest = None
@@ -697,14 +697,14 @@ class ProcessZipTask:
                                     if found_manifest:
                                         break
 
-                                # Immediate Vapor fallback if not cached locally
+                                # Immediate at0-m fallback if not cached locally
                                 if not found_manifest and actual_mid:
                                     try:
                                         from core import morrenus_api
                                         depot_key = (game_data.get("depots", {}).get(str(m_did)) or {}).get("key")
                                         logger.info(
                                             f"[ProcessZipTask] Depot {m_did} ({m_name}) missing from Hubcap bundle. "
-                                            f"Attempting immediate Vapor fallback (Steam CDN)..."
+                                            f"Attempting immediate at0-m fallback (Steam CDN)..."
                                         )
                                         raw_bytes, g_err = morrenus_api.generate_single_manifest(
                                             m_did, actual_mid, depot_key=depot_key
@@ -721,15 +721,15 @@ class ProcessZipTask:
                                                 except Exception:
                                                     pass
                                             logger.info(
-                                                f"[ProcessZipTask] Vapor successfully fetched missing manifest {m_did}_{actual_mid}"
+                                                f"[ProcessZipTask] at0-m successfully fetched missing manifest {m_did}_{actual_mid}"
                                             )
                                         else:
                                             logger.warning(
-                                                f"[ProcessZipTask] Vapor fallback failed for depot {m_did}: {g_err}"
+                                                f"[ProcessZipTask] at0-m fallback failed for depot {m_did}: {g_err}"
                                             )
                                     except Exception as _v_err:
                                         logger.warning(
-                                            f"[ProcessZipTask] Error during Vapor fallback for depot {m_did}: {_v_err}"
+                                            f"[ProcessZipTask] Error during at0-m fallback for depot {m_did}: {_v_err}"
                                         )
 
                                 if found_manifest and actual_mid:

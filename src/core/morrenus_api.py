@@ -326,15 +326,18 @@ def generate_single_manifest(
     """
     if not force_hubcap:
         try:
-            from core import vapor
-            raw_bytes, err = vapor.generate_single_manifest(
+            try:
+                from core import at0m
+            except ImportError:
+                from core import vapor as at0m
+            raw_bytes, err = at0m.generate_single_manifest(
                 depot_id, manifest_id, depot_key=depot_key, force_fallback=False
             )
             if raw_bytes and not err:
                 return raw_bytes, None
-            logger.info(f"Vapor engine failed for depot {depot_id} ({err}), falling back to Hubcap API...")
+            logger.info(f"at0-m engine failed for depot {depot_id} ({err}), falling back to Hubcap API...")
         except Exception as e:
-            logger.warning(f"Vapor invocation exception for depot {depot_id}: {e}, falling back to Hubcap API")
+            logger.warning(f"at0-m invocation exception for depot {depot_id}: {e}, falling back to Hubcap API")
 
     headers = _get_headers()
     if not headers:

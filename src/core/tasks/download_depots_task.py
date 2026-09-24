@@ -740,9 +740,9 @@ class DownloadDepotsTask(QObject):
                     except Exception as e:
                         self.progress.emit(f"Warning: Failed to copy local depotcache manifest: {e}")
 
-            # Fallback 2: if manifest is missing or empty, generate single manifest directly via Vapor/Hubcap
+            # Fallback 2: if manifest is missing or empty, generate single manifest directly via at0-m/Hubcap
             if not os.path.exists(manifest_file_path) or os.path.getsize(manifest_file_path) == 0:
-                self.progress.emit(f"Manifest file {os.path.basename(manifest_file_path)} is missing/invalid. Requesting manifest via Vapor (Steam CDN) / Hubcap...")
+                self.progress.emit(f"Manifest file {os.path.basename(manifest_file_path)} is missing/invalid. Requesting manifest via at0-m (Steam CDN) / Hubcap...")
                 try:
                     from core import morrenus_api
                     depots_map = game_data.get("depots", {})

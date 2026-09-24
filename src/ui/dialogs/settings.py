@@ -325,7 +325,7 @@ class SettingsDialog(QDialog):
         tabs.create_advanced_tab(self)
         tabs.create_morrenus_tab(self)
         create_sls_tab(self)
-        tabs.create_vapor_tab(self)
+        tabs.create_at0m_tab(self)
         tabs.create_health_tab(self)
         tabs.create_tools_tab(self)
         tabs.create_style_tab(self)
@@ -815,9 +815,11 @@ class SettingsDialog(QDialog):
                     pass
 
     def _save_vapor_settings(self) -> None:
-        """Save all Vapor (Beta) settings."""
-        if hasattr(self, "enable_vapor_checkbox") and self.enable_vapor_checkbox is not None:
-            val = self.enable_vapor_checkbox.isChecked()
+        """Save all at0-m / Vapor settings."""
+        cb = getattr(self, "enable_at0m_checkbox", None) or getattr(self, "enable_vapor_checkbox", None)
+        if cb is not None:
+            val = cb.isChecked()
+            self.settings.setValue("enable_at0m", val)
             self.settings.setValue("enable_vapor", val)
             self.settings.setValue("use_native_steam_download", val)
             try:
@@ -830,8 +832,10 @@ class SettingsDialog(QDialog):
             except Exception as e:
                 logger.debug(f"Error syncing SLS Plugins setting: {e}")
 
-        if hasattr(self, "vapor_disable_updates_checkbox") and self.vapor_disable_updates_checkbox is not None:
-            val = self.vapor_disable_updates_checkbox.isChecked()
+        du_cb = getattr(self, "at0m_disable_updates_checkbox", None) or getattr(self, "vapor_disable_updates_checkbox", None)
+        if du_cb is not None:
+            val = du_cb.isChecked()
+            self.settings.setValue("at0m_disable_updates", val)
             self.settings.setValue("vapor_disable_updates", val)
             try:
                 from utils.yaml_config_manager import (
@@ -843,14 +847,19 @@ class SettingsDialog(QDialog):
             except Exception as e:
                 logger.warning(f"Error syncing SLS DisableUpdates setting: {e}")
 
-        if hasattr(self, "vapor_download_action_combo") and self.vapor_download_action_combo is not None:
-            action = self.vapor_download_action_combo.currentData() or "ask"
+        act_combo = getattr(self, "at0m_download_action_combo", None) or getattr(self, "vapor_download_action_combo", None)
+        if act_combo is not None:
+            action = act_combo.currentData() or "ask"
+            self.settings.setValue("at0m_default_download_action", action)
             self.settings.setValue("vapor_default_download_action", action)
             self.settings.setValue("native_steam_default_action", action)
 
-        if hasattr(self, "vapor_start_mode_combo") and self.vapor_start_mode_combo is not None:
-            start_act = self.vapor_start_mode_combo.currentData() or "immediate"
+        start_combo = getattr(self, "at0m_start_mode_combo", None) or getattr(self, "vapor_start_mode_combo", None)
+        if start_combo is not None:
+            start_act = start_combo.currentData() or "immediate"
+            self.settings.setValue("at0m_start_download_action", start_act)
             self.settings.setValue("vapor_start_download_action", start_act)
+            self.settings.setValue("at0m_start_download_immediately", start_act == "immediate")
             self.settings.setValue("vapor_start_download_immediately", start_act == "immediate")
         elif hasattr(self, "vapor_start_immediate_checkbox") and self.vapor_start_immediate_checkbox is not None:
             self.settings.setValue(

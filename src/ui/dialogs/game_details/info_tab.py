@@ -82,9 +82,11 @@ def init_info_tab(dialog) -> None:
         dialog.settings.setValue(f"selected_branch/{dialog.appid}", saved_b)
 
     is_vapor_mode = bool(
-        dialog.game_data.get("is_vapor")
+        dialog.game_data.get("is_atom")
+        or dialog.game_data.get("is_vapor")
         or dialog.game_data.get("is_plugin_game")
-        or dialog.game_data.get("update_status") == "vapor"
+        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
     )
 
     dialog.branch_combo = CenteredComboBox()
@@ -94,7 +96,7 @@ def init_info_tab(dialog) -> None:
     dialog.branch_combo.setMaxVisibleItems(5)
     if is_vapor_mode:
         dialog.branch_combo.setEnabled(False)
-        dialog.branch_combo.setToolTip("Branch selection is disabled for Steam Native / Vapor games.")
+        dialog.branch_combo.setToolTip("Branch selection is disabled for AT0-M games.")
         dialog.branch_combo.setStyleSheet("""
             QComboBox, CenteredComboBox {
                 background-color: rgba(255, 255, 255, 0.04);
@@ -114,7 +116,7 @@ def init_info_tab(dialog) -> None:
     dialog.validate_btn.setFixedHeight(26)
     if is_vapor_mode:
         dialog.validate_btn.setEnabled(False)
-        dialog.validate_btn.setToolTip("Build verification is not available for Steam Native / Vapor games.")
+        dialog.validate_btn.setToolTip("Build verification is not available for AT0-M games.")
         dialog.validate_btn.setStyleSheet("""
             QPushButton, QPushButton:disabled {
                 background-color: rgba(255, 255, 255, 0.04);
@@ -180,7 +182,7 @@ def init_info_tab(dialog) -> None:
         """)
         dialog.update_all_tile.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: rgba(255, 255, 255, 0.3); background: transparent;")
         dialog.update_all_tile.sub_lbl.setStyleSheet("font-size: 7.5pt; color: rgba(255, 255, 255, 0.2); background: transparent;")
-        dialog.update_all_tile.setToolTip("Steam Native / Vapor games are excluded from Update All.")
+        dialog.update_all_tile.setToolTip("AT0-M games are excluded from Update All.")
         if dialog.settings:
             dialog.settings.setValue(f"exclude_from_update_all/{dialog.appid}", True)
     elif is_pinned:
@@ -202,17 +204,17 @@ def init_info_tab(dialog) -> None:
     lay.addWidget(top_tiles_widget)
     lay.addSpacing(8)
 
-    # ── Vapor Mode Transition Buttons (Move to Vapor / Remove from Vapor) ───
+    # ── AT0-M Mode Transition Buttons (Move to plugin AT0-M / Remove from plugin) ───
     vapor_actions_widget = QWidget()
     vapor_actions_layout = QHBoxLayout(vapor_actions_widget)
     vapor_actions_layout.setContentsMargins(0, 0, 0, 0)
     vapor_actions_layout.setSpacing(10)
 
-    dialog.move_to_vapor_btn = QPushButton("Move to Vapor")
+    dialog.move_to_vapor_btn = QPushButton("Move to plugin AT0-M")
     dialog.move_to_vapor_btn.setFixedHeight(36)
     dialog.move_to_vapor_btn.setCursor(Qt.CursorShape.PointingHandCursor if not is_vapor_mode else Qt.CursorShape.ArrowCursor)
 
-    dialog.remove_from_vapor_btn = QPushButton("Remove from Vapor")
+    dialog.remove_from_vapor_btn = QPushButton("Remove from plugin")
     dialog.remove_from_vapor_btn.setFixedHeight(36)
     dialog.remove_from_vapor_btn.setCursor(Qt.CursorShape.PointingHandCursor if is_vapor_mode else Qt.CursorShape.ArrowCursor)
 
@@ -271,7 +273,7 @@ def init_info_tab(dialog) -> None:
     if is_vapor_mode:
         dialog.move_to_vapor_btn.setEnabled(False)
         dialog.move_to_vapor_btn.setStyleSheet(vapor_disabled_style)
-        dialog.move_to_vapor_btn.setToolTip("Game is already in Vapor (Steam Native) mode.")
+        dialog.move_to_vapor_btn.setToolTip("Game is already in AT0-M (Steam Native) mode.")
 
         dialog.remove_from_vapor_btn.setEnabled(True)
         dialog.remove_from_vapor_btn.setStyleSheet(accela_active_style)
@@ -279,11 +281,11 @@ def init_info_tab(dialog) -> None:
     else:
         dialog.move_to_vapor_btn.setEnabled(True)
         dialog.move_to_vapor_btn.setStyleSheet(vapor_active_style)
-        dialog.move_to_vapor_btn.setToolTip("Convert game to Vapor (Steam Native) mode.")
+        dialog.move_to_vapor_btn.setToolTip("Convert game to plugin AT0-M (Steam Native) mode.")
 
         dialog.remove_from_vapor_btn.setEnabled(False)
         dialog.remove_from_vapor_btn.setStyleSheet(vapor_disabled_style)
-        dialog.remove_from_vapor_btn.setToolTip("Game is currently ACCELA managed, not in Vapor.")
+        dialog.remove_from_vapor_btn.setToolTip("Game is currently ACCELA managed, not in plugin AT0-M.")
 
     dialog.move_to_vapor_btn.clicked.connect(lambda: on_move_to_vapor_clicked(dialog))
     dialog.remove_from_vapor_btn.clicked.connect(lambda: on_remove_from_vapor_clicked(dialog))
@@ -441,7 +443,7 @@ def init_info_tab(dialog) -> None:
                 padding: 0 16px;
             }
         """)
-        dialog._uninstall_pill.setToolTip("Uninstall is managed directly through Steam for Vapor games.")
+        dialog._uninstall_pill.setToolTip("Uninstall is managed directly through Steam for AT0-M games.")
     else:
         dialog._uninstall_pill.setStyleSheet(f"""
             QPushButton {{
@@ -474,7 +476,7 @@ def init_info_tab(dialog) -> None:
                 padding: 0 16px;
             }
         """)
-        dialog._adv_uninstall_btn.setToolTip("Advanced uninstall is disabled for Steam Native / Vapor games.")
+        dialog._adv_uninstall_btn.setToolTip("Advanced uninstall is disabled for AT0-M games.")
     else:
         dialog._adv_uninstall_btn.setStyleSheet(f"""
             QPushButton {{
@@ -646,13 +648,15 @@ def on_branches_loaded(dialog, branches_dict: dict) -> None:
 
         dialog.branch_combo.setCurrentIndex(select_idx)
         is_vm = bool(
-            dialog.game_data.get("is_vapor")
+            dialog.game_data.get("is_atom")
+            or dialog.game_data.get("is_vapor")
             or dialog.game_data.get("is_plugin_game")
-            or dialog.game_data.get("update_status") == "vapor"
+            or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
         )
         if is_vm:
             dialog.branch_combo.setEnabled(False)
-            dialog.branch_combo.setToolTip("Branch selection is disabled for Steam Native / Vapor games.")
+            dialog.branch_combo.setToolTip("Branch selection is disabled for AT0-M games.")
             dialog.branch_combo.setStyleSheet("""
                 QComboBox, CenteredComboBox {
                     background-color: rgba(255, 255, 255, 0.04);
@@ -728,14 +732,16 @@ def update_validate_button(dialog) -> None:
         return
 
     is_vm = bool(
-        dialog.game_data.get("is_vapor")
+        dialog.game_data.get("is_atom")
+        or dialog.game_data.get("is_vapor")
         or dialog.game_data.get("is_plugin_game")
-        or dialog.game_data.get("update_status") == "vapor"
+        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
     )
     if is_vm:
         dialog.validate_btn.setEnabled(False)
         dialog.validate_btn.setText("Verify Build")
-        dialog.validate_btn.setToolTip("Build verification is not available for Steam Native / Vapor games.")
+        dialog.validate_btn.setToolTip("Build verification is not available for AT0-M games.")
         dialog.validate_btn.setStyleSheet("""
             QPushButton, QPushButton:disabled {
                 background-color: rgba(255, 255, 255, 0.04);
@@ -2070,8 +2076,8 @@ def on_move_to_vapor_clicked(dialog) -> None:
 
     reply = QMessageBox.question(
         dialog,
-        "Move to Vapor",
-        f"Are you sure you want to convert '{game_name}' to Vapor (Steam Native)?\n\n"
+        "Move to plugin AT0-M",
+        f"Are you sure you want to convert '{game_name}' to AT0-M (Steam Native)?\n\n"
         "• ACCELA marker folders (.ACCELA / .DepotDownloader) will be removed.\n"
         "• Required AppID, DepotIDs, and DecryptionKeys will be registered in SLSsteam config.\n"
         "• Updates will be handled natively by Steam client instead of ACCELA.\n\n"
@@ -2179,13 +2185,14 @@ def on_move_to_vapor_clicked(dialog) -> None:
 
     # Update game data dict
     game_data["is_vapor"] = True
-    game_data["source"] = "Vapor"
-    game_data["update_status"] = "vapor"
+    game_data["is_atom"] = True
+    game_data["source"] = "at0-m"
+    game_data["update_status"] = "at0m"
 
     QMessageBox.information(
         dialog,
-        "Moved to Vapor",
-        f"'{game_name}' has been successfully moved to Vapor mode.\n"
+        "Moved to plugin AT0-M",
+        f"'{game_name}' has been successfully moved to AT0-M mode.\n"
         f"Registered {len(depot_ids)} depot(s) and {len(decryption_keys)} decryption key(s) into SLSsteam.",
     )
 
@@ -2208,8 +2215,8 @@ def on_remove_from_vapor_clicked(dialog) -> None:
 
     reply = QMessageBox.question(
         dialog,
-        "Remove from Vapor",
-        f"Move '{game_name}' from Vapor to ACCELA Managed?\n\n"
+        "Remove from plugin",
+        f"Move '{game_name}' from AT0-M to ACCELA Managed?\n\n"
         "• Unlinks depots and decryption keys from SLSsteam config\n"
         "• Restores .ACCELA installation marker\n"
         "• Prompts for depot selection and verifies game files\n\n"
@@ -2283,6 +2290,7 @@ def on_remove_from_vapor_clicked(dialog) -> None:
         dialog.settings.setValue(f"exclude_from_update_all/{appid}", False)
 
     game_data["is_vapor"] = False
+    game_data["is_atom"] = False
     game_data["source"] = "ACCELA"
     game_data["update_status"] = "up_to_date"
 

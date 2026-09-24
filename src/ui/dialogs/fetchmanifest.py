@@ -1047,7 +1047,7 @@ class FetchManifestDialog(QDialog):
         self._handle_game_selection(app_id, game_name)
 
     def _handle_game_selection(self, app_id: str, game_name: str = ""):
-        """Route game download based on Vapor / Native Steam settings and user preference."""
+        """Route game download based on AT0-M / Native Steam settings and user preference."""
         if not app_id:
             return
 
@@ -1063,21 +1063,29 @@ class FetchManifestDialog(QDialog):
                 dialog.exec()
                 return
 
-        enable_vapor = (
+        enable_at0m = (
             sys.platform == "linux"
-            and self.settings.value("enable_vapor", True, type=bool)
+            and self.settings.value(
+                "enable_at0m",
+                self.settings.value("enable_vapor", True, type=bool),
+                type=bool,
+            )
         )
 
-        if not enable_vapor:
+        if not enable_at0m:
             self._start_assella_flow(aid_str)
             return
 
-        vapor_action = self.settings.value("vapor_default_download_action", "ask", type=str)
+        at0m_action = self.settings.value(
+            "at0m_default_download_action",
+            self.settings.value("vapor_default_download_action", "ask", type=str),
+            type=str,
+        )
 
-        if vapor_action == "native":
+        if at0m_action == "native":
             self._start_native_steam_flow(aid_str, name)
             return
-        elif vapor_action == "assella":
+        elif at0m_action == "assella":
             self._start_assella_flow(aid_str)
             return
         else:  # "ask"
@@ -1103,13 +1111,21 @@ class FetchManifestDialog(QDialog):
                 self.status_label.setText("Download cancelled.")
 
     def _start_native_steam_flow(self, app_id: str, game_name: str = ""):
-        """Handle Native Steam (Vapor) installation flow without branch/depot/storage picker."""
+        """Handle Native Steam (AT0-M) installation flow without branch/depot/storage picker."""
         aid_str = str(app_id).strip()
         name = game_name or f"App {aid_str}"
 
-        start_mode = self.settings.value("vapor_start_download_action", "", type=str)
+        start_mode = self.settings.value(
+            "at0m_start_download_action",
+            self.settings.value("vapor_start_download_action", "", type=str),
+            type=str,
+        )
         if not start_mode:
-            old_imm = self.settings.value("vapor_start_download_immediately", True, type=bool)
+            old_imm = self.settings.value(
+                "at0m_start_download_immediately",
+                self.settings.value("vapor_start_download_immediately", True, type=bool),
+                type=bool,
+            )
             start_mode = "immediate" if old_imm else "add_only"
 
         auto_install = True

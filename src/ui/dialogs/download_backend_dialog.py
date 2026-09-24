@@ -2,7 +2,7 @@
 download_backend_dialog.py
 ==========================
 Dialog prompting the user to choose between downloading via ASSella
-Downloader or downloading natively via the Steam client (Vapor).
+Downloader or downloading natively via the Steam client (at0-m).
 """
 
 from typing import Optional
@@ -23,7 +23,7 @@ BACKEND_NATIVE_STEAM = 2
 
 class DownloadBackendDialog(QDialog):
     """
-    Prompt user to choose between ASSella Downloader and Native Steam (Vapor).
+    Prompt user to choose between ASSella Downloader and Native Steam (at0-m).
     """
 
     def __init__(

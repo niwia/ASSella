@@ -369,14 +369,22 @@ class TaskManager(QObject):
         missing_depots = (self.game_data or {}).get("missing_depots_from_hubcap") or []
         is_single = (len(depots) == 1)
 
-        enable_vapor = (
+        enable_at0m = (
             sys.platform == "linux"
-            and self.settings.value("enable_vapor", True, type=bool)
+            and self.settings.value(
+                "enable_at0m",
+                self.settings.value("enable_vapor", True, type=bool),
+                type=bool,
+            )
         )
-        vapor_action = self.settings.value("vapor_default_download_action", "ask", type=str)
-        is_vapor_native = enable_vapor and (vapor_action == "native")
+        at0m_action = self.settings.value(
+            "at0m_default_download_action",
+            self.settings.value("vapor_default_download_action", "ask", type=str),
+            type=str,
+        )
+        is_vapor_native = enable_at0m and (at0m_action == "native")
 
-        # In Vapor native mode, immediately hand off without dialog or timer
+        # In AT0-M native mode, immediately hand off without dialog or timer
         if is_vapor_native:
             selected_depots = list(depots.keys())
             if self.game_data:
@@ -664,21 +672,29 @@ class TaskManager(QObject):
         self.main_window.speed_label.setVisible(True)
 
         # ── Choose download backend ──────────────────────────────────────────
-        enable_vapor = (
+        enable_at0m = (
             sys.platform == "linux"
-            and self.settings.value("enable_vapor", True, type=bool)
+            and self.settings.value(
+                "enable_at0m",
+                self.settings.value("enable_vapor", True, type=bool),
+                type=bool,
+            )
         )
-        vapor_action = self.settings.value("vapor_default_download_action", "ask", type=str)
+        at0m_action = self.settings.value(
+            "at0m_default_download_action",
+            self.settings.value("vapor_default_download_action", "ask", type=str),
+            type=str,
+        )
         legacy_native = self.settings.value("use_native_steam_download", True, type=bool)
 
         use_native_steam = False
         action_mode = "ask"
 
-        if enable_vapor:
-            if vapor_action == "native":
+        if enable_at0m:
+            if at0m_action == "native":
                 use_native_steam = True
                 action_mode = "handoff"
-            elif vapor_action == "assella":
+            elif at0m_action == "assella":
                 use_native_steam = False
             else:  # "ask"
                 use_native_steam = True
@@ -736,7 +752,11 @@ class TaskManager(QObject):
                         app.processEvents()
 
                 _update_handoff_progress(f"Handing off {game_name} to Steam...")
-                auto_inst = self.settings.value("vapor_start_download_immediately", True, type=bool)
+                auto_inst = self.settings.value(
+                    "at0m_start_download_immediately",
+                    self.settings.value("vapor_start_download_immediately", True, type=bool),
+                    type=bool,
+                )
                 ok, msg = perform_steam_handoff(
                     self.game_data,
                     selected_depots,
