@@ -81,8 +81,12 @@ def _get_headers() -> Optional[Dict[str, str]]:
 
 def _handle_request_exception(e: Exception, context: str) -> str:
     """Centralized exception handler for request errors."""
-    logger.error(f"{context} failed: {e}")
     error_str = str(e).lower()
+    if "429" in error_str:
+        logger.warning(f"{context} rate limited (HTTP 429 Too Many Requests). Backing off.")
+        return API_ERROR_MESSAGES.get(429, "Rate limit reached. Please wait before retrying.")
+
+    logger.error(f"{context} failed: {e}")
 
     if isinstance(e, requests.exceptions.HTTPError):
         response = getattr(e, "response", None)
@@ -241,41 +245,67 @@ def search_games(
     return {"results": all_games, "total_count": total_count or len(all_games)}
 
 
-def get_user_stats() -> Dict:
-    """Retrieves user statistics with cached fallback on network timeout."""
-    logger.info("Fetching user stats")
+_last_user_stats_fetch: float = 0.0
+_last_generate_usage_fetch: float = 0.0
+_STATS_CACHE_TTL: float = 60.0  # 60s minimum interval between API calls to avoid 429
+
+
+def get_user_stats(force: bool = False) -> Dict:
+    """Retrieves user statistics with cached fallback on network timeout or rate limit."""
+    global _last_user_stats_fetch
     settings = get_settings()
+    cached = settings.value("last_cached_user_stats", None)
+
+    now = time.time()
+    if not force and cached and (now - _last_user_stats_fetch < _STATS_CACHE_TTL):
+        logger.debug("[Hubcap] Using recently cached user stats (throttled)")
+        return cached
+
+    logger.info("Fetching user stats")
     api_key = settings.value("morrenus_api_key", "", type=str)
     res = _make_json_request("GET", "/user/stats", params={"api_key": api_key})
     if isinstance(res, dict) and "error" not in res and res:
+        _last_user_stats_fetch = now
         settings.setValue("last_cached_user_stats", res)
         return res
-    cached = settings.value("last_cached_user_stats", None)
+
+    # On rate limit (429) or error, back off for 120s
+    _last_user_stats_fetch = now + 60.0
     if isinstance(cached, dict) and cached:
-        logger.info("Using cached user stats due to network request error")
+        logger.info("Using cached user stats due to network request error / rate limit")
         return cached
     return res
 
 
-def get_generate_usage() -> Dict:
+def get_generate_usage(force: bool = False) -> Dict:
     """Retrieves cloud generation API quotas and usage limits from /generate/usage."""
-    logger.info("Fetching generation usage stats")
+    global _last_generate_usage_fetch
     settings = get_settings()
+    cached = settings.value("last_cached_generate_usage", None)
+
+    now = time.time()
+    if not force and cached and (now - _last_generate_usage_fetch < _STATS_CACHE_TTL):
+        logger.debug("[Hubcap] Using recently cached generation usage stats (throttled)")
+        return cached
+
+    logger.info("Fetching generation usage stats")
     res = _make_json_request("GET", "/generate/usage")
     if isinstance(res, dict) and "error" not in res and res:
+        _last_generate_usage_fetch = now
         settings.setValue("last_cached_generate_usage", res)
         return res
-    cached = settings.value("last_cached_generate_usage", None)
+
+    _last_generate_usage_fetch = now + 60.0
     if isinstance(cached, dict) and cached:
-        logger.info("Using cached generation usage stats due to network request error")
+        logger.info("Using cached generation usage stats due to network request error / rate limit")
         return cached
     return res
 
 
-def get_all_hubcap_stats() -> Dict:
+def get_all_hubcap_stats(force: bool = False) -> Dict:
     """Fetches both user stats and generation usage limits."""
-    user_stats = get_user_stats()
-    gen_usage = get_generate_usage()
+    user_stats = get_user_stats(force=force)
+    gen_usage = get_generate_usage(force=force)
     return {
         "user_stats": user_stats,
         "gen_usage": gen_usage,

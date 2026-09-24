@@ -707,6 +707,167 @@ def get_additional_apps(config_path: Path) -> List[str]:
     return results
 
 
+def get_additional_depots(config_path: Path) -> List[str]:
+    """Get list of DepotIDs currently in AdditionalDepots section."""
+    content = _read_config_content(config_path)
+    if not content:
+        return []
+    bounds = _get_section_bounds(content, "AdditionalDepots")
+    if not bounds:
+        return []
+    _, content_start, section_end = bounds
+    sec = content[content_start:section_end]
+    results = []
+    for line in sec.splitlines():
+        m = re.match(r"^[ \t]*-[ \t]*([0-9]+)", line)
+        if m:
+            results.append(m.group(1))
+    return results
+
+
+def add_additional_depot(config_path: Path, depot_id: str) -> bool:
+    """Add a DepotID to the AdditionalDepots list in SLSsteam config.yaml."""
+    try:
+        content = _read_config_content(config_path)
+        if content is None:
+            return False
+
+        depot_id_str = str(depot_id).strip()
+        bounds = _get_section_bounds(content, "AdditionalDepots")
+        depot_pattern = re.compile(
+            rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+
+        entry_line = f"  - {depot_id_str}\n"
+
+        if bounds:
+            _, content_start, section_end = bounds
+            sec_content = content[content_start:section_end]
+            if depot_pattern.search(sec_content):
+                logger.debug(f"DepotID '{depot_id_str}' already exists in AdditionalDepots")
+                return False
+
+            insert_pos = section_end
+            if insert_pos > 0 and content[insert_pos - 1] != "\n":
+                entry_line = "\n" + entry_line
+            new_content = content[:insert_pos] + entry_line + content[insert_pos:]
+        else:
+            new_content = content.rstrip() + f"\n\nAdditionalDepots:\n{entry_line}"
+
+        if not _atomic_write(config_path, new_content):
+            return False
+
+        logger.info(f"Added DepotID '{depot_id_str}' to AdditionalDepots in {config_path}")
+        return True
+    except OSError as e:
+        logger.error(f"Failed to add DepotID '{depot_id}': {e}", exc_info=True)
+        return False
+
+
+def remove_additional_depot(config_path: Path, depot_id: str) -> bool:
+    """Remove a DepotID from the AdditionalDepots list in SLSsteam config.yaml."""
+    depot_id_str = str(depot_id).strip()
+    depot_pattern = re.compile(
+        rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}[ \t]*(?:#[^\r\n]*)?$",
+        re.MULTILINE,
+    )
+    return _remove_entry_from_section(
+        config_path,
+        "AdditionalDepots",
+        depot_pattern,
+        f"Removed DepotID '{depot_id_str}' from AdditionalDepots in {config_path}",
+        f"Failed to remove DepotID '{depot_id_str}': {{e}}",
+    )
+
+
+def get_decryption_keys(config_path: Path) -> Dict[str, str]:
+    """Get mapping of {depot_id: key} currently in DecryptionKeys section."""
+    content = _read_config_content(config_path)
+    if not content:
+        return {}
+    bounds = _get_section_bounds(content, "DecryptionKeys")
+    if not bounds:
+        return {}
+    _, content_start, section_end = bounds
+    sec = content[content_start:section_end]
+    results = {}
+    key_pattern = re.compile(
+        r"^[ \t]*['\"]?([0-9]+)['\"]?[ \t]*:[ \t]*['\"]?([a-fA-F0-9]{64})['\"]?",
+        re.MULTILINE,
+    )
+    for m in key_pattern.finditer(sec):
+        results[m.group(1)] = m.group(2)
+    return results
+
+
+def add_decryption_key(config_path: Path, depot_id: str, key: str) -> bool:
+    """Add or update a depot AES decryption key in DecryptionKeys section in SLSsteam config.yaml."""
+    try:
+        content = _read_config_content(config_path)
+        if content is None:
+            return False
+
+        depot_id_str = str(depot_id).strip()
+        key_str = str(key).strip().lower()
+        if len(key_str) != 64:
+            logger.warning(f"Invalid AES key length ({len(key_str)}) for depot {depot_id_str}")
+            return False
+
+        bounds = _get_section_bounds(content, "DecryptionKeys")
+        new_key_line = f"  {depot_id_str}: {key_str}\n"
+
+        if not bounds:
+            new_content = content.rstrip() + f"\n\nDecryptionKeys:\n{new_key_line}"
+            if _atomic_write(config_path, new_content):
+                logger.info(f"Added DecryptionKey for depot '{depot_id_str}' in new DecryptionKeys section")
+                return True
+            return False
+
+        _, content_start, section_end = bounds
+        sec_content = content[content_start:section_end]
+
+        dup_pattern = re.compile(
+            rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        match = dup_pattern.search(sec_content)
+        if match:
+            abs_start = content_start + match.start()
+            abs_end = content_start + match.end()
+            new_content = content[:abs_start] + f"  {depot_id_str}: {key_str}" + content[abs_end:]
+        else:
+            insert_pos = section_end
+            if insert_pos > 0 and content[insert_pos - 1] != "\n":
+                new_key_line = "\n" + new_key_line
+            new_content = content[:insert_pos] + new_key_line + content[insert_pos:]
+
+        if not _atomic_write(config_path, new_content):
+            return False
+
+        logger.info(f"Saved DecryptionKey for depot '{depot_id_str}' in {config_path}")
+        return True
+    except OSError as e:
+        logger.error(f"Failed to add DecryptionKey for depot '{depot_id}': {e}", exc_info=True)
+        return False
+
+
+def remove_decryption_key(config_path: Path, depot_id: str) -> bool:
+    """Remove a depot key from DecryptionKeys section in SLSsteam config.yaml."""
+    depot_id_str = str(depot_id).strip()
+    pattern = re.compile(
+        rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n]+$",
+        re.MULTILINE,
+    )
+    return _remove_entry_from_section(
+        config_path,
+        "DecryptionKeys",
+        pattern,
+        f"Removed DecryptionKey for depot '{depot_id_str}' in {config_path}",
+        f"Failed to remove DecryptionKey for depot '{depot_id_str}': {{e}}",
+    )
+
+
 def add_dlc_data(
     config_path: Path, parent_app_id: str, dlc_id: str, dlc_name: str
 ) -> bool:

@@ -36,6 +36,7 @@ UPDATE_STATUS = {
     "UP_TO_DATE": "up_to_date",
     "CANNOT_DETERMINE": "cannot_determine",
     "CHECKING": "checking",  # While async update check is running
+    "VAPOR": "vapor",
 }
 
 
@@ -240,6 +241,11 @@ class GameManager(QObject):
                 logger.debug(f"Skipping update check for actively downloading/queued appid={appid}")
                 continue
 
+            # Vapor / Plugin games bypass — Steam manages updates natively
+            if g.get("is_vapor") or g.get("is_plugin_game") or g.get("update_status") == UPDATE_STATUS["VAPOR"]:
+                logger.debug(f"Skipping update check for Vapor/Plugin game: {g.get('game_name')} ({appid})")
+                continue
+
             # Pinned build bypass
             settings = get_settings()
             if settings.value(f"pin_build/{appid}", False, type=bool):
@@ -299,6 +305,13 @@ class GameManager(QObject):
         game = self._games_by_appid.get(appid) or self.get_game(appid)
         if not game:
             logger.warning(f"check_single_game_update: appid {appid} not found")
+            return
+
+        # Vapor / Plugin games bypass
+        if game.get("is_vapor") or game.get("is_plugin_game") or game.get("update_status") == UPDATE_STATUS["VAPOR"]:
+            logger.info(f"check_single_game_update: appid {appid} is a Vapor/Plugin game. Updates handled natively by Steam.")
+            game["update_status"] = UPDATE_STATUS["VAPOR"]
+            self.game_update_status_changed.emit(appid, UPDATE_STATUS["VAPOR"])
             return
 
         # Pinned build bypass
@@ -728,10 +741,18 @@ class GameManager(QObject):
         except OSError as e:
             logger.error(f"Error scanning {common_path}: {e}")
 
-        # Second pass: directly discover any game in SLSsteam AdditionalApps whose
-        # appmanifest resides in this library, verifying the installdir exists and has content,
+        # Second pass: directly discover any game in SLSsteam AdditionalApps or plugin_library
+        # whose appmanifest resides in this library, verifying the installdir exists and has content,
         # skipping any legitimately owned Steam games.
-        for appid_str in additional_apps:
+        plugin_games_dict = {}
+        try:
+            from utils.plugin_games import get_all_plugin_games
+            plugin_games_dict = get_all_plugin_games()
+        except Exception:
+            pass
+
+        all_target_apps = set(additional_apps) | set(plugin_games_dict.keys())
+        for appid_str in all_target_apps:
             if appid_str in owned_appids:
                 continue
             acf_info = acf_cache.get(f"appid:{appid_str}")
@@ -1048,6 +1069,18 @@ class GameManager(QObject):
                     f"FAILED to determine AppID for '{game_name}'. Game will have AppID='0' (unknown). This may happen if the ACF file's installdir doesn't match the folder name exactly."
                 )
 
+            # Check if this game is managed via plugin_games (Steam native downloader)
+            plugin_record = None
+            if appid and appid not in ("0", "N/A", "unknown"):
+                try:
+                    from utils.plugin_games import get_plugin_game
+                    plugin_record = get_plugin_game(appid)
+                except Exception:
+                    pass
+
+            is_plugin_game = bool(plugin_record)
+            is_managed = is_accela_install or is_vapor or is_plugin_game
+
             # Initialize game data dictionary early so we can populate it
             # Determine install directory name
             install_dir = game_name
@@ -1060,9 +1093,11 @@ class GameManager(QObject):
                 "library_path": library_path,
                 "library_index": get_library_index(library_path, steam_path),
                 "size_on_disk": 0,  # Will be calculated below
-                "source": "Vapor" if is_vapor else ("ACCELA" if is_accela_install else "Steam"),
+                "source": "Plugin/Native" if is_plugin_game else ("Vapor" if is_vapor else ("ACCELA" if is_accela_install else "Steam")),
                 "is_accela_install": is_managed,
                 "is_vapor": is_vapor,
+                "is_plugin_game": is_plugin_game,
+                "plugin_record": plugin_record or {},
                 "depot_downloader_path": marker_path or "",
                 "accela_marker_path": marker_path or "",
                 "appmanifest_path": appmanifest_path or "",
@@ -1168,6 +1203,11 @@ class GameManager(QObject):
 
             # Update the size in game_data
             game_data["size_on_disk"] = size_on_disk
+
+            # If this is a Vapor or Plugin-managed game, mark update_status as 'vapor' directly
+            if is_vapor or is_plugin_game:
+                game_data["update_status"] = UPDATE_STATUS["VAPOR"]
+                return game_data
 
             # Set update status — restore from disk cache if available
             if appid and appid not in ("0", "N/A", "unknown"):

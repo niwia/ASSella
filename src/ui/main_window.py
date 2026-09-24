@@ -2656,8 +2656,15 @@ class MainWindow(QMainWindow):
                 )
                 logger.info("[SteamDB Visor] SteamDB status updated to: Offline")
 
-    def refresh_hubcap_stats(self) -> None:
+    def refresh_hubcap_stats(self, force: bool = False) -> None:
         """Fetch user statistics from Hubcap API asynchronously."""
+        now = time.time()
+        last_refresh = getattr(self, "_last_hubcap_refresh_time", 0.0)
+        if not force and (now - last_refresh < 30.0):
+            logger.debug("[Hubcap] Skipping stats refresh - throttled (called <30s ago)")
+            return
+        self._last_hubcap_refresh_time = now
+
         # Also refresh Steam and SLS status locally
         self.refresh_system_status()
 

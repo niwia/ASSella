@@ -25,11 +25,11 @@ This file defines essential guidelines, build rules, versioning conventions, and
 
 ### B. AppImage Binaries
 - The final production AppImage file is named exactly **`ASSella.AppImage`**.
-- The local development AppImage is named `ASSella.AppImage.dev`.
-- During active development and testing, ONLY build and modify `ASSella.AppImage.dev`. Never overwrite or change the stable `ASSella.AppImage`.
-- Rebuild command for development:
+- The local development AppImage for the beta channel is named `ASSella.AppImage.dev`.
+- **Canary Channel AppImage**: All builds created while on the `canary` branch must be saved strictly as **`assella3.0canary.appimage`** (`/home/aiwin/.local/share/ACCELA/assella3.0canary.appimage`). Only this AppImage is to be modified during canary development. Never touch or overwrite `ASSella.AppImage` or `ASSella.AppImage.dev`.
+- Rebuild command for canary:
   ```bash
-  ARCH=x86_64 /home/aiwin/.local/share/ACCELA/appimagetool squashfs-root /home/aiwin/.local/share/ACCELA/ASSella.AppImage.dev.new && mv -f /home/aiwin/.local/share/ACCELA/ASSella.AppImage.dev.new /home/aiwin/.local/share/ACCELA/ASSella.AppImage.dev
+  ARCH=x86_64 /home/aiwin/.local/share/ACCELA/appimagetool squashfs-root /home/aiwin/.local/share/ACCELA/assella3.0canary.appimage.new && mv -f /home/aiwin/.local/share/ACCELA/assella3.0canary.appimage.new /home/aiwin/.local/share/ACCELA/assella3.0canary.appimage
   ```
 
 ### C. Source Code Release Packaging

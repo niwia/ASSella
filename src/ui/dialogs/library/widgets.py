@@ -258,10 +258,14 @@ class GameItemWidget(QWidget):
         self.status_label = QLabel()
         self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         update_status = self.game_data.get("update_status", "cannot_determine")
+        if self.game_data.get("is_vapor") or self.game_data.get("is_plugin_game"):
+            update_status = "vapor"
+
         status_map = {
             "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
             "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
             "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+            "vapor": ("Vapor", "#CE93D8", "rgba(206, 147, 216, 0.15)"),
         }
         text, color, bg_color = status_map.get(
             update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
@@ -401,11 +405,15 @@ class GameItemWidget(QWidget):
 
     def update_status(self, update_status: str) -> None:
         """Update update and manifest status labels in-place."""
+        if self.game_data.get("is_vapor") or self.game_data.get("is_plugin_game"):
+            update_status = "vapor"
+
         self.game_data["update_status"] = update_status
         status_map = {
             "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
             "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
             "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+            "vapor": ("Vapor", "#CE93D8", "rgba(206, 147, 216, 0.15)"),
         }
 
         text, color, bg_color = status_map.get(

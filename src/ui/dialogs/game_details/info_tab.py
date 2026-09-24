@@ -1423,7 +1423,40 @@ def update_status_ui(dialog, status) -> None:
     sub = last_chk if last_chk != "Never" else "Click to check"
 
     from utils.color_utils import get_semantic_colors
-    sem_colors = get_semantic_colors(ac)
+    if status == "vapor" or dialog.game_data.get("is_vapor") or dialog.game_data.get("is_plugin_game"):
+        title = "VAPOR"
+        sub = "Steam Native / SLSsteam"
+        dialog.status_tile.title_lbl.setText(title)
+        dialog.status_tile.sub_lbl.setText(sub)
+
+        tonal_bg = "rgba(186, 104, 200, 0.22)"
+        tonal_hover = "rgba(186, 104, 200, 0.32)"
+        border_color = "rgba(206, 147, 216, 0.45)"
+        purple_text = "#E1BEE7"
+
+        dialog.status_tile.setChecked(True)
+        dialog.status_tile._is_active = True
+        dialog.status_tile._current_text_color = purple_text
+        dialog.status_tile.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {tonal_bg};
+                border: 1px solid {border_color};
+                border-radius: 8px;
+            }}
+            QPushButton:hover {{
+                background-color: {tonal_hover};
+                border: 1px solid rgba(225, 190, 231, 0.6);
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.04);
+            }}
+        """)
+        dialog.status_tile.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {purple_text}; background: transparent;")
+        dialog.status_tile.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(225, 190, 231, 0.85); background: transparent;")
+        dialog.status_tile.setEnabled(False)
+        update_validate_button(dialog)
+        return
 
     if status == "update_available":
         dialog.status_tile.title_lbl.setText("UPDATE")
