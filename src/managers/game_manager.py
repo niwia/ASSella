@@ -850,7 +850,7 @@ class GameManager(QObject):
     @staticmethod
     def _get_accela_marker_path(game_path):
         """Return the ACCELA marker folder path for a game, if present."""
-        for marker_name in (".ACCELA", ".DepotDownloader"):
+        for marker_name in (".ACCELA", ".DepotDownloader", ".accela", ".depotdownloader"):
             marker_path = os.path.join(game_path, marker_name)
             if os.path.exists(marker_path):
                 return marker_path

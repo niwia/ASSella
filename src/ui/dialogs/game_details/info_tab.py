@@ -79,17 +79,52 @@ def init_info_tab(dialog) -> None:
     if dialog.settings:
         dialog.settings.setValue(f"selected_branch/{dialog.appid}", saved_b)
 
+    is_vapor_mode = bool(
+        dialog.game_data.get("is_vapor")
+        or dialog.game_data.get("is_plugin_game")
+        or dialog.game_data.get("update_status") == "vapor"
+    )
+
     dialog.branch_combo = CenteredComboBox()
     dialog.branch_combo.addItem(f"{saved_b} ({installed_bid})" if installed_bid else saved_b, saved_b)
     dialog.branch_combo.setFixedHeight(26)
     dialog.branch_combo.setFixedWidth(200)
     dialog.branch_combo.setMaxVisibleItems(5)
+    if is_vapor_mode:
+        dialog.branch_combo.setEnabled(False)
+        dialog.branch_combo.setToolTip("Branch selection is disabled for Steam Native / Vapor games.")
+        dialog.branch_combo.setStyleSheet("""
+            QComboBox, CenteredComboBox {
+                background-color: rgba(255, 255, 255, 0.04);
+                color: rgba(255, 255, 255, 0.3);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 4px;
+            }
+            QComboBox:disabled, CenteredComboBox:disabled {
+                background-color: rgba(255, 255, 255, 0.03);
+                color: rgba(255, 255, 255, 0.3);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+            }
+        """)
     actions_row.addWidget(dialog.branch_combo, 0)
 
-    dialog.validate_btn = ProgressButton("Verify Files", dialog)
+    dialog.validate_btn = ProgressButton("Verify Build" if is_vapor_mode else "Verify Files", dialog)
     dialog.validate_btn.setFixedHeight(26)
-    dialog.validate_btn.setEnabled(True)
-    dialog.validate_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.047); color: rgba(255, 255, 255, 0.294); border: none;")
+    if is_vapor_mode:
+        dialog.validate_btn.setEnabled(False)
+        dialog.validate_btn.setToolTip("Build verification is not available for Steam Native / Vapor games.")
+        dialog.validate_btn.setStyleSheet("""
+            QPushButton, QPushButton:disabled {
+                background-color: rgba(255, 255, 255, 0.04);
+                color: rgba(255, 255, 255, 0.3);
+                font-weight: bold;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+            }
+        """)
+    else:
+        dialog.validate_btn.setEnabled(True)
+        dialog.validate_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.047); color: rgba(255, 255, 255, 0.294); border: none;")
     actions_row.addWidget(dialog.validate_btn, 1)
 
     lay.addLayout(actions_row)
@@ -130,7 +165,23 @@ def init_info_tab(dialog) -> None:
     dialog.update_all_tile.setChecked(not is_exclude)
     dialog.update_all_tile.update_state(not is_exclude, dialog.accent_color if not is_exclude else "#e05a47", active_sub="Include", inactive_sub="Exclude")
 
-    if is_pinned:
+    if is_vapor_mode:
+        dialog.update_all_tile.setChecked(False)
+        dialog.update_all_tile.update_state(False, "#757575", active_sub="Include", inactive_sub="Exclude")
+        dialog.update_all_tile.setEnabled(False)
+        dialog.update_all_tile.setStyleSheet("""
+            QPushButton, QPushButton:disabled {
+                background-color: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 8px;
+            }
+        """)
+        dialog.update_all_tile.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: rgba(255, 255, 255, 0.3); background: transparent;")
+        dialog.update_all_tile.sub_lbl.setStyleSheet("font-size: 7.5pt; color: rgba(255, 255, 255, 0.2); background: transparent;")
+        dialog.update_all_tile.setToolTip("Steam Native / Vapor games are excluded from Update All.")
+        if dialog.settings:
+            dialog.settings.setValue(f"exclude_from_update_all/{dialog.appid}", True)
+    elif is_pinned:
         dialog.update_all_tile.setChecked(False)
         dialog.update_all_tile.update_state(False, "#e05a47", active_sub="Include", inactive_sub="Exclude")
         dialog.update_all_tile.setEnabled(False)
@@ -283,42 +334,72 @@ def init_info_tab(dialog) -> None:
 
     dialog._uninstall_pill = QPushButton("Uninstall")
     dialog._uninstall_pill.setFixedHeight(32)
-    dialog._uninstall_pill.setStyleSheet(f"""
-        QPushButton {{
-            background: {err_bg};
-            color: {err_color};
-            border: 1px solid {err_border};
-            border-radius: 6px;
-            font-weight: bold;
-            font-size: 9.5pt;
-            padding: 0 16px;
-        }}
-        QPushButton:hover {{ background: {err_hover}; }}
-    """)
-    dialog._uninstall_pill.clicked.connect(lambda: do_standard_uninstall(dialog))
+    if is_vapor_mode:
+        dialog._uninstall_pill.setEnabled(False)
+        dialog._uninstall_pill.setStyleSheet("""
+            QPushButton, QPushButton:disabled {
+                background: rgba(255, 255, 255, 0.03);
+                color: rgba(255, 255, 255, 0.25);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 9.5pt;
+                padding: 0 16px;
+            }
+        """)
+        dialog._uninstall_pill.setToolTip("Uninstall is managed directly through Steam for Vapor games.")
+    else:
+        dialog._uninstall_pill.setStyleSheet(f"""
+            QPushButton {{
+                background: {err_bg};
+                color: {err_color};
+                border: 1px solid {err_border};
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 9.5pt;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{ background: {err_hover}; }}
+        """)
+        dialog._uninstall_pill.clicked.connect(lambda: do_standard_uninstall(dialog))
     btn_row.addWidget(dialog._uninstall_pill, 1)
 
     dialog._adv_uninstall_btn = QPushButton("Advanced Uninstall")
     dialog._adv_uninstall_btn.setFixedHeight(32)
-    dialog._adv_uninstall_btn.setCheckable(True)
-    dialog._adv_uninstall_btn.setStyleSheet(f"""
-        QPushButton {{
-            background: {adv_bg};
-            color: {err_color};
-            border: 1px solid {adv_border};
-            border-radius: 6px;
-            font-weight: bold;
-            font-size: 9.5pt;
-            padding: 0 16px;
-        }}
-        QPushButton:hover {{ background: {adv_hover}; }}
-        QPushButton:checked {{
-            background: {adv_checked_bg};
-            color: #FFFFFF;
-            border-color: {adv_checked_border};
-        }}
-    """)
-    dialog._adv_uninstall_btn.clicked.connect(lambda: toggle_uninstall_panel(dialog))
+    dialog._adv_uninstall_btn.setCheckable(not is_vapor_mode)
+    if is_vapor_mode:
+        dialog._adv_uninstall_btn.setEnabled(False)
+        dialog._adv_uninstall_btn.setStyleSheet("""
+            QPushButton, QPushButton:disabled {
+                background: rgba(255, 255, 255, 0.02);
+                color: rgba(255, 255, 255, 0.2);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 9.5pt;
+                padding: 0 16px;
+            }
+        """)
+        dialog._adv_uninstall_btn.setToolTip("Advanced uninstall is disabled for Steam Native / Vapor games.")
+    else:
+        dialog._adv_uninstall_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {adv_bg};
+                color: {err_color};
+                border: 1px solid {adv_border};
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 9.5pt;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{ background: {adv_hover}; }}
+            QPushButton:checked {{
+                background: {adv_checked_bg};
+                color: #FFFFFF;
+                border-color: {adv_checked_border};
+            }}
+        """)
+        dialog._adv_uninstall_btn.clicked.connect(lambda: toggle_uninstall_panel(dialog))
     btn_row.addWidget(dialog._adv_uninstall_btn, 1)
 
     footer_layout.addLayout(btn_row)
@@ -470,6 +551,27 @@ def on_branches_loaded(dialog, branches_dict: dict) -> None:
                 select_idx = idx
 
         dialog.branch_combo.setCurrentIndex(select_idx)
+        is_vm = bool(
+            dialog.game_data.get("is_vapor")
+            or dialog.game_data.get("is_plugin_game")
+            or dialog.game_data.get("update_status") == "vapor"
+        )
+        if is_vm:
+            dialog.branch_combo.setEnabled(False)
+            dialog.branch_combo.setToolTip("Branch selection is disabled for Steam Native / Vapor games.")
+            dialog.branch_combo.setStyleSheet("""
+                QComboBox, CenteredComboBox {
+                    background-color: rgba(255, 255, 255, 0.04);
+                    color: rgba(255, 255, 255, 0.3);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 4px;
+                }
+                QComboBox:disabled, CenteredComboBox:disabled {
+                    background-color: rgba(255, 255, 255, 0.03);
+                    color: rgba(255, 255, 255, 0.3);
+                    border: 1px solid rgba(255, 255, 255, 0.06);
+                }
+            """)
     except Exception as e:
         logger.error(f"Error in _on_branches_loaded: {e}", exc_info=True)
         dialog.branch_combo.clear()
@@ -529,6 +631,26 @@ def on_branch_combo_changed(dialog) -> None:
 
 def update_validate_button(dialog) -> None:
     if not hasattr(dialog, "validate_btn") or not dialog.validate_btn:
+        return
+
+    is_vm = bool(
+        dialog.game_data.get("is_vapor")
+        or dialog.game_data.get("is_plugin_game")
+        or dialog.game_data.get("update_status") == "vapor"
+    )
+    if is_vm:
+        dialog.validate_btn.setEnabled(False)
+        dialog.validate_btn.setText("Verify Build")
+        dialog.validate_btn.setToolTip("Build verification is not available for Steam Native / Vapor games.")
+        dialog.validate_btn.setStyleSheet("""
+            QPushButton, QPushButton:disabled {
+                background-color: rgba(255, 255, 255, 0.04);
+                color: rgba(255, 255, 255, 0.3);
+                font-weight: bold;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+            }
+        """)
         return
 
     if getattr(dialog, "_is_fetching_branches", False):

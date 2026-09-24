@@ -496,8 +496,16 @@ class LibraryActionsMixin:
             """
         )
 
+        is_vapor_mode = bool(
+            game_data.get("is_vapor")
+            or game_data.get("is_plugin_game")
+            or game_data.get("update_status") == "vapor"
+        )
+
         verify_action = QAction("Verify Game Files", self)
         verify_action.triggered.connect(lambda: self._fetch_game_manifest(game_data))
+        if is_vapor_mode:
+            verify_action.setEnabled(False)
         menu.addAction(verify_action)
 
         open_folder_action = QAction("Open Install Folder", self)
@@ -507,10 +515,14 @@ class LibraryActionsMixin:
 
         reset_depots_action = QAction("Reset Depot Selection", self)
         reset_depots_action.triggered.connect(lambda: self._reset_depot_selection(game_data))
+        if is_vapor_mode:
+            reset_depots_action.setEnabled(False)
         menu.addAction(reset_depots_action)
 
         uninstall_action = QAction("Uninstall Game", self)
         uninstall_action.triggered.connect(lambda: self._uninstall_game(game_data, None, {}))
+        if is_vapor_mode:
+            uninstall_action.setEnabled(False)
         menu.addAction(uninstall_action)
 
         menu.exec(self.games_list.mapToGlobal(pos))
