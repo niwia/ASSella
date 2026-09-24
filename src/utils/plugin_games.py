@@ -80,12 +80,23 @@ def get_all_plugin_games() -> Dict[str, Any]:
     return load_plugin_library()
 
 
+def get_game_for_depot(depot_id: Union[str, int]) -> Optional[Dict[str, Any]]:
+    """Find which registered plugin game owns a given depot_id."""
+    did_str = str(depot_id).strip()
+    lib = load_plugin_library()
+    for g in lib.values():
+        if did_str in g.get("depots", []) or did_str in g.get("keys", {}):
+            return g
+    return None
+
+
 def register_plugin_game(
     appid: Union[str, int],
     name: str,
     depot_ids: List[Union[str, int]],
     decryption_keys: Optional[Dict[Union[str, int], str]] = None,
     installdir: str = "",
+    depot_names: Optional[Dict[str, str]] = None,
 ) -> bool:
     """
     Register a game for plugin / Steam-native download and smartly inject only its
@@ -105,6 +116,13 @@ def register_plugin_game(
             if did_str.isdigit() and len(key_str) == 64:
                 clean_keys[did_str] = key_str
 
+    clean_depot_names = {}
+    if depot_names:
+        for did, dname in depot_names.items():
+            did_str = str(did).strip()
+            if did_str.isdigit() and dname:
+                clean_depot_names[did_str] = str(dname).strip()
+
     lib = load_plugin_library()
     game_record = {
         "appid": appid_str,
@@ -112,6 +130,7 @@ def register_plugin_game(
         "installdir": installdir,
         "depots": clean_depots,
         "keys": clean_keys,
+        "depot_names": clean_depot_names,
         "updated_at": int(time.time()),
         "source": "plugin_native",
     }
@@ -125,13 +144,17 @@ def register_plugin_game(
         # 1. Add AppID with game name comment
         add_additional_app(cfg_path, appid_str, comment=name)
 
-        # 2. Add only the required depots
+        # 2. Add only the required depots with clear comments
         for did in clean_depots:
-            add_additional_depot(cfg_path, did)
+            d_name = clean_depot_names.get(did, "")
+            depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
+            add_additional_depot(cfg_path, did, comment=depot_comment)
 
-        # 3. Add decryption keys
+        # 3. Add decryption keys with game comment
         for did, key in clean_keys.items():
-            add_decryption_key(cfg_path, did, key)
+            d_name = clean_depot_names.get(did, "")
+            key_comment = f"{name} - {d_name}" if d_name else name
+            add_decryption_key(cfg_path, did, key, comment=key_comment)
 
         # 4. Notify bridge / SLSsteam of update
         SLSBridge.notify_reload()
@@ -184,7 +207,7 @@ def unregister_plugin_game(appid: Union[str, int]) -> bool:
 
 
 def sync_all_plugin_games_to_config() -> None:
-    """Ensure all registered plugin games have their AppID, depots, and keys in config.yaml."""
+    """Ensure all registered plugin games have their AppID, depots, and keys in config.yaml with comments."""
     lib = load_plugin_library()
     if not lib:
         return
@@ -196,13 +219,18 @@ def sync_all_plugin_games_to_config() -> None:
     modified = False
     for appid_str, game in lib.items():
         name = game.get("name", "")
+        depot_names = game.get("depot_names", {})
         if add_additional_app(cfg_path, appid_str, comment=name):
             modified = True
         for did in game.get("depots", []):
-            if add_additional_depot(cfg_path, did):
+            d_name = depot_names.get(did, "")
+            depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
+            if add_additional_depot(cfg_path, did, comment=depot_comment):
                 modified = True
         for did, key in game.get("keys", {}).items():
-            if add_decryption_key(cfg_path, did, key):
+            d_name = depot_names.get(did, "")
+            key_comment = f"{name} - {d_name}" if d_name else name
+            if add_decryption_key(cfg_path, did, key, comment=key_comment):
                 modified = True
 
     if modified:

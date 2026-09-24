@@ -734,6 +734,48 @@ def is_generic_or_missing_comment(raw_value: str) -> bool:
     return False
 
 
+def get_depot_to_app_map() -> Dict[str, Tuple[str, str]]:
+    """Build a mapping of {depot_id: (game_name, appid)} from plugin_library.json and db."""
+    depot_map = {}
+    try:
+        from utils.plugin_games import load_plugin_library
+        lib = load_plugin_library()
+        for appid, data in lib.items():
+            gname = data.get("name", f"App {appid}")
+            for did in data.get("depots", []):
+                depot_map[str(did)] = (gname, str(appid))
+            for did in data.get("keys", {}).keys():
+                depot_map[str(did)] = (gname, str(appid))
+    except Exception:
+        pass
+
+    try:
+        from utils.helpers import get_base_path
+        import sqlite3
+        base = get_base_path()
+        db_path = base / "db" / "steam_headers.db"
+        if db_path.exists():
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute("SELECT appid, name FROM apps")
+            for appid, name in cur.fetchall():
+                depot_file = base / "depots" / f"{appid}.depot"
+                if depot_file.exists():
+                    try:
+                        with open(depot_file, "r", encoding="utf-8", errors="ignore") as df:
+                            for line in df:
+                                m = re.match(r"^(\d+)", line.strip())
+                                if m and m.group(1) not in depot_map:
+                                    depot_map[m.group(1)] = (name or f"App {appid}", str(appid))
+                    except Exception:
+                        pass
+            conn.close()
+    except Exception:
+        pass
+
+    return depot_map
+
+
 def resolve_missing_names(config_data: dict) -> None:
     tasks = []
 
@@ -753,15 +795,16 @@ def resolve_missing_names(config_data: dict) -> None:
     if not tasks:
         return
 
+    depot_map = get_depot_to_app_map()
     info(f"Resolving {len(tasks)} game name(s) in parallel via SteamCMD...")
-    
+
     # Extract numeric AppIDs for lookups
     all_ids = set()
     for entry in tasks:
         raw_val = entry.val.split("#")[0].strip()
-        if raw_val.isdigit():
+        if raw_val.isdigit() and raw_val not in depot_map:
             all_ids.add(raw_val)
-        if entry.key and entry.key.isdigit():
+        if entry.key and entry.key.isdigit() and entry.key not in depot_map:
             all_ids.add(entry.key)
 
     uncached = {aid for aid in all_ids if aid not in _app_details_cache}
@@ -773,8 +816,15 @@ def resolve_missing_names(config_data: dict) -> None:
                 pass
 
     for entry in tasks:
-        # Check if list entry or map entry
         raw_val = entry.val.split("#")[0].strip()
+
+        # DecryptionKeys map entry: key is depot_id, val is hex key
+        if entry.key and entry.key.isdigit() and len(raw_val) == 64:
+            if entry.key in depot_map:
+                gname, _ = depot_map[entry.key]
+                entry.val = f"{raw_val} # {gname}"
+            continue
+
         if entry.key and entry.key.isdigit() and raw_val.isdigit():
             # Map entry (FakeAppIds AppId: FakeAppId)
             src_name = get_formatted_name(entry.key)
@@ -783,10 +833,15 @@ def resolve_missing_names(config_data: dict) -> None:
                 comment = f"{src_name} → {tgt_name}" if tgt_name else src_name
                 entry.val = f"{raw_val} # {comment}"
         elif raw_val.isdigit():
-            # List entry (AdditionalApps etc.)
-            name = get_formatted_name(raw_val)
-            if name:
-                entry.val = f"{raw_val} # {name}"
+            # Check if this raw_val is in depot_map (AdditionalDepots)
+            if raw_val in depot_map:
+                gname, _ = depot_map[raw_val]
+                entry.val = f"{raw_val} # {gname} ({raw_val})"
+            else:
+                # List entry (AdditionalApps etc.)
+                name = get_formatted_name(raw_val)
+                if name:
+                    entry.val = f"{raw_val} # {name}"
 
 
 # ──────────────────────────────────────────────────────────────

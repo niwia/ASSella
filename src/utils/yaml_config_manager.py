@@ -725,7 +725,7 @@ def get_additional_depots(config_path: Path) -> List[str]:
     return results
 
 
-def add_additional_depot(config_path: Path, depot_id: str) -> bool:
+def add_additional_depot(config_path: Path, depot_id: str, comment: str = "") -> bool:
     """Add a DepotID to the AdditionalDepots list in SLSsteam config.yaml."""
     try:
         content = _read_config_content(config_path)
@@ -739,13 +739,21 @@ def add_additional_depot(config_path: Path, depot_id: str) -> bool:
             re.MULTILINE,
         )
 
-        entry_line = f"  - {depot_id_str}\n"
+        comment_suffix = f" # {comment.strip()}" if comment and comment.strip() else ""
+        entry_line = f"  - {depot_id_str}{comment_suffix}\n"
 
         if bounds:
             _, content_start, section_end = bounds
             sec_content = content[content_start:section_end]
-            if depot_pattern.search(sec_content):
-                logger.debug(f"DepotID '{depot_id_str}' already exists in AdditionalDepots")
+            m = depot_pattern.search(sec_content)
+            if m:
+                if comment and comment.strip():
+                    abs_start = content_start + m.start()
+                    abs_end = content_start + m.end()
+                    new_content = content[:abs_start] + f"  - {depot_id_str}{comment_suffix}" + content[abs_end:]
+                    if _atomic_write(config_path, new_content):
+                        logger.info(f"Updated comment for DepotID '{depot_id_str}' in AdditionalDepots")
+                        return True
                 return False
 
             insert_pos = section_end
@@ -801,7 +809,7 @@ def get_decryption_keys(config_path: Path) -> Dict[str, str]:
     return results
 
 
-def add_decryption_key(config_path: Path, depot_id: str, key: str) -> bool:
+def add_decryption_key(config_path: Path, depot_id: str, key: str, comment: str = "") -> bool:
     """Add or update a depot AES decryption key in DecryptionKeys section in SLSsteam config.yaml."""
     try:
         content = _read_config_content(config_path)
@@ -815,7 +823,8 @@ def add_decryption_key(config_path: Path, depot_id: str, key: str) -> bool:
             return False
 
         bounds = _get_section_bounds(content, "DecryptionKeys")
-        new_key_line = f"  {depot_id_str}: {key_str}\n"
+        comment_suffix = f" # {comment.strip()}" if comment and comment.strip() else ""
+        new_key_line = f"  {depot_id_str}: {key_str}{comment_suffix}\n"
 
         if not bounds:
             new_content = content.rstrip() + f"\n\nDecryptionKeys:\n{new_key_line}"
@@ -835,7 +844,7 @@ def add_decryption_key(config_path: Path, depot_id: str, key: str) -> bool:
         if match:
             abs_start = content_start + match.start()
             abs_end = content_start + match.end()
-            new_content = content[:abs_start] + f"  {depot_id_str}: {key_str}" + content[abs_end:]
+            new_content = content[:abs_start] + f"  {depot_id_str}: {key_str}{comment_suffix}" + content[abs_end:]
         else:
             insert_pos = section_end
             if insert_pos > 0 and content[insert_pos - 1] != "\n":

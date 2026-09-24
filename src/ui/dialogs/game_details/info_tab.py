@@ -8,7 +8,9 @@ import os
 import re
 import platform
 import logging
+import shutil
 import threading
+import zipfile
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, QMetaObject, Q_ARG
@@ -198,6 +200,98 @@ def init_info_tab(dialog) -> None:
     top_tiles_layout.addWidget(dialog.update_all_tile, 1)
 
     lay.addWidget(top_tiles_widget)
+    lay.addSpacing(8)
+
+    # ── Vapor Mode Transition Buttons (Move to Vapor / Remove from Vapor) ───
+    vapor_actions_widget = QWidget()
+    vapor_actions_layout = QHBoxLayout(vapor_actions_widget)
+    vapor_actions_layout.setContentsMargins(0, 0, 0, 0)
+    vapor_actions_layout.setSpacing(10)
+
+    dialog.move_to_vapor_btn = QPushButton("Move to Vapor")
+    dialog.move_to_vapor_btn.setFixedHeight(36)
+    dialog.move_to_vapor_btn.setCursor(Qt.CursorShape.PointingHandCursor if not is_vapor_mode else Qt.CursorShape.ArrowCursor)
+
+    dialog.remove_from_vapor_btn = QPushButton("Remove from Vapor")
+    dialog.remove_from_vapor_btn.setFixedHeight(36)
+    dialog.remove_from_vapor_btn.setCursor(Qt.CursorShape.PointingHandCursor if is_vapor_mode else Qt.CursorShape.ArrowCursor)
+
+    vapor_active_style = """
+        QPushButton {
+            background-color: rgba(186, 104, 200, 0.15);
+            border: 1px solid rgba(206, 147, 216, 0.45);
+            border-radius: 8px;
+            color: #E1BEE7;
+            font-weight: bold;
+            font-size: 9.5pt;
+            padding: 0 16px;
+        }
+        QPushButton:hover {
+            background-color: rgba(186, 104, 200, 0.28);
+            border-color: rgba(225, 190, 231, 0.7);
+            color: #FFFFFF;
+        }
+        QPushButton:pressed {
+            background-color: rgba(186, 104, 200, 0.35);
+        }
+    """
+
+    vapor_disabled_style = """
+        QPushButton, QPushButton:disabled {
+            background-color: rgba(255, 255, 255, 0.025);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 8px;
+            color: rgba(255, 255, 255, 0.25);
+            font-weight: bold;
+            font-size: 9.5pt;
+            padding: 0 16px;
+        }
+    """
+
+    accela_active_style = f"""
+        QPushButton {{
+            background-color: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 8px;
+            color: #FFFFFF;
+            font-weight: bold;
+            font-size: 9.5pt;
+            padding: 0 16px;
+        }}
+        QPushButton:hover {{
+            background-color: rgba(255, 255, 255, 0.12);
+            border-color: {dialog.accent_color};
+            color: #FFFFFF;
+        }}
+        QPushButton:pressed {{
+            background-color: rgba(255, 255, 255, 0.18);
+        }}
+    """
+
+    if is_vapor_mode:
+        dialog.move_to_vapor_btn.setEnabled(False)
+        dialog.move_to_vapor_btn.setStyleSheet(vapor_disabled_style)
+        dialog.move_to_vapor_btn.setToolTip("Game is already in Vapor (Steam Native) mode.")
+
+        dialog.remove_from_vapor_btn.setEnabled(True)
+        dialog.remove_from_vapor_btn.setStyleSheet(accela_active_style)
+        dialog.remove_from_vapor_btn.setToolTip("Convert game back to ACCELA managed.")
+    else:
+        dialog.move_to_vapor_btn.setEnabled(True)
+        dialog.move_to_vapor_btn.setStyleSheet(vapor_active_style)
+        dialog.move_to_vapor_btn.setToolTip("Convert game to Vapor (Steam Native) mode.")
+
+        dialog.remove_from_vapor_btn.setEnabled(False)
+        dialog.remove_from_vapor_btn.setStyleSheet(vapor_disabled_style)
+        dialog.remove_from_vapor_btn.setToolTip("Game is currently ACCELA managed, not in Vapor.")
+
+    dialog.move_to_vapor_btn.clicked.connect(lambda: on_move_to_vapor_clicked(dialog))
+    dialog.remove_from_vapor_btn.clicked.connect(lambda: on_remove_from_vapor_clicked(dialog))
+
+    vapor_actions_layout.addWidget(dialog.move_to_vapor_btn, 1)
+    vapor_actions_layout.addWidget(dialog.remove_from_vapor_btn, 1)
+
+    lay.addWidget(vapor_actions_widget)
     lay.addSpacing(8)
 
     # ── Bottom Row Section (SLSonline & EOS Proxy) ───────────
@@ -1961,3 +2055,252 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
     finally:
         dialog.dlcdata_exp_btn.setEnabled(True)
         refresh_dlcdata_btn_text(dialog)
+
+
+def on_move_to_vapor_clicked(dialog) -> None:
+    game_data = dialog.game_data
+    appid = str(dialog.appid)
+    game_name = game_data.get("game_name") or f"App {appid}"
+
+    reply = QMessageBox.question(
+        dialog,
+        "Move to Vapor",
+        f"Are you sure you want to convert '{game_name}' to Vapor (Steam Native)?\n\n"
+        "• ACCELA marker folders (.ACCELA / .DepotDownloader) will be removed.\n"
+        "• Required AppID, DepotIDs, and DecryptionKeys will be registered in SLSsteam config.\n"
+        "• Updates will be handled natively by Steam client instead of ACCELA.\n\n"
+        "Do you want to proceed?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    from managers.db_manager import DatabaseManager
+    from utils.plugin_games import register_plugin_game
+    from utils.helpers import get_base_path
+
+    depot_ids = []
+    decryption_keys = {}
+    depot_names = {}
+    installdir = game_data.get("installdir") or game_data.get("game_name") or ""
+
+    # Check DatabaseManager for known depots
+    try:
+        db = DatabaseManager()
+        app_info = db.get_app_info(appid, bypass_expiration=True)
+        if app_info and app_info.get("depots"):
+            for did, dinfo in app_info["depots"].items():
+                did_str = str(did)
+                depot_ids.append(did_str)
+                if isinstance(dinfo, dict) and dinfo.get("name"):
+                    depot_names[did_str] = dinfo["name"]
+    except Exception as e:
+        logger.debug(f"[VaporTransition] DB lookup error: {e}")
+
+    # Check local .depot files
+    depot_file = get_base_path() / "depots" / f"{appid}.depot"
+    if depot_file.exists():
+        try:
+            with open(depot_file, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    parts = line.strip().split(":")
+                    if parts and parts[0].strip().isdigit():
+                        did = parts[0].strip()
+                        if did not in depot_ids:
+                            depot_ids.append(did)
+                        if len(parts) > 1 and parts[1].strip() and not parts[1].strip().isdigit():
+                            depot_names[did] = parts[1].strip()
+        except Exception:
+            pass
+
+    # Extract keys from cached lua / manifest zip if available
+    lua_file = get_base_path() / "cached_luas" / f"{appid}.lua"
+    zip_file = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
+
+    def extract_keys_from_lua_text(lua_text: str):
+        for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_text):
+            did = m.group(1)
+            key = m.group(2)
+            decryption_keys[did] = key
+            if did not in depot_ids:
+                depot_ids.append(did)
+
+    if lua_file.exists():
+        try:
+            with open(lua_file, "r", encoding="utf-8", errors="ignore") as lf:
+                extract_keys_from_lua_text(lf.read())
+        except Exception:
+            pass
+
+    if zip_file.exists():
+        try:
+            with zipfile.ZipFile(zip_file, "r") as zf:
+                for name in zf.namelist():
+                    if name.endswith(".lua"):
+                        extract_keys_from_lua_text(zf.read(name).decode("utf-8", errors="ignore"))
+        except Exception:
+            pass
+
+    # Register into plugin_library and config.yaml
+    register_plugin_game(
+        appid=appid,
+        name=game_name,
+        depot_ids=depot_ids,
+        decryption_keys=decryption_keys,
+        installdir=installdir,
+        depot_names=depot_names,
+    )
+
+    # Remove ACCELA markers from install folder
+    install_path = game_data.get("install_path")
+    if install_path and os.path.isdir(install_path):
+        for marker_name in (".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
+            m_path = os.path.join(install_path, marker_name)
+            if os.path.exists(m_path):
+                try:
+                    if os.path.isdir(m_path):
+                        shutil.rmtree(m_path, ignore_errors=True)
+                    else:
+                        os.remove(m_path)
+                    logger.info(f"[VaporTransition] Removed marker {m_path}")
+                except Exception as e:
+                    logger.warning(f"[VaporTransition] Could not remove marker {m_path}: {e}")
+
+    # Update settings
+    if dialog.settings:
+        dialog.settings.setValue(f"exclude_from_update_all/{appid}", True)
+
+    # Update game data dict
+    game_data["is_vapor"] = True
+    game_data["source"] = "Vapor"
+    game_data["update_status"] = "vapor"
+
+    QMessageBox.information(
+        dialog,
+        "Moved to Vapor",
+        f"'{game_name}' has been successfully moved to Vapor mode.\n"
+        f"Registered {len(depot_ids)} depot(s) and {len(decryption_keys)} decryption key(s) into SLSsteam.",
+    )
+
+    # Close dialog and refresh parent
+    dialog.accept()
+    parent = getattr(dialog, "parent_window", None)
+    if parent:
+        if hasattr(parent, "refresh_games_list"):
+            parent.refresh_games_list()
+        elif hasattr(parent, "refresh_library"):
+            parent.refresh_library()
+        elif hasattr(parent, "_refresh_library"):
+            parent._refresh_library()
+
+
+def on_remove_from_vapor_clicked(dialog) -> None:
+    game_data = dialog.game_data
+    appid = str(dialog.appid)
+    game_name = game_data.get("game_name") or f"App {appid}"
+
+    reply = QMessageBox.question(
+        dialog,
+        "Remove from Vapor",
+        f"Move '{game_name}' from Vapor to ACCELA Managed?\n\n"
+        "• Unlinks depots and decryption keys from SLSsteam config\n"
+        "• Restores .ACCELA installation marker\n"
+        "• Prompts for depot selection and verifies game files\n\n"
+        "Do you want to proceed?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    import json
+    from utils.plugin_games import unregister_plugin_game
+    from core.morrenus_api import get_manifest_zip_path, download_manifest
+
+    # 1. Ensure manifest zip exists in ACCELA cache beforehand
+    zip_path = get_manifest_zip_path(appid)
+    if not zip_path.exists():
+        dl_path, err = download_manifest(appid)
+        if dl_path and os.path.exists(dl_path):
+            zip_path = Path(dl_path)
+
+    # 2. Present DepotSelectionDialog if zip is available
+    if zip_path.exists():
+        try:
+            from core.tasks.process_zip_task import ProcessZipTask
+            from ui.dialogs.depotselection import DepotSelectionDialog
+
+            zip_task = ProcessZipTask()
+            parsed_data = zip_task.run(str(zip_path))
+            if parsed_data and parsed_data.get("depots"):
+                depots = parsed_data.get("depots")
+                depot_dialog = DepotSelectionDialog(
+                    parsed_data["appid"],
+                    parsed_data.get("game_name", game_name),
+                    depots,
+                    parsed_data.get("header_url"),
+                    dialog,
+                    selected_depots=None,
+                    is_single_depot=(len(depots) == 1),
+                    missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
+                    missing_depots_info=parsed_data.get("missing_depots_info"),
+                    current_build_id=str(game_data.get("buildid") or "").strip(),
+                )
+                if not depot_dialog.exec():
+                    # User cancelled depot selection
+                    return
+                chosen = depot_dialog.get_selected_depots()
+                if chosen and dialog.settings:
+                    dialog.settings.setValue(
+                        f"depot_selection/{appid}",
+                        json.dumps({"selected": chosen})
+                    )
+        except Exception as e:
+            logger.warning(f"[VaporTransition] Depot selection dialog error: {e}")
+
+    # 3. Unregister from Vapor / SLSsteam config
+    unregister_plugin_game(appid)
+
+    # 4. Restore .ACCELA marker
+    install_path = game_data.get("install_path")
+    if install_path and os.path.isdir(install_path):
+        accela_marker = os.path.join(install_path, ".ACCELA")
+        try:
+            os.makedirs(accela_marker, exist_ok=True)
+            logger.info(f"[VaporTransition] Created marker {accela_marker}")
+        except Exception as e:
+            logger.error(f"[VaporTransition] Failed to create marker {accela_marker}: {e}")
+
+    # 5. Update settings & game data
+    if dialog.settings:
+        dialog.settings.setValue(f"exclude_from_update_all/{appid}", False)
+
+    game_data["is_vapor"] = False
+    game_data["source"] = "ACCELA"
+    game_data["update_status"] = "up_to_date"
+
+    # 6. Trigger verification of game files
+    parent = getattr(dialog, "parent_window", None)
+    if parent and hasattr(parent, "_fetch_game_manifest"):
+        try:
+            parent._fetch_game_manifest(game_data)
+        except Exception as e:
+            logger.warning(f"[VaporTransition] Could not trigger manifest verification: {e}")
+
+    QMessageBox.information(
+        dialog,
+        "Moved to ACCELA",
+        f"'{game_name}' is now managed by ACCELA.\n"
+        "SLSsteam config has been updated and the game files will be verified.",
+    )
+
+    # 7. Close dialog and refresh parent
+    dialog.accept()
+    if parent:
+        if hasattr(parent, "refresh_games_list"):
+            parent.refresh_games_list()
+        elif hasattr(parent, "refresh_library"):
+            parent.refresh_library()
+        elif hasattr(parent, "_refresh_library"):
+            parent._refresh_library()
