@@ -33,8 +33,8 @@ PLUGIN_LIBRARY_FILENAME = "plugin_library.json"
 
 def get_plugin_library_path() -> Path:
     """Return the path to ACCELA's plugin_library.json database."""
-    base = get_base_path()
-    return Path(base) / PLUGIN_LIBRARY_FILENAME
+    from utils.helpers import get_data_file_path
+    return get_data_file_path(PLUGIN_LIBRARY_FILENAME)
 
 
 def load_plugin_library() -> Dict[str, Any]:

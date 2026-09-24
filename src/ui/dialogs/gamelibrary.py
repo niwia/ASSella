@@ -503,11 +503,15 @@ class GameLibraryDialog(
             logger.error(f"Failed to load Game Details V2: {e}", exc_info=True)
 
     def _show_details_for_appid(self, appid: str) -> None:
-        if not self.game_manager:
-            return
-        game_data = self.game_manager.get_game(appid)
-        if game_data:
-            self._show_game_details_dialog(game_data)
+        game_data = None
+        if self.game_manager:
+            game_data = self.game_manager.get_game(appid)
+        if not game_data:
+            from utils.plugin_games import get_plugin_game
+            game_data = get_plugin_game(str(appid))
+        if not game_data:
+            game_data = {"appid": str(appid), "game_name": f"App {appid}"}
+        self._show_game_details_dialog(game_data)
 
     def closeEvent(self, event) -> None:
         """Cleanup resources on close."""

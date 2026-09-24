@@ -44,8 +44,9 @@ class VoicesManager:
 
     def __init__(self):
         self._data: Dict[str, Any] = {"version": 1, "games": {}, "named_games": {}}
-        self._cache_dir = Path.home() / ".local" / "share" / "ACCELA"
-        self._cache_file = self._cache_dir / "voices.json"
+        from utils.helpers import get_data_file_path
+        self._cache_file = get_data_file_path("voices.json")
+        self._cache_dir = self._cache_file.parent
         self._is_loaded = False
 
         self._load_local_data()

@@ -542,6 +542,10 @@ DB_RELOCATED_FILES = {
     "steam_headers.db",
     "steamdb_builds.db",
     "games_cache.json",
+    "plugin_library.json",
+    "voices.json",
+    "games.db",
+    "assella.db",
 }
 
 

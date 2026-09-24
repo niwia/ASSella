@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QStackedWidget,
     QScrollArea,
+    QWidget,
 )
 
 from utils.settings import get_settings
@@ -697,11 +698,13 @@ class GameDetailsDialogV2(QDialog):
         update_depot_label(self)
 
     def _configure_depots_wrapper(self):
-        self.parent_window._configure_depots(self.game_data)
+        if hasattr(self.parent_window, "_configure_depots"):
+            self.parent_window._configure_depots(self.game_data)
         self._update_depot_label()
 
     def _reset_depots_wrapper(self):
-        self.parent_window._reset_depot_selection(self.game_data)
+        if hasattr(self.parent_window, "_reset_depot_selection"):
+            self.parent_window._reset_depot_selection(self.game_data)
         self._update_depot_label()
 
     def _refresh_dlcdata_btn_text(self):
