@@ -94,6 +94,7 @@ class SettingsDialog(QDialog):
         self.vapor_disable_updates_checkbox = None
         self.vapor_download_action_combo = None
         self.vapor_start_immediate_checkbox = None
+        self.vapor_start_mode_combo = None
         self.current_font = QFont()
         self.morrenus_stats_widget = None
         self.morrenus_tab_initialized = False
@@ -815,18 +816,19 @@ class SettingsDialog(QDialog):
 
     def _save_vapor_settings(self) -> None:
         """Save all Vapor (Beta) settings."""
-        # Vapor & Native Steam are enabled by default
-        self.settings.setValue("enable_vapor", True)
-        self.settings.setValue("use_native_steam_download", True)
-        try:
-            from utils.yaml_config_manager import (
-                get_user_config_path,
-                update_yaml_boolean_value,
-            )
-            cfg = get_user_config_path()
-            update_yaml_boolean_value(cfg, "Plugins", True)
-        except Exception as e:
-            logger.debug(f"Error ensuring SLS Plugins setting: {e}")
+        if hasattr(self, "enable_vapor_checkbox") and self.enable_vapor_checkbox is not None:
+            val = self.enable_vapor_checkbox.isChecked()
+            self.settings.setValue("enable_vapor", val)
+            self.settings.setValue("use_native_steam_download", val)
+            try:
+                from utils.yaml_config_manager import (
+                    get_user_config_path,
+                    update_yaml_boolean_value,
+                )
+                cfg = get_user_config_path()
+                update_yaml_boolean_value(cfg, "Plugins", val)
+            except Exception as e:
+                logger.debug(f"Error syncing SLS Plugins setting: {e}")
 
         if hasattr(self, "vapor_disable_updates_checkbox") and self.vapor_disable_updates_checkbox is not None:
             val = self.vapor_disable_updates_checkbox.isChecked()
@@ -846,7 +848,11 @@ class SettingsDialog(QDialog):
             self.settings.setValue("vapor_default_download_action", action)
             self.settings.setValue("native_steam_default_action", action)
 
-        if hasattr(self, "vapor_start_immediate_checkbox") and self.vapor_start_immediate_checkbox is not None:
+        if hasattr(self, "vapor_start_mode_combo") and self.vapor_start_mode_combo is not None:
+            start_act = self.vapor_start_mode_combo.currentData() or "immediate"
+            self.settings.setValue("vapor_start_download_action", start_act)
+            self.settings.setValue("vapor_start_download_immediately", start_act == "immediate")
+        elif hasattr(self, "vapor_start_immediate_checkbox") and self.vapor_start_immediate_checkbox is not None:
             self.settings.setValue(
                 "vapor_start_download_immediately",
                 self.vapor_start_immediate_checkbox.isChecked(),

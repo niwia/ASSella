@@ -684,12 +684,8 @@ class FetchManifestDialog(QDialog):
                 dialog.exec()
                 return
 
-            logger.info(f"Numeric AppID query '{query}' — fetching branches first...")
-            self._toggle_inputs(False)
-            self.status_label.setText(f"Checking branches for App ID {query}...")
-            worker = self.task_runner.run(self._fetch_branches_and_prompt, query)
-            worker.finished.connect(self._on_branches_fetched)
-            worker.error.connect(lambda err, q=query: self._on_direct_manifest_error(err, q))
+            logger.info(f"Numeric AppID query '{query}' — handling game selection...")
+            self._handle_game_selection(query, f"App {query}")
             return
 
         self._search_generation += 1
@@ -1045,10 +1041,120 @@ class FetchManifestDialog(QDialog):
             dialog.exec()
             return
 
+        widget = self.results_list.itemWidget(item)
+        game_name = getattr(widget, "name", "") if widget else f"App {app_id}"
+        self._handle_game_selection(app_id, game_name)
+
+    def _handle_game_selection(self, app_id: str, game_name: str = ""):
+        """Route game download based on Vapor / Native Steam settings and user preference."""
+        if not app_id:
+            return
+
+        aid_str = str(app_id).strip()
+        name = game_name or f"App {aid_str}"
+
+        # If in library, redirect to GameLibraryDialog
+        if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
+            if self.parent_window.game_manager.get_game(aid_str) is not None:
+                self.accept()
+                from ui.dialogs.gamelibrary import GameLibraryDialog
+                dialog = GameLibraryDialog(self.parent_window, show_details_for_appid=aid_str)
+                dialog.exec()
+                return
+
+        enable_vapor = (
+            sys.platform == "linux"
+            and self.settings.value("enable_vapor", True, type=bool)
+        )
+
+        if not enable_vapor:
+            self._start_assella_flow(aid_str)
+            return
+
+        vapor_action = self.settings.value("vapor_default_download_action", "ask", type=str)
+
+        if vapor_action == "native":
+            self._start_native_steam_flow(aid_str, name)
+            return
+        elif vapor_action == "assella":
+            self._start_assella_flow(aid_str)
+            return
+        else:  # "ask"
+            from ui.dialogs.download_backend_dialog import (
+                DownloadBackendDialog,
+                BACKEND_CANCEL,
+                BACKEND_ASSELLA,
+                BACKEND_NATIVE_STEAM,
+            )
+            dlg = DownloadBackendDialog(
+                parent=self,
+                app_id=aid_str,
+                game_name=name,
+                accent_color=self.accent_color,
+            )
+            dlg.exec()
+            choice = dlg.get_choice()
+            if choice == BACKEND_ASSELLA:
+                self._start_assella_flow(aid_str)
+            elif choice == BACKEND_NATIVE_STEAM:
+                self._start_native_steam_flow(aid_str, name)
+            else:
+                self.status_label.setText("Download cancelled.")
+
+    def _start_native_steam_flow(self, app_id: str, game_name: str = ""):
+        """Handle Native Steam (Vapor) installation flow without branch/depot/storage picker."""
+        aid_str = str(app_id).strip()
+        name = game_name or f"App {aid_str}"
+
+        start_mode = self.settings.value("vapor_start_download_action", "", type=str)
+        if not start_mode:
+            old_imm = self.settings.value("vapor_start_download_immediately", True, type=bool)
+            start_mode = "immediate" if old_imm else "add_only"
+
+        auto_install = True
+        if start_mode == "immediate":
+            auto_install = True
+        elif start_mode == "add_only":
+            auto_install = False
+        else:  # "ask"
+            from ui.dialogs.native_steam_action_dialog import (
+                NativeSteamActionDialog,
+                ACTION_DOWNLOAD,
+                ACTION_ADD_ONLY,
+                ACTION_CANCEL,
+            )
+            dlg = NativeSteamActionDialog(
+                parent=self,
+                app_id=aid_str,
+                game_name=name,
+                accent_color=self.accent_color,
+            )
+            dlg.exec()
+            act = dlg.get_action()
+            if act == ACTION_CANCEL:
+                self.status_label.setText("Download cancelled.")
+                return
+            auto_install = (act == ACTION_DOWNLOAD)
+
+        logger.info(
+            f"[FetchManifest] Handing off {name} ({aid_str}) directly to Steam (auto_install={auto_install})"
+        )
+        self.accept()
+
+        if self.parent_window and hasattr(self.parent_window, "task_manager") and self.parent_window.task_manager:
+            self.parent_window.task_manager.start_native_steam_handoff(
+                app_id=aid_str,
+                game_name=name,
+                auto_install=auto_install,
+            )
+
+    def _start_assella_flow(self, app_id: str):
+        """Standard ASSella downloader flow: branch selection -> manifest fetch -> depot selection."""
+        aid_str = str(app_id).strip()
         self._toggle_inputs(False)
         self._set_loading_active(True)
-        self.status_label.setText(f"Checking branches for App ID {app_id}...")
-        worker = self.task_runner.run(self._fetch_branches_and_prompt, app_id)
+        self.status_label.setText(f"Checking branches for App ID {aid_str}...")
+        worker = self.task_runner.run(self._fetch_branches_and_prompt, aid_str)
         worker.finished.connect(self._on_branches_fetched)
         worker.error.connect(self.on_task_error)
 

@@ -21,14 +21,16 @@ from PyQt6.QtWidgets import (
 )
 
 ACTION_CANCEL = 0
+ACTION_DOWNLOAD = 1
+ACTION_ADD_ONLY = 2
 ACTION_TRACK = 1
 ACTION_HANDOFF = 2
 
 
 class NativeSteamActionDialog(QDialog):
     """
-    Presents the user with a choice between monitored Steam download
-    and instant handoff to the Steam client.
+    Presents the user with a choice between immediate Steam download
+    and adding to Steam library only.
     """
 
     def __init__(
@@ -44,22 +46,22 @@ class NativeSteamActionDialog(QDialog):
         self.accent_color = accent_color
         self._action = ACTION_CANCEL
 
-        self.setWindowTitle("Steam Client Download")
-        self.setFixedSize(520, 370)
+        self.setWindowTitle("Native Steam Installation")
+        self.setFixedSize(520, 360)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
 
         self._init_ui()
 
     def _init_ui(self):
-        self.setStyleSheet(f"""
-            QDialog {{
+        self.setStyleSheet("""
+            QDialog {
                 background-color: #1a1c23;
                 border: 1px solid rgba(255, 255, 255, 0.12);
                 border-radius: 12px;
-            }}
-            QLabel {{
+            }
+            QLabel {
                 color: #FFFFFF;
-            }}
+            }
         """)
 
         layout = QVBoxLayout(self)
@@ -67,32 +69,32 @@ class NativeSteamActionDialog(QDialog):
         layout.setSpacing(14)
 
         # Title
-        title_lbl = QLabel("Steam Client Download")
-        title_lbl.setStyleSheet(f"font-size: 15pt; font-weight: bold; color: {self.accent_color};")
+        title_lbl = QLabel("Native Steam Installation")
+        title_lbl.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {self.accent_color};")
         layout.addWidget(title_lbl)
 
         # Game info
         info_lbl = QLabel(f"Target: <b style='color: #FFFFFF;'>{self.game_name}</b> (AppID: {self.app_id})")
-        info_lbl.setStyleSheet("font-size: 10pt; color: rgba(255, 255, 255, 0.85);")
+        info_lbl.setStyleSheet("font-size: 9.5pt; color: rgba(255, 255, 255, 0.85);")
         info_lbl.setWordWrap(True)
         layout.addWidget(info_lbl)
 
-        desc_lbl = QLabel("Select how you would like ASSella to proceed with this Steam download:")
-        desc_lbl.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.65);")
+        desc_lbl = QLabel("Select how to proceed with this Steam game:")
+        desc_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.65);")
         layout.addWidget(desc_lbl)
 
-        # Option A: Download & Track in ASSella
+        # Option A: Download with Steam
         self.track_btn = QPushButton()
         self.track_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.track_btn.setFixedHeight(68)
+        self.track_btn.setFixedHeight(64)
         self.track_btn.clicked.connect(self._on_track_clicked)
         track_layout = QVBoxLayout(self.track_btn)
         track_layout.setContentsMargins(14, 8, 14, 8)
         track_layout.setSpacing(2)
 
-        t_title = QLabel("Download and Track in ASSella")
+        t_title = QLabel("Download with Steam")
         t_title.setStyleSheet("font-size: 10pt; font-weight: bold; color: #FFFFFF; background: transparent;")
-        t_sub = QLabel("Steam downloads files while ASSella monitors progress, speeds, and completion.")
+        t_sub = QLabel("Registers licenses in SLSsteam and immediately starts downloading in Steam.")
         t_sub.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.65); background: transparent;")
         t_sub.setWordWrap(True)
         track_layout.addWidget(t_title)
@@ -100,18 +102,18 @@ class NativeSteamActionDialog(QDialog):
         self._style_option_btn(self.track_btn, primary=True)
         layout.addWidget(self.track_btn)
 
-        # Option B: Add to Steam & Hand Off
+        # Option B: Add to Steam only
         self.handoff_btn = QPushButton()
         self.handoff_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.handoff_btn.setFixedHeight(68)
+        self.handoff_btn.setFixedHeight(64)
         self.handoff_btn.clicked.connect(self._on_handoff_clicked)
         handoff_layout = QVBoxLayout(self.handoff_btn)
         handoff_layout.setContentsMargins(14, 8, 14, 8)
         handoff_layout.setSpacing(2)
 
-        h_title = QLabel("Add to Steam and Hand Off")
+        h_title = QLabel("Add to Steam only")
         h_title.setStyleSheet("font-size: 10pt; font-weight: bold; color: #FFFFFF; background: transparent;")
-        h_sub = QLabel("Registers game and depot keys in Steam library. Install manually in Steam whenever you want.")
+        h_sub = QLabel("Unlocks game and depot keys in your Steam library without starting download.")
         h_sub.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.65); background: transparent;")
         h_sub.setWordWrap(True)
         handoff_layout.addWidget(h_title)

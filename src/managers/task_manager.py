@@ -376,8 +376,8 @@ class TaskManager(QObject):
         vapor_action = self.settings.value("vapor_default_download_action", "ask", type=str)
         is_vapor_native = enable_vapor and (vapor_action == "native")
 
-        # In Vapor native mode with a single depot, immediately hand off without dialog or timer
-        if is_vapor_native and is_single:
+        # In Vapor native mode, immediately hand off without dialog or timer
+        if is_vapor_native:
             selected_depots = list(depots.keys())
             if self.game_data:
                 self.game_data["selected_depots_list"] = selected_depots
@@ -928,6 +928,85 @@ class TaskManager(QObject):
 
         t = threading.Thread(target=_watch, daemon=True)
         t.start()
+
+    def start_native_steam_handoff(
+        self,
+        app_id: str,
+        game_name: str = "",
+        auto_install: bool = True,
+        library_path: str = "",
+    ):
+        """
+        Direct asynchronous handoff to Steam client without manifest zip preprocessing
+        or depot selection dialogs.
+        """
+        app_id_str = str(app_id).strip()
+        name = game_name or f"App {app_id_str}"
+        logger.info(f"[TaskManager] start_native_steam_handoff: {name} ({app_id_str}), auto_install={auto_install}")
+
+        self.is_processing = True
+        self._is_handoff_job = True
+        self.game_data = {
+            "appid": app_id_str,
+            "game_name": name,
+            "library_path": library_path,
+        }
+        self.current_job = f"steam_handoff_{app_id_str}"
+        self.current_job_metadata = {"appid": app_id_str, "game_name": name, "auto_install": auto_install}
+
+        if self.main_window:
+            if hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                st = self.main_window.simplified_terminal
+                st.show_active_job(name, appid=app_id_str)
+                st.set_stage_status("download", "running")
+                if hasattr(st, "active_game_card") and st.active_game_card:
+                    st.active_game_card.set_sub_status("Handing off to Steam...")
+            if hasattr(self.main_window, "progress_bar") and self.main_window.progress_bar:
+                self.main_window.progress_bar.setVisible(True)
+                self.main_window.progress_bar.setRange(0, 0)
+            if hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
+                self.main_window.speed_label.setVisible(True)
+                self.main_window.speed_label.setText(f"Handing off {name} to Steam...")
+
+        def _do_handoff():
+            from core.native_steam.native_steam_handoff import perform_steam_handoff
+            def _update_msg(msg: str):
+                logger.info(f"[Handoff] {msg}")
+                if self.main_window and hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
+                    self.main_window.speed_label.setText(msg)
+                if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                    st = self.main_window.simplified_terminal
+                    if hasattr(st, "active_game_card") and st.active_game_card:
+                        st.active_game_card.set_sub_status(msg)
+            return perform_steam_handoff(
+                self.game_data,
+                selected_depots=[],
+                dest_path=library_path,
+                progress_cb=_update_msg,
+                auto_install=auto_install,
+            )
+
+        def _on_handoff_finished(result):
+            ok, msg = result
+            self._last_handoff_success = ok
+            if ok:
+                logger.info(f"[TaskManager] Handoff succeeded: {msg}")
+                if auto_install:
+                    self._start_vapor_install_watcher(app_id_str)
+            else:
+                logger.error(f"[TaskManager] Handoff failed: {msg}")
+
+            if self.main_window and hasattr(self.main_window, "progress_bar") and self.main_window.progress_bar:
+                self.main_window.progress_bar.setRange(0, 100)
+                self.main_window.progress_bar.setValue(100 if ok else 0)
+
+            self.job_finished()
+
+        from utils.task_runner import TaskRunner
+        self._handoff_runner = TaskRunner(self)
+        worker = self._handoff_runner.run(_do_handoff)
+        worker.finished.connect(_on_handoff_finished)
+        worker.error.connect(lambda err: (logger.error(f"[TaskManager] Handoff error: {err}"), _on_handoff_finished((False, str(err)))))
 
     def _on_download_complete(self):
         """Handle download completion"""
