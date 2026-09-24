@@ -1365,7 +1365,13 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
             dialog.sls_input.setEnabled(True)
         update_eos_btn_state(dialog)
         if hasattr(dialog, "ws_tab_btn") and dialog.ws_tab_btn:
-            if getattr(dialog, "_has_workshop", False):
+            is_vapor = bool(
+                dialog.game_data.get("is_vapor")
+                or dialog.game_data.get("is_plugin_game")
+                or dialog.game_data.get("update_status") == "vapor"
+                or dialog.game_data.get("source") == "Vapor"
+            )
+            if getattr(dialog, "_has_workshop", False) and not is_vapor:
                 dialog.ws_tab_btn.setVisible(True)
 
 

@@ -373,7 +373,13 @@ class GameDetailsDialogV2(QDialog):
             if label == "Workshop":
                 self.ws_tab_btn = btn
                 from utils.dlc_helpers import is_dlc_only_mode
-                if is_dlc_only_mode(self.appid) or not self._has_workshop:
+                is_vapor = bool(
+                    self.game_data.get("is_vapor")
+                    or self.game_data.get("is_plugin_game")
+                    or self.game_data.get("update_status") == "vapor"
+                    or self.game_data.get("source") == "Vapor"
+                )
+                if is_dlc_only_mode(self.appid) or not self._has_workshop or is_vapor:
                     btn.setVisible(False)
 
         tab_bar_layout.addStretch()
@@ -468,6 +474,14 @@ class GameDetailsDialogV2(QDialog):
             self._fetch_steamdb_builds_async()
 
     def _ensure_workshop_loaded(self):
+        is_vapor = bool(
+            self.game_data.get("is_vapor")
+            or self.game_data.get("is_plugin_game")
+            or self.game_data.get("update_status") == "vapor"
+            or self.game_data.get("source") == "Vapor"
+        )
+        if is_vapor:
+            return
         if getattr(self, "_workshop_scanned", False):
             return
         self._workshop_scanned = True
@@ -476,7 +490,13 @@ class GameDetailsDialogV2(QDialog):
     @pyqtSlot(bool)
     def _on_workshop_check_finished(self, has_ws: bool):
         from utils.dlc_helpers import is_dlc_only_mode
-        if is_dlc_only_mode(self.appid):
+        is_vapor = bool(
+            self.game_data.get("is_vapor")
+            or self.game_data.get("is_plugin_game")
+            or self.game_data.get("update_status") == "vapor"
+            or self.game_data.get("source") == "Vapor"
+        )
+        if is_dlc_only_mode(self.appid) or is_vapor:
             return
         if has_ws:
             self._has_workshop = True
@@ -703,6 +723,16 @@ class GameDetailsDialogV2(QDialog):
     #  Workshop Tab Delegations
     # ──────────────────────────────────────────
     def _init_workshop_tab(self):
+        is_vapor = bool(
+            self.game_data.get("is_vapor")
+            or self.game_data.get("is_plugin_game")
+            or self.game_data.get("update_status") == "vapor"
+            or self.game_data.get("source") == "Vapor"
+        )
+        if is_vapor:
+            dummy = QWidget()
+            self.stacked.addWidget(dummy)
+            return
         init_workshop_tab(self)
 
     def _scan_workshop_mods_async(self):

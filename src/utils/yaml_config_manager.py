@@ -283,8 +283,33 @@ def ensure_slssteam_prerequisites(config_path: Optional[Path] = None) -> bool:
 
 
 
+def get_yaml_boolean_value(config_path: Path, key: str, default: bool = False) -> bool:
+    """Get a boolean value from YAML config using regex matching."""
+    try:
+        if not config_path.exists():
+            return default
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        pattern = re.compile(
+            r"^[ \t]*"
+            + re.escape(key)
+            + r"[ \t]*:[ \t]*(yes|no|true|false|Yes|No|True|False)\b",
+            re.MULTILINE,
+        )
+        match = pattern.search(content)
+        if match:
+            val_str = match.group(1).lower()
+            return val_str in ("yes", "true", "1")
+        return default
+    except Exception as e:
+        logger.warning(f"Error reading '{key}' from {config_path}: {e}")
+        return default
+
+
 def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
-    """Update a boolean value in YAML config using regex pattern matching."""
+    """Update a boolean value in YAML config using regex pattern matching, appending if missing."""
     try:
         if not config_path.exists():
             logger.warning(f"Config file not found at {config_path}")
@@ -301,16 +326,17 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
             re.MULTILINE,
         )
 
+        new_value = "yes" if value else "no"
         match = pattern.search(content)
         if not match:
-            logger.warning(f"Key '{key}' not found in config file {config_path}")
-            return False
+            logger.info(f"Key '{key}' not found in {config_path}, appending '{key}: {new_value}'")
+            new_content = content.rstrip() + f"\n\n{key}: {new_value}\n"
+            if not _atomic_write(config_path, new_content):
+                return False
+            return True
 
         indent = match.group(1)
         old_value = match.group(2)
-
-        # Always use yes/no format for SLSsteam compatibility
-        new_value = "yes" if value else "no"
 
         # Check if already set correctly
         if old_value.lower() == new_value.lower():
@@ -321,7 +347,7 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
         replacement = f"{indent}{key}: {new_value}"
 
         # Replace only the matched line
-        new_content = pattern.sub(replacement, content)
+        new_content = pattern.sub(replacement, content, count=1)
 
         if not _atomic_write(config_path, new_content):
             return False
@@ -332,6 +358,123 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
     except OSError as e:
         logger.error(f"Failed to update '{key}' in {config_path}: {e}", exc_info=True)
         return False
+
+
+def calculate_file_sha256(file_path: Path) -> Optional[str]:
+    """Calculate SHA256 checksum of a file."""
+    if not file_path.is_file():
+        return None
+    try:
+        import hashlib
+        h = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception as e:
+        logger.error(f"Failed to calculate SHA256 for {file_path}: {e}")
+        return None
+
+
+def get_sls_plugins_dirs() -> List[Path]:
+    """Resolve target plugin directories based on detected Native/Flatpak Steam environments."""
+    dirs: List[Path] = []
+    try:
+        from core.steam_helpers import get_steam_env
+        env = get_steam_env()
+        primary_dir = env.sls_config_dir / "plugins"
+        dirs.append(primary_dir)
+
+        # Check if alternate environment exists on disk (Flatpak vs Native)
+        alt_base = (
+            Path.home() / ".config" / "SLSsteam"
+            if env.is_flatpak
+            else Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / ".config" / "SLSsteam"
+        )
+        if alt_base.exists():
+            alt_dir = alt_base / "plugins"
+            if alt_dir not in dirs:
+                dirs.append(alt_dir)
+    except Exception as e:
+        logger.warning(f"Error resolving SteamEnv for plugins: {e}")
+        dirs.append(Path.home() / ".config" / "SLSsteam" / "plugins")
+
+    return dirs
+
+
+def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
+    """Deploy a specific bundled plugin file to SLSsteam plugin directories.
+
+    Returns:
+        (success: bool, skipped: bool, message: str)
+        - skipped=True if all target locations already have the matching SHA-256.
+    """
+    from utils.paths import Paths
+    src_path = Paths.resource(f"plugins/{plugin_filename}")
+    if not src_path.is_file():
+        fallback = Path(__file__).resolve().parent.parent / "res" / "plugins" / plugin_filename
+        if fallback.is_file():
+            src_path = fallback
+        else:
+            return False, False, f"Bundled plugin '{plugin_filename}' not found."
+
+    src_hash = calculate_file_sha256(src_path)
+    if not src_hash:
+        return False, False, f"Could not compute hash for source plugin '{plugin_filename}'."
+
+    target_dirs = get_sls_plugins_dirs()
+    all_matched = True
+    any_deployed = False
+    errors = []
+
+    for tdir in target_dirs:
+        try:
+            tdir.mkdir(parents=True, exist_ok=True)
+            dst_file = tdir / plugin_filename
+            if dst_file.is_file():
+                dst_hash = calculate_file_sha256(dst_file)
+                if dst_hash == src_hash:
+                    logger.debug(f"Plugin {plugin_filename} at {dst_file} has matching hash {src_hash[:8]}, skipping.")
+                    continue
+
+            all_matched = False
+            shutil.copy2(src_path, dst_file)
+            any_deployed = True
+            logger.info(f"Deployed {plugin_filename} to {dst_file}")
+        except Exception as exc:
+            errors.append(f"{tdir}: {exc}")
+
+    if errors:
+        return False, False, f"Error deploying {plugin_filename}: {'; '.join(errors)}"
+
+    if all_matched and not any_deployed:
+        return True, True, f"{plugin_filename} is already up to date (SHA-256 matched). Skipped deployment."
+
+    return True, False, f"Successfully deployed {plugin_filename} to SLSsteam."
+
+
+def deploy_all_sls_plugins() -> Tuple[bool, List[str]]:
+    """Deploy all 3 required plugins: assella_bridge.lua, download.lua, spliced-tickets.lua."""
+    plugins = ["assella_bridge.lua", "download.lua", "spliced-tickets.lua"]
+    results = []
+    overall_ok = True
+    for p in plugins:
+        ok, skipped, msg = deploy_sls_plugin(p)
+        results.append(msg)
+        if not ok:
+            overall_ok = False
+    return overall_ok, results
+
+
+def are_sls_plugins_deployed() -> bool:
+    """Check if all 3 required plugins exist in at least the primary SLSsteam plugins directory."""
+    plugins = ["assella_bridge.lua", "download.lua", "spliced-tickets.lua"]
+    target_dirs = get_sls_plugins_dirs()
+    if not target_dirs:
+        return False
+    primary = target_dirs[0]
+    return all((primary / p).is_file() for p in plugins)
+
 
 
 def get_user_config_path() -> Path:

@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 from typing import Optional
+from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -16,37 +17,47 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.helpers import create_checkbox_setting
+from utils.yaml_config_manager import (
+    get_user_config_path,
+    get_yaml_boolean_value,
+    update_yaml_boolean_value,
+    deploy_sls_plugin,
+    deploy_all_sls_plugins,
+    are_sls_plugins_deployed,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def create_vapor_tab(dialog) -> QWidget:
     """
-    Create the dedicated Vapor (Beta) settings tab for native Steam and SLSsteam integration.
+    Create the dedicated Vapor settings tab for native Steam and SLSsteam integration.
     """
     tab = QWidget()
     layout = QVBoxLayout(tab)
     layout.setContentsMargins(16, 16, 16, 16)
     layout.setSpacing(16)
 
+    cfg_path = get_user_config_path()
+
     # -- 1. General Configuration Card --
     cfg_card, cfg_layout = dialog._create_card_frame("General Configuration")
 
-    # Option 1: Master Enable/Disable Toggle
+    # Read current state from SLSsteam config.yaml
+    sls_plugins_enabled = get_yaml_boolean_value(cfg_path, "Plugins", default=False)
+    saved_vapor_enabled = dialog.settings.value("enable_vapor", sls_plugins_enabled, type=bool)
+    initial_plugins_val = sls_plugins_enabled or saved_vapor_enabled
+
+    # Option 1: Plugin (SLSsteam Plugins Toggle)
     dialog.enable_vapor_checkbox = create_checkbox_setting(
-        "Enable Vapor (Native Steam Integration)",
+        "Plugins (Enable Lua Plugins in SLSsteam)",
         "enable_vapor",
-        False,
+        initial_plugins_val,
         dialog,
-        tooltip=None,
+        tooltip="Enables Lua plugins in SLSsteam required for Vapor downloads. Automatically deploys required plugins to your plugins folder.",
         show_description=False,
     )
-    dialog.enable_vapor_checkbox.toggled.connect(
-        lambda checked: (
-            dialog.settings.setValue("enable_vapor", checked),
-            dialog.settings.setValue("use_native_steam_download", checked),
-        )
-    )
+
     cfg_layout.addWidget(dialog.enable_vapor_checkbox)
 
     # Separator
@@ -55,7 +66,63 @@ def create_vapor_tab(dialog) -> QWidget:
     sep1.setStyleSheet("color: rgba(255,255,255,0.08); border: none; background: rgba(255,255,255,0.08); max-height: 1px;")
     cfg_layout.addWidget(sep1)
 
-    # Option 2: Default Download Behavior
+    # Option 2: Disable updates (SLSsteam AdditionalApps)
+    # Recommended to have on. Also auto-on if proxy is active.
+    proxy_active = False
+    try:
+        from utils.isp_bypass import TorManager
+        proxy_active = TorManager.is_proxy_active()
+    except Exception:
+        pass
+
+    sls_disable_updates = get_yaml_boolean_value(cfg_path, "DisableUpdates", default=(proxy_active or initial_plugins_val or True))
+    saved_disable_updates = dialog.settings.value("vapor_disable_updates", sls_disable_updates, type=bool)
+
+    dialog.vapor_disable_updates_checkbox = create_checkbox_setting(
+        "Disable updates (SLSsteam AdditionalApps)",
+        "vapor_disable_updates",
+        saved_disable_updates,
+        dialog,
+        tooltip="Recommended. Prevents Steam from attempting to update unowned AdditionalApps. Automatically turns on when plugins or proxy are enabled.",
+        show_description=False,
+    )
+    cfg_layout.addWidget(dialog.vapor_disable_updates_checkbox)
+
+    # Wire up Disable updates toggle
+    def _on_disable_updates_toggled(checked: bool):
+        dialog.settings.setValue("vapor_disable_updates", checked)
+        update_yaml_boolean_value(cfg_path, "DisableUpdates", checked)
+
+    dialog.vapor_disable_updates_checkbox.toggled.connect(_on_disable_updates_toggled)
+
+    # Wire up Plugin toggle (replaces old enable_vapor behavior)
+    def _on_plugin_toggled(checked: bool):
+        dialog.settings.setValue("enable_vapor", checked)
+        dialog.settings.setValue("use_native_steam_download", checked)
+        update_yaml_boolean_value(cfg_path, "Plugins", checked)
+
+        if checked:
+            # Condition: deploy the three required plugins into plugins folder
+            deploy_all_sls_plugins()
+
+            # Disable updates has to turn on if user enabled plugins / proxy
+            if hasattr(dialog, "vapor_disable_updates_checkbox") and dialog.vapor_disable_updates_checkbox:
+                if not dialog.vapor_disable_updates_checkbox.isChecked():
+                    dialog.vapor_disable_updates_checkbox.setChecked(True)
+                    dialog.settings.setValue("vapor_disable_updates", True)
+                    update_yaml_boolean_value(cfg_path, "DisableUpdates", True)
+
+        _update_plugin_status()
+
+    dialog.enable_vapor_checkbox.toggled.connect(_on_plugin_toggled)
+
+    # Separator
+    sep2 = QFrame()
+    sep2.setFrameShape(QFrame.Shape.HLine)
+    sep2.setStyleSheet("color: rgba(255,255,255,0.08); border: none; background: rgba(255,255,255,0.08); max-height: 1px;")
+    cfg_layout.addWidget(sep2)
+
+    # Option 3: Default Download Behavior
     act_row = QHBoxLayout()
     act_row.setContentsMargins(4, 4, 4, 4)
     act_row.setSpacing(12)
@@ -91,12 +158,12 @@ def create_vapor_tab(dialog) -> QWidget:
     cfg_layout.addLayout(act_row)
 
     # Separator
-    sep2 = QFrame()
-    sep2.setFrameShape(QFrame.Shape.HLine)
-    sep2.setStyleSheet("color: rgba(255,255,255,0.08); border: none; background: rgba(255,255,255,0.08); max-height: 1px;")
-    cfg_layout.addWidget(sep2)
+    sep3 = QFrame()
+    sep3.setFrameShape(QFrame.Shape.HLine)
+    sep3.setStyleSheet("color: rgba(255,255,255,0.08); border: none; background: rgba(255,255,255,0.08); max-height: 1px;")
+    cfg_layout.addWidget(sep3)
 
-    # Option 3: Always Start Installation Immediately Toggle
+    # Option 4: Always Start Installation Immediately Toggle (Default: True)
     dialog.vapor_start_immediate_checkbox = create_checkbox_setting(
         "Always start installation immediately in Steam",
         "vapor_start_download_immediately",
@@ -109,26 +176,6 @@ def create_vapor_tab(dialog) -> QWidget:
         lambda checked: dialog.settings.setValue("vapor_start_download_immediately", checked)
     )
     cfg_layout.addWidget(dialog.vapor_start_immediate_checkbox)
-
-    # Separator
-    sep3 = QFrame()
-    sep3.setFrameShape(QFrame.Shape.HLine)
-    sep3.setStyleSheet("color: rgba(255,255,255,0.08); border: none; background: rgba(255,255,255,0.08); max-height: 1px;")
-    cfg_layout.addWidget(sep3)
-
-    # Option 4: Simplified Depot Selection for Vapor
-    dialog.vapor_depot_checklist_checkbox = create_checkbox_setting(
-        "Show depot checklist for multi-depot games (No storage picker)",
-        "vapor_show_depot_checklist",
-        True,
-        dialog,
-        tooltip=None,
-        show_description=False,
-    )
-    dialog.vapor_depot_checklist_checkbox.toggled.connect(
-        lambda checked: dialog.settings.setValue("vapor_show_depot_checklist", checked)
-    )
-    cfg_layout.addWidget(dialog.vapor_depot_checklist_checkbox)
 
     layout.addWidget(cfg_card)
 
@@ -146,18 +193,21 @@ def create_vapor_tab(dialog) -> QWidget:
     sls_status_lbl.setStyleSheet("font-size: 9pt;")
     status_row.addWidget(sls_status_lbl)
 
-    # Plugin status check
-    plugin_path = os.path.expanduser("~/.config/SLSsteam/plugins/download.lua")
-    flatpak_plugin_path = os.path.expanduser("~/.var/app/com.valvesoftware.Steam/.config/SLSsteam/plugins/download.lua")
-    plugin_present = os.path.exists(plugin_path) or os.path.exists(flatpak_plugin_path)
-    plugin_status_lbl = QLabel(
-        f"<b>Download Plugin:</b> {'<font color=\"#44bb44\">Deployed</font>' if plugin_present else '<font color=\"#ffaa00\">Missing</font>'}"
-    )
+    # Plugin status check for all 3 plugins
+    plugin_status_lbl = QLabel()
     plugin_status_lbl.setStyleSheet("font-size: 9pt;")
     status_row.addWidget(plugin_status_lbl)
+
+    def _update_plugin_status():
+        all_deployed = are_sls_plugins_deployed()
+        plugin_status_lbl.setText(
+            f"<b>Plugins:</b> {'<font color=\"#44bb44\">All Deployed</font>' if all_deployed else '<font color=\"#ffaa00\">Incomplete</font>'}"
+        )
+
+    _update_plugin_status()
     diag_layout.addLayout(status_row)
 
-    # Actions row
+    # Actions row for repair/sync
     action_btns_layout = QHBoxLayout()
     action_btns_layout.setSpacing(10)
 
@@ -168,11 +218,11 @@ def create_vapor_tab(dialog) -> QWidget:
     def _on_sync_clicked():
         try:
             from utils.assfixer import repair_and_sync_config, get_user_config_path
-            cfg_path = get_user_config_path()
-            if not cfg_path.exists():
-                QMessageBox.warning(dialog, "Config Not Found", f"SLSsteam config file not found at: {cfg_path}")
+            cfg_p = get_user_config_path()
+            if not cfg_p.exists():
+                QMessageBox.warning(dialog, "Config Not Found", f"SLSsteam config file not found at: {cfg_p}")
                 return
-            ok, msg = repair_and_sync_config(cfg_path, online=True)
+            ok, msg = repair_and_sync_config(cfg_p, online=True)
             if ok:
                 QMessageBox.information(dialog, "Config Synced", "SLSsteam config.yaml verified and synced with upstream template!")
             else:
@@ -183,51 +233,100 @@ def create_vapor_tab(dialog) -> QWidget:
 
     sync_cfg_btn.clicked.connect(_on_sync_clicked)
     action_btns_layout.addWidget(sync_cfg_btn)
-
-    deploy_plugin_btn = QPushButton("Re-deploy Download Plugins")
-    deploy_plugin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    deploy_plugin_btn.setStyleSheet("padding: 6px 14px; font-size: 9pt;")
-
-    def _on_deploy_plugins():
-        try:
-            import shutil
-            from pathlib import Path
-            src_plugin = Path(__file__).resolve().parents[3] / "res" / "plugins" / "download.lua"
-            if not src_plugin.exists():
-                QMessageBox.warning(dialog, "Plugin Missing", "Bundled download.lua plugin not found in application assets.")
-                return
-
-            targets = [
-                Path.home() / ".config/SLSsteam/plugins",
-                Path.home() / ".var/app/com.valvesoftware.Steam/.config/SLSsteam/plugins",
-            ]
-            deployed = 0
-            for tgt in targets:
-                if tgt.parent.exists():
-                    tgt.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_plugin, tgt / "download.lua")
-                    deployed += 1
-
-            QMessageBox.information(
-                dialog,
-                "Plugins Deployed",
-                f"Successfully deployed download.lua to {deployed} SLSsteam location(s)."
-            )
-        except Exception as exc:
-            logger.error(f"[VaporTab] Failed deploying plugins: {exc}")
-            QMessageBox.critical(dialog, "Deploy Error", f"Failed to deploy plugins: {exc}")
-
-    deploy_plugin_btn.clicked.connect(_on_deploy_plugins)
-    action_btns_layout.addWidget(deploy_plugin_btn)
+    action_btns_layout.addStretch()
 
     diag_layout.addLayout(action_btns_layout)
     layout.addWidget(diag_card)
 
-    # Dynamic widget enablement based on enable_vapor checkbox
+    # -- 3. Deploy Card (Bottom Card) --
+    deploy_card, deploy_layout = dialog._create_card_frame("Deploy")
+
+    deploy_desc = QLabel(
+        "Deploy bundled Lua plugins to your SLSsteam plugins folder. "
+        "Files with matching SHA-256 checksums are automatically skipped."
+    )
+    deploy_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    deploy_desc.setWordWrap(True)
+    deploy_layout.addWidget(deploy_desc)
+
+    deploy_btns_row = QHBoxLayout()
+    deploy_btns_row.setSpacing(12)
+
+    btn_style = """
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.08);
+            color: #FFFFFF;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            padding: 7px 16px;
+            font-size: 9pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        QPushButton:disabled {
+            background-color: rgba(255, 255, 255, 0.02);
+            color: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.05);
+        }
+    """
+
+    def _deploy_single(filename: str, title: str):
+        try:
+            ok, skipped, msg = deploy_sls_plugin(filename)
+            _update_plugin_status()
+            if not ok:
+                QMessageBox.warning(dialog, f"{title}", f"Failed deploying {filename}:\n{msg}")
+            elif skipped:
+                QMessageBox.information(
+                    dialog,
+                    f"{title}",
+                    f"{title} ({filename}) is already up to date.\nSHA-256 checksum matches — skipped deployment."
+                )
+            else:
+                QMessageBox.information(
+                    dialog,
+                    f"{title}",
+                    f"Successfully deployed {title} ({filename}) to SLSsteam plugins folder."
+                )
+        except Exception as exc:
+            logger.error(f"[VaporTab] Deploy {filename} error: {exc}")
+            QMessageBox.critical(dialog, "Deploy Error", f"Error deploying {filename}: {exc}")
+
+    # Button 1: Lua Plugin (download.lua)
+    lua_plugin_btn = QPushButton("Lua Plugin")
+    lua_plugin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    lua_plugin_btn.setStyleSheet(btn_style)
+    lua_plugin_btn.setToolTip("Deploy download.lua to SLSsteam plugins directory")
+    lua_plugin_btn.clicked.connect(lambda: _deploy_single("download.lua", "Lua Plugin"))
+    deploy_btns_row.addWidget(lua_plugin_btn)
+
+    # Button 2: Spliced Plugin (spliced-tickets.lua)
+    spliced_plugin_btn = QPushButton("Spliced Plugin")
+    spliced_plugin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    spliced_plugin_btn.setStyleSheet(btn_style)
+    spliced_plugin_btn.setToolTip("Deploy spliced-tickets.lua to SLSsteam plugins directory")
+    spliced_plugin_btn.clicked.connect(lambda: _deploy_single("spliced-tickets.lua", "Spliced Plugin"))
+    deploy_btns_row.addWidget(spliced_plugin_btn)
+
+    # Button 3: ASSella (assella_bridge.lua)
+    assella_btn = QPushButton("ASSella")
+    assella_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    assella_btn.setStyleSheet(btn_style)
+    assella_btn.setToolTip("Deploy assella_bridge.lua to SLSsteam plugins directory")
+    assella_btn.clicked.connect(lambda: _deploy_single("assella_bridge.lua", "ASSella Plugin"))
+    deploy_btns_row.addWidget(assella_btn)
+
+    deploy_layout.addLayout(deploy_btns_row)
+    layout.addWidget(deploy_card)
+
+    # Dynamic widget enablement based on enable_vapor / plugins checkbox
     def _update_enabled_states(enabled: bool):
         dialog.vapor_download_action_combo.setEnabled(enabled)
         dialog.vapor_start_immediate_checkbox.setEnabled(enabled)
-        dialog.vapor_depot_checklist_checkbox.setEnabled(enabled)
+        dialog.vapor_disable_updates_checkbox.setEnabled(enabled)
 
     dialog.enable_vapor_checkbox.toggled.connect(_update_enabled_states)
     _update_enabled_states(dialog.enable_vapor_checkbox.isChecked())

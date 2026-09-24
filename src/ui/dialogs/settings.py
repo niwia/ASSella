@@ -91,9 +91,9 @@ class SettingsDialog(QDialog):
         self.workshop_max_dl_spinbox = None
         self.workshop_cell_id_input = None
         self.enable_vapor_checkbox = None
+        self.vapor_disable_updates_checkbox = None
         self.vapor_download_action_combo = None
         self.vapor_start_immediate_checkbox = None
-        self.vapor_depot_checklist_checkbox = None
         self.current_font = QFont()
         self.morrenus_stats_widget = None
         self.morrenus_tab_initialized = False
@@ -819,6 +819,31 @@ class SettingsDialog(QDialog):
             val = self.enable_vapor_checkbox.isChecked()
             self.settings.setValue("enable_vapor", val)
             self.settings.setValue("use_native_steam_download", val)
+            try:
+                from utils.yaml_config_manager import (
+                    get_user_config_path,
+                    update_yaml_boolean_value,
+                    deploy_all_sls_plugins,
+                )
+                cfg = get_user_config_path()
+                update_yaml_boolean_value(cfg, "Plugins", val)
+                if val:
+                    deploy_all_sls_plugins()
+            except Exception as e:
+                logger.warning(f"Error syncing SLS Plugins setting: {e}")
+
+        if hasattr(self, "vapor_disable_updates_checkbox") and self.vapor_disable_updates_checkbox is not None:
+            val = self.vapor_disable_updates_checkbox.isChecked()
+            self.settings.setValue("vapor_disable_updates", val)
+            try:
+                from utils.yaml_config_manager import (
+                    get_user_config_path,
+                    update_yaml_boolean_value,
+                )
+                cfg = get_user_config_path()
+                update_yaml_boolean_value(cfg, "DisableUpdates", val)
+            except Exception as e:
+                logger.warning(f"Error syncing SLS DisableUpdates setting: {e}")
 
         if hasattr(self, "vapor_download_action_combo") and self.vapor_download_action_combo is not None:
             action = self.vapor_download_action_combo.currentData() or "ask"
@@ -829,12 +854,6 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "vapor_start_download_immediately",
                 self.vapor_start_immediate_checkbox.isChecked(),
-            )
-
-        if hasattr(self, "vapor_depot_checklist_checkbox") and self.vapor_depot_checklist_checkbox is not None:
-            self.settings.setValue(
-                "vapor_show_depot_checklist",
-                self.vapor_depot_checklist_checkbox.isChecked(),
             )
 
     def _save_style_settings(self) -> bool:
