@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Union, List
 
 import requests
+import sqlite3
 
 # Set up logging
 logger = logging.getLogger("vapor")
@@ -69,57 +70,152 @@ except ImportError:
         HAS_MORRENUS = False
 
 
-class WudrmMRCFetcher:
-    """Fetches Manifest Request Codes (MRC) from wudrm service."""
+def _get_mrc_db_path() -> Path:
+    """Returns Path to db/mrc_cache.db for persistent MRC code caching."""
+    try:
+        from utils.helpers import get_base_path
+        base = get_base_path()
+    except Exception:
+        base = Path.home() / ".local" / "share" / "ACCELA"
+    db_dir = base / "db"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    return db_dir / "mrc_cache.db"
 
-    def __init__(self, max_tries: int = 3, timeout: int = 5):
+
+class WudrmMRCFetcher:
+    """Fetches Manifest Request Codes (MRC) from wudrm service with smart retries and persistent caching."""
+
+    def __init__(self, max_tries: int = 5, timeout: int = 5):
         self.max_tries = max_tries
         self.timeout = timeout
         self.base_url = "http://gmrc.wudrm.com/manifest/"
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "ASSella-Vapor/1.0 (X11; Linux x86_64)",
-            "Accept": "text/plain",
+            "Accept": "*/*",
         })
+        self._memory_cache: Dict[str, str] = {}
+        self._db_path = _get_mrc_db_path()
+        self._init_db()
+
+    def _init_db(self) -> None:
+        try:
+            with sqlite3.connect(str(self._db_path)) as conn:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS mrc_cache ("
+                    "manifest_id TEXT PRIMARY KEY, "
+                    "mrc TEXT NOT NULL, "
+                    "created_at REAL NOT NULL"
+                    ")"
+                )
+                conn.commit()
+        except Exception as e:
+            logger.debug(f"[MRC Cache] Failed to initialize SQLite cache table: {e}")
+
+    def _get_cached_mrc(self, manifest_id_str: str) -> Optional[str]:
+        try:
+            with sqlite3.connect(str(self._db_path), timeout=2) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT mrc FROM mrc_cache WHERE manifest_id = ?", (manifest_id_str,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return str(row[0])
+        except Exception as e:
+            logger.debug(f"[MRC Cache] Error reading cache for {manifest_id_str}: {e}")
+        return None
+
+    def _save_cached_mrc(self, manifest_id_str: str, mrc: str) -> None:
+        try:
+            with sqlite3.connect(str(self._db_path), timeout=2) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO mrc_cache (manifest_id, mrc, created_at) VALUES (?, ?, ?)",
+                    (manifest_id_str, mrc, time.time())
+                )
+                conn.commit()
+        except Exception as e:
+            logger.debug(f"[MRC Cache] Error saving cache for {manifest_id_str}: {e}")
 
     def get_manifest_request_code(self, manifest_id: Union[str, int]) -> Optional[str]:
         """
         Fetches the 64-bit Manifest Request Code for a given manifest GID.
+        Checks in-memory cache and persistent SQLite cache first.
+        If missing, queries wudrm with smart retries (handling 503/429/timeouts with backoff,
+        and failing fast on fatal 400/404s).
         Returns the MRC string or None on failure.
         """
         manifest_id_str = str(manifest_id).strip()
+
+        # 1. Fast in-memory cache hit (0.001ms)
+        if manifest_id_str in self._memory_cache:
+            logger.debug(f"[MRC Cache] Memory cache hit for {manifest_id_str}: {self._memory_cache[manifest_id_str]}")
+            return self._memory_cache[manifest_id_str]
+
+        # 2. Persistent SQLite cache hit
+        cached_mrc = self._get_cached_mrc(manifest_id_str)
+        if cached_mrc:
+            self._memory_cache[manifest_id_str] = cached_mrc
+            logger.info(f"[MRC Cache] Persistent cache hit for {manifest_id_str}: {cached_mrc}")
+            return cached_mrc
+
+        # 3. Smart Network Fetch with Retry Budget
         url = f"{self.base_url}{manifest_id_str}"
+        delays = [1.0, 1.5, 2.0, 2.5, 3.0]
 
         for attempt in range(1, self.max_tries + 1):
             try:
                 logger.debug(f"Attempt {attempt}/{self.max_tries}: Requesting MRC for {manifest_id_str} from {url}")
                 response = self.session.get(url, timeout=self.timeout)
 
+                # Fatal client errors -> Fail fast immediately, do not waste retry budget
+                if response.status_code in (400, 404):
+                    logger.warning(
+                        f"Attempt {attempt}/{self.max_tries}: MRC server returned fatal HTTP {response.status_code} "
+                        f"for {manifest_id_str}. Fast-failing to Hubcap fallback."
+                    )
+                    return None
+
                 if response.status_code == 200:
                     code_str = response.text.strip()
                     if not code_str:
-                        logger.warning(f"Attempt {attempt}: Empty MRC response for {manifest_id_str}")
+                        logger.warning(f"Attempt {attempt}/{self.max_tries}: Empty MRC response for {manifest_id_str}")
                         continue
 
                     # Validate that the response is a valid integer uint64
                     try:
                         int(code_str)
                         logger.info(f"Retrieved MRC for manifest {manifest_id_str}: {code_str}")
+                        self._memory_cache[manifest_id_str] = code_str
+                        self._save_cached_mrc(manifest_id_str, code_str)
                         return code_str
                     except ValueError:
-                        logger.warning(f"Attempt {attempt}: Invalid MRC response (not a number): {code_str[:60]}")
+                        logger.warning(
+                            f"Attempt {attempt}/{self.max_tries}: Invalid MRC response (not a number): {code_str[:60]}"
+                        )
                         continue
+                elif response.status_code in (503, 429, 502, 504):
+                    logger.warning(
+                        f"Attempt {attempt}/{self.max_tries}: MRC server returned HTTP {response.status_code} "
+                        f"for {manifest_id_str} (server busy/generating code)"
+                    )
                 else:
-                    logger.warning(f"Attempt {attempt}: MRC server returned HTTP {response.status_code} for {manifest_id_str}")
+                    logger.warning(
+                        f"Attempt {attempt}/{self.max_tries}: MRC server returned HTTP {response.status_code} "
+                        f"for {manifest_id_str}"
+                    )
 
             except requests.exceptions.RequestException as e:
-                logger.warning(f"Attempt {attempt}: Network error requesting MRC for {manifest_id_str}: {e}")
+                logger.warning(f"Attempt {attempt}/{self.max_tries}: Network error requesting MRC for {manifest_id_str}: {e}")
 
             if attempt < self.max_tries:
-                time.sleep(0.5 * attempt)
+                delay = delays[attempt - 1] if attempt - 1 < len(delays) else 2.0
+                time.sleep(delay)
 
-        logger.error(f"Failed to fetch MRC for manifest {manifest_id_str} after {self.max_tries} attempts")
+        logger.error(
+            f"Failed to fetch MRC for manifest {manifest_id_str} after {self.max_tries} attempts. "
+            f"Proceeding to Hubcap fallback."
+        )
         return None
+
 
 
 class SteamCDNDownloader:
@@ -306,7 +402,7 @@ def generate_single_manifest(
     logger.info(f"[Fallback/Hubcap] Falling back to Hubcap API for Depot {depot_str}, GID {manifest_str}...")
     if HAS_MORRENUS and morrenus_api is not None:
         try:
-            raw_bytes, err = morrenus_api.generate_single_manifest(depot_str, manifest_str)
+            raw_bytes, err = morrenus_api.generate_single_manifest(depot_str, manifest_str, force_hubcap=True)
             if raw_bytes and not err:
                 logger.info(f"[Fallback/Hubcap] SUCCESS: Retrieved {len(raw_bytes)} bytes from Hubcap API")
                 return raw_bytes, None
