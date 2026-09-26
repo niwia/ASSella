@@ -932,8 +932,20 @@ class TaskManager(QObject):
                                 m = re.search(r'"StateFlags"\s+"(\d+)"', text)
                                 if m and m.group(1) == "4":
                                     logger.info(
-                                        f"[VaporWatcher] Steam download completed for AppID {appid}. Refreshing library..."
+                                        f"[VaporWatcher] Steam download completed for AppID {appid} (StateFlags=4). "
+                                        "Marking up_to_date and refreshing library..."
                                     )
+                                    # Now that Steam confirmed the download, set the status.
+                                    # This is deferred from job_finished() so that wudrm/MRC
+                                    # failures during download don't produce a false up_to_date.
+                                    try:
+                                        from utils.update_status_cache import get_update_cache
+                                        cache = get_update_cache()
+                                        cache.set_status(appid, "up_to_date")
+                                        cache.save_async()
+                                        logger.info(f"[VaporWatcher] Set up_to_date for appid={appid} after confirmed Steam download")
+                                    except Exception as _cache_err:
+                                        logger.debug(f"[VaporWatcher] Error updating status cache for {appid}: {_cache_err}")
                                     if (
                                         self.main_window
                                         and hasattr(self.main_window, "game_manager")
@@ -943,6 +955,12 @@ class TaskManager(QObject):
                                     return
                             except Exception:
                                 pass
+                # Watcher timed out — Steam never reached StateFlags=4 within 30 minutes.
+                # The download likely failed (e.g. wudrm/MRC unavailable). Do NOT mark up_to_date.
+                logger.warning(
+                    f"[VaporWatcher] Timed out waiting for Steam to complete AppID {appid} download. "
+                    "Update status will remain as-is (not marked up_to_date)."
+                )
             except Exception as e:
                 logger.debug(f"[VaporWatcher] Error in watcher thread for AppID {appid}: {e}")
 
@@ -1286,6 +1304,17 @@ class TaskManager(QObject):
                 from utils.update_status_cache import get_update_cache
                 appid = self.game_data.get("appid", "")
                 if appid and appid not in ("0", "N/A", "unknown"):
+                    # For handoff jobs (native Steam download), we do NOT mark up_to_date here.
+                    # Steam is still downloading in the background. The VaporWatcher will set
+                    # up_to_date once StateFlags=4 is confirmed in the ACF. Without this guard,
+                    # if gmrc.wudrm.com is unreachable Steam's MRC fetch fails and the download
+                    # stalls, yet ASSella would incorrectly show the game as up_to_date.
+                    is_handoff = getattr(self, "_is_handoff_job", False)
+                    if is_handoff:
+                        logger.info(
+                            f"[JobFinished] Handoff job for appid={appid} — deferring up_to_date "
+                            "to VaporWatcher (Steam download still in progress)"
+                        )
                     # Set status to up_to_date so the post-download rescan restores
                     # the correct status immediately. Without this, the game would stay
                     # at "checking" indefinitely because _on_initial_scan_complete
@@ -1293,7 +1322,7 @@ class TaskManager(QObject):
                     # itself after boot and never runs again for subsequent rescans.
                     # Skip for rollback installs — user chose an older build, so keep
                     # the game showing "update_available".
-                    if not self.game_data.get("_is_rollback"):
+                    elif not self.game_data.get("_is_rollback"):
                         cache = get_update_cache()
                         cache.set_status(appid, "up_to_date")
                         cache.save_async()
