@@ -1915,8 +1915,9 @@ class DepotSelectionDialog(QDialog):
             """)
             for i in range(max_direct_buttons, len(storage_paths)):
                 spath = storage_paths[i]
-                lbl_text, tip_text = _format_storage_info(spath)
-                self._more_storage_combo.addItem(lbl_text, spath)
+                lbl_text, free_str, tip_text = _format_storage_info(spath)
+                item_text = f"{lbl_text} ({free_str})" if free_str else lbl_text
+                self._more_storage_combo.addItem(item_text, spath)
 
             def _on_combo_changed(index):
                 if index > 0:

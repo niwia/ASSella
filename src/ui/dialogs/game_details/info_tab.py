@@ -1651,6 +1651,7 @@ def update_status_ui(dialog, status) -> None:
     sub = last_chk if last_chk != "Never" else "Click to check"
 
     from utils.color_utils import get_semantic_colors
+    sem_colors = get_semantic_colors(ac)
     if status == "vapor" or dialog.game_data.get("is_vapor") or dialog.game_data.get("is_plugin_game"):
         title = "VAPOR"
         sub = "Steam Native / SLSsteam"
