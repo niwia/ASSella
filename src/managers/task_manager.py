@@ -705,31 +705,42 @@ class TaskManager(QObject):
 
         if use_native_steam:
             if action_mode == "ask":
-                from ui.dialogs.native_steam_action_dialog import (
-                    NativeSteamActionDialog,
-                    ACTION_TRACK,
-                    ACTION_CANCEL,
-                )
-                appid_str = str(self.game_data.get("appid", ""))
-                game_title = self.game_data.get("game_name", f"App {appid_str}")
-                accent_c = getattr(self.main_window, "accent_color", "#6c5ce7")
-                dlg = NativeSteamActionDialog(
-                    parent=self.main_window,
-                    app_id=appid_str,
-                    game_name=game_title,
-                    accent_color=accent_c,
-                )
-                dlg.exec()
-                action = dlg.get_action()
-                if action == ACTION_CANCEL:
-                    logger.info("[TaskManager] User cancelled native Steam download action dialog")
-                    self.job_finished()
-                    return
-                if dlg.should_remember():
-                    saved_val = "track" if action == ACTION_TRACK else "handoff"
-                    self.settings.setValue("native_steam_default_action", saved_val)
-                    logger.info(f"[TaskManager] Remembered default native Steam action: {saved_val}")
-                chosen_action = "track" if action == ACTION_TRACK else "handoff"
+                # For updates to already-installed games, never show the mode dialog —
+                # the user already chose their preferred mode at install time. Default to
+                # "handoff" (the same path used when at0m_default_download_action="native")
+                # so updates go straight through without interruption.
+                if getattr(self, "_pre_existing_install", False):
+                    logger.info(
+                        "[TaskManager] Skipping mode dialog for update (pre-existing install) — "
+                        "defaulting to handoff"
+                    )
+                    chosen_action = "handoff"
+                else:
+                    from ui.dialogs.native_steam_action_dialog import (
+                        NativeSteamActionDialog,
+                        ACTION_TRACK,
+                        ACTION_CANCEL,
+                    )
+                    appid_str = str(self.game_data.get("appid", ""))
+                    game_title = self.game_data.get("game_name", f"App {appid_str}")
+                    accent_c = getattr(self.main_window, "accent_color", "#6c5ce7")
+                    dlg = NativeSteamActionDialog(
+                        parent=self.main_window,
+                        app_id=appid_str,
+                        game_name=game_title,
+                        accent_color=accent_c,
+                    )
+                    dlg.exec()
+                    action = dlg.get_action()
+                    if action == ACTION_CANCEL:
+                        logger.info("[TaskManager] User cancelled native Steam download action dialog")
+                        self.job_finished()
+                        return
+                    if dlg.should_remember():
+                        saved_val = "track" if action == ACTION_TRACK else "handoff"
+                        self.settings.setValue("native_steam_default_action", saved_val)
+                        logger.info(f"[TaskManager] Remembered default native Steam action: {saved_val}")
+                    chosen_action = "track" if action == ACTION_TRACK else "handoff"
             else:
                 chosen_action = action_mode
 
