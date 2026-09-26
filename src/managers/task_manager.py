@@ -687,60 +687,129 @@ class TaskManager(QObject):
         )
         legacy_native = self.settings.value("use_native_steam_download", True, type=bool)
 
+        explicit_backend = self.game_data.get("download_backend") if self.game_data else None
+        appid_str = str(self.game_data.get("appid", "")).strip() if self.game_data else ""
+        game_title = self.game_data.get("game_name", f"App {appid_str}") if self.game_data else f"App {appid_str}"
+        accent_c = getattr(self.main_window, "accent_color", "#6c5ce7")
+
         use_native_steam = False
         action_mode = "ask"
 
-        if enable_at0m:
+        if getattr(self, "_pre_existing_install", False):
+            # Check how this existing installation was managed
+            is_plugin_game = False
+            if self.game_data:
+                if (
+                    self.game_data.get("is_plugin_game")
+                    or self.game_data.get("source") == "Plugin/Native"
+                    or self.game_data.get("is_vapor")
+                    or self.game_data.get("is_atom")
+                ):
+                    is_plugin_game = True
+                elif appid_str and appid_str not in ("0", "N/A", "unknown"):
+                    try:
+                        from utils.plugin_games import get_plugin_game
+                        if get_plugin_game(appid_str):
+                            is_plugin_game = True
+                    except Exception:
+                        pass
+
+            is_accela_game = False
+            if self.game_data:
+                if (
+                    self.game_data.get("source") == "ACCELA"
+                    or self.game_data.get("accela_marker_path")
+                ):
+                    is_accela_game = True
+                else:
+                    try:
+                        game_dir = get_game_directory(dest_path, self.game_data)
+                        if game_dir and os.path.isdir(game_dir):
+                            for m in (".accela", ".depotdownloader", ".ACCELA", ".DepotDownloader"):
+                                if os.path.exists(os.path.join(game_dir, m)):
+                                    is_accela_game = True
+                                    break
+                    except Exception:
+                        pass
+
+            if is_plugin_game and not is_accela_game:
+                logger.info(
+                    f"[TaskManager] Update for pre-existing Plugin/Native Steam game '{game_title}' — "
+                    "defaulting to handoff"
+                )
+                use_native_steam = True
+                action_mode = "handoff"
+            else:
+                logger.info(
+                    f"[TaskManager] Update for pre-existing ACCELA game '{game_title}' — "
+                    "using ASSella Downloader backend"
+                )
+                use_native_steam = False
+        elif explicit_backend == "assella":
+            logger.info(f"[TaskManager] Job explicitly requested ASSella Downloader for '{game_title}'")
+            use_native_steam = False
+        elif explicit_backend == "native":
+            logger.info(f"[TaskManager] Job explicitly requested Native Steam for '{game_title}'")
+            use_native_steam = True
+            action_mode = "handoff"
+        elif enable_at0m:
             if at0m_action == "native":
                 use_native_steam = True
                 action_mode = "handoff"
             elif at0m_action == "assella":
                 use_native_steam = False
             else:  # "ask"
-                use_native_steam = True
-                action_mode = "ask"
+                from ui.dialogs.download_backend_dialog import (
+                    DownloadBackendDialog,
+                    BACKEND_CANCEL,
+                    BACKEND_ASSELLA,
+                    BACKEND_NATIVE_STEAM,
+                )
+                dlg = DownloadBackendDialog(
+                    parent=self.main_window,
+                    app_id=appid_str,
+                    game_name=game_title,
+                    accent_color=accent_c,
+                )
+                dlg.exec()
+                choice = dlg.get_choice()
+                if choice == BACKEND_CANCEL:
+                    logger.info("[TaskManager] User cancelled download backend selection")
+                    self.job_finished()
+                    return
+                elif choice == BACKEND_ASSELLA:
+                    use_native_steam = False
+                elif choice == BACKEND_NATIVE_STEAM:
+                    use_native_steam = True
+                    action_mode = "handoff"
         elif legacy_native:
             use_native_steam = True
             action_mode = self.settings.value("native_steam_default_action", "ask", type=str)
 
         if use_native_steam:
             if action_mode == "ask":
-                # For updates to already-installed games, never show the mode dialog —
-                # the user already chose their preferred mode at install time. Default to
-                # "handoff" (the same path used when at0m_default_download_action="native")
-                # so updates go straight through without interruption.
-                if getattr(self, "_pre_existing_install", False):
-                    logger.info(
-                        "[TaskManager] Skipping mode dialog for update (pre-existing install) — "
-                        "defaulting to handoff"
-                    )
-                    chosen_action = "handoff"
-                else:
-                    from ui.dialogs.native_steam_action_dialog import (
-                        NativeSteamActionDialog,
-                        ACTION_TRACK,
-                        ACTION_CANCEL,
-                    )
-                    appid_str = str(self.game_data.get("appid", ""))
-                    game_title = self.game_data.get("game_name", f"App {appid_str}")
-                    accent_c = getattr(self.main_window, "accent_color", "#6c5ce7")
-                    dlg = NativeSteamActionDialog(
-                        parent=self.main_window,
-                        app_id=appid_str,
-                        game_name=game_title,
-                        accent_color=accent_c,
-                    )
-                    dlg.exec()
-                    action = dlg.get_action()
-                    if action == ACTION_CANCEL:
-                        logger.info("[TaskManager] User cancelled native Steam download action dialog")
-                        self.job_finished()
-                        return
-                    if dlg.should_remember():
-                        saved_val = "track" if action == ACTION_TRACK else "handoff"
-                        self.settings.setValue("native_steam_default_action", saved_val)
-                        logger.info(f"[TaskManager] Remembered default native Steam action: {saved_val}")
-                    chosen_action = "track" if action == ACTION_TRACK else "handoff"
+                from ui.dialogs.native_steam_action_dialog import (
+                    NativeSteamActionDialog,
+                    ACTION_TRACK,
+                    ACTION_CANCEL,
+                )
+                dlg = NativeSteamActionDialog(
+                    parent=self.main_window,
+                    app_id=appid_str,
+                    game_name=game_title,
+                    accent_color=accent_c,
+                )
+                dlg.exec()
+                action = dlg.get_action()
+                if action == ACTION_CANCEL:
+                    logger.info("[TaskManager] User cancelled native Steam download action dialog")
+                    self.job_finished()
+                    return
+                if dlg.should_remember():
+                    saved_val = "track" if action == ACTION_TRACK else "handoff"
+                    self.settings.setValue("native_steam_default_action", saved_val)
+                    logger.info(f"[TaskManager] Remembered default native Steam action: {saved_val}")
+                chosen_action = "track" if action == ACTION_TRACK else "handoff"
             else:
                 chosen_action = action_mode
 

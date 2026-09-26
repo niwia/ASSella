@@ -1190,7 +1190,7 @@ class FetchManifestDialog(QDialog):
                 self._cached_app_ids.add(m.group(1))
         
         branch = getattr(self, "_current_selected_branch", "public")
-        metadata = {"branch": branch}
+        metadata = {"branch": branch, "download_backend": "assella"}
         
         self.status_label.setText("Processing manifest data...")
         self._toggle_inputs(False)

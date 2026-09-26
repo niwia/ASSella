@@ -2993,13 +2993,14 @@ class MainWindow(QMainWindow):
                             skipped_names.append(name)
                             continue
 
-                    metadata = {
+                    metadata = dict(game_data)
+                    metadata.update({
                         "appid": appid,
                         "library_path": game_data.get("library_path"),
                         "install_path": game_data.get("install_path"),
                         "game_name": name,
                         "branch": branch,
-                    }
+                    })
 
                     if parsed_data and parsed_data.get("depots"):
                         depots = parsed_data.get("depots")
