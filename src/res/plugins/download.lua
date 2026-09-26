@@ -229,15 +229,90 @@ Downloader.hkGetBinary = ffi.cast("GetBinary_t", function(pConfigStore, store, p
 	return Downloader.mutexReturn(#bytes, mutex)
 end)
 
+-- getManifestRequestCodeViaImpersonate
+-- Fallback: one attempt using the bundled curl_chrome120 binary which sends a
+-- real Chrome 120 TLS Client Hello. This bypasses Cloudflare's TLS fingerprint
+-- filter that blocks plain libcurl requests and causes 503 responses.
+--
+-- Returns a uint64 MRC cdata on success, or nil on failure.
+-- The binary lives in a 'bin/' directory alongside this plugin file.
+Downloader.IMPERSONATE_BIN = nil  -- resolved lazily on first use
+
+Downloader.resolveImpersonateBin = function()
+	if Downloader.IMPERSONATE_BIN ~= nil then
+		return Downloader.IMPERSONATE_BIN
+	end
+
+	-- Check config for an override path first
+	local cfgPath = SLS.config:getString("ImpersonateBin")
+	if cfgPath and #cfgPath > 0 then
+		Downloader.IMPERSONATE_BIN = cfgPath
+		return cfgPath
+	end
+
+	-- Default: bin/curl_chrome120 next to this plugin file
+	-- __FILE__ is not available in LuaJIT, so use the well-known SLS plugin dir
+	local candidate = os.getenv("HOME") .. "/.config/SLSsteam/plugins/bin/curl_chrome120"
+	-- Verify it exists and is executable using a quick test
+	local f = io.open(candidate, "r")
+	if f then
+		f:close()
+		Downloader.IMPERSONATE_BIN = candidate
+		return candidate
+	end
+
+	log.warn("curl_chrome120 not found at " .. candidate .. " — impersonate fallback disabled")
+	Downloader.IMPERSONATE_BIN = ""  -- mark as checked, don't retry
+	return nil
+end
+
+Downloader.getManifestRequestCodeViaImpersonate = function(manifestStr)
+	local bin = Downloader.resolveImpersonateBin()
+	if bin == nil or bin == "" then
+		return nil
+	end
+
+	local cmd = bin .. " --silent --max-time 6 "
+		.. "\"http://gmrc.wudrm.com/manifest/" .. manifestStr .. "\""
+
+	local ok, body = pcall(function()
+		local handle = io.popen(cmd)
+		if handle == nil then return nil end
+		local out = handle:read("*a")
+		handle:close()
+		return out
+	end)
+
+	if not ok or body == nil then
+		log.warn("impersonate fallback: io.popen failed for manifest " .. manifestStr)
+		return nil
+	end
+
+	local trimmed = body:match("^%s*(.-)%s*$")
+	local mrcNum = tonumber(trimmed)
+	if mrcNum ~= nil and mrcNum > 0 then
+		local mrc = ffi.C.strtoull(trimmed, ffi.cast("char*", 0), 10)
+		log.debug("impersonate fallback: got MRC for manifest " .. manifestStr)
+		return mrc
+	end
+
+	log.warn("impersonate fallback: non-numeric response for manifest " .. manifestStr
+		.. ": " .. (trimmed:sub(1, 60)))
+	return nil
+end
+
 -- GetManifestRequestCode
 -- Returns the MRC uint64 on success, or nil if all attempts exhausted.
 -- Uses iterative retries with exponential backoff to avoid blocking Steam
 -- inside a mutex for multiple seconds (the old recursive approach could
 -- hold the lock for up to MAX_MANIFEST_TRIES * sleep_time seconds).
 --
--- If wudrm is returning HTTP 5xx/503 errors the response body will be an
--- HTML page. We detect this early from the <title> tag and apply a longer
--- backoff rather than hammering the server.
+-- Per-attempt flow:
+--   1. Try curl.downloadString (fast path, plain libcurl)
+--   2. If body is non-numeric (Cloudflare 503 etc), try curl_chrome120 once
+--      as a fallback (Chrome TLS fingerprint bypasses CF filtering)
+--   3. If fallback also fails, sleep + continue to next attempt as normal
+-- If all attempts are exhausted, return nil → Steam fails cleanly.
 Downloader.getManifestRequestCode = function(manifestId)
 	local manifestCStr = ffi.new("char[?]", Downloader.MAX_MANIFEST_STRING_SIZE)
 	ffi.C.snprintf(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE, "%llu", manifestId)
@@ -254,7 +329,13 @@ Downloader.getManifestRequestCode = function(manifestId)
 		if #codeStr < 1 then
 			-- Empty response — network error or timeout
 			log.warn("MRC fetch attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES
-				.. " returned empty body for manifest " .. manifestStr)
+				.. " returned empty body for manifest " .. manifestStr
+				.. " — trying impersonate fallback")
+
+			local mrc = Downloader.getManifestRequestCodeViaImpersonate(manifestStr)
+			if mrc ~= nil then
+				return mrc
+			end
 		else
 			local mrcNum = tonumber(codeStr)
 
@@ -270,18 +351,26 @@ Downloader.getManifestRequestCode = function(manifestId)
 			local errSummary = codeStr:match("<title>(.-)</title>")
 				or (codeStr:len() > 60 and codeStr:sub(1, 60) .. "..." or codeStr)
 
-			-- Detect server-side errors (5xx) — no point retrying immediately
+			-- Detect server-side errors (5xx)
 			local is5xx = codeStr:find("503") ~= nil
 				or codeStr:find("Service Unavailable") ~= nil
 				or codeStr:find("502") ~= nil
 				or codeStr:find("500") ~= nil
 
 			if is5xx then
-				log.warn("MRC endpoint appears to be down (" .. errSummary .. ") for manifest "
-					.. manifestStr .. " — attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES)
+				log.warn("MRC blocked/down (" .. errSummary .. ") for manifest "
+					.. manifestStr .. " — attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES
+					.. ", trying impersonate fallback")
 			else
 				log.warn("Invalid MRC response (" .. errSummary .. ") for manifest "
-					.. manifestStr .. " — attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES)
+					.. manifestStr .. " — attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES
+					.. ", trying impersonate fallback")
+			end
+
+			-- Try Chrome TLS impersonation fallback before sleeping
+			local mrc = Downloader.getManifestRequestCodeViaImpersonate(manifestStr)
+			if mrc ~= nil then
+				return mrc
 			end
 		end
 
@@ -292,9 +381,10 @@ Downloader.getManifestRequestCode = function(manifestId)
 		end
 	end
 
-	-- All attempts failed
+	-- All attempts (plain + impersonate) failed
 	log.error("MRC fetch exhausted " .. Downloader.MAX_MANIFEST_TRIES
-		.. " attempts for manifest " .. manifestStr .. " (wudrm may be offline)")
+		.. " attempts (plain + impersonate fallback) for manifest " .. manifestStr
+		.. " (wudrm may be offline)")
 	return nil
 end
 
