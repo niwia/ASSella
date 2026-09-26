@@ -477,6 +477,16 @@ class NativeSteamDownloadTask(QObject):
                 self._deployed_plugins.append(dest)
                 deployed_any = True
                 logger.info(f"[NativeSteamDL] Deployed bundled {name} to {dest}")
+                if name == "download.lua":
+                    src_bin = src_path.parent / "bin"
+                    if src_bin.is_dir():
+                        dst_bin = plugins_dir / "bin"
+                        dst_bin.mkdir(parents=True, exist_ok=True)
+                        for item in src_bin.iterdir():
+                            if item.is_file():
+                                dst_item = dst_bin / item.name
+                                shutil.copy2(item, dst_item)
+                                dst_item.chmod(dst_item.stat().st_mode | 0o755)
             return deployed_any
 
         # Fall back to remote download

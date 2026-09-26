@@ -156,6 +156,16 @@ def deploy_bundled_plugins(plugins_dir: Path) -> bool:
                 pass
             shutil.copy2(src, dest)
             logger.info(f"[SteamHandoff] Deployed plugin: {name}")
+            if name == "download.lua":
+                src_bin = src.parent / "bin"
+                if src_bin.is_dir():
+                    dst_bin = plugins_dir / "bin"
+                    dst_bin.mkdir(parents=True, exist_ok=True)
+                    for item in src_bin.iterdir():
+                        if item.is_file():
+                            dst_item = dst_bin / item.name
+                            shutil.copy2(item, dst_item)
+                            dst_item.chmod(dst_item.stat().st_mode | 0o755)
         return True
 
     logger.warning("[SteamHandoff] Bundled plugins not found locally")

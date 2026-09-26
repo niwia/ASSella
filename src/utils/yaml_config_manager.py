@@ -441,6 +441,21 @@ def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
             shutil.copy2(src_path, dst_file)
             any_deployed = True
             logger.info(f"Deployed {plugin_filename} to {dst_file}")
+
+            # Deploy companion bin directory (curl-impersonate, curl_chrome120) for download.lua
+            if plugin_filename == "download.lua":
+                src_bin = src_path.parent / "bin"
+                if src_bin.is_dir():
+                    dst_bin = tdir / "bin"
+                    dst_bin.mkdir(parents=True, exist_ok=True)
+                    for item in src_bin.iterdir():
+                        if item.is_file():
+                            dst_item = dst_bin / item.name
+                            item_hash = calculate_file_sha256(item)
+                            if not dst_item.is_file() or calculate_file_sha256(dst_item) != item_hash:
+                                shutil.copy2(item, dst_item)
+                                dst_item.chmod(dst_item.stat().st_mode | 0o755)
+                                logger.info(f"Deployed companion binary {item.name} to {dst_item}")
         except Exception as exc:
             errors.append(f"{tdir}: {exc}")
 

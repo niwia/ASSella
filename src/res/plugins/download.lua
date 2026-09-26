@@ -272,7 +272,7 @@ Downloader.getManifestRequestCodeViaImpersonate = function(manifestStr)
 		return nil
 	end
 
-	local cmd = bin .. " --silent --max-time 6 "
+	local cmd = bin .. " -4 --silent --max-time 6 "
 		.. "\"http://gmrc.wudrm.com/manifest/" .. manifestStr .. "\""
 
 	local ok, body = pcall(function()
