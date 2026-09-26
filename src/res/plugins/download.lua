@@ -309,13 +309,16 @@ Downloader.hkGetMRC = ffi.cast("GetMRC_t", function(a1, appId, depotId, manifest
 
 	local code = Downloader.getManifestRequestCode(manifestId)
 	if code == nil then
-		-- wudrm is offline/unreachable. If ASSella pre-seeded this manifest into
-		-- Steam's depotcache, Steam may still be able to use the local file.
-		-- Return true so Steam continues rather than aborting the whole download.
-		-- pOutMRC[0] stays 0; Steam will fall back to its local depotcache lookup.
-		log.warn("MRC unavailable for depot " .. depotId
-			.. " — returning true to allow depotcache fallback")
-		return Downloader.mutexReturn(true, mutex)
+		-- wudrm is offline/unreachable and all retries are exhausted.
+		-- Return false (the native Steam result) so Steam fails cleanly.
+		-- A silent "success" with pOutMRC=0 would be worse for updates — Steam
+		-- could proceed with a stale depotcache manifest and appear to succeed
+		-- while the game stays on the old version.
+		-- The honest failure here lets ASSella's VaporWatcher time out and keep
+		-- the game as update_available so the user can retry when wudrm is back.
+		log.error("MRC unavailable for depot " .. depotId
+			.. " — wudrm offline, failing so Steam aborts cleanly")
+		return Downloader.mutexReturn(success, mutex)
 	end
 
 	local codeCStr = ffi.new("char[?]", Downloader.MAX_MANIFEST_STRING_SIZE)
