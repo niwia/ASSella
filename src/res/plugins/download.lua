@@ -250,7 +250,8 @@ Downloader.getManifestRequestCode = function(manifestId, try)
 	-- log.debug("Downloaded MRC string " .. codeStr)
 
 	if tonumber(codeStr) == nil then
-		log.error("Invalid MRC response " .. codeStr)
+		local errSummary = codeStr:match("<title>(.-)</title>") or (codeStr:len() > 60 and codeStr:sub(1, 60) .. "..." or codeStr)
+		log.warn("Invalid MRC response (" .. errSummary .. ") for manifest " .. tostring(ffi.string(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE)))
 		ffi.C.sleep(1)
 		return Downloader.getManifestRequestCode(manifestId, try + 1)
 	end

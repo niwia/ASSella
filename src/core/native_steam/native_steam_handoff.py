@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import time
+import zipfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Callable
 
@@ -161,6 +162,78 @@ def deploy_bundled_plugins(plugins_dir: Path) -> bool:
     return False
 
 
+def get_depotcache_dirs(dest_path: str = "") -> List[Path]:
+    """Resolve all active Steam depotcache directories."""
+    dirs: List[Path] = []
+    try:
+        from core.steam_helpers import get_steam_env
+        env = get_steam_env()
+        if env.steam_path:
+            p = Path(env.steam_path) / "depotcache"
+            dirs.append(p)
+    except Exception:
+        pass
+
+    for candidate in [
+        Path.home() / ".local/share/Steam/depotcache",
+        Path.home() / ".steam/steam/depotcache",
+        Path.home() / ".var/app/com.valvesoftware.Steam/data/Steam/depotcache",
+    ]:
+        if candidate.is_dir() and candidate not in dirs:
+            dirs.append(candidate)
+
+    if dest_path:
+        dp = Path(dest_path)
+        for cand in [dp / "depotcache", dp.parent / "depotcache", dp.parent.parent / "depotcache"]:
+            if cand.is_dir() and cand not in dirs:
+                dirs.append(cand)
+
+    return dirs
+
+
+def sync_manifests_to_depotcache(appid: str, dest_path: str = "") -> int:
+    """Extract all .manifest files for appid from Hubcap cache into Steam's depotcache.
+    Pre-seeding Steam's depotcache allows Steam to install and verify depots locally
+    without needing to query external MRC endpoints that may be Cloudflare-blocked.
+    """
+    try:
+        from utils.helpers import get_base_path
+        base_dir = Path(get_base_path())
+    except Exception:
+        base_dir = Path.home() / ".local" / "share" / "ACCELA"
+
+    hubcap_dir = base_dir / "hubcap_manifests"
+    if not hubcap_dir.exists():
+        return 0
+
+    depotcache_dirs = get_depotcache_dirs(dest_path)
+    if not depotcache_dirs:
+        return 0
+
+    copied = 0
+    for zip_path in hubcap_dir.glob(f"accela_fetch_{appid}*.zip"):
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                for name in zf.namelist():
+                    if name.endswith(".manifest"):
+                        data = zf.read(name)
+                        base_name = os.path.basename(name)
+                        for ddir in depotcache_dirs:
+                            try:
+                                ddir.mkdir(parents=True, exist_ok=True)
+                                target = ddir / base_name
+                                if not target.exists() or target.stat().st_size != len(data):
+                                    target.write_bytes(data)
+                                    copied += 1
+                                    logger.info(f"[SteamHandoff] Synced manifest to depotcache: {target}")
+                            except OSError as e:
+                                logger.debug(f"[SteamHandoff] Failed writing manifest to {ddir}: {e}")
+        except Exception as e:
+            logger.debug(f"[SteamHandoff] Error reading zip {zip_path}: {e}")
+
+    return copied
+
+
 def perform_steam_handoff(
     game_data: Dict[str, Any],
     selected_depots: List[str],
@@ -266,7 +339,12 @@ def perform_steam_handoff(
     task_helper._poll_license_unlocked(appid, log_offset, timeout_sec=15.0)
     time.sleep(1.5)
 
-    # 8. Send install to Steam API only if auto_install is requested
+    # 8. Sync manifests to Steam depotcache so Steam has them locally without needing MRC endpoints
+    synced_mfs = sync_manifests_to_depotcache(appid, dest_path)
+    if synced_mfs > 0:
+        _emit(f"Synced {synced_mfs} manifest(s) into Steam depotcache.")
+
+    # 9. Send install to Steam API only if auto_install is requested
     if auto_install:
         library_index = resolve_library_index(dest_path)
         _emit(f"Signalling Steam to install {game_name} into library folder {library_index}...")
