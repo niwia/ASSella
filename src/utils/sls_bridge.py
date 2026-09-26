@@ -114,33 +114,12 @@ class SLSBridge:
 
     @classmethod
     def notify_reload(cls) -> bool:
-        """Trigger an instant configuration reload inside SLSsteam."""
-        # 1. Try writing reloadlua to /tmp/SLSsteam.API
-        try:
-            if os.path.exists(SLS_API_PIPE):
-                with open(SLS_API_PIPE, "w") as f:
-                    f.write("reloadlua\n")
-                logger.debug("[SLSBridge] Sent reloadlua to /tmp/SLSsteam.API")
-                return True
-        except Exception as e:
-            logger.debug(f"[SLSBridge] Failed to write to {SLS_API_PIPE}: {e}")
-
-        # 2. In-place touch config.yaml to trigger SLS inotify watcher
-        try:
-            from utils.yaml_config_manager import get_user_config_path
-            cfg_path = get_user_config_path()
-            if cfg_path.exists():
-                with open(cfg_path, "r+") as f:
-                    content = f.read()
-                    f.seek(0)
-                    f.write(content)
-                    f.truncate()
-                logger.debug(f"[SLSBridge] Touched in-place {cfg_path} to trigger inotify")
-                return True
-        except Exception as e:
-            logger.warning(f"[SLSBridge] Failed to touch config.yaml: {e}")
-
-        return False
+        """Notify SLSsteam of updates.
+        SLSsteam's built-in CFileWatcher automatically detects modifications to
+        config.yaml and hot-reloads settings without needing forced API signals.
+        """
+        logger.debug("[SLSBridge] SLSsteam inotify watcher handles config reload automatically")
+        return True
 
     @classmethod
     def send_command(cls, cmd: str, extra: Optional[Dict[str, Any]] = None) -> bool:

@@ -147,6 +147,12 @@ def deploy_bundled_plugins(plugins_dir: Path) -> bool:
     if "download.lua" in found and "spliced-tickets.lua" in found:
         for name, src in found.items():
             dest = plugins_dir / name
+            try:
+                if dest.exists() and dest.read_bytes() == src.read_bytes():
+                    logger.debug(f"[SteamHandoff] Plugin already up to date: {name}")
+                    continue
+            except OSError:
+                pass
             shutil.copy2(src, dest)
             logger.info(f"[SteamHandoff] Deployed plugin: {name}")
         return True
