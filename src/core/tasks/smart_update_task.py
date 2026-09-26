@@ -280,7 +280,8 @@ class SmartUpdateTask(QObject):
                 with zipfile.ZipFile(gen_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                     for d_id, d_gid in target_depots.items():
                         logger.info(f"[SmartUpdate] Fetching Depot {d_id} (GID {d_gid}) via /generate/manifest...")
-                        raw_bytes, s_err = morrenus_api.generate_single_manifest(d_id, d_gid)
+                        d_key = cached_keys.get(d_id)
+                        raw_bytes, s_err = morrenus_api.generate_single_manifest(d_id, d_gid, depot_key=d_key)
                         if raw_bytes and not s_err:
                             zf.writestr(f"{d_id}_{d_gid}.manifest", raw_bytes)
                             gen_mapping[d_id] = d_gid
