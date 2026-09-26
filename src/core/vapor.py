@@ -33,6 +33,14 @@ from typing import Optional, Tuple, Dict, Union, List
 import requests
 import sqlite3
 
+# Optional: curl_cffi for Chrome 120 TLS impersonation (Tier 2 MRC fallback)
+try:
+    from curl_cffi import requests as cffi_requests
+    _CFFI_AVAILABLE = True
+except ImportError:
+    cffi_requests = None  # type: ignore[assignment]
+    _CFFI_AVAILABLE = False
+
 # Set up logging
 logger = logging.getLogger("vapor")
 if not logger.handlers:
@@ -83,20 +91,58 @@ def _get_mrc_db_path() -> Path:
 
 
 class WudrmMRCFetcher:
-    """Fetches Manifest Request Codes (MRC) from wudrm service with smart retries and persistent caching."""
+    """
+    Fetches Manifest Request Codes (MRC) from wudrm service.
 
-    def __init__(self, max_tries: int = 5, timeout: int = 5):
+    Two-tier fetch strategy:
+      Tier 1 — Plain requests.Session (fast path, ~400ms, in-process).
+                Works when Cloudflare's edge cache serves the MRC directly.
+      Tier 2 — curl_cffi Chrome 120 TLS impersonation (in-process, no subprocess).
+                Used as immediate fallback when Tier 1 gets CF-blocked (503/HTML body).
+                Spoofs Chrome 120's TLS Client Hello, cipher order, HTTP/2 settings
+                and browser headers so CF treats the request as a real browser.
+
+    Per-attempt flow:
+      1. Tier 1: plain GET -> if valid uint64 body -> return MRC immediately.
+      2. Tier 1 blocked (non-numeric body or 503) -> Tier 2: cffi_requests.get with
+         impersonate='chrome120' -> if valid uint64 body -> return MRC.
+      3. Both fail -> exponential backoff (1s, 2s, 4s, capped at 8s) -> next attempt.
+      4. All MAX_MANIFEST_TRIES exhausted -> return None -> Hubcap fallback.
+
+    Results are cached in memory (per-process) and in a persistent SQLite DB so
+    subsequent calls for the same manifest GID within the same update cycle are free.
+
+    NOTE: curl_cffi Session reuse is intentionally avoided — persistent keepalive
+    connections get consistently 503'd by Cloudflare; per-request calls succeed.
+    """
+
+    _cffi_available: Optional[bool] = None
+
+    def __init__(self, max_tries: int = 5, timeout: int = 6):
         self.max_tries = max_tries
         self.timeout = timeout
         self.base_url = "http://gmrc.wudrm.com/manifest/"
+        # Plain requests session — used for Tier 1 (fast path)
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "ASSella-Vapor/1.0 (X11; Linux x86_64)",
+            "User-Agent": "curl/7.88.1",
             "Accept": "*/*",
         })
         self._memory_cache: Dict[str, str] = {}
         self._db_path = _get_mrc_db_path()
         self._init_db()
+        self._probe_cffi()
+
+    def _probe_cffi(self) -> None:
+        """Check once at startup whether curl_cffi Chrome impersonation is available."""
+        if WudrmMRCFetcher._cffi_available is not None:
+            return
+        if not _CFFI_AVAILABLE:
+            WudrmMRCFetcher._cffi_available = False
+            logger.debug("[MRC/Tier2] curl_cffi not available — impersonate fallback disabled")
+        else:
+            WudrmMRCFetcher._cffi_available = True
+            logger.debug("[MRC/Tier2] curl_cffi available — Chrome 120 impersonate fallback enabled")
 
     def _init_db(self) -> None:
         try:
@@ -135,86 +181,131 @@ class WudrmMRCFetcher:
         except Exception as e:
             logger.debug(f"[MRC Cache] Error saving cache for {manifest_id_str}: {e}")
 
+    @staticmethod
+    def _is_valid_mrc(body: str) -> bool:
+        """Returns True if body is a non-empty positive integer (valid uint64 MRC)."""
+        s = body.strip()
+        return bool(s) and s.isdigit() and int(s) > 0
+
+    def _fetch_tier1(self, url: str) -> Optional[str]:
+        """Tier 1: plain requests GET. Returns MRC string or None."""
+        try:
+            r = self.session.get(url, timeout=self.timeout)
+            if r.status_code in (400, 404):
+                # Fatal — manifest genuinely doesn't exist on wudrm
+                raise _WudrmFatal(r.status_code)
+            body = r.text.strip()
+            if self._is_valid_mrc(body):
+                return body
+            logger.debug(f"[MRC/Tier1] Non-numeric body (HTTP {r.status_code}) — handing off to Tier 2")
+        except _WudrmFatal:
+            raise
+        except Exception as e:
+            logger.debug(f"[MRC/Tier1] Request error: {e}")
+        return None
+
+    def _fetch_tier2(self, url: str) -> Optional[str]:
+        """
+        Tier 2: curl_cffi Chrome 120 TLS impersonation.
+        Uses a fresh per-request call (no session) — persistent connections get 503'd by CF.
+        Returns MRC string or None.
+        """
+        if not WudrmMRCFetcher._cffi_available:
+            return None
+        try:
+            r = cffi_requests.get(
+                url,
+                impersonate="chrome120",
+                timeout=self.timeout,
+            )
+            body = r.text.strip()
+            if self._is_valid_mrc(body):
+                return body
+            logger.debug(f"[MRC/Tier2] cffi non-numeric body (HTTP {r.status_code})")
+        except Exception as e:
+            logger.debug(f"[MRC/Tier2] cffi request error: {e}")
+        return None
+
     def get_manifest_request_code(self, manifest_id: Union[str, int]) -> Optional[str]:
         """
         Fetches the 64-bit Manifest Request Code for a given manifest GID.
-        Checks in-memory cache and persistent SQLite cache first.
-        If missing, queries wudrm with smart retries (handling 503/429/timeouts with backoff,
-        and failing fast on fatal 400/404s).
-        Returns the MRC string or None on failure.
+
+        Checks in-memory and persistent SQLite cache first, then runs the
+        two-tier wudrm fetch (plain -> Chrome 120 impersonate) with exponential
+        backoff between full attempts.
+
+        Returns the MRC string, or None if all attempts exhausted (triggers
+        Hubcap fallback in generate_single_manifest).
         """
         manifest_id_str = str(manifest_id).strip()
 
         # 1. Fast in-memory cache hit (0.001ms)
         if manifest_id_str in self._memory_cache:
-            logger.debug(f"[MRC Cache] Memory cache hit for {manifest_id_str}: {self._memory_cache[manifest_id_str]}")
+            logger.debug(f"[MRC Cache] Memory hit for {manifest_id_str}")
             return self._memory_cache[manifest_id_str]
 
         # 2. Persistent SQLite cache hit
         cached_mrc = self._get_cached_mrc(manifest_id_str)
         if cached_mrc:
             self._memory_cache[manifest_id_str] = cached_mrc
-            logger.info(f"[MRC Cache] Persistent cache hit for {manifest_id_str}: {cached_mrc}")
+            logger.info(f"[MRC Cache] DB hit for {manifest_id_str}: {cached_mrc}")
             return cached_mrc
 
-        # 3. Smart Network Fetch with Retry Budget
+        # 3. Two-tier network fetch with retry budget
         url = f"{self.base_url}{manifest_id_str}"
-        delays = [1.0, 1.5, 2.0, 2.5, 3.0]
+        BASE_SLEEP = 1.0
+        MAX_SLEEP  = 8.0
 
         for attempt in range(1, self.max_tries + 1):
+            logger.debug(f"[MRC] Attempt {attempt}/{self.max_tries} for manifest {manifest_id_str}")
+
             try:
-                logger.debug(f"Attempt {attempt}/{self.max_tries}: Requesting MRC for {manifest_id_str} from {url}")
-                response = self.session.get(url, timeout=self.timeout)
+                # ── Tier 1: plain requests (fast path) ─────────────────────
+                mrc = self._fetch_tier1(url)
+                if mrc:
+                    logger.info(f"[MRC/Tier1] ✅ Got MRC for {manifest_id_str} on attempt {attempt}")
+                    self._memory_cache[manifest_id_str] = mrc
+                    self._save_cached_mrc(manifest_id_str, mrc)
+                    return mrc
 
-                # Fatal client errors -> Fail fast immediately, do not waste retry budget
-                if response.status_code in (400, 404):
-                    logger.warning(
-                        f"Attempt {attempt}/{self.max_tries}: MRC server returned fatal HTTP {response.status_code} "
-                        f"for {manifest_id_str}. Fast-failing to Hubcap fallback."
-                    )
-                    return None
+                # ── Tier 2: Chrome 120 TLS impersonation ───────────────────
+                logger.debug(f"[MRC/Tier1] Blocked — trying Tier 2 (Chrome 120 impersonate) for {manifest_id_str}")
+                mrc = self._fetch_tier2(url)
+                if mrc:
+                    logger.info(f"[MRC/Tier2] ✅ Got MRC via cffi impersonate for {manifest_id_str} on attempt {attempt}")
+                    self._memory_cache[manifest_id_str] = mrc
+                    self._save_cached_mrc(manifest_id_str, mrc)
+                    return mrc
 
-                if response.status_code == 200:
-                    code_str = response.text.strip()
-                    if not code_str:
-                        logger.warning(f"Attempt {attempt}/{self.max_tries}: Empty MRC response for {manifest_id_str}")
-                        continue
+                logger.warning(
+                    f"[MRC] Both tiers failed for manifest {manifest_id_str} "
+                    f"(attempt {attempt}/{self.max_tries})"
+                )
 
-                    # Validate that the response is a valid integer uint64
-                    try:
-                        int(code_str)
-                        logger.info(f"Retrieved MRC for manifest {manifest_id_str}: {code_str}")
-                        self._memory_cache[manifest_id_str] = code_str
-                        self._save_cached_mrc(manifest_id_str, code_str)
-                        return code_str
-                    except ValueError:
-                        logger.warning(
-                            f"Attempt {attempt}/{self.max_tries}: Invalid MRC response (not a number): {code_str[:60]}"
-                        )
-                        continue
-                elif response.status_code in (503, 429, 502, 504):
-                    logger.warning(
-                        f"Attempt {attempt}/{self.max_tries}: MRC server returned HTTP {response.status_code} "
-                        f"for {manifest_id_str} (server busy/generating code)"
-                    )
-                else:
-                    logger.warning(
-                        f"Attempt {attempt}/{self.max_tries}: MRC server returned HTTP {response.status_code} "
-                        f"for {manifest_id_str}"
-                    )
-
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"Attempt {attempt}/{self.max_tries}: Network error requesting MRC for {manifest_id_str}: {e}")
+            except _WudrmFatal as e:
+                logger.warning(
+                    f"[MRC] Fatal HTTP {e.status_code} for manifest {manifest_id_str} "
+                    f"— wudrm does not know this manifest. Skipping to Hubcap."
+                )
+                return None
 
             if attempt < self.max_tries:
-                delay = delays[attempt - 1] if attempt - 1 < len(delays) else 2.0
-                time.sleep(delay)
+                sleep_time = min(BASE_SLEEP * (2 ** (attempt - 1)), MAX_SLEEP)
+                logger.debug(f"[MRC] Sleeping {sleep_time:.1f}s before attempt {attempt + 1}")
+                time.sleep(sleep_time)
 
         logger.error(
-            f"Failed to fetch MRC for manifest {manifest_id_str} after {self.max_tries} attempts. "
+            f"[MRC] All {self.max_tries} attempts (Tier1 + Tier2) exhausted for manifest {manifest_id_str}. "
             f"Proceeding to Hubcap fallback."
         )
         return None
+
+
+class _WudrmFatal(Exception):
+    """Raised by _fetch_tier1 when wudrm returns a fatal error (400/404)."""
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        super().__init__(f"wudrm fatal HTTP {status_code}")
 
 
 
