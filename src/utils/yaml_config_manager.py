@@ -454,8 +454,11 @@ def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
 
 
 def deploy_all_sls_plugins() -> Tuple[bool, List[str]]:
-    """Deploy all 3 required plugins: assella_bridge.lua, download.lua, spliced-tickets.lua."""
-    plugins = ["assella_bridge.lua", "download.lua", "spliced-tickets.lua"]
+    """Deploy required plugins: download.lua, spliced-tickets.lua.
+    Note: assella_bridge.lua is intentionally excluded — its IPC server is never started
+    and all dynamic depot/key injection commands have been superseded by _patch_config.
+    """
+    plugins = ["download.lua", "spliced-tickets.lua"]
     results = []
     overall_ok = True
     for p in plugins:
@@ -467,8 +470,8 @@ def deploy_all_sls_plugins() -> Tuple[bool, List[str]]:
 
 
 def are_sls_plugins_deployed() -> bool:
-    """Check if all 3 required plugins exist in at least the primary SLSsteam plugins directory."""
-    plugins = ["assella_bridge.lua", "download.lua", "spliced-tickets.lua"]
+    """Check if the required plugins exist in at least the primary SLSsteam plugins directory."""
+    plugins = ["download.lua", "spliced-tickets.lua"]
     target_dirs = get_sls_plugins_dirs()
     if not target_dirs:
         return False

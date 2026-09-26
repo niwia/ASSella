@@ -312,9 +312,6 @@ def create_at0m_tab(dialog) -> QWidget:
     spliced_plugin_btn = QPushButton("Spliced Plugin")
     deploy_btns_row.addWidget(spliced_plugin_btn)
 
-    # Button 3: ASSella
-    assella_btn = QPushButton("ASSella")
-    deploy_btns_row.addWidget(assella_btn)
 
     deploy_layout.addLayout(deploy_btns_row)
     layout.addWidget(deploy_card)
@@ -323,7 +320,6 @@ def create_at0m_tab(dialog) -> QWidget:
         items = [
             (lua_plugin_btn, "download.lua", "Lua Plugin"),
             (spliced_plugin_btn, "spliced-tickets.lua", "Spliced Plugin"),
-            (assella_btn, "assella_bridge.lua", "ASSella"),
         ]
         detected_style = _get_detected_btn_style(dialog)
         for btn, fname, label in items:
@@ -365,7 +361,6 @@ def create_at0m_tab(dialog) -> QWidget:
 
     lua_plugin_btn.clicked.connect(lambda: _deploy_single("download.lua", "Lua Plugin"))
     spliced_plugin_btn.clicked.connect(lambda: _deploy_single("spliced-tickets.lua", "Spliced Plugin"))
-    assella_btn.clicked.connect(lambda: _deploy_single("assella_bridge.lua", "ASSella"))
 
     def _update_subwidget_states(enabled: bool):
         dialog.at0m_disable_updates_checkbox.setEnabled(enabled)
@@ -381,7 +376,7 @@ def create_at0m_tab(dialog) -> QWidget:
         except Exception as e:
             logger.debug(f"[at0mTab] Could not update Plugins in SLS config: {e}")
         if checked:
-            for p_file in ("download.lua", "spliced-tickets.lua", "assella_bridge.lua"):
+            for p_file in ("download.lua", "spliced-tickets.lua"):
                 deploy_sls_plugin(p_file)
         _refresh_deploy_buttons()
         _update_subwidget_states(checked)
