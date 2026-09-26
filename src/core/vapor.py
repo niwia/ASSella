@@ -181,6 +181,18 @@ class WudrmMRCFetcher:
         except Exception as e:
             logger.debug(f"[MRC Cache] Error saving cache for {manifest_id_str}: {e}")
 
+    def invalidate_cached_mrc(self, manifest_id_str: str) -> None:
+        """Removes a manifest_id from in-memory and SQLite cache if CDN rejected it."""
+        clean_id = str(manifest_id_str).strip()
+        self._memory_cache.pop(clean_id, None)
+        try:
+            with sqlite3.connect(str(self._db_path), timeout=2) as conn:
+                conn.execute("DELETE FROM mrc_cache WHERE manifest_id = ?", (clean_id,))
+                conn.commit()
+            logger.info(f"[Vapor] [MRC Cache] Invalidated stale cache for {clean_id}")
+        except Exception as e:
+            logger.debug(f"[MRC Cache] Error invalidating cache for {clean_id}: {e}")
+
     @staticmethod
     def _is_valid_mrc(body: str) -> bool:
         """Returns True if body is a non-empty positive integer (valid uint64 MRC)."""
@@ -447,6 +459,33 @@ def unpack_and_process_manifest(
     return None
 
 
+def _lookup_cached_depot_key(depot_id: Union[str, int]) -> Optional[str]:
+    """Look up cached AES depot key from DepotKeyManager or depot_keys.db."""
+    depot_id_str = str(depot_id).strip()
+    try:
+        from managers.depot_key_manager import DepotKeyManager
+        dkm = DepotKeyManager()
+        key = dkm.get_depot_key(depot_id_str)
+        if key:
+            return key
+    except Exception:
+        pass
+
+    try:
+        from utils.helpers import get_base_path
+        db_path = get_base_path() / "db" / "depot_keys.db"
+        if db_path.exists():
+            with sqlite3.connect(str(db_path), timeout=2) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT aes_key FROM depot_keys WHERE depot_id = ?", (depot_id_str,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return str(row[0])
+    except Exception:
+        pass
+    return None
+
+
 def generate_single_manifest(
     depot_id: Union[str, int],
     manifest_id: Union[str, int],
@@ -468,6 +507,13 @@ def generate_single_manifest(
     depot_str = str(depot_id).strip()
     manifest_str = str(manifest_id).strip()
 
+    # Automatically resolve depot key from cache if not provided by caller
+    if not depot_key:
+        resolved_key = _lookup_cached_depot_key(depot_str)
+        if resolved_key:
+            depot_key = resolved_key
+            logger.debug(f"[Primary/Vapor] Auto-resolved cached depot key for Depot {depot_str}")
+
     # ── Path 1: Primary (wudrm MRC + Steam CDN) ──────────────────────────────
     if not force_fallback:
         logger.info(f"[Primary/Vapor] Requesting manifest for Depot {depot_str}, GID {manifest_str} via Steam CDN...")
@@ -484,8 +530,10 @@ def generate_single_manifest(
                     return processed, None
                 else:
                     logger.warning("[Primary/Vapor] Failed to unpack CDN manifest payload")
+                    _mrc_fetcher.invalidate_cached_mrc(manifest_str)
             else:
                 logger.warning(f"[Primary/Vapor] Steam CDN download failed for depot {depot_str}")
+                _mrc_fetcher.invalidate_cached_mrc(manifest_str)
         else:
             logger.warning(f"[Primary/Vapor] MRC retrieval unavailable for manifest {manifest_str}")
 
