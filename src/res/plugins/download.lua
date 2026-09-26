@@ -230,58 +230,97 @@ Downloader.hkGetBinary = ffi.cast("GetBinary_t", function(pConfigStore, store, p
 end)
 
 -- GetManifestRequestCode
-Downloader.getManifestRequestCode = function(manifestId, try)
-	if try > Downloader.MAX_MANIFEST_TRIES then
-		return nil
-	end
-
+-- Returns the MRC uint64 on success, or nil if all attempts exhausted.
+-- Uses iterative retries with exponential backoff to avoid blocking Steam
+-- inside a mutex for multiple seconds (the old recursive approach could
+-- hold the lock for up to MAX_MANIFEST_TRIES * sleep_time seconds).
+--
+-- If wudrm is returning HTTP 5xx/503 errors the response body will be an
+-- HTML page. We detect this early from the <title> tag and apply a longer
+-- backoff rather than hammering the server.
+Downloader.getManifestRequestCode = function(manifestId)
 	local manifestCStr = ffi.new("char[?]", Downloader.MAX_MANIFEST_STRING_SIZE)
 	ffi.C.snprintf(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE, "%llu", manifestId)
+	local manifestStr = ffi.string(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE)
 
-	-- local url = "https://manifest.opensteamtool.com/" .. tostring(ffi.string(manifestCStr, MAX_MANIFEST_STRING_SIZE))
-	-- local headers = { "User-Agent: OpenSteamTool/1.0" }
-	-- local codeStr = tostring(curl.downloadString(url, headers, 5))
-	local url = "http://gmrc.wudrm.com/manifest/" .. tostring(ffi.string(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE))
-	local codeStr = tostring(curl.downloadString(url, 5))
-	if #codeStr < 1 then
-		log.warn("Failed to download manifest request code for " .. manifestId)
+	local url = "http://gmrc.wudrm.com/manifest/" .. manifestStr
+
+	local BASE_SLEEP = 1   -- seconds between retries
+	local MAX_SLEEP  = 8   -- cap backoff at 8 seconds
+
+	for attempt = 1, Downloader.MAX_MANIFEST_TRIES do
+		local codeStr = tostring(curl.downloadString(url, 5))
+
+		if #codeStr < 1 then
+			-- Empty response — network error or timeout
+			log.warn("MRC fetch attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES
+				.. " returned empty body for manifest " .. manifestStr)
+		else
+			local mrcNum = tonumber(codeStr)
+
+			-- Sanity check: a valid MRC is a large non-zero uint64
+			if mrcNum ~= nil and mrcNum > 0 then
+				-- We don't use tonumber for the final value because of precision loss
+				local mrc = ffi.C.strtoull(codeStr, ffi.cast("char*", 0), 10)
+				log.debug("Got MRC for manifest " .. manifestStr .. " on attempt " .. attempt)
+				return mrc
+			end
+
+			-- Non-numeric body — likely an HTTP error page (503, 403, etc.)
+			local errSummary = codeStr:match("<title>(.-)</title>")
+				or (codeStr:len() > 60 and codeStr:sub(1, 60) .. "..." or codeStr)
+
+			-- Detect server-side errors (5xx) — no point retrying immediately
+			local is5xx = codeStr:find("503") ~= nil
+				or codeStr:find("Service Unavailable") ~= nil
+				or codeStr:find("502") ~= nil
+				or codeStr:find("500") ~= nil
+
+			if is5xx then
+				log.warn("MRC endpoint appears to be down (" .. errSummary .. ") for manifest "
+					.. manifestStr .. " — attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES)
+			else
+				log.warn("Invalid MRC response (" .. errSummary .. ") for manifest "
+					.. manifestStr .. " — attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES)
+			end
+		end
+
+		if attempt < Downloader.MAX_MANIFEST_TRIES then
+			-- Exponential backoff: 1s, 2s, 4s, 8s (capped)
+			local sleepTime = math.min(BASE_SLEEP * (2 ^ (attempt - 1)), MAX_SLEEP)
+			ffi.C.sleep(sleepTime)
+		end
 	end
 
-	-- log.debug("Downloaded MRC string " .. codeStr)
-
-	if tonumber(codeStr) == nil then
-		local errSummary = codeStr:match("<title>(.-)</title>") or (codeStr:len() > 60 and codeStr:sub(1, 60) .. "..." or codeStr)
-		log.warn("Invalid MRC response (" .. errSummary .. ") for manifest " .. tostring(ffi.string(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE)))
-		ffi.C.sleep(1)
-		return Downloader.getManifestRequestCode(manifestId, try + 1)
-	end
-
-	-- We don't use tonumber because of precision loss
-	local mrcCStr = ffi.new("char[?]", #codeStr + 1)
-	ffi.copy(mrcCStr, codeStr)
-
-	local mrc = ffi.C.strtoull(codeStr, ffi.cast("char*", 0), 10)
-	return mrc
+	-- All attempts failed
+	log.error("MRC fetch exhausted " .. Downloader.MAX_MANIFEST_TRIES
+		.. " attempts for manifest " .. manifestStr .. " (wudrm may be offline)")
+	return nil
 end
 
 Downloader.hkGetMRC = ffi.cast("GetMRC_t", function(a1, appId, depotId, manifestId, pChBranch, pOutMRC)
 	local mutex = LuaMutex()
 	local success = Downloader.getMRCTramp(a1, appId, depotId, manifestId, pChBranch, pOutMRC)
 
-	-- Don't rely on success. Check wheter MRC has been written
+	-- Native Steam already produced an MRC — nothing to do
 	if pOutMRC[0] ~= ffi.cast("uint64_t", 0) then
 		return Downloader.mutexReturn(success, mutex)
 	end
 
-	local code = Downloader.getManifestRequestCode(manifestId, 1)
+	local code = Downloader.getManifestRequestCode(manifestId)
 	if code == nil then
-		log.error("Failed to get MRC for " .. depotId)
-		return Downloader.mutexReturn(success, mutex)
+		-- wudrm is offline/unreachable. If ASSella pre-seeded this manifest into
+		-- Steam's depotcache, Steam may still be able to use the local file.
+		-- Return true so Steam continues rather than aborting the whole download.
+		-- pOutMRC[0] stays 0; Steam will fall back to its local depotcache lookup.
+		log.warn("MRC unavailable for depot " .. depotId
+			.. " — returning true to allow depotcache fallback")
+		return Downloader.mutexReturn(true, mutex)
 	end
 
 	local codeCStr = ffi.new("char[?]", Downloader.MAX_MANIFEST_STRING_SIZE)
 	ffi.C.snprintf(codeCStr, Downloader.MAX_MANIFEST_STRING_SIZE, "%llu", code)
-	log.debug("Using MRC " .. tostring(ffi.string(codeCStr) .. " for " .. depotId))
+	log.debug("Using MRC " .. tostring(ffi.string(codeCStr)) .. " for depot " .. depotId)
 
 	pOutMRC[0] = code
 
