@@ -12,7 +12,7 @@ via download.lua, and will be locked from auto-updating those depots.
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from utils.settings import get_settings
 from utils.yaml_config_manager import _atomic_write, _get_section_bounds
