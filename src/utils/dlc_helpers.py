@@ -4,7 +4,9 @@ Provides centralized logic for checking DLC-only mode state, parsing installed D
 syncing SLSsteam config, and formatting user-facing uninstall messages.
 """
 
+import os
 import re
+import shutil
 import logging
 import sqlite3
 from pathlib import Path
@@ -182,15 +184,268 @@ def get_all_dlcs_for_app(appid: str, game_data: Optional[dict] = None, allow_net
     return results
 
 
+def is_goldberg_applied(game_dir: str) -> bool:
+    """Check for Goldberg backup files (.valve) in game directory."""
+    if not game_dir or not os.path.exists(game_dir):
+        return False
+    for root, _, files in os.walk(game_dir):
+        for fname in files:
+            if fname.lower() in (
+                "steam_api.dll.valve",
+                "steam_api64.dll.valve",
+                "libsteam_api.so.valve",
+                "libsteam_api64.so.valve",
+            ):
+                return True
+    return False
+
+
+def restore_goldberg_backups(game_dir: str) -> List[str]:
+    """
+    Restore original Steam DLLs from .valve backups and remove steam_settings & steam_appid.txt.
+    Returns list of restored file names.
+    """
+    restored: List[str] = []
+    if not game_dir or not os.path.isdir(game_dir):
+        return restored
+
+    for root, _, files in os.walk(game_dir):
+        if any(f.lower().endswith((".dll.valve", ".so.valve")) for f in files):
+            st_dir = os.path.join(root, "steam_settings")
+            if os.path.isdir(st_dir):
+                shutil.rmtree(st_dir, ignore_errors=True)
+            aid_txt = os.path.join(root, "steam_appid.txt")
+            if os.path.exists(aid_txt):
+                try:
+                    os.remove(aid_txt)
+                except Exception:
+                    pass
+            for fname in files:
+                if fname.lower().endswith((".dll.valve", ".so.valve")):
+                    orig_name = fname[:-6]
+                    bak_path = os.path.join(root, fname)
+                    orig_path = os.path.join(root, orig_name)
+                    if os.path.exists(orig_path):
+                        try:
+                            os.remove(orig_path)
+                        except Exception:
+                            pass
+                    try:
+                        os.rename(bak_path, orig_path)
+                        restored.append(orig_name)
+                        logger.info(f"[DLCMode] Restored Goldberg backup {orig_name} in {root}")
+                    except Exception as r_err:
+                        logger.warning(f"Failed to restore {bak_path}: {r_err}")
+    return restored
+
+
+def get_base_depot_ids_for_app(appid: str, game_data: Optional[dict] = None) -> List[str]:
+    """
+    Identify all depot IDs that belong to the base game (not a DLC) for appid.
+    """
+    appid_str = str(appid).strip()
+    base_depots = {appid_str}
+
+    # 1. From game_data
+    if game_data and game_data.get("depots"):
+        for did, dinfo in game_data["depots"].items():
+            did_str = str(did)
+            if isinstance(dinfo, dict):
+                dlcappid = dinfo.get("dlcappid")
+                desc = dinfo.get("desc", "")
+                if not dlcappid or is_base_game_main_depot(did_str, desc, appid_str):
+                    base_depots.add(did_str)
+            else:
+                base_depots.add(did_str)
+
+    # 2. From DatabaseManager
+    try:
+        from managers.db_manager import DatabaseManager
+        db = DatabaseManager()
+        app_info = db.get_app_info(appid_str, bypass_expiration=True)
+        if app_info and app_info.get("depots"):
+            for did, dinfo in app_info["depots"].items():
+                did_str = str(did)
+                if isinstance(dinfo, dict):
+                    dlcappid = dinfo.get("dlcappid")
+                    desc = dinfo.get("desc", "")
+                    if not dlcappid or is_base_game_main_depot(did_str, desc, appid_str):
+                        base_depots.add(did_str)
+                else:
+                    base_depots.add(did_str)
+    except Exception as e:
+        logger.debug(f"Could not load depots from DB for {appid_str}: {e}")
+
+    # 3. Exclude any known DLC AppIDs
+    try:
+        dlc_list = get_all_dlcs_for_app(appid_str, game_data, allow_network=False)
+        dlc_appids = {str(d["dlc_appid"]) for d in dlc_list}
+        base_depots = {d for d in base_depots if d not in dlc_appids}
+    except Exception:
+        pass
+
+    return sorted(list(base_depots))
+
+
+def purge_and_sanitize_for_dlc_only(
+    appid: str,
+    game_name: str = "",
+    install_path: Optional[str] = None,
+    game_data: Optional[dict] = None,
+    config_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Sanity check and purge all base-game and non-DLC configurations when DLC-only mode is active.
+    Works for BOTH ASSella mode and Native Steam (at0m) mode:
+      1. SLSsteam config.yaml:
+         - Removes base game AppID from AdditionalApps.
+         - Adds DLC AppIDs to AdditionalApps (or DlcData if >=64 DLCs) with '[DLC]' comments.
+         - Prunes base game depots from AdditionalDepots, retaining only DLC depots with comments.
+         - Prunes base game keys from DecryptionKeys, retaining only DLC keys.
+         - Removes AppID from FakeAppIds (SLSonline bypasses).
+         - Removes Steam launch option overrides (Netsock LD_AUDIT / custom wrappers).
+         - Cleans any base game pinned manifests from ManifestIds.
+      2. Local Game Directory:
+         - Detects and reverts Goldberg Steam emulator (.valve backups restored, steam_settings & steam_appid.txt removed).
+         - Detects and removes EOS proxy (restoring original EOS DLL).
+    """
+    summary: Dict[str, Any] = {
+        "base_app_removed": False,
+        "dlcs_added": [],
+        "base_depots_removed": [],
+        "base_keys_removed": [],
+        "fake_app_removed": False,
+        "launch_options_removed": False,
+        "manifest_ids_removed": [],
+        "goldberg_restored": [],
+        "eos_proxy_removed": False,
+    }
+    appid_str = str(appid).strip()
+    if not appid_str or appid_str in ("0", "N/A", "unknown"):
+        return summary
+
+    from utils.yaml_config_manager import (
+        get_user_config_path,
+        remove_additional_app,
+        add_additional_app,
+        remove_additional_depot,
+        get_additional_depots,
+        remove_decryption_key,
+        get_decryption_keys,
+        remove_fake_app_id,
+        remove_launch_option,
+        add_dlc_data_batch,
+        remove_dlc_data,
+    )
+    try:
+        from core.native_steam.steam_manifest_pinning import remove_manifest_ids, get_manifest_ids
+    except ImportError:
+        remove_manifest_ids, get_manifest_ids = None, None
+
+    if config_path is None:
+        try:
+            config_path = get_user_config_path()
+        except Exception:
+            config_path = None
+
+    # Resolve DLCs and base depots
+    dlc_list = get_all_dlcs_for_app(appid_str, game_data, allow_network=True)
+    dlc_ids = {str(d["dlc_appid"]) for d in dlc_list}
+    base_depots = get_base_depot_ids_for_app(appid_str, game_data)
+
+    if config_path and config_path.exists():
+        # 1. Base AppID removed from AdditionalApps
+        if remove_additional_app(config_path, appid_str):
+            summary["base_app_removed"] = True
+
+        # 2. Add DLC AppIDs to AdditionalApps (or DlcData if >=64 DLCs)
+        if dlc_list:
+            if len(dlc_list) >= 64:
+                dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
+                add_dlc_data_batch(config_path, appid_str, dlc_dict)
+                summary["dlcs_added"].extend(list(dlc_dict.keys()))
+            else:
+                remove_dlc_data(config_path, appid_str)
+                for d in dlc_list:
+                    did = str(d["dlc_appid"])
+                    dname = d["dlc_name"]
+                    bname = d["base_game_name"] or game_name
+                    comment = f"[DLC] {dname or did} / {bname}"
+                    if add_additional_app(config_path, did, comment):
+                        summary["dlcs_added"].append(did)
+
+        # 3. Prune base game depots from AdditionalDepots
+        existing_depots = get_additional_depots(config_path)
+        for bd in base_depots:
+            if bd in existing_depots and bd not in dlc_ids:
+                if remove_additional_depot(config_path, bd):
+                    summary["base_depots_removed"].append(bd)
+
+        # 4. Prune base game keys from DecryptionKeys
+        existing_keys = get_decryption_keys(config_path)
+        keys_to_purge = [bd for bd in base_depots if bd in existing_keys and bd not in dlc_ids]
+        if appid_str in existing_keys:
+            keys_to_purge.append(appid_str)
+        for kd in keys_to_purge:
+            if remove_decryption_key(config_path, kd):
+                summary["base_keys_removed"].append(kd)
+
+        # 5. Remove FakeAppIds for this app
+        if remove_fake_app_id(config_path, appid_str):
+            summary["fake_app_removed"] = True
+
+        # 6. Remove launch options (Netsock LD_AUDIT / custom wrappers)
+        if remove_launch_option(config_path, appid_str):
+            summary["launch_options_removed"] = True
+
+        # 7. Remove any pinned ManifestIds for base game depots
+        if get_manifest_ids and remove_manifest_ids:
+            current_pins = get_manifest_ids(config_path)
+            pins_to_remove = [bd for bd in base_depots if bd in current_pins and bd not in dlc_ids]
+            if pins_to_remove:
+                if remove_manifest_ids(config_path, pins_to_remove):
+                    summary["manifest_ids_removed"].extend(pins_to_remove)
+
+    # 8. Revert emulators / proxies in game install path
+    target_install = install_path
+    if not target_install and game_data:
+        target_install = game_data.get("install_path") or game_data.get("dest_path")
+    if not target_install:
+        try:
+            settings = get_settings()
+            target_install = settings.value(f"game_dir/{appid_str}", "")
+        except Exception:
+            pass
+
+    if target_install and os.path.isdir(target_install):
+        # A. Goldberg restore
+        try:
+            restored = restore_goldberg_backups(target_install)
+            if restored:
+                summary["goldberg_restored"].extend(restored)
+        except Exception as ge:
+            logger.warning(f"Error restoring Goldberg in {target_install}: {ge}")
+
+        # B. EOS proxy remove
+        try:
+            from utils.eos_detector import EOSDetector
+            status = EOSDetector.get_proxy_status(target_install)
+            if status not in (None, False, "not_found"):
+                if EOSDetector.remove_proxy(target_install):
+                    summary["eos_proxy_removed"] = True
+        except Exception as ee:
+            logger.warning(f"Error removing EOS proxy in {target_install}: {ee}")
+
+    return summary
+
+
 def sync_dlc_only_sls_config(
     config_path: Path, appid: str, game_name: str, game_data: Optional[dict] = None
 ) -> bool:
     """
     Syncs a game to SLSsteam config.yaml based on DLC-only mode status.
     If DLC-only mode is active:
-      - Ensures the base game AppID is REMOVED from AdditionalApps.
-      - Adds each DLC AppID with comment '[DLC] {dlc_name} / {base_game_name}'.
-      - If the game has 64 or more DLCs, adds them under DlcData to bypass Steam's 64 DLC limit.
+      - Runs full purge_and_sanitize_for_dlc_only to ensure only DLC items exist.
     Else:
       - Adds the base game AppID to AdditionalApps.
       - Removes DLC AppIDs from AdditionalApps.
@@ -205,29 +460,14 @@ def sync_dlc_only_sls_config(
 
     appid_str = str(appid).strip()
     dlc_mode = is_dlc_only_mode(appid_str)
-    # Only allow slow network lookups if the game is in DLC-only mode or specifically requested
     dlc_list = get_all_dlcs_for_app(appid_str, game_data, allow_network=dlc_mode)
 
     if dlc_mode:
-        # Base game AppID MUST NOT be in AdditionalApps when in DLC-only mode
-        remove_additional_app(config_path, appid_str)
-        added_any = False
-        if dlc_list:
-            for dlc_entry in dlc_list:
-                dlc_appid = str(dlc_entry["dlc_appid"])
-                dlc_name = dlc_entry["dlc_name"]
-                base_name = dlc_entry["base_game_name"] or game_name
-                comment = f"[DLC] {dlc_name or dlc_appid} / {base_name}"
-                if add_additional_app(config_path, dlc_appid, comment):
-                    added_any = True
-
-            # If 64 or more DLCs, add them under DlcData to bypass Steam's 64 DLC limit
-            if len(dlc_list) >= 64:
-                dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
-                add_dlc_data_batch(config_path, appid_str, dlc_dict)
-            else:
-                remove_dlc_data(config_path, appid_str)
-        return added_any
+        install_path = (game_data.get("install_path") or game_data.get("dest_path")) if game_data else None
+        res = purge_and_sanitize_for_dlc_only(
+            appid_str, game_name, install_path=install_path, game_data=game_data, config_path=config_path
+        )
+        return bool(res.get("dlcs_added") or res.get("base_app_removed"))
     else:
         # Regular game mode - ensure base game in AdditionalApps
         added = add_additional_app(config_path, appid_str, game_name)

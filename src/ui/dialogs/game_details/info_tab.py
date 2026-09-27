@@ -1129,14 +1129,44 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
     dialog.update_title()
 
     if state:
+        try:
+            from utils.dlc_helpers import purge_and_sanitize_for_dlc_only
+            install_path = getattr(dialog, "install_path", None) or dialog.game_data.get("install_path") or ""
+            purge_res = purge_and_sanitize_for_dlc_only(
+                dialog.appid,
+                dialog.game_data.get("game_name", ""),
+                install_path=install_path,
+                game_data=dialog.game_data,
+            )
+            logger.info(f"[DLCMode] Sanity purge summary for {dialog.appid}: {purge_res}")
+        except Exception as pe:
+            logger.error(f"[DLCMode] Error in sanity purge: {pe}", exc_info=True)
+
         if hasattr(dialog, "sls_tile") and dialog.sls_tile:
+            dialog.sls_tile.blockSignals(True)
+            dialog.sls_tile.setChecked(False)
+            dialog.sls_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Enable SLSonline")
             dialog.sls_tile.setEnabled(False)
             dialog.sls_tile.setToolTip("Not available in DLC-Only mode")
+            dialog.sls_tile.blockSignals(False)
+        if hasattr(dialog, "sls_input_container") and dialog.sls_input_container:
+            dialog.sls_input_container.setVisible(False)
         if hasattr(dialog, "sls_input") and dialog.sls_input:
             dialog.sls_input.setEnabled(False)
+        if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
+            dialog.netsock_tile.blockSignals(True)
+            dialog.netsock_tile.setChecked(False)
+            dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
+            dialog.netsock_tile.setEnabled(False)
+            dialog.netsock_tile.setToolTip("Not available in DLC-Only mode")
+            dialog.netsock_tile.blockSignals(False)
         if hasattr(dialog, "eos_tile") and dialog.eos_tile:
+            dialog.eos_tile.blockSignals(True)
+            dialog.eos_tile.setChecked(False)
+            dialog.eos_tile.update_state(False, dialog.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
             dialog.eos_tile.setEnabled(False)
             dialog.eos_tile.setToolTip("Not available in DLC-Only mode")
+            dialog.eos_tile.blockSignals(False)
         if hasattr(dialog, "ws_tab_btn") and dialog.ws_tab_btn:
             dialog.ws_tab_btn.setVisible(False)
             if hasattr(dialog, "ws_page_index") and dialog.stacked.currentIndex() == dialog.ws_page_index:
@@ -1147,6 +1177,11 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
             dialog.sls_tile.setToolTip("")
         if hasattr(dialog, "sls_input") and dialog.sls_input:
             dialog.sls_input.setEnabled(True)
+        if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
+            dialog.netsock_tile.setEnabled(True)
+            dialog.netsock_tile.setToolTip("")
+        if hasattr(dialog, "init_slsonline_logic"):
+            dialog.init_slsonline_logic()
         update_eos_btn_state(dialog)
         if hasattr(dialog, "ws_tab_btn") and dialog.ws_tab_btn:
             if getattr(dialog, "_has_workshop", False):
