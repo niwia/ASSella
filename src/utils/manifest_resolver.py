@@ -64,6 +64,26 @@ def sanitize_manifest_file(file_path: Union[str, Path]) -> bool:
     return False
 
 
+def is_valid_manifest(data: Union[bytes, str, Path]) -> bool:
+    """
+    Validates whether data or a file on disk represents a valid, parseable Steam DepotManifest.
+    """
+    try:
+        from steam.core.manifest import DepotManifest
+        if isinstance(data, (str, Path)):
+            p = Path(data)
+            if not p.is_file() or p.stat().st_size == 0:
+                return False
+            raw = p.read_bytes()
+        else:
+            raw = data
+        if not raw or len(raw) < 16:
+            return False
+        dm = DepotManifest(raw)
+        return hasattr(dm, "payload") and hasattr(dm.payload, "mappings")
+    except Exception:
+        return False
+
 
 def resolve_appid_from_depot(depot_id: str | int) -> Tuple[Optional[str], Optional[str]]:
     """Resolves the parent game AppID and game title from a Steam Depot ID.

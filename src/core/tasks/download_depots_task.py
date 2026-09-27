@@ -223,14 +223,111 @@ class DownloadDepotsTask(QObject):
                         return_code = self.process.poll()
                         self.process = None
 
-                if return_code != 0:
-                    failed_depots.append((depot_id, return_code))
-                    msg = (
-                        f"Warning: DepotDownloader exited with code "
-                        f"{return_code} for depot {depot_id}."
-                    )
-                    self.progress.emit(msg)
-                    logger.warning(msg)
+                if return_code != 0 and self._is_running:
+                    # Attempt smart recovery via wudrm / Steam CDN with fallbacks
+                    try:
+                        manifest_idx = current_cmd.index("-manifest")
+                        cur_manifest_id = current_cmd[manifest_idx + 1]
+                        mf_idx = current_cmd.index("-manifestfile")
+                        cur_manifest_file_path = current_cmd[mf_idx + 1]
+                    except (ValueError, IndexError):
+                        cur_manifest_id = None
+                        cur_manifest_file_path = None
+
+                    recovered_manifest = False
+                    if cur_manifest_id and cur_manifest_file_path:
+                        rec_msg = (
+                            f"⚠️ DepotDownloader failed for depot {depot_id} (exit code {return_code}). "
+                            f"Suspecting corrupted/poisoned manifest. Attempting fresh recovery via wudrm (Steam CDN)..."
+                        )
+                        self.progress.emit(rec_msg)
+                        logger.warning(rec_msg)
+
+                        # Purge suspected bad manifest from disk
+                        for bad_p in [
+                            cur_manifest_file_path,
+                            cur_manifest_file_path + ".sha",
+                            os.path.join(self.download_dir, ".DepotDownloader", f"{depot_id}_{cur_manifest_id}.manifest"),
+                            os.path.join(self.download_dir, ".DepotDownloader", f"{depot_id}_{cur_manifest_id}.manifest.sha"),
+                        ]:
+                            try:
+                                if os.path.exists(bad_p):
+                                    os.remove(bad_p)
+                            except OSError:
+                                pass
+
+                        try:
+                            from core import morrenus_api
+                            depots_map = game_data.get("depots", {})
+                            d_info = depots_map.get(str(depot_id)) or depots_map.get(int(depot_id)) or {}
+                            d_key = d_info.get("key") if isinstance(d_info, dict) else None
+                            if not d_key:
+                                from managers.depot_key_manager import DepotKeyManager
+                                d_key = DepotKeyManager().get_depot_keys(str(game_data.get("appid", ""))).get(str(depot_id))
+
+                            raw_bytes, gen_err = morrenus_api.generate_single_manifest(
+                                depot_id, cur_manifest_id, depot_key=d_key
+                            )
+                            if raw_bytes:
+                                from utils.manifest_resolver import sanitize_manifest_bytes, is_valid_manifest
+                                clean_bytes = sanitize_manifest_bytes(raw_bytes)
+                                if is_valid_manifest(clean_bytes):
+                                    os.makedirs(os.path.dirname(cur_manifest_file_path), exist_ok=True)
+                                    with open(cur_manifest_file_path, "wb") as mf:
+                                        mf.write(clean_bytes)
+                                    recovered_manifest = True
+                                    self.progress.emit(f"✅ Successfully re-fetched clean manifest for depot {depot_id} via wudrm/Steam CDN. Retrying download...")
+                                    logger.info(f"[DownloadDepotsTask] Re-fetched clean manifest for depot {depot_id} ({len(clean_bytes)} bytes)")
+                                else:
+                                    logger.error(f"[DownloadDepotsTask] Re-fetched manifest for depot {depot_id} is invalid.")
+                            else:
+                                logger.error(f"[DownloadDepotsTask] wudrm manifest recovery failed for depot {depot_id}: {gen_err}")
+                        except Exception as _rec_e:
+                            logger.error(f"[DownloadDepotsTask] Error during wudrm manifest recovery: {_rec_e}")
+
+                    if recovered_manifest and self._is_running:
+                        self.last_percentage = -1
+                        self._is_validating = False
+                        retry_cmd = [arg for arg in current_cmd if arg != "-use-lancache"]
+                        self.process = subprocess.Popen(
+                            retry_cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=False,
+                            creationflags=creation_flags,
+                            env=get_dotnet_env(),
+                        )
+                        self._read_process_output()
+
+                        if self.process and self.process.stdout:
+                            try:
+                                self.process.stdout.close()
+                            except OSError:
+                                pass
+
+                        self._flush_log_buffer()
+
+                        if not self._is_running:
+                            if self.process and self.process.poll() is None:
+                                self.process.terminate()
+                            logger.info("Download task stopping because stop() was called.")
+                            self.completed.emit()
+                            return
+
+                        if self.process:
+                            return_code = self.process.poll()
+                            self.process = None
+
+                    if return_code != 0:
+                        error_msg = (
+                            f"Poisoned manifest files: Depot {depot_id} (Manifest {cur_manifest_id or 'unknown'}) failed verification "
+                            f"and could not be recovered via wudrm or Steam CDN. Aborting."
+                        )
+                        self.progress.emit(f"ERROR: {error_msg}")
+                        logger.error(error_msg)
+                        self._cleanup_temp_files()
+                        self.error.emit((RuntimeError, error_msg, None))
+                        return
                 else:
                     self.completed_so_far_for_this_job += self.current_depot_size
                     self._last_speed_calc_time = 0.0
@@ -800,22 +897,45 @@ class DownloadDepotsTask(QObject):
                     self.progress.emit(f"Warning: Failed to fetch fallback manifest from Hubcap: {e}")
 
             # Pre-download Sanity Check: Ensure valid non-empty manifest file exists on disk
-            if not os.path.exists(manifest_file_path) or os.path.getsize(manifest_file_path) == 0:
-                err_msg = (
-                    f"Manifest for Depot {depot_id} (Manifest ID: {manifest_id}) could not be retrieved from Hubcap or local cache. "
-                    f"The specified manifest ID or depot ID may be invalid or obsolete."
-                )
-                logger.error(f"[DownloadDepotsTask] {err_msg}")
-                self.progress.emit(f"ERROR: {err_msg}")
-                skipped_depots.append(str(depot_id))
-                continue
-
-            # Ensure manifest file has no null characters in filenames before DepotDownloader parses it
+            from utils.manifest_resolver import sanitize_manifest_file, is_valid_manifest
             try:
-                from utils.manifest_resolver import sanitize_manifest_file
                 sanitize_manifest_file(manifest_file_path)
             except Exception as _m_san_err:
                 logger.debug(f"[DownloadDepotsTask] Failed to sanitize manifest {manifest_file_path}: {_m_san_err}")
+
+            if not os.path.exists(manifest_file_path) or not is_valid_manifest(manifest_file_path):
+                # Try emergency wudrm recovery before giving up
+                emergency_ok = False
+                try:
+                    from core import morrenus_api
+                    depots_map = game_data.get("depots", {})
+                    d_info = depots_map.get(str(depot_id)) or depots_map.get(int(depot_id)) or {}
+                    d_key = d_info.get("key") if isinstance(d_info, dict) else None
+                    if not d_key and appid_str:
+                        from managers.depot_key_manager import DepotKeyManager
+                        d_key = DepotKeyManager().get_depot_keys(appid_str).get(str(depot_id))
+                    em_bytes, _ = morrenus_api.generate_single_manifest(depot_id, manifest_id, depot_key=d_key)
+                    if em_bytes:
+                        from utils.manifest_resolver import sanitize_manifest_bytes
+                        em_clean = sanitize_manifest_bytes(em_bytes)
+                        if is_valid_manifest(em_clean):
+                            os.makedirs(os.path.dirname(manifest_file_path), exist_ok=True)
+                            with open(manifest_file_path, "wb") as mf:
+                                mf.write(em_clean)
+                            emergency_ok = True
+                            self.progress.emit(f"Emergency recovered valid manifest for depot {depot_id} via wudrm/Steam CDN")
+                except Exception as _em_err:
+                    logger.debug(f"[DownloadDepotsTask] Emergency wudrm pre-check failed: {_em_err}")
+
+                if not emergency_ok:
+                    err_msg = (
+                        f"Poisoned manifest files: Depot {depot_id} (Manifest ID: {manifest_id}) "
+                        f"is corrupted or invalid and could not be recovered via wudrm or Steam CDN."
+                    )
+                    logger.error(f"[DownloadDepotsTask] {err_msg}")
+                    self.progress.emit(f"ERROR: {err_msg}")
+                    skipped_depots.append(str(depot_id))
+                    continue
 
             cmd_args = [
                 dotnet_cmd,
