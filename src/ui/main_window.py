@@ -3378,6 +3378,12 @@ class MainWindow(QMainWindow):
                 import json
                 local_clean = _extract_semver(app_version)
 
+                is_local_canary = (
+                    "canary" in local_clean.lower()
+                    or "testing" in local_clean.lower()
+                    or local_clean.startswith("3.")
+                )
+
                 # 1. Primary check: GitHub Releases API (detects full releases + pre-releases with AppImage)
                 try:
                     api_url = "https://api.github.com/repos/niwia/ASSella/releases"
@@ -3389,8 +3395,24 @@ class MainWindow(QMainWindow):
                         releases = json.loads(response.read().decode("utf-8"))
                         for r in releases:
                             tag = r.get("tag_name", "").strip()
+                            is_remote_canary = (
+                                "canary" in tag.lower()
+                                or "testing" in tag.lower()
+                                or tag.lstrip("v").startswith("3.")
+                            )
+                            # Strict channel isolation:
+                            # Stable/Beta (2.x) must NEVER pick up Canary/Testing (3.x)
+                            # Canary (3.x) must NEVER pick up Stable/Beta (2.x)
+                            if is_local_canary != is_remote_canary:
+                                continue
+
                             assets = [a.get("name", "") for a in r.get("assets", [])]
-                            if any(a.endswith(".AppImage") for a in assets):
+                            if is_local_canary:
+                                has_appimage = any(a.lower().endswith(".appimage") for a in assets)
+                            else:
+                                has_appimage = any(a == "ASSella.AppImage" or (a.endswith(".AppImage") and "canary" not in a.lower()) for a in assets)
+
+                            if has_appimage:
                                 remote_clean = _extract_semver(tag)
                                 break
                 except Exception as api_err:
@@ -3398,7 +3420,9 @@ class MainWindow(QMainWindow):
 
                 # 2. Fallback check: raw version file on GitHub branch
                 if not remote_clean:
-                    if "alpha" in local_clean.lower():
+                    if is_local_canary:
+                        branch = "canary"
+                    elif "alpha" in local_clean.lower():
                         branch = "alpha"
                     elif any(x in local_clean.lower() for x in ("beta", "rc")):
                         branch = "beta"
@@ -3554,11 +3578,23 @@ class MainWindow(QMainWindow):
                             raise
 
                 download_url = None
+                is_local_canary = (
+                    "canary" in local_clean.lower()
+                    or "testing" in local_clean.lower()
+                    or local_clean.startswith("3.")
+                )
                 for asset in release_data.get("assets", []):
                     name = asset.get("name", "")
-                    if name.endswith(".AppImage") and "zsync" not in name:
-                        download_url = asset["browser_download_url"]
-                        break
+                    if "zsync" in name.lower():
+                        continue
+                    if is_local_canary:
+                        if name.lower().endswith(".appimage"):
+                            download_url = asset["browser_download_url"]
+                            break
+                    else:
+                        if name == "ASSella.AppImage" or (name.endswith(".AppImage") and "canary" not in name.lower()):
+                            download_url = asset["browser_download_url"]
+                            break
 
                 if not download_url:
                     raise RuntimeError("No AppImage asset found in the release.")

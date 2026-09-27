@@ -112,19 +112,55 @@ get_latest_github_version() {
 
     REL_JSON=$(curl -s "https://api.github.com/repos/niwia/ASSella/releases" || true)
     if [ -n "$REL_JSON" ]; then
-        TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4 || true)
-        if [ -n "$TAG_NAME" ]; then
-            LATEST_VER="$TAG_NAME"
+        if command -v python3 &>/dev/null; then
+            PARSED=$(echo "$REL_JSON" | python3 -c '
+import sys, json
+try:
+    releases = json.load(sys.stdin)
+    is_canary = ("--canary" in sys.argv)
+    for r in releases:
+        tag = r.get("tag_name", "").strip()
+        is_rel_canary = any(x in tag.lower() for x in ("canary", "testing")) or tag.lstrip("v").startswith("3.")
+        if is_canary != is_rel_canary:
+            continue
+        for a in r.get("assets", []):
+            name = a.get("name", "")
+            if is_canary:
+                if name.lower().endswith(".appimage"):
+                    print(tag)
+                    print(a.get("browser_download_url", ""))
+                    sys.exit(0)
+            else:
+                if name == "ASSella.AppImage" or (name.endswith(".AppImage") and "canary" not in name.lower()):
+                    print(tag)
+                    print(a.get("browser_download_url", ""))
+                    sys.exit(0)
+except Exception:
+    pass
+' "$@" || true)
+            if [ -n "$PARSED" ]; then
+                TAG_NAME=$(echo "$PARSED" | sed -n '1p')
+                DL_URL=$(echo "$PARSED" | sed -n '2p')
+                if [ -n "$TAG_NAME" ]; then LATEST_VER="$TAG_NAME"; fi
+                if [ -n "$DL_URL" ]; then LATEST_URL="$DL_URL"; fi
+            fi
         fi
 
-        DL_URL=$(echo "$REL_JSON" | grep -o '"browser_download_url": *"[^"]*ASSella\.AppImage"' | head -n 1 | cut -d '"' -f 4 || true)
-        if [ -n "$DL_URL" ]; then
-            LATEST_URL="$DL_URL"
+        if [ "$LATEST_VER" = "Unknown" ]; then
+            TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | grep -v -i -E 'canary|testing|"v?3\.' | head -n 1 | cut -d '"' -f 4 || true)
+            if [ -n "$TAG_NAME" ]; then
+                LATEST_VER="$TAG_NAME"
+            fi
+
+            DL_URL=$(echo "$REL_JSON" | grep -o '"browser_download_url": *"[^"]*ASSella\.AppImage"' | head -n 1 | cut -d '"' -f 4 || true)
+            if [ -n "$DL_URL" ]; then
+                LATEST_URL="$DL_URL"
+            fi
         fi
     fi
 
     if [ -z "$LATEST_URL" ]; then
-        LATEST_URL="https://github.com/niwia/ASSella/releases/download/v2.6.4/ASSella.AppImage"
+        LATEST_URL="https://github.com/niwia/ASSella/releases/download/v2.6.5/ASSella.AppImage"
     fi
 }
 
