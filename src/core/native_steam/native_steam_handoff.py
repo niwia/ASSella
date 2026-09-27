@@ -13,7 +13,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import time
 import zipfile
 from pathlib import Path
@@ -128,38 +127,6 @@ def send_sls_api(command: str) -> bool:
     except OSError as e:
         logger.warning(f"[SteamHandoff] SLS send failed: {e}")
         return False
-
-
-def trigger_steam_validation(appid: str) -> bool:
-    """Trigger file verification in the Steam client via steam://validate/<appid>."""
-    clean_id = str(appid).strip()
-    if not clean_id:
-        return False
-
-    cmd = ["steam", f"steam://validate/{clean_id}"]
-    try:
-        subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        logger.info(f"[SteamHandoff] Dispatched Steam validation: {' '.join(cmd)}")
-        return True
-    except Exception as e:
-        logger.debug(f"[SteamHandoff] Direct steam command failed ({e}), falling back to xdg-open")
-        try:
-            subprocess.Popen(
-                ["xdg-open", f"steam://validate/{clean_id}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            logger.info(f"[SteamHandoff] Dispatched Steam validation via xdg-open for {clean_id}")
-            return True
-        except Exception as xerr:
-            logger.warning(f"[SteamHandoff] Failed to trigger Steam validation for {clean_id}: {xerr}")
-            return False
 
 
 def deploy_bundled_plugins(plugins_dir: Path) -> bool:

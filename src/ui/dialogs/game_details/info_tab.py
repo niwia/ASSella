@@ -1140,7 +1140,7 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
     )
 
     if is_vapor_mode:
-        from core.native_steam.native_steam_handoff import get_depotcache_dirs, trigger_steam_validation
+        from core.native_steam.native_steam_handoff import get_depotcache_dirs, send_sls_api
         from core.native_steam.steam_manifest_pinning import set_manifest_ids
         from utils.yaml_config_manager import get_user_config_path
 
@@ -1161,16 +1161,16 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
         comment = f"{game_name} ({dialog.appid}) [Build {build_id}]"
         set_manifest_ids(config_path, manifest_map, comment=comment)
 
-        val_sent = trigger_steam_validation(dialog.appid)
+        api_sent = send_sls_api(f"validate|{dialog.appid}")
         msg = (
             f"<b>Native Steam Rollback Configured!</b><br><br>"
             f"Depot <b>{depot_id}</b> has been locked to Manifest <b>{manifest_id}</b> (Build <b>{build_id}</b>) in SLSsteam.<br><br>"
             f"The manifest was seeded into Steam's depotcache."
         )
-        if val_sent:
-            msg += "<br><br>Steam file validation has been initiated to apply the rollback in your Steam client."
+        if api_sent:
+            msg += "<br><br>Steam was signalled to validate and downgrade the build natively."
         else:
-            msg += "<br><br><i>Note: Please verify game file integrity in Steam to apply the pinned build.</i>"
+            msg += "<br><br><i>Note: Steam is not running with SLSsteam active. When Steam starts, it will use the pinned build.</i>"
         QMessageBox.information(dialog, "Native Rollback Applied", msg)
         return
 
@@ -1913,7 +1913,7 @@ def on_pin_build_toggled(dialog, pinned: bool) -> None:
             try:
                 from core.native_steam.steam_manifest_pinning import remove_manifest_ids, get_manifest_ids
                 from utils.yaml_config_manager import get_user_config_path
-                from core.native_steam.native_steam_handoff import trigger_steam_validation
+                from core.native_steam.native_steam_handoff import send_sls_api
                 cp = get_user_config_path()
                 if cp.exists():
                     current_pins = get_manifest_ids(cp)
@@ -1923,7 +1923,7 @@ def on_pin_build_toggled(dialog, pinned: bool) -> None:
                     if to_remove:
                         remove_manifest_ids(cp, to_remove)
                         logger.info(f"[NativeRollback] Unpinned native manifests for {dialog.appid}: {to_remove}")
-                        trigger_steam_validation(dialog.appid)
+                        send_sls_api(f"validate|{dialog.appid}")
             except Exception as e:
                 logger.error(f"[NativeRollback] Failed to unpin manifests: {e}")
 
