@@ -45,7 +45,10 @@ def get_settings() -> QSettings:
             _settings_local.instance.setValue("workshop_steam_enabled", True)
             _settings_local.instance.setValue("workshop_max_downloads", 4)
             _settings_local.instance.setValue("use_lancache", True)
+            _settings_local.instance.setValue("prompt_steam_restart", False)
+            _settings_local.instance.setValue("sls_config_management", True)
             _settings_local.instance.sync()
+
 
         # Sanitize default_download_directory (e.g. if transient /tmp was left behind)
         try:
@@ -64,3 +67,10 @@ def is_twp_needed() -> bool:
     """True if the Training Wheels Protocol should be shown (first ASSella launch / transition from ACCELA)."""
     s = get_settings()
     return not s.value("assella_twp_seen", False, type=bool)
+
+
+def is_canary_welcome_needed() -> bool:
+    """True if the Canary Welcome Slideshow should be shown (first Canary launch / onboarding)."""
+    s = get_settings()
+    return not s.value("canary_welcome_seen", False, type=bool)
+

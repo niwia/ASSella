@@ -268,36 +268,20 @@ def create_sls_tab(dialog) -> QWidget:
         "experimental_acf_independent",
         True,
         dialog,
-        "Use slsteam native api for installtion/uninstallion with native acf generation.",
+        "Use SLSsteam native API for installation/uninstallation with native ACF generation.",
     )
     dialog.experimental_acf_independent_checkbox.stateChanged.connect(dialog._on_experimental_acf_toggled)
     int_layout.addWidget(dialog.experimental_acf_independent_checkbox)
 
-    dialog.sls_config_management_checkbox = create_checkbox_setting(
-        f"{wrapper_name} Config Management",
-        "sls_config_management",
-        True,
-        dialog,
-        f"Allow ACCELA to manage {wrapper_name} configuration files.",
-    )
-    
-    if sys.platform == "linux":
-        paths = get_sls_paths()
-        if paths["detected"]:
-            dialog.sls_config_management_checkbox.setChecked(True)
-            dialog.sls_config_management_checkbox.setEnabled(False)
-            dialog.sls_config_management_checkbox.setToolTip("Permanently enabled because SLSsteam installation was detected.")
-            
-    int_layout.addWidget(dialog.sls_config_management_checkbox)
+    # Cleaned up: only single SLSsteam API toggle is shown.
+    # Steam restart is disabled by default / forced off.
+    # SLS config management is ON by default and toggles in lockstep with SLSsteam API.
+    dialog.sls_config_management_checkbox = None
+    dialog.prompt_steam_restart_checkbox = None
+    dialog.settings.setValue("prompt_steam_restart", False)
+    if dialog.settings.value("sls_config_management") is None:
+        dialog.settings.setValue("sls_config_management", True)
 
-    dialog.prompt_steam_restart_checkbox = create_checkbox_setting(
-        "Prompt Steam Restart",
-        "prompt_steam_restart",
-        True,
-        dialog,
-        "Show prompt to restart Steam after Steam-integrated downloads.",
-    )
-    int_layout.addWidget(dialog.prompt_steam_restart_checkbox)
 
     dialog.ignore_slssteam_updater_checkbox = create_checkbox_setting(
         "Ignore SLSsteam Updater (managed by Headcrab)",

@@ -284,19 +284,18 @@ def goldberg_warning_box(dialog, checkbox, warning) -> bool:
 def on_experimental_acf_toggled(dialog, state):
     is_checked = (state == Qt.CheckState.Checked.value or state == True or state == 2)
 
-    # 1. prompt_steam_restart_checkbox
+    # 1. prompt_steam_restart is always disabled/off by default
+    dialog.settings.setValue("prompt_steam_restart", False)
     if hasattr(dialog, "prompt_steam_restart_checkbox") and dialog.prompt_steam_restart_checkbox is not None:
-        if is_checked:
-            if not hasattr(dialog, "_saved_prompt_restart_pref"):
-                dialog._saved_prompt_restart_pref = dialog.prompt_steam_restart_checkbox.isChecked()
-            dialog.prompt_steam_restart_checkbox.setChecked(False)
-            dialog.prompt_steam_restart_checkbox.setLocked(True, "Disabled while 'SLSsteam API' is active.")
-        else:
-            dialog.prompt_steam_restart_checkbox.setLocked(False)
-            if hasattr(dialog, "_saved_prompt_restart_pref"):
-                dialog.prompt_steam_restart_checkbox.setChecked(dialog._saved_prompt_restart_pref)
+        dialog.prompt_steam_restart_checkbox.setChecked(False)
+        dialog.prompt_steam_restart_checkbox.setLocked(True, "Disabled while 'SLSsteam API' is active.")
 
-    # 2. library_mode_checkbox (Limit Downloads to Steam Libraries)
+    # 2. sls_config_management is linked in lockstep with SLSsteam API
+    dialog.settings.setValue("sls_config_management", is_checked)
+    if hasattr(dialog, "sls_config_management_checkbox") and dialog.sls_config_management_checkbox is not None:
+        dialog.sls_config_management_checkbox.setChecked(is_checked)
+
+    # 3. library_mode_checkbox (Limit Downloads to Steam Libraries)
     if hasattr(dialog, "library_mode_checkbox") and dialog.library_mode_checkbox is not None:
         if is_checked:
             if not hasattr(dialog, "_saved_library_mode_pref"):
@@ -308,27 +307,6 @@ def on_experimental_acf_toggled(dialog, state):
             if hasattr(dialog, "_saved_library_mode_pref"):
                 dialog.library_mode_checkbox.setChecked(dialog._saved_library_mode_pref)
 
-    # 3. sls_config_management_checkbox (SLS Config Management)
-    if hasattr(dialog, "sls_config_management_checkbox") and dialog.sls_config_management_checkbox is not None:
-        if is_checked:
-            if not hasattr(dialog, "_saved_sls_config_mgmt_pref"):
-                dialog._saved_sls_config_mgmt_pref = dialog.sls_config_management_checkbox.isChecked()
-            dialog.sls_config_management_checkbox.setChecked(True)
-            dialog.sls_config_management_checkbox.setLocked(True, "Must be enabled when 'SLSsteam API' is active.")
-        else:
-            is_sls_detected = False
-            try:
-                from ui.dialogs.settings_sls import get_sls_paths
-                is_sls_detected = get_sls_paths()["detected"]
-            except Exception:
-                pass
-            if sys.platform == "linux" and is_sls_detected:
-                dialog.sls_config_management_checkbox.setChecked(True)
-                dialog.sls_config_management_checkbox.setLocked(True, "Enabled because SLSsteam installation was detected.")
-            else:
-                dialog.sls_config_management_checkbox.setLocked(False)
-                if hasattr(dialog, "_saved_sls_config_mgmt_pref"):
-                    dialog.sls_config_management_checkbox.setChecked(dialog._saved_sls_config_mgmt_pref)
 
     # 4. Silently ensure SLS prerequisites (API: yes, LogLevels: 0x2) in config.yaml if checked
     if is_checked:
