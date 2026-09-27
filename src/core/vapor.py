@@ -440,6 +440,20 @@ def unpack_and_process_manifest(
                         dm.decrypt_filenames(raw_key)
                         logger.info("Decrypted manifest file mappings with provided depot key")
 
+                # Sanitize null characters in filenames and linktargets to prevent System.ArgumentException in DepotDownloader
+                if hasattr(dm, "payload") and hasattr(dm.payload, "mappings"):
+                    for m in dm.payload.mappings:
+                        if hasattr(m, "filename"):
+                            if isinstance(m.filename, str):
+                                m.filename = m.filename.rstrip("\x00")
+                            elif isinstance(m.filename, bytes):
+                                m.filename = m.filename.rstrip(b"\x00").decode("utf-8", errors="replace")
+                        if hasattr(m, "linktarget") and m.linktarget:
+                            if isinstance(m.linktarget, str):
+                                m.linktarget = m.linktarget.rstrip("\x00")
+                            elif isinstance(m.linktarget, bytes):
+                                m.linktarget = m.linktarget.rstrip(b"\x00").decode("utf-8", errors="replace")
+
                 # Serialize uncompressed manifest (magic 0x71F617D0)
                 return dm.serialize(compress=False)
             except Exception as e:
