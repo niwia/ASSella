@@ -32,6 +32,7 @@ from typing import Optional, Tuple, Dict, Union, List
 
 import requests
 import sqlite3
+import subprocess
 
 # Optional: curl_cffi for Chrome 120 TLS impersonation (Tier 2 MRC fallback)
 try:
@@ -121,7 +122,7 @@ class WudrmMRCFetcher:
     def __init__(self, max_tries: int = 5, timeout: int = 6):
         self.max_tries = max_tries
         self.timeout = timeout
-        self.base_url = "http://gmrc.wudrm.com/manifest/"
+        self.base_url = "https://gmrc.wudrm.com/manifest/"
         # Plain requests session — used for Tier 1 (fast path)
         self.session = requests.Session()
         self.session.headers.update({
@@ -218,24 +219,36 @@ class WudrmMRCFetcher:
 
     def _fetch_tier2(self, url: str) -> Optional[str]:
         """
-        Tier 2: curl_cffi Chrome 120 TLS impersonation.
+        Tier 2: curl_cffi Chrome 120 TLS impersonation, with system curl fallback.
         Uses a fresh per-request call (no session) — persistent connections get 503'd by CF.
         Returns MRC string or None.
         """
-        if not WudrmMRCFetcher._cffi_available:
-            return None
+        if WudrmMRCFetcher._cffi_available:
+            try:
+                r = cffi_requests.get(
+                    url,
+                    impersonate="chrome120",
+                    timeout=self.timeout,
+                )
+                body = r.text.strip()
+                if self._is_valid_mrc(body):
+                    return body
+                logger.debug(f"[MRC/Tier2] cffi non-numeric body (HTTP {r.status_code})")
+            except Exception as e:
+                logger.debug(f"[MRC/Tier2] cffi request error: {e}")
+
+        # Subprocess curl fallback if curl_cffi is missing or failed
         try:
-            r = cffi_requests.get(
-                url,
-                impersonate="chrome120",
-                timeout=self.timeout,
-            )
-            body = r.text.strip()
-            if self._is_valid_mrc(body):
-                return body
-            logger.debug(f"[MRC/Tier2] cffi non-numeric body (HTTP {r.status_code})")
+            cmd = ["curl", "-s", "--max-time", str(int(self.timeout)), "-H", "User-Agent: Valve/Steam HTTP Client 1.0", url]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=self.timeout + 1)
+            if res.returncode == 0:
+                body = res.stdout.strip()
+                if self._is_valid_mrc(body):
+                    logger.debug("[MRC/Tier2] System curl successfully fetched MRC")
+                    return body
         except Exception as e:
-            logger.debug(f"[MRC/Tier2] cffi request error: {e}")
+            logger.debug(f"[MRC/Tier2] system curl fallback error: {e}")
+
         return None
 
     def get_manifest_request_code(self, manifest_id: Union[str, int]) -> Optional[str]:
