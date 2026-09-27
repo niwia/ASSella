@@ -4,9 +4,65 @@ import tempfile
 import zipfile
 import logging
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict, Any, List, Union
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_manifest_bytes(manifest_bytes: bytes) -> bytes:
+    """
+    Sanitize null characters from filenames and linktargets in a DepotManifest.
+    Returns cleaned serialized manifest bytes (uncompressed).
+    If no null characters are present or parsing fails, returns original bytes.
+    """
+    if not manifest_bytes:
+        return manifest_bytes
+    try:
+        from steam.core.manifest import DepotManifest
+        dm = DepotManifest(manifest_bytes)
+        modified = False
+        if hasattr(dm, "payload") and hasattr(dm.payload, "mappings"):
+            for m in dm.payload.mappings:
+                if hasattr(m, "filename") and m.filename:
+                    if isinstance(m.filename, str) and "\x00" in m.filename:
+                        m.filename = m.filename.replace("\x00", "")
+                        modified = True
+                    elif isinstance(m.filename, bytes) and b"\x00" in m.filename:
+                        m.filename = m.filename.replace(b"\x00", b"").decode("utf-8", errors="replace")
+                        modified = True
+                if hasattr(m, "linktarget") and m.linktarget:
+                    if isinstance(m.linktarget, str) and "\x00" in m.linktarget:
+                        m.linktarget = m.linktarget.replace("\x00", "")
+                        modified = True
+                    elif isinstance(m.linktarget, bytes) and b"\x00" in m.linktarget:
+                        m.linktarget = m.linktarget.replace(b"\x00", b"").decode("utf-8", errors="replace")
+                        modified = True
+        if modified:
+            return dm.serialize(compress=False)
+    except Exception as e:
+        logger.debug(f"[ManifestResolver] Failed to sanitize manifest bytes: {e}")
+    return manifest_bytes
+
+
+def sanitize_manifest_file(file_path: Union[str, Path]) -> bool:
+    """
+    Sanitizes null characters in-place in a manifest file on disk if needed.
+    Returns True if the file was modified, False otherwise.
+    """
+    p = Path(file_path)
+    if not p.is_file():
+        return False
+    try:
+        raw = p.read_bytes()
+        cleaned = sanitize_manifest_bytes(raw)
+        if cleaned != raw:
+            p.write_bytes(cleaned)
+            logger.info(f"[ManifestResolver] Sanitized null characters in manifest: {p.name}")
+            return True
+    except Exception as e:
+        logger.debug(f"[ManifestResolver] Failed to sanitize manifest file {file_path}: {e}")
+    return False
+
 
 
 def resolve_appid_from_depot(depot_id: str | int) -> Tuple[Optional[str], Optional[str]]:

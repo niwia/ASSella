@@ -249,6 +249,11 @@ class DownloadDepotsTask(QObject):
                         dest_manifest_path = os.path.join(dest_depot_downloader, f"{depot_id}_{manifest_id}.manifest")
 
                         if os.path.exists(manifest_file_path):
+                            try:
+                                from utils.manifest_resolver import sanitize_manifest_file
+                                sanitize_manifest_file(manifest_file_path)
+                            except Exception:
+                                pass
                             shutil.copy2(manifest_file_path, dest_manifest_path)
 
                             # Calculate SHA1 hash of the manifest file
@@ -398,9 +403,14 @@ class DownloadDepotsTask(QObject):
             return
 
         try:
+            from utils.manifest_resolver import sanitize_manifest_file
             for fname in os.listdir(temp_manifest_dir):
                 if fname.endswith(".manifest"):
                     src = os.path.join(temp_manifest_dir, fname)
+                    try:
+                        sanitize_manifest_file(src)
+                    except Exception:
+                        pass
                     dst = os.path.join(central_depotcache_dir, fname)
                     shutil.copy2(src, dst)
                     logger.info(f"Copied manifest {fname} to Steam's central depotcache")
@@ -799,6 +809,13 @@ class DownloadDepotsTask(QObject):
                 self.progress.emit(f"ERROR: {err_msg}")
                 skipped_depots.append(str(depot_id))
                 continue
+
+            # Ensure manifest file has no null characters in filenames before DepotDownloader parses it
+            try:
+                from utils.manifest_resolver import sanitize_manifest_file
+                sanitize_manifest_file(manifest_file_path)
+            except Exception as _m_san_err:
+                logger.debug(f"[DownloadDepotsTask] Failed to sanitize manifest {manifest_file_path}: {_m_san_err}")
 
             cmd_args = [
                 dotnet_cmd,
