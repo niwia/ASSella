@@ -118,6 +118,7 @@ class DownloadDepotsTask(QObject):
 
             # Track sidecar writes across all depots — determines DD_DELTA vs DD_FULL
             _sidecar_written_count = 0
+            failed_depots = []
 
             for i, current_cmd in enumerate(commands):
                 if not self._is_running:
@@ -223,6 +224,7 @@ class DownloadDepotsTask(QObject):
                         self.process = None
 
                 if return_code != 0:
+                    failed_depots.append((depot_id, return_code))
                     msg = (
                         f"Warning: DepotDownloader exited with code "
                         f"{return_code} for depot {depot_id}."
@@ -271,6 +273,22 @@ class DownloadDepotsTask(QObject):
                     f"Skipped {len(skipped_depots)} depots due to missing manifests: "
                     f"{', '.join(skipped_depots)}"
                 )
+                if len(skipped_depots) == total_depots:
+                    error_msg = "Download aborted: all depots were skipped due to missing manifests."
+                    self.progress.emit(f"ERROR: {error_msg}")
+                    logger.error(error_msg)
+                    self._cleanup_temp_files()
+                    self.error.emit((RuntimeError, error_msg, None))
+                    return
+
+            if failed_depots:
+                err_summary = ", ".join(f"depot {d} (code {c})" for d, c in failed_depots)
+                error_msg = f"DepotDownloader failed for {len(failed_depots)} depot(s): {err_summary}"
+                self.progress.emit(f"ERROR: {error_msg}")
+                logger.error(error_msg)
+                self._cleanup_temp_files()
+                self.error.emit((RuntimeError, error_msg, None))
+                return
 
             if not self._is_running:
                 logger.info("Download task stopped before cleanup.")
