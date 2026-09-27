@@ -222,11 +222,17 @@ class ProcessZipTask:
                         except Exception as _lua_arch_err:
                             logger.debug(f"Failed to archive LUA backup: {_lua_arch_err}")
 
-                manifest_files = {
-                    os.path.basename(f): zip_ref.read(f)
-                    for f in zip_ref.namelist()
-                    if f.endswith(".manifest")
-                }
+                manifest_files = {}
+                for f in zip_ref.namelist():
+                    if f.endswith(".manifest"):
+                        mf_data = zip_ref.read(f)
+                        try:
+                            from utils.manifest_resolver import sanitize_manifest_bytes
+                            mf_data = sanitize_manifest_bytes(mf_data)
+                        except Exception:
+                            pass
+                        manifest_files[os.path.basename(f)] = mf_data
+
                 for depot_id_manifest in manifest_files:
                     parts = depot_id_manifest.replace(".manifest", "").split("_")
                     if len(parts) == 2:
@@ -288,7 +294,13 @@ class ProcessZipTask:
                                         game_data.setdefault("manifests", {})[did] = mid
                                     if mf_file.name not in manifest_files:
                                         try:
-                                            manifest_files[mf_file.name] = mf_file.read_bytes()
+                                            raw_bytes = mf_file.read_bytes()
+                                            try:
+                                                from utils.manifest_resolver import sanitize_manifest_bytes
+                                                raw_bytes = sanitize_manifest_bytes(raw_bytes)
+                                            except Exception:
+                                                pass
+                                            manifest_files[mf_file.name] = raw_bytes
                                         except Exception:
                                             pass
 
@@ -733,6 +745,11 @@ class ProcessZipTask:
                                         )
 
                                 if found_manifest and actual_mid:
+                                    try:
+                                        from utils.manifest_resolver import sanitize_manifest_bytes
+                                        found_manifest = sanitize_manifest_bytes(found_manifest)
+                                    except Exception:
+                                        pass
                                     manifest_files[f"{m_did}_{actual_mid}.manifest"] = found_manifest
                                     game_data.setdefault("manifests", {})[str(m_did)] = str(actual_mid)
                                     if str(m_did) not in filtered_depots:
@@ -906,6 +923,11 @@ class ProcessZipTask:
                 )
                 os.makedirs(manifest_dir, exist_ok=True)
                 for name, content in manifest_files.items():
+                    try:
+                        from utils.manifest_resolver import sanitize_manifest_bytes
+                        content = sanitize_manifest_bytes(content)
+                    except Exception:
+                        pass
                     with open(os.path.join(manifest_dir, name), "wb") as f:
                         f.write(content)
 

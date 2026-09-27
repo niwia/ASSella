@@ -2461,6 +2461,11 @@ class DepotSelectionDialog(QDialog):
                     QApplication.processEvents()
                     raw_bytes, g_err = morrenus_api.generate_single_manifest(r_did, r_mid)
                     if raw_bytes:
+                        try:
+                            from utils.manifest_resolver import sanitize_manifest_bytes
+                            raw_bytes = sanitize_manifest_bytes(raw_bytes)
+                        except Exception:
+                            pass
                         for s_dir in [Path(tempfile.gettempdir()) / "mistwalker_manifests", Path(get_base_path()) / "manifests"]:
                             try:
                                 s_dir.mkdir(parents=True, exist_ok=True)
