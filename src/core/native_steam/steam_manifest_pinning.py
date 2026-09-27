@@ -20,8 +20,8 @@ from utils.yaml_config_manager import _atomic_write, _get_section_bounds
 logger = logging.getLogger(__name__)
 
 
-def get_manifest_ids(config_path: Path) -> Dict[str, str]:
-    """Parse and return all current ManifestIds mappings from config.yaml."""
+def get_manifest_ids_with_comments(config_path: Path) -> Dict[str, Tuple[str, str]]:
+    """Parse and return all current ManifestIds mappings with comments from config.yaml: {depot_id: (gid, comment)}."""
     if not config_path.exists():
         return {}
 
@@ -38,18 +38,31 @@ def get_manifest_ids(config_path: Path) -> Dict[str, str]:
     _, content_start, section_end = bounds
     section_text = content[content_start:section_end]
 
-    result: Dict[str, str] = {}
+    result: Dict[str, Tuple[str, str]] = {}
     for line in section_text.splitlines():
-        line = line.split("#")[0].strip()
-        if not line or ":" not in line:
+        comment = ""
+        if "#" in line:
+            parts = line.split("#", 1)
+            line_part = parts[0].strip()
+            comment = parts[1].strip()
+        else:
+            line_part = line.strip()
+
+        if not line_part or ":" not in line_part:
             continue
-        parts = line.split(":", 1)
+        parts = line_part.split(":", 1)
         depot_id = parts[0].strip()
         gid = parts[1].strip().strip('"').strip("'")
         if depot_id.isdigit() and gid.isdigit():
-            result[depot_id] = gid
+            result[depot_id] = (gid, comment)
 
     return result
+
+
+def get_manifest_ids(config_path: Path) -> Dict[str, str]:
+    """Parse and return all current ManifestIds mappings from config.yaml."""
+    full_map = get_manifest_ids_with_comments(config_path)
+    return {d: gid for d, (gid, _) in full_map.items()}
 
 
 def set_manifest_ids(
@@ -59,7 +72,7 @@ def set_manifest_ids(
 ) -> bool:
     """
     Atomically add or update depot manifest GIDs under the ManifestIds section.
-    Preserves other existing ManifestIds entries and other sections.
+    Preserves other existing ManifestIds entries, comments, and other sections.
     """
     if not manifest_map:
         return True
@@ -71,17 +84,18 @@ def set_manifest_ids(
         else:
             content = config_path.read_text(encoding="utf-8", errors="ignore")
 
-        # Read existing ManifestIds
-        current_map = get_manifest_ids(config_path)
+        # Read existing ManifestIds with comments
+        current_map = get_manifest_ids_with_comments(config_path)
         # Merge new mappings
         for d, gid in manifest_map.items():
-            current_map[str(d)] = str(gid)
+            current_map[str(d)] = (str(gid), comment.strip())
 
-        # Format new ManifestIds block
+        # Format new ManifestIds block preserving comments
         lines = ["ManifestIds:"]
-        suffix = f" # {comment}" if comment else ""
         for d in sorted(current_map.keys(), key=lambda x: int(x) if x.isdigit() else 0):
-            lines.append(f"  {d}: {current_map[d]}{suffix if d in manifest_map else ''}")
+            gid, c = current_map[d]
+            suffix = f" # {c}" if c else ""
+            lines.append(f"  {d}: {gid}{suffix}")
         new_block = "\n".join(lines) + "\n"
 
         bounds = _get_section_bounds(content, "ManifestIds")
@@ -105,7 +119,7 @@ def set_manifest_ids(
 
 
 def remove_manifest_ids(config_path: Path, depot_ids: List[str]) -> bool:
-    """Remove specific depot IDs from the ManifestIds section in config.yaml."""
+    """Remove specific depot IDs from the ManifestIds section in config.yaml, preserving comments for remaining entries."""
     if not config_path.exists() or not depot_ids:
         return True
 
@@ -115,11 +129,11 @@ def remove_manifest_ids(config_path: Path, depot_ids: List[str]) -> bool:
         if not bounds:
             return True
 
-        current_map = get_manifest_ids(config_path)
+        current_map = get_manifest_ids_with_comments(config_path)
         depot_set = set(str(d) for d in depot_ids)
 
         # Filter out requested depots
-        remaining_map = {d: gid for d, gid in current_map.items() if d not in depot_set}
+        remaining_map = {d: val for d, val in current_map.items() if d not in depot_set}
 
         if len(remaining_map) == len(current_map):
             return True  # Nothing changed
@@ -127,7 +141,9 @@ def remove_manifest_ids(config_path: Path, depot_ids: List[str]) -> bool:
         if remaining_map:
             lines = ["ManifestIds:"]
             for d in sorted(remaining_map.keys(), key=lambda x: int(x) if x.isdigit() else 0):
-                lines.append(f"  {d}: {remaining_map[d]}")
+                gid, c = remaining_map[d]
+                suffix = f" # {c}" if c else ""
+                lines.append(f"  {d}: {gid}{suffix}")
             new_block = "\n".join(lines) + "\n"
         else:
             new_block = "ManifestIds:\n"

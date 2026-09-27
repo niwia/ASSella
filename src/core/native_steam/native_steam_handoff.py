@@ -308,10 +308,21 @@ def perform_steam_handoff(
         return False, f"No depot keys available for {game_name} ({appid})."
 
     # Retain all keys (both main AppID key and all depots) in DecryptionKeys so Steam client
-    # and download.lua never fail with Missing Decryption Key / UpdateResult 8
+    # and download.lua never fail with Missing Decryption Key / UpdateResult 8, unless in DLC-only mode.
+    from utils.dlc_helpers import is_dlc_only_mode, get_base_depot_ids_for_app
+    is_dlc = is_dlc_only_mode(appid) or bool(game_data.get("is_dlc_only"))
+
     active_keys = dict(depot_keys)
-    if game_data.get("app_key") and str(appid) not in active_keys:
-        active_keys[str(appid)] = game_data["app_key"]
+    if not is_dlc:
+        if game_data.get("app_key") and str(appid) not in active_keys:
+            active_keys[str(appid)] = game_data["app_key"]
+    else:
+        base_depots_set = set(get_base_depot_ids_for_app(appid, game_data))
+        for bd in base_depots_set:
+            active_keys.pop(bd, None)
+        active_keys.pop(str(appid), None)
+        if selected_depots:
+            selected_depots = [d for d in selected_depots if str(d) not in base_depots_set]
 
     # 4. Check pinned manifests
     pinned_manifests = resolve_pinned_manifests(game_data, appid)
@@ -329,7 +340,7 @@ def perform_steam_handoff(
     log_offset = sls_log.stat().st_size if sls_log.exists() else 0
 
     patch_ok = task_helper._patch_config(
-        config_path, appid, game_name, active_keys, selected_depots=selected_depots
+        config_path, appid, game_name, active_keys, selected_depots=selected_depots, game_data=game_data
     )
     if not patch_ok:
         return False, "Failed to patch SLSsteam config.yaml."

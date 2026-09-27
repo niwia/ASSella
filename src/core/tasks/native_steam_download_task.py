@@ -181,9 +181,9 @@ class NativeSteamDownloadTask(QObject):
         log_offset = sls_log.stat().st_size if sls_log.exists() else 0
 
         # 3. Patch config.yaml (BEFORE deploying plugins)
-        config_path = sls_config_dir / "config.yaml"
-        self.progress.emit("[Native Steam] Patching SLSsteam config.yaml...")
-        patch_ok = self._patch_config(config_path, appid, game_name, depot_keys)
+        patch_ok = self._patch_config(
+            config_path, appid, game_name, depot_keys, selected_depots=selected_depots, game_data=game_data
+        )
         if not patch_ok:
             msg = "Failed to patch SLSsteam config.yaml."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
@@ -521,20 +521,31 @@ class NativeSteamDownloadTask(QObject):
         game_name: str,
         depot_keys: Dict[str, str],
         selected_depots: Optional[List[str]] = None,
+        game_data: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Patch SLSsteam config.yaml in a single atomic write with:
           - Plugins: yes
-          - AdditionalApps: [appid]
-          - AdditionalDepots: [depot_ids] (selected or discovered)
-          - DecryptionKeys: {depot/app: key} (including main AppID key)
+          - AdditionalApps: [appid] or [dlc_appids] (if DLC-only mode)
+          - AdditionalDepots: [depot_ids] with readable comments (# Game [Desc] (AppID))
+          - DecryptionKeys: {depot/app: key}
         """
         from utils.yaml_config_manager import (
             _atomic_write,
             _get_section_bounds,
             _fix_additional_apps_indentation,
             _append_to_additional_apps,
+            remove_fake_app_id,
+            remove_launch_option,
         )
+        from utils.dlc_helpers import (
+            is_dlc_only_mode,
+            get_all_dlcs_for_app,
+            get_base_depot_ids_for_app,
+        )
+
+        appid_str = str(appid).strip()
+        is_dlc = is_dlc_only_mode(appid_str) or bool(game_data and game_data.get("is_dlc_only"))
 
         if not config_path.exists():
             config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -556,64 +567,126 @@ class NativeSteamDownloadTask(QObject):
             else:
                 content = "Plugins: yes\n" + content
 
-        # 2. Add AppID to AdditionalApps in-memory
+        # 2. AdditionalApps
         fixed_content, _ = _fix_additional_apps_indentation(content)
         app_bounds = _get_section_bounds(fixed_content, "AdditionalApps")
-        app_id_pattern = re.compile(
-            rf"^[ \t]*-[ \t]*{re.escape(str(appid))}[ \t]*(?:#[^\r\n]*)?$",
-            re.MULTILINE,
-        )
-        entry_line = f"  - {appid} # {game_name}\n" if game_name else f"  - {appid}\n"
-        if app_bounds:
-            _, content_start, section_end = app_bounds
-            sec_content = fixed_content[content_start:section_end]
-            if not app_id_pattern.search(sec_content):
-                content = _append_to_additional_apps(fixed_content, str(appid), game_name, app_bounds)
+
+        if is_dlc:
+            # In DLC mode: Remove base AppID from AdditionalApps, add DLCs
+            if app_bounds:
+                content = re.sub(
+                    rf"^[ \t]*-[ \t]*{re.escape(appid_str)}[ \t]*(?:#[^\r\n]*)?\r?\n?",
+                    "",
+                    fixed_content,
+                    flags=re.MULTILINE,
+                )
             else:
                 content = fixed_content
-        else:
-            content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
 
-        # 3. Format AdditionalDepots (merge with existing, depot IDs excluding main appid)
+            dlcs = get_all_dlcs_for_app(appid_str, game_data, allow_network=True)
+            if dlcs and len(dlcs) < 64:
+                for d in dlcs:
+                    did = str(d["dlc_appid"])
+                    dname = d["dlc_name"] or did
+                    comment = f"[DLC] {dname} / {game_name}"
+                    bounds = _get_section_bounds(content, "AdditionalApps")
+                    if bounds:
+                        if not re.search(rf"^[ \t]*-[ \t]*{re.escape(did)}[ \t]*(?:#[^\r\n]*)?$", content[bounds[1]:bounds[2]], re.MULTILINE):
+                            content = _append_to_additional_apps(content, did, comment, bounds)
+                    else:
+                        content = content.rstrip() + f"\n\nAdditionalApps:\n  - {did} # {comment}\n"
+        else:
+            # Regular game mode: ensure base game in AdditionalApps
+            app_id_pattern = re.compile(
+                rf"^[ \t]*-[ \t]*{re.escape(appid_str)}[ \t]*(?:#[^\r\n]*)?$",
+                re.MULTILINE,
+            )
+            entry_line = f"  - {appid_str} # {game_name}\n" if game_name else f"  - {appid_str}\n"
+            if app_bounds:
+                _, content_start, section_end = app_bounds
+                sec_content = fixed_content[content_start:section_end]
+                if not app_id_pattern.search(sec_content):
+                    content = _append_to_additional_apps(fixed_content, appid_str, game_name, app_bounds)
+                else:
+                    content = fixed_content
+            else:
+                content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
+
+        # 3. Format AdditionalDepots with descriptive comments
         if selected_depots:
-            new_depot_ids = [str(d) for d in selected_depots if str(d) != str(appid)]
+            new_depot_ids = [str(d) for d in selected_depots if str(d) != appid_str]
         else:
-            new_depot_ids = [str(d) for d in depot_keys.keys() if str(d) != str(appid)]
+            new_depot_ids = [str(d) for d in depot_keys.keys() if str(d) != appid_str]
 
-        all_depot_ids: List[str] = []
+        base_depots_set = set(get_base_depot_ids_for_app(appid_str, game_data)) if is_dlc else set()
+
+        # Parse existing depots and comments
+        existing_depots_comments: Dict[str, str] = {}
         bounds_depots = _get_section_bounds(content, "AdditionalDepots")
         if bounds_depots:
             depots_text = content[bounds_depots[1] : bounds_depots[2]]
-            all_depot_ids = re.findall(r"^[ \t]*-[ \t]*(\d+)", depots_text, re.MULTILINE)
+            for line in depots_text.splitlines():
+                m = re.match(r"^[ \t]*-[ \t]*(\d+)(?:[ \t]*#[ \t]*(.*))?$", line)
+                if m:
+                    did = m.group(1)
+                    existing_depots_comments[did] = m.group(2).strip() if m.group(2) else ""
+
+        if is_dlc:
+            # Prune base game depots from existing
+            for bd in base_depots_set:
+                existing_depots_comments.pop(bd, None)
+            new_depot_ids = [d for d in new_depot_ids if d not in base_depots_set]
+
+        # Merge new depot IDs with comments
+        depots_meta = (game_data.get("depots") or {}) if game_data else {}
         for d in new_depot_ids:
-            if d not in all_depot_ids:
-                all_depot_ids.append(d)
+            meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
+            desc = meta.get("desc", "") if isinstance(meta, dict) else ""
+            is_depot_dlc = bool(isinstance(meta, dict) and meta.get("dlcappid")) or is_dlc
+            if is_depot_dlc:
+                depot_comment = f"[DLC] {desc or d} / {game_name} ({appid_str})"
+            elif desc:
+                depot_comment = f"{game_name} [{desc}] ({appid_str})"
+            else:
+                depot_comment = f"{game_name} ({appid_str})"
+            existing_depots_comments[d] = depot_comment
 
         depot_lines = ["AdditionalDepots:"]
-        for d in all_depot_ids:
-            depot_lines.append(f"  - {d}")
+        for d in sorted(existing_depots_comments.keys(), key=lambda x: int(x) if x.isdigit() else 0):
+            cm = existing_depots_comments[d]
+            depot_lines.append(f"  - {d} # {cm}" if cm else f"  - {d}")
         depot_block = "\n".join(depot_lines) + "\n"
 
+        bounds_depots = _get_section_bounds(content, "AdditionalDepots")
         if bounds_depots:
             content = content[: bounds_depots[0]] + depot_block + content[bounds_depots[2] :]
         else:
             content = content.rstrip() + "\n\n" + depot_block
 
-        # 4. Format DecryptionKeys (merge with existing, all keys including appid key)
+        # 4. Format DecryptionKeys (merge with existing)
         all_keys: Dict[str, str] = {}
         bounds_keys = _get_section_bounds(content, "DecryptionKeys")
         if bounds_keys:
             keys_text = content[bounds_keys[1] : bounds_keys[2]]
             for m in re.finditer(r"^[ \t]*(\d+)[ \t]*:[ \t]*([a-fA-F0-9]{64})", keys_text, re.MULTILINE):
                 all_keys[m.group(1)] = m.group(2)
-        for d, k in depot_keys.items():
-            if k:
-                all_keys[str(d)] = str(k)
+
+        if is_dlc:
+            # Purge base game keys from DecryptionKeys
+            for bd in base_depots_set:
+                all_keys.pop(bd, None)
+            all_keys.pop(appid_str, None)
+            for d, k in depot_keys.items():
+                if k and str(d) not in base_depots_set and str(d) != appid_str:
+                    all_keys[str(d)] = str(k)
+        else:
+            for d, k in depot_keys.items():
+                if k:
+                    all_keys[str(d)] = str(k)
 
         key_lines = ["DecryptionKeys:"]
-        for d, k in all_keys.items():
-            if k:
-                key_lines.append(f"  {d}: {k}")
+        for d in sorted(all_keys.keys(), key=lambda x: int(x) if x.isdigit() else 0):
+            key_lines.append(f"  {d}: {all_keys[d]}")
         key_block = "\n".join(key_lines) + "\n"
 
         # Re-evaluate bounds since content changed after AdditionalDepots insertion
@@ -627,6 +700,10 @@ class NativeSteamDownloadTask(QObject):
         if not _atomic_write(config_path, content):
             logger.error(f"[NativeSteamDL] Failed to atomic-write {config_path}")
             return False
+
+        if is_dlc:
+            remove_fake_app_id(config_path, appid_str)
+            remove_launch_option(config_path, appid_str)
 
         logger.info(f"[NativeSteamDL] config.yaml successfully patched in single pass ({len(content)} chars)")
         return True

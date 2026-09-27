@@ -1132,6 +1132,48 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
         QMessageBox.critical(dialog, "Error", f"Failed to package manifest file: {e}")
         return
 
+    is_vapor_mode = bool(
+        dialog.game_data.get("is_vapor")
+        or dialog.game_data.get("is_atom")
+        or dialog.game_data.get("is_plugin_game")
+        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+    )
+
+    if is_vapor_mode:
+        from core.native_steam.native_steam_handoff import get_depotcache_dirs, send_sls_api
+        from core.native_steam.steam_manifest_pinning import set_manifest_ids
+        from utils.yaml_config_manager import get_user_config_path
+
+        dest_path = dialog.game_data.get("install_path") or dialog.game_data.get("dest_path") or ""
+        depotcache_dirs = get_depotcache_dirs(dest_path)
+        for ddir in depotcache_dirs:
+            try:
+                ddir.mkdir(parents=True, exist_ok=True)
+                target_mf = ddir / manifest_filename
+                shutil.copy2(src_manifest_path, target_mf)
+                logger.info(f"[NativeRollback] Copied {manifest_filename} to {target_mf}")
+            except Exception as ce:
+                logger.warning(f"[NativeRollback] Could not copy manifest to {ddir}: {ce}")
+
+        config_path = get_user_config_path()
+        game_name = dialog.game_data.get("game_name", f"App {dialog.appid}")
+        manifest_map = {str(depot_id): str(manifest_id)}
+        comment = f"{game_name} ({dialog.appid}) [Build {build_id}]"
+        set_manifest_ids(config_path, manifest_map, comment=comment)
+
+        api_sent = send_sls_api(f"validate|{dialog.appid}")
+        msg = (
+            f"<b>Native Steam Rollback Configured!</b><br><br>"
+            f"Depot <b>{depot_id}</b> has been locked to Manifest <b>{manifest_id}</b> (Build <b>{build_id}</b>) in SLSsteam.<br><br>"
+            f"The manifest was seeded into Steam's depotcache."
+        )
+        if api_sent:
+            msg += "<br><br>Steam was signalled to validate and downgrade the build natively."
+        else:
+            msg += "<br><br><i>Note: Steam is not running with SLSsteam active. When Steam starts, it will use the pinned build.</i>"
+        QMessageBox.information(dialog, "Native Rollback Applied", msg)
+        return
+
     game_data = dialog.game_data.copy()
     game_data["buildid"] = build_id
     game_data["branch"] = "public"
@@ -1351,14 +1393,44 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
     dialog.update_title()
 
     if state:
+        try:
+            from utils.dlc_helpers import purge_and_sanitize_for_dlc_only
+            install_path = getattr(dialog, "install_path", None) or dialog.game_data.get("install_path") or ""
+            purge_res = purge_and_sanitize_for_dlc_only(
+                dialog.appid,
+                dialog.game_data.get("game_name", ""),
+                install_path=install_path,
+                game_data=dialog.game_data,
+            )
+            logger.info(f"[DLCMode] Sanity purge summary for {dialog.appid}: {purge_res}")
+        except Exception as pe:
+            logger.error(f"[DLCMode] Error in sanity purge: {pe}", exc_info=True)
+
         if hasattr(dialog, "sls_tile") and dialog.sls_tile:
+            dialog.sls_tile.blockSignals(True)
+            dialog.sls_tile.setChecked(False)
+            dialog.sls_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Enable SLSonline")
             dialog.sls_tile.setEnabled(False)
             dialog.sls_tile.setToolTip("Not available in DLC-Only mode")
+            dialog.sls_tile.blockSignals(False)
+        if hasattr(dialog, "sls_input_container") and dialog.sls_input_container:
+            dialog.sls_input_container.setVisible(False)
         if hasattr(dialog, "sls_input") and dialog.sls_input:
             dialog.sls_input.setEnabled(False)
+        if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
+            dialog.netsock_tile.blockSignals(True)
+            dialog.netsock_tile.setChecked(False)
+            dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
+            dialog.netsock_tile.setEnabled(False)
+            dialog.netsock_tile.setToolTip("Not available in DLC-Only mode")
+            dialog.netsock_tile.blockSignals(False)
         if hasattr(dialog, "eos_tile") and dialog.eos_tile:
+            dialog.eos_tile.blockSignals(True)
+            dialog.eos_tile.setChecked(False)
+            dialog.eos_tile.update_state(False, dialog.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
             dialog.eos_tile.setEnabled(False)
             dialog.eos_tile.setToolTip("Not available in DLC-Only mode")
+            dialog.eos_tile.blockSignals(False)
         if hasattr(dialog, "ws_tab_btn") and dialog.ws_tab_btn:
             dialog.ws_tab_btn.setVisible(False)
             if hasattr(dialog, "ws_page_index") and dialog.stacked.currentIndex() == dialog.ws_page_index:
@@ -1369,12 +1441,17 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
             dialog.sls_tile.setToolTip("")
         if hasattr(dialog, "sls_input") and dialog.sls_input:
             dialog.sls_input.setEnabled(True)
+        if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
+            dialog.netsock_tile.setEnabled(True)
+            dialog.netsock_tile.setToolTip("")
+        init_slsonline_logic(dialog)
         update_eos_btn_state(dialog)
         if hasattr(dialog, "ws_tab_btn") and dialog.ws_tab_btn:
             is_vapor = bool(
                 dialog.game_data.get("is_vapor")
+                or dialog.game_data.get("is_atom")
                 or dialog.game_data.get("is_plugin_game")
-                or dialog.game_data.get("update_status") == "vapor"
+                or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
                 or dialog.game_data.get("source") == "Vapor"
             )
             if getattr(dialog, "_has_workshop", False) and not is_vapor:
@@ -1824,6 +1901,30 @@ def on_pin_build_toggled(dialog, pinned: bool) -> None:
         except Exception as e:
             logger.warning(f"Failed to duplicate manifest zip on pin build activation: {e}")
     else:
+        is_vapor_mode = bool(
+            dialog.game_data.get("is_vapor")
+            or dialog.game_data.get("is_atom")
+            or dialog.game_data.get("is_plugin_game")
+            or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+        )
+        if is_vapor_mode:
+            try:
+                from core.native_steam.steam_manifest_pinning import remove_manifest_ids, get_manifest_ids
+                from utils.yaml_config_manager import get_user_config_path
+                from core.native_steam.native_steam_handoff import send_sls_api
+                cp = get_user_config_path()
+                if cp.exists():
+                    current_pins = get_manifest_ids(cp)
+                    game_depots = set(str(d) for d in (dialog.game_data.get("depots") or {}).keys())
+                    game_depots.add(str(dialog.appid))
+                    to_remove = [d for d in current_pins if d in game_depots]
+                    if to_remove:
+                        remove_manifest_ids(cp, to_remove)
+                        logger.info(f"[NativeRollback] Unpinned native manifests for {dialog.appid}: {to_remove}")
+                        send_sls_api(f"validate|{dialog.appid}")
+            except Exception as e:
+                logger.error(f"[NativeRollback] Failed to unpin manifests: {e}")
+
         if hasattr(dialog, "update_all_tile") and dialog.update_all_tile:
             dialog.update_all_tile.setEnabled(True)
             dialog.update_all_tile.setChecked(True)
