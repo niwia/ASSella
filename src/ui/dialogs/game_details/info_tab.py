@@ -1130,13 +1130,15 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
 
     if state:
         try:
-            from utils.dlc_helpers import purge_and_sanitize_for_dlc_only
+            from utils.dlc_helpers import purge_and_sanitize_for_dlc_only, get_saved_depot_selection
             install_path = getattr(dialog, "install_path", None) or dialog.game_data.get("install_path") or ""
+            sel = dialog.game_data.get("selected_depots") or get_saved_depot_selection(dialog.appid)
             purge_res = purge_and_sanitize_for_dlc_only(
                 dialog.appid,
                 dialog.game_data.get("game_name", ""),
                 install_path=install_path,
                 game_data=dialog.game_data,
+                selected_depots=sel,
             )
             logger.info(f"[DLCMode] Sanity purge summary for {dialog.appid}: {purge_res}")
         except Exception as pe:
