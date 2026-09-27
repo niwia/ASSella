@@ -287,24 +287,60 @@ def get_base_depot_ids_for_app(appid: str, game_data: Optional[dict] = None) -> 
     return sorted(list(base_depots))
 
 
+def get_saved_depot_selection(appid: str) -> List[str]:
+    """Retrieve user's selected depots from QSettings or .depot file."""
+    appid_str = str(appid).strip()
+    try:
+        settings = get_settings()
+        saved = settings.value(f"depot_selection/{appid_str}", "", type=str)
+        if saved:
+            import json
+            data = json.loads(saved)
+            if isinstance(data, dict) and "selected" in data:
+                return [str(d) for d in data["selected"]]
+            elif isinstance(data, list):
+                return [str(d) for d in data]
+    except Exception:
+        pass
+
+    try:
+        from utils.helpers import get_base_path
+        depot_file = get_base_path() / "depots" / f"{appid_str}.depot"
+        if depot_file.exists():
+            depots = []
+            for line in depot_file.read_text().splitlines():
+                line = line.strip()
+                if line and ":" in line:
+                    did = line.split(":", 1)[0].strip()
+                    if did.isdigit():
+                        depots.append(did)
+            if depots:
+                return depots
+    except Exception:
+        pass
+
+    return []
+
+
 def purge_and_sanitize_for_dlc_only(
     appid: str,
     game_name: str = "",
     install_path: Optional[str] = None,
     game_data: Optional[dict] = None,
+    selected_depots: Optional[List[str]] = None,
     config_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
-    Sanity check and purge all base-game and non-DLC configurations when DLC-only mode is active.
+    Sanity check and purge applied settings when DLC-only mode is active,
+    retaining ONLY the depots the user explicitly selected.
     Works for BOTH ASSella mode and Native Steam (at0m) mode:
       1. SLSsteam config.yaml:
-         - Removes base game AppID from AdditionalApps.
-         - Adds DLC AppIDs to AdditionalApps (or DlcData if >=64 DLCs) with '[DLC]' comments.
-         - Prunes base game depots from AdditionalDepots, retaining only DLC depots with comments.
-         - Prunes base game keys from DecryptionKeys, retaining only DLC keys.
-         - Removes AppID from FakeAppIds (SLSonline bypasses).
-         - Removes Steam launch option overrides (Netsock LD_AUDIT / custom wrappers).
-         - Cleans any base game pinned manifests from ManifestIds.
+         - Removes base game AppID from AdditionalApps (adds DLC AppIDs or DlcData).
+         - Configures AdditionalDepots to contain ONLY the depots the user selected.
+         - Cleans DecryptionKeys for unselected depots and base game AppID.
+         - Removes AppID from FakeAppIds (disables SLSonline bypass).
+         - Removes Steam launch option overrides (disables Netsock LD_AUDIT).
+         - Cleans any pinned ManifestIds for unselected depots of this game.
       2. Local Game Directory:
          - Detects and reverts Goldberg Steam emulator (.valve backups restored, steam_settings & steam_appid.txt removed).
          - Detects and removes EOS proxy (restoring original EOS DLL).
@@ -329,6 +365,7 @@ def purge_and_sanitize_for_dlc_only(
         remove_additional_app,
         add_additional_app,
         remove_additional_depot,
+        add_additional_depot,
         get_additional_depots,
         remove_decryption_key,
         get_decryption_keys,
@@ -348,10 +385,29 @@ def purge_and_sanitize_for_dlc_only(
         except Exception:
             config_path = None
 
-    # Resolve DLCs and base depots
-    dlc_list = get_all_dlcs_for_app(appid_str, game_data, allow_network=True)
-    dlc_ids = {str(d["dlc_appid"]) for d in dlc_list}
-    base_depots = get_base_depot_ids_for_app(appid_str, game_data)
+    # Resolve user's selected depots
+    user_sel = selected_depots
+    if user_sel is None and game_data:
+        user_sel = game_data.get("selected_depots") or (
+            game_data.get("metadata", {}).get("selected_depots_list")
+        )
+    if user_sel is None:
+        user_sel = get_saved_depot_selection(appid_str)
+
+    user_sel_set = {str(d) for d in user_sel} if user_sel is not None else None
+
+    # Known depots for this game
+    all_game_depots = set()
+    if game_data and game_data.get("depots"):
+        all_game_depots.update(str(d) for d in game_data["depots"].keys())
+    try:
+        from managers.db_manager import DatabaseManager
+        db = DatabaseManager()
+        app_info = db.get_app_info(appid_str, bypass_expiration=True)
+        if app_info and app_info.get("depots"):
+            all_game_depots.update(str(d) for d in app_info["depots"].keys())
+    except Exception:
+        pass
 
     if config_path and config_path.exists():
         # 1. Base AppID removed from AdditionalApps
@@ -359,6 +415,7 @@ def purge_and_sanitize_for_dlc_only(
             summary["base_app_removed"] = True
 
         # 2. Add DLC AppIDs to AdditionalApps (or DlcData if >=64 DLCs)
+        dlc_list = get_all_dlcs_for_app(appid_str, game_data, allow_network=True)
         if dlc_list:
             if len(dlc_list) >= 64:
                 dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
@@ -374,34 +431,46 @@ def purge_and_sanitize_for_dlc_only(
                     if add_additional_app(config_path, did, comment):
                         summary["dlcs_added"].append(did)
 
-        # 3. Prune base game depots from AdditionalDepots
-        existing_depots = get_additional_depots(config_path)
-        for bd in base_depots:
-            if bd in existing_depots and bd not in dlc_ids:
-                if remove_additional_depot(config_path, bd):
-                    summary["base_depots_removed"].append(bd)
+        # 3. AdditionalDepots: User-selected depots ONLY
+        if user_sel_set is not None:
+            existing_depots = get_additional_depots(config_path)
+            # Remove any depot belonging to this game that user did NOT select
+            for d in all_game_depots:
+                if d in existing_depots and d not in user_sel_set:
+                    if remove_additional_depot(config_path, d):
+                        summary["base_depots_removed"].append(d)
+            # Ensure selected depots are added with comments
+            depots_meta = (game_data.get("depots") or {}) if game_data else {}
+            for d in user_sel_set:
+                if d != appid_str:
+                    meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
+                    desc = meta.get("desc", "") if isinstance(meta, dict) else ""
+                    comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
+                    add_additional_depot(config_path, d, comment=comment)
 
-        # 4. Prune base game keys from DecryptionKeys
+        # 4. DecryptionKeys: Remove base appid key and unselected depot keys
         existing_keys = get_decryption_keys(config_path)
-        keys_to_purge = [bd for bd in base_depots if bd in existing_keys and bd not in dlc_ids]
         if appid_str in existing_keys:
-            keys_to_purge.append(appid_str)
-        for kd in keys_to_purge:
-            if remove_decryption_key(config_path, kd):
-                summary["base_keys_removed"].append(kd)
+            if remove_decryption_key(config_path, appid_str):
+                summary["base_keys_removed"].append(appid_str)
+        if user_sel_set is not None:
+            for d in all_game_depots:
+                if d in existing_keys and d not in user_sel_set:
+                    if remove_decryption_key(config_path, d):
+                        summary["base_keys_removed"].append(d)
 
-        # 5. Remove FakeAppIds for this app
+        # 5. Remove FakeAppIds for this app (disable SLSonline)
         if remove_fake_app_id(config_path, appid_str):
             summary["fake_app_removed"] = True
 
-        # 6. Remove launch options (Netsock LD_AUDIT / custom wrappers)
+        # 6. Remove launch options (disable Netsock LD_AUDIT / custom wrappers)
         if remove_launch_option(config_path, appid_str):
             summary["launch_options_removed"] = True
 
-        # 7. Remove any pinned ManifestIds for base game depots
-        if get_manifest_ids and remove_manifest_ids:
+        # 7. Remove any pinned ManifestIds for unselected depots of this game
+        if get_manifest_ids and remove_manifest_ids and user_sel_set is not None:
             current_pins = get_manifest_ids(config_path)
-            pins_to_remove = [bd for bd in base_depots if bd in current_pins and bd not in dlc_ids]
+            pins_to_remove = [d for d in all_game_depots if d in current_pins and d not in user_sel_set]
             if pins_to_remove:
                 if remove_manifest_ids(config_path, pins_to_remove):
                     summary["manifest_ids_removed"].extend(pins_to_remove)

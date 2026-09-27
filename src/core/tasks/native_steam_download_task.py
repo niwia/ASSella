@@ -613,12 +613,10 @@ class NativeSteamDownloadTask(QObject):
                 content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
 
         # 3. Format AdditionalDepots with descriptive comments
-        if selected_depots:
+        if selected_depots is not None:
             new_depot_ids = [str(d) for d in selected_depots if str(d) != appid_str]
         else:
             new_depot_ids = [str(d) for d in depot_keys.keys() if str(d) != appid_str]
-
-        base_depots_set = set(get_base_depot_ids_for_app(appid_str, game_data)) if is_dlc else set()
 
         # Parse existing depots and comments
         existing_depots_comments: Dict[str, str] = {}
@@ -631,21 +629,20 @@ class NativeSteamDownloadTask(QObject):
                     did = m.group(1)
                     existing_depots_comments[did] = m.group(2).strip() if m.group(2) else ""
 
-        if is_dlc:
-            # Prune base game depots from existing
-            for bd in base_depots_set:
-                existing_depots_comments.pop(bd, None)
-            new_depot_ids = [d for d in new_depot_ids if d not in base_depots_set]
+        # If user explicitly selected depots, prune any depots of THIS game that are not selected
+        if game_data and game_data.get("depots") and selected_depots is not None:
+            all_game_depots = {str(d) for d in game_data["depots"].keys()}
+            user_depots_set = set(new_depot_ids)
+            for d in all_game_depots:
+                if d in existing_depots_comments and d not in user_depots_set:
+                    existing_depots_comments.pop(d, None)
 
         # Merge new depot IDs with comments
         depots_meta = (game_data.get("depots") or {}) if game_data else {}
         for d in new_depot_ids:
             meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
             desc = meta.get("desc", "") if isinstance(meta, dict) else ""
-            is_depot_dlc = bool(isinstance(meta, dict) and meta.get("dlcappid")) or is_dlc
-            if is_depot_dlc:
-                depot_comment = f"[DLC] {desc or d} / {game_name} ({appid_str})"
-            elif desc:
+            if desc:
                 depot_comment = f"{game_name} [{desc}] ({appid_str})"
             else:
                 depot_comment = f"{game_name} ({appid_str})"
@@ -672,12 +669,15 @@ class NativeSteamDownloadTask(QObject):
                 all_keys[m.group(1)] = m.group(2)
 
         if is_dlc:
-            # Purge base game keys from DecryptionKeys
-            for bd in base_depots_set:
-                all_keys.pop(bd, None)
             all_keys.pop(appid_str, None)
+            if game_data and game_data.get("depots") and selected_depots is not None:
+                all_game_depots = {str(d) for d in game_data["depots"].keys()}
+                user_depots_set = set(new_depot_ids)
+                for d in all_game_depots:
+                    if d not in user_depots_set:
+                        all_keys.pop(d, None)
             for d, k in depot_keys.items():
-                if k and str(d) not in base_depots_set and str(d) != appid_str:
+                if k and (selected_depots is None or str(d) in set(new_depot_ids)):
                     all_keys[str(d)] = str(k)
         else:
             for d, k in depot_keys.items():
