@@ -804,6 +804,9 @@ class ProcessZipTask:
                             )
 
                             e_info = db_enrichments.get(str(depot_id))
+                            if not e_info and details and details.get("dlcappid"):
+                                e_info = db_enrichments.get(str(details["dlcappid"]))
+
                             if e_info:
                                 is_generic = (
                                     not base_description
@@ -812,7 +815,11 @@ class ProcessZipTask:
                                 )
                                 if is_generic and e_info.get("name"):
                                     if e_info.get("is_dlc"):
-                                        base_description = f"[DLC] {e_info['name']}"
+                                        dlc_prefix = f"[DLC {e_info['dlcappid']}]" if e_info.get("dlcappid") else "[DLC]"
+                                        if dlc_prefix.lower() not in e_info["name"].lower():
+                                            base_description = f"{dlc_prefix} {e_info['name']}"
+                                        else:
+                                            base_description = e_info["name"]
                                     else:
                                         base_description = e_info["name"]
                                 if not details and e_info.get("oslist"):
@@ -823,6 +830,14 @@ class ProcessZipTask:
                                     final_depot_data["size_str"] = e_info["size_str"]
                                 if e_info.get("is_dlc"):
                                     final_depot_data["is_dlc"] = True
+
+                            is_base_generic = (
+                                not base_description
+                                or bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", base_description, re.IGNORECASE))
+                                or bool(re.match(r"^(?:\[.*?\]\s*)?DLC \d+$", base_description, re.IGNORECASE))
+                            )
+                            if is_base_generic and details and details.get("name"):
+                                base_description = details["name"]
 
                             if details:
                                 tags = []
@@ -848,6 +863,12 @@ class ProcessZipTask:
                                     final_depot_data["manifests"] = details["manifests"]
                                 if details.get("manifest_id"):
                                     final_depot_data["manifest_id"] = str(details["manifest_id"])
+                                if details.get("dlcappid"):
+                                    final_depot_data["dlcappid"] = str(details["dlcappid"])
+                                if details.get("is_dlc") or details.get("dlcappid"):
+                                    final_depot_data["is_dlc"] = True
+                                if details.get("name"):
+                                    final_depot_data["name"] = details["name"]
                             else:
                                 final_description = base_description
 

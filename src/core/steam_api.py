@@ -270,6 +270,7 @@ def fetch_steamcmd_info(app_id: str, include_header: bool = True) -> dict:
                             elif depot_data.get("maxsize"):
                                 depot_size = depot_data["maxsize"]
 
+                            dlc_appid = depot_data.get("dlcappid")
                             depot_info[str(depot_id)] = {
                                 "name": depot_data.get("name"),
                                 "oslist": config.get("oslist"),
@@ -278,6 +279,8 @@ def fetch_steamcmd_info(app_id: str, include_header: bool = True) -> dict:
                                 "size": depot_size,
                                 "manifest_id": manifest_id,
                                 "manifests": depot_data.get("manifests"),
+                                "dlcappid": str(dlc_appid) if dlc_appid is not None else None,
+                                "is_dlc": bool(dlc_appid),
                             }
 
                         public_branch = branches_raw.get("public", {})
@@ -354,7 +357,7 @@ def batched_fetch_steamcmd_info(
                 aid, data = future.result()
                 with lock:
                     completed += 1
-                    if data and data.get("depots"):
+                    if data and (data.get("depots") or data.get("name")):
                         results[aid] = data
                     if on_progress:
                         try:
@@ -370,9 +373,9 @@ def batched_fetch_steamcmd_info(
 
 def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
     """
-    If the app uses Steam's `hasdepotsindlc: 1` architecture (or has unexpanded DLC depots),
-    fetches the child DLC AppIDs via batched SteamCMD REST API and merges their depots
-    into `app_info["depots"]`.
+    Enriches and expands DLC depots for the given app_info:
+    1. For apps using `hasdepotsindlc: 1`, fetches child DLC AppIDs and merges their depots into `app_info["depots"]`.
+    2. For apps with inline DLC depots (having `dlcappid`), resolves DLC names and labels them as `[DLC <dlcappid>] <DLC Name>`.
     """
     if not app_info or not isinstance(app_info, dict):
         return app_info
@@ -382,70 +385,144 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
 
     has_depots_in_dlc = app_info.get("hasdepotsindlc") in (1, "1", True)
     listofdlc = app_info.get("listofdlc")
+    base_depots = app_info.setdefault("depots", {})
 
-    if not (has_depots_in_dlc and listofdlc):
-        app_info["dlcs_expanded"] = True
-        return app_info
+    # Extract DLC AppIDs from both listofdlc and child depot dlcappid attributes
+    dlc_ids = set()
+    if listofdlc:
+        if isinstance(listofdlc, str):
+            dlc_ids.update(x.strip() for x in listofdlc.split(",") if x.strip().isdigit())
+        elif isinstance(listofdlc, list):
+            dlc_ids.update(str(x) for x in listofdlc if str(x).isdigit())
+        elif isinstance(listofdlc, int):
+            dlc_ids.add(str(listofdlc))
 
-    # Extract DLC AppIDs
-    dlc_ids = []
-    if isinstance(listofdlc, str):
-        dlc_ids = [x.strip() for x in listofdlc.split(",") if x.strip().isdigit()]
-    elif isinstance(listofdlc, list):
-        dlc_ids = [str(x) for x in listofdlc if str(x).isdigit()]
-    elif isinstance(listofdlc, int):
-        dlc_ids = [str(listofdlc)]
+    for d_id, d_info in base_depots.items():
+        if isinstance(d_info, dict):
+            d_appid = d_info.get("dlcappid")
+            if d_appid and str(d_appid).isdigit():
+                dlc_ids.add(str(d_appid))
 
     if not dlc_ids:
         app_info["dlcs_expanded"] = True
         return app_info
 
     logger.info(
-        f"[SteamAPI] App {app_info.get('appid') or app_info.get('name')} has hasdepotsindlc=1. "
-        f"Batch-fetching {len(dlc_ids)} child DLC(s)..."
+        f"[SteamAPI] App {app_info.get('appid') or app_info.get('name')}: "
+        f"Resolving {len(dlc_ids)} child DLC(s) for depot enrichment..."
     )
 
-    dlc_results = batched_fetch_steamcmd_info(dlc_ids, max_workers=max_workers, include_header=False)
+    dlc_results = batched_fetch_steamcmd_info(list(dlc_ids), max_workers=max_workers, include_header=False)
 
-    base_depots = app_info.setdefault("depots", {})
+    # For any DLC missing from SteamCMD results or lacking a name, fallback to Steam Store API
+    missing_dlc_ids = [did for did in dlc_ids if not dlc_results.get(did, {}).get("name")]
+    if missing_dlc_ids:
+        for m_did in missing_dlc_ids:
+            try:
+                s_resp = requests.get(
+                    f"https://store.steampowered.com/api/appdetails?appids={m_did}",
+                    timeout=5,
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                if s_resp.status_code == 200:
+                    s_data = s_resp.json()
+                    s_name = s_data.get(str(m_did), {}).get("data", {}).get("name")
+                    if s_name:
+                        dlc_results.setdefault(m_did, {})["name"] = s_name
+            except Exception:
+                pass
+
     added_count = 0
+    enriched_count = 0
 
     for dlc_id_str, dlc_data in dlc_results.items():
         if not isinstance(dlc_data, dict):
             continue
         dlc_name = dlc_data.get("name")
-        dlc_depots = dlc_data.get("depots", {})
-        if not isinstance(dlc_depots, dict):
-            continue
 
-        for d_id, d_info in dlc_depots.items():
-            d_id_str = str(d_id)
-            if not d_id_str.isdigit():
-                continue
+        # 1. Enrich existing base depots referencing this DLC
+        for d_id, d_info in base_depots.items():
             if not isinstance(d_info, dict):
                 continue
+            if str(d_info.get("dlcappid") or "") == str(dlc_id_str):
+                d_info["is_dlc"] = True
+                d_info["dlcappid"] = str(dlc_id_str)
+                curr_name = d_info.get("name")
+                if not curr_name or re.match(r"^Depot \d+$", str(curr_name), re.IGNORECASE):
+                    if dlc_name:
+                        d_info["name"] = f"[DLC {dlc_id_str}] {dlc_name}"
+                    else:
+                        d_info["name"] = f"DLC {dlc_id_str}"
+                    enriched_count += 1
+                if not d_info.get("oslist") and dlc_data.get("oslist"):
+                    d_info["oslist"] = dlc_data.get("oslist")
 
-            merged_info = dict(d_info)
-            if not merged_info.get("name") and dlc_name:
-                merged_info["name"] = f"{dlc_name} - Depot {d_id_str}"
+        # 2. If hasdepotsindlc=1, merge child depots defined within the DLC app
+        if has_depots_in_dlc:
+            dlc_depots = dlc_data.get("depots", {})
+            if isinstance(dlc_depots, dict):
+                for d_id, d_info in dlc_depots.items():
+                    d_id_str = str(d_id)
+                    if not d_id_str.isdigit() or not isinstance(d_info, dict):
+                        continue
 
-            if d_id_str not in base_depots:
-                # Mark the origin: DLC apps normally carry no beta branches of their
-                # own, so branch-aware lookups may fall back to their public manifest.
-                # Only for depots the base app does not list itself.
-                merged_info["from_dlc_app"] = dlc_id_str
-                base_depots[d_id_str] = merged_info
-                added_count += 1
-            else:
-                for k, v in merged_info.items():
-                    if v is not None and (base_depots[d_id_str].get(k) is None or base_depots[d_id_str].get(k) == ""):
-                        base_depots[d_id_str][k] = v
+                    merged_info = dict(d_info)
+                    merged_info["is_dlc"] = True
+                    merged_info["dlcappid"] = dlc_id_str
+                    if not merged_info.get("name") and dlc_name:
+                        merged_info["name"] = f"[DLC {dlc_id_str}] {dlc_name}"
+
+                    if d_id_str not in base_depots:
+                        merged_info["from_dlc_app"] = dlc_id_str
+                        base_depots[d_id_str] = merged_info
+                        added_count += 1
+                    else:
+                        for k, v in merged_info.items():
+                            if v is not None and (base_depots[d_id_str].get(k) is None or base_depots[d_id_str].get(k) == ""):
+                                base_depots[d_id_str][k] = v
 
     logger.info(
-        f"[SteamAPI] Expanded {added_count} DLC depot(s) from {len(dlc_results)} DLC(s). "
+        f"[SteamAPI] Expanded/Enriched {added_count} added, {enriched_count} named DLC depot(s) from {len(dlc_results)} DLC(s). "
         f"Total depots now: {len(base_depots)}"
     )
     app_info["dlcs_expanded"] = True
+
+    # Persist resolved depot enrichments into SQLite for instant local cache hits
+    try:
+        app_id_val = str(app_info.get("appid") or "")
+        if app_id_val and app_id_val not in ("0", "N/A", "unknown"):
+            from managers.db_manager import DatabaseManager
+            db = DatabaseManager()
+            enrichments_to_save = {}
+
+            def _fmt_sz(b):
+                try:
+                    val = float(b)
+                    for unit in ["B", "KB", "MB", "GB", "TB"]:
+                        if val < 1024.0:
+                            return f"{val:.2f} {unit}"
+                        val /= 1024.0
+                    return f"{val:.2f} PB"
+                except Exception:
+                    return ""
+
+            for did, dinfo in base_depots.items():
+                if isinstance(dinfo, dict) and dinfo.get("name"):
+                    raw_sz = dinfo.get("size")
+                    enrichments_to_save[str(did)] = {
+                        "depot_id": str(did),
+                        "name": dinfo.get("name"),
+                        "oslist": dinfo.get("oslist"),
+                        "size_str": _fmt_sz(raw_sz) if raw_sz and str(raw_sz).isdigit() else "",
+                        "size_bytes": int(raw_sz) if raw_sz and str(raw_sz).isdigit() else 0,
+                        "is_dlc": bool(dinfo.get("is_dlc")),
+                        "dlcappid": dinfo.get("dlcappid"),
+                    }
+            if enrichments_to_save:
+                db.save_depot_enrichments(app_id_val, enrichments_to_save)
+    except Exception as e:
+        logger.debug(f"[SteamAPI] Failed to cache depot enrichments in expand_dlc_depots: {e}")
+
     return app_info
 
 
@@ -670,6 +747,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
                         f"Depot {depot_id}: Found manifest_id: {manifest_id}"
                     )
 
+                    dlc_appid = value.get("dlcappid")
                     depot_info[depot_id] = {
                         "name": depot_name,
                         "oslist": oslist,
@@ -678,6 +756,8 @@ def _fetch_with_steam_client(app_id, access_token=None):
                         "size": raw_size,
                         "manifest_id": manifest_id,
                         "manifests": raw_manifests,
+                        "dlcappid": str(dlc_appid) if dlc_appid is not None else None,
+                        "is_dlc": bool(dlc_appid),
                     }
 
         has_depots_in_dlc = app_data.get("depots", {}).get("hasdepotsindlc") in (1, "1", True)
@@ -919,6 +999,7 @@ def batched_get_product_info(
                                     else manifest_public
                                 )
 
+                                dlc_appid = depot_data.get("dlcappid")
                                 depot_info[depot_id] = {
                                     "name": depot_data.get("name"),
                                     "oslist": config.get("oslist"),
@@ -927,6 +1008,8 @@ def batched_get_product_info(
                                     "size": None,
                                     "manifest_id": manifest_id,
                                     "manifests": depot_data.get("manifests"),
+                                    "dlcappid": str(dlc_appid) if dlc_appid is not None else None,
+                                    "is_dlc": bool(dlc_appid),
                                 }
 
                         all_results[appid_str] = {
@@ -941,7 +1024,12 @@ def batched_get_product_info(
                             "buildid": build_id,
                             "timeupdated": time_updated,
                             "name": app_name,
-                            "listofdlc": app_data.get("extended", {}).get("listofdlc", "") if app_data else "",
+                            "listofdlc": (
+                                app_data.get("extended", {}).get("listofdlc", "")
+                                or app_data.get("common", {}).get("listofdlc", "")
+                                or app_data.get("listofdlc", "")
+                            ) if app_data else "",
+                            "hasdepotsindlc": depots.get("hasdepotsindlc") in (1, "1", True),
                         }
                 batch_success = True
                 break
