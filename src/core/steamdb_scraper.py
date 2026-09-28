@@ -534,12 +534,30 @@ class SteamDBScraper:
                                 results[str(dlc_id)] = {
                                     "depot_id": str(dlc_id),
                                     "name": dlc_name,
+                                    "dlcappid": str(dlc_id),
                                     "oslist": None,
                                     "size_str": "",
                                     "size_bytes": 0,
                                     "dl_str": "",
                                     "is_dlc": True,
                                 }
+                                try:
+                                    from managers.db_manager import DatabaseManager
+                                    db_info = DatabaseManager().get_app_info(appid) or {}
+                                    for d_id, d_data in db_info.get("depots", {}).items():
+                                        if isinstance(d_data, dict) and str(d_data.get("dlcappid") or "") == str(dlc_id):
+                                            results[str(d_id)] = {
+                                                "depot_id": str(d_id),
+                                                "name": f"[DLC {dlc_id}] {dlc_name}",
+                                                "dlcappid": str(dlc_id),
+                                                "oslist": d_data.get("oslist"),
+                                                "size_str": "",
+                                                "size_bytes": 0,
+                                                "dl_str": "",
+                                                "is_dlc": True,
+                                            }
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
         except Exception as e:

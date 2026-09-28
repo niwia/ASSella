@@ -992,15 +992,14 @@ class DepotSelectionDialog(QDialog):
                     final_desc = base_desc
 
             is_dlc = d_data.get("is_dlc", False) or "[dlc]" in original_desc.lower()
+            dlc_id = str(d_data.get("dlcappid") or "")
             final_desc = re.sub(r"^DLC\s+\d+\s*-?\s*", "", final_desc, flags=re.IGNORECASE).strip()
             if not final_desc and d_data.get("name"):
                 final_desc = d_data["name"]
 
             oslist = (d_data.get("oslist") or "").lower()
             os_tag = ""
-            if is_dlc:
-                os_tag = "[DLC]"
-            elif oslist == "windows":
+            if oslist == "windows":
                 os_tag = "[Windows]"
             elif oslist == "linux":
                 os_tag = "[Linux]"
@@ -1012,6 +1011,14 @@ class DepotSelectionDialog(QDialog):
                 os_tag = "[All]"
 
             display_tags = tags if tags else os_tag
+            if os_tag and os_tag.lower() not in display_tags.lower() and "[all]" not in display_tags.lower():
+                display_tags = f"{os_tag} {display_tags}".strip() if display_tags else os_tag
+
+            if is_dlc:
+                dlc_tag = f"[DLC {dlc_id}]" if dlc_id and dlc_id.isdigit() else "[DLC]"
+                if dlc_tag.lower() not in display_tags.lower() and "[dlc" not in display_tags.lower() and dlc_tag.lower() not in final_desc.lower() and "[dlc" not in final_desc.lower():
+                    display_tags = f"{display_tags} {dlc_tag}".strip() if display_tags else dlc_tag
+
             if display_tags:
                 cfg_text = f"{display_tags}  {final_desc}".strip()
             else:
@@ -1538,17 +1545,28 @@ class DepotSelectionDialog(QDialog):
         try:
             if enrichments and self.depots:
                 for did, info in enrichments.items():
-                    if did in self.depots and isinstance(self.depots[did], dict):
-                        d_data = self.depots[did]
+                    target_depot_ids = []
+                    if did in self.depots:
+                        target_depot_ids.append(did)
+                    # Also match any depot whose dlcappid matches did
+                    for dep_k, dep_v in self.depots.items():
+                        if isinstance(dep_v, dict) and str(dep_v.get("dlcappid") or "") == str(did):
+                            if dep_k not in target_depot_ids:
+                                target_depot_ids.append(dep_k)
+
+                    for target_did in target_depot_ids:
+                        d_data = self.depots[target_did]
                         curr_desc = str(d_data.get("desc") or "").strip()
                         is_generic = (
                             not curr_desc
                             or bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", curr_desc, re.IGNORECASE))
                             or bool(re.match(r"^(?:\[.*?\]\s*)?DLC \d+$", curr_desc, re.IGNORECASE))
                         )
+                        dlc_id = info.get("dlcappid") or d_data.get("dlcappid") or did
+                        dlc_tag = f"[DLC {dlc_id}]" if dlc_id and str(dlc_id).isdigit() else "[DLC]"
                         if is_generic and info.get("name"):
-                            if info.get("is_dlc"):
-                                d_data["desc"] = f"[DLC] {info['name']}"
+                            if info.get("is_dlc") or d_data.get("dlcappid"):
+                                d_data["desc"] = f"{dlc_tag} {info['name']}"
                             else:
                                 d_data["desc"] = info["name"]
                             d_data["name"] = info["name"]
@@ -1558,7 +1576,7 @@ class DepotSelectionDialog(QDialog):
                             d_data["size_str"] = info["size_str"]
                         if info.get("oslist") and not d_data.get("oslist"):
                             d_data["oslist"] = info["oslist"]
-                        if info.get("is_dlc"):
+                        if info.get("is_dlc") or d_data.get("dlcappid"):
                             d_data["is_dlc"] = True
         finally:
             if hasattr(self, "linux_button") and self.linux_button:
@@ -1581,7 +1599,15 @@ class DepotSelectionDialog(QDialog):
             cached_enrichments = db.get_depot_enrichments(str(self.app_id))
             if cached_enrichments:
                 self._depots_enriched_signal.emit(cached_enrichments)
-                if not force:
+                # Only return early if no active depots still require generic resolution
+                still_unresolved = any(
+                    isinstance(d, dict) and (
+                        not str(d.get("desc") or "").strip()
+                        or bool(re.match(r"^(?:\[.*?\]\s*)?(?:Depot|DLC)\s+\d+$", str(d.get("desc") or "").strip(), re.IGNORECASE))
+                    )
+                    for d in self.depots.values()
+                )
+                if not still_unresolved and not force:
                     return
         except Exception as e:
             logger.debug(f"[DepotSelection] DB cache enrichment lookup error: {e}")
@@ -1628,8 +1654,15 @@ class DepotSelectionDialog(QDialog):
             if role == "expander":
                 continue
             depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
-            if depot_id in depots_info:
-                info = depots_info[depot_id]
+            info = depots_info.get(depot_id)
+            if not info:
+                # Also check matching by dlcappid
+                d_data = self.depots.get(depot_id, {})
+                d_dlc = str(d_data.get("dlcappid") or "")
+                if d_dlc and d_dlc in depots_info:
+                    info = depots_info[d_dlc]
+
+            if info:
                 config_item = self.table_widget.item(row, 1)
                 size_item = self.table_widget.item(row, 2)
 
@@ -1647,8 +1680,17 @@ class DepotSelectionDialog(QDialog):
                     if not clean_curr or re.match(r"^(?:Depot|DLC)\s+\d+$", clean_curr, re.IGNORECASE):
                         name = info.get("name", "")
                         if name:
-                            tag = "[DLC]" if info.get("is_dlc") else (f"[{info['oslist'].upper()}]" if info.get("oslist") else "")
-                            new_text = f"{tag}  {name}".strip() if tag else name
+                            d_data = self.depots.get(depot_id, {})
+                            dlc_id = info.get("dlcappid") or d_data.get("dlcappid")
+                            is_dlc = info.get("is_dlc") or bool(dlc_id)
+                            os_val = info.get("oslist") or d_data.get("oslist")
+                            os_prefix = f"[{os_val.upper()}]" if os_val else ""
+                            dlc_tag = f"[DLC {dlc_id}]" if dlc_id else "[DLC]"
+                            if is_dlc:
+                                tags = f"{os_prefix} {dlc_tag}".strip()
+                            else:
+                                tags = os_prefix
+                            new_text = f"{tags}  {name}".strip() if tags else name
                             if config_item:
                                 config_item.setText(new_text)
 
