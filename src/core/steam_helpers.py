@@ -585,6 +585,47 @@ def get_library_index(library_path: str, steam_path: str | None = None) -> int:
         return 0
 
 
+def dispatch_steam_url(url: str) -> bool:
+    """Dispatch a steam:// URL (such as steam://install/<appid>) to the active Steam client."""
+    import shutil
+    import subprocess
+
+    try:
+        env = get_steam_env()
+        cmd = None
+        if env.is_flatpak and shutil.which("flatpak"):
+            cmd = ["flatpak", "run", "com.valvesoftware.Steam", url]
+        elif shutil.which("steam"):
+            cmd = ["steam", url]
+        elif shutil.which("xdg-open"):
+            cmd = ["xdg-open", url]
+
+        if cmd:
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            logger.info(f"[SteamDispatch] Successfully dispatched URL via {cmd[0]}: {url}")
+            return True
+    except Exception as e:
+        logger.warning(f"[SteamDispatch] Failed to dispatch Steam URL {url}: {e}")
+    return False
+
+
+def trigger_steam_install(appid: str, library_index: int = 0) -> bool:
+    """Trigger Steam to begin downloading and installing an application.
+
+    1. Writes install|<appid>|<library_index> to /tmp/SLSsteam.API.
+    2. Dispatches steam://install/<appid> directly via native steam or flatpak.
+    """
+    appid_str = str(appid).strip()
+    pipe_sent = slssteam_api_send(f"install|{appid_str}|{library_index}")
+    url_sent = dispatch_steam_url(f"steam://install/{appid_str}")
+    return pipe_sent or url_sent
+
+
 def slssteam_api_send(command: str) -> bool:
     """Send a command to SLSsteam API via named pipe."""
     if sys.platform != "linux":
@@ -594,7 +635,7 @@ def slssteam_api_send(command: str) -> bool:
 
     try:
         with open(pipe_path, "w") as f:
-            f.write(command)
+            f.write(command.strip() + "\n")
             f.flush()
         logger.info(f"SLSsteam API command sent: {command}")
         return True

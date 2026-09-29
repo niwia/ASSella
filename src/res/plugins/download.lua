@@ -228,6 +228,29 @@ Downloader.hkGetBinary = ffi.cast("GetBinary_t", function(pConfigStore, store, p
 	return Downloader.mutexReturn(#bytes, mutex)
 end)
 
+-- MRC server list: tried in order, first numeric response wins.
+-- gmrc.wudrm.com may be Cloudflare-blocked (returns HTML 503); ryuu is a
+-- plain HTTP fallback that responds correctly without bot-challenge.
+Downloader.MRC_SERVERS = {
+	"http://gmrc.wudrm.com/manifest/",
+	"http://167.235.229.108/",
+}
+
+-- tryFetchMRC: attempt a single URL and return the numeric string or nil.
+Downloader.tryFetchMRC = function(manifestIdStr, serverUrl)
+	local url = serverUrl .. manifestIdStr
+	local codeStr = tostring(curl.downloadString(url, 5))
+	if #codeStr < 1 then
+		return nil
+	end
+	if tonumber(codeStr) ~= nil then
+		return codeStr
+	end
+	-- Non-numeric (e.g. HTML Cloudflare page) — not usable
+	log.debug("MRC server " .. serverUrl .. " returned non-numeric response, skipping")
+	return nil
+end
+
 -- GetManifestRequestCode
 Downloader.getManifestRequestCode = function(manifestId, try)
 	if try > Downloader.MAX_MANIFEST_TRIES then
@@ -236,20 +259,21 @@ Downloader.getManifestRequestCode = function(manifestId, try)
 
 	local manifestCStr = ffi.new("char[?]", Downloader.MAX_MANIFEST_STRING_SIZE)
 	ffi.C.snprintf(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE, "%llu", manifestId)
+	local manifestIdStr = tostring(ffi.string(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE))
 
-	-- local url = "https://manifest.opensteamtool.com/" .. tostring(ffi.string(manifestCStr, MAX_MANIFEST_STRING_SIZE))
-	-- local headers = { "User-Agent: OpenSteamTool/1.0" }
-	-- local codeStr = tostring(curl.downloadString(url, headers, 5))
-	local url = "http://gmrc.wudrm.com/manifest/" .. tostring(ffi.string(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE))
-	local codeStr = tostring(curl.downloadString(url, 5))
-	if #codeStr < 1 then
-		log.warn("Failed to download manifest request code for " .. manifestId)
+	-- Try each server in order; use the first that returns a valid numeric MRC
+	local codeStr = nil
+	for _, serverUrl in ipairs(Downloader.MRC_SERVERS) do
+		codeStr = Downloader.tryFetchMRC(manifestIdStr, serverUrl)
+		if codeStr ~= nil then
+			log.debug("Got MRC from " .. serverUrl)
+			break
+		end
+		log.warn("MRC server " .. serverUrl .. " failed for " .. manifestId)
 	end
 
-	-- log.debug("Downloaded MRC string " .. codeStr)
-
-	if tonumber(codeStr) == nil then
-		log.error("Invalid MRC response " .. codeStr)
+	if codeStr == nil then
+		log.error("All MRC servers failed for manifest " .. manifestId)
 		return Downloader.getManifestRequestCode(manifestId, try + 1)
 	end
 

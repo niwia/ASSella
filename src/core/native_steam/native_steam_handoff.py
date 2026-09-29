@@ -120,7 +120,7 @@ def send_sls_api(command: str) -> bool:
         return False
     try:
         with open(pipe, "w") as f:
-            f.write(command)
+            f.write(command.strip() + "\n")
             f.flush()
         logger.info(f"[SteamHandoff] SLS sent: {command!r}")
         return True
@@ -253,8 +253,8 @@ def sync_manifests_to_depotcache(appid: str, dest_path: str = "") -> int:
 
 def perform_steam_handoff(
     game_data: Dict[str, Any],
-    selected_depots: List[str],
-    dest_path: str,
+    selected_depots: Optional[List[str]] = None,
+    dest_path: str = "",
     progress_cb: Optional[Callable[[str], None]] = None,
     auto_install: bool = False,
 ) -> Tuple[bool, str]:
@@ -313,6 +313,15 @@ def perform_steam_handoff(
 
     if not depot_keys:
         return False, f"No depot keys available for {game_name} ({appid})."
+
+    # Resolve depots if none explicitly selected
+    if not selected_depots:
+        all_d = set(str(d) for d in depot_keys.keys())
+        if manifest_gids:
+            all_d.update(str(d) for d in manifest_gids.keys())
+        if game_data and game_data.get("depots"):
+            all_d.update(str(d) for d in game_data["depots"].keys())
+        selected_depots = [d for d in all_d if str(d) != str(appid)]
 
     # Retain all keys (both main AppID key and all depots) in DecryptionKeys so Steam client
     # and download.lua never fail with Missing Decryption Key / UpdateResult 8, unless in DLC-only mode.
@@ -376,9 +385,19 @@ def perform_steam_handoff(
     if auto_install:
         library_index = resolve_library_index(dest_path)
         _emit(f"Signalling Steam to install {game_name} into library folder {library_index}...")
-        sent = send_sls_api(f"install|{appid}|{library_index}")
-        if not sent:
-            return False, "Failed to send install command to /tmp/SLSsteam.API."
+
+        # Schedule smart background retry pipe to bridge the 15-20s Steam scheduler delay
+        try:
+            from utils.slssteam_integration import _silent_background_retry_pipe
+            _silent_background_retry_pipe(appid, library_index, max_retries=6, library_path=dest_path)
+        except Exception as e:
+            logger.debug(f"[SteamHandoff] Error scheduling background retry: {e}")
+
+        sent_pipe = send_sls_api(f"install|{appid}|{library_index}")
+        from core.steam_helpers import dispatch_steam_url
+        sent_url = dispatch_steam_url(f"steam://install/{appid}")
+        if not sent_pipe and not sent_url:
+            return False, "Failed to send install command to Steam."
 
         success_msg = (
             f"Successfully handed off {game_name} ({appid}) to Steam! "
@@ -389,6 +408,46 @@ def perform_steam_handoff(
             f"Successfully added {game_name} ({appid}) to Steam! "
             f"The game and depot keys are unlocked in your Steam library, ready to install."
         )
+
+    # Register into plugin_library so AT0-M and library management track it
+    try:
+        from utils.plugin_games import register_plugin_game
+        depot_names: Dict[str, str] = {}
+        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        for did in (selected_depots or []):
+            meta = depots_meta.get(did) or depots_meta.get(int(did) if str(did).isdigit() else did) or {}
+            if isinstance(meta, dict) and meta.get("desc"):
+                depot_names[str(did)] = meta["desc"]
+
+        dlc_appids: List[str] = []
+        if is_dlc:
+            try:
+                from utils.dlc_helpers import get_dlc_only_info
+                d_info = get_dlc_only_info(appid)
+                if d_info:
+                    dlc_appids = [str(x["dlc_appid"]) for x in d_info if x.get("dlc_appid")]
+            except Exception:
+                pass
+            if not dlc_appids:
+                for did in (selected_depots or []):
+                    meta = depots_meta.get(did) or depots_meta.get(int(did) if str(did).isdigit() else did) or {}
+                    if isinstance(meta, dict):
+                        dlc_id = str(meta.get("dlcappid") or "").strip()
+                        if dlc_id and dlc_id != appid and dlc_id not in dlc_appids:
+                            dlc_appids.append(dlc_id)
+
+        installdir = game_data.get("install_dir") or game_data.get("installdir") or ""
+        register_plugin_game(
+            appid=appid,
+            name=game_name,
+            depot_ids=selected_depots or list(depot_keys.keys()),
+            decryption_keys=active_keys,
+            installdir=installdir,
+            depot_names=depot_names,
+            dlc_appids=dlc_appids,
+        )
+    except Exception as e:
+        logger.warning(f"[SteamHandoff] Could not register into plugin_library: {e}")
 
     _emit(success_msg)
     return True, success_msg

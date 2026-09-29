@@ -243,15 +243,24 @@ class NativeSteamDownloadTask(QObject):
             self._cleanup_failure()
             return
 
-        # 6. Resolve library index and trigger install
+        # 5b. Sync manifests to Steam depotcache so Steam has them locally without needing MRC endpoints
+        try:
+            from core.native_steam.native_steam_handoff import sync_manifests_to_depotcache
+            synced_mfs = sync_manifests_to_depotcache(appid, dest_path)
+            if synced_mfs > 0:
+                self.progress.emit(f"[Native Steam] Synced {synced_mfs} manifest(s) into Steam depotcache")
+                logger.info(f"[NativeSteamDL] Synced {synced_mfs} manifest(s) for {appid} into depotcache")
+        except Exception as e:
+            logger.warning(f"[NativeSteamDL] Error syncing manifests to depotcache: {e}")
+
+        # 6. Resolve library index and trigger install with pulsing smart retry
         library_index = self._resolve_library_index(dest_path)
         self.progress.emit(f"[Native Steam] Triggering Steam install (library {library_index})...")
-        sent = self._send_sls(f"install|{appid}|{library_index}")
-        if not sent:
-            msg = "Failed to communicate with /tmp/SLSsteam.API"
-            self.progress.emit(f"[Native Steam] ERROR: {msg}")
+        installed_triggered = self._trigger_steam_install_with_retry(
+            appid, library_index, acf_path, game_name
+        )
+        if not installed_triggered and not self._is_running:
             self._cleanup_failure()
-            self.error.emit((RuntimeError, msg, None))
             return
 
         # 7. Monitor download progress
@@ -644,7 +653,7 @@ class NativeSteamDownloadTask(QObject):
                 content = fixed_content
 
             # Determine which depot IDs the user actually selected
-            user_sel_ids = [str(d) for d in (selected_depots or [])] if selected_depots is not None else \
+            user_sel_ids = [str(d) for d in selected_depots] if selected_depots else \
                 [str(d) for d in depot_keys.keys()]
 
             # Build the set of app IDs to write to AdditionalApps from selected depots only.
@@ -700,10 +709,13 @@ class NativeSteamDownloadTask(QObject):
                 content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
 
         # 3. Format AdditionalDepots with descriptive comments
-        if selected_depots is not None:
+        if selected_depots:
             new_depot_ids = [str(d) for d in selected_depots if str(d) != appid_str]
         else:
-            new_depot_ids = [str(d) for d in depot_keys.keys() if str(d) != appid_str]
+            depots_set = set(str(d) for d in depot_keys.keys())
+            if game_data and game_data.get("depots"):
+                depots_set.update(str(d) for d in game_data["depots"].keys())
+            new_depot_ids = [str(d) for d in depots_set if str(d) != appid_str]
 
         # Parse existing depots and comments
         existing_depots_comments: Dict[str, str] = {}
@@ -717,7 +729,7 @@ class NativeSteamDownloadTask(QObject):
                     existing_depots_comments[did] = m.group(2).strip() if m.group(2) else ""
 
         # If user explicitly selected depots, prune any depots of THIS game that are not selected
-        if game_data and game_data.get("depots") and selected_depots is not None:
+        if game_data and game_data.get("depots") and selected_depots:
             all_game_depots = {str(d) for d in game_data["depots"].keys()}
             user_depots_set = set(new_depot_ids)
             for d in all_game_depots:
@@ -762,7 +774,7 @@ class NativeSteamDownloadTask(QObject):
         if is_dlc:
             all_keys.pop(appid_str, None)
             key_comments.pop(appid_str, None)
-            if game_data and game_data.get("depots") and selected_depots is not None:
+            if game_data and game_data.get("depots") and selected_depots:
                 all_game_depots = {str(d) for d in game_data["depots"].keys()}
                 user_depots_set = set(new_depot_ids)
                 for d in all_game_depots:
@@ -770,7 +782,7 @@ class NativeSteamDownloadTask(QObject):
                         all_keys.pop(d, None)
                         key_comments.pop(d, None)
             for d, k in depot_keys.items():
-                if k and (selected_depots is None or str(d) in set(new_depot_ids)):
+                if k and (not selected_depots or str(d) in set(new_depot_ids)):
                     did_str = str(d)
                     all_keys[did_str] = str(k)
                     meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
@@ -855,13 +867,95 @@ class NativeSteamDownloadTask(QObject):
             return False
         try:
             with open(pipe, "w") as f:
-                f.write(command)
+                f.write(command.strip() + "\n")
                 f.flush()
             logger.info(f"[NativeSteamDL] SLS sent: {command!r}")
             return True
         except OSError as e:
             logger.warning(f"[NativeSteamDL] SLS send failed: {e}")
             return False
+
+    def _trigger_steam_install_with_retry(
+        self,
+        appid: str,
+        library_index: int,
+        acf_path: Path,
+        game_name: str,
+        max_attempts: int = 8,
+        interval_sec: float = 3.0,
+    ) -> bool:
+        """
+        Pulse the install command to /tmp/SLSsteam.API and Steam client every interval_sec
+        until Steam confirms update started or ACF manifest appears on disk.
+        """
+        from core.steam_helpers import dispatch_steam_url
+
+        content_log = self._get_content_log_path()
+        c_offset = content_log.stat().st_size if content_log and content_log.exists() else 0
+        sls_log = self._get_sls_log_path()
+        s_offset = sls_log.stat().st_size if sls_log and sls_log.exists() else 0
+
+        started_pattern = re.compile(rf"AppID {re.escape(str(appid))} update started")
+        installed_pattern = re.compile(rf"Installed {re.escape(str(appid))}")
+
+        for attempt in range(1, max_attempts + 1):
+            if not self._is_running:
+                return False
+
+            cmd = f"install|{appid}|{library_index}"
+            logger.info(f"[NativeSteamDL] Triggering install attempt {attempt}/{max_attempts}: {cmd}")
+            self._send_sls(cmd)
+            dispatch_steam_url(f"steam://install/{appid}")
+
+            # Poll for quick confirmation during the interval
+            deadline = time.time() + interval_sec
+            while time.time() < deadline:
+                if not self._is_running:
+                    return False
+
+                # 1. Check if ACF created or installing
+                if acf_path.exists():
+                    logger.info(f"[NativeSteamDL] ACF confirmed for {appid} on attempt {attempt}")
+                    return True
+
+                # 2. Check content_log.txt for update started
+                if content_log and content_log.exists():
+                    try:
+                        c_size = content_log.stat().st_size
+                        if c_size > c_offset:
+                            with open(content_log, "r", encoding="utf-8", errors="replace") as f:
+                                f.seek(c_offset)
+                                for line in f:
+                                    if started_pattern.search(line):
+                                        logger.info(
+                                            f"[NativeSteamDL] Steam download started confirmed via content_log on attempt {attempt}"
+                                        )
+                                        self.progress.emit("[Native Steam] Steam download started...")
+                                        return True
+                            c_offset = c_size
+                    except OSError:
+                        pass
+
+                # 3. Check SLS log for "Installed <appid>"
+                if sls_log and sls_log.exists():
+                    try:
+                        s_size = sls_log.stat().st_size
+                        if s_size > s_offset:
+                            with open(sls_log, "r", encoding="utf-8", errors="replace") as f:
+                                f.seek(s_offset)
+                                for line in f:
+                                    if installed_pattern.search(line):
+                                        logger.info(
+                                            f"[NativeSteamDL] SLS log confirmed install for {appid} on attempt {attempt}"
+                                        )
+                            s_offset = s_size
+                    except OSError:
+                        pass
+
+                time.sleep(0.5)
+
+        logger.info(f"[NativeSteamDL] Retry loop completed for {appid}, proceeding to monitor")
+        return True
 
     def _monitor_download(
         self,

@@ -1181,7 +1181,14 @@ class DSSProtector:
         pe.set_data_directory(1, imp_rva, imp_size)
         return True
 VARIANTS = [Variant10x86(), Variant20x86(), Variant21x86(), Variant31x64(), Variant31x86(), Variant30x64(), Variant30x86()]
-def unpack(path: str, opts: Options, out_path: Optional[str]=None, in_place: bool=False) -> bool:
+def unpack(path: str, opts: Options, out_path: Optional[str]=None, in_place: bool=False) -> int:
+    """
+    Unpack SteamStub DRM from a PE executable.
+    Returns:
+        0 - Successfully unpacked
+        1 - No SteamStub DRM detected (clean executable)
+        2 - SteamStub DRM detected, but unpacking failed
+    """
     pe = PEFile(path)
     dss_info = DSSProtector.detect(pe)
     dss_present = dss_info is not None
@@ -1191,11 +1198,13 @@ def unpack(path: str, opts: Options, out_path: Optional[str]=None, in_place: boo
             print('[+] DSS unwrapped in memory - proceeding to SteamStub detection.')
         else:
             print('[!] Cannot continue: SteamStub layer is inaccessible until DSS is stripped.')
-            return False
+            return 2
     attempted = set()
+    found_variant = False
     for variant in VARIANTS:
         if not variant.detect(pe):
             continue
+        found_variant = True
         cls = variant.__class__.__name__
         if cls in attempted:
             continue
@@ -1223,15 +1232,20 @@ def unpack(path: str, opts: Options, out_path: Optional[str]=None, in_place: boo
                     out = out_path or os.path.splitext(path)[0] + '.unpacked' + os.path.splitext(path)[1]
                 pe_try.write(out, zero_dos_stub=opts.zero_dos_stub, recalc_checksum=opts.recalculate_checksum)
                 print(f'[+] Unpacked with {variant.name} -> {out}')
-                return True
+                return 0
         except Exception as e:
             print(f'[!] {variant.name} failed: {e}')
             if opts.use_experimental:
                 import traceback
                 traceback.print_exc()
             continue
-    print('[!] No variant matched or all failed.')
-    return False
+    if found_variant:
+        print('[!] SteamStub DRM detected, but unpacking failed.')
+        return 2
+    else:
+        print('[!] No SteamStub DRM detected in executable.')
+        return 1
+
 def main():
     ap = argparse.ArgumentParser(description='Steamless Python port — SteamStub DRM unpacker')
     ap.add_argument('file', help='Path to the packed executable')
@@ -1248,7 +1262,11 @@ def main():
     args = ap.parse_args()
     opts = Options(keep_bind_section=args.keep_bind, zero_dos_stub=args.zero_dos_stub, dont_realign_sections=args.no_realign, recalculate_checksum=args.checksum, dump_payload=args.dump_payload, dump_drmp=args.dump_drmp, use_experimental=args.experimental, strip_dsstext=args.strip_dsstext)
     in_place = args.output is None and (not args.no_inplace)
-    ok = unpack(args.file, opts, args.output, in_place=in_place)
-    sys.exit(0 if ok else 1)
+    try:
+        code = unpack(args.file, opts, args.output, in_place=in_place)
+        sys.exit(code)
+    except Exception as e:
+        print(f'[!] Fatal error processing executable: {e}')
+        sys.exit(3)
 if __name__ == '__main__':
     main()

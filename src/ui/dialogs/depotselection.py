@@ -2449,32 +2449,51 @@ class DepotSelectionDialog(QDialog):
 
         def on_dump_finished(success, err):
             progress_dialog.close()
-            # Clean up temp keys file
-            if os.path.exists(keys_path):
-                try:
-                    os.remove(keys_path)
-                except OSError:
-                    pass
 
             if not success:
+                if os.path.exists(keys_path):
+                    try:
+                        os.remove(keys_path)
+                    except OSError:
+                        pass
                 QMessageBox.critical(self, "Error", f"Failed to load file list: {err}")
                 return
 
             txt_path = os.path.join(temp_dir, f"manifest_{target_depot}_{manifest_id}.txt")
             if not os.path.exists(txt_path):
+                if os.path.exists(keys_path):
+                    try:
+                        os.remove(keys_path)
+                    except OSError:
+                        pass
                 QMessageBox.critical(self, "Error", "Failed to locate generated file list text file.")
                 return
 
             # Open File Selection Tree Dialog
             from ui.dialogs.fileselection import FileSelectionDialog
-            sel_dialog = FileSelectionDialog(app_id, target_depot, txt_path, self)
-            if sel_dialog.exec():
-                self.selected_files = sel_dialog.selected_files
-                QMessageBox.information(
-                    self,
-                    "Selection Confirmed",
-                    f"Selected {len(self.selected_files)} file(s) for custom download.\nPress OK at the bottom to start installing."
-                )
+            sel_dialog = FileSelectionDialog(
+                app_id=app_id,
+                depot_id=target_depot,
+                manifest_txt_path=txt_path,
+                parent=self,
+                manifest_file=manifest_file,
+                keys_path=keys_path,
+                manifest_id=manifest_id,
+            )
+            try:
+                if sel_dialog.exec():
+                    self.selected_files = sel_dialog.selected_files
+                    QMessageBox.information(
+                        self,
+                        "Selection Confirmed",
+                        f"Selected {len(self.selected_files)} file(s) for custom download.\nPress OK at the bottom to start installing."
+                    )
+            finally:
+                if os.path.exists(keys_path):
+                    try:
+                        os.remove(keys_path)
+                    except OSError:
+                        pass
 
         self.dump_thread.finished_signal.connect(on_dump_finished)
         self.dump_thread.start()

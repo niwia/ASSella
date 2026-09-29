@@ -367,6 +367,7 @@ def purge_and_sanitize_for_dlc_only(
         remove_additional_depot,
         add_additional_depot,
         get_additional_depots,
+        add_decryption_key,
         remove_decryption_key,
         get_decryption_keys,
         remove_fake_app_id,
@@ -480,7 +481,7 @@ def purge_and_sanitize_for_dlc_only(
                     comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
                     add_additional_depot(config_path, d, comment=comment)
 
-        # 4. DecryptionKeys: Remove base appid key and unselected depot keys
+        # 4. DecryptionKeys: Remove base appid key and unselected depot keys, then add keys for selected depots
         existing_keys = get_decryption_keys(config_path)
         if appid_str in existing_keys:
             if remove_decryption_key(config_path, appid_str):
@@ -490,6 +491,40 @@ def purge_and_sanitize_for_dlc_only(
                 if d in existing_keys and d not in user_sel_set:
                     if remove_decryption_key(config_path, d):
                         summary["base_keys_removed"].append(d)
+
+            # Ensure keys for selected DLC depots are added so Steam can decrypt DLC content
+            depot_keys = {}
+            if game_data and game_data.get("depot_keys"):
+                depot_keys.update({str(k): v for k, v in game_data["depot_keys"].items()})
+            if game_data and game_data.get("depots"):
+                for did, dinfo in game_data["depots"].items():
+                    if isinstance(dinfo, dict) and dinfo.get("key"):
+                        depot_keys[str(did)] = dinfo["key"]
+            try:
+                from managers.depot_key_manager import DepotKeyManager
+                dkm = DepotKeyManager.get_instance()
+                cached_dkm = dkm.get_depot_keys(appid_str)
+                if cached_dkm:
+                    for k, v in cached_dkm.items():
+                        depot_keys.setdefault(str(k), v)
+            except Exception as e:
+                logger.debug(f"[DLCMode] Error querying DepotKeyManager for {appid_str}: {e}")
+
+            for d in user_sel_set:
+                if d != appid_str and str(d) in depot_keys:
+                    k = depot_keys[str(d)]
+                    meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
+                    desc = meta.get("desc", "") if isinstance(meta, dict) else ""
+                    comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
+                    if add_decryption_key(config_path, str(d), k, comment=comment):
+                        summary.setdefault("keys_added", []).append(str(d))
+
+        # 4b. Sync DLC manifests to Steam depotcache so Steam does not fail on MRC
+        try:
+            from core.native_steam.native_steam_handoff import sync_manifests_to_depotcache
+            sync_manifests_to_depotcache(appid_str)
+        except Exception as e:
+            logger.debug(f"[DLCMode] Error syncing manifests to depotcache: {e}")
 
         # 5. Remove FakeAppIds for this app (disable SLSonline)
         if remove_fake_app_id(config_path, appid_str):

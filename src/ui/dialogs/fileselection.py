@@ -1,7 +1,12 @@
 import os
+import re
+import subprocess
 import logging
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QIcon
+from pathlib import Path
+from typing import Optional, List
+
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QUrl
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QIcon, QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -12,18 +17,84 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QHeaderView,
     QApplication,
-    QMessageBox
+    QMessageBox,
+    QFileDialog,
+    QProgressDialog,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class FileSelectionDialog(QDialog):
-    def __init__(self, app_id, depot_id, manifest_txt_path, parent=None):
+class DirectDownloadThread(QThread):
+    progress_signal = pyqtSignal(str, float)
+    finished_signal = pyqtSignal(bool, str)
+
+    def __init__(self, cmd, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Select Files to Download - Depot {depot_id}")
-        self.resize(650, 500)
+        self.cmd = cmd
+        self.process = None
+        self._is_cancelled = False
+
+    def run(self):
+        try:
+            self.process = subprocess.Popen(
+                self.cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            for line in iter(self.process.stdout.readline, ""):
+                if self._is_cancelled:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                pct_match = re.search(r"(\d+(?:\.\d+)?)%", line)
+                pct = float(pct_match.group(1)) if pct_match else -1.0
+                self.progress_signal.emit(line, pct)
+
+            self.process.stdout.close()
+            self.process.wait()
+
+            if self._is_cancelled:
+                self.finished_signal.emit(False, "Download cancelled by user.")
+            elif self.process.returncode == 0:
+                self.finished_signal.emit(True, "")
+            else:
+                self.finished_signal.emit(False, f"Download failed with exit code {self.process.returncode}")
+        except Exception as ex:
+            self.finished_signal.emit(False, str(ex))
+
+    def cancel(self):
+        self._is_cancelled = True
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.terminate()
+            except Exception:
+                pass
+
+
+class FileSelectionDialog(QDialog):
+    def __init__(
+        self,
+        app_id,
+        depot_id,
+        manifest_txt_path,
+        parent=None,
+        manifest_file=None,
+        keys_path=None,
+        manifest_id=None,
+    ):
+        super().__init__(parent)
+        self.app_id = str(app_id)
+        self.depot_id = str(depot_id)
         self.manifest_txt_path = manifest_txt_path
+        self.manifest_file = manifest_file
+        self.keys_path = keys_path
+        self.manifest_id = manifest_id
+        self.setWindowTitle(f"Select Files to Download - Depot {depot_id}")
+        self.resize(700, 560)
         self.selected_files = []
         self.all_files = []
 
@@ -102,7 +173,7 @@ class FileSelectionDialog(QDialog):
 
         # Header info
         info_label = QLabel(
-            "Expand folders to customize your download. Unchecked files and folders will be skipped during installation."
+            "Expand folders to customize your download. Unchecked files and folders will be skipped."
         )
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
@@ -136,6 +207,25 @@ class FileSelectionDialog(QDialog):
         self.stats_label = QLabel("Loading file structure...")
         layout.addWidget(self.stats_label)
 
+        # Destination Folder Row
+        dest_layout = QHBoxLayout()
+        dest_layout.setSpacing(6)
+        dest_lbl = QLabel("Download To:")
+        dest_lbl.setStyleSheet("font-weight: bold; color: rgba(255, 255, 255, 0.9);")
+        dest_layout.addWidget(dest_lbl)
+
+        self.dest_edit = QLineEdit()
+        default_dir = os.path.expanduser("~/Downloads")
+        self.dest_edit.setText(default_dir)
+        self.dest_edit.setPlaceholderText("Select folder to download chosen file(s)...")
+        dest_layout.addWidget(self.dest_edit, 1)
+
+        self.browse_btn = QPushButton("Browse...")
+        self.browse_btn.clicked.connect(self._browse_destination)
+        dest_layout.addWidget(self.browse_btn)
+
+        layout.addLayout(dest_layout)
+
         # Actions Row
         actions_layout = QHBoxLayout()
         
@@ -149,9 +239,15 @@ class FileSelectionDialog(QDialog):
 
         actions_layout.addStretch()
 
-        self.ok_btn = QPushButton("Confirm")
+        self.direct_download_btn = QPushButton("Download Selected")
+        self.direct_download_btn.setToolTip("Directly download the selected files into the chosen folder without queuing other depots.")
+        self.direct_download_btn.setStyleSheet(f"background-color: {self.accent_color}; color: #000000; font-weight: bold; border: none; padding: 5px 14px;")
+        self.direct_download_btn.clicked.connect(self._on_direct_download_clicked)
+        actions_layout.addWidget(self.direct_download_btn)
+
+        self.ok_btn = QPushButton("Confirm Selection")
+        self.ok_btn.setToolTip("Save this selection to download during the regular game installation queue.")
         self.ok_btn.clicked.connect(self._on_confirm)
-        self.ok_btn.setStyleSheet(f"background-color: {self.accent_color}; color: #000000; font-weight: bold; border: none;")
         actions_layout.addWidget(self.ok_btn)
 
         self.cancel_btn = QPushButton("Cancel")
@@ -367,8 +463,13 @@ class FileSelectionDialog(QDialog):
         # Very basic filtering
         self.tree_view.keyboardSearch(text)
 
-    def _on_confirm(self):
-        # Traverse tree and collect all selected files
+    def _browse_destination(self):
+        cur = self.dest_edit.text() or os.path.expanduser("~/Downloads")
+        chosen = QFileDialog.getExistingDirectory(self, "Select Download Folder", cur)
+        if chosen:
+            self.dest_edit.setText(chosen)
+
+    def _collect_selected_files(self):
         self.selected_files = []
         root = self.model.invisibleRootItem()
 
@@ -384,14 +485,131 @@ class FileSelectionDialog(QDialog):
                         _collect(child)
 
         _collect(root)
+        return self.selected_files
 
-        if not self.selected_files:
+    def _on_confirm(self):
+        selected = self._collect_selected_files()
+        if not selected:
             QMessageBox.warning(
                 self, "Warning", "Please select at least one file to download."
             )
             return
 
         self.accept()
+
+    def _on_direct_download_clicked(self):
+        selected = self._collect_selected_files()
+        if not selected:
+            QMessageBox.warning(self, "No Files Selected", "Please select at least one file to download.")
+            return
+
+        dest_folder = self.dest_edit.text().strip()
+        if not dest_folder:
+            QMessageBox.warning(self, "No Destination", "Please choose a destination folder.")
+            return
+
+        try:
+            os.makedirs(dest_folder, exist_ok=True)
+        except OSError as e:
+            QMessageBox.critical(self, "Error", f"Failed to create destination folder:\n{e}")
+            return
+
+        # Resolve manifest and keys if not passed explicitly
+        temp_dir = os.path.dirname(self.manifest_txt_path)
+        manifest_file = self.manifest_file
+        keys_path = self.keys_path
+        manifest_id = self.manifest_id
+
+        if not manifest_id:
+            stem = os.path.basename(self.manifest_txt_path).replace(".txt", "")
+            manifest_id = stem.split("_")[-1]
+
+        if not manifest_file:
+            cand = list(Path(temp_dir).glob(f"{self.depot_id}_*.manifest")) or list(Path(temp_dir).glob("*.manifest"))
+            if cand:
+                manifest_file = str(cand[0])
+
+        if not keys_path:
+            cand_keys = os.path.join(temp_dir, "depot.keys")
+            if os.path.exists(cand_keys):
+                keys_path = cand_keys
+
+        if not manifest_file or not os.path.exists(manifest_file):
+            QMessageBox.critical(self, "Error", f"Could not find depot manifest file in {temp_dir}.")
+            return
+        if not keys_path or not os.path.exists(keys_path):
+            QMessageBox.critical(self, "Error", f"Could not find depot decryption keys file in {temp_dir}.")
+            return
+
+        # Write selective filelist
+        fl_path = os.path.join(temp_dir, f"direct_filelist_{self.depot_id}.txt")
+        try:
+            with open(fl_path, "w", encoding="utf-8") as fl:
+                for fp in selected:
+                    fl.write(fp.replace("\\", "/") + "\n")
+        except OSError as e:
+            QMessageBox.critical(self, "Error", f"Failed to write filelist: {e}")
+            return
+
+        from utils.helpers import get_dotnet_path, resource_path
+        dotnet_path = get_dotnet_path()
+        dll_path = resource_path(os.path.join("deps", "DepotDownloader.dll"))
+
+        cmd = [
+            dotnet_path,
+            dll_path,
+            "-app", str(self.app_id),
+            "-depot", str(self.depot_id),
+            "-manifest", str(manifest_id),
+            "-manifestfile", str(manifest_file),
+            "-depotkeys", str(keys_path),
+            "-filelist", fl_path,
+            "-dir", dest_folder,
+            "-validate",
+            "-max-downloads", "8"
+        ]
+
+        progress_dialog = QProgressDialog(f"Downloading {len(selected)} file(s)...", "Cancel", 0, 100, self)
+        progress_dialog.setWindowTitle("Downloading Selected Files")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        progress_dialog.show()
+
+        thread = DirectDownloadThread(cmd, self)
+
+        def on_progress(msg, pct):
+            if pct >= 0:
+                progress_dialog.setValue(int(pct))
+            progress_dialog.setLabelText(msg[:80] + "..." if len(msg) > 80 else msg)
+
+        def on_finished(success, err):
+            progress_dialog.close()
+            if os.path.exists(fl_path):
+                try:
+                    os.remove(fl_path)
+                except OSError:
+                    pass
+
+            if success:
+                box = QMessageBox(self)
+                box.setWindowTitle("Download Complete")
+                box.setText(f"Successfully downloaded {len(selected)} file(s) to:\n{dest_folder}")
+                open_btn = box.addButton("Open Folder", QMessageBox.ButtonRole.ActionRole)
+                box.addButton(QMessageBox.StandardButton.Ok)
+                box.exec()
+                if box.clickedButton() == open_btn:
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(dest_folder))
+            else:
+                if "cancelled" in err.lower():
+                    QMessageBox.information(self, "Cancelled", "Direct download was cancelled.")
+                else:
+                    QMessageBox.critical(self, "Download Error", f"Download failed:\n{err}")
+
+        thread.progress_signal.connect(on_progress)
+        thread.finished_signal.connect(on_finished)
+        progress_dialog.canceled.connect(thread.cancel)
+        thread.start()
 
     @staticmethod
     def _format_size(size_bytes):

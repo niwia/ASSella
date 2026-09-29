@@ -1098,7 +1098,7 @@ class TaskManager(QObject):
                         st.active_game_card.set_sub_status(msg)
             return perform_steam_handoff(
                 self.game_data,
-                selected_depots=[],
+                selected_depots=None,
                 dest_path=library_path,
                 progress_cb=_update_msg,
                 auto_install=auto_install,
@@ -3429,15 +3429,18 @@ class TaskManager(QObject):
         log_text = "\n".join(self._steamless_progress_log).lower()
         if "no suitable game executables found" in log_text:
             return "None (Linux Native)"
-        if "no steam drm detected" in log_text:
-            return "None"
+        if "no steam drm detected" in log_text or "(code 1)" in log_text:
+            return "None (Clean, code 1)"
         if self._last_steamless_success is None:
             return "Ready"
         elif self._last_steamless_success:
-            return "Success"
+            return "Success (code 0)"
         else:
-            if "no steam drm detected" in log_text:
-                return "None"
+            if "code 2" in log_text or "unpacking failed" in log_text:
+                return "Failed (code 2)"
+            match_code = re.search(r'exit code\s*:?\s*(\d+)', log_text)
+            if match_code:
+                return f"Error (code {match_code.group(1)})"
             return "Error"
 
     def parse_steamless_result(self) -> str:
@@ -3449,29 +3452,34 @@ class TaskManager(QObject):
         if "no suitable game executables found" in log_text:
             return "Skipped (Linux Native)"
 
-        if "no steam drm detected" in log_text or "no drm found" in log_text or "not encrypted" in log_text:
-            return "None (No DRM)"
+        if "code 2" in log_text or "unpacking failed" in log_text:
+            return "Failed (DRM Unpack Error, code 2)"
 
-        # Check if there was an error
         if self._steamless_error or not self._last_steamless_success:
+            match_code = re.search(r'exit code\s*:?\s*(\d+)', log_text)
+            if match_code:
+                return f"Failed (Error, code {match_code.group(1)})"
             return "Failed / Error"
 
+        if "no steam drm detected" in log_text or "no drm found" in log_text or "not encrypted" in log_text or "(code 1)" in log_text:
+            return "None (Clean, code 1)"
+
         # If successful, find the variant/version
-        log_text = "\n".join(self._steamless_progress_log)
+        log_text_raw = "\n".join(self._steamless_progress_log)
         
         # Try AIO log format first: "[+] Unpacked with V3.0 ->"
-        match = re.search(r'Unpacked with\s+V?([\d\.]+x?)', log_text)
+        match = re.search(r'Unpacked with\s+V?([\d\.]+x?)', log_text_raw)
         if match:
             version = match.group(1)
-            return f"Removed SteamStub v{version}"
+            return f"Removed SteamStub v{version} (code 0)"
 
         # Fallback to older C# CLI format
-        match = re.search(r'[Vv]ariant[\s:]+([\d\.]+)', log_text)
+        match = re.search(r'[Vv]ariant[\s:]+([\d\.]+)', log_text_raw)
         if match:
             version = match.group(1)
-            return f"Removed SteamStub v{version}"
+            return f"Removed SteamStub v{version} (code 0)"
 
-        return "Removed DRM"
+        return "Removed DRM (code 0)"
 
     def _update_status_for_job(self, ddm_ok=True, slscheevo_ok=None, steamless_ok=None):
         self._last_ddm_status = "ok" if ddm_ok else "error"
