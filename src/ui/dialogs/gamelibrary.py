@@ -30,6 +30,14 @@ from ui.dialogs.library.scanner import LibraryScannerMixin
 from ui.dialogs.library.filter_sort import LibraryFilterSortMixin
 from ui.dialogs.library.image_loader import LibraryImageLoaderMixin
 from ui.dialogs.library.actions import LibraryActionsMixin
+from ui.dialogs.library.tab_bar import (
+    LibraryTabBar,
+    TAB_ACCELA,
+    TAB_ATOM,
+    TAB_STEAM,
+)
+from ui.dialogs.library.steam_tab_cache import load_steam_cache, save_steam_cache
+from ui.dialogs.library.acf_scanner import scan_acf_files
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +56,7 @@ class GameLibraryDialog(
     uninstall_complete = pyqtSignal(bool, str)  # success, error_message
     zip_parse_complete = pyqtSignal(object, str, dict, object, object)  # parsed_data, filepath, game_data, dialog, parse_progress
     hubcap_status_check_complete = pyqtSignal(dict, dict, object, object)  # result, game_data, dialog, check_progress
+    steam_scan_complete = pyqtSignal(list)  # games list
 
     # Backward compatible static methods
     _format_size = staticmethod(format_size)
@@ -100,6 +109,20 @@ class GameLibraryDialog(
         # Multi-select state
         self._select_mode = False
         self._selected_appids: set = set()
+
+        # Tab state
+        self._active_tab = TAB_ACCELA
+        self._steam_tab_games = []
+        self._steam_scan_in_progress = False
+        self._steam_scanned_this_session = False
+        try:
+            self._steam_tab_games = load_steam_cache()
+        except Exception as e:
+            logger.warning(f"Failed to load steam tab cache on startup: {e}")
+
+        # If cache is empty, start background scan immediately
+        if not self._steam_tab_games:
+            self._trigger_steam_scan()
 
         self._setup_window()
         self._setup_ui()
@@ -354,6 +377,11 @@ class GameLibraryDialog(
 
         layout.addLayout(top_layout)
 
+        # --- Tab Navigation Bar ---
+        self.tab_bar = LibraryTabBar(accent_color=self.accent_color, parent=self)
+        self.tab_bar.current_tab_changed.connect(self._on_tab_changed)
+        layout.addWidget(self.tab_bar)
+
         # --- Games List ---
         self.games_list = QListWidget()
         self.games_list.setSpacing(2)
@@ -486,11 +514,54 @@ class GameLibraryDialog(
         self.uninstall_complete.connect(self._on_uninstall_complete)
         self.zip_parse_complete.connect(self._on_zip_parse_complete)
         self.hubcap_status_check_complete.connect(self._on_hubcap_status_check_complete)
+        self.steam_scan_complete.connect(self._on_steam_scan_complete)
 
     @pyqtSlot(object)
     def _run_on_main_thread(self, fn) -> None:
         """Slot to execute a callable on the main thread (used by background threads)."""
         fn()
+
+    def _on_tab_changed(self, tab: str) -> None:
+        self._active_tab = tab
+        if tab == TAB_STEAM:
+            if not self._steam_scanned_this_session or not self._steam_tab_games:
+                self._trigger_steam_scan()
+        self._refresh_game_list()
+
+    def _trigger_steam_scan(self) -> None:
+        if getattr(self, "_steam_scan_in_progress", False) or getattr(self, "_closing", False):
+            return
+        self._steam_scan_in_progress = True
+        if hasattr(self, "tab_bar"):
+            self.tab_bar.set_scanning(TAB_STEAM, True)
+        if getattr(self, "_active_tab", "") == TAB_STEAM and not self._steam_tab_games:
+            self.info_label.setText("Scanning Steam libraries for installed games... Please wait.")
+        self.executor.submit(self._bg_scan_steam_games)
+
+    def _bg_scan_steam_games(self) -> None:
+        try:
+            games = scan_acf_files()
+            if games:
+                save_steam_cache(games)
+            self._steam_scanned_this_session = True
+            # Safely emit cross-thread signal to GUI thread
+            self.steam_scan_complete.emit(games)
+        except Exception as e:
+            logger.error(f"[GameLibrary] Steam ACF scan error: {e}")
+            self.steam_scan_complete.emit([])
+
+    def _on_steam_scan_complete(self, games: list) -> None:
+        self._steam_scan_in_progress = False
+        if hasattr(self, "tab_bar"):
+            self.tab_bar.set_scanning(TAB_STEAM, False)
+        if getattr(self, "_closing", False):
+            return
+        if games:
+            self._steam_tab_games = games
+        if hasattr(self, "tab_bar"):
+            self.tab_bar.update_counts(steam=len(self._steam_tab_games))
+        if getattr(self, "_active_tab", "") == TAB_STEAM:
+            self._refresh_game_list()
 
     def _show_game_details_dialog(self, game_data: dict) -> None:
         try:

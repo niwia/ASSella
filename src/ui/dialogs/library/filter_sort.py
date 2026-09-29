@@ -24,15 +24,26 @@ class LibraryFilterSortMixin:
     def _get_sort_key(cls, game: dict, sort_option: str):
         """Helper for sorting keys."""
         if sort_option in ("name_asc", "name_desc"):
-            return game.get("game_name", "").lower()
+            return str(game.get("game_name", "")).lower()
         if sort_option in ("size_asc", "size_desc"):
-            return game.get("size_on_disk", 0)
+            try:
+                return int(game.get("size_on_disk") or 0)
+            except (ValueError, TypeError):
+                return 0
         if sort_option == "appid":
             try:
                 return int(game.get("appid", 0))
             except (ValueError, TypeError):
                 return 0
         if sort_option == "recently_installed":
+            lu = game.get("last_updated")
+            if lu:
+                try:
+                    val = float(lu)
+                    if val > 0:
+                        return val
+                except (ValueError, TypeError):
+                    pass
             path = (
                 game.get("accela_marker_path")
                 or game.get("depot_downloader_path")
@@ -40,8 +51,11 @@ class LibraryFilterSortMixin:
                 or game.get("install_path", "")
             )
             if path and os.path.exists(path):
-                return os.path.getmtime(path)
-            return 0
+                try:
+                    return float(os.path.getmtime(path))
+                except (OSError, TypeError):
+                    pass
+            return 0.0
         if sort_option == "pinned_first":
             appid = str(game.get("appid", "0"))
             pinned_cache = getattr(cls, "_current_pinned_cache", None)
@@ -50,16 +64,16 @@ class LibraryFilterSortMixin:
             else:
                 from utils.settings import get_settings
                 is_pinned = get_settings().value(f"pin_build/{appid}", False, type=bool)
-            return (0 if is_pinned else 1, game.get("game_name", "").lower())
+            return (0 if is_pinned else 1, str(game.get("game_name", "")).lower())
         if sort_option == "update_first":
             # Games with an update available sort first (0), then everything else (1)
             has_update = game.get("update_status") == "update_available"
-            return (0 if has_update else 1, game.get("game_name", "").lower())
+            return (0 if has_update else 1, str(game.get("game_name", "")).lower())
         if sort_option == "dlc_only_first":
             from utils.dlc_helpers import is_dlc_only_mode
             is_dlc = is_dlc_only_mode(str(game.get("appid", "")))
-            return (0 if is_dlc else 1, game.get("game_name", "").lower())
-        return game.get("game_name", "").lower()
+            return (0 if is_dlc else 1, str(game.get("game_name", "")).lower())
+        return str(game.get("game_name", "")).lower()
 
     def _sort_games(self, games: list) -> list:
         sort_option = self.sort_combo.currentData()
@@ -135,11 +149,67 @@ class LibraryFilterSortMixin:
         except Exception as e:
             logger.warning(f"Failed to pre-scan hubcap_manifests: {e}")
 
-        if not self.game_manager:
-            self._refreshing = False
-            return
+        from ui.dialogs.library.tab_bar import TAB_ACCELA, TAB_ATOM, TAB_STEAM
 
-        games = self.game_manager.get_all_games()
+        active_tab = getattr(self, "_active_tab", TAB_ACCELA)
+        all_manager_games = self.game_manager.get_all_games() if self.game_manager else []
+        steam_games = getattr(self, "_steam_tab_games", [])
+
+        # Collect all AppIDs managed by ACCELA or AT0-M so they don't appear in Steam tab
+        managed_appids = set()
+        for g in all_manager_games:
+            aid = str(g.get("appid", "")).strip()
+            if aid and aid not in ("0", "N/A", "unknown"):
+                if g.get("is_accela_install") or g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"):
+                    managed_appids.add(aid)
+        try:
+            from utils.plugin_games import load_plugin_library
+            managed_appids.update(load_plugin_library().keys())
+        except Exception:
+            pass
+
+        # Unmanaged Steam games: strictly exclude any game in ACCELA or AT0-M
+        steam_unmanaged = [
+            g
+            for g in steam_games
+            if str(g.get("appid", "")).strip() not in managed_appids
+            and not g.get("is_accela_install")
+            and not g.get("is_atom")
+        ]
+
+        # Update tab counts on the bar
+        accela_total = sum(
+            1
+            for g in all_manager_games
+            if g.get("is_accela_install") and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
+        )
+        atom_total = sum(
+            1
+            for g in all_manager_games
+            if g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game")
+        )
+        steam_total = len(steam_unmanaged)
+
+        if hasattr(self, "tab_bar"):
+            self.tab_bar.update_counts(accela=accela_total, atom=atom_total, steam=steam_total)
+
+        # Select game dataset based on active tab
+        if active_tab == TAB_STEAM:
+            for g in steam_unmanaged:
+                g["is_steam_tab"] = True
+            games = list(steam_unmanaged)
+        elif active_tab == TAB_ATOM:
+            games = [
+                g
+                for g in all_manager_games
+                if g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game")
+            ]
+        else:
+            games = [
+                g
+                for g in all_manager_games
+                if g.get("is_accela_install") and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
+            ]
         
         # Filter games by search term (case-insensitive)
         has_filter = False
@@ -159,31 +229,42 @@ class LibraryFilterSortMixin:
         else:
             showing_games = games
 
+        # Optimize: freeze widget repaints during batch insertion
+        self.games_list.setUpdatesEnabled(False)
         total_size = 0
-        accela_count = 0
+        try:
+            for game in showing_games:
+                total_size += self._add_game_to_list(game)
+        finally:
+            self.games_list.setUpdatesEnabled(True)
 
-        for game in showing_games:
-            if game.get("is_accela_install"):
-                accela_count += 1
-            total_size += self._add_game_to_list(game)
+        if active_tab == TAB_STEAM:
+            tab_label = "Steam (Beta)"
+        elif active_tab == TAB_ATOM:
+            tab_label = "AT0-M"
+        else:
+            tab_label = "ACCELA"
 
-        if truncated:
+        if active_tab == TAB_STEAM and getattr(self, "_steam_scan_in_progress", False) and len(games) == 0:
+            self.info_label.setText("Scanning Steam libraries for installed games... Please wait.")
+        elif truncated:
             self.info_label.setText(
-                f"Showing top 150 of {len(games)} game(s) ({accela_count} ACCELA-managed) - "
+                f"Showing top 150 of {len(games)} {tab_label} game(s) - "
                 f"Please refine your search query."
             )
         else:
             self.info_label.setText(
-                f"Found {len(games)} Steam game(s) ({accela_count} ACCELA-managed) - "
+                f"Found {len(games)} {tab_label} game(s) - "
                 f"Total Size: {format_size(total_size)}"
             )
         self._refreshing = False
 
-        # Defer image downloads first (100ms), then ratings badges (300ms).
-        # This keeps widget construction and layout completely free of any
-        # network/lock/thread work.
-        QTimer.singleShot(100, self._start_pending_image_fetches)
-        QTimer.singleShot(300, self._populate_ratings_badges)
+        # Defer image downloads; skip ratings badges entirely for Steam tab
+        if active_tab != TAB_STEAM:
+            QTimer.singleShot(100, self._start_pending_image_fetches)
+            QTimer.singleShot(300, self._populate_ratings_badges)
+        else:
+            QTimer.singleShot(50, self._start_pending_image_fetches)
 
     def _add_game_to_list(self, game: dict) -> int:
         """Creates and adds a single game widget to the list. Returns size."""
@@ -229,14 +310,7 @@ class LibraryFilterSortMixin:
             )
 
     def _populate_ratings_badges(self) -> None:
-        """
-        Called once after the game list is fully drawn.
-        1) Immediately paints any already-cached Denuvo + ProtonDB badges
-           (in-memory reads, zero I/O on the GUI thread).
-        2) Queues background ProtonDB fetches for uncached games via the
-           single sequential worker — one request at a time, no burst.
-        """
-        if self._closing:
+        if self._closing or getattr(self, "_active_tab", "") == "steam":
             return
 
         from core.ratings import prefetch_protondb_for_appids

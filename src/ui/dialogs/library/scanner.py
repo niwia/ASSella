@@ -46,6 +46,8 @@ class LibraryScannerMixin:
         self.scan_button.setText("Scan Libraries")
         self._scanning = False
         self.info_label.setText(f"Found {count} installed Steam game(s).")
+        if hasattr(self, "_trigger_steam_scan"):
+            self._trigger_steam_scan()
         self._refresh_game_list()
 
     def _on_all_updates_checked(self) -> None:

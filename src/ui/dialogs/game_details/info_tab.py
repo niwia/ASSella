@@ -2328,6 +2328,24 @@ def on_move_to_vapor_clicked(dialog) -> None:
         except Exception:
             pass
 
+    # Check if this game is in DLC-only mode
+    from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
+    dlc_appids = []
+    if is_dlc_only_mode(appid) or game_data.get("is_dlc_only"):
+        try:
+            d_info = get_dlc_only_info(appid)
+            if d_info:
+                dlc_appids = [str(x["dlc_appid"]) for x in d_info if x.get("dlc_appid")]
+        except Exception:
+            pass
+        if not dlc_appids:
+            depots_meta = (game_data.get("depots") or {})
+            for did in depot_ids:
+                meta = depots_meta.get(str(did)) or {}
+                dlc_id = str(meta.get("dlcappid") or "").strip()
+                if dlc_id and dlc_id != str(appid) and dlc_id not in dlc_appids:
+                    dlc_appids.append(dlc_id)
+
     # Register into plugin_library and config.yaml
     register_plugin_game(
         appid=appid,
@@ -2336,6 +2354,7 @@ def on_move_to_vapor_clicked(dialog) -> None:
         decryption_keys=decryption_keys,
         installdir=installdir,
         depot_names=depot_names,
+        dlc_appids=dlc_appids,
     )
 
     # Remove ACCELA markers from install folder

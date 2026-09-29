@@ -414,22 +414,54 @@ def purge_and_sanitize_for_dlc_only(
         if remove_additional_app(config_path, appid_str):
             summary["base_app_removed"] = True
 
-        # 2. Add DLC AppIDs to AdditionalApps (or DlcData if >=64 DLCs)
-        dlc_list = get_all_dlcs_for_app(appid_str, game_data, allow_network=True)
-        if dlc_list:
-            if len(dlc_list) >= 64:
-                dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
-                add_dlc_data_batch(config_path, appid_str, dlc_dict)
-                summary["dlcs_added"].extend(list(dlc_dict.keys()))
-            else:
-                remove_dlc_data(config_path, appid_str)
-                for d in dlc_list:
-                    did = str(d["dlc_appid"])
-                    dname = d["dlc_name"]
-                    bname = d["base_game_name"] or game_name
-                    comment = f"[DLC] {dname or did} / {bname}"
-                    if add_additional_app(config_path, did, comment):
-                        summary["dlcs_added"].append(did)
+        # 2. Add ONLY the DLC AppIDs that correspond to the user's selected depots.
+        # Derive dlcappid from each selected depot's metadata — do NOT fetch all DLCs
+        # from Steam, as that would add unselected DLCs and potentially the base appid.
+        depots_meta_for_dlc = (game_data.get("depots") or {}) if game_data else {}
+        # Also pull from DB if game_data depots are sparse
+        try:
+            from managers.db_manager import DatabaseManager
+            _db = DatabaseManager()
+            _db_app = _db.get_app_info(appid_str, bypass_expiration=True)
+            if _db_app and _db_app.get("depots"):
+                for _did, _dinfo in _db_app["depots"].items():
+                    _did_str = str(_did)
+                    if _did_str not in depots_meta_for_dlc:
+                        depots_meta_for_dlc[_did_str] = _dinfo
+        except Exception:
+            pass
+
+        # Build set of app IDs to add to AdditionalApps from selected depots only.
+        # Priority:
+        #   1. dlcappid from depot metadata  → correct DLC AppID for SLSsteam to unlock
+        #   2. depot ID itself (fallback)    → if no dlcappid info, user selected it so add it directly
+        # The base appid is always excluded.
+        sel_dlcappid_set: dict = {}  # appid_to_add -> label (for comment)
+        if user_sel_set:
+            for sel_did in user_sel_set:
+                if sel_did == appid_str:
+                    continue  # never add base appid
+                meta = depots_meta_for_dlc.get(sel_did) or depots_meta_for_dlc.get(
+                    int(sel_did) if sel_did.isdigit() else sel_did, {}
+                )
+                desc = ""
+                dlcappid_val = ""
+                if isinstance(meta, dict):
+                    dlcappid_val = str(meta.get("dlcappid") or "").strip()
+                    desc = meta.get("desc", "")
+
+                if dlcappid_val and dlcappid_val != appid_str:
+                    # Preferred: use the proper DLC AppID that owns this depot
+                    sel_dlcappid_set[dlcappid_val] = desc or f"DLC {dlcappid_val}"
+                else:
+                    # Fallback: no dlcappid metadata — use the depot ID itself
+                    sel_dlcappid_set[sel_did] = desc or f"Depot {sel_did}"
+
+        remove_dlc_data(config_path, appid_str)
+        for did, dname in sel_dlcappid_set.items():
+            comment = f"[DLC] {dname} / {game_name}" if game_name else f"[DLC] {dname}"
+            if add_additional_app(config_path, did, comment):
+                summary["dlcs_added"].append(did)
 
         # 3. AdditionalDepots: User-selected depots ONLY
         if user_sel_set is not None:

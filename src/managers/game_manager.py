@@ -760,6 +760,15 @@ class GameManager(QObject):
         if owned_appids is None:
             owned_appids = self._get_owned_steam_appids()
 
+        plugin_games_dict = {}
+        dlc_to_base = {}
+        try:
+            from utils.plugin_games import get_all_plugin_games, build_dlc_reverse_map
+            plugin_games_dict = get_all_plugin_games()
+            dlc_to_base = build_dlc_reverse_map()
+        except Exception:
+            pass
+
         try:
             # Use scandir for better error handling during concurrent modifications
             with os.scandir(common_path) as entries:
@@ -785,14 +794,18 @@ class GameManager(QObject):
                         is_vapor = False
 
                         if not marker_path:
-                            # Check if this game is unlocked via Vapor/SLSsteam AdditionalApps and not owned
+                            # Check if this game is unlocked via Vapor/SLSsteam AdditionalApps or plugin_library
                             acf_entry = acf_cache.get(game_name) or acf_cache.get(game_name.lower())
                             if acf_entry:
                                 appid_str = str(acf_entry[1])
                                 if appid_str in owned_appids:
                                     logger.debug(f"  Skipped owned Steam game: {game_name} ({appid_str})")
                                     continue
-                                elif appid_str in additional_apps:
+                                elif (
+                                    appid_str in additional_apps
+                                    or appid_str in plugin_games_dict
+                                    or appid_str in dlc_to_base.values()
+                                ):
                                     is_vapor = True
                                 else:
                                     logger.debug(f"  Skipped non-ACCELA game: {game_name}")
@@ -829,14 +842,7 @@ class GameManager(QObject):
         # Second pass: directly discover any game in SLSsteam AdditionalApps or plugin_library
         # whose appmanifest resides in this library, verifying the installdir exists and has content,
         # skipping any legitimately owned Steam games.
-        plugin_games_dict = {}
-        try:
-            from utils.plugin_games import get_all_plugin_games
-            plugin_games_dict = get_all_plugin_games()
-        except Exception:
-            pass
-
-        all_target_apps = set(additional_apps) | set(plugin_games_dict.keys())
+        all_target_apps = set(additional_apps) | set(plugin_games_dict.keys()) | set(dlc_to_base.values())
         for appid_str in all_target_apps:
             if appid_str in owned_appids:
                 continue
@@ -1178,10 +1184,10 @@ class GameManager(QObject):
                 "library_path": library_path,
                 "library_index": get_library_index(library_path, steam_path),
                 "size_on_disk": 0,  # Will be calculated below
-                "source": "Plugin/Native" if is_plugin_game else ("at0-m" if is_vapor else ("ACCELA" if is_accela_install else "Steam")),
+                "source": "at0-m" if (is_vapor or is_plugin_game) else ("ACCELA" if is_accela_install else "Steam"),
                 "is_accela_install": is_managed,
-                "is_vapor": is_vapor,
-                "is_atom": is_vapor,
+                "is_vapor": is_vapor or is_plugin_game,
+                "is_atom": is_vapor or is_plugin_game,
                 "is_plugin_game": is_plugin_game,
                 "plugin_record": plugin_record or {},
                 "depot_downloader_path": marker_path or "",

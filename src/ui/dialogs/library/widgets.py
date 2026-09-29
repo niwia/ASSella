@@ -240,11 +240,19 @@ class GameItemWidget(QWidget):
         size_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px;")
         info_layout.addWidget(size_label)
 
-        # Manifest cache status
-        self.manifest_label = QLabel()
-        info_layout.addWidget(self.manifest_label)
+        # Check if this item belongs to the Steam (Beta) tab
+        is_steam_tab = (
+            (self.parent_dialog and getattr(self.parent_dialog, "_active_tab", "") == "steam")
+            or self.game_data.get("is_steam_tab", False)
+        )
 
-        self.update_manifest_label()
+        # Manifest cache status (skip entirely for Steam tab)
+        self.manifest_label = QLabel()
+        if not is_steam_tab:
+            info_layout.addWidget(self.manifest_label)
+            self.update_manifest_label()
+        else:
+            self.manifest_label.setVisible(False)
 
         info_layout.addStretch()
         layout.addLayout(info_layout, 1)
@@ -254,70 +262,75 @@ class GameItemWidget(QWidget):
         right_col.setContentsMargins(0, 8, 0, 8)
         right_col.setSpacing(4)
 
-        # Update status badge
         self.status_label = QLabel()
         self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        update_status = self.game_data.get("update_status", "cannot_determine")
-        if self.game_data.get("is_atom") or self.game_data.get("is_vapor") or self.game_data.get("is_plugin_game"):
-            update_status = "at0m"
 
-        is_at0m = update_status in ("vapor", "at0m", "at0-m")
-        if is_at0m:
-            self.status_label.setText("[AT0-M]")
-            self.status_label.setStyleSheet(
-                "color: #CE93D8; "
-                "background: transparent; "
-                "font-size: 11px; "
-                "font-weight: bold; "
-                "padding: 2px 2px;"
-            )
-        else:
-            status_map = {
-                "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
-                "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
-                "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
-            }
-            text, color, bg_color = status_map.get(
-                update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
-            )
-            self.status_label.setText(text)
-            self.status_label.setStyleSheet(
-                f"color: {color}; "
-                f"background-color: {bg_color}; "
-                f"border-radius: 10px; "
-                f"padding: 3px 10px; "
-                f"font-size: 11px; "
-                f"font-weight: bold;"
-            )
-        right_col.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignRight)
-
-        # Pinned build label directly below the update status badge
         self.pinned_build_label = QLabel()
         self.pinned_build_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.pinned_build_label.setVisible(False)
-        right_col.addWidget(self.pinned_build_label, 0, Qt.AlignmentFlag.AlignRight)
         self.pinned_label = self.pinned_build_label
-        self.update_pinned_label()
-
-        right_col.addStretch(1)
-
-        # Ratings row: Denuvo badge on LEFT, ProtonDB badge on RIGHT
-        ratings_row = QHBoxLayout()
-        ratings_row.setSpacing(6)
-        ratings_row.setContentsMargins(0, 0, 0, 0)
-        ratings_row.addStretch(1)
 
         self.denuvo_badge = QLabel()
         self.denuvo_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.denuvo_badge.hide()
-        ratings_row.addWidget(self.denuvo_badge, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.proton_badge = QLabel()
         self.proton_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.proton_badge.hide()
-        ratings_row.addWidget(self.proton_badge, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        right_col.addLayout(ratings_row)
+        if not is_steam_tab:
+            # Update status badge
+            update_status = self.game_data.get("update_status", "cannot_determine")
+            if self.game_data.get("is_atom") or self.game_data.get("is_vapor") or self.game_data.get("is_plugin_game"):
+                update_status = "at0m"
+
+            is_at0m = update_status in ("vapor", "at0m", "at0-m")
+            if is_at0m:
+                self.status_label.setText("[AT0-M]")
+                self.status_label.setStyleSheet(
+                    "color: #CE93D8; "
+                    "background: transparent; "
+                    "font-size: 11px; "
+                    "font-weight: bold; "
+                    "padding: 2px 2px;"
+                )
+            else:
+                status_map = {
+                    "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
+                    "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
+                    "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+                }
+                text, color, bg_color = status_map.get(
+                    update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
+                )
+                self.status_label.setText(text)
+                self.status_label.setStyleSheet(
+                    f"color: {color}; "
+                    f"background-color: {bg_color}; "
+                    f"border-radius: 10px; "
+                    f"padding: 3px 10px; "
+                    f"font-size: 11px; "
+                    f"font-weight: bold;"
+                )
+            right_col.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignRight)
+
+            # Pinned build label directly below the update status badge
+            right_col.addWidget(self.pinned_build_label, 0, Qt.AlignmentFlag.AlignRight)
+            self.update_pinned_label()
+
+            right_col.addStretch(1)
+
+            # Ratings row: Denuvo badge on LEFT, ProtonDB badge on RIGHT
+            ratings_row = QHBoxLayout()
+            ratings_row.setSpacing(6)
+            ratings_row.setContentsMargins(0, 0, 0, 0)
+            ratings_row.addStretch(1)
+            ratings_row.addWidget(self.denuvo_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+            ratings_row.addWidget(self.proton_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+            right_col.addLayout(ratings_row)
+        else:
+            self.status_label.setVisible(False)
+            right_col.addStretch(1)
 
         layout.addLayout(right_col)
 

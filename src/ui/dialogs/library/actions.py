@@ -148,6 +148,10 @@ class LibraryActionsMixin:
         if self._dialog_open:
             return
 
+        # Don't allow accessing the game details page for Steam tab games
+        if getattr(self, "_active_tab", "") == "steam" or game_data.get("is_steam_tab"):
+            return
+
         # Debounce
         self._dialog_open = True
         QTimer.singleShot(500, lambda: setattr(self, "_dialog_open", False))
@@ -479,6 +483,10 @@ class LibraryActionsMixin:
 
         game_data = item.data(Qt.ItemDataRole.UserRole)
         if not game_data:
+            return
+
+        # Don't show context menu for Steam tab games
+        if getattr(self, "_active_tab", "") == "steam" or game_data.get("is_steam_tab"):
             return
 
         menu = QMenu(self)
