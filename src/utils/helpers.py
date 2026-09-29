@@ -543,6 +543,7 @@ DB_RELOCATED_FILES = {
     "steamdb_builds.db",
     "workshop_keys.txt",
     "games_cache.json",
+    "voices.json",
 }
 
 
