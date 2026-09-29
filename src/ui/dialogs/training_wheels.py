@@ -283,38 +283,6 @@ class TrainingWheelsDialog(QDialog):
         )
         layout.addWidget(sep2)
 
-        # ── Button 4: SLS Inheritance ────────────────────────────────────
-        row4 = QHBoxLayout()
-        lbl4 = QLabel("SLS Inheritance")
-        lbl4.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.85); font-weight: 500;")
-        row4.addWidget(lbl4)
-        row4.addStretch()
-
-        self.btn_sls_inheritance = QPushButton("Manage SLS Inheritance")
-        self.btn_sls_inheritance.setStyleSheet(f"""
-            QPushButton {{
-                background: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 6px;
-                padding: 5px 14px;
-                color: #e0e0e0;
-                font-size: 8.5pt;
-                font-weight: 600;
-            }}
-            QPushButton:hover {{
-                background: rgba(255, 255, 255, 0.15);
-                border-color: {self.accent_color};
-            }}
-        """)
-        self.btn_sls_inheritance.clicked.connect(self._open_sls_inheritance)
-        row4.addWidget(self.btn_sls_inheritance)
-        layout.addLayout(row4)
-
-        lbl_inh_status = QLabel("Manage orphan configs, external game installations, and library ownership mapping.")
-        lbl_inh_status.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8pt; margin-left: 2px;")
-        lbl_inh_status.setWordWrap(True)
-        layout.addWidget(lbl_inh_status)
-
         self._config_needs_repair = False
         self._config_issue_count = 0
 
@@ -438,14 +406,6 @@ class TrainingWheelsDialog(QDialog):
             self._style_status_btn(self.btn_sls_version, state="neutral", text="Not Installed")
         else:
             self._style_status_btn(self.btn_sls_version, state="neutral", text="Version Unknown")
-
-    def _open_sls_inheritance(self) -> None:
-        try:
-            from ui.dialogs.sls_inheritance import SlsInheritanceDialog
-            dlg = SlsInheritanceDialog(self)
-            dlg.exec()
-        except Exception as e:
-            logger.error(f"Error opening SLS Inheritance dialog: {e}", exc_info=True)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Config check & repair (online)

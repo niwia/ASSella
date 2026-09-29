@@ -542,6 +542,7 @@ DB_RELOCATED_FILES = {
     "steam_headers.db",
     "steamdb_builds.db",
     "workshop_keys.txt",
+    "games_cache.json",
 }
 
 

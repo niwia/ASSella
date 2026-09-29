@@ -1185,7 +1185,7 @@ def run_boot_config_check() -> None:
         issues = []
         try:
             raw_hpp = _fetch_url(TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
-            key_types = infer_key_types(raw_hpp)
+            key_types = infer_key_types(raw_hpp, config_path=config_path)
             template_yaml = extract_template_yaml(raw_hpp)
             if not template_yaml:
                 raise ValueError("Template syntax changed.")
@@ -1201,7 +1201,8 @@ def run_boot_config_check() -> None:
             new_keys = set(template_data) - set(old_data)
         except Exception as net_err:
             boot_issues = [f"[Network] Could not fetch template: {net_err}"]
-            issues = validate_config(config_path, {})
+            fallback_types = get_effective_plugin_keys(config_path)
+            issues = validate_config(config_path, fallback_types)
             if issues:
                 boot_status = "needs_fix"
                 boot_issues = issues[:]

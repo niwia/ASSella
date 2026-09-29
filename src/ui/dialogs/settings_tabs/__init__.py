@@ -14,7 +14,6 @@ from ui.dialogs.settings_tabs.health_tab import (
     on_rec_setting_toggled,
     update_rec_score_badge,
     apply_health_recommended_settings,
-    open_sls_inheritance_dialog,
     run_assfixer_check,
     handle_assfixer_check_done,
     run_assfixer_repair,
