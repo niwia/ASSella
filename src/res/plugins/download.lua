@@ -236,7 +236,18 @@ end)
 --
 -- Returns a uint64 MRC cdata on success, or nil on failure.
 -- The binary lives in a 'bin/' directory alongside this plugin file.
+--
+-- SAFETY NOTE: io.popen inside a Steam hook calls fork(). If Steam's process
+-- has LD_PRELOAD or LD_AUDIT set (common with 32-bit overlay/audit libs), the
+-- child process inherits them and immediately crashes/deadlocks because those
+-- 32-bit libs are not valid in the 64-bit curl child. We therefore prefix every
+-- command with 'env -u ...' to strip those variables before exec.
 Downloader.IMPERSONATE_BIN = nil  -- resolved lazily on first use
+
+-- Variables we must strip before exec'ing the curl child.
+-- LD_LIBRARY_PATH is included because Steam's 32-bit lib paths corrupt the
+-- dynamic linker for the 64-bit curl_chrome120 binary.
+local ENV_STRIP = "env -u LD_PRELOAD -u LD_AUDIT -u LD_LIBRARY_PATH "
 
 Downloader.resolveImpersonateBin = function()
 	if Downloader.IMPERSONATE_BIN ~= nil then
@@ -250,10 +261,11 @@ Downloader.resolveImpersonateBin = function()
 		return cfgPath
 	end
 
-	-- Default: bin/curl_chrome120 next to this plugin file
-	-- __FILE__ is not available in LuaJIT, so use the well-known SLS plugin dir
+	-- Default: bin/curl_chrome120 next to this plugin file.
+	-- __FILE__ is not available in LuaJIT, so use the well-known SLS plugin dir.
 	local candidate = os.getenv("HOME") .. "/.config/SLSsteam/plugins/bin/curl_chrome120"
-	-- Verify it exists and is executable using a quick test
+
+	-- Existence check via io.open — safe (no fork), cheap, and clear.
 	local f = io.open(candidate, "r")
 	if f then
 		f:close()
@@ -272,19 +284,30 @@ Downloader.getManifestRequestCodeViaImpersonate = function(manifestStr)
 		return nil
 	end
 
-	local cmd = bin .. " -4 --silent --max-time 6 "
+	-- Strip dangerous inherited env vars before forking, then run the binary.
+	-- The 'env -u' prefix is the safest portable way to do this from Lua since
+	-- we have no direct setenv/unsetenv from LuaJIT's ffi in this context.
+	local cmd = ENV_STRIP .. bin
+		.. " -4 --silent --max-time 6 "
 		.. "\"http://gmrc.wudrm.com/manifest/" .. manifestStr .. "\""
 
+	-- pcall: last-resort guard — if io.popen itself raises (e.g. EMFILE, or
+	-- the 'env' binary is missing), we return nil gracefully instead of crashing.
 	local ok, body = pcall(function()
 		local handle = io.popen(cmd)
-		if handle == nil then return nil end
+		if handle == nil then
+			return nil  -- popen returned nil without raising — treat as failure
+		end
 		local out = handle:read("*a")
 		handle:close()
 		return out
 	end)
 
 	if not ok or body == nil then
-		log.warn("impersonate fallback: io.popen failed for manifest " .. manifestStr)
+		-- Either pcall caught an error, or popen returned nil.
+		-- Fall back to the plain (non-bypass) path by returning nil.
+		log.warn("impersonate fallback: subprocess failed for manifest " .. manifestStr
+			.. (ok and " (nil handle)" or (" — " .. tostring(body))))
 		return nil
 	end
 
