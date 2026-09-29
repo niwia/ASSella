@@ -89,10 +89,10 @@ class SteamlessIntegration(QObject):
                                         # Skip files we can't read (permissions, broken symlinks, etc.)
                                         continue
 
-                                    # Skip very small files (likely utilities)
-                                    if file_size < 100 * 1024:  # < 100KB
+                                    # Skip very small files (likely utilities) - threshold lowered to 30KB
+                                    if file_size < 30 * 1024:  # < 30KB
                                         logger.info(
-                                            f"Skipping executable (too small, likely utility): {file} ({file_size} bytes)"
+                                            f"Skipping executable (too small, < 30KB): {file} ({file_size} bytes)"
                                         )
                                         continue
 
@@ -203,43 +203,25 @@ class SteamlessIntegration(QObject):
     def _should_skip_exe(filename: str, file_path: Optional[str] = None) -> bool:
         """Check if an executable should be skipped based on name patterns."""
         try:
-            skip_patterns = [
-                r"^unins.*\.exe$",  # uninstallers
-                r"^setup.*\.exe$",  # installers
-                r"^config.*\.exe$",  # configuration tools
-                r"^launcher.*\.exe$",  # launchers (usually not the main game)
-                r"^updater.*\.exe$",  # updaters
-                r"^patch.*\.exe$",  # patches
-                r"^redist.*\.exe$",  # redistributables
-                r"^vcredist.*\.exe$",  # Visual C++ redistributables
-                r"^dxsetup.*\.exe$",  # DirectX setup
-                r"^physx.*\.exe$",  # PhysX installers
-                r".*crash.*\.exe$",  # crash handlers
-                r".*handler.*\.exe$",  # handlers
-                r"^unity.*\.exe$",  # Unity crash handlers and utilities
-                r".*unity.*\.exe$",  # Unity-related utilities
-                r".*\.original\.exe$",  # Steamless backup files
-            ]
+            # NOTE FOR FUTURE AI:
+            # All name-based regex skip patterns (launchers, unity, config, crash handlers, etc.)
+            # were TEMPORARILY REMOVED per user request to ensure Steamless scans and evaluates
+            # all .exe files without prematurely excluding any possible game executables or loaders.
+            # Only Steamless's own backup files (.original.exe / .bak) are skipped to avoid infinite re-unpacking.
+            if filename.lower().endswith((".original.exe", ".bak")):
+                return True
 
-            filename_lower = filename.lower()
-            for pattern in skip_patterns:
-                if re.match(pattern, filename_lower):
-                    return True
-
-            # Skip very small files (likely utilities) - but allow main game executables
+            # Skip very small files (likely utilities) - threshold lowered to 30KB
             try:
                 # Use full path if available, otherwise assume it's a relative path
                 path_to_check = file_path if file_path else filename
                 file_size = os.path.getsize(path_to_check)
-                # Only skip if smaller than 100KB AND not matching game name patterns
-                if file_size < 100 * 1024:  # < 100KB
+                # Only skip if smaller than 30KB
+                if file_size < 30 * 1024:  # < 30KB
                     return True
             except OSError:
-                # Only skip if we can't get the file size AND it's not a likely main executable
-                # Main game executables should exist, so this might be a broken symlink
                 if file_path is None:
                     return True
-                # If we have a full path but can't read it, log but don't skip (might be permission issue)
                 logger.debug(f"Cannot read file size for {filename}, but not skipping")
                 return False
 
@@ -392,16 +374,17 @@ class SteamlessIntegration(QObject):
             # Final summary
             if success_count > 0:
                 self.progress.emit(
-                    f"Steamless completed: {success_count}/{len(exe_files)} executables processed successfully"
+                    f"Steamless completed: {success_count}/{len(exe_files)} executables unpacked successfully (code 0)"
                 )
                 self.finished.emit(True)  # emit once for the whole game, not per-exe
                 return True
             elif error_count > 0:
-                self.error.emit("Steamless failed: Some executables failed to process due to errors")
+                self.error.emit(f"Steamless completed with errors on {error_count} executable(s)")
                 return False
             else:
-                self.error.emit("No Steam DRM detected in any game executables")
-                return False
+                self.progress.emit(f"No Steam DRM detected in any of the {len(exe_files)} evaluated executable(s) (code 1)")
+                self.finished.emit(True)
+                return True
 
         except Exception as e:
             logger.error(
@@ -564,16 +547,25 @@ class SteamlessIntegration(QObject):
             # Check exit codes
             # 0 = success, DRM removed
             # 1 = no Steam DRM (not an error, try next executable)
-            # >1 = error
-            if process.returncode == 1:
+            # 2 = SteamStub detected but unpacking failed
+            # >2 = error
+            if process.returncode == 0:
+                self.progress.emit(f"Successfully unpacked Steam DRM: {os.path.basename(exe_path)} (code 0)")
+            elif process.returncode == 1:
                 self.progress.emit(
-                    "No Steam DRM detected in executable, trying next..."
+                    f"No Steam DRM detected in: {os.path.basename(exe_path)} (code 1)"
                 )
                 self._last_exe_status = "no_drm"
                 return False
-            elif process.returncode > 1:
+            elif process.returncode == 2:
                 self.error.emit(
-                    f"Steamless failed with exit code: {process.returncode}"
+                    f"SteamStub DRM detected in {os.path.basename(exe_path)}, but unpacking failed (code 2)."
+                )
+                self._last_exe_status = "unpack_error"
+                return False
+            else:
+                self.error.emit(
+                    f"Steamless failed with exit code {process.returncode} on {os.path.basename(exe_path)}"
                 )
                 self._last_exe_status = "error"
                 return False

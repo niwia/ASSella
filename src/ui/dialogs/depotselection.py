@@ -380,8 +380,8 @@ class DepotSelectionDialog(QDialog):
         self._missing_contents_checked_signal.connect(self._on_missing_contents_check_finished)
         self._missing_depots_updated_signal.connect(self._on_missing_depots_updated)
         self.setWindowTitle("Select Depots to Download")
-        self.depots = depots or {}
         self.app_id = app_id
+        self.depots = {k: v for k, v in (depots or {}).items() if str(k) != str(app_id)}
         self.game_name = game_name
         self.header_url = header_url
         self.selected_depots = selected_depots
@@ -705,9 +705,6 @@ class DepotSelectionDialog(QDialog):
         self._hidden_depots_expanded = False
         self._populate_table()
 
-        # Makes list widget update stylesheets for the items
-        QApplication.processEvents()
- 
         content_widget.addWidget(self.table_widget)
  
         self.table_widget.cellClicked.connect(self.on_depot_cell_clicked)
@@ -2452,32 +2449,51 @@ class DepotSelectionDialog(QDialog):
 
         def on_dump_finished(success, err):
             progress_dialog.close()
-            # Clean up temp keys file
-            if os.path.exists(keys_path):
-                try:
-                    os.remove(keys_path)
-                except OSError:
-                    pass
 
             if not success:
+                if os.path.exists(keys_path):
+                    try:
+                        os.remove(keys_path)
+                    except OSError:
+                        pass
                 QMessageBox.critical(self, "Error", f"Failed to load file list: {err}")
                 return
 
             txt_path = os.path.join(temp_dir, f"manifest_{target_depot}_{manifest_id}.txt")
             if not os.path.exists(txt_path):
+                if os.path.exists(keys_path):
+                    try:
+                        os.remove(keys_path)
+                    except OSError:
+                        pass
                 QMessageBox.critical(self, "Error", "Failed to locate generated file list text file.")
                 return
 
             # Open File Selection Tree Dialog
             from ui.dialogs.fileselection import FileSelectionDialog
-            sel_dialog = FileSelectionDialog(app_id, target_depot, txt_path, self)
-            if sel_dialog.exec():
-                self.selected_files = sel_dialog.selected_files
-                QMessageBox.information(
-                    self,
-                    "Selection Confirmed",
-                    f"Selected {len(self.selected_files)} file(s) for custom download.\nPress OK at the bottom to start installing."
-                )
+            sel_dialog = FileSelectionDialog(
+                app_id=app_id,
+                depot_id=target_depot,
+                manifest_txt_path=txt_path,
+                parent=self,
+                manifest_file=manifest_file,
+                keys_path=keys_path,
+                manifest_id=manifest_id,
+            )
+            try:
+                if sel_dialog.exec():
+                    self.selected_files = sel_dialog.selected_files
+                    QMessageBox.information(
+                        self,
+                        "Selection Confirmed",
+                        f"Selected {len(self.selected_files)} file(s) for custom download.\nPress OK at the bottom to start installing."
+                    )
+            finally:
+                if os.path.exists(keys_path):
+                    try:
+                        os.remove(keys_path)
+                    except OSError:
+                        pass
 
         self.dump_thread.finished_signal.connect(on_dump_finished)
         self.dump_thread.start()
@@ -2506,6 +2522,11 @@ class DepotSelectionDialog(QDialog):
                     QApplication.processEvents()
                     raw_bytes, g_err = morrenus_api.generate_single_manifest(r_did, r_mid)
                     if raw_bytes:
+                        try:
+                            from utils.manifest_resolver import sanitize_manifest_bytes
+                            raw_bytes = sanitize_manifest_bytes(raw_bytes)
+                        except Exception:
+                            pass
                         for s_dir in [Path(tempfile.gettempdir()) / "mistwalker_manifests", Path(get_base_path()) / "manifests"]:
                             try:
                                 s_dir.mkdir(parents=True, exist_ok=True)

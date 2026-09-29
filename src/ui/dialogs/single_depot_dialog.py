@@ -61,7 +61,7 @@ class SingleDepotSelectionDialog(QDialog):
 
         self.app_id = str(app_id)
         self.game_name = game_name or "Unknown Game"
-        self.depots = dict(depots or {})
+        self.depots = {str(k): v for k, v in (depots or {}).items() if str(k) != str(app_id)}
         self.header_url = header_url
         self.selected_files: List[str] = []
         self.show_storage = show_storage
@@ -730,13 +730,15 @@ class SingleDepotSelectionDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to extract manifest zip: {e}")
             return
 
-        # Fallback depot key lookup
+        # Extract key from LUA config or fallback to depot_keys.db
         depot_key = None
         lua_files = list(Path(temp_dir).glob("*.lua"))
         if lua_files:
             try:
                 content = lua_files[0].read_text(encoding="utf-8", errors="ignore")
-                m = re.search(rf'\["?{self.single_depot_id}"?\]\s*=\s*"(.*?)"', content)
+                m = re.search(r"addappid\(\s*" + re.escape(str(self.single_depot_id)) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)", content)
+                if not m:
+                    m = re.search(rf'\["?{self.single_depot_id}"?\]\s*=\s*"(.*?)"', content)
                 if m:
                     depot_key = m.group(1).strip()
             except Exception:
@@ -745,29 +747,124 @@ class SingleDepotSelectionDialog(QDialog):
         if not depot_key:
             try:
                 from managers.depot_key_manager import DepotKeyManager
-                depot_key = DepotKeyManager().get_key(self.single_depot_id)
+                cached = DepotKeyManager().get_depot_keys(app_id)
+                if str(self.single_depot_id) in cached:
+                    depot_key = cached[str(self.single_depot_id)]
+                else:
+                    depot_key = DepotKeyManager().get_key(self.single_depot_id)
             except Exception:
                 pass
 
-        manifest_candidates = list(Path(temp_dir).glob(f"{self.single_depot_id}_*.manifest"))
-        if not manifest_candidates:
-            QMessageBox.critical(self, "Error", f"No manifest file found for depot {self.single_depot_id}.")
+        if not depot_key:
+            QMessageBox.critical(self, "Error", f"Could not find depot key for depot {self.single_depot_id} in LUA config or local key database.")
             return
 
-        manifest_path = str(manifest_candidates[0])
-        from ui.dialogs.selective_downloader import SelectiveFileDownloaderDialog
-        dlg = SelectiveFileDownloaderDialog(
-            manifest_path=manifest_path,
-            depot_key=depot_key,
-            depot_id=self.single_depot_id,
-            parent=self
-        )
-        if dlg.exec():
-            self.selected_files = dlg.get_selected_files()
-            if self.selected_files:
-                self.select_files_button.setText(f"Select Files... ({len(self.selected_files)} files selected)")
-            else:
-                self.select_files_button.setText("Select Files...")
+        # Create depot keys file
+        keys_path = os.path.join(temp_dir, "depot.keys")
+        try:
+            with open(keys_path, "w") as kf:
+                kf.write(f"{self.single_depot_id};{depot_key}\n")
+        except OSError as e:
+            QMessageBox.critical(self, "Error", f"Failed to write keys file: {e}")
+            return
+
+        manifest_candidates = list(Path(temp_dir).glob(f"{self.single_depot_id}_*.manifest"))
+        if not manifest_candidates:
+            manifest_candidates = list(Path(temp_dir).glob("*.manifest"))
+
+        if not manifest_candidates:
+            QMessageBox.critical(self, "Error", f"No manifest file (*.manifest) found for depot {self.single_depot_id} in the extracted manifest bundle.")
+            return
+
+        manifest_path = manifest_candidates[0]
+        manifest_file = str(manifest_path)
+        stem = manifest_path.name.replace(".manifest", "")
+        manifest_id = stem.split("_", 1)[1] if "_" in stem else stem
+
+        # Dump manifest files using DDM in background progress
+        from PyQt6.QtWidgets import QProgressDialog
+        from PyQt6.QtCore import QThread
+        import subprocess
+        progress_dialog = QProgressDialog("Loading file list from manifest...", "Cancel", 0, 0, self)
+        progress_dialog.setWindowTitle("Loading Manifest")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.show()
+
+        from utils.helpers import get_dotnet_path, resource_path
+        dotnet_path = get_dotnet_path()
+        dll_path = resource_path(os.path.join("deps", "DepotDownloader.dll"))
+
+        cmd = [
+            dotnet_path,
+            dll_path,
+            "-app", str(app_id),
+            "-depot", str(self.single_depot_id),
+            "-manifest", str(manifest_id),
+            "-manifestfile", manifest_file,
+            "-depotkeys", keys_path,
+            "-manifest-only",
+            "-dir", temp_dir
+        ]
+
+        class DumpThread(QThread):
+            finished_signal = pyqtSignal(bool, str)
+            def run(self):
+                try:
+                    subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    self.finished_signal.emit(True, "")
+                except Exception as ex:
+                    self.finished_signal.emit(False, str(ex))
+
+        self.dump_thread = DumpThread()
+
+        def on_dump_finished(success, err):
+            progress_dialog.close()
+
+            if not success:
+                if os.path.exists(keys_path):
+                    try:
+                        os.remove(keys_path)
+                    except OSError:
+                        pass
+                QMessageBox.critical(self, "Error", f"Failed to load file list: {err}")
+                return
+
+            txt_path = os.path.join(temp_dir, f"manifest_{self.single_depot_id}_{manifest_id}.txt")
+            if not os.path.exists(txt_path):
+                if os.path.exists(keys_path):
+                    try:
+                        os.remove(keys_path)
+                    except OSError:
+                        pass
+                QMessageBox.critical(self, "Error", "Failed to locate generated file list text file.")
+                return
+
+            from ui.dialogs.fileselection import FileSelectionDialog
+            sel_dialog = FileSelectionDialog(
+                app_id=app_id,
+                depot_id=self.single_depot_id,
+                manifest_txt_path=txt_path,
+                parent=self,
+                manifest_file=manifest_file,
+                keys_path=keys_path,
+                manifest_id=manifest_id,
+            )
+            try:
+                if sel_dialog.exec():
+                    self.selected_files = sel_dialog.selected_files
+                    if self.selected_files:
+                        self.select_files_button.setText(f"Select Files... ({len(self.selected_files)} files selected)")
+                    else:
+                        self.select_files_button.setText("Select Files...")
+            finally:
+                if os.path.exists(keys_path):
+                    try:
+                        os.remove(keys_path)
+                    except OSError:
+                        pass
+
+        self.dump_thread.finished_signal.connect(on_dump_finished)
+        self.dump_thread.start()
 
     def _start_enrichment_async(self):
         from utils.task_runner import TaskRunner
