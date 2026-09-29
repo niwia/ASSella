@@ -4,7 +4,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from utils.settings import get_settings
 
@@ -273,6 +273,25 @@ def ensure_slssteam_prerequisites(config_path: Optional[Path] = None) -> bool:
 
     return changed
 
+
+def ensure_plugins_enabled(config_path: Optional[Path] = None) -> bool:
+    """Ensure 'Plugins: yes' is present and enabled in SLSsteam config.yaml.
+
+    If missing or disabled ('no', 'false'), imposes 'Plugins: yes'.
+    Creates a backup if modification is needed and writes atomically.
+    """
+    if config_path is None:
+        config_path = get_user_config_path()
+
+    if not config_path.exists():
+        logger.debug(f"ensure_plugins_enabled: Config not found at {config_path}")
+        return False
+
+    if not is_slssteam_config_management_enabled():
+        logger.debug("ensure_plugins_enabled: SLS config management disabled in settings")
+        return False
+
+    return update_yaml_boolean_value(config_path, "Plugins", True)
 
 
 def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
@@ -705,6 +724,301 @@ def get_additional_apps(config_path: Path) -> List[str]:
         if m:
             results.append(m.group(1))
     return results
+
+
+def get_additional_depots(config_path: Path) -> List[str]:
+    """Get list of DepotIDs currently in AdditionalDepots section."""
+    content = _read_config_content(config_path)
+    if not content:
+        return []
+    bounds = _get_section_bounds(content, "AdditionalDepots")
+    if not bounds:
+        return []
+    _, content_start, section_end = bounds
+    sec = content[content_start:section_end]
+    results = []
+    for line in sec.splitlines():
+        m = re.match(r"^[ \t]*-[ \t]*([0-9]+)", line)
+        if m:
+            results.append(m.group(1))
+    return results
+
+
+def is_depot_shared_with_other_games(
+    depot_id: Union[str, int], excluding_appid: Optional[Union[str, int]] = None
+) -> bool:
+    """Check if a depot ID is shared with other installed/registered games or is a common redistributable.
+
+    Returns True if:
+      1. It is a known Steam common redistributable depot (Steamworks Shared, DirectX, VC++, etc.).
+      2. It is referenced by any other registered game in plugin_library.json.
+      3. It is listed under InstalledDepots in any other game's appmanifest_*.acf on disk.
+    """
+    depot_id_str = str(depot_id).strip()
+    if not depot_id_str:
+        return False
+
+    # 1. Known redistributables / shared runtime depots
+    try:
+        from ui.assets import DEPOT_BLACKLIST
+        shared_known = {str(d) for d in DEPOT_BLACKLIST} | {
+            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
+            "228986", "228987", "228988", "228989", "229000", "229001",
+            "229002", "229003", "229004", "229005", "229006", "229007", "229010",
+            "229011", "229012", "229020", "229030", "229031", "229032"
+        }
+    except Exception:
+        shared_known = {
+            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
+            "228986", "228987", "228988", "228989", "228990"
+        }
+
+    if depot_id_str in shared_known:
+        logger.debug(f"[SharedDepotCheck] Depot {depot_id_str} is a known common redistributable.")
+        return True
+
+    ex_aid_str = str(excluding_appid).strip() if excluding_appid is not None else None
+
+    # 2. Check plugin_library.json (if present)
+    try:
+        from utils.plugin_games import load_plugin_library
+        lib = load_plugin_library()
+        for aid, g in lib.items():
+            if ex_aid_str and str(aid) == ex_aid_str:
+                continue
+            for did in g.get("depots", []):
+                if str(did) == depot_id_str:
+                    logger.debug(
+                        f"[SharedDepotCheck] Depot {depot_id_str} is used by registered game "
+                        f"'{g.get('name')}' ({aid})"
+                    )
+                    return True
+            for kid in g.get("keys", {}).keys():
+                if str(kid) == depot_id_str:
+                    logger.debug(
+                        f"[SharedDepotCheck] Depot {depot_id_str} key is used by registered game "
+                        f"'{g.get('name')}' ({aid})"
+                    )
+                    return True
+    except Exception as e:
+        logger.debug(f"[SharedDepotCheck] Error checking plugin library: {e}")
+
+    # 3. Check Steam library ACF manifests
+    try:
+        from core.steam_helpers import get_steam_env
+        env = get_steam_env()
+        steamapps_dirs = getattr(env, "steamapps_paths", [])
+        for sdir in steamapps_dirs:
+            sdir_path = Path(sdir)
+            if not sdir_path.is_dir():
+                continue
+            for acf in sdir_path.glob("appmanifest_*.acf"):
+                if ex_aid_str and acf.name == f"appmanifest_{ex_aid_str}.acf":
+                    continue
+                try:
+                    txt = acf.read_text(encoding="utf-8", errors="ignore")
+                    m = re.search(r'"InstalledDepots"\s*\{([^}]*)\}', txt, re.DOTALL)
+                    if m and f'"{depot_id_str}"' in m.group(1):
+                        logger.debug(
+                            f"[SharedDepotCheck] Depot {depot_id_str} found in InstalledDepots of {acf.name}"
+                        )
+                        return True
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.debug(f"[SharedDepotCheck] Error checking Steam ACF manifests: {e}")
+
+    return False
+
+
+def add_additional_depot(config_path: Path, depot_id: str, comment: str = "") -> bool:
+    """Add a DepotID to the AdditionalDepots list in SLSsteam config.yaml."""
+    try:
+        ensure_plugins_enabled(config_path)
+        content = _read_config_content(config_path)
+        if content is None:
+            return False
+
+        depot_id_str = str(depot_id).strip()
+        bounds = _get_section_bounds(content, "AdditionalDepots")
+        depot_pattern = re.compile(
+            rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+
+        comment_suffix = f" # {comment.strip()}" if comment and comment.strip() else ""
+        entry_line = f"  - {depot_id_str}{comment_suffix}\n"
+
+        if bounds:
+            _, content_start, section_end = bounds
+            sec_content = content[content_start:section_end]
+            m = depot_pattern.search(sec_content)
+            if m:
+                if comment and comment.strip():
+                    abs_start = content_start + m.start()
+                    abs_end = content_start + m.end()
+                    new_content = content[:abs_start] + f"  - {depot_id_str}{comment_suffix}" + content[abs_end:]
+                    if _atomic_write(config_path, new_content):
+                        logger.info(f"Updated comment for DepotID '{depot_id_str}' in AdditionalDepots")
+                        return True
+                return False
+
+            insert_pos = section_end
+            if insert_pos > 0 and content[insert_pos - 1] != "\n":
+                entry_line = "\n" + entry_line
+            new_content = content[:insert_pos] + entry_line + content[insert_pos:]
+        else:
+            new_content = content.rstrip() + f"\n\nAdditionalDepots:\n{entry_line}"
+
+        if not _atomic_write(config_path, new_content):
+            return False
+
+        logger.info(f"Added DepotID '{depot_id_str}' to AdditionalDepots in {config_path}")
+        return True
+    except OSError as e:
+        logger.error(f"Failed to add DepotID '{depot_id}': {e}", exc_info=True)
+        return False
+
+
+def remove_additional_depot(
+    config_path: Path,
+    depot_id: str,
+    check_shared: bool = True,
+    excluding_appid: Optional[Union[str, int]] = None,
+) -> bool:
+    """Remove a DepotID from the AdditionalDepots list in SLSsteam config.yaml.
+    If check_shared is True, skips removal if the depot is shared with another game or is a common redistributable.
+    """
+    ensure_plugins_enabled(config_path)
+    depot_id_str = str(depot_id).strip()
+    if check_shared and is_depot_shared_with_other_games(depot_id_str, excluding_appid=excluding_appid):
+        logger.info(
+            f"Preserving shared depot '{depot_id_str}' in AdditionalDepots "
+            f"(used by other games or redistributable)"
+        )
+        return False
+
+    depot_pattern = re.compile(
+        rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}[ \t]*(?:#[^\r\n]*)?$",
+        re.MULTILINE,
+    )
+    return _remove_entry_from_section(
+        config_path,
+        "AdditionalDepots",
+        depot_pattern,
+        f"Removed DepotID '{depot_id_str}' from AdditionalDepots in {config_path}",
+        f"Failed to remove DepotID '{depot_id_str}': {{e}}",
+    )
+
+
+def get_decryption_keys(config_path: Path) -> Dict[str, str]:
+    """Get mapping of {depot_id: key} currently in DecryptionKeys section."""
+    content = _read_config_content(config_path)
+    if not content:
+        return {}
+    bounds = _get_section_bounds(content, "DecryptionKeys")
+    if not bounds:
+        return {}
+    _, content_start, section_end = bounds
+    sec = content[content_start:section_end]
+    results = {}
+    key_pattern = re.compile(
+        r"^[ \t]*['\"]?([0-9]+)['\"]?[ \t]*:[ \t]*['\"]?([a-fA-F0-9]{64})['\"]?",
+        re.MULTILINE,
+    )
+    for m in key_pattern.finditer(sec):
+        results[m.group(1)] = m.group(2)
+    return results
+
+
+def add_decryption_key(config_path: Path, depot_id: str, key: str, comment: str = "") -> bool:
+    """Add or update a depot AES decryption key in DecryptionKeys section in SLSsteam config.yaml."""
+    try:
+        ensure_plugins_enabled(config_path)
+        content = _read_config_content(config_path)
+        if content is None:
+            return False
+
+        depot_id_str = str(depot_id).strip()
+        key_str = str(key).strip().lower()
+        if len(key_str) != 64:
+            logger.warning(f"Invalid AES key length ({len(key_str)}) for depot {depot_id_str}")
+            return False
+
+        bounds = _get_section_bounds(content, "DecryptionKeys")
+        comment_suffix = f" # {comment.strip()}" if comment and comment.strip() else ""
+        new_key_line = f"  {depot_id_str}: {key_str}{comment_suffix}\n"
+
+        if not bounds:
+            new_content = content.rstrip() + f"\n\nDecryptionKeys:\n{new_key_line}"
+            if _atomic_write(config_path, new_content):
+                logger.info(f"Added DecryptionKey for depot '{depot_id_str}' in new DecryptionKeys section")
+                return True
+            return False
+
+        _, content_start, section_end = bounds
+        sec_content = content[content_start:section_end]
+
+        dup_pattern = re.compile(
+            rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        match = dup_pattern.search(sec_content)
+        if match:
+            # Preserve existing comment if new comment was not explicitly passed
+            if not comment:
+                m_existing = re.search(r"#[ \t]*(.*)$", match.group(0))
+                if m_existing:
+                    comment_suffix = f" # {m_existing.group(1).strip()}"
+
+            abs_start = content_start + match.start()
+            abs_end = content_start + match.end()
+            new_content = content[:abs_start] + f"  {depot_id_str}: {key_str}{comment_suffix}" + content[abs_end:]
+        else:
+            insert_pos = section_end
+            if insert_pos > 0 and content[insert_pos - 1] != "\n":
+                new_key_line = "\n" + new_key_line
+            new_content = content[:insert_pos] + new_key_line + content[insert_pos:]
+
+        if not _atomic_write(config_path, new_content):
+            return False
+
+        logger.info(f"Saved DecryptionKey for depot '{depot_id_str}' in {config_path}")
+        return True
+    except OSError as e:
+        logger.error(f"Failed to add DecryptionKey for depot '{depot_id}': {e}", exc_info=True)
+        return False
+
+
+def remove_decryption_key(
+    config_path: Path,
+    depot_id: str,
+    check_shared: bool = True,
+    excluding_appid: Optional[Union[str, int]] = None,
+) -> bool:
+    """Remove a depot key from DecryptionKeys section in SLSsteam config.yaml.
+    If check_shared is True, skips removal if the depot is shared with another game or is a common redistributable.
+    """
+    ensure_plugins_enabled(config_path)
+    depot_id_str = str(depot_id).strip()
+    if check_shared and is_depot_shared_with_other_games(depot_id_str, excluding_appid=excluding_appid):
+        logger.info(
+            f"Preserving shared decryption key for depot '{depot_id_str}' "
+            f"(used by other games or redistributable)"
+        )
+        return False
+
+    pattern = re.compile(
+        rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n]+$",
+        re.MULTILINE,
+    )
+    return _remove_entry_from_section(
+        config_path,
+        "DecryptionKeys",
+        pattern,
+        f"Removed DecryptionKey for depot '{depot_id_str}' in {config_path}",
+        f"Failed to remove DecryptionKey for depot '{depot_id_str}': {{e}}",
+    )
 
 
 def add_dlc_data(
