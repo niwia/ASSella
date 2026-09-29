@@ -154,6 +154,13 @@ def deploy_bundled_plugins(plugins_dir: Path) -> bool:
                     continue
             except OSError:
                 pass
+            if dest.is_file():
+                bak_dest = plugins_dir / f"{name}.bak"
+                try:
+                    shutil.copy2(dest, bak_dest)
+                    logger.info(f"[SteamHandoff] Backed up old {name} to {bak_dest}")
+                except Exception as bak_err:
+                    logger.warning(f"[SteamHandoff] Could not back up {dest} to {bak_dest}: {bak_err}")
             shutil.copy2(src, dest)
             logger.info(f"[SteamHandoff] Deployed plugin: {name}")
             if name == "download.lua":

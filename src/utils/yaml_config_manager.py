@@ -462,6 +462,16 @@ def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
                 if dst_hash == src_hash:
                     logger.debug(f"Plugin {plugin_filename} at {dst_file} has matching hash {src_hash[:8]}, skipping.")
                     continue
+                # Hash mismatch: back up old plugin as .bak before injecting updated version
+                bak_file = tdir / f"{plugin_filename}.bak"
+                try:
+                    shutil.copy2(dst_file, bak_file)
+                    logger.info(
+                        f"Existing {plugin_filename} hash mismatch ({dst_hash[:8]} != {src_hash[:8]}). "
+                        f"Backed up old version to {bak_file}"
+                    )
+                except Exception as bak_err:
+                    logger.warning(f"Could not back up existing {plugin_filename} to {bak_file}: {bak_err}")
 
             all_matched = False
             shutil.copy2(src_path, dst_file)
@@ -519,6 +529,56 @@ def are_sls_plugins_deployed() -> bool:
         return False
     primary = target_dirs[0]
     return all((primary / p).is_file() for p in plugins)
+
+
+def is_slssteam_plugins_enabled() -> bool:
+    """Check if the user has enabled SLSsteam plugins in ASSella or in config.yaml.
+
+    Returns:
+        bool: True if plugins are enabled in settings or config.yaml.
+    """
+    settings = get_settings()
+
+    # 1. Check ASSella explicit user settings (enable_vapor / enable_at0m)
+    vapor_val = settings.value("enable_vapor", None)
+    if vapor_val is not None:
+        return settings.value("enable_vapor", type=bool)
+
+    at0m_val = settings.value("enable_at0m", None)
+    if at0m_val is not None:
+        return settings.value("enable_at0m", type=bool)
+
+    # 2. Check config.yaml Plugins key
+    cfg_path = get_user_config_path()
+    if cfg_path.exists():
+        return get_yaml_boolean_value(cfg_path, "Plugins", default=False)
+
+    return False
+
+
+def sync_plugins_on_startup() -> bool:
+    """Check and update SLSsteam plugins on ASSella startup if enabled by the user.
+
+    Uses SHA-256 hash matching:
+    - If a plugin (such as download.lua) exists in the user's SLSsteam plugins directory
+      and its SHA-256 differs from the bundled version in ASSella, the old version is
+      backed up as `<plugin>.bak` (e.g. download.lua.bak) and the updated version is injected.
+    - If the plugin is missing, it is injected.
+    - Also ensures companion binaries (bin/curl_chrome120) are deployed and executable (+x).
+    - If plugins are not enabled by the user, no actions are performed.
+
+    Returns:
+        bool: True if sync completed successfully or was skipped because plugins are disabled.
+    """
+    if not is_slssteam_plugins_enabled():
+        logger.debug("sync_plugins_on_startup: Plugins are not enabled by user; skipping check.")
+        return True
+
+    logger.info("sync_plugins_on_startup: Plugins are enabled. Checking plugin SHA-256 checksums...")
+    overall_ok, results = deploy_all_sls_plugins()
+    for res in results:
+        logger.info(f"[PluginSync] {res}")
+    return overall_ok
 
 
 

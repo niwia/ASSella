@@ -1395,6 +1395,13 @@ class MainWindow(QMainWindow):
             run_boot_update_check()
             run_boot_config_check()
 
+            # Ensure SLSsteam plugins (download.lua, etc.) are up to date with .bak preservation
+            try:
+                from utils.yaml_config_manager import sync_plugins_on_startup
+                sync_plugins_on_startup()
+            except Exception as e:
+                logger.debug(f"Plugin sync boot check skipped/failed: {e}")
+
             # Queue ProtonDB prefetch for all installed games, just before Denuvo sync.
             # This runs in background (worker threads) so it never blocks startup.
             try:

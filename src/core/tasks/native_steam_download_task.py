@@ -518,6 +518,19 @@ class NativeSteamDownloadTask(QObject):
             logger.info("[NativeSteamDL] Deploying plugins from local bundled files")
             for name, src_path in bundled.items():
                 dest = plugins_dir / name
+                try:
+                    if dest.exists() and dest.read_bytes() == src_path.read_bytes():
+                        logger.debug(f"[NativeSteamDL] Plugin already up to date: {name}")
+                        continue
+                except OSError:
+                    pass
+                if dest.is_file():
+                    bak_dest = plugins_dir / f"{name}.bak"
+                    try:
+                        shutil.copy2(dest, bak_dest)
+                        logger.info(f"[NativeSteamDL] Backed up old {name} to {bak_dest}")
+                    except Exception as bak_err:
+                        logger.warning(f"[NativeSteamDL] Could not back up {dest} to {bak_dest}: {bak_err}")
                 shutil.copy2(src_path, dest)
                 self._deployed_plugins.append(dest)
                 deployed_any = True
