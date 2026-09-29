@@ -41,7 +41,6 @@ ffi.cdef[[
 	void Plat_Free(void*);
 
 	void* place_lua_hook(const int, const void*);
-	unsigned int sleep(unsigned int seconds);
 
 	typedef struct
 	{
@@ -229,214 +228,57 @@ Downloader.hkGetBinary = ffi.cast("GetBinary_t", function(pConfigStore, store, p
 	return Downloader.mutexReturn(#bytes, mutex)
 end)
 
--- getManifestRequestCodeViaImpersonate
--- Fallback: one attempt using the bundled curl_chrome120 binary which sends a
--- real Chrome 120 TLS Client Hello. This bypasses Cloudflare's TLS fingerprint
--- filter that blocks plain libcurl requests and causes 503 responses.
---
--- Returns a uint64 MRC cdata on success, or nil on failure.
--- The binary lives in a 'bin/' directory alongside this plugin file.
---
--- SAFETY NOTE: io.popen inside a Steam hook calls fork(). If Steam's process
--- has LD_PRELOAD or LD_AUDIT set (common with 32-bit overlay/audit libs), the
--- child process inherits them and immediately crashes/deadlocks because those
--- 32-bit libs are not valid in the 64-bit curl child. We therefore prefix every
--- command with 'env -u ...' to strip those variables before exec.
-Downloader.IMPERSONATE_BIN = nil  -- resolved lazily on first use
-
--- Variables we must strip before exec'ing the curl child.
--- LD_LIBRARY_PATH is included because Steam's 32-bit lib paths corrupt the
--- dynamic linker for the 64-bit curl_chrome120 binary.
-local ENV_STRIP = "env -u LD_PRELOAD -u LD_AUDIT -u LD_LIBRARY_PATH "
-
-Downloader.resolveImpersonateBin = function()
-	if Downloader.IMPERSONATE_BIN ~= nil then
-		return Downloader.IMPERSONATE_BIN
-	end
-
-	-- Check config for an override path first
-	local cfgPath = SLS.config:getString("ImpersonateBin")
-	if cfgPath and #cfgPath > 0 then
-		Downloader.IMPERSONATE_BIN = cfgPath
-		return cfgPath
-	end
-
-	-- Default: bin/curl_chrome120 next to this plugin file.
-	-- __FILE__ is not available in LuaJIT, so use the well-known SLS plugin dir.
-	local candidate = os.getenv("HOME") .. "/.config/SLSsteam/plugins/bin/curl_chrome120"
-
-	-- Existence check via io.open — safe (no fork), cheap, and clear.
-	local f = io.open(candidate, "r")
-	if f then
-		f:close()
-		Downloader.IMPERSONATE_BIN = candidate
-		return candidate
-	end
-
-	log.warn("curl_chrome120 not found at " .. candidate .. " — impersonate fallback disabled")
-	Downloader.IMPERSONATE_BIN = ""  -- mark as checked, don't retry
-	return nil
-end
-
-Downloader.getManifestRequestCodeViaImpersonate = function(manifestStr)
-	local bin = Downloader.resolveImpersonateBin()
-	if bin == nil or bin == "" then
-		return nil
-	end
-
-	-- Strip dangerous inherited env vars before forking, then run the binary.
-	-- The 'env -u' prefix is the safest portable way to do this from Lua since
-	-- we have no direct setenv/unsetenv from LuaJIT's ffi in this context.
-	local cmd = ENV_STRIP .. bin
-		.. " -4 --silent --max-time 6 "
-		.. "\"http://gmrc.wudrm.com/manifest/" .. manifestStr .. "\""
-
-	-- pcall: last-resort guard — if io.popen itself raises (e.g. EMFILE, or
-	-- the 'env' binary is missing), we return nil gracefully instead of crashing.
-	local ok, body = pcall(function()
-		local handle = io.popen(cmd)
-		if handle == nil then
-			return nil  -- popen returned nil without raising — treat as failure
-		end
-		local out = handle:read("*a")
-		handle:close()
-		return out
-	end)
-
-	if not ok or body == nil then
-		-- Either pcall caught an error, or popen returned nil.
-		-- Fall back to the plain (non-bypass) path by returning nil.
-		log.warn("impersonate fallback: subprocess failed for manifest " .. manifestStr
-			.. (ok and " (nil handle)" or (" — " .. tostring(body))))
-		return nil
-	end
-
-	local trimmed = body:match("^%s*(.-)%s*$")
-	local mrcNum = tonumber(trimmed)
-	if mrcNum ~= nil and mrcNum > 0 then
-		local mrc = ffi.C.strtoull(trimmed, ffi.cast("char*", 0), 10)
-		log.debug("impersonate fallback: got MRC for manifest " .. manifestStr)
-		return mrc
-	end
-
-	log.warn("impersonate fallback: non-numeric response for manifest " .. manifestStr
-		.. ": " .. (trimmed:sub(1, 60)))
-	return nil
-end
-
 -- GetManifestRequestCode
--- Returns the MRC uint64 on success, or nil if all attempts exhausted.
--- Uses iterative retries with exponential backoff to avoid blocking Steam
--- inside a mutex for multiple seconds (the old recursive approach could
--- hold the lock for up to MAX_MANIFEST_TRIES * sleep_time seconds).
---
--- Per-attempt flow:
---   1. Try curl.downloadString (fast path, plain libcurl)
---   2. If body is non-numeric (Cloudflare 503 etc), try curl_chrome120 once
---      as a fallback (Chrome TLS fingerprint bypasses CF filtering)
---   3. If fallback also fails, sleep + continue to next attempt as normal
--- If all attempts are exhausted, return nil → Steam fails cleanly.
-Downloader.getManifestRequestCode = function(manifestId)
+Downloader.getManifestRequestCode = function(manifestId, try)
+	if try > Downloader.MAX_MANIFEST_TRIES then
+		return nil
+	end
+
 	local manifestCStr = ffi.new("char[?]", Downloader.MAX_MANIFEST_STRING_SIZE)
 	ffi.C.snprintf(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE, "%llu", manifestId)
-	local manifestStr = ffi.string(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE)
 
-	local url = "http://gmrc.wudrm.com/manifest/" .. manifestStr
-
-	local BASE_SLEEP = 1   -- seconds between retries
-	local MAX_SLEEP  = 8   -- cap backoff at 8 seconds
-
-	for attempt = 1, Downloader.MAX_MANIFEST_TRIES do
-		local codeStr = tostring(curl.downloadString(url, 5))
-
-		if #codeStr < 1 then
-			-- Empty response — network error or timeout
-			log.warn("MRC fetch attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES
-				.. " returned empty body for manifest " .. manifestStr
-				.. " — trying impersonate fallback")
-
-			local mrc = Downloader.getManifestRequestCodeViaImpersonate(manifestStr)
-			if mrc ~= nil then
-				return mrc
-			end
-		else
-			local mrcNum = tonumber(codeStr)
-
-			-- Sanity check: a valid MRC is a large non-zero uint64
-			if mrcNum ~= nil and mrcNum > 0 then
-				-- We don't use tonumber for the final value because of precision loss
-				local mrc = ffi.C.strtoull(codeStr, ffi.cast("char*", 0), 10)
-				log.debug("Got MRC for manifest " .. manifestStr .. " on attempt " .. attempt)
-				return mrc
-			end
-
-			-- Non-numeric body — likely an HTTP error page (503, 403, etc.)
-			local errSummary = codeStr:match("<title>(.-)</title>")
-				or (codeStr:len() > 60 and codeStr:sub(1, 60) .. "..." or codeStr)
-
-			-- Detect server-side errors (5xx)
-			local is5xx = codeStr:find("503") ~= nil
-				or codeStr:find("Service Unavailable") ~= nil
-				or codeStr:find("502") ~= nil
-				or codeStr:find("500") ~= nil
-
-			if is5xx then
-				log.warn("MRC blocked/down (" .. errSummary .. ") for manifest "
-					.. manifestStr .. " — attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES
-					.. ", trying impersonate fallback")
-			else
-				log.warn("Invalid MRC response (" .. errSummary .. ") for manifest "
-					.. manifestStr .. " — attempt " .. attempt .. "/" .. Downloader.MAX_MANIFEST_TRIES
-					.. ", trying impersonate fallback")
-			end
-
-			-- Try Chrome TLS impersonation fallback before sleeping
-			local mrc = Downloader.getManifestRequestCodeViaImpersonate(manifestStr)
-			if mrc ~= nil then
-				return mrc
-			end
-		end
-
-		if attempt < Downloader.MAX_MANIFEST_TRIES then
-			-- Exponential backoff: 1s, 2s, 4s, 8s (capped)
-			local sleepTime = math.min(BASE_SLEEP * (2 ^ (attempt - 1)), MAX_SLEEP)
-			ffi.C.sleep(sleepTime)
-		end
+	-- local url = "https://manifest.opensteamtool.com/" .. tostring(ffi.string(manifestCStr, MAX_MANIFEST_STRING_SIZE))
+	-- local headers = { "User-Agent: OpenSteamTool/1.0" }
+	-- local codeStr = tostring(curl.downloadString(url, headers, 5))
+	local url = "http://gmrc.wudrm.com/manifest/" .. tostring(ffi.string(manifestCStr, Downloader.MAX_MANIFEST_STRING_SIZE))
+	local codeStr = tostring(curl.downloadString(url, 5))
+	if #codeStr < 1 then
+		log.warn("Failed to download manifest request code for " .. manifestId)
 	end
 
-	-- All attempts (plain + impersonate) failed
-	log.error("MRC fetch exhausted " .. Downloader.MAX_MANIFEST_TRIES
-		.. " attempts (plain + impersonate fallback) for manifest " .. manifestStr
-		.. " (wudrm may be offline)")
-	return nil
+	-- log.debug("Downloaded MRC string " .. codeStr)
+
+	if tonumber(codeStr) == nil then
+		log.error("Invalid MRC response " .. codeStr)
+		return Downloader.getManifestRequestCode(manifestId, try + 1)
+	end
+
+	-- We don't use tonumber because of precision loss
+	local mrcCStr = ffi.new("char[?]", #codeStr + 1)
+	ffi.copy(mrcCStr, codeStr)
+
+	local mrc = ffi.C.strtoull(codeStr, ffi.cast("char*", 0), 10)
+	return mrc
 end
 
 Downloader.hkGetMRC = ffi.cast("GetMRC_t", function(a1, appId, depotId, manifestId, pChBranch, pOutMRC)
 	local mutex = LuaMutex()
 	local success = Downloader.getMRCTramp(a1, appId, depotId, manifestId, pChBranch, pOutMRC)
 
-	-- Native Steam already produced an MRC — nothing to do
+	-- Don't rely on success. Check wheter MRC has been written
 	if pOutMRC[0] ~= ffi.cast("uint64_t", 0) then
 		return Downloader.mutexReturn(success, mutex)
 	end
 
-	local code = Downloader.getManifestRequestCode(manifestId)
+	local code = Downloader.getManifestRequestCode(manifestId, 1)
 	if code == nil then
-		-- wudrm is offline/unreachable and all retries are exhausted.
-		-- Return false (the native Steam result) so Steam fails cleanly.
-		-- A silent "success" with pOutMRC=0 would be worse for updates — Steam
-		-- could proceed with a stale depotcache manifest and appear to succeed
-		-- while the game stays on the old version.
-		-- The honest failure here lets ASSella's VaporWatcher time out and keep
-		-- the game as update_available so the user can retry when wudrm is back.
-		log.error("MRC unavailable for depot " .. depotId
-			.. " — wudrm offline, failing so Steam aborts cleanly")
+		log.error("Failed to get MRC for " .. depotId)
 		return Downloader.mutexReturn(success, mutex)
 	end
 
 	local codeCStr = ffi.new("char[?]", Downloader.MAX_MANIFEST_STRING_SIZE)
 	ffi.C.snprintf(codeCStr, Downloader.MAX_MANIFEST_STRING_SIZE, "%llu", code)
-	log.debug("Using MRC " .. tostring(ffi.string(codeCStr)) .. " for depot " .. depotId)
+	log.debug("Using MRC " .. tostring(ffi.string(codeCStr) .. " for " .. depotId))
 
 	pOutMRC[0] = code
 
