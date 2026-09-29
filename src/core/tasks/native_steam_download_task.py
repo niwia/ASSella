@@ -263,6 +263,51 @@ class NativeSteamDownloadTask(QObject):
         if success and self._is_running:
             self.progress.emit(f"[Native Steam] Download complete: {game_name}")
             self._cleanup_success(config_path, plugins_dir)
+
+            # Register into plugin_library so AT0-M tracks it
+            try:
+                from utils.plugin_games import register_plugin_game
+                from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
+
+                depot_names: Dict[str, str] = {}
+                depots_meta = (game_data.get("depots") or {}) if game_data else {}
+                for did in depot_keys.keys():
+                    did_str = str(did)
+                    meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
+                    if isinstance(meta, dict) and meta.get("desc"):
+                        depot_names[did_str] = meta["desc"]
+
+                is_dlc = is_dlc_only_mode(appid) or bool(game_data and game_data.get("is_dlc_only"))
+                dlc_appids: List[str] = []
+                if is_dlc:
+                    try:
+                        d_info = get_dlc_only_info(appid)
+                        if d_info:
+                            dlc_appids = [str(x["dlc_appid"]) for x in d_info if x.get("dlc_appid")]
+                    except Exception:
+                        pass
+                    if not dlc_appids:
+                        for did in depot_keys.keys():
+                            did_str = str(did)
+                            meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
+                            if isinstance(meta, dict):
+                                dlc_id = str(meta.get("dlcappid") or "").strip()
+                                if dlc_id and dlc_id != appid and dlc_id not in dlc_appids:
+                                    dlc_appids.append(dlc_id)
+
+                installdir = game_data.get("install_dir") or game_data.get("installdir") or ""
+                register_plugin_game(
+                    appid=appid,
+                    name=game_name,
+                    depot_ids=list(depot_keys.keys()),
+                    decryption_keys=depot_keys,
+                    installdir=installdir,
+                    depot_names=depot_names,
+                    dlc_appids=dlc_appids,
+                )
+            except Exception as e:
+                logger.warning(f"[NativeSteamDL] Could not register into plugin_library: {e}")
+
             self.completed.emit()
         elif not self._is_running:
             self.progress.emit("[Native Steam] Download cancelled")
@@ -540,7 +585,6 @@ class NativeSteamDownloadTask(QObject):
         )
         from utils.dlc_helpers import (
             is_dlc_only_mode,
-            get_all_dlcs_for_app,
             get_base_depot_ids_for_app,
         )
 
@@ -572,7 +616,10 @@ class NativeSteamDownloadTask(QObject):
         app_bounds = _get_section_bounds(fixed_content, "AdditionalApps")
 
         if is_dlc:
-            # In DLC mode: Remove base AppID from AdditionalApps, add DLCs
+            # In DLC mode: Remove base AppID from AdditionalApps, then add ONLY the
+            # dlcappid values that correspond to the user's selected depot IDs.
+            # Never call get_all_dlcs_for_app here — that fetches ALL Steam DLCs
+            # and would inject unselected DLC AppIDs and the base AppID.
             if app_bounds:
                 content = re.sub(
                     rf"^[ \t]*-[ \t]*{re.escape(appid_str)}[ \t]*(?:#[^\r\n]*)?\r?\n?",
@@ -583,18 +630,45 @@ class NativeSteamDownloadTask(QObject):
             else:
                 content = fixed_content
 
-            dlcs = get_all_dlcs_for_app(appid_str, game_data, allow_network=True)
-            if dlcs and len(dlcs) < 64:
-                for d in dlcs:
-                    did = str(d["dlc_appid"])
-                    dname = d["dlc_name"] or did
-                    comment = f"[DLC] {dname} / {game_name}"
-                    bounds = _get_section_bounds(content, "AdditionalApps")
-                    if bounds:
-                        if not re.search(rf"^[ \t]*-[ \t]*{re.escape(did)}[ \t]*(?:#[^\r\n]*)?$", content[bounds[1]:bounds[2]], re.MULTILINE):
-                            content = _append_to_additional_apps(content, did, comment, bounds)
-                    else:
-                        content = content.rstrip() + f"\n\nAdditionalApps:\n  - {did} # {comment}\n"
+            # Determine which depot IDs the user actually selected
+            user_sel_ids = [str(d) for d in (selected_depots or [])] if selected_depots is not None else \
+                [str(d) for d in depot_keys.keys()]
+
+            # Build the set of app IDs to write to AdditionalApps from selected depots only.
+            # Priority:
+            #   1. dlcappid from depot metadata  -> correct DLC AppID for SLSsteam to unlock
+            #   2. depot ID itself (fallback)    -> if no dlcappid info, user selected it explicitly
+            # Base appid is always excluded.
+            depots_meta = (game_data.get("depots") or {}) if game_data else {}
+            seen_dlcappids: dict = {}  # appid_to_add -> comment string
+            for sel_did in user_sel_ids:
+                if sel_did == appid_str:
+                    continue  # skip base appid
+                meta = depots_meta.get(sel_did) or depots_meta.get(
+                    int(sel_did) if sel_did.isdigit() else sel_did, {}
+                )
+                desc = ""
+                dlcappid_val = ""
+                if isinstance(meta, dict):
+                    dlcappid_val = str(meta.get("dlcappid") or "").strip()
+                    desc = meta.get("desc", "")
+
+                if dlcappid_val and dlcappid_val != appid_str and dlcappid_val not in seen_dlcappids:
+                    # Preferred: use the proper DLC AppID that owns this depot
+                    label = desc or f"DLC {dlcappid_val}"
+                    seen_dlcappids[dlcappid_val] = f"[DLC] {label} / {game_name}" if game_name else f"[DLC] {label}"
+                elif sel_did not in seen_dlcappids:
+                    # Fallback: no dlcappid metadata — use the depot ID itself
+                    label = desc or f"Depot {sel_did}"
+                    seen_dlcappids[sel_did] = f"[DLC] {label} / {game_name}" if game_name else f"[DLC] {label}"
+
+            for did, comment in seen_dlcappids.items():
+                bounds = _get_section_bounds(content, "AdditionalApps")
+                if bounds:
+                    if not re.search(rf"^[ \t]*-[ \t]*{re.escape(did)}[ \t]*(?:#[^\r\n]*)?$", content[bounds[1]:bounds[2]], re.MULTILINE):
+                        content = _append_to_additional_apps(content, did, comment, bounds)
+                else:
+                    content = content.rstrip() + f"\n\nAdditionalApps:\n  - {did} # {comment}\n"
         else:
             # Regular game mode: ensure base game in AdditionalApps
             app_id_pattern = re.compile(
@@ -660,33 +734,57 @@ class NativeSteamDownloadTask(QObject):
         else:
             content = content.rstrip() + "\n\n" + depot_block
 
-        # 4. Format DecryptionKeys (merge with existing)
+        # 4. Format DecryptionKeys (merge with existing and keep/add descriptive comments)
         all_keys: Dict[str, str] = {}
+        key_comments: Dict[str, str] = {}
         bounds_keys = _get_section_bounds(content, "DecryptionKeys")
         if bounds_keys:
             keys_text = content[bounds_keys[1] : bounds_keys[2]]
-            for m in re.finditer(r"^[ \t]*(\d+)[ \t]*:[ \t]*([a-fA-F0-9]{64})", keys_text, re.MULTILINE):
-                all_keys[m.group(1)] = m.group(2)
+            for m in re.finditer(r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*['\"]?([a-fA-F0-9]{64})['\"]?(?:[ \t]*#[ \t]*(.*))?$", keys_text, re.MULTILINE):
+                did = m.group(1)
+                all_keys[did] = m.group(2)
+                if m.group(3):
+                    key_comments[did] = m.group(3).strip()
 
         if is_dlc:
             all_keys.pop(appid_str, None)
+            key_comments.pop(appid_str, None)
             if game_data and game_data.get("depots") and selected_depots is not None:
                 all_game_depots = {str(d) for d in game_data["depots"].keys()}
                 user_depots_set = set(new_depot_ids)
                 for d in all_game_depots:
                     if d not in user_depots_set:
                         all_keys.pop(d, None)
+                        key_comments.pop(d, None)
             for d, k in depot_keys.items():
                 if k and (selected_depots is None or str(d) in set(new_depot_ids)):
-                    all_keys[str(d)] = str(k)
+                    did_str = str(d)
+                    all_keys[did_str] = str(k)
+                    meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
+                    desc = meta.get("desc", "") if isinstance(meta, dict) else ""
+                    if desc:
+                        key_comments[did_str] = f"{game_name} [{desc}] ({appid_str})"
+                    else:
+                        key_comments[did_str] = f"{game_name} ({appid_str})" if game_name else f"Depot {did_str}"
         else:
             for d, k in depot_keys.items():
                 if k:
-                    all_keys[str(d)] = str(k)
+                    did_str = str(d)
+                    all_keys[did_str] = str(k)
+                    meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
+                    desc = meta.get("desc", "") if isinstance(meta, dict) else ""
+                    if desc:
+                        key_comments[did_str] = f"{game_name} [{desc}] ({appid_str})"
+                    else:
+                        key_comments[did_str] = f"{game_name} ({appid_str})" if game_name else f"Depot {did_str}"
 
         key_lines = ["DecryptionKeys:"]
         for d in sorted(all_keys.keys(), key=lambda x: int(x) if x.isdigit() else 0):
-            key_lines.append(f"  {d}: {all_keys[d]}")
+            cm = key_comments.get(d, "")
+            if cm:
+                key_lines.append(f"  {d}: {all_keys[d]} # {cm}")
+            else:
+                key_lines.append(f"  {d}: {all_keys[d]}")
         key_block = "\n".join(key_lines) + "\n"
 
         # Re-evaluate bounds since content changed after AdditionalDepots insertion

@@ -90,6 +90,19 @@ def get_game_for_depot(depot_id: Union[str, int]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def build_dlc_reverse_map() -> Dict[str, str]:
+    """
+    Build a reverse mapping {dlc_appid: base_appid} for all DLC-only registered games.
+    Used by the library scanner to discover base games when only DLC AppIDs are in
+    AdditionalApps (AT0-M DLC-only mode).
+    """
+    result: Dict[str, str] = {}
+    for appid_str, record in load_plugin_library().items():
+        for dlc_id in record.get("dlc_appids", []):
+            result[str(dlc_id)] = appid_str
+    return result
+
+
 def register_plugin_game(
     appid: Union[str, int],
     name: str,
@@ -97,10 +110,15 @@ def register_plugin_game(
     decryption_keys: Optional[Dict[Union[str, int], str]] = None,
     installdir: str = "",
     depot_names: Optional[Dict[str, str]] = None,
+    dlc_appids: Optional[List[Union[str, int]]] = None,
 ) -> bool:
     """
     Register a game for plugin / Steam-native download and smartly inject only its
     required AppID, DepotIDs, and AES keys into SLSsteam config.yaml.
+
+    dlc_appids: If provided, the game was added in DLC-only mode. Only these DLC AppIDs
+    (NOT the base appid) will be added to SLSsteam AdditionalApps. The base appid is
+    stored in the record for ACCELA-side library discovery only.
     """
     appid_str = str(appid).strip()
     if not appid_str or appid_str in ("0", "N/A", "unknown"):
@@ -123,6 +141,10 @@ def register_plugin_game(
             if did_str.isdigit() and dname:
                 clean_depot_names[did_str] = str(dname).strip()
 
+    # Normalise DLC AppIDs (if DLC-only mode was used)
+    clean_dlc_appids = [str(d).strip() for d in (dlc_appids or []) if str(d).strip().isdigit()]
+    is_dlc_only = bool(clean_dlc_appids)
+
     lib = load_plugin_library()
     game_record = {
         "appid": appid_str,
@@ -131,6 +153,8 @@ def register_plugin_game(
         "depots": clean_depots,
         "keys": clean_keys,
         "depot_names": clean_depot_names,
+        "dlc_only": is_dlc_only,
+        "dlc_appids": clean_dlc_appids,
         "updated_at": int(time.time()),
         "source": "plugin_native",
     }
@@ -141,32 +165,43 @@ def register_plugin_game(
     # Smart injection into SLSsteam config.yaml
     cfg_path = get_user_config_path()
     if cfg_path.exists():
-        # 1. Add AppID with game name comment
-        add_additional_app(cfg_path, appid_str, comment=name)
+        if is_dlc_only:
+            # DLC-only: add DLC AppIDs to AdditionalApps, NOT the base game appid.
+            # SLSsteam needs the DLC AppID to grant license; base appid never goes in
+            # config so Steam doesn't try to download a game the user may not own.
+            for dlc_id in clean_dlc_appids:
+                add_additional_app(cfg_path, dlc_id, comment=f"{name} DLC ({dlc_id})")
+        else:
+            # Normal mode: add base AppID
+            add_additional_app(cfg_path, appid_str, comment=name)
 
-        # 2. Add only the required depots with clear comments
+        # Add only the required depots with clear comments
         for did in clean_depots:
             d_name = clean_depot_names.get(did, "")
             depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
             add_additional_depot(cfg_path, did, comment=depot_comment)
 
-        # 3. Add decryption keys with game comment
+        # Add decryption keys with game comment
         for did, key in clean_keys.items():
             d_name = clean_depot_names.get(did, "")
             key_comment = f"{name} - {d_name}" if d_name else name
             add_decryption_key(cfg_path, did, key, comment=key_comment)
 
-        # 4. Notify bridge / SLSsteam of update
+        # Notify bridge / SLSsteam of update
         SLSBridge.notify_reload()
 
-    logger.info(f"[PluginGames] Successfully registered '{name}' ({appid_str}) with {len(clean_depots)} depot(s)")
+    mode_str = "DLC-only" if is_dlc_only else "normal"
+    logger.info(
+        f"[PluginGames] Successfully registered '{name}' ({appid_str}) "
+        f"in {mode_str} mode with {len(clean_depots)} depot(s)"
+    )
     return True
 
 
 def unregister_plugin_game(appid: Union[str, int]) -> bool:
     """
     Unregister a plugin-managed game and clean up its entries in config.yaml.
-    Depots and keys shared with other registered games will be safely preserved.
+    Depots, keys, and DLC AppIDs shared with other registered games are safely preserved.
     """
     appid_str = str(appid).strip()
     lib = load_plugin_library()
@@ -177,27 +212,36 @@ def unregister_plugin_game(appid: Union[str, int]) -> bool:
     target_game = lib.pop(appid_str)
     save_plugin_library(lib)
 
-    # Collect depots and keys still required by remaining games
+    # Collect depots, keys, and DLC AppIDs still required by remaining games
     remaining_depots: Set[str] = set()
     remaining_keys: Set[str] = set()
+    remaining_dlc_appids: Set[str] = set()
     for g in lib.values():
         remaining_depots.update(g.get("depots", []))
         remaining_keys.update(g.get("keys", {}).keys())
+        remaining_dlc_appids.update(g.get("dlc_appids", []))
 
     cfg_path = get_user_config_path()
     if cfg_path.exists():
-        # 1. Remove from AdditionalApps
-        remove_additional_app(cfg_path, appid_str)
+        # 1a. Remove DLC AppIDs from AdditionalApps (DLC-only mode)
+        for dlc_id in target_game.get("dlc_appids", []):
+            if dlc_id not in remaining_dlc_appids:
+                remove_additional_app(cfg_path, dlc_id)
+
+        # 1b. Remove base AppID from AdditionalApps (normal mode only; skip if dlc-only
+        #     since the base appid was never added to AdditionalApps in dlc-only mode)
+        if not target_game.get("dlc_only"):
+            remove_additional_app(cfg_path, appid_str)
 
         # 2. Remove depots that are not shared with any other registered game
         for did in target_game.get("depots", []):
             if did not in remaining_depots:
-                remove_additional_depot(cfg_path, did)
+                remove_additional_depot(cfg_path, did, check_shared=True, excluding_appid=appid_str)
 
         # 3. Remove decryption keys that are not shared
         for did in target_game.get("keys", {}).keys():
             if did not in remaining_keys:
-                remove_decryption_key(cfg_path, did)
+                remove_decryption_key(cfg_path, did, check_shared=True, excluding_appid=appid_str)
 
         # 4. Notify bridge / SLSsteam of update
         SLSBridge.notify_reload()
@@ -220,8 +264,16 @@ def sync_all_plugin_games_to_config() -> None:
     for appid_str, game in lib.items():
         name = game.get("name", "")
         depot_names = game.get("depot_names", {})
-        if add_additional_app(cfg_path, appid_str, comment=name):
-            modified = True
+
+        if game.get("dlc_only") and game.get("dlc_appids"):
+            # DLC-only: sync DLC AppIDs (not base appid) to AdditionalApps
+            for dlc_id in game["dlc_appids"]:
+                if add_additional_app(cfg_path, dlc_id, comment=f"{name} DLC ({dlc_id})"):
+                    modified = True
+        else:
+            if add_additional_app(cfg_path, appid_str, comment=name):
+                modified = True
+
         for did in game.get("depots", []):
             d_name = depot_names.get(did, "")
             depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
