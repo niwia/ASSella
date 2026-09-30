@@ -480,8 +480,6 @@ class NativeSteamDownloadTask(QObject):
                     for d, info in gd.get("depots", {}).items():
                         if isinstance(info, dict) and info.get("key"):
                             depot_keys[str(d)] = info["key"]
-                    if gd.get("app_key"):
-                        depot_keys[str(appid)] = gd["app_key"]
                     for d, gid in gd.get("manifests", {}).items():
                         manifest_gids[str(d)] = str(gid)
 
