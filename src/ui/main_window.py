@@ -2894,7 +2894,6 @@ class MainWindow(QMainWindow):
         # Guard: don't start Update All while an update check is still running
         gm = self.game_manager
         if gm and (getattr(gm, "manifest_check_task", None) is not None or getattr(gm, "manifest_check_runner", None) is not None):
-            from PyQt6.QtWidgets import QMessageBox
             QMessageBox.information(self, "Update Check Running", "Please wait for the update check to finish before queuing updates.")
             return
         self._update_all_running = True
@@ -3187,7 +3186,6 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str, bool)
     def _show_update_all_skip_notice(self, names_text: str, all_skipped: bool) -> None:
         """Show a non-blocking notice when some games were skipped in Update All."""
-        from PyQt6.QtWidgets import QMessageBox
         if all_skipped:
             QMessageBox.warning(
                 self,
