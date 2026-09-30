@@ -515,6 +515,7 @@ class NativeSteamDownloadTask(QObject):
         depot_keys: Dict[str, str],
         selected_depots: Optional[List[str]] = None,
         game_data: Optional[Dict[str, Any]] = None,
+        dlc_appids: Optional[List[str]] = None,
     ) -> bool:
         """
         Patch SLSsteam config.yaml in a single atomic write with:
@@ -538,6 +539,18 @@ class NativeSteamDownloadTask(QObject):
 
         appid_str = str(appid).strip()
         is_dlc = is_dlc_only_mode(appid_str) or bool(game_data and game_data.get("is_dlc_only"))
+
+        # Resolve DLC AppIDs so they are never accidentally added to AdditionalDepots or DecryptionKeys
+        resolved_dlc_appids = set(str(d) for d in (dlc_appids or []))
+        if game_data:
+            if game_data.get("dlcs"):
+                for d in game_data["dlcs"].keys():
+                    resolved_dlc_appids.add(str(d))
+            if game_data.get("depots"):
+                for dinfo in game_data["depots"].values():
+                    if isinstance(dinfo, dict) and dinfo.get("dlcappid"):
+                        resolved_dlc_appids.add(str(dinfo["dlcappid"]))
+        dlc_appids = resolved_dlc_appids
 
         if not config_path.exists():
             config_path.parent.mkdir(parents=True, exist_ok=True)
