@@ -2304,6 +2304,18 @@ def on_move_to_vapor_clicked(dialog) -> None:
     lua_file = get_base_path() / "cached_luas" / f"{appid}.lua"
     zip_file = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
 
+    # Also query authoritative local SQLite DepotKeyManager
+    try:
+        from managers.depot_key_manager import DepotKeyManager
+        stored_keys = DepotKeyManager.get_instance().get_depot_keys(appid)
+        for did, key in stored_keys.items():
+            if str(did) != str(appid) and key:
+                decryption_keys[str(did)] = key
+                if str(did) not in depot_ids:
+                    depot_ids.append(str(did))
+    except Exception as e:
+        logger.debug(f"[VaporTransition] DepotKeyManager lookup error: {e}")
+
     def extract_keys_from_lua_text(lua_text: str):
         for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_text):
             did = m.group(1)
