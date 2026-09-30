@@ -20,6 +20,7 @@ from utils.yaml_config_manager import (
     add_additional_app,
     add_additional_depot,
     add_decryption_key,
+    batch_config_edit,
     get_user_config_path,
     remove_additional_app,
     remove_additional_depot,
@@ -165,27 +166,26 @@ def register_plugin_game(
     # Smart injection into SLSsteam config.yaml
     cfg_path = get_user_config_path()
     if cfg_path.exists():
-        if is_dlc_only:
-            # DLC-only: add DLC AppIDs to AdditionalApps, NOT the base game appid.
-            # SLSsteam needs the DLC AppID to grant license; base appid never goes in
-            # config so Steam doesn't try to download a game the user may not own.
-            for dlc_id in clean_dlc_appids:
-                add_additional_app(cfg_path, dlc_id, comment=f"{name} DLC ({dlc_id})")
-        else:
-            # Normal mode: add base AppID
-            add_additional_app(cfg_path, appid_str, comment=name)
+        with batch_config_edit(cfg_path) as editor:
+            if is_dlc_only:
+                # DLC-only: add DLC AppIDs to AdditionalApps, NOT the base game appid.
+                for dlc_id in clean_dlc_appids:
+                    editor.add_app(dlc_id, comment=f"{name} DLC ({dlc_id})")
+            else:
+                # Normal mode: add base AppID
+                editor.add_app(appid_str, comment=name)
 
-        # Add only the required depots with clear comments
-        for did in clean_depots:
-            d_name = clean_depot_names.get(did, "")
-            depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
-            add_additional_depot(cfg_path, did, comment=depot_comment)
+            # Add only the required depots with clear comments
+            for did in clean_depots:
+                d_name = clean_depot_names.get(did, "")
+                depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
+                editor.add_depot(did, comment=depot_comment)
 
-        # Add decryption keys with game comment
-        for did, key in clean_keys.items():
-            d_name = clean_depot_names.get(did, "")
-            key_comment = f"{name} - {d_name}" if d_name else name
-            add_decryption_key(cfg_path, did, key, comment=key_comment)
+            # Add decryption keys with game comment
+            for did, key in clean_keys.items():
+                d_name = clean_depot_names.get(did, "")
+                key_comment = f"{name} - {d_name}" if d_name else name
+                editor.add_key(did, key, comment=key_comment)
 
         # Notify bridge / SLSsteam of update
         SLSBridge.notify_reload()
@@ -223,25 +223,26 @@ def unregister_plugin_game(appid: Union[str, int]) -> bool:
 
     cfg_path = get_user_config_path()
     if cfg_path.exists():
-        # 1a. Remove DLC AppIDs from AdditionalApps (DLC-only mode)
-        for dlc_id in target_game.get("dlc_appids", []):
-            if dlc_id not in remaining_dlc_appids:
-                remove_additional_app(cfg_path, dlc_id)
+        with batch_config_edit(cfg_path) as editor:
+            # 1a. Remove DLC AppIDs from AdditionalApps (DLC-only mode)
+            for dlc_id in target_game.get("dlc_appids", []):
+                if dlc_id not in remaining_dlc_appids:
+                    editor.remove_app(dlc_id)
 
-        # 1b. Remove base AppID from AdditionalApps (normal mode only; skip if dlc-only
-        #     since the base appid was never added to AdditionalApps in dlc-only mode)
-        if not target_game.get("dlc_only"):
-            remove_additional_app(cfg_path, appid_str)
+            # 1b. Remove base AppID from AdditionalApps (normal mode only; skip if dlc-only
+            #     since the base appid was never added to AdditionalApps in dlc-only mode)
+            if not target_game.get("dlc_only"):
+                editor.remove_app(appid_str)
 
-        # 2. Remove depots that are not shared with any other registered game
-        for did in target_game.get("depots", []):
-            if did not in remaining_depots:
-                remove_additional_depot(cfg_path, did, check_shared=True, excluding_appid=appid_str)
+            # 2. Remove depots that are not shared with any other registered game
+            for did in target_game.get("depots", []):
+                if did not in remaining_depots:
+                    editor.remove_depot(did, check_shared=True, excluding_appid=appid_str)
 
-        # 3. Remove decryption keys that are not shared
-        for did in target_game.get("keys", {}).keys():
-            if did not in remaining_keys:
-                remove_decryption_key(cfg_path, did, check_shared=True, excluding_appid=appid_str)
+            # 3. Remove decryption keys that are not shared
+            for did in target_game.get("keys", {}).keys():
+                if did not in remaining_keys:
+                    editor.remove_key(did, check_shared=True, excluding_appid=appid_str)
 
         # 4. Notify bridge / SLSsteam of update
         SLSBridge.notify_reload()
@@ -260,31 +261,28 @@ def sync_all_plugin_games_to_config() -> None:
     if not cfg_path.exists():
         return
 
-    modified = False
-    for appid_str, game in lib.items():
-        name = game.get("name", "")
-        depot_names = game.get("depot_names", {})
+    with batch_config_edit(cfg_path) as editor:
+        for appid_str, game in lib.items():
+            name = game.get("name", "")
+            depot_names = game.get("depot_names", {})
 
-        if game.get("dlc_only") and game.get("dlc_appids"):
-            # DLC-only: sync DLC AppIDs (not base appid) to AdditionalApps
-            for dlc_id in game["dlc_appids"]:
-                if add_additional_app(cfg_path, dlc_id, comment=f"{name} DLC ({dlc_id})"):
-                    modified = True
-        else:
-            if add_additional_app(cfg_path, appid_str, comment=name):
-                modified = True
+            if game.get("dlc_only") and game.get("dlc_appids"):
+                # DLC-only: sync DLC AppIDs (not base appid) to AdditionalApps
+                for dlc_id in game["dlc_appids"]:
+                    editor.add_app(dlc_id, comment=f"{name} DLC ({dlc_id})")
+            else:
+                editor.add_app(appid_str, comment=name)
 
-        for did in game.get("depots", []):
-            d_name = depot_names.get(did, "")
-            depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
-            if add_additional_depot(cfg_path, did, comment=depot_comment):
-                modified = True
-        for did, key in game.get("keys", {}).items():
-            d_name = depot_names.get(did, "")
-            key_comment = f"{name} - {d_name}" if d_name else name
-            if add_decryption_key(cfg_path, did, key, comment=key_comment):
-                modified = True
+            for did in game.get("depots", []):
+                d_name = depot_names.get(did, "")
+                depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
+                editor.add_depot(did, comment=depot_comment)
 
-    if modified:
-        SLSBridge.notify_reload()
-        logger.info("[PluginGames] Synced all registered plugin games to config.yaml")
+            for did, key in game.get("keys", {}).items():
+                d_name = depot_names.get(did, "")
+                key_comment = f"{name} - {d_name}" if d_name else name
+                editor.add_key(did, key, comment=key_comment)
+
+        if editor.has_changes:
+            SLSBridge.notify_reload()
+            logger.info("[PluginGames] Synced all registered plugin games to config.yaml in a single batch")
