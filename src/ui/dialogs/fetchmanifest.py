@@ -1139,6 +1139,7 @@ class FetchManifestDialog(QDialog):
                 ACTION_DOWNLOAD,
                 ACTION_ADD_ONLY,
                 ACTION_CANCEL,
+                ACTION_TRACK,
             )
             dlg = NativeSteamActionDialog(
                 parent=self,

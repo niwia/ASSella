@@ -1,18 +1,18 @@
 """
 native_steam_action_dialog.py
 =============================
-Minimal compact dialog matching user specification:
-  - "How to proceed?" header
-  - Option 1: "Automatic" (starts download immediately in Steam)
-  - Option 2: "Manual Depot/Storage" (adds to Steam only)
+Minimal compact dialog prompting how to proceed with Steam installation:
+  - Option 1: "Start steam download" (starts download immediately in Steam)
+  - Option 2: "Download later" (adds game manifest to Steam library)
   - "Remember my choice" checkbox (unchecked by default)
-  - "Cancel" and "Proceed" buttons
+  - Clean borderless cards with soft glow and accessible contrast.
 """
 
 from typing import Optional
 import logging
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.settings import get_settings
+from utils.color_utils import get_best_foreground_color
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +41,9 @@ ACTION_HANDOFF = 2
 class NativeSteamActionDialog(QDialog):
     """
     Minimal dialog prompting how to proceed with Steam installation:
-      - Automatic (starts download immediately)
-      - Manual Depot/Storage (add to Steam only)
+      - Start steam download
+      - Download later
+    Clean borderless cards with soft hover/selection glow.
     """
 
     def __init__(
@@ -58,8 +60,14 @@ class NativeSteamActionDialog(QDialog):
         self._action = ACTION_CANCEL
         self.settings = get_settings()
 
+        # Parse accent RGB for glowing backgrounds
+        c = QColor(self.accent_color)
+        if not c.isValid():
+            c = QColor("#6c5ce7")
+        self._r, self._g, self._b = c.red(), c.green(), c.blue()
+
         self.setWindowTitle("How to proceed?")
-        self.setFixedWidth(420)
+        self.setFixedWidth(400)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
 
         self._init_ui()
@@ -68,100 +76,78 @@ class NativeSteamActionDialog(QDialog):
         self.setStyleSheet("""
             QDialog {
                 background-color: #1a1c23;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 10px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
             }
             QLabel {
                 color: #FFFFFF;
+                border: none;
+                background: transparent;
             }
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(14)
 
         # Header title
         title_lbl = QLabel("How to proceed?")
-        title_lbl.setStyleSheet("font-size: 11pt; font-weight: bold; color: rgba(255, 255, 255, 0.95);")
+        title_lbl.setStyleSheet("font-size: 11pt; font-weight: bold; color: rgba(255, 255, 255, 0.95); border: none; background: transparent;")
         layout.addWidget(title_lbl)
 
         self.button_group = QButtonGroup(self)
 
-        # Option 1: Automatic
-        self.auto_frame = QFrame()
-        self.auto_frame.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.auto_frame.setFixedHeight(46)
-        auto_layout = QHBoxLayout(self.auto_frame)
-        auto_layout.setContentsMargins(14, 8, 14, 8)
-        auto_layout.setSpacing(10)
+        # Option 1: Start steam download
+        self.start_frame = QFrame()
+        self.start_frame.setObjectName("start_frame")
+        self.start_frame.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.start_frame.setFixedHeight(48)
+        start_layout = QHBoxLayout(self.start_frame)
+        start_layout.setContentsMargins(16, 8, 16, 8)
+        start_layout.setSpacing(12)
 
-        # Left badge indicator
-        auto_badge = QLabel("AUTO")
-        auto_badge.setStyleSheet(f"""
-            background-color: rgba(255, 255, 255, 0.08);
-            color: {self.accent_color};
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 4px;
-            padding: 2px 6px;
-            font-size: 7.5pt;
-            font-weight: bold;
-        """)
-        auto_layout.addWidget(auto_badge)
+        start_lbl = QLabel("Start steam download")
+        start_lbl.setStyleSheet("font-size: 9.5pt; color: #FFFFFF; font-weight: 500; border: none; background: transparent;")
+        start_layout.addWidget(start_lbl)
+        start_layout.addStretch()
 
-        auto_lbl = QLabel("Automatic")
-        auto_lbl.setStyleSheet("font-size: 9.5pt; color: #FFFFFF; background: transparent; font-weight: 500;")
-        auto_layout.addWidget(auto_lbl)
-        auto_layout.addStretch()
+        self.start_radio = QRadioButton()
+        self.start_radio.setChecked(True)
+        self.start_radio.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._style_radio(self.start_radio)
+        self.button_group.addButton(self.start_radio)
+        start_layout.addWidget(self.start_radio)
 
-        self.auto_radio = QRadioButton()
-        self.auto_radio.setChecked(True)
-        self.auto_radio.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._style_radio(self.auto_radio)
-        self.button_group.addButton(self.auto_radio)
-        auto_layout.addWidget(self.auto_radio)
+        self.start_frame.mousePressEvent = lambda e: self.start_radio.setChecked(True)
+        layout.addWidget(self.start_frame)
 
-        self.auto_frame.mousePressEvent = lambda e: self.auto_radio.setChecked(True)
-        layout.addWidget(self.auto_frame)
+        # Option 2: Download later
+        self.later_frame = QFrame()
+        self.later_frame.setObjectName("later_frame")
+        self.later_frame.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.later_frame.setFixedHeight(48)
+        later_layout = QHBoxLayout(self.later_frame)
+        later_layout.setContentsMargins(16, 8, 16, 8)
+        later_layout.setSpacing(12)
 
-        # Option 2: Manual Depot/Storage
-        self.manual_frame = QFrame()
-        self.manual_frame.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.manual_frame.setFixedHeight(46)
-        manual_layout = QHBoxLayout(self.manual_frame)
-        manual_layout.setContentsMargins(14, 8, 14, 8)
-        manual_layout.setSpacing(10)
+        later_lbl = QLabel("Download later")
+        later_lbl.setStyleSheet("font-size: 9.5pt; color: #FFFFFF; font-weight: 500; border: none; background: transparent;")
+        later_layout.addWidget(later_lbl)
+        later_layout.addStretch()
 
-        # Left badge indicator
-        manual_badge = QLabel("MANUAL")
-        manual_badge.setStyleSheet("""
-            background-color: rgba(255, 255, 255, 0.08);
-            color: rgba(255, 255, 255, 0.7);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 4px;
-            padding: 2px 6px;
-            font-size: 7.5pt;
-            font-weight: bold;
-        """)
-        manual_layout.addWidget(manual_badge)
+        self.later_radio = QRadioButton()
+        self.later_radio.setChecked(False)
+        self.later_radio.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._style_radio(self.later_radio)
+        self.button_group.addButton(self.later_radio)
+        later_layout.addWidget(self.later_radio)
 
-        manual_lbl = QLabel("Manual Depot/Storage")
-        manual_lbl.setStyleSheet("font-size: 9.5pt; color: #FFFFFF; background: transparent; font-weight: 500;")
-        manual_layout.addWidget(manual_lbl)
-        manual_layout.addStretch()
-
-        self.manual_radio = QRadioButton()
-        self.manual_radio.setChecked(False)
-        self.manual_radio.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._style_radio(self.manual_radio)
-        self.button_group.addButton(self.manual_radio)
-        manual_layout.addWidget(self.manual_radio)
-
-        self.manual_frame.mousePressEvent = lambda e: self.manual_radio.setChecked(True)
-        layout.addWidget(self.manual_frame)
+        self.later_frame.mousePressEvent = lambda e: self.later_radio.setChecked(True)
+        layout.addWidget(self.later_frame)
 
         # Synchronize frame selection styles when radios change
-        self.auto_radio.toggled.connect(self._update_styles)
-        self.manual_radio.toggled.connect(self._update_styles)
+        self.start_radio.toggled.connect(self._update_styles)
+        self.later_radio.toggled.connect(self._update_styles)
         self._update_styles()
 
         # Remember my choice Checkbox
@@ -172,14 +158,19 @@ class NativeSteamActionDialog(QDialog):
             QCheckBox {
                 font-size: 8.5pt;
                 color: rgba(255, 255, 255, 0.75);
-                spacing: 6px;
+                spacing: 7px;
+                border: none;
+                background: transparent;
             }
             QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
+                width: 15px;
+                height: 15px;
+                border: 1px solid rgba(255, 255, 255, 0.25);
                 border-radius: 3px;
                 background: rgba(255, 255, 255, 0.05);
+            }
+            QCheckBox::indicator:hover {
+                border-color: rgba(255, 255, 255, 0.5);
             }
             QCheckBox::indicator:checked {
                 background: %s;
@@ -194,17 +185,18 @@ class NativeSteamActionDialog(QDialog):
         bot_layout.setSpacing(10)
 
         self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("cancel_btn")
         self.cancel_btn.setFixedSize(85, 30)
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_btn.setStyleSheet("""
-            QPushButton {
+            QPushButton#cancel_btn {
                 background-color: rgba(255, 255, 255, 0.06);
                 color: rgba(255, 255, 255, 0.85);
-                border: 1px solid rgba(255, 255, 255, 0.15);
+                border: none;
                 border-radius: 6px;
                 font-size: 8.5pt;
             }
-            QPushButton:hover {
+            QPushButton#cancel_btn:hover {
                 background-color: rgba(255, 255, 255, 0.12);
                 color: #FFFFFF;
             }
@@ -214,19 +206,23 @@ class NativeSteamActionDialog(QDialog):
 
         bot_layout.addStretch()
 
+        # Foreground color chosen for maximum contrast against accent
+        btn_fg = get_best_foreground_color(self.accent_color, dark_color="#121214", light_color="#FFFFFF")
+
         self.proceed_btn = QPushButton("Proceed")
+        self.proceed_btn.setObjectName("proceed_btn")
         self.proceed_btn.setFixedSize(85, 30)
         self.proceed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.proceed_btn.setStyleSheet(f"""
-            QPushButton {{
+            QPushButton#proceed_btn {{
                 background-color: {self.accent_color};
-                color: #FFFFFF;
-                border: 1px solid {self.accent_color};
+                color: {btn_fg};
+                border: none;
                 border-radius: 6px;
                 font-size: 8.5pt;
                 font-weight: bold;
             }}
-            QPushButton:hover {{
+            QPushButton#proceed_btn:hover {{
                 opacity: 0.9;
             }}
         """)
@@ -237,11 +233,15 @@ class NativeSteamActionDialog(QDialog):
 
     def _style_radio(self, radio: QRadioButton):
         radio.setStyleSheet(f"""
+            QRadioButton {{
+                background: transparent;
+                border: none;
+            }}
             QRadioButton::indicator {{
                 width: 16px;
                 height: 16px;
                 border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.4);
+                border: 1px solid rgba(255, 255, 255, 0.35);
                 background-color: rgba(255, 255, 255, 0.05);
             }}
             QRadioButton::indicator:hover {{
@@ -250,34 +250,43 @@ class NativeSteamActionDialog(QDialog):
             QRadioButton::indicator:checked {{
                 background-color: {self.accent_color};
                 border: 3px solid #1a1c23;
-                outline: 1px solid {self.accent_color};
             }}
         """)
 
     def _update_styles(self):
         sel_style = f"""
             QFrame {{
-                background-color: rgba(255, 255, 255, 0.07);
-                border: 1px solid {self.accent_color};
+                background-color: rgba({self._r}, {self._g}, {self._b}, 0.18);
+                border: none;
                 border-radius: 8px;
+            }}
+            QFrame:hover {{
+                background-color: rgba({self._r}, {self._g}, {self._b}, 0.24);
+            }}
+            QLabel {{
+                border: none;
+                background: transparent;
             }}
         """
         unsel_style = """
             QFrame {
                 background-color: rgba(255, 255, 255, 0.04);
-                border: 1px solid rgba(255, 255, 255, 0.12);
+                border: none;
                 border-radius: 8px;
             }
             QFrame:hover {
-                background-color: rgba(255, 255, 255, 0.06);
-                border: 1px solid rgba(255, 255, 255, 0.22);
+                background-color: rgba(255, 255, 255, 0.08);
+            }
+            QLabel {
+                border: none;
+                background: transparent;
             }
         """
-        self.auto_frame.setStyleSheet(sel_style if self.auto_radio.isChecked() else unsel_style)
-        self.manual_frame.setStyleSheet(sel_style if self.manual_radio.isChecked() else unsel_style)
+        self.start_frame.setStyleSheet(sel_style if self.start_radio.isChecked() else unsel_style)
+        self.later_frame.setStyleSheet(sel_style if self.later_radio.isChecked() else unsel_style)
 
     def _on_proceed(self):
-        if self.auto_radio.isChecked():
+        if self.start_radio.isChecked():
             self._action = ACTION_DOWNLOAD
         else:
             self._action = ACTION_ADD_ONLY

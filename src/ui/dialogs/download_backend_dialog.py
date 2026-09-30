@@ -4,14 +4,15 @@ download_backend_dialog.py
 Compact, minimal dialog prompting the user to choose between downloading
 via Native Steam (at0-m) or ASSella Downloader.
 Features early plugin verification blocking and a 'Remember my choice' option.
+Clean, borderless cards with soft glow and accessible contrast.
 """
 
 from typing import Optional
 from pathlib import Path
 import logging
 
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QPixmap, QIcon
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap, QColor
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
 from utils.settings import get_settings
 from utils.plugin_manager import are_plugins_present
 from utils.helpers import get_base_path
+from utils.color_utils import get_best_foreground_color
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ class DownloadBackendDialog(QDialog):
     """
     Compact dialog asking whether to download via Steam or ASSella.
     Includes early plugin presence check with blocking for Steam option.
+    Clean borderless cards with soft hover/selection glow.
     """
 
     def __init__(
@@ -54,10 +57,14 @@ class DownloadBackendDialog(QDialog):
         self._choice = BACKEND_CANCEL
         self.settings = get_settings()
 
-        self._selected_backend = BACKEND_NATIVE_STEAM
         self._plugins_available = are_plugins_present()
-        if not self._plugins_available:
-            self._selected_backend = BACKEND_ASSELLA
+        self._selected_backend = BACKEND_NATIVE_STEAM if self._plugins_available else BACKEND_ASSELLA
+
+        # Parse accent RGB for glowing backgrounds
+        c = QColor(self.accent_color)
+        if not c.isValid():
+            c = QColor("#6c5ce7")
+        self._r, self._g, self._b = c.red(), c.green(), c.blue()
 
         self.setWindowTitle("Download Method")
         self.setFixedWidth(440)
@@ -69,50 +76,54 @@ class DownloadBackendDialog(QDialog):
         self.setStyleSheet("""
             QDialog {
                 background-color: #1a1c23;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 10px;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
             }
             QLabel {
                 color: #FFFFFF;
+                border: none;
+                background: transparent;
             }
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(16)
 
-        # Title: Download: {game_name} via
+        # Title: Download : {game_name} via
         title_lbl = QLabel(f"Download : <b style='color: {self.accent_color};'>{self.game_name}</b> via")
-        title_lbl.setStyleSheet("font-size: 11pt; color: rgba(255, 255, 255, 0.95);")
+        title_lbl.setStyleSheet("font-size: 11pt; color: rgba(255, 255, 255, 0.95); border: none; background: transparent;")
         title_lbl.setWordWrap(True)
         layout.addWidget(title_lbl)
 
-        # Options Container (Two boxes side by side)
+        # Options Container (Two borderless cards side by side)
         cards_layout = QHBoxLayout()
-        cards_layout.setSpacing(12)
+        cards_layout.setSpacing(14)
 
         # 1. Steam Card (Left)
         self.steam_card = QFrame()
+        self.steam_card.setObjectName("steam_card")
         self.steam_card.setCursor(Qt.CursorShape.PointingHandCursor if self._plugins_available else Qt.CursorShape.ForbiddenCursor)
-        self.steam_card.setFixedHeight(115)
+        self.steam_card.setFixedHeight(120)
         steam_vbox = QVBoxLayout(self.steam_card)
-        steam_vbox.setContentsMargins(10, 12, 10, 10)
+        steam_vbox.setContentsMargins(12, 14, 12, 12)
         steam_vbox.setSpacing(6)
         steam_vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # Steam Logo
         self.steam_icon_lbl = QLabel()
+        self.steam_icon_lbl.setObjectName("steam_icon_lbl")
         steam_pix = self._load_logo("steam.png")
         if not steam_pix.isNull():
-            self.steam_icon_lbl.setPixmap(steam_pix.scaled(44, 44, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self.steam_icon_lbl.setPixmap(steam_pix.scaled(46, 46, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         steam_vbox.addWidget(self.steam_icon_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
 
         steam_name = QLabel("Steam")
-        steam_name.setStyleSheet("font-size: 10pt; font-weight: bold; background: transparent;")
+        steam_name.setStyleSheet("font-size: 10pt; font-weight: bold; border: none; background: transparent;")
         steam_vbox.addWidget(steam_name, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.steam_status_lbl = QLabel()
-        self.steam_status_lbl.setStyleSheet("font-size: 7.5pt; color: #ff6b6b; background: transparent; font-weight: 500;")
+        self.steam_status_lbl.setStyleSheet("font-size: 7.5pt; color: #ff6b6b; border: none; background: transparent; font-weight: 500;")
         self.steam_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         if not self._plugins_available:
             self.steam_status_lbl.setText("Plugins Missing")
@@ -126,27 +137,28 @@ class DownloadBackendDialog(QDialog):
 
         # 2. ASSella Card (Right)
         self.assella_card = QFrame()
+        self.assella_card.setObjectName("assella_card")
         self.assella_card.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.assella_card.setFixedHeight(115)
+        self.assella_card.setFixedHeight(120)
         assella_vbox = QVBoxLayout(self.assella_card)
-        assella_vbox.setContentsMargins(10, 12, 10, 10)
+        assella_vbox.setContentsMargins(12, 14, 12, 12)
         assella_vbox.setSpacing(6)
         assella_vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # ASSella Logo
         self.assella_icon_lbl = QLabel()
+        self.assella_icon_lbl.setObjectName("assella_icon_lbl")
         assella_pix = self._load_logo("accela.png")
         if not assella_pix.isNull():
-            self.assella_icon_lbl.setPixmap(assella_pix.scaled(44, 44, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self.assella_icon_lbl.setPixmap(assella_pix.scaled(46, 46, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         assella_vbox.addWidget(self.assella_icon_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
 
         assella_name = QLabel("ASSella")
-        assella_name.setStyleSheet("font-size: 10pt; font-weight: bold; background: transparent;")
+        assella_name.setStyleSheet("font-size: 10pt; font-weight: bold; border: none; background: transparent;")
         assella_vbox.addWidget(assella_name, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Spacer placeholder for alignment matching steam card
         assella_sub = QLabel("Built-in")
-        assella_sub.setStyleSheet("font-size: 7.5pt; color: rgba(255, 255, 255, 0.45); background: transparent;")
+        assella_sub.setStyleSheet("font-size: 7.5pt; color: rgba(255, 255, 255, 0.45); border: none; background: transparent;")
         assella_vbox.addWidget(assella_sub, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.assella_card.mousePressEvent = lambda e: self._select_backend(BACKEND_ASSELLA)
@@ -182,14 +194,19 @@ class DownloadBackendDialog(QDialog):
             QCheckBox {
                 font-size: 8.5pt;
                 color: rgba(255, 255, 255, 0.75);
-                spacing: 6px;
+                spacing: 7px;
+                border: none;
+                background: transparent;
             }
             QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
+                width: 15px;
+                height: 15px;
+                border: 1px solid rgba(255, 255, 255, 0.25);
                 border-radius: 3px;
                 background: rgba(255, 255, 255, 0.05);
+            }
+            QCheckBox::indicator:hover {
+                border-color: rgba(255, 255, 255, 0.5);
             }
             QCheckBox::indicator:checked {
                 background: %s;
@@ -204,17 +221,18 @@ class DownloadBackendDialog(QDialog):
         bot_layout.setSpacing(10)
 
         self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("cancel_btn")
         self.cancel_btn.setFixedSize(85, 30)
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_btn.setStyleSheet("""
-            QPushButton {
+            QPushButton#cancel_btn {
                 background-color: rgba(255, 255, 255, 0.06);
                 color: rgba(255, 255, 255, 0.85);
-                border: 1px solid rgba(255, 255, 255, 0.15);
+                border: none;
                 border-radius: 6px;
                 font-size: 8.5pt;
             }
-            QPushButton:hover {
+            QPushButton#cancel_btn:hover {
                 background-color: rgba(255, 255, 255, 0.12);
                 color: #FFFFFF;
             }
@@ -224,25 +242,28 @@ class DownloadBackendDialog(QDialog):
 
         bot_layout.addStretch()
 
+        # Foreground color chosen for maximum contrast against accent
+        btn_fg = get_best_foreground_color(self.accent_color, dark_color="#121214", light_color="#FFFFFF")
+
         self.proceed_btn = QPushButton("Proceed")
+        self.proceed_btn.setObjectName("proceed_btn")
         self.proceed_btn.setFixedSize(85, 30)
         self.proceed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.proceed_btn.setStyleSheet(f"""
-            QPushButton {{
+            QPushButton#proceed_btn {{
                 background-color: {self.accent_color};
-                color: #FFFFFF;
-                border: 1px solid {self.accent_color};
+                color: {btn_fg};
+                border: none;
                 border-radius: 6px;
                 font-size: 8.5pt;
                 font-weight: bold;
             }}
-            QPushButton:hover {{
+            QPushButton#proceed_btn:hover {{
                 opacity: 0.9;
             }}
-            QPushButton:disabled {{
+            QPushButton#proceed_btn:disabled {{
                 background-color: rgba(255, 255, 255, 0.05);
                 color: rgba(255, 255, 255, 0.25);
-                border: 1px solid rgba(255, 255, 255, 0.08);
             }}
         """)
         self.proceed_btn.clicked.connect(self._on_proceed)
@@ -271,29 +292,45 @@ class DownloadBackendDialog(QDialog):
         self._update_cards_ui()
 
     def _update_cards_ui(self):
+        # Clean, borderless cards with soft background glow on select/hover
+        # Explicit child selector ensures NO inner labels ever get borders or backgrounds
         sel_style = f"""
             QFrame {{
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 2px solid {self.accent_color};
-                border-radius: 8px;
+                background-color: rgba({self._r}, {self._g}, {self._b}, 0.20);
+                border: none;
+                border-radius: 10px;
+            }}
+            QFrame:hover {{
+                background-color: rgba({self._r}, {self._g}, {self._b}, 0.26);
+            }}
+            QLabel {{
+                border: none;
+                background: transparent;
             }}
         """
         unsel_style = """
             QFrame {
                 background-color: rgba(255, 255, 255, 0.04);
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 8px;
+                border: none;
+                border-radius: 10px;
             }
             QFrame:hover {
-                background-color: rgba(255, 255, 255, 0.07);
-                border: 1px solid rgba(255, 255, 255, 0.25);
+                background-color: rgba(255, 255, 255, 0.09);
+            }
+            QLabel {
+                border: none;
+                background: transparent;
             }
         """
         disabled_style = """
             QFrame {
                 background-color: rgba(255, 255, 255, 0.02);
-                border: 1px solid rgba(255, 255, 255, 0.05);
-                border-radius: 8px;
+                border: none;
+                border-radius: 10px;
+            }
+            QLabel {
+                border: none;
+                background: transparent;
             }
         """
 
@@ -301,15 +338,12 @@ class DownloadBackendDialog(QDialog):
         if not self._plugins_available:
             self.steam_card.setStyleSheet(disabled_style)
             self.steam_card.setEnabled(False)
-            self.steam_icon_lbl.setStyleSheet("opacity: 0.35;")
         elif self._selected_backend == BACKEND_NATIVE_STEAM:
             self.steam_card.setStyleSheet(sel_style)
             self.steam_card.setEnabled(True)
-            self.steam_icon_lbl.setStyleSheet("")
         else:
             self.steam_card.setStyleSheet(unsel_style)
             self.steam_card.setEnabled(True)
-            self.steam_icon_lbl.setStyleSheet("")
 
         # Update ASSella Card
         if self._selected_backend == BACKEND_ASSELLA:
