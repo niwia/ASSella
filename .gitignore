@@ -33,6 +33,7 @@ gifs/
 # ── Local test scripts ───────────────────────────────────────────────────────
 scripts/*
 !scripts/setup_byparr.sh
+!scripts/generate_plugins_manifest.py
 prerelease_check.py
 scratch/
 

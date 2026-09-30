@@ -41,9 +41,6 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 logger = logging.getLogger(__name__)
 
-DOWNLOAD_LUA_URL = (
-    "https://github.com/ciscosweater/enter-the-wired/releases/download/latest/plugins-deps.zip"
-)
 SLSSTEAM_API_PIPE = "/tmp/SLSsteam.API"
 MONITOR_TIMEOUT_SECONDS = 3600
 POLL_INTERVAL_SECONDS = 1.5
@@ -502,81 +499,15 @@ class NativeSteamDownloadTask(QObject):
 
         return depot_keys, manifest_gids
 
-    def _find_bundled_plugins(self) -> Dict[str, Path]:
-        """Look for bundled download.lua and spliced-tickets.lua files locally."""
-        candidates = [
-            Path(__file__).resolve().parents[2] / "res" / "plugins",
-            Path.home() / ".local/share/ACCELA/plugins",
-            Path("/home/aiwin/.local/share/ACCELA/plugins"),
-        ]
-        found = {}
-        for base in candidates:
-            if base.is_dir():
-                for name in ["download.lua", "spliced-tickets.lua"]:
-                    p = base / name
-                    if p.is_file() and name not in found:
-                        found[name] = p
-        return found
-
     def _deploy_plugin(self, plugins_dir: Path) -> bool:
-        """Deploy download.lua and spliced-tickets.lua to SLSsteam plugins directory."""
-        bundled = self._find_bundled_plugins()
-        deployed_any = False
-
-        if "download.lua" in bundled and "spliced-tickets.lua" in bundled:
-            logger.info("[NativeSteamDL] Deploying plugins from local bundled files")
-            for name, src_path in bundled.items():
-                dest = plugins_dir / name
-                try:
-                    if dest.exists() and dest.read_bytes() == src_path.read_bytes():
-                        logger.debug(f"[NativeSteamDL] Plugin already up to date: {name}")
-                        continue
-                except OSError:
-                    pass
-                if dest.is_file():
-                    bak_dest = plugins_dir / f"{name}.bak"
-                    try:
-                        shutil.copy2(dest, bak_dest)
-                        logger.info(f"[NativeSteamDL] Backed up old {name} to {bak_dest}")
-                    except Exception as bak_err:
-                        logger.warning(f"[NativeSteamDL] Could not back up {dest} to {bak_dest}: {bak_err}")
-                shutil.copy2(src_path, dest)
-                self._deployed_plugins.append(dest)
-                deployed_any = True
-                logger.info(f"[NativeSteamDL] Deployed bundled {name} to {dest}")
-                if name == "download.lua":
-                    src_bin = src_path.parent / "bin"
-                    if src_bin.is_dir():
-                        dst_bin = plugins_dir / "bin"
-                        dst_bin.mkdir(parents=True, exist_ok=True)
-                        for item in src_bin.iterdir():
-                            if item.is_file():
-                                dst_item = dst_bin / item.name
-                                shutil.copy2(item, dst_item)
-                                dst_item.chmod(dst_item.stat().st_mode | 0o755)
-            return deployed_any
-
-        # Fall back to remote download
-        logger.info("[NativeSteamDL] Bundled plugins missing, fetching from GitHub...")
-        self.progress.emit("[Native Steam] Downloading download.lua from enter-the-wired...")
+        """Deploy download.lua and spliced-tickets.lua to SLSsteam plugins directory from Cloudflare R2."""
         try:
-            req = urllib.request.Request(
-                DOWNLOAD_LUA_URL, headers={"User-Agent": "ASSella-NativeSteam/1.0"}
-            )
-            with urllib.request.urlopen(req, timeout=30) as r:
-                zip_data = r.read()
-
-            with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
-                for name in ["download.lua", "spliced-tickets.lua"]:
-                    if name in zf.namelist():
-                        content = zf.read(name).decode("utf-8", errors="ignore")
-                        dest = plugins_dir / name
-                        dest.write_text(content, encoding="utf-8")
-                        self._deployed_plugins.append(dest)
-                        logger.info(f"[NativeSteamDL] Deployed remote {name} ({len(content)} chars)")
-                        deployed_any = True
-
-            return deployed_any
+            from utils.plugin_manager import deploy_all_plugins
+            self.progress.emit("[Native Steam] Checking required plugins from Cloudflare R2...")
+            ok, msgs = deploy_all_plugins()
+            for m in msgs:
+                logger.info(f"[NativeSteamDL] {m}")
+            return ok
         except Exception as e:
             logger.error(f"[NativeSteamDL] Plugin deploy failed: {e}")
             return False

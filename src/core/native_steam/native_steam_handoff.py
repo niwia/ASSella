@@ -130,53 +130,16 @@ def send_sls_api(command: str) -> bool:
 
 
 def deploy_bundled_plugins(plugins_dir: Path) -> bool:
-    """Deploy download.lua and spliced-tickets.lua to plugins directory."""
-    plugins_dir.mkdir(parents=True, exist_ok=True)
-    candidates = [
-        Path(__file__).resolve().parents[2] / "res" / "plugins",
-        Path.home() / ".local/share/ACCELA/plugins",
-        Path("/home/aiwin/.local/share/ACCELA/plugins"),
-    ]
-    found = {}
-    for base in candidates:
-        if base.is_dir():
-            for name in ["download.lua", "spliced-tickets.lua"]:
-                p = base / name
-                if p.is_file() and name not in found:
-                    found[name] = p
-
-    if "download.lua" in found and "spliced-tickets.lua" in found:
-        for name, src in found.items():
-            dest = plugins_dir / name
-            try:
-                if dest.exists() and dest.read_bytes() == src.read_bytes():
-                    logger.debug(f"[SteamHandoff] Plugin already up to date: {name}")
-                    continue
-            except OSError:
-                pass
-            if dest.is_file():
-                bak_dest = plugins_dir / f"{name}.bak"
-                try:
-                    shutil.copy2(dest, bak_dest)
-                    logger.info(f"[SteamHandoff] Backed up old {name} to {bak_dest}")
-                except Exception as bak_err:
-                    logger.warning(f"[SteamHandoff] Could not back up {dest} to {bak_dest}: {bak_err}")
-            shutil.copy2(src, dest)
-            logger.info(f"[SteamHandoff] Deployed plugin: {name}")
-            if name == "download.lua":
-                src_bin = src.parent / "bin"
-                if src_bin.is_dir():
-                    dst_bin = plugins_dir / "bin"
-                    dst_bin.mkdir(parents=True, exist_ok=True)
-                    for item in src_bin.iterdir():
-                        if item.is_file():
-                            dst_item = dst_bin / item.name
-                            shutil.copy2(item, dst_item)
-                            dst_item.chmod(dst_item.stat().st_mode | 0o755)
-        return True
-
-    logger.warning("[SteamHandoff] Bundled plugins not found locally")
-    return False
+    """Deploy download.lua and spliced-tickets.lua to plugins directory on demand from Cloudflare R2."""
+    try:
+        from utils.plugin_manager import deploy_all_plugins
+        ok, msgs = deploy_all_plugins()
+        for m in msgs:
+            logger.info(f"[SteamHandoff] {m}")
+        return ok
+    except Exception as e:
+        logger.error(f"[SteamHandoff] Failed deploying plugins: {e}")
+        return False
 
 
 def get_depotcache_dirs(dest_path: str = "") -> List[Path]:

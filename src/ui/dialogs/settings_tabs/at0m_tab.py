@@ -80,28 +80,13 @@ def _get_detected_btn_style(dialog) -> str:
 
 
 def is_plugin_detected(filename: str) -> bool:
-    """Check if plugin file exists in SLSsteam plugins directory and its SHA-256 matches the bundled version."""
-    src_path = Paths.resource(f"plugins/{filename}")
-    if not src_path.is_file():
-        fallback = Path(__file__).resolve().parent.parent.parent / "res" / "plugins" / filename
-        if fallback.is_file():
-            src_path = fallback
-        else:
-            return False
-
-    src_hash = calculate_file_sha256(src_path)
-    if not src_hash:
+    """Check if plugin file exists in SLSsteam plugins directory and is valid."""
+    try:
+        from utils.plugin_manager import is_plugin_installed_and_valid
+        return is_plugin_installed_and_valid(filename)
+    except Exception as e:
+        logger.debug(f"[at0mTab] Check plugin detected error: {e}")
         return False
-
-    target_dirs = get_sls_plugins_dirs()
-    if not target_dirs:
-        return False
-
-    primary_dst = target_dirs[0] / filename
-    if not primary_dst.is_file():
-        return False
-
-    return calculate_file_sha256(primary_dst) == src_hash
 
 
 def create_at0m_tab(dialog) -> QWidget:
@@ -325,35 +310,36 @@ def create_at0m_tab(dialog) -> QWidget:
         for btn, fname, label in items:
             detected = is_plugin_detected(fname)
             if detected:
-                btn.setText(label)
+                btn.setText(f"{label} (Installed)")
                 btn.setStyleSheet(detected_style)
-                btn.setEnabled(False)
-                btn.setCursor(Qt.CursorShape.ArrowCursor)
-                btn.setToolTip(f"{label} ({fname}) is installed and SHA-256 matches bundled plugin.")
+                btn.setEnabled(True)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setToolTip(f"{label} ({fname}) is installed and up to date. Click to re-check or update from Cloudflare R2.")
             else:
-                btn.setText(f"Deploy {label}")
+                btn.setText(f"Download & Deploy {label}")
                 btn.setStyleSheet(NORMAL_BTN_STYLE)
                 btn.setEnabled(True)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"Click to deploy {fname} to SLSsteam plugins directory.")
+                btn.setToolTip(f"Click to download {fname} on demand from Cloudflare R2 and deploy to SLSsteam plugins.")
 
     def _deploy_single(filename: str, title: str):
         try:
-            ok, skipped, msg = deploy_sls_plugin(filename)
+            from utils.plugin_manager import deploy_plugin
+            ok, skipped, msg = deploy_plugin(filename, force_download=True)
             _refresh_deploy_buttons()
             if not ok:
-                QMessageBox.warning(dialog, f"{title}", f"Failed deploying {filename}:\n{msg}")
+                QMessageBox.warning(dialog, f"{title}", f"Failed downloading/deploying {filename}:\n{msg}")
             elif skipped:
                 QMessageBox.information(
                     dialog,
                     f"{title}",
-                    f"{title} ({filename}) is already up to date.\nSHA-256 checksum matched — skipped deployment."
+                    f"{title} ({filename}) is already up to date from Cloudflare R2.\nSHA-256 checksum matched."
                 )
             else:
                 QMessageBox.information(
                     dialog,
                     f"{title}",
-                    f"Successfully deployed {title} ({filename}) to SLSsteam plugins folder!"
+                    f"Successfully downloaded from Cloudflare R2 and deployed {title} ({filename}) to SLSsteam plugins!"
                 )
         except Exception as exc:
             logger.error(f"[at0mTab] Deploy {filename} error: {exc}")
