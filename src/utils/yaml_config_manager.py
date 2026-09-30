@@ -73,30 +73,73 @@ def get_fake_appid_for_online() -> str:
     return fake_appid if fake_appid else "480"
 
 
+def _validate_yaml_content(content: str) -> bool:
+    """Validate YAML syntax and ensure no duplicate top-level keys exist."""
+    try:
+        import yaml
+        yaml.safe_load(content)
+    except Exception as e:
+        logger.error(f"YAML validation failed: {e}")
+        return False
+
+    # Check for duplicate top-level keys (safe_load silently allows duplicate keys)
+    top_keys = re.findall(r"^[A-Za-z0-9_]+(?=[ \t]*:)", content, re.MULTILINE)
+    seen = set()
+    dupes = set()
+    for k in top_keys:
+        if k in seen:
+            dupes.add(k)
+        seen.add(k)
+    if dupes:
+        logger.error(f"Duplicate top-level YAML keys detected: {dupes}")
+        return False
+
+    return True
+
+
+HEX_64_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+NUMERIC_ID_PATTERN = re.compile(r"^\d+$")
+
+
+def _sanitize_comment(comment: Optional[str]) -> str:
+    """Sanitize comment string by removing newlines and control characters to prevent line injection."""
+    if not comment:
+        return ""
+    cleaned = str(comment).replace("\r", " ").replace("\n", " ").strip()
+    return re.sub(r"[ \t]+", " ", cleaned)
+
+
+def _sanitize_id(item_id: Union[str, int]) -> Optional[str]:
+    """Validate and cast AppID / DepotID to a clean numeric string."""
+    if item_id is None:
+        return None
+    s = str(item_id).strip()
+    return s if NUMERIC_ID_PATTERN.match(s) else None
+
+
+def _is_valid_hex64(key: str) -> bool:
+    """Check if AES decryption key is a valid 64-character hexadecimal string."""
+    if not key:
+        return False
+    return bool(HEX_64_PATTERN.match(str(key).strip()))
+
+
 def _create_backup(config_path: Path) -> bool:
     """Create a backup of the config file.
 
     Creates config.yaml.bak with the current config content.
-    Only creates backup if source file exists.
-    Does not overwrite existing backup if new file is smaller.
+    Only creates backup if source file exists and is non-empty.
     """
     try:
         if not config_path.exists():
             return False
 
+        new_size = config_path.stat().st_size
+        if new_size == 0:
+            logger.warning(f"Skipping backup: config file {config_path} is empty (0 bytes)")
+            return False
+
         backup_path = config_path.with_name(config_path.name + BACKUP_SUFFIX)
-
-        # Check if backup already exists and new file is smaller
-        if backup_path.exists():
-            new_size = config_path.stat().st_size
-            backup_size = backup_path.stat().st_size
-            if new_size < backup_size:
-                logger.debug(
-                    f"Skipping backup: new file ({new_size} bytes) is smaller "
-                    f"than existing backup ({backup_size} bytes)"
-                )
-                return True
-
         shutil.copy2(config_path, backup_path)
         logger.info(f"Created backup: {backup_path}")
         return True
@@ -111,16 +154,31 @@ def backup_config_on_startup(config_path: Path) -> bool:
 
 
 def _atomic_write(config_path: Path, content: str) -> bool:
-    """Write content to config file in-place to preserve inode and trigger inotify FileWatcher."""
+    """Write content to config file in-place to preserve inode and trigger inotify FileWatcher without empty-file window."""
+    if not _validate_yaml_content(content):
+        logger.error(f"Refusing to write invalid YAML content to {config_path}")
+        return False
+
     try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
+        if config_path.exists():
+            with open(config_path, "r+", encoding="utf-8") as f:
+                f.seek(0)
+                f.write(content)
+                f.truncate()
+                f.flush()
+                os.fsync(f.fileno())
+        else:
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
         return True
     except OSError as e:
         logger.error(f"Failed to write {config_path}: {e}", exc_info=True)
         return False
+
+
+_write_in_place = _atomic_write
 
 
 def ensure_slssteam_api_enabled(config_path: Path) -> bool:
@@ -236,12 +294,33 @@ def ensure_slssteam_logging_enabled(config_path: Path) -> bool:
         return False
 
 
+def ensure_plugins_enabled(config_path: Optional[Path] = None) -> bool:
+    """Ensure 'Plugins: yes' is present and enabled in SLSsteam config.yaml.
+
+    If missing or disabled ('no', 'false'), imposes 'Plugins: yes'.
+    Creates a backup if modification is needed and writes atomically.
+    """
+    if config_path is None:
+        config_path = get_user_config_path()
+
+    if not config_path.exists():
+        logger.debug(f"ensure_plugins_enabled: Config not found at {config_path}")
+        return False
+
+    if not is_slssteam_config_management_enabled():
+        logger.debug("ensure_plugins_enabled: SLS config management disabled in settings")
+        return False
+
+    return update_yaml_boolean_value(config_path, "Plugins", True)
+
+
 def ensure_slssteam_prerequisites(config_path: Optional[Path] = None) -> bool:
     """Silently ensure all SLSsteam configuration prerequisites are met.
 
     Specifically ensures:
       1. API: yes (for communication via /tmp/SLSsteam.API)
       2. LogLevels has 0x2 / Once flag enabled (or old LogLevel: 0)
+      3. Plugins: yes (for library-inject plugin loader)
 
     Creates a backup before applying any modifications and performs in-place atomic writes.
     Never shows disruptive UI popups — logs actions at INFO/DEBUG level.
@@ -268,34 +347,44 @@ def ensure_slssteam_prerequisites(config_path: Optional[Path] = None) -> bool:
         if ensure_slssteam_logging_enabled(config_path):
             changed = True
             logger.info("Silently ensured SLSsteam LogLevels includes 0x2 (Once) in config.yaml")
+
+        if ensure_plugins_enabled(config_path):
+            changed = True
+            logger.info("Silently ensured SLSsteam Plugins: yes is enabled in config.yaml")
     except Exception as e:
         logger.warning(f"Error ensuring SLSsteam prerequisites: {e}")
 
     return changed
 
 
-def ensure_plugins_enabled(config_path: Optional[Path] = None) -> bool:
-    """Ensure 'Plugins: yes' is present and enabled in SLSsteam config.yaml.
 
-    If missing or disabled ('no', 'false'), imposes 'Plugins: yes'.
-    Creates a backup if modification is needed and writes atomically.
-    """
-    if config_path is None:
-        config_path = get_user_config_path()
+def get_yaml_boolean_value(config_path: Path, key: str, default: bool = False) -> bool:
+    """Get a boolean value from YAML config using regex matching."""
+    try:
+        if not config_path.exists():
+            return default
 
-    if not config_path.exists():
-        logger.debug(f"ensure_plugins_enabled: Config not found at {config_path}")
-        return False
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
 
-    if not is_slssteam_config_management_enabled():
-        logger.debug("ensure_plugins_enabled: SLS config management disabled in settings")
-        return False
-
-    return update_yaml_boolean_value(config_path, "Plugins", True)
+        pattern = re.compile(
+            r"^[ \t]*"
+            + re.escape(key)
+            + r"[ \t]*:[ \t]*(yes|no|true|false|Yes|No|True|False)\b",
+            re.MULTILINE,
+        )
+        match = pattern.search(content)
+        if match:
+            val_str = match.group(1).lower()
+            return val_str in ("yes", "true", "1")
+        return default
+    except Exception as e:
+        logger.warning(f"Error reading '{key}' from {config_path}: {e}")
+        return default
 
 
 def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
-    """Update a boolean value in YAML config using regex pattern matching."""
+    """Update a boolean value in YAML config using regex pattern matching, appending if missing."""
     try:
         if not config_path.exists():
             logger.warning(f"Config file not found at {config_path}")
@@ -312,16 +401,17 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
             re.MULTILINE,
         )
 
+        new_value = "yes" if value else "no"
         match = pattern.search(content)
         if not match:
-            logger.warning(f"Key '{key}' not found in config file {config_path}")
-            return False
+            logger.info(f"Key '{key}' not found in {config_path}, appending '{key}: {new_value}'")
+            new_content = content.rstrip() + f"\n\n{key}: {new_value}\n"
+            if not _atomic_write(config_path, new_content):
+                return False
+            return True
 
         indent = match.group(1)
         old_value = match.group(2)
-
-        # Always use yes/no format for SLSsteam compatibility
-        new_value = "yes" if value else "no"
 
         # Check if already set correctly
         if old_value.lower() == new_value.lower():
@@ -332,7 +422,7 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
         replacement = f"{indent}{key}: {new_value}"
 
         # Replace only the matched line
-        new_content = pattern.sub(replacement, content)
+        new_content = pattern.sub(replacement, content, count=1)
 
         if not _atomic_write(config_path, new_content):
             return False
@@ -343,6 +433,188 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
     except OSError as e:
         logger.error(f"Failed to update '{key}' in {config_path}: {e}", exc_info=True)
         return False
+
+
+def calculate_file_sha256(file_path: Path) -> Optional[str]:
+    """Calculate SHA256 checksum of a file."""
+    if not file_path.is_file():
+        return None
+    try:
+        import hashlib
+        h = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception as e:
+        logger.error(f"Failed to calculate SHA256 for {file_path}: {e}")
+        return None
+
+
+def get_sls_plugins_dirs() -> List[Path]:
+    """Resolve target plugin directories based on detected Native/Flatpak Steam environments."""
+    dirs: List[Path] = []
+    try:
+        from core.steam_helpers import get_steam_env
+        env = get_steam_env()
+        primary_dir = env.sls_config_dir / "plugins"
+        dirs.append(primary_dir)
+
+        # Check if alternate environment exists on disk (Flatpak vs Native)
+        alt_base = (
+            Path.home() / ".config" / "SLSsteam"
+            if env.is_flatpak
+            else Path.home() / ".var" / "app" / "com.valvesoftware.Steam" / ".config" / "SLSsteam"
+        )
+        if alt_base.exists():
+            alt_dir = alt_base / "plugins"
+            if alt_dir not in dirs:
+                dirs.append(alt_dir)
+    except Exception as e:
+        logger.warning(f"Error resolving SteamEnv for plugins: {e}")
+        dirs.append(Path.home() / ".config" / "SLSsteam" / "plugins")
+
+    return dirs
+
+
+def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
+    """Deploy a specific bundled plugin file to SLSsteam plugin directories.
+
+    Returns:
+        (success: bool, skipped: bool, message: str)
+        - skipped=True if all target locations already have the matching SHA-256.
+    """
+    ensure_plugins_enabled()
+    from utils.paths import Paths
+    src_path = Paths.resource(f"plugins/{plugin_filename}")
+    if not src_path.is_file():
+        fallback = Path(__file__).resolve().parent.parent / "res" / "plugins" / plugin_filename
+        if fallback.is_file():
+            src_path = fallback
+        else:
+            return False, False, f"Bundled plugin '{plugin_filename}' not found."
+
+    src_hash = calculate_file_sha256(src_path)
+    if not src_hash:
+        return False, False, f"Could not compute hash for source plugin '{plugin_filename}'."
+
+    target_dirs = get_sls_plugins_dirs()
+    all_matched = True
+    any_deployed = False
+    errors = []
+
+    for tdir in target_dirs:
+        try:
+            tdir.mkdir(parents=True, exist_ok=True)
+            dst_file = tdir / plugin_filename
+            if dst_file.is_file():
+                dst_hash = calculate_file_sha256(dst_file)
+                if dst_hash == src_hash:
+                    logger.debug(f"Plugin {plugin_filename} at {dst_file} has matching hash {src_hash[:8]}, skipping.")
+                    continue
+                # Hash mismatch: back up old plugin as .bak before injecting updated version
+                bak_file = tdir / f"{plugin_filename}.bak"
+                try:
+                    shutil.copy2(dst_file, bak_file)
+                    logger.info(
+                        f"Existing {plugin_filename} hash mismatch ({dst_hash[:8]} != {src_hash[:8]}). "
+                        f"Backed up old version to {bak_file}"
+                    )
+                except Exception as bak_err:
+                    logger.warning(f"Could not back up existing {plugin_filename} to {bak_file}: {bak_err}")
+
+            all_matched = False
+            shutil.copy2(src_path, dst_file)
+            any_deployed = True
+            logger.info(f"Deployed {plugin_filename} to {dst_file}")
+
+        except Exception as exc:
+            errors.append(f"{tdir}: {exc}")
+
+    if errors:
+        return False, False, f"Error deploying {plugin_filename}: {'; '.join(errors)}"
+
+    if all_matched and not any_deployed:
+        return True, True, f"{plugin_filename} is already up to date (SHA-256 matched). Skipped deployment."
+
+    return True, False, f"Successfully deployed {plugin_filename} to SLSsteam."
+
+
+def deploy_all_sls_plugins() -> Tuple[bool, List[str]]:
+    """Deploy required plugins: download.lua, spliced-tickets.lua.
+    Note: assella_bridge.lua is intentionally excluded — its IPC server is never started
+    and all dynamic depot/key injection commands have been superseded by _patch_config.
+    """
+    ensure_plugins_enabled()
+    plugins = ["download.lua", "spliced-tickets.lua"]
+    results = []
+    overall_ok = True
+    for p in plugins:
+        ok, skipped, msg = deploy_sls_plugin(p)
+        results.append(msg)
+        if not ok:
+            overall_ok = False
+    return overall_ok, results
+
+
+def are_sls_plugins_deployed() -> bool:
+    """Check if the required plugins exist in at least the primary SLSsteam plugins directory."""
+    plugins = ["download.lua", "spliced-tickets.lua"]
+    target_dirs = get_sls_plugins_dirs()
+    if not target_dirs:
+        return False
+    primary = target_dirs[0]
+    return all((primary / p).is_file() for p in plugins)
+
+
+def is_slssteam_plugins_enabled() -> bool:
+    """Check if the user has enabled SLSsteam plugins in ASSella or in config.yaml.
+
+    Returns:
+        bool: True if plugins are enabled in settings or config.yaml.
+    """
+    settings = get_settings()
+
+    # 1. Check ASSella explicit user settings (enable_vapor / enable_at0m)
+    vapor_val = settings.value("enable_vapor", None)
+    if vapor_val is not None:
+        return settings.value("enable_vapor", type=bool)
+
+    at0m_val = settings.value("enable_at0m", None)
+    if at0m_val is not None:
+        return settings.value("enable_at0m", type=bool)
+
+    # 2. Check config.yaml Plugins key
+    cfg_path = get_user_config_path()
+    if cfg_path.exists():
+        return get_yaml_boolean_value(cfg_path, "Plugins", default=False)
+
+    return False
+
+
+def sync_plugins_on_startup() -> bool:
+    """Check and update SLSsteam plugins on ASSella startup if enabled by the user.
+
+    Uses SHA-256 hash matching:
+    - If a plugin (such as download.lua) exists in the user's SLSsteam plugins directory
+      and its SHA-256 differs from the bundled version in ASSella, the old version is
+      backed up as `<plugin>.bak` (e.g. download.lua.bak) and the updated version is injected.
+    - If the plugin is missing, it is injected.
+    - If plugins are not enabled by the user, no actions are performed.
+
+    Returns:
+        bool: True if sync completed successfully or was skipped because plugins are disabled.
+    """
+    if not is_slssteam_plugins_enabled():
+        logger.debug("sync_plugins_on_startup: Plugins are not enabled by user; skipping check.")
+        return True
+
+    logger.info("sync_plugins_on_startup: Plugins are enabled. Checking plugin SHA-256 checksums...")
+    overall_ok, results = deploy_all_sls_plugins()
+    for res in results:
+        logger.info(f"[PluginSync] {res}")
+    return overall_ok
+
 
 
 def get_user_config_path() -> Path:
@@ -390,7 +662,7 @@ def _get_section_bounds(content: str, section_name: str) -> Optional[Tuple[int, 
     section_end: index of the start of the next top-level key line or EOF.
     """
     header_pattern = re.compile(
-        rf"^[ \t]*{re.escape(section_name)}[ \t]*:[ \t]*(?:#[^\r\n]*)?$",
+        r"^[ \t]*" + re.escape(section_name) + r"[ \t]*:[ \t]*(?:\[[ \t]*\]|\{[ \t]*\})?[ \t]*(?:#[^\r\n]*)?$",
         re.MULTILINE,
     )
     match = header_pattern.search(content)
@@ -409,6 +681,51 @@ def _get_section_bounds(content: str, section_name: str) -> Optional[Tuple[int, 
     section_end = (content_start + next_match.start()) if next_match else len(content)
 
     return header_start, content_start, section_end
+
+
+def _expand_flow_section_if_needed(
+    content: str, section_name: str, bounds: Tuple[int, int, int]
+) -> Tuple[str, Tuple[int, int, int]]:
+    """If a top-level section is written in flow style like 'Section: []', expand to block header 'Section:'."""
+    h_start, c_start, s_end = bounds
+    header_line = content[h_start:c_start]
+    flow_pattern = re.compile(
+        r"^([ \t]*" + re.escape(section_name) + r"[ \t]*:)[ \t]*(?:\[[ \t]*\]|\{[ \t]*\})([ \t]*(?:#[^\r\n]*)?[\r\n]*)$"
+    )
+    m = flow_pattern.match(header_line)
+    if m:
+        new_header = f"{m.group(1)}{m.group(2)}"
+        content = content[:h_start] + new_header + content[c_start:]
+        new_bounds = _get_section_bounds(content, section_name)
+        if new_bounds:
+            return content, new_bounds
+    return content, bounds
+
+
+def _find_section_insert_pos(content: str, bounds: Tuple[int, int, int]) -> int:
+    """Find the best position to insert a new entry into a section.
+    Inserts right after the last indented list or map item, avoiding placing new entries
+    below leading comments or whitespace of the subsequent section.
+    """
+    _, content_start, section_end = bounds
+    section_text = content[content_start:section_end]
+
+    lines = section_text.splitlines(keepends=True)
+    last_item_end = 0
+    curr_offset = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and (line.startswith(" ") or line.startswith("\t")):
+            last_item_end = curr_offset + len(line)
+        elif stripped and not stripped.startswith("#") and not line.startswith(" ") and not line.startswith("\t"):
+            break
+        curr_offset += len(line)
+
+    if last_item_end > 0:
+        return content_start + last_item_end
+
+    return content_start
 
 
 def _get_section_start(content: str, pattern: re.Pattern) -> Optional[int]:
@@ -433,6 +750,39 @@ def _get_section_end(
     return len(content)
 
 
+def _remove_entry_in_memory(
+    content: str,
+    section_name: str,
+    pattern: re.Pattern,
+) -> Tuple[str, bool]:
+    """Remove matching lines only within a specific top-level YAML section in memory."""
+    removed = False
+    while True:
+        bounds = _get_section_bounds(content, section_name)
+        if not bounds:
+            break
+        _, content_start, section_end = bounds
+        section_content = content[content_start:section_end]
+        match = pattern.search(section_content)
+        if not match:
+            break
+
+        abs_match_start = content_start + match.start()
+        line_start = content.rfind("\n", 0, abs_match_start)
+        line_start = 0 if line_start == -1 else line_start + 1
+
+        line_end = content.find("\n", abs_match_start)
+        if line_end == -1:
+            line_end = len(content)
+        else:
+            line_end += 1
+
+        content = content[:line_start] + content[line_end:]
+        removed = True
+
+    return content, removed
+
+
 def _remove_entry_from_section(
     config_path: Path,
     section_name: str,
@@ -446,34 +796,11 @@ def _remove_entry_from_section(
         if content is None:
             return False
 
-        removed = False
-        while True:
-            bounds = _get_section_bounds(content, section_name)
-            if not bounds:
-                break
-            _, content_start, section_end = bounds
-            section_content = content[content_start:section_end]
-            match = pattern.search(section_content)
-            if not match:
-                break
-
-            abs_match_start = content_start + match.start()
-            line_start = content.rfind("\n", 0, abs_match_start)
-            line_start = 0 if line_start == -1 else line_start + 1
-
-            line_end = content.find("\n", abs_match_start)
-            if line_end == -1:
-                line_end = len(content)
-            else:
-                line_end += 1
-
-            content = content[:line_start] + content[line_end:]
-            removed = True
-
+        new_content, removed = _remove_entry_in_memory(content, section_name, pattern)
         if not removed:
             return False
 
-        if not _atomic_write(config_path, content):
+        if not _atomic_write(config_path, new_content):
             return False
 
         logger.info(success_message)
@@ -481,6 +808,523 @@ def _remove_entry_from_section(
     except OSError as e:
         logger.error(error_message.format(e=e), exc_info=True)
         return False
+
+
+def _add_list_item_in_memory(
+    content: str, section_name: str, item_id: str, comment: str = ""
+) -> Tuple[str, bool]:
+    """Add an item to a YAML list section in memory."""
+    bounds = _get_section_bounds(content, section_name)
+    comment_suffix = f" # {comment}" if comment else ""
+    entry_line = f"  - {item_id}{comment_suffix}\n"
+
+    if bounds:
+        content, bounds = _expand_flow_section_if_needed(content, section_name, bounds)
+        _, content_start, section_end = bounds
+        sec_content = content[content_start:section_end]
+        item_pattern = re.compile(
+            rf"^[ \t]*-[ \t]*{re.escape(item_id)}[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        m = item_pattern.search(sec_content)
+        if m:
+            if comment:
+                abs_start = content_start + m.start()
+                abs_end = content_start + m.end()
+                new_line = f"  - {item_id}{comment_suffix}"
+                if content[abs_start:abs_end] != new_line:
+                    return content[:abs_start] + new_line + content[abs_end:], True
+            return content, False
+
+        insert_pos = _find_section_insert_pos(content, bounds)
+        if insert_pos > 0 and content[insert_pos - 1] != "\n":
+            entry_line = "\n" + entry_line
+        return content[:insert_pos] + entry_line + content[insert_pos:], True
+    else:
+        new_content = content.rstrip() + f"\n\n{section_name}:\n{entry_line}"
+        return new_content, True
+
+
+def _add_map_item_in_memory(
+    content: str, section_name: str, key: str, value: str, comment: str = ""
+) -> Tuple[str, bool]:
+    """Add or update a key-value pair in a YAML map section in memory."""
+    bounds = _get_section_bounds(content, section_name)
+    comment_suffix = f" # {comment}" if comment else ""
+    entry_line = f"  {key}: {value}{comment_suffix}\n"
+
+    if bounds:
+        content, bounds = _expand_flow_section_if_needed(content, section_name, bounds)
+        _, content_start, section_end = bounds
+        sec_content = content[content_start:section_end]
+        map_pattern = re.compile(
+            rf"^[ \t]*['\"]?{re.escape(key)}['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        m = map_pattern.search(sec_content)
+        if m:
+            existing_val = m.group(1).strip().strip('"').strip("'")
+            existing_comment = ""
+            m_comm = re.search(r"#[ \t]*(.*)$", m.group(0))
+            if m_comm:
+                existing_comment = m_comm.group(1).strip()
+
+            final_comment = comment if comment else existing_comment
+            final_suffix = f" # {final_comment}" if final_comment else ""
+            new_line = f"  {key}: {value}{final_suffix}"
+
+            abs_start = content_start + m.start()
+            abs_end = content_start + m.end()
+            if content[abs_start:abs_end] != new_line:
+                return content[:abs_start] + new_line + content[abs_end:], True
+            return content, False
+
+        insert_pos = _find_section_insert_pos(content, bounds)
+        if insert_pos > 0 and content[insert_pos - 1] != "\n":
+            entry_line = "\n" + entry_line
+        return content[:insert_pos] + entry_line + content[insert_pos:], True
+    else:
+        new_content = content.rstrip() + f"\n\n{section_name}:\n{entry_line}"
+        return new_content, True
+
+
+def _add_dlc_batch_in_memory(
+    content: str, parent_app_id: str, dlc_dict: Dict[str, str]
+) -> Tuple[str, bool]:
+    """Add multiple DLC entries under parent_app_id in DlcData section in memory."""
+    if not dlc_dict:
+        return content, False
+
+    parent_app_id = str(parent_app_id).strip()
+    bounds = _get_section_bounds(content, "DlcData")
+
+    if not bounds:
+        lines = ["DlcData:", f"  {parent_app_id}:"]
+        for did, dname in dlc_dict.items():
+            did_str = _sanitize_id(did) or str(did).strip()
+            cname = _sanitize_comment(dname or f"DLC {did_str}").replace('"', '\\"')
+            lines.append(f'    {did_str}: "{cname}"')
+        new_entry = "\n".join(lines) + "\n"
+        new_content = content.rstrip() + "\n\n" + new_entry
+        return new_content, True
+
+    content, bounds = _expand_flow_section_if_needed(content, "DlcData", bounds)
+    _, dlc_start, dlc_end = bounds
+    dlc_section = content[dlc_start:dlc_end]
+
+    parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_app_id)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
+    parent_match = parent_pattern.search(dlc_section)
+
+    if not parent_match:
+        lines = [f"  {parent_app_id}:"]
+        for did, dname in dlc_dict.items():
+            did_str = _sanitize_id(did) or str(did).strip()
+            cname = _sanitize_comment(dname or f"DLC {did_str}").replace('"', '\\"')
+            lines.append(f'    {did_str}: "{cname}"')
+        insert_text = "\n".join(lines) + "\n"
+        insert_pos = _find_section_insert_pos(content, bounds)
+        new_content = content[:insert_pos].rstrip() + "\n" + insert_text + "\n" + content[insert_pos:].lstrip("\n")
+        return new_content, True
+
+    p_start = dlc_start + parent_match.end()
+    if p_start < len(content) and content[p_start] == "\r":
+        p_start += 1
+    if p_start < len(content) and content[p_start] == "\n":
+        p_start += 1
+
+    p_after = content[p_start:dlc_end]
+    next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+    parent_end = (p_start + next_parent.start()) if next_parent else dlc_end
+
+    parent_block = content[p_start:parent_end]
+    new_dlc_lines = []
+    for did, dname in dlc_dict.items():
+        did_str = _sanitize_id(did) or str(did).strip()
+        check_pat = re.compile(rf'^[ \t]*{re.escape(did_str)}[ \t]*:[ \t]*"', re.MULTILINE)
+        if not check_pat.search(parent_block):
+            cname = _sanitize_comment(dname or f"DLC {did_str}").replace('"', '\\"')
+            new_dlc_lines.append(f'    {did_str}: "{cname}"')
+
+    if not new_dlc_lines:
+        return content, False
+
+    insert_text = "\n".join(new_dlc_lines) + "\n"
+    new_content = content[:parent_end].rstrip() + "\n" + insert_text + content[parent_end:]
+    return new_content, True
+
+
+class BatchConfigEditor:
+    """Context manager and in-memory batch editor for SLSsteam config.yaml.
+    Performs all modifications in memory and writes once on context exit,
+    preventing filewatcher reload storms and ensuring atomicity.
+    """
+
+    def __init__(self, config_path: Path):
+        self.config_path = config_path
+        self.content: Optional[str] = None
+        self.has_changes = False
+        self.committed_successfully = True
+
+    def __enter__(self):
+        self.content = _read_config_content(self.config_path)
+        if self.content is None:
+            self.content = ""
+        self.has_changes = False
+        self.committed_successfully = True
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            self.committed_successfully = False
+            logger.warning(f"Batch config edit on {self.config_path} aborted due to: {exc_val}")
+            return False
+
+        if self.has_changes and self.content is not None:
+            if not _atomic_write(self.config_path, self.content):
+                logger.error(f"Failed to commit batch config changes to {self.config_path}")
+                self.committed_successfully = False
+                return False
+            self.committed_successfully = True
+            logger.info(f"Committed batch config changes to {self.config_path}")
+        return True
+
+    def add_app(self, app_id: Union[str, int], comment: str = "") -> bool:
+        app_id_str = _sanitize_id(app_id)
+        if not app_id_str:
+            logger.warning(f"Invalid AppID provided: {app_id}")
+            return False
+        comment_clean = _sanitize_comment(comment)
+        self.content, _ = _fix_additional_apps_indentation(self.content)
+        new_content, changed = _add_list_item_in_memory(
+            self.content, "AdditionalApps", app_id_str, comment_clean
+        )
+        if changed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def remove_app(self, app_id: Union[str, int]) -> bool:
+        app_id_str = _sanitize_id(app_id)
+        if not app_id_str:
+            return False
+        pattern = re.compile(
+            rf"^[ \t]*-[ \t]*{re.escape(app_id_str)}[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        new_content, removed = _remove_entry_in_memory(
+            self.content, "AdditionalApps", pattern
+        )
+        if removed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def add_depot(self, depot_id: Union[str, int], comment: str = "") -> bool:
+        depot_id_str = _sanitize_id(depot_id)
+        if not depot_id_str:
+            logger.warning(f"Invalid DepotID provided: {depot_id}")
+            return False
+        comment_clean = _sanitize_comment(comment)
+        new_content, changed = _add_list_item_in_memory(
+            self.content, "AdditionalDepots", depot_id_str, comment_clean
+        )
+        if changed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def remove_depot(
+        self,
+        depot_id: Union[str, int],
+        check_shared: bool = True,
+        excluding_appid: Optional[Union[str, int]] = None,
+    ) -> bool:
+        depot_id_str = _sanitize_id(depot_id)
+        if not depot_id_str:
+            return False
+        if check_shared and is_depot_shared_with_other_games(
+            depot_id_str, excluding_appid=excluding_appid
+        ):
+            logger.info(
+                f"Preserving shared depot '{depot_id_str}' in AdditionalDepots (used by other games or redistributable)"
+            )
+            return False
+        pattern = re.compile(
+            rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}[ \t]*(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        new_content, removed = _remove_entry_in_memory(
+            self.content, "AdditionalDepots", pattern
+        )
+        if removed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def add_key(self, depot_id: Union[str, int], key: str, comment: str = "") -> bool:
+        depot_id_str = _sanitize_id(depot_id)
+        if not depot_id_str:
+            logger.warning(f"Invalid DepotID for key: {depot_id}")
+            return False
+        key_str = str(key).strip().lower()
+        if not _is_valid_hex64(key_str):
+            logger.warning(f"Invalid AES decryption key (not 64 hex chars) for depot {depot_id_str}")
+            return False
+        comment_clean = _sanitize_comment(comment)
+        new_content, changed = _add_map_item_in_memory(
+            self.content, "DecryptionKeys", depot_id_str, key_str, comment_clean
+        )
+        if changed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def remove_key(
+        self,
+        depot_id: Union[str, int],
+        check_shared: bool = True,
+        excluding_appid: Optional[Union[str, int]] = None,
+    ) -> bool:
+        depot_id_str = _sanitize_id(depot_id)
+        if not depot_id_str:
+            return False
+        if check_shared and is_depot_shared_with_other_games(
+            depot_id_str, excluding_appid=excluding_appid
+        ):
+            logger.info(
+                f"Preserving decryption key for shared depot '{depot_id_str}' (used by other games or redistributable)"
+            )
+            return False
+        pattern = re.compile(
+            rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        new_content, removed = _remove_entry_in_memory(
+            self.content, "DecryptionKeys", pattern
+        )
+        if removed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def add_dlc(
+        self,
+        parent_app_id: Union[str, int],
+        dlc_id: Union[str, int],
+        dlc_name: str = "",
+    ) -> bool:
+        parent_str = _sanitize_id(parent_app_id)
+        dlc_str = _sanitize_id(dlc_id)
+        if not parent_str or not dlc_str:
+            return False
+        return self.add_dlc_batch(parent_str, {dlc_str: dlc_name})
+
+    def add_dlc_batch(
+        self,
+        parent_app_id: Union[str, int],
+        dlc_dict: Dict[str, str],
+    ) -> bool:
+        parent_str = _sanitize_id(parent_app_id)
+        if not parent_str or not dlc_dict:
+            return False
+        new_content, changed = _add_dlc_batch_in_memory(
+            self.content, parent_str, dlc_dict
+        )
+        if changed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def remove_dlc(
+        self, parent_app_id: Union[str, int], dlc_id: Union[str, int]
+    ) -> bool:
+        parent_str = _sanitize_id(parent_app_id)
+        dlc_str = _sanitize_id(dlc_id)
+        if not parent_str or not dlc_str:
+            return False
+        bounds = _get_section_bounds(self.content, "DlcData")
+        if not bounds:
+            return False
+        _, dlc_start, dlc_end = bounds
+        dlc_section = self.content[dlc_start:dlc_end]
+        parent_pattern = re.compile(rf"^[ \t]+{re.escape(parent_str)}:[ \t]*(?:#[^\r\n]*)?$", re.MULTILINE)
+        parent_match = parent_pattern.search(dlc_section)
+        if not parent_match:
+            return False
+
+        p_start = dlc_start + parent_match.end()
+        if p_start < len(self.content) and self.content[p_start] == "\r":
+            p_start += 1
+        if p_start < len(self.content) and self.content[p_start] == "\n":
+            p_start += 1
+
+        p_after = self.content[p_start:dlc_end]
+        next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
+        parent_end = (p_start + next_parent.start()) if next_parent else dlc_end
+
+        dlc_item_pattern = re.compile(
+            rf'^[ \t]*{re.escape(dlc_str)}[ \t]*:[ \t]*"[^"\r\n]*"(?:#[^\r\n]*)?$',
+            re.MULTILINE,
+        )
+        parent_block = self.content[p_start:parent_end]
+        match = dlc_item_pattern.search(parent_block)
+        if not match:
+            return False
+
+        abs_match_start = p_start + match.start()
+        line_start = self.content.rfind("\n", 0, abs_match_start)
+        line_start = 0 if line_start == -1 else line_start + 1
+        line_end = self.content.find("\n", abs_match_start)
+        line_end = len(self.content) if line_end == -1 else line_end + 1
+
+        self.content = self.content[:line_start] + self.content[line_end:]
+        self.has_changes = True
+        return True
+
+    def add_fake_app_id(
+        self,
+        app_id: Union[str, int],
+        target_id: Union[str, int],
+        comment: str = "",
+    ) -> bool:
+        app_id_str = _sanitize_id(app_id)
+        target_id_str = _sanitize_id(target_id)
+        if not app_id_str or not target_id_str:
+            return False
+        comment_clean = _sanitize_comment(comment)
+        new_content, changed = _add_map_item_in_memory(
+            self.content, "FakeAppIds", app_id_str, target_id_str, comment_clean
+        )
+        if changed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def remove_fake_app_id(self, app_id: Union[str, int]) -> bool:
+        app_id_str = _sanitize_id(app_id)
+        if not app_id_str:
+            return False
+        pattern = re.compile(
+            rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        new_content, removed = _remove_entry_in_memory(
+            self.content, "FakeAppIds", pattern
+        )
+        if removed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def add_launch_option(self, app_id: Union[str, int], option: str) -> bool:
+        app_id_str = _sanitize_id(app_id)
+        if not app_id_str:
+            return False
+        option_clean = _sanitize_comment(option)
+        new_content, changed = _add_map_item_in_memory(
+            self.content, "LaunchOptions", app_id_str, option_clean
+        )
+        if changed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def remove_launch_option(self, app_id: Union[str, int]) -> bool:
+        app_id_str = _sanitize_id(app_id)
+        if not app_id_str:
+            return False
+        pattern = re.compile(
+            rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        new_content, removed = _remove_entry_in_memory(
+            self.content, "LaunchOptions", pattern
+        )
+        if removed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+
+def batch_config_edit(config_path: Optional[Path] = None) -> BatchConfigEditor:
+    """Return a BatchConfigEditor context manager to batch multiple additions, updates,
+    and removals into a single atomic write."""
+    if config_path is None:
+        config_path = get_user_config_path()
+    return BatchConfigEditor(config_path)
+
+
+def add_additional_apps_batch(
+    config_path: Path, apps: List[Tuple[Union[str, int], str]]
+) -> bool:
+    """Add multiple AppIDs to AdditionalApps in SLSsteam config.yaml in a single atomic write."""
+    if not apps:
+        return True
+    ensure_plugins_enabled(config_path)
+    with batch_config_edit(config_path) as editor:
+        any_added = False
+        for app_id, comment in apps:
+            if editor.add_app(app_id, comment):
+                any_added = True
+    return any_added
+
+
+def add_additional_depots_batch(
+    config_path: Path, depots: List[Tuple[Union[str, int], str]]
+) -> bool:
+    """Add multiple DepotIDs to AdditionalDepots in SLSsteam config.yaml in a single atomic write."""
+    if not depots:
+        return True
+    ensure_plugins_enabled(config_path)
+    with batch_config_edit(config_path) as editor:
+        any_added = False
+        for depot_id, comment in depots:
+            if editor.add_depot(depot_id, comment):
+                any_added = True
+    return any_added
+
+
+def add_decryption_keys_batch(
+    config_path: Path,
+    keys: Union[Dict[Union[str, int], Union[Tuple[str, str], str]], List[Union[Tuple[Union[str, int], str, str], Tuple[Union[str, int], str]]]],
+) -> bool:
+    """Add or update multiple depot AES decryption keys in DecryptionKeys in a single atomic write."""
+    if not keys:
+        return True
+    ensure_plugins_enabled(config_path)
+    with batch_config_edit(config_path) as editor:
+        any_added = False
+        if isinstance(keys, dict):
+            for depot_id, val in keys.items():
+                if isinstance(val, (tuple, list)) and len(val) >= 2:
+                    k, comm = val[0], val[1]
+                else:
+                    k, comm = str(val), ""
+                if editor.add_key(depot_id, k, comment=comm):
+                    any_added = True
+        elif isinstance(keys, (list, tuple)):
+            for item in keys:
+                if len(item) == 3:
+                    did, k, comm = item
+                elif len(item) == 2:
+                    did, k = item
+                    comm = ""
+                else:
+                    continue
+                if editor.add_key(did, k, comment=comm):
+                    any_added = True
+    return any_added
 
 
 def _fix_additional_apps_indentation(content: str) -> Tuple[str, bool]:
@@ -558,15 +1402,15 @@ def fix_slssteam_config_indentation(config_path: Path) -> bool:
 
 
 def _init_config_with_app(config_path: Path, app_id: str, comment: str) -> bool:
-    """Create new config file with a single AdditionalApps entry."""
+    """Create new config file with Plugins: yes and a single AdditionalApps entry."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if comment:
-        new_entry = f"AdditionalApps:\n  - {app_id} # {comment}\n"
+        new_entry = f"Plugins: yes\nAdditionalApps:\n  - {app_id} # {comment}\n"
     else:
-        new_entry = f"AdditionalApps:\n  - {app_id}\n"
+        new_entry = f"Plugins: yes\nAdditionalApps:\n  - {app_id}\n"
 
     if _atomic_write(config_path, new_entry):
-        logger.info(f"Created config file with AppID '{app_id}' in {config_path}")
+        logger.info(f"Created config file with Plugins: yes and AppID '{app_id}' in {config_path}")
         return True
     return False
 
@@ -598,66 +1442,28 @@ def _append_to_additional_apps(
     return content[:insert_pos] + entry_line + content[insert_pos:]
 
 
-def add_additional_app(config_path: Path, app_id: str, comment: str = "") -> bool:
+def add_additional_app(config_path: Path, app_id: Union[str, int], comment: str = "") -> bool:
     """Add an AppID to the AdditionalApps list in SLSsteam config.yaml."""
-    try:
-        content = _read_config_content(config_path)
-        if content is None:
-            return _init_config_with_app(config_path, app_id, comment)
-
-        fixed_content, _ = _fix_additional_apps_indentation(content)
-
-        bounds = _get_section_bounds(fixed_content, "AdditionalApps")
-        app_id_pattern = re.compile(
-            rf"^[ \t]*-[ \t]*{re.escape(app_id)}[ \t]*(?:#[^\r\n]*)?$",
-            re.MULTILINE,
-        )
-
-        entry_line = f"  - {app_id} # {comment}\n" if comment else f"  - {app_id}\n"
-
-        if bounds:
-            _, content_start, section_end = bounds
-            sec_content = fixed_content[content_start:section_end]
-            if app_id_pattern.search(sec_content):
-                logger.debug(f"AppID '{app_id}' already exists in AdditionalApps")
-                return False
-
-            new_content = _append_to_additional_apps(
-                fixed_content, app_id, comment, bounds
-            )
-        else:
-            new_content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
-
-        if not _atomic_write(config_path, new_content):
+    ensure_plugins_enabled(config_path)
+    if not config_path.exists():
+        app_id_clean = _sanitize_id(app_id)
+        if not app_id_clean:
             return False
-
-        logger.info(f"Added AppID '{app_id}' to AdditionalApps in {config_path}")
-        return True
-
-    except OSError as e:
-        logger.error(
-            f"Failed to add AppID '{app_id}' to {config_path}: {e}",
-            exc_info=True,
-        )
-        return False
+        return _init_config_with_app(config_path, app_id_clean, _sanitize_comment(comment))
+    with batch_config_edit(config_path) as editor:
+        res = editor.add_app(app_id, comment)
+    return res and editor.committed_successfully
 
 
-def remove_additional_app(config_path: Path, app_id: str) -> bool:
+def remove_additional_app(config_path: Path, app_id: Union[str, int]) -> bool:
     """Remove an AppID from the AdditionalApps list."""
-    app_id_pattern = re.compile(
-        rf"^[ \t]*-[ \t]*{re.escape(app_id)}[ \t]*(?:#[^\r\n]*)?$",
-        re.MULTILINE,
-    )
-    return _remove_entry_from_section(
-        config_path,
-        "AdditionalApps",
-        app_id_pattern,
-        f"Removed AppID '{app_id}' from AdditionalApps in {config_path}",
-        f"Failed to remove AppID '{app_id}': {{e}}",
-    )
+    ensure_plugins_enabled(config_path)
+    with batch_config_edit(config_path) as editor:
+        res = editor.remove_app(app_id)
+    return res and editor.committed_successfully
 
 
-def replace_additional_app(config_path: Path, old_app_id: str, new_app_id: str, new_comment: str = "") -> bool:
+def replace_additional_app(config_path: Path, old_app_id: Union[str, int], new_app_id: Union[str, int], new_comment: str = "") -> bool:
     """Replace an existing AppID in AdditionalApps with a new AppID and optional comment.
     Also migrates any DlcData or FakeAppIds entries if present.
     """
@@ -665,8 +1471,8 @@ def replace_additional_app(config_path: Path, old_app_id: str, new_app_id: str, 
     if not content:
         return False
 
-    old_aid_str = str(old_app_id).strip()
-    new_aid_str = str(new_app_id).strip()
+    old_aid_str = _sanitize_id(old_app_id)
+    new_aid_str = _sanitize_id(new_app_id)
     if not old_aid_str or not new_aid_str:
         return False
 
@@ -688,6 +1494,7 @@ def replace_additional_app(config_path: Path, old_app_id: str, new_app_id: str, 
         if m_comm:
             new_comment = m_comm.group(1).strip()
 
+    new_comment = _sanitize_comment(new_comment)
     replacement_line = f"  - {new_aid_str} # {new_comment}" if new_comment else f"  - {new_aid_str}"
     new_sec_content = pattern.sub(replacement_line, sec_content, count=1)
     updated_content = content[:content_start] + new_sec_content + content[section_end:]
@@ -701,6 +1508,16 @@ def replace_additional_app(config_path: Path, old_app_id: str, new_app_id: str, 
         if d_pat.search(d_sec):
             new_d_sec = d_pat.sub(f"  {new_aid_str}:", d_sec, count=1)
             updated_content = updated_content[:d_start] + new_d_sec + updated_content[d_end:]
+
+    # Migrate FakeAppIds section key if present
+    fake_bounds = _get_section_bounds(updated_content, "FakeAppIds")
+    if fake_bounds:
+        _, f_start, f_end = fake_bounds
+        f_sec = updated_content[f_start:f_end]
+        f_pat = re.compile(rf"^([ \t]*['\"]?){re.escape(old_aid_str)}(['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?)$", re.MULTILINE)
+        if f_pat.search(f_sec):
+            new_f_sec = f_pat.sub(rf"\g<1>{new_aid_str}\g<2>", f_sec, count=1)
+            updated_content = updated_content[:f_start] + new_f_sec + updated_content[f_end:]
 
     if _atomic_write(config_path, updated_content):
         logger.info(f"Successfully replaced AppID '{old_aid_str}' with '{new_aid_str}' in {config_path}")
@@ -763,7 +1580,7 @@ def is_depot_shared_with_other_games(
         from ui.assets import DEPOT_BLACKLIST
         shared_known = {str(d) for d in DEPOT_BLACKLIST} | {
             "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
-            "228986", "228987", "228988", "228989", "229000", "229001",
+            "228986", "228987", "228988", "228989", "228990", "229000", "229001",
             "229002", "229003", "229004", "229005", "229006", "229007", "229010",
             "229011", "229012", "229020", "229030", "229031", "229032"
         }
@@ -779,7 +1596,7 @@ def is_depot_shared_with_other_games(
 
     ex_aid_str = str(excluding_appid).strip() if excluding_appid is not None else None
 
-    # 2. Check plugin_library.json (if present)
+    # 2. Check plugin_library.json
     try:
         from utils.plugin_games import load_plugin_library
         lib = load_plugin_library()
@@ -831,58 +1648,17 @@ def is_depot_shared_with_other_games(
     return False
 
 
-def add_additional_depot(config_path: Path, depot_id: str, comment: str = "") -> bool:
+def add_additional_depot(config_path: Path, depot_id: Union[str, int], comment: str = "") -> bool:
     """Add a DepotID to the AdditionalDepots list in SLSsteam config.yaml."""
-    try:
-        ensure_plugins_enabled(config_path)
-        content = _read_config_content(config_path)
-        if content is None:
-            return False
-
-        depot_id_str = str(depot_id).strip()
-        bounds = _get_section_bounds(content, "AdditionalDepots")
-        depot_pattern = re.compile(
-            rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}[ \t]*(?:#[^\r\n]*)?$",
-            re.MULTILINE,
-        )
-
-        comment_suffix = f" # {comment.strip()}" if comment and comment.strip() else ""
-        entry_line = f"  - {depot_id_str}{comment_suffix}\n"
-
-        if bounds:
-            _, content_start, section_end = bounds
-            sec_content = content[content_start:section_end]
-            m = depot_pattern.search(sec_content)
-            if m:
-                if comment and comment.strip():
-                    abs_start = content_start + m.start()
-                    abs_end = content_start + m.end()
-                    new_content = content[:abs_start] + f"  - {depot_id_str}{comment_suffix}" + content[abs_end:]
-                    if _atomic_write(config_path, new_content):
-                        logger.info(f"Updated comment for DepotID '{depot_id_str}' in AdditionalDepots")
-                        return True
-                return False
-
-            insert_pos = section_end
-            if insert_pos > 0 and content[insert_pos - 1] != "\n":
-                entry_line = "\n" + entry_line
-            new_content = content[:insert_pos] + entry_line + content[insert_pos:]
-        else:
-            new_content = content.rstrip() + f"\n\nAdditionalDepots:\n{entry_line}"
-
-        if not _atomic_write(config_path, new_content):
-            return False
-
-        logger.info(f"Added DepotID '{depot_id_str}' to AdditionalDepots in {config_path}")
-        return True
-    except OSError as e:
-        logger.error(f"Failed to add DepotID '{depot_id}': {e}", exc_info=True)
-        return False
+    ensure_plugins_enabled(config_path)
+    with batch_config_edit(config_path) as editor:
+        res = editor.add_depot(depot_id, comment)
+    return res and editor.committed_successfully
 
 
 def remove_additional_depot(
     config_path: Path,
-    depot_id: str,
+    depot_id: Union[str, int],
     check_shared: bool = True,
     excluding_appid: Optional[Union[str, int]] = None,
 ) -> bool:
@@ -890,25 +1666,9 @@ def remove_additional_depot(
     If check_shared is True, skips removal if the depot is shared with another game or is a common redistributable.
     """
     ensure_plugins_enabled(config_path)
-    depot_id_str = str(depot_id).strip()
-    if check_shared and is_depot_shared_with_other_games(depot_id_str, excluding_appid=excluding_appid):
-        logger.info(
-            f"Preserving shared depot '{depot_id_str}' in AdditionalDepots "
-            f"(used by other games or redistributable)"
-        )
-        return False
-
-    depot_pattern = re.compile(
-        rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}[ \t]*(?:#[^\r\n]*)?$",
-        re.MULTILINE,
-    )
-    return _remove_entry_from_section(
-        config_path,
-        "AdditionalDepots",
-        depot_pattern,
-        f"Removed DepotID '{depot_id_str}' from AdditionalDepots in {config_path}",
-        f"Failed to remove DepotID '{depot_id_str}': {{e}}",
-    )
+    with batch_config_edit(config_path) as editor:
+        res = editor.remove_depot(depot_id, check_shared=check_shared, excluding_appid=excluding_appid)
+    return res and editor.committed_successfully
 
 
 def get_decryption_keys(config_path: Path) -> Dict[str, str]:
@@ -931,68 +1691,17 @@ def get_decryption_keys(config_path: Path) -> Dict[str, str]:
     return results
 
 
-def add_decryption_key(config_path: Path, depot_id: str, key: str, comment: str = "") -> bool:
+def add_decryption_key(config_path: Path, depot_id: Union[str, int], key: str, comment: str = "") -> bool:
     """Add or update a depot AES decryption key in DecryptionKeys section in SLSsteam config.yaml."""
-    try:
-        ensure_plugins_enabled(config_path)
-        content = _read_config_content(config_path)
-        if content is None:
-            return False
-
-        depot_id_str = str(depot_id).strip()
-        key_str = str(key).strip().lower()
-        if len(key_str) != 64:
-            logger.warning(f"Invalid AES key length ({len(key_str)}) for depot {depot_id_str}")
-            return False
-
-        bounds = _get_section_bounds(content, "DecryptionKeys")
-        comment_suffix = f" # {comment.strip()}" if comment and comment.strip() else ""
-        new_key_line = f"  {depot_id_str}: {key_str}{comment_suffix}\n"
-
-        if not bounds:
-            new_content = content.rstrip() + f"\n\nDecryptionKeys:\n{new_key_line}"
-            if _atomic_write(config_path, new_content):
-                logger.info(f"Added DecryptionKey for depot '{depot_id_str}' in new DecryptionKeys section")
-                return True
-            return False
-
-        _, content_start, section_end = bounds
-        sec_content = content[content_start:section_end]
-
-        dup_pattern = re.compile(
-            rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:#[^\r\n]*)?$",
-            re.MULTILINE,
-        )
-        match = dup_pattern.search(sec_content)
-        if match:
-            # Preserve existing comment if new comment was not explicitly passed
-            if not comment:
-                m_existing = re.search(r"#[ \t]*(.*)$", match.group(0))
-                if m_existing:
-                    comment_suffix = f" # {m_existing.group(1).strip()}"
-
-            abs_start = content_start + match.start()
-            abs_end = content_start + match.end()
-            new_content = content[:abs_start] + f"  {depot_id_str}: {key_str}{comment_suffix}" + content[abs_end:]
-        else:
-            insert_pos = section_end
-            if insert_pos > 0 and content[insert_pos - 1] != "\n":
-                new_key_line = "\n" + new_key_line
-            new_content = content[:insert_pos] + new_key_line + content[insert_pos:]
-
-        if not _atomic_write(config_path, new_content):
-            return False
-
-        logger.info(f"Saved DecryptionKey for depot '{depot_id_str}' in {config_path}")
-        return True
-    except OSError as e:
-        logger.error(f"Failed to add DecryptionKey for depot '{depot_id}': {e}", exc_info=True)
-        return False
+    ensure_plugins_enabled(config_path)
+    with batch_config_edit(config_path) as editor:
+        res = editor.add_key(depot_id, key, comment)
+    return res and editor.committed_successfully
 
 
 def remove_decryption_key(
     config_path: Path,
-    depot_id: str,
+    depot_id: Union[str, int],
     check_shared: bool = True,
     excluding_appid: Optional[Union[str, int]] = None,
 ) -> bool:
@@ -1000,25 +1709,9 @@ def remove_decryption_key(
     If check_shared is True, skips removal if the depot is shared with another game or is a common redistributable.
     """
     ensure_plugins_enabled(config_path)
-    depot_id_str = str(depot_id).strip()
-    if check_shared and is_depot_shared_with_other_games(depot_id_str, excluding_appid=excluding_appid):
-        logger.info(
-            f"Preserving shared decryption key for depot '{depot_id_str}' "
-            f"(used by other games or redistributable)"
-        )
-        return False
-
-    pattern = re.compile(
-        rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n]+$",
-        re.MULTILINE,
-    )
-    return _remove_entry_from_section(
-        config_path,
-        "DecryptionKeys",
-        pattern,
-        f"Removed DecryptionKey for depot '{depot_id_str}' in {config_path}",
-        f"Failed to remove DecryptionKey for depot '{depot_id_str}': {{e}}",
-    )
+    with batch_config_edit(config_path) as editor:
+        res = editor.remove_key(depot_id, check_shared=check_shared, excluding_appid=excluding_appid)
+    return res and editor.committed_successfully
 
 
 def add_dlc_data(
