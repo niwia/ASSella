@@ -37,6 +37,11 @@ scripts/*
 prerelease_check.py
 scratch/
 
+# ── Plugin distribution & R2 publishing ──────────────────────────────────────
+plugins_manifest.json
+plugins/
+r2-publish/
+
 # ── OS junk ─────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

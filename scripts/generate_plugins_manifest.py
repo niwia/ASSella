@@ -36,10 +36,44 @@ DEFAULT_DESCRIPTIONS = {
 }
 
 
-def generate_manifest(plugins_dir: Path, output_file: Path) -> None:
+def increment_version(version_str: str) -> str:
+    """Increment version x.y.z where z rolls over at 10 to bump y, and y rolls over at 10 to bump x."""
+    try:
+        parts = [int(p) for p in str(version_str).split(".")]
+        while len(parts) < 3:
+            parts.append(0)
+        x, y, z = parts[0], parts[1], parts[2]
+    except Exception:
+        x, y, z = 1, 0, 0
+
+    z += 1
+    if z >= 10:
+        z = 0
+        y += 1
+        if y >= 10:
+            y = 0
+            x += 1
+    return f"{x}.{y}.{z}"
+
+
+def generate_manifest(plugins_dir: Path, output_file: Path, force_bump: bool = False) -> None:
+    # Attempt to load existing manifest to check versions and hashes
+    existing_plugins = {}
+    manifest_source = output_file if output_file.is_file() else (plugins_dir / "plugins_manifest.json")
+    if manifest_source.is_file():
+        try:
+            with open(manifest_source, "r", encoding="utf-8") as f:
+                old_data = json.load(f)
+                existing_plugins = old_data.get("plugins", {})
+        except Exception:
+            existing_plugins = {}
+
     plugins = {}
     for lua_file in sorted(plugins_dir.glob("*.lua")):
         fname = lua_file.name
+        curr_sha256 = calculate_sha256(lua_file)
+        curr_size = lua_file.stat().st_size
+
         meta = DEFAULT_DESCRIPTIONS.get(
             fname,
             {
@@ -49,13 +83,23 @@ def generate_manifest(plugins_dir: Path, output_file: Path) -> None:
                 "required": False,
             },
         )
+
+        old_entry = existing_plugins.get(fname, {})
+        old_sha = old_entry.get("sha256", "")
+        old_version = old_entry.get("version", meta.get("version", "1.0.0"))
+
+        if force_bump or not old_sha or old_sha != curr_sha256:
+            new_version = increment_version(old_version) if old_sha else old_version
+        else:
+            new_version = old_version
+
         plugins[fname] = {
             "name": meta["name"],
             "filename": fname,
-            "version": meta["version"],
+            "version": new_version,
             "description": meta["description"],
-            "sha256": calculate_sha256(lua_file),
-            "size_bytes": lua_file.stat().st_size,
+            "sha256": curr_sha256,
+            "size_bytes": curr_size,
             "required": meta["required"],
         }
 
@@ -89,8 +133,13 @@ def main():
         default=Path("plugins_manifest.json"),
         help="Output JSON file path",
     )
+    parser.add_argument(
+        "--force-bump",
+        action="store_true",
+        help="Force increment version even if SHA-256 did not change",
+    )
     args = parser.parse_args()
-    generate_manifest(args.plugins_dir, args.output)
+    generate_manifest(args.plugins_dir, args.output, force_bump=args.force_bump)
 
 
 if __name__ == "__main__":
