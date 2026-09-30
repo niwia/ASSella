@@ -89,8 +89,17 @@ def init_info_tab(dialog) -> None:
         or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
     )
 
+    if is_vapor_mode:
+        saved_b = "public"
+        installed_branch = "public"
+        if dialog.settings:
+            dialog.settings.setValue(f"selected_branch/{dialog.appid}", "public")
+            dialog.settings.setValue(f"installed_branch/{dialog.appid}", "public")
+        dialog.game_data["installed_branch"] = "public"
+        dialog.game_data["selected_branch"] = "public"
+
     dialog.branch_combo = CenteredComboBox()
-    dialog.branch_combo.addItem(f"{saved_b} ({installed_bid})" if installed_bid else saved_b, saved_b)
+    dialog.branch_combo.addItem(f"{saved_b} ({installed_bid})" if (installed_bid and not is_vapor_mode) else saved_b, saved_b)
     dialog.branch_combo.setFixedHeight(26)
     dialog.branch_combo.setFixedWidth(200)
     dialog.branch_combo.setMaxVisibleItems(5)
@@ -617,36 +626,6 @@ def on_branches_loaded(dialog, branches_dict: dict) -> None:
         dialog.branch_combo.blockSignals(True)
         dialog.branch_combo.clear()
 
-        sorted_keys = sorted(branches_dict.keys(), key=lambda k: (0 if k == "public" else 1, k))
-        installed_branch = dialog.settings.value(f"installed_branch/{dialog.appid}", "", type=str) if dialog.settings else ""
-        if not installed_branch:
-            installed_branch = dialog.game_data.get("installed_branch", "public")
-        saved_branch = dialog.settings.value(f"selected_branch/{dialog.appid}", "", type=str) if dialog.settings else ""
-        if not saved_branch or (installed_branch and installed_branch != "public" and saved_branch == "public"):
-            saved_branch = installed_branch or "public"
-
-        if saved_branch and saved_branch not in branches_dict:
-            installed_bid = dialog.settings.value(
-                f"installed_buildid/{dialog.appid}/{saved_branch}",
-                dialog.settings.value(f"installed_buildid/{dialog.appid}", "", type=str) if dialog.settings else "",
-                type=str) if dialog.settings else ""
-            branches_dict[saved_branch] = {"buildid": installed_bid or ""}
-            sorted_keys.append(saved_branch)
-            logger.info(
-                f"Branch '{saved_branch}' for {dialog.appid} not in fetched branch list "
-                f"({list(branches_dict.keys())}); keeping user's selection."
-            )
-        select_idx = 0
-
-        for idx, b_name in enumerate(sorted_keys):
-            b_info = branches_dict[b_name]
-            bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
-            label = f"{b_name} ({bid})" if bid else b_name
-            dialog.branch_combo.addItem(label, b_name)
-            if b_name == saved_branch:
-                select_idx = idx
-
-        dialog.branch_combo.setCurrentIndex(select_idx)
         is_vm = bool(
             dialog.game_data.get("is_atom")
             or dialog.game_data.get("is_vapor")
@@ -654,6 +633,46 @@ def on_branches_loaded(dialog, branches_dict: dict) -> None:
             or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
             or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
         )
+
+        sorted_keys = sorted(branches_dict.keys(), key=lambda k: (0 if k == "public" else 1, k))
+        if is_vm:
+            installed_branch = "public"
+            saved_branch = "public"
+            if dialog.settings:
+                dialog.settings.setValue(f"selected_branch/{dialog.appid}", "public")
+                dialog.settings.setValue(f"installed_branch/{dialog.appid}", "public")
+            dialog.game_data["installed_branch"] = "public"
+            dialog.game_data["selected_branch"] = "public"
+        else:
+            installed_branch = dialog.settings.value(f"installed_branch/{dialog.appid}", "", type=str) if dialog.settings else ""
+            if not installed_branch:
+                installed_branch = dialog.game_data.get("installed_branch", "public")
+            saved_branch = dialog.settings.value(f"selected_branch/{dialog.appid}", "", type=str) if dialog.settings else ""
+            if not saved_branch or (installed_branch and installed_branch != "public" and saved_branch == "public"):
+                saved_branch = installed_branch or "public"
+
+            if saved_branch and saved_branch not in branches_dict:
+                installed_bid = dialog.settings.value(
+                    f"installed_buildid/{dialog.appid}/{saved_branch}",
+                    dialog.settings.value(f"installed_buildid/{dialog.appid}", "", type=str) if dialog.settings else "",
+                    type=str) if dialog.settings else ""
+                branches_dict[saved_branch] = {"buildid": installed_bid or ""}
+                sorted_keys.append(saved_branch)
+                logger.info(
+                    f"Branch '{saved_branch}' for {dialog.appid} not in fetched branch list "
+                    f"({list(branches_dict.keys())}); keeping user's selection."
+                )
+
+        select_idx = 0
+        for idx, b_name in enumerate(sorted_keys):
+            b_info = branches_dict[b_name]
+            bid = str(b_info.get("buildid", "")) if isinstance(b_info, dict) else ""
+            label = f"{b_name} ({bid})" if (bid and not is_vm) else b_name
+            dialog.branch_combo.addItem(label, b_name)
+            if b_name == ("public" if is_vm else saved_branch):
+                select_idx = idx
+
+        dialog.branch_combo.setCurrentIndex(select_idx)
         if is_vm:
             dialog.branch_combo.setEnabled(False)
             dialog.branch_combo.setToolTip("Branch selection is disabled for AT0-M games.")
@@ -685,9 +704,24 @@ def on_branches_loaded(dialog, branches_dict: dict) -> None:
 
 
 def on_branch_combo_changed(dialog) -> None:
-    sel_branch = dialog.branch_combo.currentData() or "public"
-    if dialog.settings:
-        dialog.settings.setValue(f"selected_branch/{dialog.appid}", sel_branch)
+    is_vm = bool(
+        dialog.game_data.get("is_atom")
+        or dialog.game_data.get("is_vapor")
+        or dialog.game_data.get("is_plugin_game")
+        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
+    )
+    if is_vm:
+        sel_branch = "public"
+        if dialog.settings:
+            dialog.settings.setValue(f"selected_branch/{dialog.appid}", "public")
+            dialog.settings.setValue(f"installed_branch/{dialog.appid}", "public")
+        dialog.game_data["installed_branch"] = "public"
+        dialog.game_data["selected_branch"] = "public"
+    else:
+        sel_branch = dialog.branch_combo.currentData() or "public"
+        if dialog.settings:
+            dialog.settings.setValue(f"selected_branch/{dialog.appid}", sel_branch)
 
     b_dict = getattr(dialog, "_branches_dict", {})
     b_info = b_dict.get(sel_branch, {}) if isinstance(b_dict, dict) else {}
@@ -1720,6 +1754,15 @@ def init_slsonline_logic(dialog) -> None:
 
 
 def on_status_btn_clicked(dialog) -> None:
+    is_vm = bool(
+        dialog.game_data.get("is_vapor")
+        or dialog.game_data.get("is_atom")
+        or dialog.game_data.get("is_plugin_game")
+        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
+        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+    )
+    if is_vm:
+        return
     if dialog.parent_window and hasattr(dialog.parent_window, "game_manager") and dialog.parent_window.game_manager:
         dialog.status_tile.setEnabled(False)
         update_status_ui(dialog, "checking")
@@ -1734,11 +1777,20 @@ def update_status_ui(dialog, status) -> None:
 
     from utils.color_utils import get_semantic_colors
     sem_colors = get_semantic_colors(ac)
-    if status == "vapor" or dialog.game_data.get("is_vapor") or dialog.game_data.get("is_plugin_game"):
-        title = "VAPOR"
-        sub = "Steam Native / SLSsteam"
+    is_vm = bool(
+        status in ("vapor", "at0m", "at0-m")
+        or dialog.game_data.get("is_vapor")
+        or dialog.game_data.get("is_atom")
+        or dialog.game_data.get("is_plugin_game")
+        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
+        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+    )
+    if is_vm:
+        title = "AT0-M"
+        sub = "Updates Managed by Steam"
         dialog.status_tile.title_lbl.setText(title)
         dialog.status_tile.sub_lbl.setText(sub)
+        dialog.status_tile.setToolTip("AT0-M games are updated natively by the Steam client. Update checks are disabled in ASSella.")
 
         tonal_bg = "rgba(186, 104, 200, 0.22)"
         tonal_hover = "rgba(186, 104, 200, 0.32)"
@@ -1830,12 +1882,30 @@ def update_status_ui(dialog, status) -> None:
 def on_status_changed(dialog, changed_appid, new_status) -> None:
     if changed_appid != dialog.appid:
         return
+    is_vm = bool(
+        dialog.game_data.get("is_vapor")
+        or dialog.game_data.get("is_atom")
+        or dialog.game_data.get("is_plugin_game")
+        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
+        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+    )
+    if is_vm:
+        new_status = "at0m"
     dialog.game_data["update_status"] = new_status
     update_status_ui(dialog, new_status)
 
 
 def on_hubcap_status_changed(dialog, changed_appid, needs_update, update_in_progress) -> None:
     if changed_appid != dialog.appid:
+        return
+    is_vm = bool(
+        dialog.game_data.get("is_vapor")
+        or dialog.game_data.get("is_atom")
+        or dialog.game_data.get("is_plugin_game")
+        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
+        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+    )
+    if is_vm:
         return
     dialog.game_data["hubcap_needs_update"] = needs_update
     dialog.game_data["hubcap_update_in_progress"] = update_in_progress
@@ -2255,6 +2325,18 @@ def on_move_to_vapor_clicked(dialog) -> None:
     appid = str(dialog.appid)
     game_name = game_data.get("game_name") or f"App {appid}"
 
+    # Verify plugins are present before converting to AT0-M
+    from utils.plugin_manager import are_plugins_present
+    if not are_plugins_present():
+        QMessageBox.warning(
+            dialog,
+            "AT0-M Plugins Required",
+            "AT0-M mode requires SLSsteam plugins (download.lua and spliced-tickets.lua).\n\n"
+            "The plugins were not found in your SLSsteam plugins directory.\n\n"
+            "Please go to Settings -> AT0-M and enable/deploy plugin support before moving games to AT0-M.",
+        )
+        return
+
     reply = QMessageBox.question(
         dialog,
         "Move to plugin AT0-M",
@@ -2430,12 +2512,16 @@ def on_move_to_vapor_clicked(dialog) -> None:
     # Update settings
     if dialog.settings:
         dialog.settings.setValue(f"exclude_from_update_all/{appid}", True)
+        dialog.settings.setValue(f"selected_branch/{appid}", "public")
+        dialog.settings.setValue(f"installed_branch/{appid}", "public")
 
     # Update game data dict
     game_data["is_vapor"] = True
     game_data["is_atom"] = True
     game_data["source"] = "at0-m"
     game_data["update_status"] = "at0m"
+    game_data["selected_branch"] = "public"
+    game_data["installed_branch"] = "public"
 
     # Ensure appmanifest InstalledDepots is populated for Steam native support
     acf_path = game_data.get("appmanifest_path")

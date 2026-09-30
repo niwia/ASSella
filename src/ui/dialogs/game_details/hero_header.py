@@ -213,7 +213,16 @@ def update_title(dialog) -> None:
     """Update the hero banner title; Denuvo + ProtonDB shown as separate pill badges."""
     from utils.dlc_helpers import is_dlc_only_mode
 
-    installed_branch = dialog.settings.value(f"installed_branch/{dialog.appid}", "public", type=str) if dialog.settings else "public"
+    is_vm = bool(
+        dialog.game_data.get("is_atom")
+        or dialog.game_data.get("is_vapor")
+        or dialog.game_data.get("is_plugin_game")
+        or dialog.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+        or dialog.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
+    )
+    installed_branch = "public" if is_vm else (
+        dialog.settings.value(f"installed_branch/{dialog.appid}", "public", type=str) if dialog.settings else "public"
+    )
     display_parts = [dialog.game_data.get("game_name", "Unknown")]
     if installed_branch and installed_branch != "public":
         display_parts.append(f"({installed_branch})")

@@ -279,8 +279,7 @@ def create_at0m_tab(dialog) -> QWidget:
     deploy_card, deploy_layout = dialog._create_card_frame("Deploy")
 
     deploy_desc = QLabel(
-        "Deploy bundled Lua plugins to your SLSsteam plugins directory. "
-        "When detected with a matching SHA-256 hash, buttons turn green and are locked."
+        "Manage Lua plugins for SLSsteam. Click to verify or fetch the latest updates from the Cloud."
     )
     deploy_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
     deploy_desc.setWordWrap(True)
@@ -314,39 +313,63 @@ def create_at0m_tab(dialog) -> QWidget:
                 btn.setStyleSheet(detected_style)
                 btn.setEnabled(True)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"{label} ({fname}) is installed and up to date. Click to re-check or update from Cloudflare R2.")
+                btn.setToolTip(f"{label} ({fname}) is installed and up to date. Click to re-check or update from the Cloud.")
             else:
                 btn.setText(f"Download & Deploy {label}")
                 btn.setStyleSheet(NORMAL_BTN_STYLE)
                 btn.setEnabled(True)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"Click to download {fname} on demand from Cloudflare R2 and deploy to SLSsteam plugins.")
+                btn.setToolTip(f"Click to download {fname} on demand from the Cloud and deploy to SLSsteam plugins.")
 
-    def _deploy_single(filename: str, title: str):
-        try:
-            from utils.plugin_manager import deploy_plugin
-            ok, skipped, msg = deploy_plugin(filename, force_download=True)
-            _refresh_deploy_buttons()
-            if not ok:
-                QMessageBox.warning(dialog, f"{title}", f"Failed downloading/deploying {filename}:\n{msg}")
-            elif skipped:
-                QMessageBox.information(
-                    dialog,
-                    f"{title}",
-                    f"{title} ({filename}) is already up to date from Cloudflare R2.\nSHA-256 checksum matched."
-                )
-            else:
-                QMessageBox.information(
-                    dialog,
-                    f"{title}",
-                    f"Successfully downloaded from Cloudflare R2 and deployed {title} ({filename}) to SLSsteam plugins!"
-                )
-        except Exception as exc:
-            logger.error(f"[at0mTab] Deploy {filename} error: {exc}")
-            QMessageBox.critical(dialog, "Deploy Error", f"Error deploying {filename}: {exc}")
+    def _deploy_single(filename: str, title: str, button: QPushButton):
+        button.setEnabled(False)
+        button.setText("Checking Cloud...")
+        button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(33, 150, 243, 0.22);
+                color: #90CAF9;
+                border: 1px solid rgba(144, 202, 249, 0.45);
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 9pt;
+                font-weight: 600;
+            }
+        """)
 
-    lua_plugin_btn.clicked.connect(lambda: _deploy_single("download.lua", "Lua Plugin"))
-    spliced_plugin_btn.clicked.connect(lambda: _deploy_single("spliced-tickets.lua", "Spliced Plugin"))
+        def _worker():
+            try:
+                from utils.plugin_manager import deploy_plugin
+                ok, skipped, msg = deploy_plugin(filename, force_download=True)
+                err = None
+            except Exception as exc:
+                logger.error(f"[at0mTab] Deploy {filename} error: {exc}")
+                ok, skipped, msg, err = False, False, str(exc), exc
+
+            def _on_finish():
+                _refresh_deploy_buttons()
+                if err or not ok:
+                    QMessageBox.warning(dialog, f"{title}", f"Failed downloading/deploying {filename}:\n{msg}")
+                elif skipped:
+                    QMessageBox.information(
+                        dialog,
+                        f"{title}",
+                        f"{title} ({filename}) is already up to date from the Cloud.\nSHA-256 checksum matched."
+                    )
+                else:
+                    QMessageBox.information(
+                        dialog,
+                        f"{title}",
+                        f"Successfully downloaded from the Cloud and deployed {title} ({filename}) to SLSsteam plugins!"
+                    )
+
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, _on_finish)
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
+    lua_plugin_btn.clicked.connect(lambda: _deploy_single("download.lua", "Lua Plugin", lua_plugin_btn))
+    spliced_plugin_btn.clicked.connect(lambda: _deploy_single("spliced-tickets.lua", "Spliced Plugin", spliced_plugin_btn))
 
     def _update_subwidget_states(enabled: bool):
         dialog.at0m_disable_updates_checkbox.setEnabled(enabled)

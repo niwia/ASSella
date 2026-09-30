@@ -1307,9 +1307,19 @@ class GameManager(QObject):
             else:
                 game_data["size_on_disk"] = size_on_disk
 
-            # If this is an AT0-M or Plugin-managed game, mark update_status as 'at0m' directly
+            # If this is an AT0-M or Plugin-managed game, mark update_status as 'at0m' and force public branch
             if is_vapor or is_plugin_game:
                 game_data["update_status"] = UPDATE_STATUS.get("AT0M", "at0m")
+                game_data["installed_branch"] = "public"
+                game_data["selected_branch"] = "public"
+                if appid and appid not in ("0", "N/A", "unknown"):
+                    try:
+                        from utils.settings import get_settings
+                        _s = get_settings()
+                        _s.setValue(f"installed_branch/{appid}", "public")
+                        _s.setValue(f"selected_branch/{appid}", "public")
+                    except Exception:
+                        pass
                 return game_data
 
             # Set update status — restore from disk cache if available

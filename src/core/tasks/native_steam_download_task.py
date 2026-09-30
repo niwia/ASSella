@@ -208,18 +208,15 @@ class NativeSteamDownloadTask(QObject):
             self._cleanup_failure()
             return
 
-        # 4. Deploy download.lua and spliced-tickets.lua plugins
-        plugins_dir = sls_config_dir / "plugins"
-        plugins_dir.mkdir(parents=True, exist_ok=True)
-        self.progress.emit("[Native Steam] Deploying download.lua plugin...")
-        plugin_ok = self._deploy_plugin(plugins_dir)
-        if not plugin_ok:
-            msg = "Failed to deploy download.lua plugin."
+        # 4. Verify SLSsteam plugins are present
+        from utils.plugin_manager import are_plugins_present
+        if not are_plugins_present():
+            msg = "AT0-M plugins (download.lua / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
             self.error.emit((RuntimeError, msg, None))
             return
-        self.progress.emit("[Native Steam] download.lua plugin deployed")
+        self.progress.emit("[Native Steam] AT0-M plugins verified")
         if not self._is_running:
             self._cleanup_failure()
             return
@@ -495,10 +492,10 @@ class NativeSteamDownloadTask(QObject):
         return depot_keys, manifest_gids
 
     def _deploy_plugin(self, plugins_dir: Path) -> bool:
-        """Deploy download.lua and spliced-tickets.lua to SLSsteam plugins directory from Cloudflare R2."""
+        """Deploy download.lua and spliced-tickets.lua to SLSsteam plugins directory from Cloud."""
         try:
             from utils.plugin_manager import deploy_all_plugins
-            self.progress.emit("[Native Steam] Checking required plugins from Cloudflare R2...")
+            self.progress.emit("[Native Steam] Checking required plugins from Cloud...")
             ok, msgs = deploy_all_plugins()
             for m in msgs:
                 logger.info(f"[NativeSteamDL] {m}")

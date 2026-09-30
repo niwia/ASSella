@@ -218,6 +218,22 @@ def are_all_plugins_installed() -> bool:
     return True
 
 
+def are_plugins_present() -> bool:
+    """Check if all required SLSsteam plugins exist locally in the primary plugins directory."""
+    target_dirs = get_sls_plugins_dirs()
+    if not target_dirs:
+        return False
+    for fname in FALLBACK_REQUIRED_PLUGINS:
+        found = False
+        for tdir in target_dirs:
+            if (tdir / fname).is_file():
+                found = True
+                break
+        if not found:
+            return False
+    return True
+
+
 def deploy_plugin(filename: str, force_download: bool = False) -> Tuple[bool, bool, str]:
     """Ensure a plugin is downloaded from R2 and deployed into SLSsteam plugin directories.
 

@@ -25,10 +25,18 @@ def format_game_display_name(game_data: dict) -> str:
         from utils.dlc_helpers import is_dlc_only_mode
         if is_dlc_only_mode(appid):
             parts.append("[DLC MODE]")
-        from utils.settings import get_settings
-        branch = get_settings().value(f"installed_branch/{appid}", "public", type=str)
-        if branch and branch != "public":
-            parts.append(f"({branch})")
+        is_vm = bool(
+            game_data.get("is_atom")
+            or game_data.get("is_vapor")
+            or game_data.get("is_plugin_game")
+            or game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            or game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
+        )
+        if not is_vm:
+            from utils.settings import get_settings
+            branch = get_settings().value(f"installed_branch/{appid}", "public", type=str)
+            if branch and branch != "public":
+                parts.append(f"({branch})")
     return " ".join(parts)
 
 

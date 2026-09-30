@@ -478,7 +478,7 @@ def get_sls_plugins_dirs() -> List[Path]:
 
 
 def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
-    """Deploy a specific SLSsteam plugin on demand from Cloudflare R2 / local cache.
+    """Deploy a specific SLSsteam plugin on demand from Cloud / local cache.
 
     Returns:
         (success: bool, skipped: bool, message: str)
@@ -489,7 +489,7 @@ def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
 
 
 def deploy_all_sls_plugins() -> Tuple[bool, List[str]]:
-    """Deploy required plugins (download.lua, spliced-tickets.lua) from Cloudflare R2 on demand."""
+    """Deploy required plugins (download.lua, spliced-tickets.lua) from Cloud on demand."""
     from utils.plugin_manager import deploy_all_plugins
     return deploy_all_plugins()
 
