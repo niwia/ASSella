@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget,
@@ -321,6 +321,23 @@ def create_at0m_tab(dialog) -> QWidget:
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setToolTip(f"Click to download {fname} on demand from the Cloud and deploy to SLSsteam plugins.")
 
+    class DeployWorker(QThread):
+        finished_signal = pyqtSignal(bool, bool, str, str, str)
+
+        def __init__(self, filename: str, title: str):
+            super().__init__()
+            self.filename = filename
+            self.title = title
+
+        def run(self):
+            try:
+                from utils.plugin_manager import deploy_plugin
+                ok, skipped, msg = deploy_plugin(self.filename, force_download=True)
+            except Exception as exc:
+                logger.error(f"[at0mTab] Deploy {self.filename} error: {exc}")
+                ok, skipped, msg = False, False, str(exc)
+            self.finished_signal.emit(ok, skipped, msg, self.title, self.filename)
+
     def _deploy_single(filename: str, title: str, button: QPushButton):
         button.setEnabled(False)
         button.setText("Checking Cloud...")
@@ -336,37 +353,29 @@ def create_at0m_tab(dialog) -> QWidget:
             }
         """)
 
-        def _worker():
-            try:
-                from utils.plugin_manager import deploy_plugin
-                ok, skipped, msg = deploy_plugin(filename, force_download=True)
-                err = None
-            except Exception as exc:
-                logger.error(f"[at0mTab] Deploy {filename} error: {exc}")
-                ok, skipped, msg, err = False, False, str(exc), exc
+        worker = DeployWorker(filename, title)
+        dialog._active_deploy_worker = worker
 
-            def _on_finish():
-                _refresh_deploy_buttons()
-                if err or not ok:
-                    QMessageBox.warning(dialog, f"{title}", f"Failed downloading/deploying {filename}:\n{msg}")
-                elif skipped:
-                    QMessageBox.information(
-                        dialog,
-                        f"{title}",
-                        f"{title} ({filename}) is already up to date from the Cloud.\nSHA-256 checksum matched."
-                    )
-                else:
-                    QMessageBox.information(
-                        dialog,
-                        f"{title}",
-                        f"Successfully downloaded from the Cloud and deployed {title} ({filename}) to SLSsteam plugins!"
-                    )
+        def _on_done(ok: bool, skipped: bool, msg: str, t: str, f: str):
+            _refresh_deploy_buttons()
+            if not ok:
+                QMessageBox.warning(dialog, t, f"Failed downloading/deploying {f}:\n{msg}")
+            elif skipped:
+                QMessageBox.information(
+                    dialog,
+                    t,
+                    f"{t} ({f}) is already up to date from the Cloud.\nSHA-256 checksum matched."
+                )
+            else:
+                QMessageBox.information(
+                    dialog,
+                    t,
+                    f"Successfully downloaded from the Cloud and deployed {t} ({f}) to SLSsteam plugins!"
+                )
+            dialog._active_deploy_worker = None
 
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, _on_finish)
-
-        import threading
-        threading.Thread(target=_worker, daemon=True).start()
+        worker.finished_signal.connect(_on_done)
+        worker.start()
 
     lua_plugin_btn.clicked.connect(lambda: _deploy_single("download.lua", "Lua Plugin", lua_plugin_btn))
     spliced_plugin_btn.clicked.connect(lambda: _deploy_single("spliced-tickets.lua", "Spliced Plugin", spliced_plugin_btn))

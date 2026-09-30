@@ -1,12 +1,16 @@
 """
 native_steam_action_dialog.py
 =============================
-Dialog offering the user a choice between:
-  1. Download & Track in ASSella (monitors download progress in ASSella UI)
-  2. Add to Steam & Hand Off (instant registration, hands off to Steam client)
+Minimal compact dialog matching user specification:
+  - "How to proceed?" header
+  - Option 1: "Automatic" (starts download immediately in Steam)
+  - Option 2: "Manual Depot/Storage" (adds to Steam only)
+  - "Remember my choice" checkbox (unchecked by default)
+  - "Cancel" and "Proceed" buttons
 """
 
 from typing import Optional
+import logging
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -16,9 +20,15 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QCheckBox,
+    QRadioButton,
+    QButtonGroup,
     QFrame,
     QWidget,
 )
+
+from utils.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 ACTION_CANCEL = 0
 ACTION_DOWNLOAD = 1
@@ -29,8 +39,9 @@ ACTION_HANDOFF = 2
 
 class NativeSteamActionDialog(QDialog):
     """
-    Presents the user with a choice between immediate Steam download
-    and adding to Steam library only.
+    Minimal dialog prompting how to proceed with Steam installation:
+      - Automatic (starts download immediately)
+      - Manual Depot/Storage (add to Steam only)
     """
 
     def __init__(
@@ -45,9 +56,10 @@ class NativeSteamActionDialog(QDialog):
         self.game_name = game_name or f"App {app_id}"
         self.accent_color = accent_color
         self._action = ACTION_CANCEL
+        self.settings = get_settings()
 
-        self.setWindowTitle("Native Steam Installation")
-        self.setFixedSize(520, 360)
+        self.setWindowTitle("How to proceed?")
+        self.setFixedWidth(420)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
 
         self._init_ui()
@@ -57,7 +69,7 @@ class NativeSteamActionDialog(QDialog):
             QDialog {
                 background-color: #1a1c23;
                 border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 12px;
+                border-radius: 10px;
             }
             QLabel {
                 color: #FFFFFF;
@@ -65,120 +77,220 @@ class NativeSteamActionDialog(QDialog):
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(14)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(12)
 
-        # Title
-        title_lbl = QLabel("Native Steam Installation")
-        title_lbl.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {self.accent_color};")
+        # Header title
+        title_lbl = QLabel("How to proceed?")
+        title_lbl.setStyleSheet("font-size: 11pt; font-weight: bold; color: rgba(255, 255, 255, 0.95);")
         layout.addWidget(title_lbl)
 
-        # Game info
-        info_lbl = QLabel(f"Target: <b style='color: #FFFFFF;'>{self.game_name}</b> (AppID: {self.app_id})")
-        info_lbl.setStyleSheet("font-size: 9.5pt; color: rgba(255, 255, 255, 0.85);")
-        info_lbl.setWordWrap(True)
-        layout.addWidget(info_lbl)
+        self.button_group = QButtonGroup(self)
 
-        desc_lbl = QLabel("Select how to proceed with this Steam game:")
-        desc_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.65);")
-        layout.addWidget(desc_lbl)
+        # Option 1: Automatic
+        self.auto_frame = QFrame()
+        self.auto_frame.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.auto_frame.setFixedHeight(46)
+        auto_layout = QHBoxLayout(self.auto_frame)
+        auto_layout.setContentsMargins(14, 8, 14, 8)
+        auto_layout.setSpacing(10)
 
-        # Option A: Download with Steam
-        self.track_btn = QPushButton()
-        self.track_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.track_btn.setFixedHeight(64)
-        self.track_btn.clicked.connect(self._on_track_clicked)
-        track_layout = QVBoxLayout(self.track_btn)
-        track_layout.setContentsMargins(14, 8, 14, 8)
-        track_layout.setSpacing(2)
+        # Left badge indicator
+        auto_badge = QLabel("AUTO")
+        auto_badge.setStyleSheet(f"""
+            background-color: rgba(255, 255, 255, 0.08);
+            color: {self.accent_color};
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 7.5pt;
+            font-weight: bold;
+        """)
+        auto_layout.addWidget(auto_badge)
 
-        t_title = QLabel("Download with Steam")
-        t_title.setStyleSheet("font-size: 10pt; font-weight: bold; color: #FFFFFF; background: transparent;")
-        t_sub = QLabel("Registers licenses in SLSsteam and immediately starts downloading in Steam.")
-        t_sub.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.65); background: transparent;")
-        t_sub.setWordWrap(True)
-        track_layout.addWidget(t_title)
-        track_layout.addWidget(t_sub)
-        self._style_option_btn(self.track_btn, primary=True)
-        layout.addWidget(self.track_btn)
+        auto_lbl = QLabel("Automatic")
+        auto_lbl.setStyleSheet("font-size: 9.5pt; color: #FFFFFF; background: transparent; font-weight: 500;")
+        auto_layout.addWidget(auto_lbl)
+        auto_layout.addStretch()
 
-        # Option B: Add to Steam only
-        self.handoff_btn = QPushButton()
-        self.handoff_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.handoff_btn.setFixedHeight(64)
-        self.handoff_btn.clicked.connect(self._on_handoff_clicked)
-        handoff_layout = QVBoxLayout(self.handoff_btn)
-        handoff_layout.setContentsMargins(14, 8, 14, 8)
-        handoff_layout.setSpacing(2)
+        self.auto_radio = QRadioButton()
+        self.auto_radio.setChecked(True)
+        self.auto_radio.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._style_radio(self.auto_radio)
+        self.button_group.addButton(self.auto_radio)
+        auto_layout.addWidget(self.auto_radio)
 
-        h_title = QLabel("Add to Steam only")
-        h_title.setStyleSheet("font-size: 10pt; font-weight: bold; color: #FFFFFF; background: transparent;")
-        h_sub = QLabel("Unlocks game and depot keys in your Steam library without starting download.")
-        h_sub.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.65); background: transparent;")
-        h_sub.setWordWrap(True)
-        handoff_layout.addWidget(h_title)
-        handoff_layout.addWidget(h_sub)
-        self._style_option_btn(self.handoff_btn, primary=False)
-        layout.addWidget(self.handoff_btn)
+        self.auto_frame.mousePressEvent = lambda e: self.auto_radio.setChecked(True)
+        layout.addWidget(self.auto_frame)
 
-        # Bottom row: Remember checkbox + Cancel button
-        bot_layout = QHBoxLayout()
-        bot_layout.setContentsMargins(0, 8, 0, 0)
+        # Option 2: Manual Depot/Storage
+        self.manual_frame = QFrame()
+        self.manual_frame.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.manual_frame.setFixedHeight(46)
+        manual_layout = QHBoxLayout(self.manual_frame)
+        manual_layout.setContentsMargins(14, 8, 14, 8)
+        manual_layout.setSpacing(10)
 
+        # Left badge indicator
+        manual_badge = QLabel("MANUAL")
+        manual_badge.setStyleSheet("""
+            background-color: rgba(255, 255, 255, 0.08);
+            color: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 7.5pt;
+            font-weight: bold;
+        """)
+        manual_layout.addWidget(manual_badge)
+
+        manual_lbl = QLabel("Manual Depot/Storage")
+        manual_lbl.setStyleSheet("font-size: 9.5pt; color: #FFFFFF; background: transparent; font-weight: 500;")
+        manual_layout.addWidget(manual_lbl)
+        manual_layout.addStretch()
+
+        self.manual_radio = QRadioButton()
+        self.manual_radio.setChecked(False)
+        self.manual_radio.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._style_radio(self.manual_radio)
+        self.button_group.addButton(self.manual_radio)
+        manual_layout.addWidget(self.manual_radio)
+
+        self.manual_frame.mousePressEvent = lambda e: self.manual_radio.setChecked(True)
+        layout.addWidget(self.manual_frame)
+
+        # Synchronize frame selection styles when radios change
+        self.auto_radio.toggled.connect(self._update_styles)
+        self.manual_radio.toggled.connect(self._update_styles)
+        self._update_styles()
+
+        # Remember my choice Checkbox
         self.remember_chk = QCheckBox("Remember my choice")
+        self.remember_chk.setChecked(False)
         self.remember_chk.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.remember_chk.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.75);")
-        bot_layout.addWidget(self.remember_chk)
+        self.remember_chk.setStyleSheet("""
+            QCheckBox {
+                font-size: 8.5pt;
+                color: rgba(255, 255, 255, 0.75);
+                spacing: 6px;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                border-radius: 3px;
+                background: rgba(255, 255, 255, 0.05);
+            }
+            QCheckBox::indicator:checked {
+                background: %s;
+                border-color: %s;
+            }
+        """ % (self.accent_color, self.accent_color))
+        layout.addWidget(self.remember_chk)
 
-        bot_layout.addStretch()
+        # Bottom row: Cancel / Proceed
+        bot_layout = QHBoxLayout()
+        bot_layout.setContentsMargins(0, 4, 0, 0)
+        bot_layout.setSpacing(10)
 
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.setFixedSize(80, 28)
-        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        cancel_btn.setStyleSheet("""
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setFixedSize(85, 30)
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: rgba(255, 255, 255, 0.07);
-                color: rgba(255, 255, 255, 0.8);
+                background-color: rgba(255, 255, 255, 0.06);
+                color: rgba(255, 255, 255, 0.85);
                 border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 6px;
                 font-size: 8.5pt;
             }
             QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.14);
+                background-color: rgba(255, 255, 255, 0.12);
                 color: #FFFFFF;
             }
         """)
-        cancel_btn.clicked.connect(self._on_cancel_clicked)
-        bot_layout.addWidget(cancel_btn)
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        bot_layout.addWidget(self.cancel_btn)
+
+        bot_layout.addStretch()
+
+        self.proceed_btn = QPushButton("Proceed")
+        self.proceed_btn.setFixedSize(85, 30)
+        self.proceed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.proceed_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.accent_color};
+                color: #FFFFFF;
+                border: 1px solid {self.accent_color};
+                border-radius: 6px;
+                font-size: 8.5pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                opacity: 0.9;
+            }}
+        """)
+        self.proceed_btn.clicked.connect(self._on_proceed)
+        bot_layout.addWidget(self.proceed_btn)
 
         layout.addLayout(bot_layout)
 
-    def _style_option_btn(self, btn: QPushButton, primary: bool):
-        border_color = self.accent_color if primary else "rgba(255, 255, 255, 0.18)"
-        bg_color = "rgba(255, 255, 255, 0.05)"
-        hover_bg = "rgba(255, 255, 255, 0.10)"
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {bg_color};
-                border: 1px solid {border_color};
+    def _style_radio(self, radio: QRadioButton):
+        radio.setStyleSheet(f"""
+            QRadioButton::indicator {{
+                width: 16px;
+                height: 16px;
                 border-radius: 8px;
-                text-align: left;
+                border: 1px solid rgba(255, 255, 255, 0.4);
+                background-color: rgba(255, 255, 255, 0.05);
             }}
-            QPushButton:hover {{
-                background-color: {hover_bg};
+            QRadioButton::indicator:hover {{
                 border-color: {self.accent_color};
+            }}
+            QRadioButton::indicator:checked {{
+                background-color: {self.accent_color};
+                border: 3px solid #1a1c23;
+                outline: 1px solid {self.accent_color};
             }}
         """)
 
-    def _on_track_clicked(self):
-        self._action = ACTION_TRACK
+    def _update_styles(self):
+        sel_style = f"""
+            QFrame {{
+                background-color: rgba(255, 255, 255, 0.07);
+                border: 1px solid {self.accent_color};
+                border-radius: 8px;
+            }}
+        """
+        unsel_style = """
+            QFrame {
+                background-color: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+            }
+            QFrame:hover {
+                background-color: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.22);
+            }
+        """
+        self.auto_frame.setStyleSheet(sel_style if self.auto_radio.isChecked() else unsel_style)
+        self.manual_frame.setStyleSheet(sel_style if self.manual_radio.isChecked() else unsel_style)
+
+    def _on_proceed(self):
+        if self.auto_radio.isChecked():
+            self._action = ACTION_DOWNLOAD
+        else:
+            self._action = ACTION_ADD_ONLY
+
+        if self.should_remember():
+            val = "immediate" if self._action == ACTION_DOWNLOAD else "add_only"
+            self.settings.setValue("at0m_start_download_action", val)
+            self.settings.setValue("vapor_start_download_action", val)
+            logger.info(f"[NativeSteamActionDialog] Saved default start download action: {val}")
+
         self.accept()
 
-    def _on_handoff_clicked(self):
-        self._action = ACTION_HANDOFF
-        self.accept()
-
-    def _on_cancel_clicked(self):
+    def _on_cancel(self):
         self._action = ACTION_CANCEL
         self.reject()
 

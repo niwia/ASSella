@@ -1151,7 +1151,11 @@ class FetchManifestDialog(QDialog):
             if act == ACTION_CANCEL:
                 self.status_label.setText("Download cancelled.")
                 return
-            auto_install = (act == ACTION_DOWNLOAD)
+            if dlg.should_remember():
+                saved_val = "immediate" if act in (ACTION_DOWNLOAD, ACTION_TRACK) else "add_only"
+                self.settings.setValue("at0m_start_download_action", saved_val)
+                self.settings.setValue("vapor_start_download_action", saved_val)
+            auto_install = (act in (ACTION_DOWNLOAD, ACTION_TRACK))
 
         logger.info(
             f"[FetchManifest] Handing off {name} ({aid_str}) directly to Steam (auto_install={auto_install})"

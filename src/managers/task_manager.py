@@ -781,10 +781,15 @@ class TaskManager(QObject):
                     use_native_steam = False
                 elif choice == BACKEND_NATIVE_STEAM:
                     use_native_steam = True
-                    action_mode = "handoff"
+                    start_mode = self.settings.value(
+                        "at0m_start_download_action",
+                        self.settings.value("vapor_start_download_action", "ask", type=str),
+                        type=str,
+                    )
+                    action_mode = start_mode or "ask"
         elif legacy_native:
             use_native_steam = True
-            action_mode = self.settings.value("native_steam_default_action", "ask", type=str)
+            action_mode = self.settings.value("at0m_start_download_action", self.settings.value("vapor_start_download_action", "ask", type=str), type=str)
 
         if use_native_steam:
             if action_mode == "ask":
@@ -806,12 +811,13 @@ class TaskManager(QObject):
                     self.job_finished()
                     return
                 if dlg.should_remember():
-                    saved_val = "track" if action == ACTION_TRACK else "handoff"
-                    self.settings.setValue("native_steam_default_action", saved_val)
+                    saved_val = "immediate" if action == ACTION_TRACK else "add_only"
+                    self.settings.setValue("at0m_start_download_action", saved_val)
+                    self.settings.setValue("vapor_start_download_action", saved_val)
                     logger.info(f"[TaskManager] Remembered default native Steam action: {saved_val}")
                 chosen_action = "track" if action == ACTION_TRACK else "handoff"
             else:
-                chosen_action = action_mode
+                chosen_action = "track" if action_mode == "immediate" else "handoff"
 
             if chosen_action == "handoff":
                 from core.native_steam.native_steam_handoff import perform_steam_handoff

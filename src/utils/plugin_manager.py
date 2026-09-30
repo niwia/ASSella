@@ -73,12 +73,15 @@ def get_cached_manifest_path() -> Path:
 
 
 def fetch_plugins_manifest(force_refresh: bool = False) -> Optional[Dict[str, Any]]:
-    """Fetch plugins_manifest.json from Cloudflare R2, falling back to local cache."""
+    """Fetch plugins_manifest.json from Cloud, falling back to local cache."""
     cached_path = get_cached_manifest_path()
 
     if not force_refresh and cached_path.is_file():
-        # Check cache age if desired, or try fetching fresh with short timeout
-        pass
+        try:
+            with open(cached_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as read_err:
+            logger.error(f"[PluginManager] Error reading cached manifest: {read_err}")
 
     try:
         logger.debug(f"[PluginManager] Fetching manifest from {MANIFEST_URL}")

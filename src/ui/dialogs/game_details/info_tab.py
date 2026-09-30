@@ -2328,13 +2328,26 @@ def on_move_to_vapor_clicked(dialog) -> None:
     # Verify plugins are present before converting to AT0-M
     from utils.plugin_manager import are_plugins_present
     if not are_plugins_present():
-        QMessageBox.warning(
-            dialog,
-            "AT0-M Plugins Required",
-            "AT0-M mode requires SLSsteam plugins (download.lua and spliced-tickets.lua).\n\n"
-            "The plugins were not found in your SLSsteam plugins directory.\n\n"
-            "Please go to Settings -> AT0-M and enable/deploy plugin support before moving games to AT0-M.",
-        )
+        box = QMessageBox(dialog)
+        box.setWindowTitle("AT0-M Plugins Required")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("AT0-M mode requires SLSsteam plugins (download.lua and spliced-tickets.lua).\n\nThe plugins were not found in your SLSsteam plugins directory.")
+        box.setInformativeText("Please go to Settings -> AT0-M and enable/deploy plugin support before moving games to AT0-M.")
+        settings_btn = box.addButton("Open AT0-M Settings", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() == settings_btn:
+            parent = getattr(dialog, "parent_window", None)
+            while parent and not hasattr(parent, "open_settings") and hasattr(parent, "parent"):
+                parent = parent.parent()
+            if parent and hasattr(parent, "open_settings"):
+                parent.open_settings(initial_tab="at0-m")
+            else:
+                try:
+                    from ui.dialogs.settings import SettingsDialog
+                    SettingsDialog(dialog, initial_tab="at0-m").exec()
+                except Exception as e:
+                    logger.error(f"Error opening settings dialog: {e}")
         return
 
     reply = QMessageBox.question(

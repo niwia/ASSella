@@ -1,20 +1,33 @@
 """
 download_backend_dialog.py
 ==========================
-Dialog prompting the user to choose between downloading via ASSella
-Downloader or downloading natively via the Steam client (at0-m).
+Compact, minimal dialog prompting the user to choose between downloading
+via Native Steam (at0-m) or ASSella Downloader.
+Features early plugin verification blocking and a 'Remember my choice' option.
 """
 
 from typing import Optional
-from PyQt6.QtCore import Qt
+from pathlib import Path
+import logging
+
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QCheckBox,
+    QFrame,
     QWidget,
 )
+
+from utils.settings import get_settings
+from utils.plugin_manager import are_plugins_present
+from utils.helpers import get_base_path
+
+logger = logging.getLogger(__name__)
 
 BACKEND_CANCEL = 0
 BACKEND_ASSELLA = 1
@@ -23,7 +36,8 @@ BACKEND_NATIVE_STEAM = 2
 
 class DownloadBackendDialog(QDialog):
     """
-    Prompt user to choose between ASSella Downloader and Native Steam (at0-m).
+    Compact dialog asking whether to download via Steam or ASSella.
+    Includes early plugin presence check with blocking for Steam option.
     """
 
     def __init__(
@@ -38,9 +52,15 @@ class DownloadBackendDialog(QDialog):
         self.game_name = game_name or f"App {app_id}"
         self.accent_color = accent_color
         self._choice = BACKEND_CANCEL
+        self.settings = get_settings()
 
-        self.setWindowTitle("Choose Download Method")
-        self.setFixedSize(500, 310)
+        self._selected_backend = BACKEND_NATIVE_STEAM
+        self._plugins_available = are_plugins_present()
+        if not self._plugins_available:
+            self._selected_backend = BACKEND_ASSELLA
+
+        self.setWindowTitle("Download Method")
+        self.setFixedWidth(440)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
 
         self._init_ui()
@@ -50,7 +70,7 @@ class DownloadBackendDialog(QDialog):
             QDialog {
                 background-color: #1a1c23;
                 border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 12px;
+                border-radius: 10px;
             }
             QLabel {
                 color: #FFFFFF;
@@ -58,116 +78,288 @@ class DownloadBackendDialog(QDialog):
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setContentsMargins(20, 18, 20, 16)
         layout.setSpacing(14)
 
-        # Title
-        title_lbl = QLabel("Choose Download Method")
-        title_lbl.setStyleSheet(f"font-size: 14pt; font-weight: bold; color: {self.accent_color};")
+        # Title: Download: {game_name} via
+        title_lbl = QLabel(f"Download : <b style='color: {self.accent_color};'>{self.game_name}</b> via")
+        title_lbl.setStyleSheet("font-size: 11pt; color: rgba(255, 255, 255, 0.95);")
+        title_lbl.setWordWrap(True)
         layout.addWidget(title_lbl)
 
-        # Target info
-        info_lbl = QLabel(f"Target: <b style='color: #FFFFFF;'>{self.game_name}</b> (AppID: {self.app_id})")
-        info_lbl.setStyleSheet("font-size: 9.5pt; color: rgba(255, 255, 255, 0.85);")
-        info_lbl.setWordWrap(True)
-        layout.addWidget(info_lbl)
+        # Options Container (Two boxes side by side)
+        cards_layout = QHBoxLayout()
+        cards_layout.setSpacing(12)
 
-        desc_lbl = QLabel("How would you like to install this game?")
-        desc_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.65);")
-        layout.addWidget(desc_lbl)
+        # 1. Steam Card (Left)
+        self.steam_card = QFrame()
+        self.steam_card.setCursor(Qt.CursorShape.PointingHandCursor if self._plugins_available else Qt.CursorShape.ForbiddenCursor)
+        self.steam_card.setFixedHeight(115)
+        steam_vbox = QVBoxLayout(self.steam_card)
+        steam_vbox.setContentsMargins(10, 12, 10, 10)
+        steam_vbox.setSpacing(6)
+        steam_vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Option 1: Native Steam (Vapor)
-        self.native_btn = QPushButton()
-        self.native_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.native_btn.setFixedHeight(64)
-        self.native_btn.clicked.connect(self._on_native_clicked)
-        n_layout = QVBoxLayout(self.native_btn)
-        n_layout.setContentsMargins(14, 8, 14, 8)
-        n_layout.setSpacing(2)
+        # Steam Logo
+        self.steam_icon_lbl = QLabel()
+        steam_pix = self._load_logo("steam.png")
+        if not steam_pix.isNull():
+            self.steam_icon_lbl.setPixmap(steam_pix.scaled(44, 44, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        steam_vbox.addWidget(self.steam_icon_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        n_title = QLabel("Download using Native Steam")
-        n_title.setStyleSheet("font-size: 10pt; font-weight: bold; color: #FFFFFF; background: transparent;")
-        n_sub = QLabel("Direct Steam integration via SLSsteam. Steam handles downloading and updates.")
-        n_sub.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.65); background: transparent;")
-        n_sub.setWordWrap(True)
-        n_layout.addWidget(n_title)
-        n_layout.addWidget(n_sub)
-        self._style_option_btn(self.native_btn, primary=True)
-        layout.addWidget(self.native_btn)
+        steam_name = QLabel("Steam")
+        steam_name.setStyleSheet("font-size: 10pt; font-weight: bold; background: transparent;")
+        steam_vbox.addWidget(steam_name, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Option 2: ASSella Downloader
-        self.assella_btn = QPushButton()
-        self.assella_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.assella_btn.setFixedHeight(64)
-        self.assella_btn.clicked.connect(self._on_assella_clicked)
-        a_layout = QVBoxLayout(self.assella_btn)
-        a_layout.setContentsMargins(14, 8, 14, 8)
-        a_layout.setSpacing(2)
+        self.steam_status_lbl = QLabel()
+        self.steam_status_lbl.setStyleSheet("font-size: 7.5pt; color: #ff6b6b; background: transparent; font-weight: 500;")
+        self.steam_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if not self._plugins_available:
+            self.steam_status_lbl.setText("Plugins Missing")
+            self.steam_status_lbl.setVisible(True)
+        else:
+            self.steam_status_lbl.setVisible(False)
+        steam_vbox.addWidget(self.steam_status_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        a_title = QLabel("Download using ASSella")
-        a_title.setStyleSheet("font-size: 10pt; font-weight: bold; color: #FFFFFF; background: transparent;")
-        a_sub = QLabel("Classic downloader with branch selection, depot checklist, and storage picker.")
-        a_sub.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.65); background: transparent;")
-        a_sub.setWordWrap(True)
-        a_layout.addWidget(a_title)
-        a_layout.addWidget(a_sub)
-        self._style_option_btn(self.assella_btn, primary=False)
-        layout.addWidget(self.assella_btn)
+        self.steam_card.mousePressEvent = lambda e: self._select_backend(BACKEND_NATIVE_STEAM)
+        cards_layout.addWidget(self.steam_card)
 
-        # Bottom row: Cancel button
+        # 2. ASSella Card (Right)
+        self.assella_card = QFrame()
+        self.assella_card.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.assella_card.setFixedHeight(115)
+        assella_vbox = QVBoxLayout(self.assella_card)
+        assella_vbox.setContentsMargins(10, 12, 10, 10)
+        assella_vbox.setSpacing(6)
+        assella_vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # ASSella Logo
+        self.assella_icon_lbl = QLabel()
+        assella_pix = self._load_logo("accela.png")
+        if not assella_pix.isNull():
+            self.assella_icon_lbl.setPixmap(assella_pix.scaled(44, 44, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        assella_vbox.addWidget(self.assella_icon_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        assella_name = QLabel("ASSella")
+        assella_name.setStyleSheet("font-size: 10pt; font-weight: bold; background: transparent;")
+        assella_vbox.addWidget(assella_name, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Spacer placeholder for alignment matching steam card
+        assella_sub = QLabel("Built-in")
+        assella_sub.setStyleSheet("font-size: 7.5pt; color: rgba(255, 255, 255, 0.45); background: transparent;")
+        assella_vbox.addWidget(assella_sub, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.assella_card.mousePressEvent = lambda e: self._select_backend(BACKEND_ASSELLA)
+        cards_layout.addWidget(self.assella_card)
+
+        layout.addLayout(cards_layout)
+
+        # Plugin Missing Helper Link/Button (if blocked)
+        self.plugin_help_btn = QPushButton("Enable Plugin Support in Settings")
+        self.plugin_help_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.plugin_help_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #ff9800;
+                font-size: 8pt;
+                text-decoration: underline;
+                border: none;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                color: #ffb74d;
+            }
+        """)
+        self.plugin_help_btn.clicked.connect(self._open_settings_atom)
+        self.plugin_help_btn.setVisible(not self._plugins_available)
+        layout.addWidget(self.plugin_help_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        # Remember my choice Checkbox
+        self.remember_chk = QCheckBox("Remember my choice")
+        self.remember_chk.setChecked(False)
+        self.remember_chk.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remember_chk.setStyleSheet("""
+            QCheckBox {
+                font-size: 8.5pt;
+                color: rgba(255, 255, 255, 0.75);
+                spacing: 6px;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                border-radius: 3px;
+                background: rgba(255, 255, 255, 0.05);
+            }
+            QCheckBox::indicator:checked {
+                background: %s;
+                border-color: %s;
+            }
+        """ % (self.accent_color, self.accent_color))
+        layout.addWidget(self.remember_chk)
+
+        # Bottom buttons row: Cancel / Proceed
         bot_layout = QHBoxLayout()
         bot_layout.setContentsMargins(0, 4, 0, 0)
-        bot_layout.addStretch()
+        bot_layout.setSpacing(10)
 
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.setFixedSize(80, 28)
-        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        cancel_btn.setStyleSheet("""
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setFixedSize(85, 30)
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: rgba(255, 255, 255, 0.07);
-                color: rgba(255, 255, 255, 0.8);
+                background-color: rgba(255, 255, 255, 0.06);
+                color: rgba(255, 255, 255, 0.85);
                 border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 6px;
                 font-size: 8.5pt;
             }
             QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.14);
+                background-color: rgba(255, 255, 255, 0.12);
                 color: #FFFFFF;
             }
         """)
-        cancel_btn.clicked.connect(self._on_cancel_clicked)
-        bot_layout.addWidget(cancel_btn)
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        bot_layout.addWidget(self.cancel_btn)
+
+        bot_layout.addStretch()
+
+        self.proceed_btn = QPushButton("Proceed")
+        self.proceed_btn.setFixedSize(85, 30)
+        self.proceed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.proceed_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {self.accent_color};
+                color: #FFFFFF;
+                border: 1px solid {self.accent_color};
+                border-radius: 6px;
+                font-size: 8.5pt;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                opacity: 0.9;
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.25);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+        """)
+        self.proceed_btn.clicked.connect(self._on_proceed)
+        bot_layout.addWidget(self.proceed_btn)
 
         layout.addLayout(bot_layout)
 
-    def _style_option_btn(self, btn: QPushButton, primary: bool):
-        border_color = self.accent_color if primary else "rgba(255, 255, 255, 0.18)"
-        bg_color = "rgba(255, 255, 255, 0.05)"
-        hover_bg = "rgba(255, 255, 255, 0.10)"
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {bg_color};
-                border: 1px solid {border_color};
+        self._update_cards_ui()
+
+    def _load_logo(self, filename: str) -> QPixmap:
+        """Load logo from bundled src/res/logo or ~/.local/share/ACCELA/Logo."""
+        candidates = [
+            Path(__file__).resolve().parent.parent.parent / "res" / "logo" / filename,
+            get_base_path() / "Logo" / filename,
+            Path.home() / ".local/share/ACCELA/Logo" / filename,
+        ]
+        for c in candidates:
+            if c.is_file():
+                return QPixmap(str(c))
+        return QPixmap()
+
+    def _select_backend(self, backend: int):
+        if backend == BACKEND_NATIVE_STEAM and not self._plugins_available:
+            return
+        self._selected_backend = backend
+        self._update_cards_ui()
+
+    def _update_cards_ui(self):
+        sel_style = f"""
+            QFrame {{
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 2px solid {self.accent_color};
                 border-radius: 8px;
-                text-align: left;
             }}
-            QPushButton:hover {{
-                background-color: {hover_bg};
-                border-color: {self.accent_color};
-            }}
-        """)
+        """
+        unsel_style = """
+            QFrame {
+                background-color: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+            }
+            QFrame:hover {
+                background-color: rgba(255, 255, 255, 0.07);
+                border: 1px solid rgba(255, 255, 255, 0.25);
+            }
+        """
+        disabled_style = """
+            QFrame {
+                background-color: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 8px;
+            }
+        """
 
-    def _on_assella_clicked(self):
-        self._choice = BACKEND_ASSELLA
+        # Update Steam Card
+        if not self._plugins_available:
+            self.steam_card.setStyleSheet(disabled_style)
+            self.steam_card.setEnabled(False)
+            self.steam_icon_lbl.setStyleSheet("opacity: 0.35;")
+        elif self._selected_backend == BACKEND_NATIVE_STEAM:
+            self.steam_card.setStyleSheet(sel_style)
+            self.steam_card.setEnabled(True)
+            self.steam_icon_lbl.setStyleSheet("")
+        else:
+            self.steam_card.setStyleSheet(unsel_style)
+            self.steam_card.setEnabled(True)
+            self.steam_icon_lbl.setStyleSheet("")
+
+        # Update ASSella Card
+        if self._selected_backend == BACKEND_ASSELLA:
+            self.assella_card.setStyleSheet(sel_style)
+        else:
+            self.assella_card.setStyleSheet(unsel_style)
+
+    def _open_settings_atom(self):
+        """Open settings dialog directly to at0-m tab and recheck plugins on return."""
+        parent = self.parent()
+        opened = False
+        while parent:
+            if hasattr(parent, "open_settings"):
+                parent.open_settings(initial_tab="at0-m")
+                opened = True
+                break
+            parent = getattr(parent, "parent", lambda: None)()
+
+        if not opened:
+            try:
+                from ui.dialogs.settings import SettingsDialog
+                dlg = SettingsDialog(self, initial_tab="at0-m")
+                dlg.exec()
+            except Exception as e:
+                logger.error(f"[DownloadBackendDialog] Error opening settings: {e}")
+
+        # Re-check plugin availability
+        self._plugins_available = are_plugins_present()
+        self.plugin_help_btn.setVisible(not self._plugins_available)
+        self.steam_status_lbl.setVisible(not self._plugins_available)
+        self.steam_card.setCursor(Qt.CursorShape.PointingHandCursor if self._plugins_available else Qt.CursorShape.ForbiddenCursor)
+        if self._plugins_available:
+            self._selected_backend = BACKEND_NATIVE_STEAM
+        self._update_cards_ui()
+
+    def _on_proceed(self):
+        self._choice = self._selected_backend
+        if self.should_remember():
+            val = "native" if self._choice == BACKEND_NATIVE_STEAM else "assella"
+            self.settings.setValue("at0m_default_download_action", val)
+            self.settings.setValue("vapor_default_download_action", val)
+            logger.info(f"[DownloadBackendDialog] Saved default download method: {val}")
         self.accept()
 
-    def _on_native_clicked(self):
-        self._choice = BACKEND_NATIVE_STEAM
-        self.accept()
-
-    def _on_cancel_clicked(self):
+    def _on_cancel(self):
         self._choice = BACKEND_CANCEL
         self.reject()
 
     def get_choice(self) -> int:
         return self._choice
+
+    def should_remember(self) -> bool:
+        return self.remember_chk.isChecked()
