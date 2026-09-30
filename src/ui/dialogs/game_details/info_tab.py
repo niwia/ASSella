@@ -2307,6 +2307,9 @@ def on_move_to_vapor_clicked(dialog) -> None:
     def extract_keys_from_lua_text(lua_text: str):
         for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_text):
             did = m.group(1)
+            # AppIDs MUST NEVER be added to depot_ids or decryption_keys
+            if str(did) == str(appid):
+                continue
             key = m.group(2)
             decryption_keys[did] = key
             if did not in depot_ids:
@@ -2345,6 +2348,10 @@ def on_move_to_vapor_clicked(dialog) -> None:
                 dlc_id = str(meta.get("dlcappid") or "").strip()
                 if dlc_id and dlc_id != str(appid) and dlc_id not in dlc_appids:
                     dlc_appids.append(dlc_id)
+
+    # Clean depot IDs and decryption keys to strictly exclude AppIDs and DLC AppIDs
+    depot_ids = [d for d in depot_ids if str(d) != str(appid) and str(d) not in dlc_appids]
+    decryption_keys = {d: k for d, k in decryption_keys.items() if str(d) != str(appid) and str(d) not in dlc_appids}
 
     # Register into plugin_library and config.yaml
     register_plugin_game(
@@ -2439,80 +2446,38 @@ def on_remove_from_vapor_clicked(dialog) -> None:
     if reply != QMessageBox.StandardButton.Yes:
         return
 
-    import json
-    from utils.plugin_games import unregister_plugin_game
-    from core.morrenus_api import get_manifest_zip_path, download_manifest
+    from utils.plugin_games import convert_plugin_game_to_accela
 
-    # 1. Ensure manifest zip exists in ACCELA cache beforehand
-    zip_path = get_manifest_zip_path(appid)
-    if not zip_path.exists():
-        dl_path, err = download_manifest(appid)
-        if dl_path and os.path.exists(dl_path):
-            zip_path = Path(dl_path)
+    # 1. Unregister from AT0-M plugin mode and clean config.yaml (keeps game in AdditionalApps!)
+    convert_plugin_game_to_accela(appid)
 
-    # 2. Present DepotSelectionDialog if zip is available
-    if zip_path.exists():
-        try:
-            from core.tasks.process_zip_task import ProcessZipTask
-            from ui.dialogs.depotselection import DepotSelectionDialog
-
-            zip_task = ProcessZipTask()
-            parsed_data = zip_task.run(str(zip_path))
-            if parsed_data and parsed_data.get("depots"):
-                depots = parsed_data.get("depots")
-                depot_dialog = DepotSelectionDialog(
-                    parsed_data["appid"],
-                    parsed_data.get("game_name", game_name),
-                    depots,
-                    parsed_data.get("header_url"),
-                    dialog,
-                    selected_depots=None,
-                    is_single_depot=(len(depots) == 1),
-                    missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
-                    missing_depots_info=parsed_data.get("missing_depots_info"),
-                    current_build_id=str(game_data.get("buildid") or "").strip(),
-                )
-                if not depot_dialog.exec():
-                    # User cancelled depot selection
-                    return
-                chosen = depot_dialog.get_selected_depots()
-                if chosen and dialog.settings:
-                    dialog.settings.setValue(
-                        f"depot_selection/{appid}",
-                        json.dumps({"selected": chosen})
-                    )
-        except Exception as e:
-            logger.warning(f"[VaporTransition] Depot selection dialog error: {e}")
-
-    # 3. Unregister from Vapor / SLSsteam config
-    unregister_plugin_game(appid)
-
-    # 4. Restore .ACCELA marker
+    # 2. Restore .ACCELA marker
     install_path = game_data.get("install_path")
     if install_path and os.path.isdir(install_path):
         accela_marker = os.path.join(install_path, ".ACCELA")
         try:
             os.makedirs(accela_marker, exist_ok=True)
-            logger.info(f"[VaporTransition] Created marker {accela_marker}")
+            logger.info(f"[AtomTransition] Created marker {accela_marker}")
         except Exception as e:
-            logger.error(f"[VaporTransition] Failed to create marker {accela_marker}: {e}")
+            logger.error(f"[AtomTransition] Failed to create marker {accela_marker}: {e}")
 
-    # 5. Update settings & game data
+    # 3. Update settings & game data
     if dialog.settings:
         dialog.settings.setValue(f"exclude_from_update_all/{appid}", False)
 
     game_data["is_vapor"] = False
     game_data["is_atom"] = False
+    game_data["is_plugin_game"] = False
     game_data["source"] = "ACCELA"
     game_data["update_status"] = "up_to_date"
 
-    # 6. Trigger verification of game files
+    # 4. Trigger verification of game files (this will cleanly present DepotSelectionDialog once)
     parent = getattr(dialog, "parent_window", None)
     if parent and hasattr(parent, "_fetch_game_manifest"):
         try:
             parent._fetch_game_manifest(game_data)
         except Exception as e:
-            logger.warning(f"[VaporTransition] Could not trigger manifest verification: {e}")
+            logger.warning(f"[AtomTransition] Could not trigger manifest verification: {e}")
 
     QMessageBox.information(
         dialog,
@@ -2541,3 +2506,8 @@ def on_remove_from_vapor_clicked(dialog) -> None:
             parent.refresh_library()
         elif hasattr(parent, "_refresh_library"):
             parent._refresh_library()
+
+
+# Atom aliases
+on_move_to_atom_clicked = on_move_to_vapor_clicked
+on_remove_from_atom_clicked = on_remove_from_vapor_clicked

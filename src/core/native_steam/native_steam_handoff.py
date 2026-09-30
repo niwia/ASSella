@@ -286,22 +286,14 @@ def perform_steam_handoff(
             all_d.update(str(d) for d in game_data["depots"].keys())
         selected_depots = [d for d in all_d if str(d) != str(appid)]
 
-    # Retain all keys (both main AppID key and all depots) in DecryptionKeys so Steam client
-    # and download.lua never fail with Missing Decryption Key / UpdateResult 8, unless in DLC-only mode.
+    # AppIDs MUST NEVER be added into AdditionalDepots or DecryptionKeys.
+    # Only actual depot IDs and their AES decryption keys belong there.
+    active_keys = {str(d): k for d, k in depot_keys.items() if str(d) != str(appid)}
     from utils.dlc_helpers import is_dlc_only_mode
     is_dlc = is_dlc_only_mode(appid) or bool(game_data.get("is_dlc_only"))
-
-    active_keys = dict(depot_keys)
-    if not is_dlc:
-        if game_data.get("app_key") and str(appid) not in active_keys:
-            active_keys[str(appid)] = game_data["app_key"]
-    else:
-        # In DLC mode: do not add base game appid key to DecryptionKeys
-        active_keys.pop(str(appid), None)
-        # Retain keys for the depots the user explicitly selected
-        if selected_depots:
-            sel_set = {str(d) for d in selected_depots}
-            active_keys = {d: k for d, k in active_keys.items() if str(d) in sel_set}
+    if is_dlc and selected_depots:
+        sel_set = {str(d) for d in selected_depots}
+        active_keys = {d: k for d, k in active_keys.items() if str(d) in sel_set}
 
     # 4. Check pinned manifests
     pinned_manifests = resolve_pinned_manifests(game_data, appid)

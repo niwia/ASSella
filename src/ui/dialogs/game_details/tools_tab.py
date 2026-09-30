@@ -309,6 +309,46 @@ def init_tools_tab(dialog) -> None:
 
     depots_row.addWidget(choose_reset_group, 1)
 
+    dialog.move_storage_btn = QPushButton("Move Storage...")
+    dialog.move_storage_btn.setFixedHeight(36)
+    dialog.move_storage_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.move_storage_btn.setToolTip("Move game installation and manifest to another Steam library storage.")
+    dialog.move_storage_btn.setStyleSheet(f"""
+        QPushButton {{
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            color: #FFFFFF;
+            font-weight: bold;
+            font-size: 8.5pt;
+            padding: 0 10px;
+        }}
+        QPushButton:hover {{
+            background: rgba(255, 255, 255, 0.10);
+            border-color: {ac};
+            color: {ac};
+        }}
+        QPushButton:disabled {{
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.25);
+        }}
+    """)
+    def _open_move_storage():
+        from ui.dialogs.move_storage_dialog import MoveStorageDialog
+        dlg = MoveStorageDialog(dialog, dialog.game_data, accent_color=ac)
+        if dlg.target_libs:
+            dlg.exec()
+        else:
+            QMessageBox.information(
+                dialog,
+                "No Other Libraries",
+                "No other Steam library folder was detected.\n\n"
+                "To move games between drives, add additional library folders in Steam Settings -> Storage."
+            )
+    dialog.move_storage_btn.clicked.connect(_open_move_storage)
+    depots_row.addWidget(dialog.move_storage_btn, 1)
+
     dialog.fix_btn = QPushButton("Fix Installation")
     dialog.fix_btn.setFixedHeight(36)
     dialog.fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)

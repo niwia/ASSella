@@ -936,12 +936,49 @@ class BatchConfigEditor:
             return True
         return False
 
-    def add_depot(self, depot_id: Union[str, int], comment: str = "") -> bool:
+    def add_depot(
+        self,
+        depot_id: Union[str, int],
+        comment: str = "",
+        app_id: Optional[Union[str, int]] = None,
+    ) -> bool:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
             logger.warning(f"Invalid DepotID provided: {depot_id}")
             return False
-        comment_clean = _sanitize_comment(comment)
+
+        # Guard: never add a base game AppID into AdditionalDepots
+        if app_id and depot_id_str == str(app_id).strip():
+            logger.warning(f"Refusing to add base AppID '{depot_id_str}' to AdditionalDepots")
+            return False
+
+        bounds_apps = _get_section_bounds(self.content, "AdditionalApps")
+        if bounds_apps:
+            apps_text = self.content[bounds_apps[1] : bounds_apps[2]]
+            m_app = re.search(
+                rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}(?:[ \t]*#[ \t]*(.*))?$",
+                apps_text,
+                re.MULTILINE,
+            )
+            if m_app:
+                cm = (m_app.group(1) or "").lower()
+                if "dlc" not in cm:
+                    logger.warning(
+                        f"Refusing to add base AppID '{depot_id_str}' from AdditionalApps to AdditionalDepots"
+                    )
+                    return False
+
+        shared_redists = {
+            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
+            "228986", "228987", "228988", "228989", "228990", "229000", "229001",
+            "229002", "229003", "229004", "229005", "229006", "229007", "229010",
+            "229011", "229012", "229020", "229030", "229031", "229032"
+        }
+        if depot_id_str in shared_redists:
+            comment_clean = "Steamworks Shared"
+        else:
+            comment_clean = _sanitize_comment(comment)
+
         new_content, changed = _add_list_item_in_memory(
             self.content, "AdditionalDepots", depot_id_str, comment_clean
         )
@@ -980,7 +1017,13 @@ class BatchConfigEditor:
             return True
         return False
 
-    def add_key(self, depot_id: Union[str, int], key: str, comment: str = "") -> bool:
+    def add_key(
+        self,
+        depot_id: Union[str, int],
+        key: str,
+        comment: str = "",
+        app_id: Optional[Union[str, int]] = None,
+    ) -> bool:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
             logger.warning(f"Invalid DepotID for key: {depot_id}")
@@ -989,7 +1032,39 @@ class BatchConfigEditor:
         if not _is_valid_hex64(key_str):
             logger.warning(f"Invalid AES decryption key (not 64 hex chars) for depot {depot_id_str}")
             return False
-        comment_clean = _sanitize_comment(comment)
+
+        # Guard: never add a base game AppID into DecryptionKeys
+        if app_id and depot_id_str == str(app_id).strip():
+            logger.warning(f"Refusing to add base AppID '{depot_id_str}' to DecryptionKeys")
+            return False
+
+        bounds_apps = _get_section_bounds(self.content, "AdditionalApps")
+        if bounds_apps:
+            apps_text = self.content[bounds_apps[1] : bounds_apps[2]]
+            m_app = re.search(
+                rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}(?:[ \t]*#[ \t]*(.*))?$",
+                apps_text,
+                re.MULTILINE,
+            )
+            if m_app:
+                cm = (m_app.group(1) or "").lower()
+                if "dlc" not in cm:
+                    logger.warning(
+                        f"Refusing to add base AppID '{depot_id_str}' from AdditionalApps to DecryptionKeys"
+                    )
+                    return False
+
+        shared_redists = {
+            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
+            "228986", "228987", "228988", "228989", "228990", "229000", "229001",
+            "229002", "229003", "229004", "229005", "229006", "229007", "229010",
+            "229011", "229012", "229020", "229030", "229031", "229032"
+        }
+        if depot_id_str in shared_redists:
+            comment_clean = "Steamworks Shared"
+        else:
+            comment_clean = _sanitize_comment(comment)
+
         new_content, changed = _add_map_item_in_memory(
             self.content, "DecryptionKeys", depot_id_str, key_str, comment_clean
         )

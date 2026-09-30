@@ -1062,6 +1062,8 @@ class LibraryActionsMixin:
                     missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
                     missing_depots_info=parsed_data.get("missing_depots_info"),
                     current_build_id=str(game_data.get("buildid") or "").strip() if isinstance(game_data, dict) else "",
+                    library_path=game_data.get("library_path"),
+                    show_storage=False,
                 )
                 if depot_dialog.exec():
                     chosen = depot_dialog.get_selected_depots()
@@ -1074,6 +1076,24 @@ class LibraryActionsMixin:
                                 "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in chosen}
                             })
                         )
+                        # If game is in AT0-M mode, keep SLSsteam AdditionalDepots in sync
+                        if game_data and (game_data.get("is_atom") or game_data.get("is_vapor") or game_data.get("is_plugin_game")):
+                            try:
+                                from utils.plugin_games import register_plugin_game, load_plugin_library
+                                lib = load_plugin_library()
+                                rec = lib.get(appid, {})
+                                d_names = {d_id: depots.get(d_id, {}).get("desc", "") for d_id in chosen}
+                                register_plugin_game(
+                                    appid=appid,
+                                    name=game_data.get("game_name", ""),
+                                    depot_ids=chosen,
+                                    decryption_keys=rec.get("keys", {}),
+                                    installdir=game_data.get("install_dir", ""),
+                                    depot_names=d_names,
+                                )
+                            except Exception as _e:
+                                logger.warning(f"Could not sync AT0-M depots after selection: {_e}")
+
                         self._update_depot_status_label(appid)
                         QMessageBox.information(self, "Success", "Depot selection saved successfully.")
                     else:

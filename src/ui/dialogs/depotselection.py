@@ -1815,21 +1815,26 @@ class DepotSelectionDialog(QDialog):
         from utils.paths import is_valid_download_directory
 
         storage_paths = []
+        try:
+            raw_libs = get_steam_libraries() or []
+            for p in raw_libs:
+                if p and is_valid_download_directory(p):
+                    real_p = os.path.realpath(p)
+                    if real_p not in storage_paths:
+                        storage_paths.append(real_p)
+        except Exception as e:
+            logger.warning(f"Error discovering Steam storage libraries: {e}")
+
         def_dir = self._settings.value("default_download_directory", "", type=str) if self._settings else ""
         if def_dir and is_valid_download_directory(def_dir):
-            # Option A: User configured a custom/default download directory in Settings.
-            # Show ONLY this single configured storage path taking the full width.
-            storage_paths.append(os.path.realpath(def_dir))
-        else:
-            try:
-                raw_libs = get_steam_libraries() or []
-                for p in raw_libs:
-                    if p and is_valid_download_directory(p):
-                        real_p = os.path.realpath(p)
-                        if real_p not in storage_paths:
-                            storage_paths.append(real_p)
-            except Exception as e:
-                logger.warning(f"Error discovering Steam storage libraries: {e}")
+            real_def = os.path.realpath(def_dir)
+            if real_def not in storage_paths:
+                storage_paths.append(real_def)
+
+        if self.preferred_library_path and is_valid_download_directory(self.preferred_library_path):
+            real_pref = os.path.realpath(self.preferred_library_path)
+            if real_pref not in storage_paths:
+                storage_paths.append(real_pref)
 
         self._storage_paths = storage_paths
         self._storage_btn_group = QButtonGroup(self)

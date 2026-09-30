@@ -104,47 +104,55 @@ def build_dlc_reverse_map() -> Dict[str, str]:
     return result
 
 
+SHARED_REDISTS: Set[str] = {
+    "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
+    "228986", "228987", "228988", "228989", "228990", "229000", "229001",
+    "229002", "229003", "229004", "229005", "229006", "229007", "229010",
+    "229011", "229012", "229020", "229030", "229031", "229032"
+}
+
+
 def register_plugin_game(
     appid: Union[str, int],
     name: str,
     depot_ids: List[Union[str, int]],
     decryption_keys: Optional[Dict[Union[str, int], str]] = None,
     installdir: str = "",
-    depot_names: Optional[Dict[str, str]] = None,
+    depot_names: Optional[Dict[Union[str, int], str]] = None,
     dlc_appids: Optional[List[Union[str, int]]] = None,
 ) -> bool:
     """
-    Register a game for plugin / Steam-native download and smartly inject only its
-    required AppID, DepotIDs, and AES keys into SLSsteam config.yaml.
-
-    dlc_appids: If provided, the game was added in DLC-only mode. Only these DLC AppIDs
-    (NOT the base appid) will be added to SLSsteam AdditionalApps. The base appid is
-    stored in the record for ACCELA-side library discovery only.
+    Register a newly installed or downloaded game as plugin-managed.
+    AppIDs are NEVER added to AdditionalDepots or DecryptionKeys.
     """
     appid_str = str(appid).strip()
     if not appid_str or appid_str in ("0", "N/A", "unknown"):
         logger.warning(f"[PluginGames] Invalid AppID '{appid}' for registration")
         return False
 
-    clean_depots = [str(d).strip() for d in depot_ids if str(d).strip().isdigit()]
+    # Normalise DLC AppIDs (if DLC-only mode was used)
+    clean_dlc_appids = [str(d).strip() for d in (dlc_appids or []) if str(d).strip().isdigit()]
+    is_dlc_only = bool(clean_dlc_appids)
+
+    # Base AppIDs and DLC AppIDs must NEVER be in clean_depots or clean_keys
+    clean_depots = [
+        str(d).strip() for d in depot_ids
+        if str(d).strip().isdigit() and str(d).strip() != appid_str and str(d).strip() not in clean_dlc_appids
+    ]
     clean_keys = {}
     if decryption_keys:
         for did, key in decryption_keys.items():
             did_str = str(did).strip()
             key_str = str(key).strip().lower()
-            if did_str.isdigit() and len(key_str) == 64:
+            if did_str.isdigit() and len(key_str) == 64 and did_str != appid_str and did_str not in clean_dlc_appids:
                 clean_keys[did_str] = key_str
 
     clean_depot_names = {}
     if depot_names:
         for did, dname in depot_names.items():
             did_str = str(did).strip()
-            if did_str.isdigit() and dname:
+            if did_str.isdigit() and dname and did_str != appid_str:
                 clean_depot_names[did_str] = str(dname).strip()
-
-    # Normalise DLC AppIDs (if DLC-only mode was used)
-    clean_dlc_appids = [str(d).strip() for d in (dlc_appids or []) if str(d).strip().isdigit()]
-    is_dlc_only = bool(clean_dlc_appids)
 
     lib = load_plugin_library()
     game_record = {
@@ -175,16 +183,22 @@ def register_plugin_game(
                 # Normal mode: add base AppID
                 editor.add_app(appid_str, comment=name)
 
-            # Add only the required depots with clear comments
+            # Add only the required depots with clear comments (never AppIDs!)
             for did in clean_depots:
-                d_name = clean_depot_names.get(did, "")
-                depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
+                if did in SHARED_REDISTS:
+                    depot_comment = "Steamworks Shared"
+                else:
+                    d_name = clean_depot_names.get(did, "")
+                    depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
                 editor.add_depot(did, comment=depot_comment)
 
-            # Add decryption keys with game comment
+            # Add decryption keys with game comment (never AppIDs!)
             for did, key in clean_keys.items():
-                d_name = clean_depot_names.get(did, "")
-                key_comment = f"{name} - {d_name}" if d_name else name
+                if did in SHARED_REDISTS:
+                    key_comment = "Steamworks Shared"
+                else:
+                    d_name = clean_depot_names.get(did, "")
+                    key_comment = f"{name} - {d_name}" if d_name else name
                 editor.add_key(did, key, comment=key_comment)
 
         # Notify bridge / SLSsteam of update
@@ -198,10 +212,14 @@ def register_plugin_game(
     return True
 
 
-def unregister_plugin_game(appid: Union[str, int]) -> bool:
+def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool = False) -> bool:
     """
     Unregister a plugin-managed game and clean up its entries in config.yaml.
     Depots, keys, and DLC AppIDs shared with other registered games are safely preserved.
+
+    If keep_in_additional_apps is True (e.g. converting from AT0-M to ACCELA mode):
+      - The game's AppID is kept in AdditionalApps.
+      - Game-specific depots and keys are pruned from AdditionalDepots and DecryptionKeys.
     """
     appid_str = str(appid).strip()
     lib = load_plugin_library()
@@ -224,15 +242,20 @@ def unregister_plugin_game(appid: Union[str, int]) -> bool:
     cfg_path = get_user_config_path()
     if cfg_path.exists():
         with batch_config_edit(cfg_path) as editor:
-            # 1a. Remove DLC AppIDs from AdditionalApps (DLC-only mode)
-            for dlc_id in target_game.get("dlc_appids", []):
-                if dlc_id not in remaining_dlc_appids:
-                    editor.remove_app(dlc_id)
+            if keep_in_additional_apps:
+                # Ensure the game remains in AdditionalApps for ACCELA mode
+                if not target_game.get("dlc_only"):
+                    editor.add_app(appid_str, comment=target_game.get("name", ""))
+            else:
+                # Full unregistration/uninstall: remove from AdditionalApps
+                # 1a. Remove DLC AppIDs from AdditionalApps (DLC-only mode)
+                for dlc_id in target_game.get("dlc_appids", []):
+                    if dlc_id not in remaining_dlc_appids:
+                        editor.remove_app(dlc_id)
 
-            # 1b. Remove base AppID from AdditionalApps (normal mode only; skip if dlc-only
-            #     since the base appid was never added to AdditionalApps in dlc-only mode)
-            if not target_game.get("dlc_only"):
-                editor.remove_app(appid_str)
+                # 1b. Remove base AppID from AdditionalApps (normal mode only)
+                if not target_game.get("dlc_only"):
+                    editor.remove_app(appid_str)
 
             # 2. Remove depots that are not shared with any other registered game
             for did in target_game.get("depots", []):
@@ -247,8 +270,19 @@ def unregister_plugin_game(appid: Union[str, int]) -> bool:
         # 4. Notify bridge / SLSsteam of update
         SLSBridge.notify_reload()
 
-    logger.info(f"[PluginGames] Successfully unregistered '{target_game.get('name')}' ({appid_str})")
+    logger.info(f"[PluginGames] Successfully unregistered '{target_game.get('name')}' ({appid_str}) [keep_apps={keep_in_additional_apps}]")
     return True
+
+
+def convert_plugin_game_to_accela(appid: Union[str, int]) -> bool:
+    """
+    Convert a game from AT0-M (plugin mode) to ACCELA Managed mode.
+    - AppID is PRESERVED in AdditionalApps (ensuring the game stays unlocked in Steam).
+    - Game-specific depots and keys are removed from AdditionalDepots and DecryptionKeys.
+    - Shared depots/keys (used by other registered games or common redistributables) are preserved.
+    - Unregisters the game from plugin_library.json.
+    """
+    return unregister_plugin_game(appid, keep_in_additional_apps=True)
 
 
 def sync_all_plugin_games_to_config() -> None:
@@ -274,13 +308,23 @@ def sync_all_plugin_games_to_config() -> None:
                 editor.add_app(appid_str, comment=name)
 
             for did in game.get("depots", []):
-                d_name = depot_names.get(did, "")
-                depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
+                if str(did) == appid_str:
+                    continue  # Never add AppID to AdditionalDepots
+                if str(did) in SHARED_REDISTS:
+                    depot_comment = "Steamworks Shared"
+                else:
+                    d_name = depot_names.get(did, "")
+                    depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
                 editor.add_depot(did, comment=depot_comment)
 
             for did, key in game.get("keys", {}).items():
-                d_name = depot_names.get(did, "")
-                key_comment = f"{name} - {d_name}" if d_name else name
+                if str(did) == appid_str:
+                    continue  # Never add AppID to DecryptionKeys
+                if str(did) in SHARED_REDISTS:
+                    key_comment = "Steamworks Shared"
+                else:
+                    d_name = depot_names.get(did, "")
+                    key_comment = f"{name} - {d_name}" if d_name else name
                 editor.add_key(did, key, comment=key_comment)
 
         if editor.has_changes:

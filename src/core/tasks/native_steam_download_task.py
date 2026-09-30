@@ -424,8 +424,7 @@ class NativeSteamDownloadTask(QObject):
                 if m:
                     manifest_gids[str(depot_id)] = str(m)
 
-        if game_data.get("app_key") and appid:
-            depot_keys[str(appid)] = game_data["app_key"]
+        # Base AppIDs MUST NEVER be added to depot_keys or AdditionalDepots/DecryptionKeys.
 
         # 2. From DepotKeyManager (SQLite)
         try:
@@ -450,8 +449,6 @@ class NativeSteamDownloadTask(QObject):
                 for d, info in (parsed_gd.get("depots") or {}).items():
                     if isinstance(info, dict) and info.get("key"):
                         depot_keys.setdefault(str(d), info["key"])
-                if parsed_gd.get("app_key"):
-                    depot_keys.setdefault(str(appid), parsed_gd["app_key"])
                 for d, gid in (parsed_gd.get("manifests") or {}).items():
                     manifest_gids.setdefault(str(d), str(gid))
         except Exception as e:
@@ -640,13 +637,21 @@ class NativeSteamDownloadTask(QObject):
                 content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
 
         # 3. Format AdditionalDepots with descriptive comments
-        if selected_depots:
-            new_depot_ids = [str(d) for d in selected_depots if str(d) != appid_str]
-        else:
-            depots_set = set(str(d) for d in depot_keys.keys())
-            if game_data and game_data.get("depots"):
-                depots_set.update(str(d) for d in game_data["depots"].keys())
-            new_depot_ids = [str(d) for d in depots_set if str(d) != appid_str]
+        # Define known shared redistributable depots
+        shared_redists = {
+            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
+            "228986", "228987", "228988", "228989", "228990", "229000", "229001",
+            "229002", "229003", "229004", "229005", "229006", "229007", "229010",
+            "229011", "229012", "229020", "229030", "229031", "229032"
+        }
+
+        # 3. Format AdditionalDepots with descriptive comments (ONLY depots, NEVER AppIDs!)
+        raw_candidates = set(str(d) for d in selected_depots) if selected_depots else (
+            set(str(d) for d in depot_keys.keys()) | (
+                set(str(d) for d in game_data["depots"].keys()) if (game_data and game_data.get("depots")) else set()
+            )
+        )
+        new_depot_ids = [d for d in raw_candidates if d != appid_str and d not in dlc_appids]
 
         # Parse existing depots and comments
         existing_depots_comments: Dict[str, str] = {}
@@ -657,26 +662,31 @@ class NativeSteamDownloadTask(QObject):
                 m = re.match(r"^[ \t]*-[ \t]*(\d+)(?:[ \t]*#[ \t]*(.*))?$", line)
                 if m:
                     did = m.group(1)
-                    existing_depots_comments[did] = m.group(2).strip() if m.group(2) else ""
+                    # Never keep base AppIDs in AdditionalDepots
+                    if did != appid_str and did not in dlc_appids:
+                        existing_depots_comments[did] = m.group(2).strip() if m.group(2) else ""
 
         # If user explicitly selected depots, prune any depots of THIS game that are not selected
         if game_data and game_data.get("depots") and selected_depots:
-            all_game_depots = {str(d) for d in game_data["depots"].keys()}
+            all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str and str(d) not in dlc_appids}
             user_depots_set = set(new_depot_ids)
             for d in all_game_depots:
-                if d in existing_depots_comments and d not in user_depots_set:
+                if d in existing_depots_comments and d not in user_depots_set and d not in shared_redists:
                     existing_depots_comments.pop(d, None)
 
         # Merge new depot IDs with comments
         depots_meta = (game_data.get("depots") or {}) if game_data else {}
         for d in new_depot_ids:
-            meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
-            desc = meta.get("desc", "") if isinstance(meta, dict) else ""
-            if desc:
-                depot_comment = f"{game_name} [{desc}] ({appid_str})"
+            if d in shared_redists:
+                existing_depots_comments[d] = "Steamworks Shared"
             else:
-                depot_comment = f"{game_name} ({appid_str})"
-            existing_depots_comments[d] = depot_comment
+                meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
+                desc = meta.get("desc", "") if isinstance(meta, dict) else ""
+                if desc:
+                    depot_comment = f"{game_name} [{desc}] ({appid_str})"
+                else:
+                    depot_comment = f"{game_name} ({appid_str})"
+                existing_depots_comments[d] = depot_comment
 
         depot_lines = ["AdditionalDepots:"]
         for d in sorted(existing_depots_comments.keys(), key=lambda x: int(x) if x.isdigit() else 0):
@@ -690,7 +700,7 @@ class NativeSteamDownloadTask(QObject):
         else:
             content = content.rstrip() + "\n\n" + depot_block
 
-        # 4. Format DecryptionKeys (merge with existing and keep/add descriptive comments)
+        # 4. Format DecryptionKeys (merge with existing and keep/add descriptive comments, NEVER AppIDs!)
         all_keys: Dict[str, str] = {}
         key_comments: Dict[str, str] = {}
         bounds_keys = _get_section_bounds(content, "DecryptionKeys")
@@ -698,41 +708,57 @@ class NativeSteamDownloadTask(QObject):
             keys_text = content[bounds_keys[1] : bounds_keys[2]]
             for m in re.finditer(r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*['\"]?([a-fA-F0-9]{64})['\"]?(?:[ \t]*#[ \t]*(.*))?$", keys_text, re.MULTILINE):
                 did = m.group(1)
-                all_keys[did] = m.group(2)
-                if m.group(3):
-                    key_comments[did] = m.group(3).strip()
+                if did != appid_str and did not in dlc_appids:
+                    all_keys[did] = m.group(2)
+                    if m.group(3):
+                        key_comments[did] = m.group(3).strip()
+
+        # Always strip appid_str from DecryptionKeys
+        all_keys.pop(appid_str, None)
+        key_comments.pop(appid_str, None)
+        for da in dlc_appids:
+            all_keys.pop(da, None)
+            key_comments.pop(da, None)
 
         if is_dlc:
-            all_keys.pop(appid_str, None)
-            key_comments.pop(appid_str, None)
             if game_data and game_data.get("depots") and selected_depots:
-                all_game_depots = {str(d) for d in game_data["depots"].keys()}
+                all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str}
                 user_depots_set = set(new_depot_ids)
                 for d in all_game_depots:
-                    if d not in user_depots_set:
+                    if d not in user_depots_set and d not in shared_redists:
                         all_keys.pop(d, None)
                         key_comments.pop(d, None)
             for d, k in depot_keys.items():
-                if k and (not selected_depots or str(d) in set(new_depot_ids)):
-                    did_str = str(d)
+                did_str = str(d)
+                if did_str == appid_str or did_str in dlc_appids:
+                    continue
+                if k and (not selected_depots or did_str in set(new_depot_ids)):
                     all_keys[did_str] = str(k)
-                    meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
-                    desc = meta.get("desc", "") if isinstance(meta, dict) else ""
-                    if desc:
-                        key_comments[did_str] = f"{game_name} [{desc}] ({appid_str})"
+                    if did_str in shared_redists:
+                        key_comments[did_str] = "Steamworks Shared"
                     else:
-                        key_comments[did_str] = f"{game_name} ({appid_str})" if game_name else f"Depot {did_str}"
+                        meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
+                        desc = meta.get("desc", "") if isinstance(meta, dict) else ""
+                        if desc:
+                            key_comments[did_str] = f"{game_name} [{desc}] ({appid_str})"
+                        else:
+                            key_comments[did_str] = f"{game_name} ({appid_str})" if game_name else f"Depot {did_str}"
         else:
             for d, k in depot_keys.items():
+                did_str = str(d)
+                if did_str == appid_str or did_str in dlc_appids:
+                    continue
                 if k:
-                    did_str = str(d)
                     all_keys[did_str] = str(k)
-                    meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
-                    desc = meta.get("desc", "") if isinstance(meta, dict) else ""
-                    if desc:
-                        key_comments[did_str] = f"{game_name} [{desc}] ({appid_str})"
+                    if did_str in shared_redists:
+                        key_comments[did_str] = "Steamworks Shared"
                     else:
-                        key_comments[did_str] = f"{game_name} ({appid_str})" if game_name else f"Depot {did_str}"
+                        meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
+                        desc = meta.get("desc", "") if isinstance(meta, dict) else ""
+                        if desc:
+                            key_comments[did_str] = f"{game_name} [{desc}] ({appid_str})"
+                        else:
+                            key_comments[did_str] = f"{game_name} ({appid_str})" if game_name else f"Depot {did_str}"
 
         key_lines = ["DecryptionKeys:"]
         for d in sorted(all_keys.keys(), key=lambda x: int(x) if x.isdigit() else 0):
