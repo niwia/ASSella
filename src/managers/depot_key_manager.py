@@ -98,10 +98,14 @@ class DepotKeyManager:
                 for did, key in depot_keys.items():
                     if not key:
                         continue
-                    row = conn.execute("SELECT updated_at FROM depot_keys WHERE appid=? AND depot_id=?", (str(appid), str(did))).fetchone()
-                    if row and row["updated_at"] >= now:
-                        continue
-                    
+                    row = conn.execute("SELECT aes_key, updated_at FROM depot_keys WHERE appid=? AND depot_id=?", (str(appid), str(did))).fetchone()
+                    if row:
+                        old_key = row["aes_key"]
+                        old_ts = row["updated_at"]
+                        # If the key is identical and was updated at or after now, skip
+                        if old_key == key and old_ts >= now:
+                            continue
+
                     conn.execute("INSERT OR REPLACE INTO depot_keys (appid, depot_id, aes_key, updated_at) VALUES (?,?,?,?)", (str(appid), str(did), str(key), now))
                     saved_count += 1
                 conn.commit()

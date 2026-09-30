@@ -836,7 +836,12 @@ def update_validate_button(dialog) -> None:
         palette.setColor(QPalette.ColorRole.Highlight, base_qcolor)
         dialog.validate_btn.setPalette(palette)
 
-    if pinned and has_cache and not is_missing_manifest_or_lua:
+    is_installed = dialog.game_data.get("is_installed", True) and bool(dialog.game_data.get("install_path"))
+
+    if not is_installed:
+        dialog.validate_btn.setText("Install Game")
+        set_btn_style(accent_hex)
+    elif pinned and has_cache and not is_missing_manifest_or_lua:
         dialog.validate_btn.setText("Verify Pinned Build")
         set_btn_style(success_hex)
     elif not same_branch:
@@ -878,7 +883,9 @@ def on_validate_btn_clicked(dialog) -> None:
     dialog.validate_btn.set_loading(True)
     dialog.validate_btn.setEnabled(False)
     dialog.validate_btn.setToolTip("Task in progress...")
-    if "Update" in btn_text:
+    if "Install" in btn_text:
+        dialog.validate_btn.setText("Starting Installation...")
+    elif "Update" in btn_text:
         dialog.validate_btn.setText("Preparing Update...")
     elif btn_text == "Refetch":
         dialog.validate_btn.setText("Refetching...")
@@ -2364,6 +2371,35 @@ def on_move_to_vapor_clicked(dialog) -> None:
     # Clean depot IDs and decryption keys to strictly exclude AppIDs and DLC AppIDs
     depot_ids = [d for d in depot_ids if str(d) != str(appid) and str(d) not in dlc_appids]
     decryption_keys = {d: k for d, k in decryption_keys.items() if str(d) != str(appid) and str(d) not in dlc_appids}
+
+    # If any depot is missing its decryption key, attempt an emergency fetch via Hubcap API
+    missing_key_depots = [d for d in depot_ids if str(d) not in decryption_keys]
+    if missing_key_depots:
+        try:
+            logger.info(f"[VaporTransition] Missing keys for depot(s) {missing_key_depots}. Fetching fresh Hubcap bundle...")
+            from core import morrenus_api
+            zip_res, z_err = morrenus_api.download_manifest(appid, force_update=True)
+            if zip_res and os.path.exists(zip_res):
+                import zipfile
+                fresh_keys = {}
+                with zipfile.ZipFile(zip_res, "r") as zf:
+                    for name in zf.namelist():
+                        if name.endswith(".lua"):
+                            lua_txt = zf.read(name).decode("utf-8", errors="ignore")
+                            for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_txt):
+                                did_found, k_found = m.group(1), m.group(2)
+                                if did_found != str(appid) and did_found not in dlc_appids:
+                                    fresh_keys[did_found] = k_found
+                if fresh_keys:
+                    from managers.depot_key_manager import DepotKeyManager
+                    DepotKeyManager.get_instance().save_depot_keys(appid, fresh_keys)
+                    for did_f, k_f in fresh_keys.items():
+                        decryption_keys[did_f] = k_f
+                        if did_f not in depot_ids:
+                            depot_ids.append(did_f)
+                    logger.info(f"[VaporTransition] Recovered {len(fresh_keys)} fresh key(s) from Hubcap bundle.")
+        except Exception as e:
+            logger.warning(f"[VaporTransition] Failed to fetch missing keys from Hubcap: {e}")
 
     # Register into plugin_library and config.yaml
     register_plugin_game(

@@ -724,7 +724,7 @@ class DownloadDepotsTask(QObject):
 
                 key = depot_info.get("key")
 
-                # Fallback: query DepotKeyManager directly if key is missing from in-memory game_data
+                # Fallback 1: query DepotKeyManager directly if key is missing from in-memory game_data
                 if not key and appid_str:
                     try:
                         if cached_dkm_keys is None:
@@ -741,11 +741,41 @@ class DownloadDepotsTask(QObject):
                             f"[DownloadDepotsTask] Failed to query DepotKeyManager for depot {depot_id}: {e}"
                         )
 
+                # Fallback 2: If key is still missing, attempt live Hubcap API bundle download to extract fresh keys
+                if not key and appid_str:
+                    try:
+                        self.progress.emit(f"Fetching fresh decryption key for depot {depot_id} via Hubcap...")
+                        from core import morrenus_api
+                        zip_res, z_err = morrenus_api.download_manifest(appid_str, force_update=True)
+                        if zip_res and os.path.exists(zip_res):
+                            import zipfile
+                            recovered_keys = {}
+                            with zipfile.ZipFile(zip_res, "r") as zf:
+                                for name in zf.namelist():
+                                    if name.endswith(".lua"):
+                                        lua_txt = zf.read(name).decode("utf-8", errors="ignore")
+                                        for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_txt):
+                                            if m.group(1) != str(appid_str):
+                                                recovered_keys[m.group(1)] = m.group(2)
+                            if recovered_keys:
+                                from managers.depot_key_manager import DepotKeyManager
+                                DepotKeyManager().save_depot_keys(appid_str, recovered_keys)
+                                cached_dkm_keys = DepotKeyManager().get_depot_keys(appid_str) or {}
+                                key = recovered_keys.get(str(depot_id))
+                                if key:
+                                    logger.info(f"[DownloadDepotsTask] Recovered fresh key for depot {depot_id} via live Hubcap bundle")
+                                    self.progress.emit(f"Successfully recovered decryption key for depot {depot_id}")
+                    except Exception as fetch_err:
+                        logger.warning(f"[DownloadDepotsTask] Failed live key fetch for depot {depot_id}: {fetch_err}")
+
                 if key:
                     f.write(f"{depot_id};{key}\n")
                 else:
                     logger.warning(
                         f"[DownloadDepotsTask] No decryption key available for depot {depot_id}"
+                    )
+                    self.progress.emit(
+                        f"Warning: No decryption key found for depot {depot_id}. Download may fail or be skipped."
                     )
 
         from utils.steam_manifest import get_install_folder_name
