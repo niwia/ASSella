@@ -587,8 +587,31 @@ class DepotSelectionDialog(QDialog):
             self.show_hidden_chk.toggled.connect(self._on_show_hidden_toggled)
             self.show_hidden_chk.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.8);")
             controls_row.addWidget(self.show_hidden_chk)
+
+            controls_row.addSpacing(8)
+            self.smart_select_btn = QPushButton("Smart Select (Beta)")
+            self.smart_select_btn.setFixedHeight(28)
+            self.smart_select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.smart_select_btn.setToolTip("Auto-detect depots Steam normally installs from package info, overwriting current selection")
+            self.smart_select_btn.setStyleSheet("""
+                QPushButton {
+                    background: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.18);
+                    border-radius: 4px;
+                    padding: 3px 8px;
+                    color: #FFFFFF;
+                    font-size: 8.5pt;
+                }
+                QPushButton:hover {
+                    background: rgba(255, 255, 255, 0.15);
+                    border-color: rgba(255, 255, 255, 0.35);
+                }
+            """)
+            self.smart_select_btn.clicked.connect(self._on_smart_select_clicked)
+            controls_row.addWidget(self.smart_select_btn)
         else:
             self.show_hidden_chk = None
+            self.smart_select_btn = None
 
         if self.branch and self.branch != "public":
             self._on_branch_changed(self.branch)
@@ -964,7 +987,13 @@ class DepotSelectionDialog(QDialog):
         if self.selected_depots is not None:
             pre_selected_set = set(str(d) for d in self.selected_depots)
         else:
-            pre_selected_set = set(get_smart_default_depots(self.depots, target_platform="linux"))
+            try:
+                from core.steam_package_info import get_steam_recommended_depots
+                rec_depots = get_steam_recommended_depots(self.app_id, self.depots, target_platform="linux")
+                pre_selected_set = set(rec_depots) if rec_depots else set(get_smart_default_depots(self.depots, target_platform="linux"))
+            except Exception as _e:
+                logger.debug(f"[DepotSelection] Steam recommended depots lookup failed: {_e}")
+                pre_selected_set = set(get_smart_default_depots(self.depots, target_platform="linux"))
 
         def _build_config_text(d_id, d_data, is_first=False):
             original_desc = d_data.get("desc", "")
@@ -2104,6 +2133,40 @@ class DepotSelectionDialog(QDialog):
                 id_item.setCheckState(state)
         self.table_widget.blockSignals(False)
 
+        self.anchor_row = -1
+        self._update_table_headers()
+
+    def _on_smart_select_clicked(self):
+        """Overwrites user selection with the depots Steam normally installs from package info / appcache."""
+        self._user_interacted = True
+        self._has_saved_selection = True
+
+        try:
+            from core.steam_package_info import get_steam_recommended_depots
+            rec_depots = get_steam_recommended_depots(self.app_id, self.depots, target_platform="linux")
+        except Exception as err:
+            logger.warning(f"[DepotSelection] Smart Select error: {err}")
+            rec_depots = []
+
+        if not rec_depots:
+            rec_depots = get_smart_default_depots(self.depots, target_platform="linux")
+
+        smart_depots = set(str(d) for d in rec_depots)
+
+        self.table_widget.blockSignals(True)
+        for i in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(i, 0)
+            if id_item is None:
+                continue
+            role = id_item.data(Qt.ItemDataRole.UserRole + 2)
+            if role in ("missing", "expander"):
+                continue
+            depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
+            if depot_id in smart_depots:
+                id_item.setCheckState(Qt.CheckState.Checked)
+            else:
+                id_item.setCheckState(Qt.CheckState.Unchecked)
+        self.table_widget.blockSignals(False)
         self.anchor_row = -1
         self._update_table_headers()
 
