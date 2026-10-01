@@ -542,94 +542,29 @@ def get_sls_plugins_dirs() -> List[Path]:
     return dirs
 
 
+
+
 def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
-    """Deploy a specific bundled plugin file to SLSsteam plugin directories.
+    """Deploy a specific SLSsteam plugin on demand from Cloud / local cache.
 
     Returns:
         (success: bool, skipped: bool, message: str)
         - skipped=True if all target locations already have the matching SHA-256.
     """
-    ensure_plugins_enabled()
-    from utils.paths import Paths
-    src_path = Paths.resource(f"plugins/{plugin_filename}")
-    if not src_path.is_file():
-        fallback = Path(__file__).resolve().parent.parent / "res" / "plugins" / plugin_filename
-        if fallback.is_file():
-            src_path = fallback
-        else:
-            return False, False, f"Bundled plugin '{plugin_filename}' not found."
-
-    src_hash = calculate_file_sha256(src_path)
-    if not src_hash:
-        return False, False, f"Could not compute hash for source plugin '{plugin_filename}'."
-
-    target_dirs = get_sls_plugins_dirs()
-    all_matched = True
-    any_deployed = False
-    errors = []
-
-    for tdir in target_dirs:
-        try:
-            tdir.mkdir(parents=True, exist_ok=True)
-            dst_file = tdir / plugin_filename
-            if dst_file.is_file():
-                dst_hash = calculate_file_sha256(dst_file)
-                if dst_hash == src_hash:
-                    logger.debug(f"Plugin {plugin_filename} at {dst_file} has matching hash {src_hash[:8]}, skipping.")
-                    continue
-                # Hash mismatch: back up old plugin as .bak before injecting updated version
-                bak_file = tdir / f"{plugin_filename}.bak"
-                try:
-                    shutil.copy2(dst_file, bak_file)
-                    logger.info(
-                        f"Existing {plugin_filename} hash mismatch ({dst_hash[:8]} != {src_hash[:8]}). "
-                        f"Backed up old version to {bak_file}"
-                    )
-                except Exception as bak_err:
-                    logger.warning(f"Could not back up existing {plugin_filename} to {bak_file}: {bak_err}")
-
-            all_matched = False
-            shutil.copy2(src_path, dst_file)
-            any_deployed = True
-            logger.info(f"Deployed {plugin_filename} to {dst_file}")
-
-        except Exception as exc:
-            errors.append(f"{tdir}: {exc}")
-
-    if errors:
-        return False, False, f"Error deploying {plugin_filename}: {'; '.join(errors)}"
-
-    if all_matched and not any_deployed:
-        return True, True, f"{plugin_filename} is already up to date (SHA-256 matched). Skipped deployment."
-
-    return True, False, f"Successfully deployed {plugin_filename} to SLSsteam."
+    from utils.plugin_manager import deploy_plugin
+    return deploy_plugin(plugin_filename)
 
 
 def deploy_all_sls_plugins() -> Tuple[bool, List[str]]:
-    """Deploy required plugins: download.lua, spliced-tickets.lua.
-    Note: assella_bridge.lua is intentionally excluded — its IPC server is never started
-    and all dynamic depot/key injection commands have been superseded by _patch_config.
-    """
-    ensure_plugins_enabled()
-    plugins = ["download.lua", "spliced-tickets.lua"]
-    results = []
-    overall_ok = True
-    for p in plugins:
-        ok, skipped, msg = deploy_sls_plugin(p)
-        results.append(msg)
-        if not ok:
-            overall_ok = False
-    return overall_ok, results
+    """Deploy required plugins (download.lua, spliced-tickets.lua) from Cloud on demand."""
+    from utils.plugin_manager import deploy_all_plugins
+    return deploy_all_plugins()
 
 
 def are_sls_plugins_deployed() -> bool:
     """Check if the required plugins exist in at least the primary SLSsteam plugins directory."""
-    plugins = ["download.lua", "spliced-tickets.lua"]
-    target_dirs = get_sls_plugins_dirs()
-    if not target_dirs:
-        return False
-    primary = target_dirs[0]
-    return all((primary / p).is_file() for p in plugins)
+    from utils.plugin_manager import are_all_plugins_installed
+    return are_all_plugins_installed()
 
 
 def is_slssteam_plugins_enabled() -> bool:
@@ -658,27 +593,9 @@ def is_slssteam_plugins_enabled() -> bool:
 
 
 def sync_plugins_on_startup() -> bool:
-    """Check and update SLSsteam plugins on ASSella startup if enabled by the user.
-
-    Uses SHA-256 hash matching:
-    - If a plugin (such as download.lua) exists in the user's SLSsteam plugins directory
-      and its SHA-256 differs from the bundled version in ASSella, the old version is
-      backed up as `<plugin>.bak` (e.g. download.lua.bak) and the updated version is injected.
-    - If the plugin is missing, it is injected.
-    - If plugins are not enabled by the user, no actions are performed.
-
-    Returns:
-        bool: True if sync completed successfully or was skipped because plugins are disabled.
-    """
-    if not is_slssteam_plugins_enabled():
-        logger.debug("sync_plugins_on_startup: Plugins are not enabled by user; skipping check.")
-        return True
-
-    logger.info("sync_plugins_on_startup: Plugins are enabled. Checking plugin SHA-256 checksums...")
-    overall_ok, results = deploy_all_sls_plugins()
-    for res in results:
-        logger.info(f"[PluginSync] {res}")
-    return overall_ok
+    """Check and update SLSsteam plugins on ASSella startup if enabled by the user."""
+    from utils.plugin_manager import sync_plugins_if_enabled
+    return sync_plugins_if_enabled()
 
 
 
@@ -1086,12 +1003,49 @@ class BatchConfigEditor:
             return True
         return False
 
-    def add_depot(self, depot_id: Union[str, int], comment: str = "") -> bool:
+    def add_depot(
+        self,
+        depot_id: Union[str, int],
+        comment: str = "",
+        app_id: Optional[Union[str, int]] = None,
+    ) -> bool:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
             logger.warning(f"Invalid DepotID provided: {depot_id}")
             return False
-        comment_clean = _sanitize_comment(comment)
+
+        # Guard: never add a base game AppID into AdditionalDepots
+        if app_id and depot_id_str == str(app_id).strip():
+            logger.warning(f"Refusing to add base AppID '{depot_id_str}' to AdditionalDepots")
+            return False
+
+        bounds_apps = _get_section_bounds(self.content, "AdditionalApps")
+        if bounds_apps:
+            apps_text = self.content[bounds_apps[1] : bounds_apps[2]]
+            m_app = re.search(
+                rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}(?:[ \t]*#[ \t]*(.*))?$",
+                apps_text,
+                re.MULTILINE,
+            )
+            if m_app:
+                cm = (m_app.group(1) or "").lower()
+                if "dlc" not in cm:
+                    logger.warning(
+                        f"Refusing to add base AppID '{depot_id_str}' from AdditionalApps to AdditionalDepots"
+                    )
+                    return False
+
+        shared_redists = {
+            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
+            "228986", "228987", "228988", "228989", "228990", "229000", "229001",
+            "229002", "229003", "229004", "229005", "229006", "229007", "229010",
+            "229011", "229012", "229020", "229030", "229031", "229032"
+        }
+        if depot_id_str in shared_redists:
+            comment_clean = "Steamworks Shared"
+        else:
+            comment_clean = _sanitize_comment(comment)
+
         new_content, changed = _add_list_item_in_memory(
             self.content, "AdditionalDepots", depot_id_str, comment_clean
         )
@@ -1130,7 +1084,13 @@ class BatchConfigEditor:
             return True
         return False
 
-    def add_key(self, depot_id: Union[str, int], key: str, comment: str = "") -> bool:
+    def add_key(
+        self,
+        depot_id: Union[str, int],
+        key: str,
+        comment: str = "",
+        app_id: Optional[Union[str, int]] = None,
+    ) -> bool:
         depot_id_str = _sanitize_id(depot_id)
         if not depot_id_str:
             logger.warning(f"Invalid DepotID for key: {depot_id}")
@@ -1139,7 +1099,39 @@ class BatchConfigEditor:
         if not _is_valid_hex64(key_str):
             logger.warning(f"Invalid AES decryption key (not 64 hex chars) for depot {depot_id_str}")
             return False
-        comment_clean = _sanitize_comment(comment)
+
+        # Guard: never add a base game AppID into DecryptionKeys
+        if app_id and depot_id_str == str(app_id).strip():
+            logger.warning(f"Refusing to add base AppID '{depot_id_str}' to DecryptionKeys")
+            return False
+
+        bounds_apps = _get_section_bounds(self.content, "AdditionalApps")
+        if bounds_apps:
+            apps_text = self.content[bounds_apps[1] : bounds_apps[2]]
+            m_app = re.search(
+                rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}(?:[ \t]*#[ \t]*(.*))?$",
+                apps_text,
+                re.MULTILINE,
+            )
+            if m_app:
+                cm = (m_app.group(1) or "").lower()
+                if "dlc" not in cm:
+                    logger.warning(
+                        f"Refusing to add base AppID '{depot_id_str}' from AdditionalApps to DecryptionKeys"
+                    )
+                    return False
+
+        shared_redists = {
+            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
+            "228986", "228987", "228988", "228989", "228990", "229000", "229001",
+            "229002", "229003", "229004", "229005", "229006", "229007", "229010",
+            "229011", "229012", "229020", "229030", "229031", "229032"
+        }
+        if depot_id_str in shared_redists:
+            comment_clean = "Steamworks Shared"
+        else:
+            comment_clean = _sanitize_comment(comment)
+
         new_content, changed = _add_map_item_in_memory(
             self.content, "DecryptionKeys", depot_id_str, key_str, comment_clean
         )

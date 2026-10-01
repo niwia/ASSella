@@ -33,7 +33,7 @@ gifs/
 # ── Local test scripts ───────────────────────────────────────────────────────
 scripts/*
 !scripts/setup_byparr.sh
-prerelease_check.py
+!scripts/prerelease_check.py
 scratch/
 
 # ── OS junk ─────────────────────────────────────────────────────────────────

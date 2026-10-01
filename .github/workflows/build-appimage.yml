@@ -27,6 +27,10 @@ permissions:
 jobs:
   build-appimage:
     runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      channel: ${{ steps.meta.outputs.channel }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -181,3 +185,104 @@ jobs:
             ASSella.AppImage.zsync.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-arch-repo:
+    name: Package & Publish Arch Linux Repository
+    needs: build-appimage
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install Pacman Packaging Tools
+        run: |
+          pacman -Syu --noconfirm base-devel git zstd sudo
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+      - name: Download AppImage Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ASSella-${{ needs.build-appimage.outputs.channel }}-AppImage
+          path: ./dist
+
+      - name: Prepare Arch Package Recipe & Metadata
+        run: |
+          mkdir -p packaging/arch
+          cp dist/ASSella.AppImage packaging/arch/
+          chmod +x packaging/arch/ASSella.AppImage
+
+          # Create desktop shortcut definition
+          cat << 'EOF' > packaging/arch/assela.desktop
+          [Desktop Entry]
+          Name=ASSella
+          Comment=Steam Game & Depot Management Suite
+          Exec=/usr/bin/assella %U
+          Icon=assela
+          Terminal=false
+          Type=Application
+          Categories=Utility;Game;
+          StartupWMClass=ASSella
+          EOF
+
+          # Format clean semver for PKGBUILD (remove v prefix and dashes)
+          RAW_TAG="${{ needs.build-appimage.outputs.tag }}"
+          CLEAN_VER=$(echo "$RAW_TAG" | sed -e 's/^v//' -e 's/-/./g')
+          if [ -z "$CLEAN_VER" ]; then
+            CLEAN_VER="2.7.0"
+          fi
+
+          cat << EOF > packaging/arch/PKGBUILD
+          # Maintainer: niwia <niwia@users.noreply.github.com>
+          pkgname=assella
+          pkgver=${CLEAN_VER}
+          pkgrel=1
+          pkgdesc="Steam Game & Depot Management Suite"
+          arch=('x86_64')
+          url="https://github.com/niwia/ASSella"
+          license=('GPL3')
+          depends=('fuse2')
+          provides=('assella')
+          conflicts=('assella-bin' 'assella-git')
+          options=(!strip)
+
+          package() {
+              install -dm755 "\$pkgdir/usr/lib/assella"
+              install -dm755 "\$pkgdir/usr/bin"
+              install -dm755 "\$pkgdir/usr/share/applications"
+
+              install -m755 "\$srcdir/ASSella.AppImage" "\$pkgdir/usr/lib/assella/ASSella.AppImage"
+
+              cat << 'WRAPPER' > "\$pkgdir/usr/bin/assella"
+          #!/bin/sh
+          exec /usr/lib/assella/ASSella.AppImage "\$@"
+          WRAPPER
+              chmod 755 "\$pkgdir/usr/bin/assella"
+
+              install -Dm644 "\$srcdir/assela.desktop" "\$pkgdir/usr/share/applications/assela.desktop"
+          }
+          EOF
+          chown -R builder:builder packaging/arch
+
+      - name: Build Arch Package via makepkg
+        run: |
+          su builder -c "cd packaging/arch && makepkg -f"
+
+      - name: Assemble Pacman Database Structure
+        run: |
+          mkdir -p repo/x86_64
+          cp packaging/arch/*.pkg.tar.zst repo/x86_64/
+          cd repo/x86_64
+          repo-add assella.db.tar.gz *.pkg.tar.zst
+          ln -sf assella.db.tar.gz assella.db
+          ln -sf assella.files.tar.gz assella.files
+
+      - name: Deploy Arch Repository to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          branch: gh-pages
+          folder: repo
+          target-folder: arch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
