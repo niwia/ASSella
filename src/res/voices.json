@@ -26,7 +26,7 @@
   },
   "version": 1,
   "description": "ASSella Recommended & Tested Game Builds (Voices)",
-  "updated_at": "2026-09-19",
+  "updated_at": "2026-10-02",
   "games": {
     "2161700": {
       "game_name": "Persona 3 Reload",
@@ -235,7 +235,11 @@
       "recommended_build_id": "22357085",
       "reason": "Known stable and compatible build",
       "depots": [],
-      "manifest_overrides": {}
+      "manifest_overrides": {
+        "3357651": "2417499809052404547",
+        "3859920": "4731286747379700304",
+        "3859930": "6714427611547107917"
+      }
     },
     "3489700": {
       "game_name": "Stellar Blade",
