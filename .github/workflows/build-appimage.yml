@@ -1,0 +1,183 @@
+name: Build and Release AppImage
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release Channel (stable, beta, canary)'
+        required: true
+        default: 'beta'
+        type: choice
+        options:
+          - beta
+          - canary
+          - stable
+      prerelease:
+        description: 'Mark as Pre-release'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install System Packaging Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file
+
+      - name: Determine Release Channel & Metadata
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME:-}"
+          if [ -z "$TAG" ] || [ "$TAG" = "beta" ] || [ "$TAG" = "canary" ] || [ "$TAG" = "main" ]; then
+            TAG="v$(cat src/res/version 2>/dev/null || echo '2.7.0dev')"
+          fi
+          
+          # Detect channel from tag if on tag push, else use manual input
+          LOWER_TAG=$(echo "$TAG" | tr '[:upper:]' '[:lower:]')
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CHANNEL="${{ github.event.inputs.channel }}"
+            IS_PRE="${{ github.event.inputs.prerelease }}"
+          elif echo "$LOWER_TAG" | grep -q -E 'canary|testing'; then
+            CHANNEL="canary"
+            IS_PRE="true"
+          elif echo "$LOWER_TAG" | grep -q -E 'beta|dev|rc'; then
+            CHANNEL="beta"
+            IS_PRE="true"
+          else
+            CHANNEL="stable"
+            IS_PRE="false"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
+          echo "Building for Tag: $TAG (Channel: $CHANNEL, Pre-release: $IS_PRE)"
+
+      - name: Download and Setup appimagetool
+        run: |
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract
+          sudo mv squashfs-root /opt/appimagetool
+          sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
+
+      - name: Assemble AppDir
+        run: |
+          mkdir -p AppDir/bin
+          
+          # 1. Desktop Entry & Icon
+          cat << 'EOF' > AppDir/ACCELA.desktop
+          [Desktop Entry]
+          Name=ASSella
+          Comment=Steam Game & Depot Management Suite
+          Exec=AppRun %U
+          Icon=accela
+          Terminal=false
+          Type=Application
+          Categories=Utility;Game;
+          StartupWMClass=ASSella
+          EOF
+          
+          # Copy icon
+          if [ -f "src/res/logo/accela.png" ]; then
+            cp "src/res/logo/accela.png" AppDir/accela.png
+            cp "src/res/logo/accela.png" AppDir/.DirIcon
+          elif [ -f "assela_logo.png" ]; then
+            cp "assela_logo.png" AppDir/accela.png
+            cp "assela_logo.png" AppDir/.DirIcon
+          fi
+
+          # 2. AppRun Script
+          cat << 'EOF' > AppDir/AppRun
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          cd "$HERE/bin"
+          export APPIMAGE=1
+          exec "./run.sh" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # 3. Bin run.sh
+          cat << 'EOF' > AppDir/bin/run.sh
+          #!/usr/bin/env bash
+          cd "$(dirname "$(realpath "$0")")"
+          export APPIMAGE=1
+          PYTHON_EXEC=".venv/bin/python3"
+          if [ -f "$PYTHON_EXEC" ]; then
+              exec "$PYTHON_EXEC" src/main.py "$@"
+          else
+              exec python3 src/main.py "$@"
+          fi
+          EOF
+          chmod +x AppDir/bin/run.sh
+
+          # 4. Copy Application Source Code
+          cp -r src AppDir/bin/
+          find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+          # 5. Build Standalone Python Virtual Environment
+          python3 -m venv AppDir/bin/.venv
+          AppDir/bin/.venv/bin/pip install --upgrade pip setuptools wheel
+          AppDir/bin/.venv/bin/pip install -r requirements.txt
+          find AppDir/bin/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+      - name: Build AppImage with ZSync Update Information
+        run: |
+          CHANNEL="${{ steps.meta.outputs.channel }}"
+          
+          # Embed GitHub Releases zsync update info for delta update capabilities
+          UPDATE_INFO="gh-releases-zsync|niwia|ASSella|latest|ASSella.AppImage.zsync"
+          
+          echo "Generating AppImage with update string: $UPDATE_INFO"
+          ARCH=x86_64 appimagetool -n -u "$UPDATE_INFO" AppDir ASSella.AppImage
+
+          # Generate SHA256 checksums
+          sha256sum ASSella.AppImage > ASSella.AppImage.sha256
+          if [ -f "ASSella.AppImage.zsync" ]; then
+            sha256sum ASSella.AppImage.zsync > ASSella.AppImage.zsync.sha256
+          fi
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ASSella-${{ steps.meta.outputs.channel }}-AppImage
+          path: |
+            ASSella.AppImage
+            ASSella.AppImage.zsync
+            *.sha256
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "ASSella ${{ steps.meta.outputs.tag }}"
+          draft: false
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          files: |
+            ASSella.AppImage
+            ASSella.AppImage.zsync
+            ASSella.AppImage.sha256
+            ASSella.AppImage.zsync.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
