@@ -343,17 +343,28 @@ Version=2.0
 Name=ASSella
 Comment=god is in the ass
 Exec=$EXEC_COMMAND
-Icon=accela
+Icon=assella
 Terminal=false
 Type=Application
 Categories=Utility;Game;
 MimeType=x-scheme-handler/accela;
+StartupWMClass=ASSella
 EOL
+    # Provide assella.desktop as alias/symlink
+    ln -sf "$DESKTOP_ENTRY" "$(dirname "$DESKTOP_ENTRY")/assella.desktop" 2>/dev/null || true
 
-    # Application Icon Download
+    # Application Icon Deployment (512x512 and 256x256)
     echo -e "${YELLOW}[INFO] Applying application icon...${NC}"
-    mkdir -p "$(dirname "$ICON_PATH")"
-    curl -sL -o "$ICON_PATH" "https://raw.githubusercontent.com/niwia/ASSella/main/src/res/logo/icon.png" || true
+    mkdir -p "$HOME/.local/share/icons/hicolor/256x256/apps" "$HOME/.local/share/icons/hicolor/512x512/apps"
+    if [ -f "$INSTALL_DESTINATION/Logo/assella_500x500.png" ]; then
+        cp -f "$INSTALL_DESTINATION/Logo/assella_500x500.png" "$HOME/.local/share/icons/hicolor/512x512/apps/assella.png"
+        cp -f "$INSTALL_DESTINATION/Logo/assella_500x500.png" "$HOME/.local/share/icons/hicolor/512x512/apps/accela.png"
+        cp -f "$INSTALL_DESTINATION/Logo/assella_500x500.png" "$HOME/.local/share/icons/hicolor/256x256/apps/assella.png"
+        cp -f "$INSTALL_DESTINATION/Logo/assella_500x500.png" "$ICON_PATH"
+    else
+        curl -sL -o "$ICON_PATH" "https://raw.githubusercontent.com/niwia/ASSella/beta/src/res/logo/icon.png" || true
+        cp -f "$ICON_PATH" "$HOME/.local/share/icons/hicolor/256x256/apps/assella.png" 2>/dev/null || true
+    fi
 
     # Update system desktop database
     if command -v update-desktop-database &>/dev/null; then

@@ -1559,7 +1559,9 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setGeometry(100, 100, 800, 350)
 
-        icon_path = Paths.resource("logo/icon.ico")
+        icon_path = Paths.resource("logo/icon.png")
+        if not icon_path.exists():
+            icon_path = Paths.resource("logo/icon.ico")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
         else:
@@ -2340,6 +2342,7 @@ class MainWindow(QMainWindow):
         dialog.exec()
         self._check_network_connections_async()
         self.refresh_hubcap_stats()
+        self.check_tool_updates()
 
     def open_fetch_dialog(self) -> None:
         self.ui_state.fetch_dialog = FetchManifestDialog(self)

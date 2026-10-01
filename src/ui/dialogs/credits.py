@@ -391,30 +391,91 @@ class CreditsDialog(QDialog):
 
         def _check_sync():
             try:
+                import json
                 local_clean = _extract_semver(app_version)
-                if "alpha" in local_clean.lower():
-                    branch = "alpha"
-                elif any(x in local_clean.lower() for x in ("beta", "rc")):
-                    branch = "beta"
+
+                # Channel resolution matching MainWindow
+                saved_ch = ""
+                if hasattr(self, "settings") and self.settings:
+                    saved_ch = str(self.settings.value("app_update_channel", "auto") or "auto").lower()
+                if saved_ch in ("canary", "beta", "stable"):
+                    active_ch = saved_ch
+                elif any(x in local_clean.lower() for x in ("canary", "testing")):
+                    active_ch = "canary"
+                elif any(x in local_clean.lower() for x in ("beta", "dev", "rc")):
+                    active_ch = "beta"
                 else:
-                    branch = "main"
-                url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
-                req = urllib.request.Request(url, headers={"User-Agent": "ASSella-Updater"})
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    remote_raw = response.read().decode("utf-8").strip()
-                    remote_clean = _extract_semver(remote_raw)
-                    if remote_clean:
-                        if _parse_version(remote_clean) > _parse_version(local_clean):
-                            QMetaObject.invokeMethod(
-                                self, "_on_check_available",
-                                Qt.ConnectionType.QueuedConnection,
-                                Q_ARG(str, remote_clean),
-                            )
-                        else:
-                            QMetaObject.invokeMethod(
-                                self, "_on_check_up_to_date",
-                                Qt.ConnectionType.QueuedConnection,
-                            )
+                    active_ch = "stable"
+
+                def _tag_matches_channel(tag_name: str, channel: str) -> bool:
+                    tv = tag_name.lower()
+                    if channel == "canary":
+                        return any(x in tv for x in ("canary", "testing"))
+                    if channel == "beta":
+                        return any(x in tv for x in ("beta", "dev", "rc"))
+                    is_c = any(x in tv for x in ("canary", "testing"))
+                    is_b = any(x in tv for x in ("beta", "dev", "rc"))
+                    return ("stable" in tv) or (not is_c and not is_b)
+
+                def _asset_matches_channel(asset_name: str, channel: str) -> bool:
+                    an = asset_name.lower()
+                    if not an.endswith(".appimage") or "zsync" in an:
+                        return False
+                    if channel == "canary":
+                        return any(x in an for x in ("canary", "testing")) or not any(x in an for x in ("beta", "stable"))
+                    if channel == "beta":
+                        return any(x in an for x in ("beta", "dev", "rc")) or (an == "assella.appimage")
+                    return ("stable" in an) or (an == "assella.appimage") or not any(x in an for x in ("canary", "testing", "beta", "dev", "rc"))
+
+                remote_clean = ""
+                # 1. Primary check: GitHub Releases API
+                try:
+                    api_url = "https://api.github.com/repos/niwia/ASSella/releases"
+                    req = urllib.request.Request(
+                        api_url,
+                        headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
+                    )
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        releases = json.loads(response.read().decode("utf-8"))
+                        for r in releases:
+                            tag = r.get("tag_name", "").strip()
+                            title = r.get("name", "").strip()
+                            if not (_tag_matches_channel(tag, active_ch) or _tag_matches_channel(title, active_ch)):
+                                continue
+                            assets = [a.get("name", "") for a in r.get("assets", [])]
+                            if any(_asset_matches_channel(a, active_ch) for a in assets):
+                                remote_clean = _extract_semver(tag)
+                                break
+                except Exception as api_err:
+                    logger.debug(f"Credits GitHub Releases API error: {api_err}")
+
+                # 2. Fallback check: raw version file
+                if not remote_clean:
+                    branch = "canary" if active_ch == "canary" else ("beta" if active_ch == "beta" else "main")
+                    url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
+                    req = urllib.request.Request(url, headers={"User-Agent": "ASSella-Updater"})
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        remote_raw = response.read().decode("utf-8").strip()
+                        remote_clean = _extract_semver(remote_raw)
+
+                if remote_clean:
+                    if _parse_version(remote_clean) > _parse_version(local_clean):
+                        QMetaObject.invokeMethod(
+                            self, "_on_check_available",
+                            Qt.ConnectionType.QueuedConnection,
+                            Q_ARG(str, remote_clean),
+                        )
+                    else:
+                        QMetaObject.invokeMethod(
+                            self, "_on_check_up_to_date",
+                            Qt.ConnectionType.QueuedConnection,
+                        )
+                else:
+                    QMetaObject.invokeMethod(
+                        self, "_on_check_failed",
+                        Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(str, f"No release found on channel '{active_ch}'"),
+                    )
             except Exception as e:
                 logger.warning(f"Credits check updates failed: {e}")
                 QMetaObject.invokeMethod(

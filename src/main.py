@@ -106,7 +106,9 @@ def main():
     app.setDesktopFileName("assella.desktop")
 
     # Set default window icon for all dialogs and sub-windows
-    icon_path = Paths.resource("logo/icon.ico")
+    icon_path = Paths.resource("logo/icon.png")
+    if not icon_path.exists():
+        icon_path = Paths.resource("logo/icon.ico")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
