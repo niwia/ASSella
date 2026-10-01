@@ -3,6 +3,11 @@
 curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bash
 ```
 
+Arch Linux:
+```bash
+sudo pacman -U https://github.com/niwia/ASSella/releases/download/v2.7.0beta/assella-2.7.0beta-1-x86_64.pkg.tar.zst
+```
+
 ## Requirements
 * **Headcrab (SLSsteam)**: Required to intercept and download depots:
   `curl -fsSL headcrab.pages.dev | bash`
