@@ -308,6 +308,43 @@ class NativeSteamDownloadTask(QObject):
                     depot_names=depot_names,
                     dlc_appids=dlc_appids,
                 )
+
+                # Clean legacy ACCELA markers from install folder if any exist
+                try:
+                    dest_lib = game_data.get("library_path") or ""
+                    if not dest_lib and acf_path:
+                        dest_lib = str(Path(acf_path).parent.parent)
+                    if installdir and dest_lib:
+                        game_folder = Path(dest_lib) / "steamapps" / "common" / installdir
+                        if game_folder.is_dir():
+                            import shutil
+                            for marker_name in (".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
+                                m_path = game_folder / marker_name
+                                if m_path.exists():
+                                    if m_path.is_dir():
+                                        shutil.rmtree(m_path, ignore_errors=True)
+                                    else:
+                                        m_path.unlink(missing_ok=True)
+                                    logger.info(f"[NativeSteamDL] Cleaned legacy ACCELA marker {m_path}")
+                except Exception as e:
+                    logger.debug(f"[NativeSteamDL] Could not clean legacy marker: {e}")
+
+                # Clean legacy .depot file and update status cache
+                try:
+                    from utils.helpers import get_base_path
+                    depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+                    if depot_file.exists():
+                        depot_file.unlink()
+                        logger.info(f"[NativeSteamDL] Removed legacy depot file {depot_file}")
+                except Exception as e:
+                    logger.debug(f"[NativeSteamDL] Failed to remove legacy depot file: {e}")
+
+                try:
+                    from utils.settings import get_settings
+                    settings = get_settings()
+                    settings.remove(f"game_update_status/{appid}")
+                except Exception:
+                    pass
             except Exception as e:
                 logger.warning(f"[NativeSteamDL] Could not register into plugin_library: {e}")
 

@@ -520,7 +520,14 @@ class LibraryActionsMixin:
 
         open_folder_action = QAction("Open Install Folder", self)
         install_path = game_data.get("install_path")
-        open_folder_action.triggered.connect(lambda: self._open_folder(install_path))
+        if not install_path or not os.path.isdir(install_path):
+            if is_vapor_mode or game_data.get("is_atom"):
+                from utils.plugin_games import get_atom_game_install_path
+                resolved_p = get_atom_game_install_path(appid)
+                if resolved_p:
+                    install_path = resolved_p
+                    game_data["install_path"] = resolved_p
+        open_folder_action.triggered.connect(lambda: self._open_folder(game_data.get("install_path") or install_path))
         menu.addAction(open_folder_action)
 
         reset_depots_action = QAction("Reset Depot Selection", self)
@@ -751,6 +758,14 @@ class LibraryActionsMixin:
                 logger.info(
                     f"I bought the game: Removed AppID {appid} and related IDs {target_ids} from SLS config"
                 )
+
+            # Unregister from AT0-M plugin library
+            if appid and appid not in ("0", "N/A", "unknown"):
+                try:
+                    from utils.plugin_games import unregister_plugin_game
+                    unregister_plugin_game(appid)
+                except Exception as e:
+                    logger.debug(f"Failed to unregister plugin game {appid} in wipe_sls_only: {e}")
 
             if platform.system() == "Linux":
                 try:

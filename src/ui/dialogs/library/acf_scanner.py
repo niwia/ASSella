@@ -139,13 +139,82 @@ def scan_acf_files(
 
                 seen_appids.add(appid)
 
-                # Check if it has an ACCELA marker or is in AT0-M plugin library
-                is_atom = appid in plugin_games
-                is_accela = False
+                # Check for physical ACCELA marker on disk
+                accela_marker_path = None
                 for marker in (".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
-                    if (install_path / marker).exists():
-                        is_accela = True
+                    cand = install_path / marker
+                    if cand.exists():
+                        accela_marker_path = cand
                         break
+
+                plugin_record = plugin_games.get(appid)
+                is_valid_plugin = bool(
+                    plugin_record
+                    and plugin_record.get("is_atom") is not False
+                    and plugin_record.get("mode") != "accela"
+                    and plugin_record.get("is_accela") is not True
+                )
+
+                if accela_marker_path and is_valid_plugin:
+                    # Conflict: both ACCELA marker and plugin record exist.
+                    # Compare timestamps to determine the most recent installation method.
+                    plugin_ts = 0
+                    try:
+                        plugin_ts = float(plugin_record.get("updated_at") or 0)
+                    except (ValueError, TypeError):
+                        plugin_ts = 0
+
+                    marker_ts = 0
+                    meta_json = install_path / ".DepotDownloader" / "metadata.json"
+                    if meta_json.exists():
+                        try:
+                            import json
+                            meta_data = json.loads(meta_json.read_text(encoding="utf-8"))
+                            marker_ts = float(meta_data.get("last_updated") or 0)
+                        except Exception:
+                            pass
+                    if marker_ts == 0:
+                        try:
+                            marker_ts = accela_marker_path.stat().st_mtime
+                        except OSError:
+                            marker_ts = 0
+
+                    if marker_ts >= plugin_ts:
+                        # Reinstalled via ASSella more recently -> ASSella wins, purge stale plugin record
+                        try:
+                            from utils.plugin_games import convert_plugin_game_to_accela
+                            convert_plugin_game_to_accela(appid)
+                        except Exception:
+                            pass
+                        is_atom = False
+                        is_accela = True
+                    else:
+                        # Reinstalled via AT0-M more recently -> AT0-M wins, purge legacy marker
+                        try:
+                            import shutil
+                            if accela_marker_path.is_dir():
+                                shutil.rmtree(accela_marker_path, ignore_errors=True)
+                            else:
+                                accela_marker_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        is_atom = True
+                        is_accela = False
+                elif accela_marker_path:
+                    is_accela = True
+                    is_atom = False
+                    if plugin_record and not is_valid_plugin:
+                        try:
+                            from utils.plugin_games import convert_plugin_game_to_accela
+                            convert_plugin_game_to_accela(appid)
+                        except Exception:
+                            pass
+                elif is_valid_plugin:
+                    is_atom = True
+                    is_accela = False
+                else:
+                    is_atom = False
+                    is_accela = False
 
                 source = "at0-m" if is_atom else ("ACCELA" if is_accela else "Steam")
 

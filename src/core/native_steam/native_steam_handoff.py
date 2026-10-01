@@ -401,6 +401,43 @@ def perform_steam_handoff(
             depot_names=depot_names,
             dlc_appids=dlc_appids,
         )
+
+        # Clean legacy ACCELA markers from install folder if any exist
+        try:
+            dest_lib = game_data.get("library_path") or ""
+            if not dest_lib and "appmanifest_path" in game_data and game_data["appmanifest_path"]:
+                dest_lib = str(Path(game_data["appmanifest_path"]).parent.parent)
+            if installdir and dest_lib:
+                game_folder = Path(dest_lib) / "steamapps" / "common" / installdir
+                if game_folder.is_dir():
+                    import shutil
+                    for marker_name in (".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
+                        m_path = game_folder / marker_name
+                        if m_path.exists():
+                            if m_path.is_dir():
+                                shutil.rmtree(m_path, ignore_errors=True)
+                            else:
+                                m_path.unlink(missing_ok=True)
+                            logger.info(f"[SteamHandoff] Cleaned legacy ACCELA marker {m_path}")
+        except Exception as e:
+            logger.debug(f"[SteamHandoff] Could not clean legacy marker: {e}")
+
+        # Clean legacy .depot file and update status cache
+        try:
+            from utils.helpers import get_base_path
+            depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+            if depot_file.exists():
+                depot_file.unlink()
+                logger.info(f"[SteamHandoff] Removed legacy depot file {depot_file}")
+        except Exception as e:
+            logger.debug(f"[SteamHandoff] Failed to remove legacy depot file: {e}")
+
+        try:
+            from utils.settings import get_settings
+            settings = get_settings()
+            settings.remove(f"game_update_status/{appid}")
+        except Exception:
+            pass
     except Exception as e:
         logger.warning(f"[SteamHandoff] Could not register into plugin_library: {e}")
 

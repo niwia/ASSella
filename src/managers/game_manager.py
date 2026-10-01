@@ -1165,11 +1165,66 @@ class GameManager(QObject):
             if appid and appid not in ("0", "N/A", "unknown"):
                 try:
                     from utils.plugin_games import get_plugin_game
-                    plugin_record = get_plugin_game(appid)
+                    plugin_record = get_plugin_game(appid, active_only=True)
                 except Exception:
                     pass
 
             is_plugin_game = bool(plugin_record)
+
+            # Smart Conflict Resolution between ACCELA physical marker and AT0-M plugin record
+            if is_accela_install and is_plugin_game:
+                plugin_ts = 0
+                try:
+                    plugin_ts = float(plugin_record.get("updated_at") or 0)
+                except (ValueError, TypeError):
+                    plugin_ts = 0
+
+                marker_ts = 0
+                meta_json_path = os.path.join(game_path, ".DepotDownloader", "metadata.json")
+                if os.path.exists(meta_json_path):
+                    try:
+                        import json
+                        with open(meta_json_path, "r", encoding="utf-8") as mf:
+                            m_data = json.load(mf)
+                            marker_ts = float(m_data.get("last_updated") or 0)
+                    except Exception:
+                        pass
+                if marker_ts == 0 and marker_path and os.path.exists(marker_path):
+                    try:
+                        marker_ts = os.path.getmtime(marker_path)
+                    except OSError:
+                        marker_ts = 0
+
+                if marker_ts >= plugin_ts:
+                    # Reinstalled via ASSella more recently -> ASSella wins, purge stale plugin record
+                    logger.info(
+                        f"[MethodResolution] Game '{game_name}' ({appid}) has newer ACCELA marker "
+                        f"({marker_ts} >= {plugin_ts}); converting stale AT0-M record to ACCELA."
+                    )
+                    try:
+                        from utils.plugin_games import convert_plugin_game_to_accela
+                        convert_plugin_game_to_accela(appid)
+                    except Exception as e:
+                        logger.debug(f"Failed to auto-clean stale plugin record for {appid}: {e}")
+                    is_plugin_game = False
+                    plugin_record = None
+                else:
+                    # Reinstalled via AT0-M more recently -> AT0-M wins, purge legacy marker
+                    logger.info(
+                        f"[MethodResolution] Game '{game_name}' ({appid}) was installed via AT0-M more recently "
+                        f"({plugin_ts} > {marker_ts}); removing legacy ACCELA marker."
+                    )
+                    try:
+                        import shutil
+                        if os.path.isdir(marker_path):
+                            shutil.rmtree(marker_path, ignore_errors=True)
+                        else:
+                            os.remove(marker_path)
+                    except Exception as e:
+                        logger.debug(f"Failed to clean legacy marker for {appid}: {e}")
+                    marker_path = None
+                    is_accela_install = False
+
             is_managed = is_accela_install or is_vapor or is_plugin_game
 
             # Initialize game data dictionary early so we can populate it
@@ -1888,8 +1943,15 @@ class GameManager(QObject):
                 if remove_shortcuts:
                     self._remove_linux_shortcuts_and_icons(appid)
 
-            # Clean up appid from SLSsteam config.yaml
+            # Clean up plugin game tracking (AT0-M) and SLS config
             if appid and appid not in ("0", "N/A", "unknown"):
+                try:
+                    from utils.plugin_games import unregister_plugin_game
+                    unregister_plugin_game(str(appid))
+                    logger.info(f"Unregistered plugin game {appid} during uninstall")
+                except Exception as e:
+                    logger.debug(f"Failed to unregister plugin game {appid}: {e}")
+
                 config_path = get_user_config_path()
                 if config_path.exists():
                     if is_dlc_only:
@@ -1913,7 +1975,7 @@ class GameManager(QObject):
             elif platform.system() == "Windows" and not is_dlc_only:
                 self._remove_windows_game_data(appid, game_data)
 
-            # Clear QSettings branch and manifest cache keys for this game
+            # Clear QSettings branch, manifest, and status cache keys for this game
             try:
                 settings = get_settings()
                 for key in (
@@ -1926,6 +1988,7 @@ class GameManager(QObject):
                     f"pin_build/{appid}",
                     f"exclude_from_update_all/{appid}",
                     f"auto_update_manifest/{appid}",
+                    f"game_update_status/{appid}",
                 ):
                     settings.remove(key)
                 

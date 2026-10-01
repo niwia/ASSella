@@ -10,6 +10,7 @@ can be injected smartly without queuing unintended games.
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
@@ -70,15 +71,35 @@ def save_plugin_library(data: Dict[str, Any]) -> bool:
         return False
 
 
-def get_plugin_game(appid: Union[str, int]) -> Optional[Dict[str, Any]]:
+def is_valid_plugin_record(record: Optional[Dict[str, Any]]) -> bool:
+    """Check if a plugin library record represents an active AT0-M / plugin-native game."""
+    if not record or not isinstance(record, dict):
+        return False
+    if record.get("is_atom") is False or record.get("is_accela") is True or record.get("mode") == "accela":
+        return False
+    return True
+
+
+def get_plugin_game(appid: Union[str, int], active_only: bool = True) -> Optional[Dict[str, Any]]:
     """Retrieve metadata for a specific plugin-managed game."""
     lib = load_plugin_library()
-    return lib.get(str(appid))
+    rec = lib.get(str(appid))
+    if active_only and not is_valid_plugin_record(rec):
+        return None
+    return rec
 
 
-def get_all_plugin_games() -> Dict[str, Any]:
+def is_plugin_game(appid: Union[str, int]) -> bool:
+    """Check if an AppID is currently registered as an active AT0-M plugin game."""
+    return get_plugin_game(appid, active_only=True) is not None
+
+
+def get_all_plugin_games(active_only: bool = True) -> Dict[str, Any]:
     """Return all currently registered plugin-managed games."""
-    return load_plugin_library()
+    lib = load_plugin_library()
+    if not active_only:
+        return lib
+    return {aid: g for aid, g in lib.items() if is_valid_plugin_record(g)}
 
 
 def get_game_for_depot(depot_id: Union[str, int]) -> Optional[Dict[str, Any]]:
@@ -330,3 +351,124 @@ def sync_all_plugin_games_to_config() -> None:
         if editor.has_changes:
             SLSBridge.notify_reload()
             logger.info("[PluginGames] Synced all registered plugin games to config.yaml in a single batch")
+
+
+def get_atom_game_install_info(appid: Union[str, int]) -> Optional[Dict[str, Any]]:
+    """
+    Locate where a game is installed (or currently downloading) when managed via AT0-M mode.
+    Since download and installation are handled directly by Steam, this inspects:
+      1. All Steam library folders from libraryfolders.vdf.
+      2. The appmanifest_<appid>.acf file in each library.
+      3. The 'installdir' property pointing to steamapps/common/<installdir>.
+      4. Staged downloads in steamapps/downloading/<appid>.
+
+    Returns a dict with install paths, state flags, size, build ID, and download state,
+    or None if not found in any Steam library.
+    """
+    aid_str = str(appid).strip()
+    if not aid_str or not aid_str.isdigit():
+        return None
+
+    try:
+        from core.steam_helpers import get_steam_libraries
+        libs = get_steam_libraries()
+    except Exception:
+        libs = []
+
+    fallback_libs = [
+        Path.home() / ".local/share/Steam",
+        Path.home() / ".steam/steam",
+        Path.home() / ".var/app/com.valvesoftware.Steam/data/Steam",
+    ]
+    for fb in fallback_libs:
+        if fb.is_dir() and fb not in libs:
+            libs.append(fb)
+
+    for lib_path in libs:
+        lib = Path(lib_path)
+        steamapps = lib / "steamapps"
+        if not steamapps.is_dir():
+            continue
+
+        acf_path = steamapps / f"appmanifest_{aid_str}.acf"
+        common_dir = steamapps / "common"
+        downloading_dir = steamapps / "downloading" / aid_str
+
+        installdir = ""
+        game_name = ""
+        state_flags = 0
+        size_on_disk = 0
+        buildid = ""
+        bytes_downloaded = 0
+        bytes_to_download = 0
+
+        if acf_path.is_file():
+            try:
+                content = acf_path.read_text(encoding="utf-8", errors="replace")
+                m_dir = re.search(r'"installdir"\s+"([^"]+)"', content)
+                if m_dir:
+                    installdir = m_dir.group(1).strip()
+                m_name = re.search(r'"name"\s+"([^"]+)"', content)
+                if m_name:
+                    game_name = m_name.group(1).strip()
+                m_state = re.search(r'"StateFlags"\s+"(\d+)"', content)
+                if m_state:
+                    state_flags = int(m_state.group(1))
+                m_size = re.search(r'"SizeOnDisk"\s+"(\d+)"', content)
+                if m_size:
+                    size_on_disk = int(m_size.group(1))
+                m_build = re.search(r'"buildid"\s+"([^"]+)"', content)
+                if m_build:
+                    buildid = m_build.group(1).strip()
+                m_b_dl = re.search(r'"BytesDownloaded"\s+"(\d+)"', content)
+                if m_b_dl:
+                    bytes_downloaded = int(m_b_dl.group(1))
+                m_b_td = re.search(r'"BytesToDownload"\s+"(\d+)"', content)
+                if m_b_td:
+                    bytes_to_download = int(m_b_td.group(1))
+            except Exception as e:
+                logger.debug(f"[PluginGames] Error reading {acf_path}: {e}")
+
+        # If installdir wasn't in ACF, check plugin_library record
+        if not installdir:
+            record = get_plugin_game(aid_str)
+            if record:
+                installdir = record.get("installdir") or ""
+                if not game_name:
+                    game_name = record.get("name") or ""
+
+        target_folder = (common_dir / installdir) if installdir else None
+        folder_exists = bool(target_folder and target_folder.is_dir())
+        is_dl = bool(downloading_dir.is_dir() or (state_flags & 1024 != 0))
+        is_installed = bool((state_flags & 4 != 0) and folder_exists)
+
+        if folder_exists or is_dl or acf_path.is_file():
+            resolved_install_path = str(target_folder) if folder_exists else (str(downloading_dir) if downloading_dir.is_dir() else None)
+            return {
+                "appid": aid_str,
+                "game_name": game_name or installdir or aid_str,
+                "installed": is_installed,
+                "is_downloading": is_dl,
+                "install_path": resolved_install_path,
+                "common_path": str(target_folder) if target_folder else None,
+                "downloading_path": str(downloading_dir) if downloading_dir.is_dir() else None,
+                "library_path": str(lib),
+                "appmanifest_path": str(acf_path) if acf_path.is_file() else None,
+                "installdir": installdir,
+                "state_flags": state_flags,
+                "size_on_disk": size_on_disk,
+                "buildid": buildid,
+                "bytes_downloaded": bytes_downloaded,
+                "bytes_to_download": bytes_to_download,
+            }
+
+    return None
+
+
+def get_atom_game_install_path(appid: Union[str, int]) -> Optional[str]:
+    """Return the absolute filesystem path where the AT0-M game is installed, or None."""
+    info = get_atom_game_install_info(appid)
+    if info:
+        return info.get("install_path")
+    return None
+

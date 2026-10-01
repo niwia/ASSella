@@ -155,9 +155,19 @@ def init_info_tab(dialog) -> None:
     dialog.status_tile.clicked.connect(lambda: on_status_btn_clicked(dialog))
     top_tiles_layout.addWidget(dialog.status_tile, 1)
 
-    dialog.folder_tile = MaterialTile("Open Folder", "Open directory", dialog, is_toggle=False)
-    dialog.folder_tile.update_state(False, dialog.accent_color, inactive_sub="Open directory")
-    dialog.folder_tile.clicked.connect(lambda: dialog.parent_window._open_folder(dialog.game_data.get("install_path")))
+    def _open_game_folder():
+        p = dialog.game_data.get("install_path")
+        if not p or not os.path.isdir(p):
+            if dialog.game_data.get("is_atom") or dialog.game_data.get("is_vapor"):
+                from utils.plugin_games import get_atom_game_install_path
+                resolved = get_atom_game_install_path(dialog.appid)
+                if resolved:
+                    p = resolved
+                    dialog.game_data["install_path"] = resolved
+        if hasattr(dialog, "parent_window") and dialog.parent_window:
+            dialog.parent_window._open_folder(p)
+
+    dialog.folder_tile.clicked.connect(_open_game_folder)
     top_tiles_layout.addWidget(dialog.folder_tile, 1)
 
     dialog.dlc_tile = MaterialTile("DLC Mode", "Inactive", dialog, is_toggle=True)
