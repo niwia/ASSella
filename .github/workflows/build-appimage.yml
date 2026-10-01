@@ -130,10 +130,14 @@ jobs:
           # 3. Bin run.sh
           cat << 'EOF' > AppDir/bin/run.sh
           #!/usr/bin/env bash
-          cd "$(dirname "$(realpath "$0")")"
+          HERE="$(dirname "$(realpath "$0")")"
+          cd "$HERE"
           export APPIMAGE=1
-          PYTHON_EXEC=".venv/bin/python3"
-          if [ -f "$PYTHON_EXEC" ]; then
+          export PYTHONHOME="$HERE/.venv"
+          export LD_LIBRARY_PATH="$HERE/.venv/lib:${LD_LIBRARY_PATH:-}"
+
+          PYTHON_EXEC="$HERE/.venv/bin/python3"
+          if [ -x "$PYTHON_EXEC" ]; then
               exec "$PYTHON_EXEC" src/main.py "$@"
           else
               exec python3 src/main.py "$@"
@@ -145,10 +149,15 @@ jobs:
           cp -r src AppDir/bin/
           find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
-          # 5. Build Standalone Python Virtual Environment
-          python3 -m venv AppDir/bin/.venv
-          AppDir/bin/.venv/bin/pip install --upgrade pip setuptools wheel
-          AppDir/bin/.venv/bin/pip install -r requirements.txt
+          # 5. Bundle Relocatable Standalone Python Runtime
+          echo "Downloading relocatable python-build-standalone runtime..."
+          curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.11.10+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz"
+          tar -xzf /tmp/cpython-standalone.tar.gz -C AppDir/bin/
+          mv AppDir/bin/python AppDir/bin/.venv
+
+          # Install application dependencies into bundled runtime
+          AppDir/bin/.venv/bin/python3 -m pip install --upgrade pip setuptools wheel
+          AppDir/bin/.venv/bin/python3 -m pip install -r requirements.txt
           find AppDir/bin/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
       - name: Build AppImage with ZSync Update Information
