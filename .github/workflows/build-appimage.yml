@@ -46,7 +46,7 @@ jobs:
       - name: Install System Packaging Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file
+          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file python3-venv python3-pip git
 
       - name: Determine Release Channel & Metadata
         id: meta

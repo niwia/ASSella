@@ -11,7 +11,7 @@ beautifulsoup4>=4.12.0
 urwid>=2.1.0
 pycryptodome>=3.19.0
 pysocks>=1.7.1
-git+https://github.com/solsticegamestudios/steam.git@1373e885f26bb636225443787f54d4082283e5f3
-git+https://github.com/solsticegamestudios/vdf.git@fb88ea7e38a85476743f5601b0c80d5715034623
+git+https://github.com/solsticegamestudios/steam.git@master
+git+https://github.com/solsticegamestudios/vdf.git@v4.0
 curl_cffi>=0.7.0
 
