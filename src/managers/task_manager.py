@@ -1219,6 +1219,10 @@ class TaskManager(QObject):
 
             if self._finalize_cancel_event.is_set() or self.is_cancelling:
                 return
+            self._finalize_eosproxy()
+
+            if self._finalize_cancel_event.is_set() or self.is_cancelling:
+                return
             self._finalize_greenluma(config_enabled)
 
         except Exception as e:
@@ -1298,6 +1302,22 @@ class TaskManager(QObject):
             )
         except OSError as e:
             logger.error(f"Error applying Goldberg: {e}")
+
+    def _finalize_eosproxy(self):
+        """Automatically detect and apply EOS proxy if enabled in settings."""
+        if not (self.settings.value("enable_eosproxy_default", False, type=bool) and not self.is_cancelling and self.current_dest_path):
+            return
+
+        try:
+            game_dir = get_game_directory(self.current_dest_path, self.game_data)
+            if game_dir and os.path.isdir(game_dir):
+                from utils.eos_detector import EOSDetector
+                status = EOSDetector.get_proxy_status(game_dir)
+                if status.get("has_eos") and not status.get("has_proxy"):
+                    if EOSDetector.apply_proxy(game_dir):
+                        logger.info(f"[TaskManager] Automatically applied EOSProxy to {game_dir}")
+        except Exception as e:
+            logger.debug(f"[TaskManager] Error applying EOSProxy: {e}")
 
     def _finalize_greenluma(self, config_enabled: bool):
         # 6. GreenLuma Files (Win32)
@@ -2837,6 +2857,15 @@ class TaskManager(QObject):
             main_appid = self.game_data.get("appid")
             game_name = self.game_data.get("game_name", "")
             if main_appid:
+                # If game was previously tracked in AT0-M plugin_games, convert it to ACCELA mode
+                try:
+                    from utils.plugin_games import convert_plugin_game_to_accela, get_plugin_game
+                    if get_plugin_game(str(main_appid), active_only=False):
+                        logger.info(f"Converting previously registered plugin game {main_appid} to ACCELA managed mode")
+                        convert_plugin_game_to_accela(str(main_appid))
+                except Exception as e:
+                    logger.debug(f"Could not convert plugin game {main_appid}: {e}")
+
                 from utils.dlc_helpers import sync_dlc_only_sls_config
                 sync_dlc_only_sls_config(config_path, str(main_appid), game_name, self.game_data)
 

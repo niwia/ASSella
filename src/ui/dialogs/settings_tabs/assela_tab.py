@@ -52,7 +52,17 @@ def create_assela_tab(dialog) -> QWidget:
     )
     assella_lay.addWidget(dialog.check_updates_on_boot_checkbox)
 
-    # 3. ISP Bypass & Hubcap Gateway Selector
+    # 3. Enable EOSProxy by default
+    dialog.enable_eosproxy_default_checkbox = create_checkbox_setting(
+        "Enable EOSProxy by default",
+        "enable_eosproxy_default",
+        False,
+        dialog,
+        "Automatically detect and apply the EOS proxy DLL to newly downloaded games that use Epic Online Services.",
+    )
+    assella_lay.addWidget(dialog.enable_eosproxy_default_checkbox)
+
+    # 4. ISP Bypass & Hubcap Gateway Selector
     isp_group = QVBoxLayout()
     isp_group.setSpacing(8)
     isp_group.setContentsMargins(0, 2, 0, 2)

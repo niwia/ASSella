@@ -273,6 +273,36 @@ def create_sls_tab(dialog) -> QWidget:
     dialog.experimental_acf_independent_checkbox.stateChanged.connect(dialog._on_experimental_acf_toggled)
     int_layout.addWidget(dialog.experimental_acf_independent_checkbox)
 
+    # All games online (beta)
+    from utils.yaml_config_manager import get_user_config_path, get_fake_appid, add_fake_app_id, remove_fake_app_id
+    cfg_path = get_user_config_path()
+    current_all_online = (
+        get_fake_appid(cfg_path, "0") == "480"
+        if cfg_path.exists()
+        else dialog.settings.value("all_games_online_beta", False, type=bool)
+    )
+
+    dialog.all_games_online_checkbox = create_checkbox_setting(
+        "All games online (beta)",
+        "all_games_online_beta",
+        current_all_online,
+        dialog,
+        "Uses 0: 480 in SLSsteam FakeAppIds to map all unowned games to Spacewar (480) for online networking features.",
+    )
+
+    def _on_all_games_online_toggled(state):
+        is_checked = bool(state)
+        dialog.settings.setValue("all_games_online_beta", is_checked)
+        c_path = get_user_config_path()
+        if is_checked:
+            add_fake_app_id(c_path, "0", game_name="All Unowned Apps", fake_appid="480")
+        else:
+            remove_fake_app_id(c_path, "0", fake_appid="480")
+            remove_fake_app_id(c_path, "0")
+
+    dialog.all_games_online_checkbox.stateChanged.connect(_on_all_games_online_toggled)
+    int_layout.addWidget(dialog.all_games_online_checkbox)
+
     # Cleaned up: only single SLSsteam API toggle is shown.
     # Steam restart is disabled by default / forced off.
     # SLS config management is ON by default and toggles in lockstep with SLSsteam API.

@@ -83,6 +83,8 @@ class SettingsDialog(QDialog):
         self.slssteam_hash_warning_label = None
         self.accent_color_button = None
         self.accent_reset_button = None
+        self.all_games_online_checkbox = None
+        self.enable_eosproxy_default_checkbox = None
         self.bg_color_button = None
         self.bg_reset_button = None
         self.titlebar_position_checkbox = None
@@ -710,6 +712,10 @@ class SettingsDialog(QDialog):
                             clean_fakeappid_db(config_path)
                     except Exception as ex:
                         logger.error(f"Failed to apply Fake AppID database integration changes: {ex}")
+
+        # EOSProxy by default toggle
+        if hasattr(self, "enable_eosproxy_default_checkbox") and self.enable_eosproxy_default_checkbox is not None:
+            self.settings.setValue("enable_eosproxy_default", self.enable_eosproxy_default_checkbox.isChecked())
 
         # Remote Web UI toggle
         old_web_ui = self.settings.value("enable_remote_web_ui", False, type=bool)
