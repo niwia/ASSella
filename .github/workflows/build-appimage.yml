@@ -256,6 +256,8 @@ jobs:
           depends=('fuse2')
           provides=('assella')
           conflicts=('assella-bin' 'assella-git')
+          source=("ASSella.AppImage" "assela.desktop" "assela.png")
+          sha256sums=('SKIP' 'SKIP' 'SKIP')
           options=(!strip)
 
           package() {
@@ -282,7 +284,7 @@ jobs:
 
       - name: Build Arch Package via makepkg
         run: |
-          su builder -c "cd packaging/arch && makepkg -f"
+          su builder -c "cd packaging/arch && makepkg -f --nodeps"
 
       - name: Assemble Pacman Database Structure
         run: |
