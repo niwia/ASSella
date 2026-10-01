@@ -208,6 +208,9 @@ jobs:
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
       - name: Download AppImage Artifact
         uses: actions/download-artifact@v4
         with:
