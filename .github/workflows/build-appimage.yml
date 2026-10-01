@@ -292,19 +292,47 @@ jobs:
           cp packaging/arch/*.pkg.tar.zst repo/x86_64/
           cd repo/x86_64
           repo-add assella.db.tar.gz *.pkg.tar.zst
-          ln -sf assella.db.tar.gz assella.db
-          ln -sf assella.files.tar.gz assella.files
+          # Provide both .tar.gz and extensionless real files for pacman compatibility
+          cp -f assella.db.tar.gz assella.db
+          cp -f assella.files.tar.gz assella.files
+          cp -f assella.db.tar.gz ../../packaging/arch/assella.db
+          cp -f assella.db.tar.gz ../../packaging/arch/assella.db.tar.gz
+          cp -f assella.files.tar.gz ../../packaging/arch/assella.files
+          cp -f assella.files.tar.gz ../../packaging/arch/assella.files.tar.gz
 
-      - name: Attach Arch Package to GitHub Release
+      - name: Attach Arch Package and Database to Version Release
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.build-appimage.outputs.tag }}
-          files: packaging/arch/*.pkg.tar.zst
+          files: |
+            packaging/arch/*.pkg.tar.zst
+            packaging/arch/assella.db
+            packaging/arch/assella.db.tar.gz
+            packaging/arch/assella.files
+            packaging/arch/assella.files.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Deploy Arch Repository to GitHub Pages
+      - name: Update Rolling Arch Channel Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: arch-repo
+          name: "ASSella Arch Linux Rolling Repository"
+          body: "Rolling repository endpoint for Arch Linux Pacman (`/etc/pacman.conf`). Automatically updated with every build."
+          prerelease: true
+          make_latest: false
+          files: |
+            packaging/arch/*.pkg.tar.zst
+            packaging/arch/assella.db
+            packaging/arch/assella.db.tar.gz
+            packaging/arch/assella.files
+            packaging/arch/assella.files.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy Arch Repo Documentation to GitHub Pages
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -320,9 +348,35 @@ jobs:
             git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           fi
 
-          mkdir -p arch
-          cp -r "$GITHUB_WORKSPACE/repo/"* arch/
-          git add -A arch
-          git commit -m "Deploy Arch repository for ${{ needs.build-appimage.outputs.tag }}" || true
+          cat << 'EOF' > index.html
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>ASSella Arch Linux Repository</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; background: #0f172a; color: #e2e8f0; }
+              h1 { color: #38bdf8; border-bottom: 2px solid #334155; padding-bottom: 10px; }
+              pre { background: #1e293b; padding: 15px; border-radius: 8px; border: 1px solid #334155; overflow-x: auto; color: #f1f5f9; }
+              code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+            </style>
+          </head>
+          <body>
+            <h1>ASSella Arch Linux / SteamOS Repository</h1>
+            <p>To configure Pacman for automatic updates, add the following to <code>/etc/pacman.conf</code>:</p>
+            <pre><code>[assella]
+SigLevel = Optional TrustAll
+Server = https://github.com/niwia/ASSella/releases/download/arch-repo</code></pre>
+            <p>Then install or update ASSella with:</p>
+            <pre><code>sudo pacman -Sy assella</code></pre>
+            <p>Direct installation without configuring Pacman:</p>
+            <pre><code>sudo pacman -U https://github.com/niwia/ASSella/releases/download/arch-repo/assella-2.7.0beta-1-x86_64.pkg.tar.zst</code></pre>
+          </body>
+          </html>
+          EOF
+
+          git add index.html
+          git commit -m "Deploy Arch repo documentation for ${{ needs.build-appimage.outputs.tag }}" || true
           git push -u origin gh-pages || true
 
