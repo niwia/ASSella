@@ -414,12 +414,19 @@ class ProcessZipTask:
                     except Exception as _supp_err:
                         logger.debug(f"[ProcessZipTask] Failed to supplement depots from depot_keys.db: {_supp_err}")
 
-                # Also supplement depots from any standalone manifests found on disk for this app
+                # Also supplement depots from any standalone manifests found on disk for this app if key is available
                 for s_did in list(game_data.get("manifests", {}).keys()):
                     if str(s_did) != str(_cur_appid) and str(s_did) not in unfiltered_depots:
-                        desc = known_depot_descriptions.get(s_did, f"Depot {s_did}")
-                        unfiltered_depots[str(s_did)] = {"key": "", "desc": desc, "system": None}
-                        logger.info(f"[ProcessZipTask] Supplemented depot {s_did} from discovered standalone manifest")
+                        d_key = ""
+                        if DepotKeyManager and _cur_appid:
+                            try:
+                                d_key = DepotKeyManager.get_instance().get_depot_keys(_cur_appid).get(str(s_did), "")
+                            except Exception:
+                                pass
+                        if d_key:
+                            desc = known_depot_descriptions.get(s_did, f"Depot {s_did}")
+                            unfiltered_depots[str(s_did)] = {"key": d_key, "desc": desc, "system": None}
+                            logger.info(f"[ProcessZipTask] Supplemented depot {s_did} with key from discovered standalone manifest")
 
                 if not unfiltered_depots:
                     logger.warning("LUA parsing did not identify any depots with keys.")
@@ -752,16 +759,35 @@ class ProcessZipTask:
                                         pass
                                     manifest_files[f"{m_did}_{actual_mid}.manifest"] = found_manifest
                                     game_data.setdefault("manifests", {})[str(m_did)] = str(actual_mid)
-                                    if str(m_did) not in filtered_depots:
-                                        filtered_depots[str(m_did)] = {"key": "", "desc": m_name, "system": None}
-                                    refetched_depots.append(str(m_did))
-                                    if str(m_did) in missing_from_hubcap:
-                                        missing_from_hubcap.remove(str(m_did))
-                                    if str(m_did) in missing_depots_info:
-                                        del missing_depots_info[str(m_did)]
-                                    logger.info(
-                                        f"[ProcessZipTask] Seamlessly integrated recovered depot {m_did} ({m_name}) with manifest {actual_mid}"
-                                    )
+
+                                    # Check if a valid AES decryption key exists for this depot
+                                    depot_key = (game_data.get("depots", {}).get(str(m_did)) or {}).get("key")
+                                    if not depot_key and DepotKeyManager:
+                                        try:
+                                            depot_key = DepotKeyManager.get_instance().get_depot_keys(str(game_data.get("appid", ""))).get(str(m_did))
+                                        except Exception:
+                                            depot_key = None
+
+                                    if depot_key:
+                                        if str(m_did) not in filtered_depots:
+                                            filtered_depots[str(m_did)] = {"key": depot_key, "desc": m_name, "system": None}
+                                        else:
+                                            filtered_depots[str(m_did)]["key"] = depot_key
+                                        refetched_depots.append(str(m_did))
+                                        if str(m_did) in missing_from_hubcap:
+                                            missing_from_hubcap.remove(str(m_did))
+                                        if str(m_did) in missing_depots_info:
+                                            del missing_depots_info[str(m_did)]
+                                        logger.info(
+                                            f"[ProcessZipTask] Seamlessly integrated recovered depot {m_did} ({m_name}) with manifest {actual_mid} and valid decryption key"
+                                        )
+                                    else:
+                                        missing_depots_info.setdefault(str(m_did), {})["hubcap_status"] = "missing_key"
+                                        missing_depots_info[str(m_did)]["name"] = m_name
+                                        logger.warning(
+                                            f"[ProcessZipTask] Depot {m_did} ({m_name}) has manifest {actual_mid} but lacks AES decryption key. "
+                                            "Depot remains unavailable for download."
+                                        )
                                 else:
                                     missing_depots_info.setdefault(str(m_did), {})["hubcap_status"] = "missing"
 

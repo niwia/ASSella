@@ -63,6 +63,9 @@ class DownloadDepotsTask(QObject):
         self._smooth_speed_bps = 0.0
         self._is_validating = False
         self._lancache_error_detected = False
+        self._current_depot_key_denied = False
+        self._current_depot_error_reason = ""
+        self._current_depot_zero_downloaded = False
 
     @property
     def is_running_flag(self) -> bool:
@@ -137,6 +140,9 @@ class DownloadDepotsTask(QObject):
                     f"({i + 1}/{total_depots}) [Size: {self.current_depot_size} bytes] ---"
                 )
                 self.last_percentage = -1
+                self._current_depot_key_denied = False
+                self._current_depot_error_reason = ""
+                self._current_depot_zero_downloaded = False
 
                 # Determine creation flags for Windows to hide the console window
                 creation_flags = 0
@@ -224,7 +230,27 @@ class DownloadDepotsTask(QObject):
                         return_code = self.process.poll()
                         self.process = None
 
+                # Check if DepotDownloader failed with key authorization error or 0 bytes downloaded
+                if return_code == 0 and (self._current_depot_key_denied or self._current_depot_zero_downloaded):
+                    return_code = 1
+                    if not self._current_depot_error_reason:
+                        self._current_depot_error_reason = "No valid decryption key (AccessDenied) or 0 bytes downloaded"
+                    logger.error(
+                        f"[DownloadDepotsTask] Depot {depot_id} failed download: {self._current_depot_error_reason}"
+                    )
+
                 if return_code != 0 and self._is_running:
+                    if self._current_depot_key_denied:
+                        error_msg = (
+                            f"Download aborted: No valid decryption key for depot {depot_id}. "
+                            f"{self._current_depot_error_reason or 'AccessDenied from Steam'}"
+                        )
+                        self.progress.emit(f"ERROR: {error_msg}")
+                        logger.error(f"[DownloadDepotsTask] {error_msg}")
+                        self._cleanup_temp_files()
+                        self.error.emit((RuntimeError, error_msg, None))
+                        return
+
                     # Attempt smart recovery via wudrm / Steam CDN with fallbacks
                     try:
                         manifest_idx = current_cmd.index("-manifest")
@@ -319,13 +345,29 @@ class DownloadDepotsTask(QObject):
                             return_code = self.process.poll()
                             self.process = None
 
+                        if return_code == 0 and (self._current_depot_key_denied or self._current_depot_zero_downloaded):
+                            return_code = 1
+                            if not self._current_depot_error_reason:
+                                self._current_depot_error_reason = "No valid decryption key (AccessDenied) or 0 bytes downloaded"
+
                     if return_code != 0:
-                        error_msg = (
-                            f"Poisoned manifest files: Depot {depot_id} (Manifest {cur_manifest_id or 'unknown'}) failed verification "
-                            f"and could not be recovered via wudrm or Steam CDN. Aborting."
-                        )
+                        if self._current_depot_key_denied:
+                            error_msg = (
+                                f"Download aborted: No valid decryption key for depot {depot_id}. "
+                                f"{self._current_depot_error_reason or 'AccessDenied from Steam'}"
+                            )
+                        elif self._current_depot_zero_downloaded and self.current_depot_size > 0:
+                            error_msg = (
+                                f"Download aborted: 0 bytes downloaded for depot {depot_id} "
+                                f"(expected {self.current_depot_size} bytes)."
+                            )
+                        else:
+                            error_msg = (
+                                f"Poisoned manifest files: Depot {depot_id} (Manifest {cur_manifest_id or 'unknown'}) failed verification "
+                                f"and could not be recovered via wudrm or Steam CDN. Aborting."
+                            )
                         self.progress.emit(f"ERROR: {error_msg}")
-                        logger.error(error_msg)
+                        logger.error(f"[DownloadDepotsTask] {error_msg}")
                         self._cleanup_temp_files()
                         self.error.emit((RuntimeError, error_msg, None))
                         return
@@ -569,6 +611,14 @@ class DownloadDepotsTask(QObject):
         # Check for LanCache CDN error lines
         if "Got CDN auth token=" in line and "result: Fail" in line:
             self._lancache_error_detected = True
+
+        # Check for depot key denial / authorization errors
+        lower_line = line.lower()
+        if "no valid depot key" in lower_line or ("depot key" in lower_line and "accessdenied" in lower_line) or "result: accessdenied" in lower_line:
+            self._current_depot_key_denied = True
+            self._current_depot_error_reason = line
+        if "total downloaded: 0 bytes" in lower_line and "from 0 depots" in lower_line:
+            self._current_depot_zero_downloaded = True
 
         # Check validation phase vs real chunk download
         is_validation_line = line.startswith("Validating ") or line.startswith("Checking ")

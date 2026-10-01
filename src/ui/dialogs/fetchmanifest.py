@@ -1255,10 +1255,20 @@ class FetchManifestDialog(QDialog):
                 self.status_label.setText("Error: Could not retrieve valid depot manifests for game.")
                 return
 
-        self._is_manifest_retry = False
         if parsed_data.get("appid"):
             appid = str(parsed_data["appid"])
             self.settings.setValue(f"selected_branch/{appid}", branch)
+
+        if not parsed_data.get("depots"):
+            logger.warning(f"[FetchManifest] No downloadable depots available for {parsed_data.get('appid')}")
+            self.status_label.setText("No downloadable depots available for this game.")
+            from PyQt6.QtWidgets import QMessageBox
+            missing_depots = parsed_data.get("missing_depots_from_hubcap") or []
+            msg = f"No downloadable depots with valid keys/manifests were found for {parsed_data.get('game_name', 'this game')}."
+            if missing_depots:
+                msg += f"\n\nUnavailable depots: {', '.join(str(d) for d in missing_depots)}"
+            QMessageBox.warning(self, "No Depots Available", msg)
+            return
 
         if parsed_data.get("depots"):
             from ui.dialogs.depotselection import DepotSelectionDialog

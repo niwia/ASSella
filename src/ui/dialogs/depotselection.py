@@ -1140,6 +1140,8 @@ class DepotSelectionDialog(QDialog):
             hubcap_status = minfo.get("hubcap_status")
             if getattr(self, "_is_checking_missing_contents", False):
                 tag = "[Checking]"
+            elif hubcap_status == "missing_key":
+                tag = "[No Key]"
             else:
                 tag = "[Missing]"
 
@@ -1163,6 +1165,11 @@ class DepotSelectionDialog(QDialog):
             cfg_font = mconfig_item.font()
             cfg_font.setItalic(True)
             mconfig_item.setFont(cfg_font)
+
+            if hubcap_status == "missing_key":
+                tip = f"Depot {did} has a manifest but no AES decryption key available. It cannot be downloaded."
+                mid_item.setToolTip(tip)
+                mconfig_item.setToolTip(tip)
 
             msize_item = NumericTableWidgetItem(msize_str, mraw_size, tier=1)
             msize_item.setFlags(Qt.ItemFlag.NoItemFlags)
