@@ -5,7 +5,18 @@ curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bas
 
 Arch Linux:
 ```bash
-sudo pacman -U https://github.com/niwia/ASSella/releases/download/v2.7.0beta/assella-2.7.0beta-1-x86_64.pkg.tar.zst
+curl -fLO https://github.com/niwia/ASSella/releases/download/v2.7.0beta/assella-2.7.0beta-1-x86_64.pkg.tar.zst
+sudo pacman -U assella-2.7.0beta-1-x86_64.pkg.tar.zst
+```
+
+Or configure the rolling repository in `/etc/pacman.conf`:
+```ini
+[assella]
+SigLevel = Optional TrustAll
+Server = https://github.com/niwia/ASSella/releases/download/arch-repo
+```
+```bash
+sudo pacman -Sy assella
 ```
 
 ## Requirements

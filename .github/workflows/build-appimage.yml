@@ -231,15 +231,15 @@ jobs:
           mkdir -p packaging/arch
           cp dist/ASSella.AppImage packaging/arch/
           chmod +x packaging/arch/ASSella.AppImage
-          cp src/res/logo/icon.png packaging/arch/assela.png
+          cp src/res/logo/icon.png packaging/arch/assella.png
 
           # Create desktop shortcut definition
-          cat << 'EOF' > packaging/arch/assela.desktop
+          cat << 'EOF' > packaging/arch/assella.desktop
           [Desktop Entry]
           Name=ASSella
           Comment=Steam Game & Depot Management Suite
           Exec=/usr/bin/assella %U
-          Icon=assela
+          Icon=assella
           Terminal=false
           Type=Application
           Categories=Utility;Game;
@@ -265,7 +265,7 @@ jobs:
           depends=('fuse2')
           provides=('assella')
           conflicts=('assella-bin' 'assella-git')
-          source=("ASSella.AppImage" "assela.desktop" "assela.png")
+          source=("ASSella.AppImage" "assella.desktop" "assella.png")
           sha256sums=('SKIP' 'SKIP' 'SKIP')
           options=(!strip)
 
@@ -277,8 +277,10 @@ jobs:
               install -dm755 "\$pkgdir/usr/share/pixmaps"
 
               install -m755 "\$srcdir/ASSella.AppImage" "\$pkgdir/usr/lib/assella/ASSella.AppImage"
-              install -Dm644 "\$srcdir/assela.png" "\$pkgdir/usr/share/icons/hicolor/512x512/apps/assella.png"
-              install -Dm644 "\$srcdir/assela.png" "\$pkgdir/usr/share/pixmaps/assella.png"
+              install -Dm644 "\$srcdir/assella.png" "\$pkgdir/usr/share/icons/hicolor/512x512/apps/assella.png"
+              install -Dm644 "\$srcdir/assella.png" "\$pkgdir/usr/share/pixmaps/assella.png"
+              ln -sf assella.png "\$pkgdir/usr/share/icons/hicolor/512x512/apps/assela.png"
+              ln -sf assella.png "\$pkgdir/usr/share/pixmaps/assela.png"
 
               cat << 'WRAPPER' > "\$pkgdir/usr/bin/assella"
           #!/bin/sh
@@ -286,7 +288,8 @@ jobs:
           WRAPPER
               chmod 755 "\$pkgdir/usr/bin/assella"
 
-              install -Dm644 "\$srcdir/assela.desktop" "\$pkgdir/usr/share/applications/assela.desktop"
+              install -Dm644 "\$srcdir/assella.desktop" "\$pkgdir/usr/share/applications/assella.desktop"
+              ln -sf assella.desktop "\$pkgdir/usr/share/applications/assela.desktop"
           }
           EOF
           chown -R builder:builder packaging/arch
