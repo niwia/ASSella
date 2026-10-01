@@ -15,8 +15,8 @@ on:
           - beta
           - canary
           - stable
-      prerelease:
-        description: 'Mark as Pre-release'
+      draft:
+        description: 'Mark as Draft Release'
         required: true
         default: true
         type: boolean
@@ -31,6 +31,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       channel: ${{ steps.meta.outputs.channel }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
+      draft: ${{ steps.meta.outputs.draft }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -71,10 +72,16 @@ jobs:
             IS_PRE="false"
           fi
 
+          DRAFT="true"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DRAFT="${{ github.event.inputs.draft }}"
+          fi
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
-          echo "Building for Tag: $TAG (Channel: $CHANNEL, Pre-release: $IS_PRE)"
+          echo "draft=$DRAFT" >> "$GITHUB_OUTPUT"
+          echo "Building for Tag: $TAG (Channel: $CHANNEL, Pre-release: $IS_PRE, Draft: $DRAFT)"
 
       - name: Download and Setup appimagetool
         run: |
@@ -175,9 +182,10 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: "ASSella ${{ steps.meta.outputs.tag }}"
-          draft: false
+          draft: ${{ steps.meta.outputs.draft == 'true' }}
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
-          generate_release_notes: true
+          body_path: docs/changelogs/v2.7.0beta.md
+          generate_release_notes: false
           files: |
             ASSella.AppImage
             ASSella.AppImage.zsync
@@ -211,6 +219,7 @@ jobs:
           mkdir -p packaging/arch
           cp dist/ASSella.AppImage packaging/arch/
           chmod +x packaging/arch/ASSella.AppImage
+          cp src/res/logo/icon.png packaging/arch/assela.png
 
           # Create desktop shortcut definition
           cat << 'EOF' > packaging/arch/assela.desktop
@@ -250,8 +259,12 @@ jobs:
               install -dm755 "\$pkgdir/usr/lib/assella"
               install -dm755 "\$pkgdir/usr/bin"
               install -dm755 "\$pkgdir/usr/share/applications"
+              install -dm755 "\$pkgdir/usr/share/icons/hicolor/512x512/apps"
+              install -dm755 "\$pkgdir/usr/share/pixmaps"
 
               install -m755 "\$srcdir/ASSella.AppImage" "\$pkgdir/usr/lib/assella/ASSella.AppImage"
+              install -Dm644 "\$srcdir/assela.png" "\$pkgdir/usr/share/icons/hicolor/512x512/apps/assella.png"
+              install -Dm644 "\$srcdir/assela.png" "\$pkgdir/usr/share/pixmaps/assella.png"
 
               cat << 'WRAPPER' > "\$pkgdir/usr/bin/assella"
           #!/bin/sh
