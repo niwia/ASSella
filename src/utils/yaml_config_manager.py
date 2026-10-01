@@ -1653,7 +1653,7 @@ def is_depot_shared_with_other_games(
 
     ex_aid_str = str(excluding_appid).strip() if excluding_appid is not None else None
 
-    # 2. Check plugin_library.json
+    # 2. Check plugin_library.json (if plugin subsystem available)
     try:
         from utils.plugin_games import load_plugin_library
         lib = load_plugin_library()
@@ -1674,6 +1674,8 @@ def is_depot_shared_with_other_games(
                         f"'{g.get('name')}' ({aid})"
                     )
                     return True
+    except ImportError:
+        pass
     except Exception as e:
         logger.debug(f"[SharedDepotCheck] Error checking plugin library: {e}")
 
