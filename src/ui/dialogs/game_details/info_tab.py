@@ -614,7 +614,12 @@ def update_validate_button(dialog) -> None:
         palette.setColor(QPalette.ColorRole.Highlight, base_qcolor)
         dialog.validate_btn.setPalette(palette)
 
-    if pinned and has_cache and not is_missing_manifest_or_lua:
+    is_installed = dialog.game_data.get("is_installed", True) and bool(dialog.game_data.get("install_path"))
+
+    if not is_installed:
+        dialog.validate_btn.setText("Install Game")
+        set_btn_style(accent_hex)
+    elif pinned and has_cache and not is_missing_manifest_or_lua:
         dialog.validate_btn.setText("Verify Pinned Build")
         set_btn_style(success_hex)
     elif not same_branch:
@@ -656,12 +661,15 @@ def on_validate_btn_clicked(dialog) -> None:
     dialog.validate_btn.set_loading(True)
     dialog.validate_btn.setEnabled(False)
     dialog.validate_btn.setToolTip("Task in progress...")
-    if "Update" in btn_text:
+    if "Install" in btn_text:
+        dialog.validate_btn.setText("Starting Installation...")
+    elif "Update" in btn_text:
         dialog.validate_btn.setText("Preparing Update...")
     elif btn_text == "Refetch":
         dialog.validate_btn.setText("Refetching...")
     else:
         dialog.validate_btn.setText("Verifying...")
+
 
     if btn_text == "Refetch":
         dialog.parent_window._fetch_game_manifest(

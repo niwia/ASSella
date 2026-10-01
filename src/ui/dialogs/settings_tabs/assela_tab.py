@@ -52,6 +52,39 @@ def create_assela_tab(dialog) -> QWidget:
     )
     assella_lay.addWidget(dialog.check_updates_on_boot_checkbox)
 
+    # 2b. App Update Channel Selector
+    channel_row = QHBoxLayout()
+    channel_row.setContentsMargins(0, 2, 0, 2)
+    channel_lbl = QLabel("App Update Channel:")
+    channel_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+    channel_lbl.setToolTip(
+        "Select which release channel ASSella checks for tool self-updates.\n\n"
+        "• Auto: Follows the current build channel automatically.\n"
+        "• Beta: Pre-release feature testing (beta, dev, rc builds).\n"
+        "• Canary: Bleeding-edge test builds (canary, testing builds).\n"
+        "• Stable: Official public releases only."
+    )
+    channel_row.addWidget(channel_lbl)
+    channel_row.addStretch()
+
+    dialog.app_update_channel_combo = QComboBox()
+    dialog.app_update_channel_combo.addItem("Auto (Current)", "auto")
+    dialog.app_update_channel_combo.addItem("Beta", "beta")
+    dialog.app_update_channel_combo.addItem("Canary", "canary")
+    dialog.app_update_channel_combo.addItem("Stable", "stable")
+    dialog.app_update_channel_combo.setFixedWidth(135)
+
+    saved_channel = dialog.settings.value("app_update_channel", "auto", type=str) or "auto"
+    c_idx = dialog.app_update_channel_combo.findData(saved_channel)
+    dialog.app_update_channel_combo.setCurrentIndex(c_idx if c_idx >= 0 else 0)
+
+    dialog.app_update_channel_combo.currentIndexChanged.connect(
+        lambda idx: dialog.settings.setValue("app_update_channel", dialog.app_update_channel_combo.itemData(idx))
+    )
+    channel_row.addWidget(dialog.app_update_channel_combo)
+    assella_lay.addLayout(channel_row)
+
+
     # 3. ISP Bypass & Hubcap Gateway Selector
     isp_group = QVBoxLayout()
     isp_group.setSpacing(8)

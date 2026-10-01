@@ -1,0 +1,24 @@
+{
+  "manifest_version": 1,
+  "updated_at": "2026-09-30T11:14:22Z",
+  "plugins": {
+    "download.lua": {
+      "name": "Download Interceptor",
+      "filename": "download.lua",
+      "version": "1.0.0",
+      "description": "Native Steam download interception and depot streaming plugin for SLSsteam.",
+      "sha256": "84d6c23f660e2d2dad968d62629b88e4525f408f5bc87d3233651c10b18fecab",
+      "size_bytes": 10656,
+      "required": true
+    },
+    "spliced-tickets.lua": {
+      "name": "Spliced Tickets",
+      "filename": "spliced-tickets.lua",
+      "version": "1.0.0",
+      "description": "App and depot ownership ticket splicing handler for SLSsteam.",
+      "sha256": "62f377e39368d94612371ca62791ac90fad258a360482e6be380069ca1d94eda",
+      "size_bytes": 2187,
+      "required": true
+    }
+  }
+}

@@ -444,6 +444,97 @@ class UpdatesPanel(QFrame):
                 main_win.position_update_all_btn()
 
 
+class RecentActivityItemWidget(QFrame):
+    """Interactive card for a recent activity entry. Clickable for games, static for workshop."""
+    def __init__(self, entry: dict, parent_terminal):
+        super().__init__()
+        self.entry = entry
+        self.parent_terminal = parent_terminal
+        appid_val = str(entry.get("appid", "")).strip()
+        self.appid = appid_val
+        self.is_game = bool(appid_val and appid_val.isdigit() and appid_val.lower() != "workshop")
+
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self._init_ui()
+
+    def _init_ui(self):
+        t = self.entry.get("timestamp", 0)
+        from datetime import datetime
+        entry_dt = datetime.fromtimestamp(t)
+        now_dt = datetime.now()
+        if entry_dt.date() == now_dt.date():
+            time_str = entry_dt.strftime('%H:%M')
+        else:
+            time_str = entry_dt.strftime('%b %d, %H:%M')
+
+        from ui.dialogs.gamelibrary import format_game_display_name
+        game_name = self.entry.get('game_name', 'Unknown')
+        game_data = {"game_name": game_name, "appid": self.appid}
+        display_name = format_game_display_name(game_data)
+
+        success = self.entry.get("success", True)
+        if not success:
+            stat_text = "<span style='color: #E74C3C;'>Installation Failed</span>"
+        else:
+            dl_size = self.entry.get("download_size", 0)
+            if dl_size > 0:
+                size_str = SimplifiedTerminalWidget._format_size(dl_size)
+                dur_str = SimplifiedTerminalWidget._format_duration(self.entry.get("download_duration", 0))
+                speed_str = SimplifiedTerminalWidget._format_speed(self.entry.get("avg_speed", 0))
+                stat_text = f"<span style='color: #2ECC71;'>Success</span> • {size_str} in {dur_str} ({speed_str})"
+            elif self.entry.get("handed_off"):
+                stat_text = "<span style='color: #2ECC71;'>Handed off to Steam</span>"
+            else:
+                stat_text = "<span style='color: #2ECC71;'>Success</span> • Zip file"
+
+        ach_status = self.entry.get("ach_status", "Skipped")
+        steamless_status = self.entry.get("steamless_status", "Skipped")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(2)
+
+        lbl = QLabel()
+        lbl.setTextFormat(Qt.TextFormat.RichText)
+        lbl.setText(f"""
+        <div style="margin-bottom: 2px;">
+            <span style="color: #FFFFFF; font-weight: bold; font-size: 9pt;">{display_name}</span>
+            <span style="color: #888888; font-size: 8pt; float: right;">[{time_str}]</span>
+            <br/>
+            <span style="color: #DDDDDD; font-size: 8pt;">{stat_text}</span>
+            <br/>
+            <span style="color: #AAAAAA; font-size: 8pt;">Ach: {ach_status} • DRM: {steamless_status}</span>
+        </div>
+        """)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("border: none; background: transparent;")
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(lbl)
+
+        if self.is_game:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.setToolTip(f"Click to open Game Details for {game_name}")
+            self.setStyleSheet("""
+                RecentActivityItemWidget {
+                    background-color: transparent;
+                    border: 1px solid transparent;
+                    border-radius: 6px;
+                }
+                RecentActivityItemWidget:hover {
+                    background-color: rgba(255, 255, 255, 0.07);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                }
+            """)
+        else:
+            self.setStyleSheet("RecentActivityItemWidget { background-color: transparent; border: none; }")
+
+    def mousePressEvent(self, event):
+        if self.is_game and event.button() == Qt.MouseButton.LeftButton:
+            if self.parent_terminal and hasattr(self.parent_terminal, "_open_game_details"):
+                self.parent_terminal._open_game_details(self.appid)
+        super().mousePressEvent(event)
+
+
 class SimplifiedTerminalWidget(QWidget):
     """A simplified terminal widget that displays stats and quotes when idle, and a job progress checklist when active."""
 
@@ -848,63 +939,29 @@ class SimplifiedTerminalWidget(QWidget):
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.history_scroll_layout.addWidget(lbl)
         else:
-            for entry in history:
-                t = entry.get("timestamp", 0)
-                from datetime import datetime
-                entry_dt = datetime.fromtimestamp(t)
-                now_dt = datetime.now()
-                if entry_dt.date() == now_dt.date():
-                    time_str = entry_dt.strftime('%H:%M')
-                else:
-                    time_str = entry_dt.strftime('%b %d, %H:%M')
+            for i, entry in enumerate(history):
+                item_widget = RecentActivityItemWidget(entry, parent_terminal=self)
+                self.history_scroll_layout.addWidget(item_widget)
 
-                # Use format_game_display_name for proper branch/DLC badges
-                from ui.dialogs.gamelibrary import format_game_display_name
-                game_name = entry.get('game_name', 'Unknown')
-                game_data = {"game_name": game_name, "appid": str(entry.get('appid', ''))}
-                game_name = format_game_display_name(game_data)
-                appid = str(entry.get('appid', ''))
-
-                success = entry.get("success", True)
-                if not success:
-                    stat_text = "<span style='color: #E74C3C;'>Installation Failed</span>"
-                else:
-                    dl_size = entry.get("download_size", 0)
-                    if dl_size > 0:
-                        size_str = self._format_size(dl_size)
-                        dur_str = self._format_duration(entry.get("download_duration", 0))
-                        speed_str = self._format_speed(entry.get("avg_speed", 0))
-                        stat_text = f"<span style='color: #2ECC71;'>Success</span> • {size_str} in {dur_str} ({speed_str})"
-                    else:
-                        stat_text = "<span style='color: #2ECC71;'>Success</span> • Zip file"
-
-                ach_status = entry.get("ach_status", "Skipped")
-                steamless_status = entry.get("steamless_status", "Skipped")
-
-                html = f"""
-                <div style="margin-bottom: 2px;">
-                    <span style="color: #FFFFFF; font-weight: bold; font-size: 9pt;">{game_name}</span>
-                    <span style="color: #888888; font-size: 8pt; float: right;">[{time_str}]</span>
-                    <br/>
-                    <span style="color: #DDDDDD; font-size: 8pt;">{stat_text}</span>
-                    <br/>
-                    <span style="color: #AAAAAA; font-size: 8pt;">Ach: {ach_status} • DRM: {steamless_status}</span>
-                </div>
-                """
-                lbl = QLabel()
-                lbl.setTextFormat(Qt.TextFormat.RichText)
-                lbl.setText(html)
-                lbl.setWordWrap(True)
-                lbl.setStyleSheet("border: none; background: transparent;")
-
-                line = QFrame()
-                line.setFrameShape(QFrame.Shape.HLine)
-                line.setFrameShadow(QFrame.Shadow.Sunken)
-                line.setStyleSheet("background-color: rgba(255, 255, 255, 0.05); border: none; height: 1px;")
-
-                self.history_scroll_layout.addWidget(lbl)
-                self.history_scroll_layout.addWidget(line)
+                if i < len(history) - 1:
+                    line = QFrame()
+                    line.setFrameShape(QFrame.Shape.HLine)
+                    line.setFrameShadow(QFrame.Shadow.Sunken)
+                    line.setStyleSheet("background-color: rgba(255, 255, 255, 0.05); border: none; height: 1px;")
+                    self.history_scroll_layout.addWidget(line)
         self.history_scroll_layout.addStretch()
+
+    def _open_game_details(self, appid: str):
+        """Open Game Details page for a game clicked in the recent activity list."""
+        if not appid or not str(appid).isdigit() or str(appid).lower() == "workshop":
+            return
+        try:
+            from ui.dialogs.gamelibrary import GameLibraryDialog
+            dialog = GameLibraryDialog(self.main_window, show_details_for_appid=str(appid))
+            dialog.exec()
+        except Exception as e:
+            logger.error(f"Failed to open game details from recent activity for {appid}: {e}")
+
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
@@ -3280,7 +3337,7 @@ class MainWindow(QMainWindow):
         def _parse_version(v_str: str) -> tuple:
             import re as _re
             v_str = v_str.lstrip('v').strip()
-            m = _re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[.-]?(dev|alpha|beta|rc|hotfix)(\d*)|\-([a-zA-Z0-9.]+))?$', v_str, _re.IGNORECASE)
+            m = _re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[.-]?(dev|alpha|beta|rc|hotfix)[.-]?(\d*)|\-([a-zA-Z0-9.]+))?$', v_str, _re.IGNORECASE)
             if m:
                 major = int(m.group(1) or 0)
                 minor = int(m.group(2) or 0)
@@ -3313,13 +3370,46 @@ class MainWindow(QMainWindow):
                 import json
                 local_clean = _extract_semver(app_version)
 
-                is_local_canary = (
-                    "canary" in local_clean.lower()
-                    or "testing" in local_clean.lower()
-                    or local_clean.startswith("3.")
-                )
+                # Channel resolution (Settings override or auto-detect from local version)
+                def _get_active_channel(local_ver_str: str) -> str:
+                    saved = ""
+                    if hasattr(self, "settings") and self.settings:
+                        saved = str(self.settings.value("app_update_channel", "auto") or "auto").lower()
+                    if saved in ("canary", "beta", "stable"):
+                        return saved
+                    lv = local_ver_str.lower()
+                    if any(x in lv for x in ("canary", "testing")):
+                        return "canary"
+                    if any(x in lv for x in ("beta", "dev", "rc")):
+                        return "beta"
+                    return "stable"
 
-                # 1. Primary check: GitHub Releases API (detects full releases + pre-releases with AppImage)
+                def _tag_matches_channel(tag_name: str, channel: str) -> bool:
+                    tv = tag_name.lower()
+                    if channel == "canary":
+                        return any(x in tv for x in ("canary", "testing"))
+                    if channel == "beta":
+                        return any(x in tv for x in ("beta", "dev", "rc"))
+                    # stable
+                    is_c = any(x in tv for x in ("canary", "testing"))
+                    is_b = any(x in tv for x in ("beta", "dev", "rc"))
+                    return ("stable" in tv) or (not is_c and not is_b)
+
+                def _asset_matches_channel(asset_name: str, channel: str) -> bool:
+                    an = asset_name.lower()
+                    if not an.endswith(".appimage") or "zsync" in an:
+                        return False
+                    if channel == "canary":
+                        return any(x in an for x in ("canary", "testing")) or not any(x in an for x in ("beta", "stable"))
+                    if channel == "beta":
+                        return any(x in an for x in ("beta", "dev", "rc")) or (an == "assella.appimage")
+                    # stable
+                    return ("stable" in an) or (an == "assella.appimage") or not any(x in an for x in ("canary", "testing", "beta", "dev", "rc"))
+
+                active_channel = _get_active_channel(local_clean)
+                logger.info(f"Checking for updates on channel: '{active_channel}' (local: '{local_clean}')")
+
+                # 1. Primary check: GitHub Releases API
                 try:
                     api_url = "https://api.github.com/repos/niwia/ASSella/releases"
                     req = urllib.request.Request(
@@ -3330,22 +3420,12 @@ class MainWindow(QMainWindow):
                         releases = json.loads(response.read().decode("utf-8"))
                         for r in releases:
                             tag = r.get("tag_name", "").strip()
-                            is_remote_canary = (
-                                "canary" in tag.lower()
-                                or "testing" in tag.lower()
-                                or tag.lstrip("v").startswith("3.")
-                            )
-                            # Strict channel isolation:
-                            # Stable/Beta (2.x) must NEVER pick up Canary/Testing (3.x)
-                            # Canary (3.x) must NEVER pick up Stable/Beta (2.x)
-                            if is_local_canary != is_remote_canary:
+                            title = r.get("name", "").strip()
+                            if not (_tag_matches_channel(tag, active_channel) or _tag_matches_channel(title, active_channel)):
                                 continue
 
                             assets = [a.get("name", "") for a in r.get("assets", [])]
-                            if is_local_canary:
-                                has_appimage = any(a.lower().endswith(".appimage") for a in assets)
-                            else:
-                                has_appimage = any(a == "ASSella.AppImage" or (a.endswith(".AppImage") and "canary" not in a.lower()) for a in assets)
+                            has_appimage = any(_asset_matches_channel(a, active_channel) for a in assets)
 
                             if has_appimage:
                                 remote_clean = _extract_semver(tag)
@@ -3355,11 +3435,9 @@ class MainWindow(QMainWindow):
 
                 # 2. Fallback check: raw version file on GitHub branch
                 if not remote_clean:
-                    if is_local_canary:
+                    if active_channel == "canary":
                         branch = "canary"
-                    elif "alpha" in local_clean.lower():
-                        branch = "alpha"
-                    elif any(x in local_clean.lower() for x in ("beta", "rc")):
+                    elif active_channel == "beta":
                         branch = "beta"
                     else:
                         branch = "main"
@@ -3372,6 +3450,7 @@ class MainWindow(QMainWindow):
                     with urllib.request.urlopen(req, timeout=10) as response:
                         remote_raw = response.read().decode("utf-8").strip()
                         remote_clean = _extract_semver(remote_raw)
+
 
                 logger.info(
                     f"Tool update check: remote='{remote_clean}', local='{local_clean}'"
@@ -3512,24 +3591,35 @@ class MainWindow(QMainWindow):
                         else:
                             raise
 
-                download_url = None
-                is_local_canary = (
-                    "canary" in local_clean.lower()
-                    or "testing" in local_clean.lower()
-                    or local_clean.startswith("3.")
-                )
+                saved_ch = ""
+                if hasattr(self, "settings") and self.settings:
+                    saved_ch = str(self.settings.value("app_update_channel", "auto") or "auto").lower()
+                if saved_ch in ("canary", "beta", "stable"):
+                    active_ch = saved_ch
+                elif any(x in local_clean.lower() for x in ("canary", "testing")):
+                    active_ch = "canary"
+                elif any(x in local_clean.lower() for x in ("beta", "dev", "rc")):
+                    active_ch = "beta"
+                else:
+                    active_ch = "stable"
+
+                def _matches_dl_asset(name: str, ch: str) -> bool:
+                    an = name.lower()
+                    if not an.endswith(".appimage") or "zsync" in an:
+                        return False
+                    if ch == "canary":
+                        return any(x in an for x in ("canary", "testing")) or not any(x in an for x in ("beta", "stable"))
+                    if ch == "beta":
+                        return any(x in an for x in ("beta", "dev", "rc")) or (an == "assella.appimage")
+                    # stable
+                    return ("stable" in an) or (an == "assella.appimage") or not any(x in an for x in ("canary", "testing", "beta", "dev", "rc"))
+
                 for asset in release_data.get("assets", []):
                     name = asset.get("name", "")
-                    if "zsync" in name.lower():
-                        continue
-                    if is_local_canary:
-                        if name.lower().endswith(".appimage"):
-                            download_url = asset["browser_download_url"]
-                            break
-                    else:
-                        if name == "ASSella.AppImage" or (name.endswith(".AppImage") and "canary" not in name.lower()):
-                            download_url = asset["browser_download_url"]
-                            break
+                    if _matches_dl_asset(name, active_ch):
+                        download_url = asset["browser_download_url"]
+                        break
+
 
                 if not download_url:
                     raise RuntimeError("No AppImage asset found in the release.")

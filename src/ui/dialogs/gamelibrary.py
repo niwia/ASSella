@@ -503,11 +503,54 @@ class GameLibraryDialog(
             logger.error(f"Failed to load Game Details V2: {e}", exc_info=True)
 
     def _show_details_for_appid(self, appid: str) -> None:
-        if not self.game_manager:
-            return
-        game_data = self.game_manager.get_game(appid)
-        if game_data:
-            self._show_game_details_dialog(game_data)
+        appid_str = str(appid).strip()
+        game_data = None
+        if self.game_manager:
+            game_data = self.game_manager.get_game(appid_str)
+        if not game_data:
+            # Fallback to local SQLite DatabaseManager & history cache for uninstalled games
+            try:
+                from managers.db_manager import DatabaseManager
+                db_info = DatabaseManager().get_app_info(appid_str, bypass_expiration=True)
+                if db_info and isinstance(db_info, dict):
+                    game_data = {
+                        "appid": appid_str,
+                        "game_name": db_info.get("name") or f"App {appid_str}",
+                        "header_url": db_info.get("header_url"),
+                        "installdir": db_info.get("installdir", ""),
+                        "depots": db_info.get("depots", {}),
+                        "buildid": db_info.get("buildid", ""),
+                        "branches": db_info.get("branches", {}),
+                        "is_installed": False,
+                        "installed": False,
+                        "install_path": None,
+                        "source": "database",
+                    }
+            except Exception as e:
+                logger.debug(f"[GameLibrary] Database lookup fallback for {appid_str}: {e}")
+
+        if not game_data:
+            # Check recent history cache for game name
+            try:
+                from utils.history_cache import get_history_cache
+                for h_entry in get_history_cache().get_history():
+                    if str(h_entry.get("appid")) == appid_str:
+                        game_data = {
+                            "appid": appid_str,
+                            "game_name": h_entry.get("game_name") or f"App {appid_str}",
+                            "is_installed": False,
+                            "installed": False,
+                            "install_path": None,
+                            "source": "history",
+                        }
+                        break
+            except Exception as e:
+                logger.debug(f"[GameLibrary] History lookup fallback for {appid_str}: {e}")
+
+        if not game_data:
+            game_data = {"appid": appid_str, "game_name": f"App {appid_str}", "is_installed": False, "installed": False}
+
+        self._show_game_details_dialog(game_data)
 
     def closeEvent(self, event) -> None:
         """Cleanup resources on close."""

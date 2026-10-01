@@ -398,7 +398,7 @@ def _slssteam_api_send(command: str) -> bool:
         return False
     try:
         with open(SLSSTEAM_API_PIPE, "w") as f:
-            f.write(command)
+            f.write(command.strip() + "\n")
             f.flush()
         logger.info(f"SLSsteam API command sent: {command}")
         return True

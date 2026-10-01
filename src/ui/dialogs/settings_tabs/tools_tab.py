@@ -82,9 +82,18 @@ def create_tools_tab(dialog) -> QWidget:
     dialog.steamless_legacy_btn.clicked.connect(lambda: run_steamless_manually(dialog))
     tools_btn_row.addWidget(dialog.steamless_legacy_btn)
 
+    dialog.spliced_ticket_btn = QPushButton("Spliced Ticket Plugin")
+    dialog.spliced_ticket_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.spliced_ticket_btn.setStyleSheet(tool_btn_style)
+    dialog.spliced_ticket_btn.setToolTip("Deploy Spliced Ticket Plugin (spliced-tickets.lua) to SLSsteam plugins.")
+    dialog.spliced_ticket_btn.clicked.connect(lambda: handle_spliced_ticket_click(dialog))
+    tools_btn_row.addWidget(dialog.spliced_ticket_btn)
+
     tools_btn_row.addStretch()
     tools_layout.addLayout(tools_btn_row)
+    update_spliced_ticket_btn_state(dialog)
     layout.addWidget(tools_card)
+
 
     # Windows Registry Card
     if sys.platform == "win32":
@@ -462,3 +471,151 @@ def on_denuvo_sync_finished(dialog) -> None:
             "Denuvo Sync Error",
             f"Denuvo Sync failed:\n{res.get('error')}"
         )
+
+
+def update_spliced_ticket_btn_state(dialog) -> None:
+    """Update Spliced Ticket Plugin button text, tooltip and color styling."""
+    if not hasattr(dialog, "spliced_ticket_btn") or not dialog.spliced_ticket_btn:
+        return
+    try:
+        from utils.plugin_manager import is_plugin_installed_and_valid
+        from utils.yaml_config_manager import is_smart_tickets_enabled
+        is_installed = is_plugin_installed_and_valid("spliced-tickets.lua")
+        smart_enabled = is_smart_tickets_enabled()
+        if is_installed and smart_enabled:
+            dialog.spliced_ticket_btn.setText("Spliced Plugin (Active)")
+            dialog.spliced_ticket_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(46, 204, 113, 0.15);
+                    border: 1px solid rgba(46, 204, 113, 0.5);
+                    border-radius: 8px;
+                    color: #2ECC71;
+                    padding: 7px 14px;
+                    font-size: 9.5pt;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: rgba(46, 204, 113, 0.25);
+                    border-color: rgba(46, 204, 113, 0.8);
+                }
+            """)
+            dialog.spliced_ticket_btn.setToolTip(
+                "Spliced Ticket Plugin is active and SmartTickets: 0x1 is enabled.\n"
+                "Click to manage or disable."
+            )
+        else:
+            dialog.spliced_ticket_btn.setText("Spliced Ticket Plugin")
+            dialog.spliced_ticket_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.18);
+                    border-radius: 8px;
+                    color: #FFFFFF;
+                    padding: 7px 14px;
+                    font-size: 9.5pt;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 255, 255, 0.16);
+                    border-color: rgba(255, 255, 255, 0.32);
+                }
+                QPushButton:disabled {
+                    background-color: rgba(255, 255, 255, 0.03) !important;
+                    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+                    color: rgba(255, 255, 255, 0.3) !important;
+                }
+            """)
+            dialog.spliced_ticket_btn.setToolTip("Deploy Spliced Ticket Plugin (spliced-tickets.lua) and configure SLSsteam.")
+    except Exception as e:
+        logger.debug(f"Error updating spliced ticket btn state: {e}")
+
+
+def handle_spliced_ticket_click(dialog) -> None:
+    """Handle click event for Spliced Ticket Plugin button."""
+    from PyQt6.QtCore import QTimer
+    from utils.plugin_manager import is_plugin_installed_and_valid, deploy_plugin
+    from utils.yaml_config_manager import (
+        is_smart_tickets_enabled,
+        ensure_smart_tickets_enabled,
+        ensure_plugins_enabled,
+        get_sls_plugins_dirs,
+    )
+
+    is_installed = is_plugin_installed_and_valid("spliced-tickets.lua")
+    smart_enabled = is_smart_tickets_enabled()
+
+    if is_installed and smart_enabled:
+        reply = QMessageBox.question(
+            dialog,
+            "Spliced Ticket Plugin",
+            "Spliced Ticket Plugin is currently installed and enabled.\n\n"
+            "Would you like to disable it?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            ensure_smart_tickets_enabled(enable=False)
+            for pdir in get_sls_plugins_dirs():
+                target = pdir / "spliced-tickets.lua"
+                if target.is_file():
+                    try:
+                        target.unlink()
+                    except Exception:
+                        pass
+            dialog.settings.setValue("spliced_tickets_enabled", False)
+            update_spliced_ticket_btn_state(dialog)
+            QMessageBox.information(
+                dialog,
+                "Spliced Ticket Plugin",
+                "Spliced Ticket Plugin has been disabled."
+            )
+        return
+
+    # User warning strictly without emojis
+    reply = QMessageBox.warning(
+        dialog,
+        "Spliced Ticket Plugin",
+        "Bypassing DRM is illegal in many countries, make sure you are aware of this!",
+        QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        QMessageBox.StandardButton.Cancel,
+    )
+    if reply != QMessageBox.StandardButton.Ok:
+        return
+
+    dialog.spliced_ticket_btn.setEnabled(False)
+    dialog.spliced_ticket_btn.setText("Deploying...")
+
+    def _worker():
+        try:
+            ensure_plugins_enabled()
+            ensure_smart_tickets_enabled(enable=True)
+            dialog.settings.setValue("spliced_tickets_enabled", True)
+            dialog.settings.setValue("slssteam_plugins_enabled", True)
+
+            ok, skipped, msg = deploy_plugin("spliced-tickets.lua", force_download=False)
+            success = ok
+            out_msg = msg
+        except Exception as exc:
+            success = False
+            out_msg = str(exc)
+
+        def _finish():
+            dialog.spliced_ticket_btn.setEnabled(True)
+            update_spliced_ticket_btn_state(dialog)
+            if success:
+                QMessageBox.information(
+                    dialog,
+                    "Spliced Ticket Plugin",
+                    f"Spliced Ticket Plugin deployed successfully.\n\n{out_msg}"
+                )
+            else:
+                QMessageBox.critical(
+                    dialog,
+                    "Deployment Failed",
+                    f"Failed to deploy Spliced Ticket Plugin:\n\n{out_msg}"
+                )
+
+        QTimer.singleShot(0, _finish)
+
+    threading.Thread(target=_worker, daemon=True).start()
+

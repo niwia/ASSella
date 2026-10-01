@@ -91,34 +91,61 @@ get_latest_github_version() {
     LATEST_VER="Unknown"
     LATEST_URL=""
 
+    # Determine channel from global or args or local version
+    TARGET_CH="${INSTALL_CHANNEL:-auto}"
+    if [ "$TARGET_CH" = "auto" ]; then
+        LOCAL_LOWER=$(echo "$LOCAL_VER" | tr '[:upper:]' '[:lower:]')
+        if echo "$LOCAL_LOWER" | grep -q -E 'canary|testing'; then
+            TARGET_CH="canary"
+        elif echo "$LOCAL_LOWER" | grep -q -E 'beta|dev|rc'; then
+            TARGET_CH="beta"
+        else
+            TARGET_CH="stable"
+        fi
+    fi
+
     REL_JSON=$(curl -s "https://api.github.com/repos/niwia/ASSella/releases" || true)
     if [ -n "$REL_JSON" ]; then
         if command -v python3 &>/dev/null; then
             PARSED=$(echo "$REL_JSON" | python3 -c '
 import sys, json
+
+target_ch = sys.argv[1].lower() if len(sys.argv) > 1 else "stable"
+
+def matches_channel(tag: str, ch: str) -> bool:
+    t = tag.lower()
+    if ch == "canary":
+        return any(x in t for x in ("canary", "testing"))
+    if ch == "beta":
+        return any(x in t for x in ("beta", "dev", "rc"))
+    # stable
+    return ("stable" in t) or not any(x in t for x in ("canary", "testing", "beta", "dev", "rc", "alpha"))
+
+def asset_matches(name: str, ch: str) -> bool:
+    an = name.lower()
+    if not an.endswith(".appimage") or "zsync" in an:
+        return False
+    if ch == "canary":
+        return any(x in an for x in ("canary", "testing")) or not any(x in an for x in ("beta", "stable"))
+    if ch == "beta":
+        return any(x in an for x in ("beta", "dev", "rc")) or (an == "assella.appimage")
+    return ("stable" in an) or (an == "assella.appimage") or not any(x in an for x in ("canary", "testing", "beta", "dev", "rc", "alpha"))
+
 try:
     releases = json.load(sys.stdin)
-    is_canary = ("--canary" in sys.argv)
     for r in releases:
         tag = r.get("tag_name", "").strip()
-        is_rel_canary = any(x in tag.lower() for x in ("canary", "testing")) or tag.lstrip("v").startswith("3.")
-        if is_canary != is_rel_canary:
+        if not matches_channel(tag, target_ch):
             continue
         for a in r.get("assets", []):
             name = a.get("name", "")
-            if is_canary:
-                if name.lower().endswith(".appimage"):
-                    print(tag)
-                    print(a.get("browser_download_url", ""))
-                    sys.exit(0)
-            else:
-                if name == "ASSella.AppImage" or (name.endswith(".AppImage") and "canary" not in name.lower()):
-                    print(tag)
-                    print(a.get("browser_download_url", ""))
-                    sys.exit(0)
+            if asset_matches(name, target_ch):
+                print(tag)
+                print(a.get("browser_download_url", ""))
+                sys.exit(0)
 except Exception:
     pass
-' "$@" || true)
+' "$TARGET_CH" || true)
             if [ -n "$PARSED" ]; then
                 TAG_NAME=$(echo "$PARSED" | sed -n '1p')
                 DL_URL=$(echo "$PARSED" | sed -n '2p')
@@ -128,12 +155,18 @@ except Exception:
         fi
 
         if [ "$LATEST_VER" = "Unknown" ]; then
-            TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | grep -v -i -E 'canary|testing|"v?3\.' | head -n 1 | cut -d '"' -f 4 || true)
+            if [ "$TARGET_CH" = "canary" ]; then
+                TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | grep -i -E 'canary|testing' | head -n 1 | cut -d '"' -f 4 || true)
+            elif [ "$TARGET_CH" = "beta" ]; then
+                TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | grep -i -E 'beta|dev|rc' | head -n 1 | cut -d '"' -f 4 || true)
+            else
+                TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | grep -v -i -E 'canary|testing|beta|dev|rc|alpha' | head -n 1 | cut -d '"' -f 4 || true)
+            fi
             if [ -n "$TAG_NAME" ]; then
                 LATEST_VER="$TAG_NAME"
             fi
 
-            DL_URL=$(echo "$REL_JSON" | grep -o '"browser_download_url": *"[^"]*ASSella\.AppImage"' | head -n 1 | cut -d '"' -f 4 || true)
+            DL_URL=$(echo "$REL_JSON" | grep -o '"browser_download_url": *"[^"]*ASSella[^"]*\.AppImage"' | head -n 1 | cut -d '"' -f 4 || true)
             if [ -n "$DL_URL" ]; then
                 LATEST_URL="$DL_URL"
             fi
@@ -529,20 +562,56 @@ main() {
     check_headcrab_status
     get_local_version
 
-    if [ $# -eq 0 ]; then
-        if [ -t 0 ]; then
-            interactive_menu
-        else
-            do_install
-        fi
-        exit 0
-    fi
+    ACTION="interactive"
+    for arg in "$@"; do
+        case "$arg" in
+            --canary)
+                INSTALL_CHANNEL="canary"
+                ;;
+            --beta)
+                INSTALL_CHANNEL="beta"
+                ;;
+            --stable)
+                INSTALL_CHANNEL="stable"
+                ;;
+            --install|-i)
+                ACTION="install"
+                ;;
+            --update|-u)
+                ACTION="update"
+                ;;
+            --headcrab)
+                ACTION="headcrab"
+                ;;
+            --restore)
+                ACTION="restore"
+                ;;
+            --uninstall)
+                ACTION="uninstall"
+                ;;
+            --help|-h)
+                ACTION="help"
+                ;;
+            *)
+                echo "Unknown option: $arg"
+                echo "Use ./install.sh --help for usage instructions."
+                exit 1
+                ;;
+        esac
+    done
 
-    case "$1" in
-        --install|-i)
+    case "$ACTION" in
+        interactive)
+            if [ -t 0 ]; then
+                interactive_menu
+            else
+                do_install
+            fi
+            ;;
+        install)
             do_install
             ;;
-        --update|-u)
+        update)
             get_latest_github_version
             if [ "$LOCAL_VER" != "$LATEST_VER" ]; then
                 do_install
@@ -550,18 +619,18 @@ main() {
                 echo -e "${GREEN}ASSella is already up to date ($LOCAL_VER).${NC}"
             fi
             ;;
-        --headcrab)
+        headcrab)
             install_headcrab
             ;;
-        --restore)
+        restore)
             do_restore_accela
             ;;
-        --uninstall)
+        uninstall)
             do_uninstall
             ;;
-        --help|-h)
+        help)
             echo "ASSella Installer & Management Suite"
-            echo "Usage: ./install.sh [OPTION]"
+            echo "Usage: ./install.sh [OPTION] [CHANNEL]"
             echo ""
             echo "Options:"
             echo "  --install, -i    Install or force update ASSella"
@@ -570,11 +639,11 @@ main() {
             echo "  --restore        Restore original ACCELA backup"
             echo "  --uninstall      Uninstall ASSella"
             echo "  --help, -h       Display this help message"
-            ;;
-        *)
-            echo "Unknown option: $1"
-            echo "Use ./install.sh --help for usage instructions."
-            exit 1
+            echo ""
+            echo "Channels:"
+            echo "  --stable         Target Stable releases (default if no branch keyword in tag)"
+            echo "  --beta           Target Beta / Dev / RC releases"
+            echo "  --canary         Target Canary / Testing releases"
             ;;
     esac
 }

@@ -1676,14 +1676,53 @@ class GameManager(QObject):
                     shutil.rmtree(install_path)
                     logger.info(f"Removed game folder: {install_path}")
 
-                # Remove ACF file (only in standard manual mode; native mode lets Steam delete it)
-                if not experimental_mode and library_path and appid != "N/A":
-                    acf_path = os.path.join(
-                        library_path, "steamapps", f"appmanifest_{appid}.acf"
-                    )
-                    if os.path.exists(acf_path):
-                        os.remove(acf_path)
-                        logger.info(f"Removed ACF file: {acf_path}")
+                # Remove ACF file
+                candidate_acfs = set()
+                if library_path:
+                    candidate_acfs.add(os.path.join(library_path, "steamapps", f"appmanifest_{appid}.acf"))
+                appmanifest_p = game_data.get("appmanifest_path")
+                if appmanifest_p:
+                    candidate_acfs.add(appmanifest_p)
+
+                try:
+                    from core.steam_helpers import get_steam_libraries
+                    for lib in get_steam_libraries():
+                        candidate_acfs.add(os.path.join(lib, "steamapps", f"appmanifest_{appid}.acf"))
+                except Exception as e:
+                    logger.debug(f"Error resolving steam libraries for ACF cleanup: {e}")
+
+                candidate_acfs = [p for p in candidate_acfs if p and appid != "N/A"]
+
+                if experimental_mode and platform.system() == "Linux" and appid and appid not in ("0", "N/A", "unknown"):
+                    # Wait up to 10 seconds for Steam to delete the ACF manifest
+                    import time
+                    deadline = time.time() + 10.0
+                    steam_deleted = False
+                    while time.time() < deadline:
+                        existing = [p for p in candidate_acfs if os.path.exists(p)]
+                        if not existing:
+                            steam_deleted = True
+                            logger.info(f"Steam confirmed ACF deletion for {appid}")
+                            break
+                        time.sleep(0.5)
+
+                    if not steam_deleted:
+                        logger.info(f"Steam did not delete ACF manifest for {appid} within 10s. Deleting manually.")
+                        for acf_path in candidate_acfs:
+                            if os.path.exists(acf_path):
+                                try:
+                                    os.remove(acf_path)
+                                    logger.info(f"Removed ACF file: {acf_path}")
+                                except Exception as err:
+                                    logger.warning(f"Could not remove ACF file {acf_path}: {err}")
+                else:
+                    for acf_path in candidate_acfs:
+                        if os.path.exists(acf_path):
+                            try:
+                                os.remove(acf_path)
+                                logger.info(f"Removed ACF file: {acf_path}")
+                            except Exception as err:
+                                logger.warning(f"Could not remove ACF file {acf_path}: {err}")
 
             # Clean up .DepotDownloader folder if remove_sls is True and the folder is not already removed
             if remove_sls and install_path and os.path.exists(install_path):

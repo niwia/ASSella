@@ -314,6 +314,71 @@ def ensure_plugins_enabled(config_path: Optional[Path] = None) -> bool:
     return update_yaml_boolean_value(config_path, "Plugins", True)
 
 
+def ensure_smart_tickets_enabled(config_path: Optional[Path] = None, enable: bool = True) -> bool:
+    """Ensure 'SmartTickets: 0x1' (or 0x0 if disabled) is present in SLSsteam config.yaml."""
+    if config_path is None:
+        config_path = get_user_config_path()
+
+    if not config_path.exists():
+        logger.debug(f"ensure_smart_tickets_enabled: Config not found at {config_path}")
+        return False
+
+    if not is_slssteam_config_management_enabled():
+        logger.debug("ensure_smart_tickets_enabled: SLS config management disabled in settings")
+        return False
+
+    val_str = "0x1" if enable else "0x0"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        pattern = re.compile(
+            r"^([ \t]*)SmartTickets[ \t]*:[ \t]*([^\r\n#]+)(.*)$",
+            re.MULTILINE,
+        )
+        match = pattern.search(content)
+        if not match:
+            logger.info(f"Adding 'SmartTickets: {val_str}' to {config_path}")
+            new_content = content.rstrip() + f"\n\nSmartTickets: {val_str}\n"
+            return _atomic_write(config_path, new_content)
+
+        indent = match.group(1)
+        cur_val = match.group(2).strip()
+        comment = match.group(3)
+
+        if cur_val.lower() == val_str.lower():
+            return True
+
+        comment_str = f" {comment.strip()}" if comment.strip() else ""
+        replacement = f"{indent}SmartTickets: {val_str}{comment_str}"
+        new_content = pattern.sub(replacement, content, count=1)
+        return _atomic_write(config_path, new_content)
+    except Exception as e:
+        logger.error(f"Failed to update SmartTickets in {config_path}: {e}")
+        return False
+
+
+def is_smart_tickets_enabled(config_path: Optional[Path] = None) -> bool:
+    """Check if 'SmartTickets: 0x1' is enabled in SLSsteam config.yaml."""
+    if config_path is None:
+        config_path = get_user_config_path()
+
+    if not config_path.exists():
+        return False
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        match = re.search(r"^([ \t]*)SmartTickets[ \t]*:[ \t]*([^\r\n#]+)", content, re.MULTILINE)
+        if match:
+            raw = match.group(2).strip().lower()
+            return raw in ("0x1", "1", "yes", "true")
+    except Exception:
+        pass
+    return False
+
+
 def ensure_slssteam_prerequisites(config_path: Optional[Path] = None) -> bool:
     """Silently ensure all SLSsteam configuration prerequisites are met.
 
