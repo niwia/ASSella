@@ -295,12 +295,34 @@ jobs:
           ln -sf assella.db.tar.gz assella.db
           ln -sf assella.files.tar.gz assella.files
 
-      - name: Deploy Arch Repository to GitHub Pages
-        uses: JamesIves/github-pages-deploy-action@v4
+      - name: Attach Arch Package to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
         with:
-          branch: gh-pages
-          folder: repo
-          target-folder: arch
+          tag_name: ${{ needs.build-appimage.outputs.tag }}
+          files: packaging/arch/*.pkg.tar.zst
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy Arch Repository to GitHub Pages
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "*"
+
+          cd /tmp
+          if git clone --depth 1 "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" -b gh-pages gh-pages-repo 2>/dev/null; then
+            cd gh-pages-repo
+          else
+            mkdir gh-pages-repo && cd gh-pages-repo
+            git init
+            git checkout -b gh-pages
+            git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          fi
+
+          mkdir -p arch
+          cp -r "$GITHUB_WORKSPACE/repo/"* arch/
+          git add -A arch
+          git commit -m "Deploy Arch repository for ${{ needs.build-appimage.outputs.tag }}" || true
+          git push -u origin gh-pages || true
 
