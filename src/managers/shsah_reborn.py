@@ -66,6 +66,21 @@ class AchievementItem:
         }
 
 
+def _sanitize_stats_for_binary_vdf(obj: Any) -> Any:
+    """Recursively convert integers to signed 32-bit range [-2^31, 2^31 - 1]
+    so vdf.binary_dumps ('<i' format) packs without struct.error."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_stats_for_binary_vdf(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_sanitize_stats_for_binary_vdf(x) for x in obj]
+    elif isinstance(obj, int) and not isinstance(obj, bool):
+        val = obj & 0xFFFFFFFF
+        if val >= 0x80000000:
+            val -= 0x100000000
+        return val
+    return obj
+
+
 class SHSAHRebornManager:
     """Manager for reading, modifying, and saving Steam game achievements."""
 
@@ -254,12 +269,19 @@ class SHSAHRebornManager:
 
         for item in achievements:
             stat_block = cache.get(item.stat_id, {})
-            data_val = stat_block.get("data", 0)
+            raw_data = stat_block.get("data", 0)
+            try:
+                data_val = int(raw_data) & 0xFFFFFFFF
+            except (ValueError, TypeError):
+                data_val = 0
             is_unlocked = bool(data_val & (1 << item.bit_id))
             item.unlocked = is_unlocked
 
             times = stat_block.get("AchievementTimes", {})
-            item.unlock_time = int(times.get(str(item.bit_id), 0))
+            try:
+                item.unlock_time = int(times.get(str(item.bit_id), 0))
+            except (ValueError, TypeError):
+                item.unlock_time = 0
 
         return achievements, user_stats
 
@@ -277,18 +299,28 @@ class SHSAHRebornManager:
         cache["PendingChanges"] = 0
 
         stat_block = cache.setdefault(str(stat_id), {})
-        current_data = stat_block.get("data", 0)
+        raw_data = stat_block.get("data", 0)
+        try:
+            current_data = int(raw_data) & 0xFFFFFFFF
+        except (ValueError, TypeError):
+            current_data = 0
         times = stat_block.setdefault("AchievementTimes", {})
 
         if unlocked:
-            stat_block["data"] = current_data | (1 << bit_id)
+            new_data = (current_data | (1 << bit_id)) & 0xFFFFFFFF
             if timestamp is None:
                 timestamp = int(time.time())
-            times[str(bit_id)] = timestamp
+            times[str(bit_id)] = int(timestamp)
         else:
-            stat_block["data"] = current_data & ~(1 << bit_id)
+            new_data = (current_data & ~(1 << bit_id)) & 0xFFFFFFFF
             if str(bit_id) in times:
                 del times[str(bit_id)]
+
+        # Convert unsigned 32-bit to two's complement signed 32-bit
+        # so vdf.binary_dumps '<i' format can pack it without struct.error
+        if new_data >= 0x80000000:
+            new_data -= 0x100000000
+        stat_block["data"] = new_data
 
     def apply_batch_states(
         self,
@@ -328,7 +360,11 @@ class SHSAHRebornManager:
         if "cache" in stats_data:
             stats_data["cache"]["crc"] = 0
 
-        raw_bytes = vdf.binary_dumps(stats_data)
+        # Recursively sanitize all integers to fit within signed 32-bit [-2^31, 2^31 - 1]
+        # ensuring vdf.binary_dumps ('<i' format) never throws struct.error on unsigned 32-bit values
+        sanitized_data = _sanitize_stats_for_binary_vdf(stats_data)
+
+        raw_bytes = vdf.binary_dumps(sanitized_data)
         temp_file = dest_file.with_suffix(".tmp")
         with open(temp_file, "wb") as f:
             f.write(raw_bytes)
