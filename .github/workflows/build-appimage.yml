@@ -297,11 +297,15 @@ jobs:
 
       - name: Assemble Pacman Database Structure
         run: |
+          set -x
+          ls -la packaging/arch/ || true
+          find packaging/arch/ -name "*.pkg.tar.zst" 2>/dev/null || echo "No .pkg.tar.zst found in packaging/arch"
           mkdir -p repo/x86_64
           cp packaging/arch/*.pkg.tar.zst repo/x86_64/
+          ls -la repo/x86_64/
           cd repo/x86_64
           repo-add assella.db.tar.gz *.pkg.tar.zst
-          # Provide both .tar.gz and extensionless real files for pacman compatibility
+          ls -la
           cp -f assella.db.tar.gz assella.db
           cp -f assella.files.tar.gz assella.files
           cp -f assella.db.tar.gz ../../packaging/arch/assella.db
