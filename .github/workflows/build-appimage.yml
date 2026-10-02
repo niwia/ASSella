@@ -89,11 +89,21 @@ jobs:
             PUBLISH="true"
           fi
 
+          RELEASE_BODY_FILE="$RUNNER_TEMP/release_notes.md"
+          if [ -f "docs/changelogs/${TAG}.md" ]; then
+            cp "docs/changelogs/${TAG}.md" "$RELEASE_BODY_FILE"
+          elif [ -f "docs/changelogs/${TAG#v}.md" ]; then
+            cp "docs/changelogs/${TAG#v}.md" "$RELEASE_BODY_FILE"
+          else
+            echo "Release ${TAG} (${CHANNEL} channel)" > "$RELEASE_BODY_FILE"
+          fi
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
           echo "draft=$DRAFT" >> "$GITHUB_OUTPUT"
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "body_file=$RELEASE_BODY_FILE" >> "$GITHUB_OUTPUT"
           echo "Building for Tag: $TAG (Channel: $CHANNEL, Pre-release: $IS_PRE, Draft: $DRAFT, Publish: $PUBLISH)"
 
       - name: Download and Setup appimagetool
@@ -226,7 +236,7 @@ jobs:
           name: "ASSella ${{ steps.meta.outputs.tag }}"
           draft: ${{ steps.meta.outputs.draft == 'true' }}
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
-          body_path: docs/changelogs/v2.7.1beta.md
+          body_path: ${{ steps.meta.outputs.body_file }}
           generate_release_notes: false
           files: |
             ASSella.AppImage
