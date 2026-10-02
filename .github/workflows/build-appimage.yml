@@ -20,6 +20,11 @@ on:
         required: true
         default: true
         type: boolean
+      publish:
+        description: 'Publish Release (if false, builds & tests artifacts without releasing)'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -32,21 +37,22 @@ jobs:
       channel: ${{ steps.meta.outputs.channel }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
       draft: ${{ steps.meta.outputs.draft }}
+      publish: ${{ steps.meta.outputs.publish }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.13
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install System Packaging Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file python3-venv python3-pip git
+          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file python3-venv python3-pip git tor libevent-2.1-7
 
       - name: Determine Release Channel & Metadata
         id: meta
@@ -73,15 +79,20 @@ jobs:
           fi
 
           DRAFT="true"
+          PUBLISH="false"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             DRAFT="${{ github.event.inputs.draft }}"
+            PUBLISH="${{ github.event.inputs.publish }}"
+          elif echo "${{ github.ref }}" | grep -q '^refs/tags/'; then
+            PUBLISH="true"
           fi
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
           echo "prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
           echo "draft=$DRAFT" >> "$GITHUB_OUTPUT"
-          echo "Building for Tag: $TAG (Channel: $CHANNEL, Pre-release: $IS_PRE, Draft: $DRAFT)"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "Building for Tag: $TAG (Channel: $CHANNEL, Pre-release: $IS_PRE, Draft: $DRAFT, Publish: $PUBLISH)"
 
       - name: Download and Setup appimagetool
         run: |
@@ -106,6 +117,7 @@ jobs:
           Type=Application
           Categories=Utility;Game;
           StartupWMClass=ASSella
+          MimeType=x-scheme-handler/accela;
           EOF
           
           # Copy icon
@@ -127,17 +139,14 @@ jobs:
           EOF
           chmod +x AppDir/AppRun
 
-          # 3. Bin run.sh
+          # 3. Bin run.sh (Preserves environment cleanly without overriding PYTHONHOME)
           cat << 'EOF' > AppDir/bin/run.sh
           #!/usr/bin/env bash
-          HERE="$(dirname "$(realpath "$0")")"
-          cd "$HERE"
+          cd "$(dirname "$(realpath "$0")")"
           export APPIMAGE=1
-          export PYTHONHOME="$HERE/.venv"
-          export LD_LIBRARY_PATH="$HERE/.venv/lib:${LD_LIBRARY_PATH:-}"
 
-          PYTHON_EXEC="$HERE/.venv/bin/python3"
-          if [ -x "$PYTHON_EXEC" ]; then
+          PYTHON_EXEC=".venv/bin/python3"
+          if [ -f "$PYTHON_EXEC" ]; then
               exec "$PYTHON_EXEC" src/main.py "$@"
           else
               exec python3 src/main.py "$@"
@@ -149,16 +158,42 @@ jobs:
           cp -r src AppDir/bin/
           find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
-          # 5. Bundle Relocatable Standalone Python Runtime
-          echo "Downloading relocatable python-build-standalone runtime..."
-          curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.11.10+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz"
+          # 5. Bundle Tor Executable
+          if [ -f "/usr/bin/tor" ]; then
+            cp /usr/bin/tor AppDir/bin/tor
+          elif [ -f "bin/tor" ]; then
+            cp bin/tor AppDir/bin/tor
+          fi
+          chmod +x AppDir/bin/tor 2>/dev/null || true
+
+          # 6. Bundle Relocatable Standalone Python 3.13 Runtime
+          echo "Downloading relocatable python-build-standalone runtime (Python 3.13)..."
+          curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.13.0+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz"
           tar -xzf /tmp/cpython-standalone.tar.gz -C AppDir/bin/
           mv AppDir/bin/python AppDir/bin/.venv
 
-          # Install application dependencies into bundled runtime
+          # 7. Install application dependencies into bundled runtime
           AppDir/bin/.venv/bin/python3 -m pip install --upgrade pip setuptools wheel
           AppDir/bin/.venv/bin/python3 -m pip install -r requirements.txt
           find AppDir/bin/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+          # 8. Sanity check: Verify all required imports inside bundled AppDir runtime
+          echo "Verifying AppDir runtime imports..."
+          AppDir/bin/.venv/bin/python3 -c "
+          import PyQt6.QtCore
+          import PyQt6.QtWidgets
+          import requests
+          import yaml
+          import PIL
+          import cryptography
+          import configobj
+          import urwid
+          import vdf
+          import steam
+          import zstandard
+          import curl_cffi
+          print('AppDir verification: All critical dependencies imported successfully!')
+          "
 
       - name: Build AppImage with ZSync Update Information
         run: |
@@ -186,7 +221,7 @@ jobs:
             *.sha256
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        if: (startsWith(github.ref, 'refs/tags/') && steps.meta.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && steps.meta.outputs.publish == 'true')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
@@ -244,6 +279,7 @@ jobs:
           Type=Application
           Categories=Utility;Game;
           StartupWMClass=ASSella
+          MimeType=x-scheme-handler/accela;
           EOF
 
           # Format clean semver for PKGBUILD (remove v prefix and dashes)
@@ -314,8 +350,17 @@ jobs:
           cp -f assella.files.tar.gz ../../packaging/arch/assella.files.tar.gz
           cp -f assella.files ../../packaging/arch/assella.files
 
+      - name: Upload Arch Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: assella-arch-package
+          path: |
+            packaging/arch/*.pkg.tar.zst
+            packaging/arch/assella.db*
+            packaging/arch/assella.files*
+
       - name: Attach Arch Package and Database to Version Release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        if: (startsWith(github.ref, 'refs/tags/') && needs.build-appimage.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && needs.build-appimage.outputs.publish == 'true')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.build-appimage.outputs.tag }}
@@ -329,7 +374,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Rolling Arch Channel Release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        if: (startsWith(github.ref, 'refs/tags/') && needs.build-appimage.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && needs.build-appimage.outputs.publish == 'true')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -353,6 +398,7 @@ jobs:
             --clobber
 
       - name: Deploy Arch Repo Documentation to GitHub Pages
+        if: (startsWith(github.ref, 'refs/tags/') && needs.build-appimage.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && needs.build-appimage.outputs.publish == 'true')
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -365,10 +411,17 @@ jobs:
             mkdir gh-pages-repo && cd gh-pages-repo
             git init
             git checkout -b gh-pages
-            git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+            remote="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+            git remote add origin "$remote"
           fi
 
-          cat << 'EOF' > index.html
+          RAW_TAG="${{ needs.build-appimage.outputs.tag }}"
+          CLEAN_VER=$(echo "$RAW_TAG" | sed -e 's/^v//' -e 's/-/./g')
+          if [ -z "$CLEAN_VER" ]; then
+            CLEAN_VER="2.7.1beta"
+          fi
+
+          cat << EOF > index.html
           <!DOCTYPE html>
           <html lang="en">
           <head>
@@ -389,7 +442,7 @@ jobs:
             <p>Then install or update ASSella with:</p>
             <pre><code>sudo pacman -Sy assella</code></pre>
             <p>Direct installation without configuring Pacman:</p>
-            <pre><code>sudo pacman -U https://github.com/niwia/ASSella/releases/download/arch-repo/assella-2.7.1beta-1-x86_64.pkg.tar.zst</code></pre>
+            <pre><code>sudo pacman -U https://github.com/niwia/ASSella/releases/download/arch-repo/assella-\${CLEAN_VER}-1-x86_64.pkg.tar.zst</code></pre>
           </body>
           </html>
           EOF
