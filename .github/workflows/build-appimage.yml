@@ -53,7 +53,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME:-}"
           if [ -z "$TAG" ] || [ "$TAG" = "beta" ] || [ "$TAG" = "canary" ] || [ "$TAG" = "main" ]; then
-            TAG="v$(cat src/res/version 2>/dev/null || echo '2.7.0dev')"
+            TAG="v$(cat src/res/version 2>/dev/null || echo '2.7.1dev')"
           fi
           
           # Detect channel from tag if on tag push, else use manual input
@@ -193,7 +193,7 @@ jobs:
           name: "ASSella ${{ steps.meta.outputs.tag }}"
           draft: ${{ steps.meta.outputs.draft == 'true' }}
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
-          body_path: docs/changelogs/v2.7.0beta.md
+          body_path: docs/changelogs/v2.7.1beta.md
           generate_release_notes: false
           files: |
             ASSella.AppImage
@@ -234,7 +234,7 @@ jobs:
           cp src/res/logo/icon.png packaging/arch/assella.png
 
           # Create desktop shortcut definition
-          cat << 'EOF' > packaging/arch/assella.desktop
+          cat << 'EOF' | sed 's/^          //' > packaging/arch/assella.desktop
           [Desktop Entry]
           Name=ASSella
           Comment=Steam Game & Depot Management Suite
@@ -250,10 +250,10 @@ jobs:
           RAW_TAG="${{ needs.build-appimage.outputs.tag }}"
           CLEAN_VER=$(echo "$RAW_TAG" | sed -e 's/^v//' -e 's/-/./g')
           if [ -z "$CLEAN_VER" ]; then
-            CLEAN_VER="2.7.0"
+            CLEAN_VER="2.7.1beta"
           fi
 
-          cat << EOF > packaging/arch/PKGBUILD
+          cat << EOF | sed 's/^          //' > packaging/arch/PKGBUILD
           # Maintainer: niwia <niwia@users.noreply.github.com>
           pkgname=assella
           pkgver=${CLEAN_VER}
@@ -282,10 +282,7 @@ jobs:
               ln -sf assella.png "\$pkgdir/usr/share/icons/hicolor/512x512/apps/assela.png"
               ln -sf assella.png "\$pkgdir/usr/share/pixmaps/assela.png"
 
-              cat << 'WRAPPER' > "\$pkgdir/usr/bin/assella"
-          #!/bin/sh
-          exec /usr/lib/assella/ASSella.AppImage "\$@"
-          WRAPPER
+              printf '%s\\n' '#!/bin/sh' 'exec /usr/lib/assella/ASSella.AppImage "\$@"' > "\$pkgdir/usr/bin/assella"
               chmod 755 "\$pkgdir/usr/bin/assella"
 
               install -Dm644 "\$srcdir/assella.desktop" "\$pkgdir/usr/share/applications/assella.desktop"
@@ -377,13 +374,11 @@ jobs:
           <body>
             <h1>ASSella Arch Linux / SteamOS Repository</h1>
             <p>To configure Pacman for automatic updates, add the following to <code>/etc/pacman.conf</code>:</p>
-            <pre><code>[assella]
-SigLevel = Optional TrustAll
-Server = https://github.com/niwia/ASSella/releases/download/arch-repo</code></pre>
+            <pre><code>[assella]&#10;SigLevel = Optional TrustAll&#10;Server = https://github.com/niwia/ASSella/releases/download/arch-repo</code></pre>
             <p>Then install or update ASSella with:</p>
             <pre><code>sudo pacman -Sy assella</code></pre>
             <p>Direct installation without configuring Pacman:</p>
-            <pre><code>sudo pacman -U https://github.com/niwia/ASSella/releases/download/arch-repo/assella-2.7.0beta-1-x86_64.pkg.tar.zst</code></pre>
+            <pre><code>sudo pacman -U https://github.com/niwia/ASSella/releases/download/arch-repo/assella-2.7.1beta-1-x86_64.pkg.tar.zst</code></pre>
           </body>
           </html>
           EOF
