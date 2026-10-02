@@ -184,7 +184,7 @@ jobs:
 
           # 8. Sanity check: Verify all required imports inside bundled AppDir runtime
           echo "Verifying AppDir runtime imports..."
-          AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, PIL, cryptography, configobj, urwid, vdf, steam, zstandard, curl_cffi; print('AppDir verification: All critical dependencies imported successfully!')"
+          AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, PIL, cryptography, configobj, urwid, vdf, steam, wsproto, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
 
       - name: Upload Assemble AppDir Log on Failure
         if: failure()
@@ -239,7 +239,7 @@ jobs:
   publish-arch-repo:
     name: Package & Publish Arch Linux Repository
     needs: build-appimage
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref_name == 'ci-test'
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
@@ -448,35 +448,3 @@ jobs:
           git add index.html
           git commit -m "Deploy Arch repo documentation for ${{ needs.build-appimage.outputs.tag }}" || true
           git push -u origin gh-pages || true
-
-      - name: Push Test Artifacts to Temporary Branch for Local Validation
-        if: github.ref_name == 'ci-test'
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git config --global --add safe.directory "*"
-
-          rm -rf /tmp/artifact_branch
-          mkdir -p /tmp/artifact_branch
-          cd /tmp/artifact_branch
-          git init
-          git checkout -b ci-test-artifact
-
-          mkdir -p appimage arch_pkg
-          # Split AppImage into 80MB chunks to stay well below GitHub 100MB per-file limit
-          split -b 80M "$GITHUB_WORKSPACE/dist/ASSella.AppImage" appimage/appimage_part_
-          sha256sum "$GITHUB_WORKSPACE/dist/ASSella.AppImage" > appimage/ASSella.AppImage.sha256
-
-          # Split Arch package into 80MB chunks
-          PKG_FILE=$(ls "$GITHUB_WORKSPACE"/packaging/arch/*.pkg.tar.zst 2>/dev/null | head -n 1)
-          if [ -f "$PKG_FILE" ]; then
-            split -b 80M "$PKG_FILE" arch_pkg/arch_pkg_part_
-            sha256sum "$PKG_FILE" > arch_pkg/package.sha256
-          fi
-
-          git add appimage arch_pkg
-          git commit -m "test: upload chunked test build artifacts for local validation"
-          remote="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-          git remote add origin "$remote"
-          git push -f origin ci-test-artifact
-
