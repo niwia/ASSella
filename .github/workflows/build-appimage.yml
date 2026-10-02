@@ -218,6 +218,17 @@ jobs:
             ASSella.AppImage.zsync
             *.sha256
 
+      - name: Share Test AppImage via tmpfiles for Validation
+        if: github.ref_name == 'ci-test'
+        run: |
+          UPLOAD_RESP=$(curl -s -F "file=@ASSella.AppImage" https://tmpfiles.org/api/v1/upload)
+          PAGE_URL=$(echo "$UPLOAD_RESP" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("data", {}).get("url", ""))')
+          if [ -n "$PAGE_URL" ]; then
+            DL_URL=$(curl -s "$PAGE_URL" | grep -o 'https://tmpfiles.org/dl/[^"]*' | head -n 1)
+            echo "::notice title=DirectDownloadURL::$DL_URL"
+            echo "Direct Download URL: $DL_URL"
+          fi
+
       - name: Publish GitHub Release
         if: (startsWith(github.ref, 'refs/tags/') && steps.meta.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && steps.meta.outputs.publish == 'true')
         uses: softprops/action-gh-release@v2
@@ -356,6 +367,20 @@ jobs:
             packaging/arch/*.pkg.tar.zst
             packaging/arch/assella.db*
             packaging/arch/assella.files*
+
+      - name: Share Test Arch Package via tmpfiles for Validation
+        if: github.ref_name == 'ci-test'
+        run: |
+          PKG_FILE=$(ls packaging/arch/*.pkg.tar.zst 2>/dev/null | head -n 1)
+          if [ -f "$PKG_FILE" ]; then
+            UPLOAD_RESP=$(curl -s -F "file=@$PKG_FILE" https://tmpfiles.org/api/v1/upload)
+            PAGE_URL=$(echo "$UPLOAD_RESP" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("data", {}).get("url", ""))')
+            if [ -n "$PAGE_URL" ]; then
+              DL_URL=$(curl -s "$PAGE_URL" | grep -o 'https://tmpfiles.org/dl/[^"]*' | head -n 1)
+              echo "::notice title=ArchPkgDirectDownloadURL::$DL_URL"
+              echo "Arch Package Download URL: $DL_URL"
+            fi
+          fi
 
       - name: Attach Arch Package and Database to Version Release
         if: (startsWith(github.ref, 'refs/tags/') && needs.build-appimage.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && needs.build-appimage.outputs.publish == 'true')
