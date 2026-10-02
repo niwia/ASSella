@@ -1,0 +1,460 @@
+name: Build and Release AppImage
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - 'ci-test'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release Channel (stable, beta, canary)'
+        required: true
+        default: 'beta'
+        type: choice
+        options:
+          - beta
+          - canary
+          - stable
+      draft:
+        description: 'Mark as Draft Release'
+        required: true
+        default: true
+        type: boolean
+      publish:
+        description: 'Publish Release (if false, builds & tests artifacts without releasing)'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      channel: ${{ steps.meta.outputs.channel }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      draft: ${{ steps.meta.outputs.draft }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install System Packaging Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file python3-venv python3-pip git tor libevent-2.1-7 libgl1 libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+
+      - name: Determine Release Channel & Metadata
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME:-}"
+          if [ -z "$TAG" ] || [ "$TAG" = "beta" ] || [ "$TAG" = "canary" ] || [ "$TAG" = "main" ]; then
+            TAG="v$(cat src/res/version 2>/dev/null || echo '2.7.1dev')"
+          fi
+          
+          # Detect channel from tag if on tag push, else use manual input
+          LOWER_TAG=$(echo "$TAG" | tr '[:upper:]' '[:lower:]')
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CHANNEL="${{ github.event.inputs.channel }}"
+            IS_PRE="${{ github.event.inputs.prerelease }}"
+          elif echo "$LOWER_TAG" | grep -q -E 'canary|testing'; then
+            CHANNEL="canary"
+            IS_PRE="true"
+          elif echo "$LOWER_TAG" | grep -q -E 'beta|dev|rc'; then
+            CHANNEL="beta"
+            IS_PRE="true"
+          else
+            CHANNEL="stable"
+            IS_PRE="false"
+          fi
+
+          DRAFT="true"
+          PUBLISH="false"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DRAFT="${{ github.event.inputs.draft }}"
+            PUBLISH="${{ github.event.inputs.publish }}"
+          elif echo "${{ github.ref }}" | grep -q '^refs/tags/'; then
+            PUBLISH="true"
+          fi
+
+          RELEASE_BODY_FILE="$RUNNER_TEMP/release_notes.md"
+          if [ -f "docs/changelogs/${TAG}.md" ]; then
+            cp "docs/changelogs/${TAG}.md" "$RELEASE_BODY_FILE"
+          elif [ -f "docs/changelogs/${TAG#v}.md" ]; then
+            cp "docs/changelogs/${TAG#v}.md" "$RELEASE_BODY_FILE"
+          else
+            echo "Release ${TAG} (${CHANNEL} channel)" > "$RELEASE_BODY_FILE"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
+          echo "draft=$DRAFT" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "body_file=$RELEASE_BODY_FILE" >> "$GITHUB_OUTPUT"
+          echo "Building for Tag: $TAG (Channel: $CHANNEL, Pre-release: $IS_PRE, Draft: $DRAFT, Publish: $PUBLISH)"
+
+      - name: Download and Setup appimagetool
+        run: |
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract
+          sudo mv squashfs-root /opt/appimagetool
+          sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
+
+      - name: Assemble AppDir
+        run: |
+          set -e
+          exec > >(tee /tmp/assemble.log) 2>&1
+          set -x
+          mkdir -p AppDir/bin
+          
+          # 1. Desktop Entry & Icon
+          cat << 'EOF' > AppDir/ACCELA.desktop
+          [Desktop Entry]
+          Name=ASSella
+          Comment=Steam Game & Depot Management Suite
+          Exec=AppRun %U
+          Icon=accela
+          Terminal=false
+          Type=Application
+          Categories=Utility;Game;
+          StartupWMClass=ASSella
+          MimeType=x-scheme-handler/accela;
+          EOF
+          
+          # Copy icon
+          if [ -f "src/res/logo/accela.png" ]; then
+            cp "src/res/logo/accela.png" AppDir/accela.png
+            cp "src/res/logo/accela.png" AppDir/.DirIcon
+          elif [ -f "assela_logo.png" ]; then
+            cp "assela_logo.png" AppDir/accela.png
+            cp "assela_logo.png" AppDir/.DirIcon
+          fi
+
+          # 2. AppRun Script
+          cat << 'EOF' > AppDir/AppRun
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          cd "$HERE/bin"
+          export APPIMAGE=1
+          exec "./run.sh" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # 3. Bin run.sh (Preserves environment cleanly without overriding PYTHONHOME)
+          cat << 'EOF' > AppDir/bin/run.sh
+          #!/usr/bin/env bash
+          cd "$(dirname "$(realpath "$0")")"
+          export APPIMAGE=1
+
+          PYTHON_EXEC=".venv/bin/python3"
+          if [ -f "$PYTHON_EXEC" ]; then
+              exec "$PYTHON_EXEC" src/main.py "$@"
+          else
+              exec python3 src/main.py "$@"
+          fi
+          EOF
+          chmod +x AppDir/bin/run.sh
+
+          # 4. Copy Application Source Code
+          cp -r src AppDir/bin/
+          find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+          # 5. Bundle Tor Executable
+          if [ -f "/usr/bin/tor" ]; then
+            cp /usr/bin/tor AppDir/bin/tor
+          elif [ -f "bin/tor" ]; then
+            cp bin/tor AppDir/bin/tor
+          fi
+          chmod +x AppDir/bin/tor 2>/dev/null || true
+
+          # 6. Bundle Relocatable Standalone Python 3.13 Runtime
+          echo "Downloading relocatable python-build-standalone runtime (Python 3.13)..."
+          curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.13.0+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz"
+          tar -xzf /tmp/cpython-standalone.tar.gz -C AppDir/bin/
+          mv AppDir/bin/python AppDir/bin/.venv
+
+          # 7. Install application dependencies into bundled runtime
+          AppDir/bin/.venv/bin/python3 -m pip install --upgrade pip setuptools wheel
+          AppDir/bin/.venv/bin/python3 -m pip install -r requirements.txt
+          find AppDir/bin/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+          # 8. Sanity check: Verify all required imports inside bundled AppDir runtime
+          echo "Verifying AppDir runtime imports..."
+          AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, PIL, cryptography, configobj, urwid, vdf, steam, wsproto, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
+
+      - name: Upload Assemble AppDir Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assemble-failure-log
+          path: /tmp/assemble.log
+
+      - name: Build AppImage with ZSync Update Information
+        run: |
+          CHANNEL="${{ steps.meta.outputs.channel }}"
+          
+          # Embed GitHub Releases zsync update info for delta update capabilities
+          UPDATE_INFO="gh-releases-zsync|niwia|ASSella|latest|ASSella.AppImage.zsync"
+          
+          echo "Generating AppImage with update string: $UPDATE_INFO"
+          ARCH=x86_64 appimagetool -n -u "$UPDATE_INFO" AppDir ASSella.AppImage
+
+          # Generate SHA256 checksums
+          sha256sum ASSella.AppImage > ASSella.AppImage.sha256
+          if [ -f "ASSella.AppImage.zsync" ]; then
+            sha256sum ASSella.AppImage.zsync > ASSella.AppImage.zsync.sha256
+          fi
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ASSella-${{ steps.meta.outputs.channel }}-AppImage
+          path: |
+            ASSella.AppImage
+            ASSella.AppImage.zsync
+            *.sha256
+
+      - name: Publish GitHub Release
+        if: (startsWith(github.ref, 'refs/tags/') && steps.meta.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && steps.meta.outputs.publish == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "ASSella ${{ steps.meta.outputs.tag }}"
+          draft: ${{ steps.meta.outputs.draft == 'true' }}
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          body_path: ${{ steps.meta.outputs.body_file }}
+          generate_release_notes: false
+          files: |
+            ASSella.AppImage
+            ASSella.AppImage.zsync
+            ASSella.AppImage.sha256
+            ASSella.AppImage.zsync.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-arch-repo:
+    name: Package & Publish Arch Linux Repository
+    needs: build-appimage
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install Pacman Packaging Tools
+        run: |
+          pacman -Syu --noconfirm base-devel git zstd sudo github-cli
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download AppImage Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ASSella-${{ needs.build-appimage.outputs.channel }}-AppImage
+          path: ./dist
+
+      - name: Prepare Arch Package Recipe & Metadata
+        run: |
+          mkdir -p packaging/arch
+          cp dist/ASSella.AppImage packaging/arch/
+          chmod +x packaging/arch/ASSella.AppImage
+          cp src/res/logo/icon.png packaging/arch/assella.png
+
+          # Create desktop shortcut definition
+          cat << 'EOF' | sed 's/^          //' > packaging/arch/assella.desktop
+          [Desktop Entry]
+          Name=ASSella
+          Comment=Steam Game & Depot Management Suite
+          Exec=/usr/bin/assella %U
+          Icon=assella
+          Terminal=false
+          Type=Application
+          Categories=Utility;Game;
+          StartupWMClass=ASSella
+          MimeType=x-scheme-handler/accela;
+          EOF
+
+          # Format clean semver for PKGBUILD (remove v prefix and dashes)
+          RAW_TAG="${{ needs.build-appimage.outputs.tag }}"
+          CLEAN_VER=$(echo "$RAW_TAG" | sed -e 's/^v//' -e 's/-/./g')
+          if [ -z "$CLEAN_VER" ]; then
+            CLEAN_VER="2.7.1beta"
+          fi
+
+          cat << EOF | sed 's/^          //' > packaging/arch/PKGBUILD
+          # Maintainer: niwia <niwia@users.noreply.github.com>
+          pkgname=assella
+          pkgver=${CLEAN_VER}
+          pkgrel=1
+          pkgdesc="Steam Game & Depot Management Suite"
+          arch=('x86_64')
+          url="https://github.com/niwia/ASSella"
+          license=('GPL3')
+          depends=('fuse2')
+          provides=('assella')
+          conflicts=('assella-bin' 'assella-git')
+          source=("ASSella.AppImage" "assella.desktop" "assella.png")
+          sha256sums=('SKIP' 'SKIP' 'SKIP')
+          options=(!strip)
+
+          package() {
+              install -dm755 "\$pkgdir/usr/lib/assella"
+              install -dm755 "\$pkgdir/usr/bin"
+              install -dm755 "\$pkgdir/usr/share/applications"
+              install -dm755 "\$pkgdir/usr/share/icons/hicolor/512x512/apps"
+              install -dm755 "\$pkgdir/usr/share/pixmaps"
+
+              install -m755 "\$srcdir/ASSella.AppImage" "\$pkgdir/usr/lib/assella/ASSella.AppImage"
+              install -Dm644 "\$srcdir/assella.png" "\$pkgdir/usr/share/icons/hicolor/512x512/apps/assella.png"
+              install -Dm644 "\$srcdir/assella.png" "\$pkgdir/usr/share/pixmaps/assella.png"
+              ln -sf assella.png "\$pkgdir/usr/share/icons/hicolor/512x512/apps/assela.png"
+              ln -sf assella.png "\$pkgdir/usr/share/pixmaps/assela.png"
+
+              printf '%s\\n' '#!/bin/sh' 'exec /usr/lib/assella/ASSella.AppImage "\$@"' > "\$pkgdir/usr/bin/assella"
+              chmod 755 "\$pkgdir/usr/bin/assella"
+
+              install -Dm644 "\$srcdir/assella.desktop" "\$pkgdir/usr/share/applications/assella.desktop"
+              ln -sf assella.desktop "\$pkgdir/usr/share/applications/assela.desktop"
+          }
+          EOF
+          chown -R builder:builder packaging/arch
+
+      - name: Build Arch Package via makepkg
+        run: |
+          su builder -c "cd packaging/arch && makepkg -f --nodeps"
+
+      - name: Assemble Pacman Database Structure
+        run: |
+          mkdir -p repo/x86_64
+          cp packaging/arch/*.pkg.tar.zst repo/x86_64/
+          cd repo/x86_64
+          repo-add assella.db.tar.gz *.pkg.tar.zst
+
+          # repo-add creates assella.db and assella.files as symlinks to .tar.gz archives.
+          # Remove symlinks before copying to avoid cp 'same file' error and ensure regular files for releases.
+          rm -f assella.db assella.files
+          cp -f assella.db.tar.gz assella.db
+          cp -f assella.files.tar.gz assella.files
+
+          # Copy database files into packaging/arch for GitHub release assets
+          cp -f assella.db.tar.gz ../../packaging/arch/assella.db.tar.gz
+          cp -f assella.db ../../packaging/arch/assella.db
+          cp -f assella.files.tar.gz ../../packaging/arch/assella.files.tar.gz
+          cp -f assella.files ../../packaging/arch/assella.files
+
+      - name: Upload Arch Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: assella-arch-package
+          path: |
+            packaging/arch/*.pkg.tar.zst
+            packaging/arch/assella.db*
+            packaging/arch/assella.files*
+
+      - name: Attach Arch Package and Database to Version Release
+        if: (startsWith(github.ref, 'refs/tags/') && needs.build-appimage.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && needs.build-appimage.outputs.publish == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build-appimage.outputs.tag }}
+          files: |
+            packaging/arch/*.pkg.tar.zst
+            packaging/arch/assella.db
+            packaging/arch/assella.db.tar.gz
+            packaging/arch/assella.files
+            packaging/arch/assella.files.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Rolling Arch Channel Release
+        if: (startsWith(github.ref, 'refs/tags/') && needs.build-appimage.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && needs.build-appimage.outputs.publish == 'true')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          git config --global --add safe.directory "*"
+          # Ensure the arch-repo release exists
+          gh release view arch-repo --repo "${{ github.repository }}" >/dev/null 2>&1 || gh release create arch-repo \
+            --repo "${{ github.repository }}" \
+            --title "ASSella Arch Linux Rolling Repository" \
+            --notes "Rolling repository endpoint for Arch Linux Pacman (\`/etc/pacman.conf\`). Automatically updated with every build." \
+            --prerelease
+
+          # Upload Arch package and database files, replacing existing assets cleanly
+          gh release upload arch-repo \
+            --repo "${{ github.repository }}" \
+            packaging/arch/*.pkg.tar.zst \
+            packaging/arch/assella.db \
+            packaging/arch/assella.db.tar.gz \
+            packaging/arch/assella.files \
+            packaging/arch/assella.files.tar.gz \
+            --clobber
+
+      - name: Deploy Arch Repo Documentation to GitHub Pages
+        if: (startsWith(github.ref, 'refs/tags/') && needs.build-appimage.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && needs.build-appimage.outputs.publish == 'true')
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "*"
+
+          cd /tmp
+          if git clone --depth 1 "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" -b gh-pages gh-pages-repo 2>/dev/null; then
+            cd gh-pages-repo
+          else
+            mkdir gh-pages-repo && cd gh-pages-repo
+            git init
+            git checkout -b gh-pages
+            remote="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+            git remote add origin "$remote"
+          fi
+
+          RAW_TAG="${{ needs.build-appimage.outputs.tag }}"
+          CLEAN_VER=$(echo "$RAW_TAG" | sed -e 's/^v//' -e 's/-/./g')
+          if [ -z "$CLEAN_VER" ]; then
+            CLEAN_VER="2.7.1beta"
+          fi
+
+          cat << EOF > index.html
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>ASSella Arch Linux Repository</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; background: #0f172a; color: #e2e8f0; }
+              h1 { color: #38bdf8; border-bottom: 2px solid #334155; padding-bottom: 10px; }
+              pre { background: #1e293b; padding: 15px; border-radius: 8px; border: 1px solid #334155; overflow-x: auto; color: #f1f5f9; }
+              code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+            </style>
+          </head>
+          <body>
+            <h1>ASSella Arch Linux / SteamOS Repository</h1>
+            <p>To configure Pacman for automatic updates, add the following to <code>/etc/pacman.conf</code>:</p>
+            <pre><code>[assella]&#10;SigLevel = Optional TrustAll&#10;Server = https://github.com/niwia/ASSella/releases/download/arch-repo</code></pre>
+            <p>Then install or update ASSella with:</p>
+            <pre><code>sudo pacman -Sy assella</code></pre>
+            <p>Direct installation without configuring Pacman:</p>
+            <pre><code>sudo pacman -U https://github.com/niwia/ASSella/releases/download/arch-repo/assella-\${CLEAN_VER}-1-x86_64.pkg.tar.zst</code></pre>
+          </body>
+          </html>
+          EOF
+
+          git add index.html
+          git commit -m "Deploy Arch repo documentation for ${{ needs.build-appimage.outputs.tag }}" || true
+          git push -u origin gh-pages || true

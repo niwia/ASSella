@@ -457,12 +457,23 @@ def purge_and_sanitize_for_dlc_only(
                 else:
                     # Fallback: no dlcappid metadata — use the depot ID itself
                     sel_dlcappid_set[sel_did] = desc or f"Depot {sel_did}"
+        else:
+            # Fallback when no depot selection provided: resolve from DLC list
+            dlc_list = get_all_dlcs_for_app(appid_str, game_data, allow_network=True)
+            for d in dlc_list:
+                did = str(d["dlc_appid"])
+                if did != appid_str:
+                    sel_dlcappid_set[did] = d.get("dlc_name") or f"DLC {did}"
 
-        remove_dlc_data(config_path, appid_str)
-        for did, dname in sel_dlcappid_set.items():
-            comment = f"[DLC] {dname} / {game_name}" if game_name else f"[DLC] {dname}"
-            if add_additional_app(config_path, did, comment):
-                summary["dlcs_added"].append(did)
+        if len(sel_dlcappid_set) >= 64:
+            add_dlc_data_batch(config_path, appid_str, sel_dlcappid_set)
+            summary["dlcs_added"].extend(list(sel_dlcappid_set.keys()))
+        else:
+            remove_dlc_data(config_path, appid_str)
+            for did, dname in sel_dlcappid_set.items():
+                comment = f"[DLC] {dname} / {game_name}" if game_name else f"[DLC] {dname}"
+                if add_additional_app(config_path, did, comment):
+                    summary["dlcs_added"].append(did)
 
         # 3. AdditionalDepots: User-selected depots ONLY
         if user_sel_set is not None:

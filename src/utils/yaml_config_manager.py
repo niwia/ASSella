@@ -314,17 +314,8 @@ def ensure_plugins_enabled(config_path: Optional[Path] = None) -> bool:
     return update_yaml_boolean_value(config_path, "Plugins", True)
 
 
-def ensure_smart_tickets_enabled(config_path: Optional[Path] = None) -> bool:
-    """Ensure 'SmartTickets: 0x1' (SteamDRM bit) is set in SLSsteam config.yaml.
-
-    SmartTickets is a bitmask key:
-      0x1 = SteamDRM  (required for spliced-tickets.lua plugin)
-      0x2 = Denuvo
-
-    This function ORs in 0x1 without disturbing other bits already set.
-    If the key is absent it is appended with value 0x1.
-    Preserves inode via in-place write so SLSsteam's inotify watcher reacts.
-    """
+def ensure_smart_tickets_enabled(config_path: Optional[Path] = None, enable: bool = True) -> bool:
+    """Ensure 'SmartTickets: 0x1' (or 0x0 if disabled) is present in SLSsteam config.yaml."""
     if config_path is None:
         config_path = get_user_config_path()
 
@@ -336,6 +327,7 @@ def ensure_smart_tickets_enabled(config_path: Optional[Path] = None) -> bool:
         logger.debug("ensure_smart_tickets_enabled: SLS config management disabled in settings")
         return False
 
+    val_str = "0x1" if enable else "0x0"
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -345,43 +337,46 @@ def ensure_smart_tickets_enabled(config_path: Optional[Path] = None) -> bool:
             re.MULTILINE,
         )
         match = pattern.search(content)
+        if not match:
+            logger.info(f"Adding 'SmartTickets: {val_str}' to {config_path}")
+            new_content = content.rstrip() + f"\n\nSmartTickets: {val_str}\n"
+            return _atomic_write(config_path, new_content)
 
-        if match:
-            indent = match.group(1)
-            raw_val = match.group(2).strip().strip('"').strip("'")
-            comment = match.group(3)
+        indent = match.group(1)
+        cur_val = match.group(2).strip()
+        comment = match.group(3)
 
-            try:
-                current_val = int(raw_val, 16) if raw_val.lower().startswith("0x") else int(raw_val, 10)
-            except ValueError:
-                current_val = 0
+        if cur_val.lower() == val_str.lower():
+            return True
 
-            # SteamDRM bit (0x1) already set — nothing to do
-            if (current_val & 0x1) != 0:
-                logger.debug(
-                    f"SmartTickets in {config_path} already has SteamDRM bit set (0x{current_val:X})"
-                )
-                return False
-
-            new_val = current_val | 0x1
-            hex_str = f"0x{new_val:X}"
-            comment_str = f" {comment.strip()}" if comment.strip() else ""
-            replacement = f"{indent}SmartTickets: {hex_str}{comment_str}"
-            new_content = pattern.sub(replacement, content, count=1)
-        else:
-            # Key absent — append it
-            logger.info(f"SmartTickets key not found in {config_path}, appending 'SmartTickets: 0x1'")
-            new_content = content.rstrip() + "\n\nSmartTickets: 0x1\n"
-
-        if not _atomic_write(config_path, new_content):
-            return False
-
-        logger.info(f"Ensured SmartTickets has SteamDRM bit (0x1) set in {config_path}")
-        return True
-
-    except OSError as e:
-        logger.error(f"Failed to ensure SmartTickets in {config_path}: {e}", exc_info=True)
+        comment_str = f" {comment.strip()}" if comment.strip() else ""
+        replacement = f"{indent}SmartTickets: {val_str}{comment_str}"
+        new_content = pattern.sub(replacement, content, count=1)
+        return _atomic_write(config_path, new_content)
+    except Exception as e:
+        logger.error(f"Failed to update SmartTickets in {config_path}: {e}")
         return False
+
+
+def is_smart_tickets_enabled(config_path: Optional[Path] = None) -> bool:
+    """Check if 'SmartTickets: 0x1' is enabled in SLSsteam config.yaml."""
+    if config_path is None:
+        config_path = get_user_config_path()
+
+    if not config_path.exists():
+        return False
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        match = re.search(r"^([ \t]*)SmartTickets[ \t]*:[ \t]*([^\r\n#]+)", content, re.MULTILINE)
+        if match:
+            raw = match.group(2).strip().lower()
+            return raw in ("0x1", "1", "yes", "true")
+    except Exception:
+        pass
+    return False
 
 
 def ensure_slssteam_prerequisites(config_path: Optional[Path] = None) -> bool:
