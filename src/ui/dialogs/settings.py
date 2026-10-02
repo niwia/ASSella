@@ -42,6 +42,7 @@ class SettingsDialog(QDialog):
         self.sls_version_check_signal.connect(self._handle_sls_version_check_done)
         self._initial_tab = initial_tab
         self.setWindowTitle("Settings")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setMinimumWidth(525)
         self.setMinimumHeight(650)
         self.resize(525, 650)
@@ -97,7 +98,8 @@ class SettingsDialog(QDialog):
         self.vapor_download_action_combo = None
         self.vapor_start_immediate_checkbox = None
         self.vapor_start_mode_combo = None
-        self.current_font = QFont()
+        from utils.helpers import create_font_from_settings
+        self.current_font = create_font_from_settings(self.settings)
         self.morrenus_stats_widget = None
         self.morrenus_tab_initialized = False
 
@@ -134,8 +136,13 @@ class SettingsDialog(QDialog):
         self._original_titlebar_position = self.settings.value("titlebar_position", "bottom", type=str)
         self._original_accent_color = self.settings.value("accent_color", "#C06C84", type=str)
         self._original_background_color = self.settings.value("background_color", "#000000", type=str)
-        self._original_font = self.settings.value("font", "TrixieCyrG-Plain", type=str)
+        orig_f = self.settings.value("font", "Open Sans", type=str)
+        if orig_f.lower() in ("trixiecyrg-plain", "trixiecyrg-plain regular", "trixie"):
+            orig_f = "Open Sans"
+        self._original_font = orig_f
         self._original_font_size = self.settings.value("font-size", 10, type=int)
+        self._original_font_size_queue = self.settings.value("font-size-queue", 10, type=int)
+        self._original_font_size_headers = self.settings.value("font-size-headers", 11, type=int)
         self._original_font_style = self.settings.value("font-style", "Normal", type=str)
         self._original_material_preset = self.settings.value("material_preset", "ocean", type=str)
         self._original_update_interval = self.settings.value("update_check_interval_minutes", 45, type=int)
@@ -160,7 +167,13 @@ class SettingsDialog(QDialog):
         from utils.color_utils import get_dark_container_color
         sel_bg_hex = get_dark_container_color(ac)
 
+        bg_col = self.settings.value("background_color", "#141416")
         self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {bg_col};
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+            }}
             QComboBox {{
                 background-color: rgba(255, 255, 255, 0.08) !important;
                 border: 1px solid rgba(255, 255, 255, 0.22) !important;
@@ -255,8 +268,21 @@ class SettingsDialog(QDialog):
         """)
 
         self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
+
+        from ui.dialog_titlebar import DialogTitleBar
+        self.title_bar = DialogTitleBar(self, title="Settings", can_minimize=False, can_maximize=False, use_power_close=True)
+        self.main_layout.addWidget(self.title_bar)
+
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(12, 8, 12, 12)
+        self.content_layout.setSpacing(8)
+        self.main_layout.addWidget(self.content_widget, 1)
+
         self._create_tab_widget()
-        self.main_layout.addWidget(self.tab_widget)
+        self.content_layout.addWidget(self.tab_widget)
         self._setup_tabs()
         self._create_dialog_buttons()
 
@@ -383,7 +409,10 @@ class SettingsDialog(QDialog):
     def _create_dialog_buttons(self) -> None:
         """Create standard Ok/Cancel buttons."""
         buttons = create_standard_buttons(self.accept, self.reject)
-        self.main_layout.addWidget(buttons)
+        if hasattr(self, "content_layout") and self.content_layout:
+            self.content_layout.addWidget(buttons)
+        elif self.main_layout:
+            self.main_layout.addWidget(buttons)
 
     # ── Signal Handlers & Delegation Slots ────────────────────────────────
     @pyqtSlot(object)
@@ -716,6 +745,13 @@ class SettingsDialog(QDialog):
         # EOSProxy by default toggle
         if hasattr(self, "enable_eosproxy_default_checkbox") and self.enable_eosproxy_default_checkbox is not None:
             self.settings.setValue("enable_eosproxy_default", self.enable_eosproxy_default_checkbox.isChecked())
+
+        # Download Animation setting
+        if hasattr(self, "download_animation_combo") and self.download_animation_combo is not None:
+            anim_val = self.download_animation_combo.currentData() or "standard"
+            self.settings.setValue("download_animation", anim_val)
+            if self.main_window and hasattr(self.main_window, "update_progress_bar_style"):
+                self.main_window.update_progress_bar_style()
 
         # Remote Web UI toggle
         old_web_ui = self.settings.value("enable_remote_web_ui", False, type=bool)

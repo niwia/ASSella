@@ -5,6 +5,7 @@ Handles application theming, palette application, and font loading.
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
 
@@ -52,7 +53,13 @@ def disabled_palette_colors(
     }
 
 
-def apply_palette(app: QApplication, accent: str, background: str, font_name: str = "") -> None:
+def apply_palette(
+    app: QApplication,
+    accent: str,
+    background: str,
+    font_name: str = "",
+    font: Optional[QFont] = None,
+) -> None:
     """Apply the Fusion style and custom color palette to the application."""
     app.setStyle("Fusion")
     dark_palette = QPalette()
@@ -74,7 +81,7 @@ def apply_palette(app: QApplication, accent: str, background: str, font_name: st
         dark_palette.setColor(QPalette.ColorGroup.Disabled, role, color)
 
     app.setPalette(dark_palette)
-    _apply_stylesheet(app, background_color, accent_color, disabled_bg, disabled_text, font_name)
+    _apply_stylesheet(app, background_color, accent_color, disabled_bg, disabled_text, font_name, font)
 
 
 def _apply_stylesheet(
@@ -84,6 +91,7 @@ def _apply_stylesheet(
     disabled_bg: QColor,
     disabled_text: QColor,
     font_name: str = "",
+    font: Optional[QFont] = None,
 ) -> None:
     """Generate and apply the CSS stylesheet."""
     def mix_colors(c1: QColor, c2: QColor, weight: float) -> QColor:
@@ -123,30 +131,77 @@ def _apply_stylesheet(
     outline_color = mix_colors(bg_color.lighter(140) if is_dark else bg_color.darker(130), accent_color, 0.2)
     outline = outline_color.name()
 
-    font_family_css = f"font-family: '{font_name}';" if font_name else ""
+    from utils.settings import get_settings
+    settings = get_settings()
+    font_size_queue = settings.value("font-size-queue", 10, type=int)
+    font_size_headers = settings.value("font-size-headers", 11, type=int)
 
-    style_sheet = f"""
-        * {{
-            {font_family_css}
-        }}
+    font_css_rules = []
+    if font_name:
+        font_css_rules.append(f"font-family: '{font_name}', 'Open Sans', 'Google Sans', sans-serif;")
+    if font and font.pointSize() > 0:
+        font_css_rules.append(f"font-size: {font.pointSize()}pt;")
+    if font and font.bold():
+        font_css_rules.append("font-weight: bold;")
+    if font and font.italic():
+        font_css_rules.append("font-style: italic;")
 
-        QLineEdit {{
-            background-color: {container_bg};
+    font_css = "\n            ".join(font_css_rules)
+
+    preset = settings.value("material_preset", "ocean", type=str) if settings else "ocean"
+    from utils.paths import Paths
+    unlit_svg = str(Paths.resource("halloween/pumpkin_unlit.svg"))
+    lit_svg = str(Paths.resource("halloween/pumpkin_lit.svg"))
+    is_halloween = (preset == "halloween" or accent_color.name().lower() in ("#ffb77d", "#ff7518"))
+
+    custom_unlit = settings.value("theme_checkbox_unlit", "", type=str) if settings else ""
+    custom_lit = settings.value("theme_checkbox_lit", "", type=str) if settings else ""
+
+    unlit_icon_path = ""
+    lit_icon_path = ""
+    use_themed_checkbox = False
+
+    if custom_unlit and custom_lit and os.path.exists(custom_unlit) and os.path.exists(custom_lit):
+        unlit_icon_path = custom_unlit
+        lit_icon_path = custom_lit
+        use_themed_checkbox = True
+    elif is_halloween and os.path.exists(unlit_svg) and os.path.exists(lit_svg):
+        unlit_icon_path = unlit_svg
+        lit_icon_path = lit_svg
+        use_themed_checkbox = True
+
+    if use_themed_checkbox:
+        checkbox_css = f"""
+        QCheckBox {{
+            background-color: transparent;
             color: {accent_color.name()};
-            border: 1.5px solid {outline};
-            border-radius: 8px;
-            padding: 5px 10px;
+            padding: 4px;
+            spacing: 8px;
+            font-weight: bold;
         }}
 
-        QLineEdit:hover {{
-            border: 1.5px solid rgba({accent_r}, {accent_g}, {accent_b}, 150);
+        QCheckBox::indicator, QTableWidget::indicator, QTableView::indicator, QTreeView::indicator, QListView::indicator, QListWidget::indicator {{
+            width: 18px;
+            height: 18px;
+            background: transparent;
+            border: none;
+            image: url("{unlit_icon_path}");
         }}
 
-        QLineEdit:focus {{
-            border: 1.5px solid {accent_color.name()};
-            background-color: {surface};
+        QCheckBox::indicator:checked, QTableWidget::indicator:checked, QTableView::indicator:checked, QTreeView::indicator:checked, QListView::indicator:checked, QListWidget::indicator:checked {{
+            background: transparent;
+            border: none;
+            image: url("{lit_icon_path}");
         }}
 
+        QCheckBox::indicator:hover, QTableWidget::indicator:hover, QTableView::indicator:hover, QTreeView::indicator:hover, QListView::indicator:hover, QListWidget::indicator:hover {{
+            border: none;
+            background: transparent;
+        }}
+        """
+        list_indicator_css = ""
+    else:
+        checkbox_css = f"""
         QCheckBox {{
             background-color: transparent;
             color: {accent_color.name()};
@@ -172,46 +227,8 @@ def _apply_stylesheet(
             border: 1.5px solid {accent_light};
             background: rgba({accent_r}, {accent_g}, {accent_b}, 20);
         }}
-
-        QDialog {{
-            background-color: {surface};
-            color: {accent_color.name()};
-        }}
-
-        QListWidget {{
-            background-color: {surface_variant};
-            color: {accent_color.name()};
-            border-radius: 12px;
-            outline: 0;
-            border: none;
-            padding: 4px;
-        }}
-
-        QListWidget::item {{
-            background-color: transparent;
-            color: {accent_color.name()};
-            border-radius: 8px;
-            padding: 8px 12px;
-            margin: 2px 0px;
-        }}
-
-        QListWidget::item:hover {{
-            background-color: {hover_bg};
-            color: {accent_light};
-        }}
-
-        QListWidget::item:selected {{
-            background-color: {selected_bg};
-            color: {accent_light};
-            font-weight: bold;
-        }}
-
-        QListWidget::item:checked {{
-            background-color: {hover_bg};
-            color: {accent_color.name()};
-            font-weight: bold;
-        }}
-
+        """
+        list_indicator_css = f"""
         QListWidget::indicator {{
             width: 14px;
             height: 14px;
@@ -233,6 +250,78 @@ def _apply_stylesheet(
             border: 1.5px solid {accent_light};
             background-color: rgba({accent_r}, {accent_g}, {accent_b}, 20);
         }}
+        """
+
+    style_sheet = f"""
+        * {{
+            {font_css}
+        }}
+
+        QGroupBox, QGroupBox::title, .header_label {{
+            font-size: {font_size_headers}pt;
+        }}
+
+        QLineEdit {{
+            background-color: {container_bg};
+            color: {accent_color.name()};
+            border: 1.5px solid {outline};
+            border-radius: 8px;
+            padding: 5px 10px;
+        }}
+
+        QLineEdit:hover {{
+            border: 1.5px solid rgba({accent_r}, {accent_g}, {accent_b}, 150);
+        }}
+
+        QLineEdit:focus {{
+            border: 1.5px solid {accent_color.name()};
+            background-color: {surface};
+        }}
+
+        {checkbox_css}
+
+        QDialog {{
+            background-color: {surface};
+            color: {accent_color.name()};
+        }}
+
+        QListWidget, QTreeWidget, QTableView {{
+            background-color: {surface_variant};
+            color: {accent_color.name()};
+            border-radius: 12px;
+            outline: 0;
+            border: none;
+            padding: 4px;
+            font-size: {font_size_queue}pt;
+        }}
+
+        QListWidget::item, QTreeWidget::item {{
+            background-color: transparent;
+            color: {accent_color.name()};
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin: 2px 0px;
+            font-size: {font_size_queue}pt;
+        }}
+
+        QListWidget::item:hover, QTreeWidget::item:hover {{
+            background-color: {hover_bg};
+            color: {accent_light};
+        }}
+
+        QListWidget::item:selected, QTreeWidget::item:selected {{
+            background-color: {selected_bg};
+            color: {accent_light};
+            font-weight: bold;
+        }}
+
+        QListWidget::item:checked {{
+            background-color: {hover_bg};
+            color: {accent_color.name()};
+            font-weight: bold;
+        }}
+
+        {list_indicator_css}
 
         QPushButton {{
             background-color: {container_bg};
@@ -280,7 +369,6 @@ def _apply_stylesheet(
             padding-right: 12px;
             padding-bottom: 12px;
             font-weight: bold;
-            font-size: 10.5pt;
             color: {accent_color.name()};
         }}
 
@@ -321,6 +409,10 @@ def _apply_stylesheet(
         }}
     """
     app.setStyleSheet(style_sheet)
+    active_font = font or app.font()
+    for widget in app.topLevelWidgets():
+        widget.setFont(active_font)
+        widget.update()
 
 
 def _resolve_font_path(font_resource: Union[str, Path]) -> Path:
@@ -375,6 +467,37 @@ def _load_and_set_font(
     return True, font_name
 
 
+def register_application_fonts() -> None:
+    """Auto-register bundled & local fonts into QFontDatabase (once per process)."""
+    global _fonts_registered
+    if _fonts_registered:
+        return
+
+    from utils.helpers import get_base_path
+    base_fonts = get_base_path() / "fonts"
+    candidate_paths = [
+        Paths.resource("fonts"),
+        base_fonts / "Opensans" / "static",
+        base_fonts / "Opensans",
+        base_fonts / "Google_Sans" / "static",
+        base_fonts / "Google_Sans",
+        Paths.resource("sonic"),
+    ]
+
+    for p in candidate_paths:
+        if p.exists() and p.is_dir():
+            for ext in ("*.ttf", "*.otf"):
+                for font_file in p.glob(ext):
+                    # Never register old Accela typewriter font
+                    if "trixie" not in font_file.name.lower():
+                        QFontDatabase.addApplicationFont(str(font_file))
+        elif p.exists() and p.is_file():
+            if "trixie" not in p.name.lower():
+                QFontDatabase.addApplicationFont(str(p))
+
+    _fonts_registered = True
+
+
 def apply_font(
     app: QApplication,
     font: Optional[QFont],
@@ -383,64 +506,67 @@ def apply_font(
     """
     Applies the font to the application.
 
-    Prioritizes Open Sans (or Google Sans) from local ACCELA fonts directory
+    Prioritizes Open Sans (or Google Sans) from local ASSella fonts directory
     if user hasn't specified a custom font override.
     """
-    # ── Auto-register bundled & local fonts into QFontDatabase (once per process) ──
-    global _fonts_registered
-    if not _fonts_registered:
-        from utils.helpers import get_base_path
-        base_fonts = get_base_path() / "fonts"
-        candidate_font_files = [
-            Paths.resource("fonts/OpenSans-Regular.ttf"),
-            Paths.resource("fonts/OpenSans-Bold.ttf"),
-            Paths.resource("fonts/GoogleSans-Regular.ttf"),
-            base_fonts / "Opensans" / "static" / "OpenSans-Regular.ttf",
-            base_fonts / "Opensans" / "OpenSans-VariableFont_wdth,wght.ttf",
-            base_fonts / "Google_Sans" / "static" / "GoogleSans-Regular.ttf",
-            base_fonts / "Google_Sans" / "GoogleSans-VariableFont_GRAD,opsz,wght.ttf",
-        ]
-        for fp in candidate_font_files:
-            if fp and Path(fp).exists():
-                QFontDatabase.addApplicationFont(str(fp))
-        _fonts_registered = True
+    register_application_fonts()
 
     # Case 1: Specific font file provided
     if font_file:
         path = _resolve_font_path(font_file)
         return _load_and_set_font(app, path, font)
 
+    # Filter out legacy Trixie typewriter font if passed from old configs
+    if font and font.family() and font.family().lower() in ("trixiecyrg-plain", "trixiecyrg-plain regular", "trixie"):
+        target_size = font.pointSize() if font.pointSize() > 0 else 10
+        font = QFont("Open Sans", target_size)
+
     # Case 2: Custom user-selected font family provided
     if font and font.family():
         font_family = font.family()
-        if font_family in QFontDatabase.families():
-            logger.debug(f"Using requested user font: {font_family}")
-            app.setFont(font)
-            return True, font_family
+        logger.debug(f"Using requested user font: {font_family}")
+        app.setFont(font)
+        return True, font_family
 
-    # Case 3: ACCELA Preferred Default Font — Open Sans
+    target_size = font.pointSize() if (font and font.pointSize() > 0) else 10
+    is_bold = font.bold() if font else False
+    is_italic = font.italic() if font else False
+
+    # Case 3: ASSella Preferred Default Font — Open Sans
     families = QFontDatabase.families()
     if "Open Sans" in families:
-        logger.info("Using ACCELA preferred default font: Open Sans")
-        new_font = QFont("Open Sans", 10)
+        logger.info(f"Using ASSella preferred default font: Open Sans ({target_size}pt)")
+        new_font = QFont("Open Sans", target_size)
+        new_font.setBold(is_bold)
+        new_font.setItalic(is_italic)
         app.setFont(new_font)
         return True, "Open Sans"
 
     if "Google Sans" in families:
-        logger.info("Using ACCELA preferred default font: Google Sans")
-        new_font = QFont("Google Sans", 10)
+        logger.info(f"Using ASSella preferred default font: Google Sans ({target_size}pt)")
+        new_font = QFont("Google Sans", target_size)
+        new_font.setBold(is_bold)
+        new_font.setItalic(is_italic)
         app.setFont(new_font)
         return True, "Google Sans"
 
     if "Roboto" in families:
         logger.debug("Roboto font found in system database, using as fallback")
-        app.setFont(QFont("Roboto", 10))
+        new_font = QFont("Roboto", target_size)
+        new_font.setBold(is_bold)
+        new_font.setItalic(is_italic)
+        app.setFont(new_font)
         return True, "Roboto"
 
-    # Case 4: Fallback resource font file (TrixieCyrG-Plain)
-    default_font_file = "TrixieCyrG-Plain Regular.otf"
-    path = _resolve_font_path(default_font_file)
-    return _load_and_set_font(app, path, font)
+    # Case 4: Fallback to bundled Open Sans font file or system font
+    fallback_res = Paths.resource("fonts/OpenSans-Regular.ttf")
+    if fallback_res.exists():
+        return _load_and_set_font(app, fallback_res, font)
+
+    logger.debug("Falling back to system default application font")
+    system_font = font if font else QFont()
+    app.setFont(system_font)
+    return True, system_font.family() or "sans-serif"
 
 
 def update_appearance(
@@ -461,5 +587,11 @@ def update_appearance(
         font_file: Relative resource path to load custom font.
     """
     font_ok, font_info = apply_font(app, font, font_file)
-    apply_palette(app, accent, background, str(font_info) if font_ok else "")
+    apply_palette(app, accent, background, font_name=str(font_info) if font_ok else "", font=font)
+    try:
+        for w in app.allWidgets():
+            if w.__class__.__name__ == "DialogTitleBar" and hasattr(w, "update_style"):
+                w.update_style()
+    except Exception:
+        pass
     return font_ok, font_info

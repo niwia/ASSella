@@ -62,6 +62,41 @@ def create_assela_tab(dialog) -> QWidget:
     )
     assella_lay.addWidget(dialog.enable_eosproxy_default_checkbox)
 
+    # 4. Download Animation (Test/Halloween styles)
+    anim_row = QHBoxLayout()
+    anim_row.setContentsMargins(0, 2, 0, 2)
+    anim_lbl = QLabel("Download Animation:")
+    anim_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+    anim_lbl.setToolTip("Choose the animation style rendered on the download progress bar (Standard, Candy Corn, Jack-o'-Lantern, or Fluttering Bat).")
+    anim_row.addWidget(anim_lbl)
+    anim_row.addStretch()
+
+    dialog.download_animation_combo = QComboBox()
+    dialog.download_animation_combo.addItem("Standard", "standard")
+    dialog.download_animation_combo.addItem("Retro Ghost & Fog", "ghost")
+    dialog.download_animation_combo.addItem("Pac-Man & Dots", "pacman")
+    dialog.download_animation_combo.addItem("Flying Witch & Stardust", "witch")
+    dialog.download_animation_combo.addItem("Goku (Kamehameha)", "goku")
+    dialog.download_animation_combo.addItem("Sonic (Green Hill)", "sonic")
+    dialog.download_animation_combo.addItem("Super Mario (Coins)", "mario")
+    dialog.download_animation_combo.addItem("Shinobi Duel (Ninja Clash)", "shinobi")
+    dialog.download_animation_combo.addItem("Nyan Cat (Rainbow)", "nyancat")
+    dialog.download_animation_combo.addItem("Mega Man (Buster)", "megaman")
+    dialog.download_animation_combo.addItem("Pokémon (Pokéball)", "pokemon")
+    dialog.download_animation_combo.addItem("City Drive (Retro Car)", "car")
+    dialog.download_animation_combo.addItem("Jack-o'-Lantern", "lantern")
+    dialog.download_animation_combo.setFixedWidth(220)
+
+    saved_anim = dialog.settings.value("download_animation", "standard", type=str)
+    idx_anim = dialog.download_animation_combo.findData(saved_anim)
+    if idx_anim >= 0:
+        dialog.download_animation_combo.setCurrentIndex(idx_anim)
+    else:
+        dialog.download_animation_combo.setCurrentIndex(0)
+
+    anim_row.addWidget(dialog.download_animation_combo)
+    assella_lay.addLayout(anim_row)
+
     # 4. ISP Bypass & Hubcap Gateway Selector
     isp_group = QVBoxLayout()
     isp_group.setSpacing(8)

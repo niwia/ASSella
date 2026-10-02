@@ -56,20 +56,22 @@ NORMAL_BTN_STYLE = """
 
 def _get_detected_btn_style(dialog) -> str:
     """Generate theme-harmonized button style for detected plugins using color utils."""
-    accent = getattr(dialog, "accent_color", "#6c5ce7")
-    sem = get_semantic_colors(accent)
-    success_hex = sem.get("success", "#81c784")
-    c = QColor(success_hex)
+    accent = getattr(dialog, "accent_color", "#ff7518")
+    c = QColor(accent)
     r, g, b = c.red(), c.green(), c.blue()
     return f"""
         QPushButton {{
-            background-color: rgba({r}, {g}, {b}, 0.18);
-            color: {success_hex};
-            border: 1px solid rgba({r}, {g}, {b}, 0.45);
+            background-color: {accent};
+            color: #000000;
+            border: 1px solid {accent};
             border-radius: 6px;
             padding: 8px 16px;
             font-size: 9pt;
             font-weight: 600;
+        }}
+        QPushButton:hover {{
+            background-color: #FFFFFF;
+            color: #000000;
         }}
         QPushButton:disabled {{
             background-color: rgba({r}, {g}, {b}, 0.14);

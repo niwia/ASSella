@@ -155,6 +155,9 @@ def init_info_tab(dialog) -> None:
     dialog.status_tile.clicked.connect(lambda: on_status_btn_clicked(dialog))
     top_tiles_layout.addWidget(dialog.status_tile, 1)
 
+    dialog.folder_tile = MaterialTile("Open Folder", "Open directory", dialog, is_toggle=False)
+    dialog.folder_tile.update_state(False, dialog.accent_color, inactive_sub="Open directory")
+
     def _open_game_folder():
         p = dialog.game_data.get("install_path")
         if not p or not os.path.isdir(p):
@@ -223,41 +226,48 @@ def init_info_tab(dialog) -> None:
     lay.addWidget(top_tiles_widget)
     lay.addSpacing(8)
 
-    # ── AT0-M Mode Transition Buttons (Move to plugin AT0-M / Remove from plugin) ───
+    # ── AT0-M Mode Transition Buttons (Move to AT0-M / Move to ASSella) ───
     vapor_actions_widget = QWidget()
     vapor_actions_layout = QHBoxLayout(vapor_actions_widget)
     vapor_actions_layout.setContentsMargins(0, 0, 0, 0)
     vapor_actions_layout.setSpacing(10)
 
-    dialog.move_to_vapor_btn = QPushButton("Move to plugin AT0-M")
+    dialog.move_to_vapor_btn = QPushButton("Move to AT0-M")
     dialog.move_to_vapor_btn.setFixedHeight(36)
     dialog.move_to_vapor_btn.setCursor(Qt.CursorShape.PointingHandCursor if not is_vapor_mode else Qt.CursorShape.ArrowCursor)
 
-    dialog.remove_from_vapor_btn = QPushButton("Remove from plugin")
+    dialog.remove_from_vapor_btn = QPushButton("Move to ASSella")
     dialog.remove_from_vapor_btn.setFixedHeight(36)
     dialog.remove_from_vapor_btn.setCursor(Qt.CursorShape.PointingHandCursor if is_vapor_mode else Qt.CursorShape.ArrowCursor)
 
-    vapor_active_style = """
-        QPushButton {
-            background-color: rgba(186, 104, 200, 0.15);
-            border: 1px solid rgba(206, 147, 216, 0.45);
+    accent_hex = dialog.accent_color or "#C06C84"
+    try:
+        qc = QColor(accent_hex)
+        r, g, b, _ = qc.getRgb()
+    except Exception:
+        r, g, b = 192, 108, 132
+
+    accent_trans_active_style = f"""
+        QPushButton {{
+            background-color: rgba({r}, {g}, {b}, 0.16);
+            border: 1px solid rgba({r}, {g}, {b}, 0.45);
             border-radius: 8px;
-            color: #E1BEE7;
+            color: {accent_hex};
             font-weight: bold;
             font-size: 9.5pt;
             padding: 0 16px;
-        }
-        QPushButton:hover {
-            background-color: rgba(186, 104, 200, 0.28);
-            border-color: rgba(225, 190, 231, 0.7);
+        }}
+        QPushButton:hover {{
+            background-color: rgba({r}, {g}, {b}, 0.28);
+            border-color: {accent_hex};
             color: #FFFFFF;
-        }
-        QPushButton:pressed {
-            background-color: rgba(186, 104, 200, 0.35);
-        }
+        }}
+        QPushButton:pressed {{
+            background-color: rgba({r}, {g}, {b}, 0.38);
+        }}
     """
 
-    vapor_disabled_style = """
+    trans_disabled_style = """
         QPushButton, QPushButton:disabled {
             background-color: rgba(255, 255, 255, 0.025);
             border: 1px solid rgba(255, 255, 255, 0.06);
@@ -269,42 +279,22 @@ def init_info_tab(dialog) -> None:
         }
     """
 
-    accela_active_style = f"""
-        QPushButton {{
-            background-color: rgba(255, 255, 255, 0.06);
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            border-radius: 8px;
-            color: #FFFFFF;
-            font-weight: bold;
-            font-size: 9.5pt;
-            padding: 0 16px;
-        }}
-        QPushButton:hover {{
-            background-color: rgba(255, 255, 255, 0.12);
-            border-color: {dialog.accent_color};
-            color: #FFFFFF;
-        }}
-        QPushButton:pressed {{
-            background-color: rgba(255, 255, 255, 0.18);
-        }}
-    """
-
     if is_vapor_mode:
         dialog.move_to_vapor_btn.setEnabled(False)
-        dialog.move_to_vapor_btn.setStyleSheet(vapor_disabled_style)
+        dialog.move_to_vapor_btn.setStyleSheet(trans_disabled_style)
         dialog.move_to_vapor_btn.setToolTip("Game is already in AT0-M (Steam Native) mode.")
 
         dialog.remove_from_vapor_btn.setEnabled(True)
-        dialog.remove_from_vapor_btn.setStyleSheet(accela_active_style)
-        dialog.remove_from_vapor_btn.setToolTip("Convert game back to ACCELA managed.")
+        dialog.remove_from_vapor_btn.setStyleSheet(accent_trans_active_style)
+        dialog.remove_from_vapor_btn.setToolTip("Convert game back to ASSella managed.")
     else:
         dialog.move_to_vapor_btn.setEnabled(True)
-        dialog.move_to_vapor_btn.setStyleSheet(vapor_active_style)
+        dialog.move_to_vapor_btn.setStyleSheet(accent_trans_active_style)
         dialog.move_to_vapor_btn.setToolTip("Convert game to plugin AT0-M (Steam Native) mode.")
 
         dialog.remove_from_vapor_btn.setEnabled(False)
-        dialog.remove_from_vapor_btn.setStyleSheet(vapor_disabled_style)
-        dialog.remove_from_vapor_btn.setToolTip("Game is currently ACCELA managed, not in plugin AT0-M.")
+        dialog.remove_from_vapor_btn.setStyleSheet(trans_disabled_style)
+        dialog.remove_from_vapor_btn.setToolTip("Game is currently ASSella managed, not in plugin AT0-M.")
 
     dialog.move_to_vapor_btn.clicked.connect(lambda: on_move_to_vapor_clicked(dialog))
     dialog.remove_from_vapor_btn.clicked.connect(lambda: on_remove_from_vapor_clicked(dialog))
@@ -831,16 +821,13 @@ def update_validate_button(dialog) -> None:
 
     dialog.validate_btn.setEnabled(True)
 
-    accent_hex = dialog.accent_color
+    accent_hex = dialog.accent_color or "#C06C84"
     try:
-        accent_qcolor = QColor(accent_hex)
-        h, s, v, a = accent_qcolor.getHsv()
-        s_s = max(s, 100)
-        v_s = max(v, 120)
-        success_qcolor = QColor.fromHsv(120, s_s, v_s, a)
-        success_hex = success_qcolor.name()
+        from utils.color_utils import get_semantic_colors
+        sem = get_semantic_colors(accent_hex)
+        success_hex = sem.get("success", "#a8dab5")
     except Exception:
-        success_hex = "#46b464"
+        success_hex = "#a8dab5"
 
     main_win = dialog.parent_window.main_window if hasattr(dialog.parent_window, "main_window") else None
     active_job = main_win.task_manager.game_data if (main_win and hasattr(main_win, "task_manager") and main_win.task_manager) else None
@@ -2591,8 +2578,8 @@ def on_remove_from_vapor_clicked(dialog) -> None:
 
     reply = QMessageBox.question(
         dialog,
-        "Remove from plugin",
-        f"Move '{game_name}' from AT0-M to ACCELA Managed?\n\n"
+        "Move to ASSella",
+        f"Move '{game_name}' from AT0-M to ASSella Managed?\n\n"
         "• Unlinks depots and decryption keys from SLSsteam config\n"
         "• Restores .ACCELA installation marker\n"
         "• Prompts for depot selection and verifies game files\n\n"

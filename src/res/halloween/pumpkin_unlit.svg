@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Stem -->
+  <path d="M12 2 C12.5 4, 13.5 5, 14 5.5 C13 5.8, 12 5.5, 11 5.5 Z" fill="#3b6948"/>
+  <!-- Pumpkin Outer Body -->
+  <ellipse cx="12" cy="14" rx="10" ry="8" fill="#a84d16"/>
+  <!-- Inner Ribs for 3D pumpkin shape -->
+  <ellipse cx="12" cy="14" rx="7" ry="8" fill="#b8581c"/>
+  <ellipse cx="12" cy="14" rx="3.8" ry="8" fill="#c76222"/>
+  <!-- Unlit Carved Eyes (Dark Hollow) -->
+  <polygon points="7.5,11.5 9.5,11.5 8.5,13.5" fill="#180b05"/>
+  <polygon points="14.5,11.5 16.5,11.5 15.5,13.5" fill="#180b05"/>
+  <!-- Nose -->
+  <polygon points="12,13.8 11.2,15 12.8,15" fill="#180b05"/>
+  <!-- Unlit Carved Mouth -->
+  <polygon points="6.8,16 8,17.2 9.5,16 11,17.2 12,16 13,17.2 14.5,16 16,17.2 17.2,16 16.5,18 12,19.2 7.5,18" fill="#180b05"/>
+</svg>

@@ -217,6 +217,7 @@ class UIStateManager:
         accent_hover_alpha = hex_to_rgba(accent, 60)
         
         if beta:
+            q_sz = self.settings.value("font-size-queue", 10, type=int)
             # Styled list widget for 2.0
             list_style = f"""
                 QListWidget {{
@@ -225,12 +226,14 @@ class UIStateManager:
                     border-radius: 6px;
                     color: #FFFFFF;
                     padding: 4px;
+                    font-size: {q_sz}pt;
                 }}
                 QListWidget::item {{
                     background-color: rgba(255, 255, 255, 8);
                     border-radius: 4px;
                     padding: 5px 8px;
                     margin-bottom: 3px;
+                    font-size: {q_sz}pt;
                 }}
                 QListWidget::item:hover {{
                     background-color: rgba(255, 255, 255, 18);
@@ -310,7 +313,9 @@ class UIStateManager:
         self.main_window.accent_color = self.settings.value("accent_color", "#C06C84")
 
         # Load font family
-        font_family = self.settings.value("font", "TrixieCyrG-Plain")
+        font_family = self.settings.value("font", "Open Sans")
+        if font_family.lower() in ("trixiecyrg-plain", "trixiecyrg-plain regular", "trixie"):
+            font_family = "Open Sans"
 
         # Load size (default 10). If Sonic mode and user left default 10, bump to 12
         font_size = self.settings.value("font-size", 10, type=int)
@@ -331,6 +336,7 @@ class UIStateManager:
         # "Normal" is the default, so no changes needed
 
         self.main_window.font = font
+        self.main_window.setFont(font)
 
         # Update application appearance
         from ui.theme import update_appearance
@@ -358,6 +364,13 @@ class UIStateManager:
             sonic_font = QFont(font_info)
             sonic_font.setPointSize(font_size)
             self.main_window.font = sonic_font
+            self.main_window.setFont(sonic_font)
+
+        # Update status pager font/style if present
+        if hasattr(self.main_window, "status_pager") and self.main_window.status_pager:
+            self.main_window.status_pager.update_style()
+
+        self.main_window.update()
 
         self.queue_move_up_button.setText("▲ Move Up")
         self.queue_move_down_button.setText("▼ Move Down")
@@ -374,11 +387,14 @@ class UIStateManager:
 
     def _apply_background_color(self):
         """Apply background color to main content"""
-        main_frame = self.main_window.central_widget.findChild(QFrame)
-        if main_frame:
-            main_frame.setStyleSheet(
+        preset = self.settings.value("material_preset", "ocean", type=str)
+        if preset == "halloween":
+            self.main_window.central_widget.setStyleSheet("background: transparent;")
+        else:
+            self.main_window.central_widget.setStyleSheet(
                 f"background-color: {self.main_window.background_color};"
             )
+        self.main_window.update()
 
     def _apply_accent_color(self):
         """Apply accent color to UI elements"""
@@ -395,10 +411,20 @@ class UIStateManager:
             )
 
         # Queue label
+        hdr_sz = self.settings.value("font-size-headers", 11, type=int)
         if hasattr(self, "queue_widget") and self.queue_widget:
             queue_label = self.queue_widget.findChild(QLabel)
             if queue_label:
-                queue_label.setStyleSheet(accent_style)
+                queue_label.setStyleSheet(
+                    f"color: {self.main_window.accent_color}; font-size: {hdr_sz}pt; font-weight: bold; border: none; background: transparent;"
+                )
+
+        # Speed label
+        if hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
+            base_sz = self.settings.value("font-size", 10, type=int)
+            self.main_window.speed_label.setStyleSheet(
+                f"color: {self.main_window.accent_color}; font-size: {base_sz}pt; font-weight: 500; border: none; background: transparent;"
+            )
 
         # Progress bar
         self.main_window.update_progress_bar_style()

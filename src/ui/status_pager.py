@@ -206,35 +206,38 @@ class StatusPagerWidget(QFrame):
         settings = get_settings()
         accent = settings.value("accent_color", "#C06C84")
         bg_color = settings.value("background_color", "#000000")
+        ui_mode = settings.value("ui_mode", "default")
 
-        # Register bundled typewriter/calculator fonts if not already registered
         from PyQt6.QtGui import QFontDatabase
         from utils.helpers import get_base_path
-        
-        trixie_path = get_base_path() / "src" / "res" / "TrixieCyrG-Plain Regular.otf"
-        if trixie_path.exists():
-            QFontDatabase.addApplicationFont(str(trixie_path))
-            
-        sonic_path = get_base_path() / "src" / "res" / "sonic" / "sonic-1-hud-font.otf"
-        if sonic_path.exists():
-            QFontDatabase.addApplicationFont(str(sonic_path))
 
-        # Prioritize typewriter (TrixieCyrG-Plain) and calculator (Sonic 1 HUD Font)
-        font_family = "TrixieCyrG-Plain, Sonic 1 HUD Font, Courier New, Consolas, monospace"
+        if ui_mode == "sonic":
+            sonic_path = get_base_path() / "src" / "res" / "sonic" / "sonic-1-hud-font.otf"
+            if sonic_path.exists():
+                QFontDatabase.addApplicationFont(str(sonic_path))
+            font_family = "'Sonic 1 HUD Font', 'Courier New', monospace"
+        else:
+            current_font = settings.value("font", "Open Sans")
+            if current_font.lower() in ("trixiecyrg-plain", "trixiecyrg-plain regular", "trixie"):
+                current_font = "Open Sans"
+            font_family = f"'{current_font}', 'Open Sans', 'Google Sans', sans-serif"
 
-        # Retro LCD styling: dark recessed container, monospace text
+        user_font_size = settings.value("font-size", 10, type=int)
+        pager_size = max(10, min(14, int(user_font_size * 1.1)))
+
+        # Retro LCD styling: dark recessed container, crisp centered status text
         self.setStyleSheet(
             f"""
             StatusPagerWidget {{
-                background-color: rgba(10, 10, 10, 220);
-                border: 1px solid rgba(255, 255, 255, 12);
+                background-color: rgba(18, 18, 22, 230);
+                border: 1px solid rgba(255, 255, 255, 14);
                 border-radius: 6px;
                 margin: 4px 15px;
             }}
             QLabel {{
                 color: {accent};
                 font-family: {font_family};
-                font-size: 12px;
+                font-size: {pager_size}px;
                 font-weight: bold;
                 border: none;
                 background: transparent;

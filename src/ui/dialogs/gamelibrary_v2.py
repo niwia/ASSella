@@ -159,6 +159,7 @@ class GameDetailsDialogV2(QDialog):
         self.background_color = getattr(parent, "background_color", "#111318")
 
         self.setWindowTitle(f"{game_data.get('game_name', 'Game')} — Details")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setMinimumSize(560, 440)
         self.resize(620, 500)
         self.setModal(True)
@@ -222,6 +223,7 @@ class GameDetailsDialogV2(QDialog):
             QDialog {{
                 background-color: {bg};
                 color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
             }}
             QFrame {{
                 border: none;
@@ -330,6 +332,11 @@ class GameDetailsDialogV2(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+
+        from ui.dialog_titlebar import DialogTitleBar
+        title_text = f"{self.game_data.get('game_name', 'Game')} — Details"
+        self.title_bar = DialogTitleBar(self, title=title_text, can_minimize=False, can_maximize=False, use_power_close=True)
+        root.addWidget(self.title_bar)
 
         # Hero Banner — v2 or legacy
         if self.USE_V2_HERO:

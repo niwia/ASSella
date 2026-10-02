@@ -122,6 +122,7 @@ class FetchManifestDialog(QDialog):
         super().__init__(parent)
         self.parent_window = parent
         self.setWindowTitle("Fetch Manifest from Hubcap API")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setMinimumWidth(600)
         self.setMinimumHeight(500)
 
@@ -213,7 +214,18 @@ class FetchManifestDialog(QDialog):
         return False
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
+        window_layout = QVBoxLayout(self)
+        window_layout.setContentsMargins(0, 0, 0, 0)
+        window_layout.setSpacing(0)
+
+        from ui.dialog_titlebar import DialogTitleBar
+        self.title_bar = DialogTitleBar(self, title="Fetch Manifest from Hubcap API", can_minimize=True, can_maximize=True)
+        window_layout.addWidget(self.title_bar)
+
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
+        layout.setContentsMargins(12, 10, 12, 12)
+        window_layout.addWidget(content_widget, 1)
 
         applist_2_0_enabled = True
 
@@ -223,6 +235,7 @@ class FetchManifestDialog(QDialog):
                 QDialog {{
                     background-color: {self.background_color};
                     color: #FFFFFF;
+                    border: 1px solid rgba(255, 255, 255, 0.15);
                 }}
                 QLabel {{
                     color: rgba(255, 255, 255, 0.85);

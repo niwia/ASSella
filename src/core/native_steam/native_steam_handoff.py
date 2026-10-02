@@ -349,10 +349,8 @@ def perform_steam_handoff(
             logger.debug(f"[SteamHandoff] Error scheduling background retry: {e}")
 
         sent_pipe = send_sls_api(f"install|{appid}|{library_index}")
-        from core.steam_helpers import dispatch_steam_url
-        sent_url = dispatch_steam_url(f"steam://install/{appid}")
-        if not sent_pipe and not sent_url:
-            return False, "Failed to send install command to Steam."
+        if not sent_pipe:
+            logger.warning(f"[SteamHandoff] Named pipe send failed for {appid}; config is written, Steam will pick it up on start.")
 
         success_msg = (
             f"Successfully handed off {game_name} ({appid}) to Steam! "

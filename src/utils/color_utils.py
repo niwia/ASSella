@@ -89,20 +89,21 @@ def get_dark_container_color(accent_hex: str) -> str:
 def get_semantic_colors(accent_hex: str) -> dict:
     """
     Returns a dict of theme-harmonized semantic colors (success, error, warning, info)
-    derived from the user's accent color's saturation and lightness.
+    derived from the user's accent color's saturation and lightness, mapped to Google
+    Material You (M3 Tone 80 / pastel) palettes.
     """
     try:
         color = QColor(accent_hex)
         h, s, v, a = color.getHsv()
-        # Keep similar saturation and brightness profiles to keep them harmonized,
-        # but change the hue to standard semantic angles.
-        s_sem = max(100, min(s, 180)) if s > 0 else 0
-        v_sem = max(180, min(v, 230))
+        # Google Material You (M3 Tone 80) pastel semantic colors:
+        # Soft saturation (70-115) and high brightness (215-240)
+        s_sem = max(70, min(s, 115)) if s > 0 else 0
+        v_sem = max(215, min(v, 240))
         
-        success = QColor.fromHsv(120, s_sem, v_sem, a).name()  # Vibrant soft green
-        error = QColor.fromHsv(0, s_sem, v_sem, a).name()      # Vibrant soft red
-        warning = QColor.fromHsv(40, s_sem, v_sem, a).name()    # Vibrant soft orange/yellow
-        info = QColor.fromHsv(210, s_sem, v_sem, a).name()      # Vibrant soft blue
+        success = QColor.fromHsv(140, s_sem, v_sem, a).name()  # Soft pastel mint (M3 Tone 80)
+        error = QColor.fromHsv(0, s_sem, v_sem, a).name()      # Soft pastel coral/rose (M3 Tone 80)
+        warning = QColor.fromHsv(42, s_sem, v_sem, a).name()   # Soft pastel peach/amber (M3 Tone 80)
+        info = QColor.fromHsv(210, s_sem, v_sem, a).name()     # Soft pastel sky blue (M3 Tone 80)
         
         return {
             "success": success,
@@ -113,10 +114,10 @@ def get_semantic_colors(accent_hex: str) -> dict:
     except Exception as e:
         logger.error(f"Error generating semantic colors: {e}")
         return {
-            "success": "#81c784",
-            "error": "#e57373",
-            "warning": "#ffd54f",
-            "info": "#64b5f6"
+            "success": "#a8dab5",
+            "error": "#f28b82",
+            "warning": "#fdd663",
+            "info": "#8ab4f8"
         }
 
 

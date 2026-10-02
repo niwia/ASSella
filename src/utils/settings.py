@@ -47,8 +47,23 @@ def get_settings() -> QSettings:
             _settings_local.instance.setValue("use_lancache", True)
             _settings_local.instance.setValue("prompt_steam_restart", False)
             _settings_local.instance.setValue("sls_config_management", True)
+            _settings_local.instance.setValue("font", "Open Sans")
+            _settings_local.instance.setValue("font-size", 10)
+            _settings_local.instance.setValue("font-style", "Normal")
             _settings_local.instance.sync()
 
+        # Sanitize legacy font settings (e.g. old Accela Trixie Cyrillic typewriter font)
+        try:
+            saved_font = _settings_local.instance.value("font", "", type=str)
+            if saved_font.lower() in ("trixiecyrg-plain", "trixiecyrg-plain regular", "trixie"):
+                _settings_local.instance.setValue("font", "Open Sans")
+                _settings_local.instance.sync()
+            saved_font_file = _settings_local.instance.value("font-file", "", type=str)
+            if "trixie" in saved_font_file.lower():
+                _settings_local.instance.setValue("font-file", "")
+                _settings_local.instance.sync()
+        except Exception:
+            pass
 
         # Sanitize default_download_directory (e.g. if transient /tmp was left behind)
         try:
@@ -60,7 +75,40 @@ def get_settings() -> QSettings:
         except Exception:
             pass
 
+        # Halloween theme seasonal auto-activation (Oct 26 - Nov 5, one-time only)
+        try:
+            check_and_apply_halloween_theme(_settings_local.instance)
+        except Exception:
+            pass
+
     return _settings_local.instance
+
+
+def check_and_apply_halloween_theme(settings: QSettings) -> bool:
+    """Auto-activates Halloween theme once if launched between Oct 26 and Nov 5.
+    
+    The switch 'halloween_auto_applied' is persistently flipped to True so it never activates
+    automatically again, even if the user changes or keeps the theme.
+    """
+    try:
+        from datetime import date
+        today = date.today()
+        # Active window: October 26 through November 5 (inclusive)
+        in_halloween_window = (today.month == 10 and today.day >= 26) or (today.month == 11 and today.day <= 5)
+        if in_halloween_window:
+            already_applied = settings.value("halloween_auto_applied", False, type=bool)
+            if not already_applied:
+                settings.setValue("halloween_auto_applied", True)
+                settings.setValue("material_preset", "halloween")
+                settings.setValue("accent_color", "#ffb77d")
+                settings.setValue("background_color", "#141211")
+                settings.setValue("user_accent_color", "#ffb77d")
+                settings.setValue("user_background_color", "#141211")
+                settings.sync()
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def is_twp_needed() -> bool:

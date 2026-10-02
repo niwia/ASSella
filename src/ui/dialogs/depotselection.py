@@ -287,6 +287,59 @@ class DepotCheckboxDelegate(QStyledItemDelegate):
     def __init__(self, dialog: "DepotSelectionDialog"):
         super().__init__(dialog)
         self.dialog = dialog
+        self._unlit_pm: Optional[QPixmap] = None
+        self._lit_pm: Optional[QPixmap] = None
+        self._loaded_theme: Optional[str] = None
+
+    def _get_themed_icons(self) -> Tuple[Optional[QPixmap], Optional[QPixmap]]:
+        settings = getattr(self.dialog, "settings", None) or get_settings()
+        preset = settings.value("material_preset", "ocean", type=str)
+        accent = getattr(self.dialog, "accent_color", "#C06C84")
+
+        theme_key = f"{preset}_{accent}"
+        if self._loaded_theme == theme_key and self._unlit_pm is not None:
+            return self._unlit_pm, self._lit_pm
+
+        self._loaded_theme = theme_key
+        self._unlit_pm = None
+        self._lit_pm = None
+
+        from utils.paths import Paths
+        unlit_svg = str(Paths.resource("halloween/pumpkin_unlit.svg"))
+        lit_svg = str(Paths.resource("halloween/pumpkin_lit.svg"))
+
+        custom_unlit = settings.value("theme_checkbox_unlit", "", type=str)
+        custom_lit = settings.value("theme_checkbox_lit", "", type=str)
+
+        path_unlit, path_lit = None, None
+        if custom_unlit and custom_lit and os.path.exists(custom_unlit) and os.path.exists(custom_lit):
+            path_unlit, path_lit = custom_unlit, custom_lit
+        elif preset == "halloween" or str(accent).lower() in ("#ffb77d", "#ff7518"):
+            if os.path.exists(unlit_svg) and os.path.exists(lit_svg):
+                path_unlit, path_lit = unlit_svg, lit_svg
+
+        if path_unlit and path_lit:
+            try:
+                from PyQt6.QtSvg import QSvgRenderer
+                for p, is_lit in [(path_unlit, False), (path_lit, True)]:
+                    if p.lower().endswith(".svg"):
+                        rend = QSvgRenderer(p)
+                        pm = QPixmap(36, 36)
+                        pm.fill(Qt.GlobalColor.transparent)
+                        p_painter = QPainter(pm)
+                        rend.render(p_painter)
+                        p_painter.end()
+                    else:
+                        pm = QPixmap(p)
+
+                    if is_lit:
+                        self._lit_pm = pm
+                    else:
+                        self._unlit_pm = pm
+            except Exception:
+                pass
+
+        return self._unlit_pm, self._lit_pm
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
         opt = QStyleOptionViewItem(option)
@@ -326,7 +379,32 @@ class DepotCheckboxDelegate(QStyledItemDelegate):
             style.drawItemText(painter, text_rect, opt.displayAlignment, opt.palette, True, opt.text)
             painter.restore()
         else:
-            super().paint(painter, option, index)
+            unlit_icon, lit_icon = self._get_themed_icons()
+            if unlit_icon and lit_icon and (opt.features & QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator):
+                style.drawPrimitive(QStyle.PrimitiveElement.PE_PanelItemViewItem, opt, painter, widget)
+                check_rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemCheckIndicator, opt, widget)
+                text_rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, opt, widget)
+
+                is_checked = (opt.checkState == Qt.CheckState.Checked)
+                pm = lit_icon if is_checked else unlit_icon
+                if pm and not pm.isNull():
+                    icon_size = 18
+                    ix = check_rect.x() + (check_rect.width() - icon_size) / 2.0
+                    iy = check_rect.y() + (check_rect.height() - icon_size) / 2.0
+                    painter.save()
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                    painter.drawPixmap(QRectF(ix, iy, icon_size, icon_size).toRect(), pm)
+                    painter.restore()
+
+                painter.save()
+                text_color = opt.palette.color(QPalette.ColorRole.Text) if not (opt.state & QStyle.StateFlag.State_Selected) else QColor("#FFFFFF")
+                painter.setPen(text_color)
+                painter.setFont(opt.font)
+                style.drawItemText(painter, text_rect, opt.displayAlignment, opt.palette, True, opt.text)
+                painter.restore()
+            else:
+                super().paint(painter, option, index)
 
 
 class DepotSelectionDialog(QDialog):
@@ -696,6 +774,7 @@ class DepotSelectionDialog(QDialog):
                 font-weight: bold;
                 text-transform: uppercase;
             }}
+            {"" if (self._settings and self._settings.value("material_preset", "ocean", type=str) == "halloween" or str(self.accent_color).lower() in ("#ffb77d", "#ff7518") or (self._settings and self._settings.value("theme_checkbox_unlit", "", type=str) and os.path.exists(self._settings.value("theme_checkbox_unlit", "", type=str)))) else f"""
             QTableWidget::indicator, QTableView::indicator {{
                 width: 14px;
                 height: 14px;
@@ -714,6 +793,7 @@ class DepotSelectionDialog(QDialog):
                 border: 1.5px solid rgba({accent_r}, {accent_g}, {accent_b}, 1.0);
                 background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.078);
             }}
+            """}
         """)
 
         header = self.table_widget.horizontalHeader()

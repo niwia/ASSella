@@ -141,13 +141,14 @@ class GameLibraryDialog(
     def _setup_window(self) -> None:
         """Configure main window properties and styles."""
         self.setWindowTitle("Game Library")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setMinimumWidth(600)
         self.setMinimumHeight(400)
         self.resize(750, 500)
 
         self.setStyleSheet(
             f"""
-            QDialog {{ background-color: {self.background_color}; color: #FFFFFF; }}
+            QDialog {{ background-color: {self.background_color}; color: #FFFFFF; border: 1px solid rgba(255, 255, 255, 0.15); }}
             
             QListWidget {{ 
                 background-color: {self.background_color}; 
@@ -213,8 +214,18 @@ class GameLibraryDialog(
 
     def _setup_ui(self) -> None:
         """Create and arrange UI elements."""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        window_layout = QVBoxLayout(self)
+        window_layout.setContentsMargins(0, 0, 0, 0)
+        window_layout.setSpacing(0)
+
+        from ui.dialog_titlebar import DialogTitleBar
+        self.title_bar = DialogTitleBar(self, title="Game Library", can_minimize=True, can_maximize=True)
+        window_layout.addWidget(self.title_bar)
+
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
+        layout.setContentsMargins(16, 12, 16, 16)
+        window_layout.addWidget(content_widget, 1)
 
         applist_2_0_enabled = self.applist_2_0_enabled
 

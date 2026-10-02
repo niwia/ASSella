@@ -324,7 +324,7 @@ class ActiveGameCard(QFrame):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         rect = self.rect()
-        bg_color = QColor(25, 25, 25)
+        bg_color = QColor(18, 18, 22, 230)
 
         path = QPainterPath()
         path.addRoundedRect(float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 6.0, 6.0)
@@ -593,7 +593,7 @@ class SimplifiedTerminalWidget(QWidget):
 
         panel_style = """
             QFrame {
-                background-color: rgba(30, 30, 30, 100);
+                background-color: rgba(18, 18, 22, 230);
                 border: 1px solid rgba(255, 255, 255, 12);
                 border-radius: 6px;
             }
@@ -1001,7 +1001,8 @@ class SimplifiedTerminalWidget(QWidget):
         accent = self.main_window.accent_color or "#C06C84"
         accent_style = f"color: {accent};"
 
-        title_style = f"font-weight: bold; font-size: 8pt; {accent_style} border: none; background: transparent;"
+        hdr_sz = self.main_window.settings.value("font-size-headers", 11, type=int) if hasattr(self.main_window, "settings") and self.main_window.settings else 11
+        title_style = f"font-weight: bold; font-size: {hdr_sz}pt; {accent_style} border: none; background: transparent;"
         if hasattr(self, "updates_title") and self.updates_title:
             self.updates_title.setStyleSheet(title_style)
         if hasattr(self, "history_title") and self.history_title:
@@ -1838,6 +1839,8 @@ class MainWindow(QMainWindow):
     def _setup_ui(self) -> None:
         """Setup the main UI components."""
         self.central_widget = QWidget()
+        self.central_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.central_widget.setStyleSheet("background: transparent;")
         self.setCentralWidget(self.central_widget)
         self.layout = QVBoxLayout(self.central_widget)
         self.layout.setContentsMargins(0, 0, 0, 0)
@@ -2072,7 +2075,7 @@ class MainWindow(QMainWindow):
         
         self.dashboard_widget.setStyleSheet("""
             #dashboard_widget {
-                background-color: rgba(25, 25, 25, 150);
+                background-color: rgba(18, 18, 22, 235);
                 border: 1px solid rgba(255, 255, 255, 12);
                 border-radius: 8px;
                 margin: 4px 15px;
@@ -2247,7 +2250,8 @@ class MainWindow(QMainWindow):
         self.active_hubcap_layout.addStretch()
         self.progress_layout.addLayout(self.active_hubcap_layout)
 
-        self.progress_bar = QProgressBar()
+        from ui.animated_progress_bar import AnimatedProgressBar
+        self.progress_bar = AnimatedProgressBar(self)
         self.progress_bar.setVisible(False)
         self._update_progress_bar_style()
         self.progress_layout.addWidget(self.progress_bar)
@@ -2338,21 +2342,9 @@ class MainWindow(QMainWindow):
 
     def _update_progress_bar_style(self) -> None:
         """Update progress bar styling."""
-        self.progress_bar.setStyleSheet(
-            f"""
-            QProgressBar {{
-                max-height: 10px;
-                border: 1px solid {self.accent_color};
-                border-radius: 5px;
-                text-align: center;
-                color: #FFFFFF;
-            }}
-            QProgressBar::chunk {{
-                background-color: {self.accent_color};
-                border-radius: 5px;
-            }}
-        """
-        )
+        if hasattr(self, "progress_bar") and self.progress_bar:
+            self.progress_bar.setStyleSheet("background: transparent; border: none;")
+            self.progress_bar.update()
 
     def open_settings(self, initial_tab: Optional[str] = None) -> None:
         dialog = SettingsDialog(self, initial_tab=initial_tab)
@@ -3322,6 +3314,68 @@ class MainWindow(QMainWindow):
             logger.error(f"Error during shutdown: {e}")
 
         super().closeEvent(event)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        from PyQt6.QtGui import QPainter, QLinearGradient, QColor, QPixmap
+        from PyQt6.QtCore import Qt, QRect
+        from utils.paths import Paths
+
+        settings = self.settings
+        preset = settings.value("material_preset", "ocean", type=str) if settings else "ocean"
+        custom_bg = settings.value("theme_background_image", "", type=str) if settings else ""
+
+        painter = QPainter(self)
+        rect = self.rect()
+
+        bg_path_to_draw = None
+        if custom_bg and os.path.exists(custom_bg):
+            bg_path_to_draw = custom_bg
+        elif preset == "halloween":
+            bg_candidates = [
+                os.path.expanduser("~/Pictures/halloween-scary-zombie-horror-graveyard-background-vector.jpg"),
+                Paths.resource("halloween_bg.jpg"),
+            ]
+            for p in bg_candidates:
+                if p and os.path.exists(str(p)):
+                    bg_path_to_draw = str(p)
+                    break
+
+        if bg_path_to_draw:
+            if not hasattr(self, "_active_bg_path") or self._active_bg_path != bg_path_to_draw or not hasattr(self, "_custom_bg_pixmap") or self._custom_bg_pixmap is None:
+                self._active_bg_path = bg_path_to_draw
+                self._custom_bg_pixmap = QPixmap(bg_path_to_draw)
+
+            # Deep dark background base
+            base_col = QColor(self.background_color or "#0d0d0f")
+            painter.fillRect(rect, base_col)
+
+            if hasattr(self, "_custom_bg_pixmap") and self._custom_bg_pixmap and not self._custom_bg_pixmap.isNull():
+                scaled = self._custom_bg_pixmap.scaled(
+                    rect.size(),
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                x = (rect.width() - scaled.width()) // 2
+                y = (rect.height() - scaled.height()) // 2
+
+                # Atmospheric opacity
+                painter.setOpacity(0.50)
+                painter.drawPixmap(x, y, scaled)
+                painter.setOpacity(1.0)
+
+                # Vertical gradient overlay: strong top vignette, gradually decreasing towards bottom
+                gradient = QLinearGradient(0, 0, 0, rect.height())
+                gradient.setColorAt(0.0, QColor(base_col.red(), base_col.green(), base_col.blue(), 235))
+                gradient.setColorAt(0.18, QColor(base_col.red(), base_col.green(), base_col.blue(), 175))
+                gradient.setColorAt(0.40, QColor(base_col.red(), base_col.green(), base_col.blue(), 115))
+                gradient.setColorAt(0.65, QColor(base_col.red(), base_col.green(), base_col.blue(), 65))
+                gradient.setColorAt(0.85, QColor(base_col.red(), base_col.green(), base_col.blue(), 35))
+                gradient.setColorAt(1.0, QColor(base_col.red(), base_col.green(), base_col.blue(), 20))
+                painter.fillRect(rect, gradient)
+        else:
+            bg_col = QColor(self.background_color or "#000000")
+            painter.fillRect(rect, bg_col)
 
     def reposition_titlebar(self, position: str) -> None:
         """Dynamically reposition the titlebar without restart."""

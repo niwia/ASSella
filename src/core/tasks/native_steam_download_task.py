@@ -907,7 +907,6 @@ class NativeSteamDownloadTask(QObject):
             cmd = f"install|{appid}|{library_index}"
             logger.info(f"[NativeSteamDL] Triggering install attempt {attempt}/{max_attempts}: {cmd}")
             self._send_sls(cmd)
-            dispatch_steam_url(f"steam://install/{appid}")
 
             # Poll for quick confirmation during the interval
             deadline = time.time() + interval_sec

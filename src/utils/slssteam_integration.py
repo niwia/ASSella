@@ -634,11 +634,6 @@ def _silent_background_retry_pipe(
                     f"sending install|{appid}|{library_index}..."
                 )
                 _slssteam_api_send(f"install|{appid}|{library_index}")
-                try:
-                    from core.steam_helpers import dispatch_steam_url
-                    dispatch_steam_url(f"steam://install/{appid}")
-                except Exception:
-                    pass
 
             logger.warning(
                 f"SLS retry worker for {appid}: exhausted {max_retries} retries without ACF confirmation"
@@ -728,13 +723,7 @@ def install_via_sls(appid: str, game_name: str = "", library_path: str = "", mai
 
     # 5. Send install to Steam (failure is non-fatal)
     t_pipe_0 = time.time()
-    sent_pipe = _slssteam_api_send(f"install|{appid}|{library_index}")
-    try:
-        from core.steam_helpers import dispatch_steam_url
-        sent_url = dispatch_steam_url(f"steam://install/{appid}")
-    except Exception:
-        sent_url = False
-    sent = sent_pipe or sent_url
+    sent = _slssteam_api_send(f"install|{appid}|{library_index}")
     pipe_latency = (time.time() - t_pipe_0) * 1000.0
 
     if not sent:
@@ -870,13 +859,7 @@ def patch_acf_via_sls(appid: str, library_path: str = "") -> bool:
         except Exception as e:
             logger.warning(f"Could not resolve library index for patch, defaulting to 0: {e}")
 
-    pipe_ok = _slssteam_api_send(f"install|{appid}|{library_index}")
-    try:
-        from core.steam_helpers import dispatch_steam_url
-        url_ok = dispatch_steam_url(f"steam://install/{appid}")
-    except Exception:
-        url_ok = False
-    return pipe_ok or url_ok
+    return _slssteam_api_send(f"install|{appid}|{library_index}")
 
 
 # ---------------------------------------------------------------------------

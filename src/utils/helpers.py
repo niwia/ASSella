@@ -1247,7 +1247,10 @@ def create_font_setting(
     if parent_widget and hasattr(parent_widget, "settings"):
         # Load current font settings
         current_font = QFont()
-        current_font.setFamily(parent_widget.settings.value("font", "TrixieCyrG-Plain"))
+        saved_fam = parent_widget.settings.value("font", "Open Sans")
+        if saved_fam.lower() in ("trixiecyrg-plain", "trixiecyrg-plain regular", "trixie"):
+            saved_fam = "Open Sans"
+        current_font.setFamily(saved_fam)
         current_font.setPointSize(
             parent_widget.settings.value("font-size", 10, type=int)
         )
@@ -1293,6 +1296,8 @@ def create_font_setting(
 def create_font_from_settings(settings) -> QFont:
     """Create a QFont object from application settings."""
     font_family = settings.value("font", "Open Sans")
+    if font_family.lower() in ("trixiecyrg-plain", "trixiecyrg-plain regular", "trixie"):
+        font_family = "Open Sans"
     font_size = settings.value("font-size", 10, type=int)
     font_style = settings.value("font-style", "Normal")
 
@@ -1441,15 +1446,21 @@ from utils.dlc_helpers import get_dlc_only_info, is_dlc_only_mode
 class FontSelectionDialog(QDialog):
     def __init__(self, initial_font: QFont, parent=None):
         super().__init__(parent)
+        try:
+            from ui.theme import register_application_fonts
+            register_application_fonts()
+        except Exception:
+            pass
+
         self.setWindowTitle("Select Font")
-        self.setMinimumWidth(380)
-        self.resize(380, 260)
+        self.setMinimumWidth(400)
+        self.resize(400, 290)
         
         self.setStyleSheet("""
             QDialog {
                 background-color: #121214;
             }
-            QLabel {
+            QLabel[form_label="true"] {
                 color: #FFFFFF;
                 font-size: 9.5pt;
             }
@@ -1478,10 +1489,17 @@ class FontSelectionDialog(QDialog):
         form_layout = QFormLayout()
         form_layout.setSpacing(10)
 
+        lbl_f = QLabel("Font:", self)
+        lbl_f.setProperty("form_label", True)
         self.font_combo = QFontComboBox(self)
-        self.font_combo.setCurrentFont(initial_font)
-        form_layout.addRow("Font:", self.font_combo)
+        if initial_font and initial_font.family():
+            if initial_font.family().lower() in ("trixiecyrg-plain", "trixiecyrg-plain regular", "trixie"):
+                initial_font = QFont("Open Sans", initial_font.pointSize())
+            self.font_combo.setCurrentFont(initial_font)
+        form_layout.addRow(lbl_f, self.font_combo)
 
+        lbl_s = QLabel("Style:", self)
+        lbl_s.setProperty("form_label", True)
         self.style_combo = QComboBox(self)
         self.style_combo.addItems(["Normal", "Bold", "Italic", "Bold Italic"])
         
@@ -1494,12 +1512,14 @@ class FontSelectionDialog(QDialog):
         else:
             self.style_combo.setCurrentIndex(0)
             
-        form_layout.addRow("Style:", self.style_combo)
+        form_layout.addRow(lbl_s, self.style_combo)
 
+        lbl_sz = QLabel("Size (pt):", self)
+        lbl_sz.setProperty("form_label", True)
         self.size_spin = QSpinBox(self)
         self.size_spin.setRange(6, 72)
         self.size_spin.setValue(initial_font.pointSize() if initial_font.pointSize() > 0 else 10)
-        form_layout.addRow("Size (pt):", self.size_spin)
+        form_layout.addRow(lbl_sz, self.size_spin)
 
         layout.addLayout(form_layout)
 
@@ -1508,7 +1528,7 @@ class FontSelectionDialog(QDialog):
         preview_title.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8.5pt;")
         self.preview_label = QLabel("Pack my box with five dozen liquor jugs. 1234567890", self)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setStyleSheet("background-color: rgba(255, 255, 255, 0.04); border: 1px dashed rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 12px; min-height: 40px; color: #FFFFFF;")
+        self.preview_label.setWordWrap(True)
         
         preview_group.addWidget(preview_title)
         preview_group.addWidget(self.preview_label)
@@ -1544,6 +1564,15 @@ class FontSelectionDialog(QDialog):
     def update_preview(self):
         font = self.get_selected_font()
         self.preview_label.setFont(font)
+        weight = "bold" if font.bold() else "normal"
+        style = "italic" if font.italic() else "normal"
+        self.preview_label.setStyleSheet(
+            f"background-color: rgba(255, 255, 255, 0.04); "
+            f"border: 1px dashed rgba(255, 255, 255, 0.15); "
+            f"border-radius: 6px; padding: 12px; min-height: 48px; color: #FFFFFF; "
+            f"font-family: '{font.family()}'; font-size: {font.pointSize()}pt; "
+            f"font-weight: {weight}; font-style: {style};"
+        )
 
     def get_selected_font(self) -> QFont:
         font = self.font_combo.currentFont()
