@@ -297,21 +297,22 @@ jobs:
 
       - name: Assemble Pacman Database Structure
         run: |
-          set -x
-          ls -la packaging/arch/ || true
-          find packaging/arch/ -name "*.pkg.tar.zst" 2>/dev/null || echo "No .pkg.tar.zst found in packaging/arch"
           mkdir -p repo/x86_64
           cp packaging/arch/*.pkg.tar.zst repo/x86_64/
-          ls -la repo/x86_64/
           cd repo/x86_64
           repo-add assella.db.tar.gz *.pkg.tar.zst
-          ls -la
+
+          # repo-add creates assella.db and assella.files as symlinks to .tar.gz archives.
+          # Remove symlinks before copying to avoid cp 'same file' error and ensure regular files for releases.
+          rm -f assella.db assella.files
           cp -f assella.db.tar.gz assella.db
           cp -f assella.files.tar.gz assella.files
-          cp -f assella.db.tar.gz ../../packaging/arch/assella.db
+
+          # Copy database files into packaging/arch for GitHub release assets
           cp -f assella.db.tar.gz ../../packaging/arch/assella.db.tar.gz
-          cp -f assella.files.tar.gz ../../packaging/arch/assella.files
+          cp -f assella.db ../../packaging/arch/assella.db
           cp -f assella.files.tar.gz ../../packaging/arch/assella.files.tar.gz
+          cp -f assella.files ../../packaging/arch/assella.files
 
       - name: Attach Arch Package and Database to Version Release
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
