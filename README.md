@@ -1,9 +1,9 @@
-
+To install assella run this in your konsole/terminal. it will replace accela if it is installed previously 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bash
 ```
 
-Arch Linux:
+Arch Linux (testing) :
 ```bash
 curl -fLO https://github.com/niwia/ASSella/releases/download/v2.7.0beta/assella-2.7.0beta-1-x86_64.pkg.tar.zst
 sudo pacman -U assella-2.7.0beta-1-x86_64.pkg.tar.zst
