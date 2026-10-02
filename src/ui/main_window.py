@@ -3562,37 +3562,41 @@ class MainWindow(QMainWindow):
                 QMetaObject.invokeMethod(progress, "setLabelText",
                     Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Fetching release info from GitHub..."))
 
-                if tag == "latest":
-                    api_url = "https://api.github.com/repos/niwia/ASSella/releases"
-                    req = urllib.request.Request(
-                        api_url,
-                        headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                    )
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        releases_list = json.loads(resp.read().decode("utf-8"))
-                        release_data = releases_list[0] if releases_list else {}
-                else:
-                    api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{tag}"
-                    req = urllib.request.Request(
-                        api_url,
-                        headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                    )
-                    try:
+                release_data = {}
+                try:
+                    if tag == "latest":
+                        api_url = "https://api.github.com/repos/niwia/ASSella/releases"
+                        req = urllib.request.Request(
+                            api_url,
+                            headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
+                        )
                         with urllib.request.urlopen(req, timeout=15) as resp:
-                            release_data = json.loads(resp.read().decode("utf-8"))
-                    except urllib.error.HTTPError as err:
-                        if err.code == 404 and tag != "latest":
-                            alt_tag = tag[1:] if tag.startswith("v") else f"v{tag}"
-                            alt_api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{alt_tag}"
-                            logger.info(f"Release tag {tag} returned 404, retrying with alternate tag: {alt_tag}")
-                            req_alt = urllib.request.Request(
-                                alt_api_url,
-                                headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                            )
-                            with urllib.request.urlopen(req_alt, timeout=15) as resp:
+                            releases_list = json.loads(resp.read().decode("utf-8"))
+                            release_data = releases_list[0] if releases_list else {}
+                    else:
+                        api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{tag}"
+                        req = urllib.request.Request(
+                            api_url,
+                            headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
+                        )
+                        try:
+                            with urllib.request.urlopen(req, timeout=15) as resp:
                                 release_data = json.loads(resp.read().decode("utf-8"))
-                        else:
-                            raise
+                        except urllib.error.HTTPError as err:
+                            if err.code == 404 and tag != "latest":
+                                alt_tag = tag[1:] if tag.startswith("v") else f"v{tag}"
+                                alt_api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{alt_tag}"
+                                logger.info(f"Release tag {tag} returned 404, retrying with alternate tag: {alt_tag}")
+                                req_alt = urllib.request.Request(
+                                    alt_api_url,
+                                    headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
+                                )
+                                with urllib.request.urlopen(req_alt, timeout=15) as resp:
+                                    release_data = json.loads(resp.read().decode("utf-8"))
+                            else:
+                                raise
+                except Exception as api_err:
+                    logger.warning(f"GitHub Releases API unavailable or rate-limited ({api_err}). Falling back to direct asset URL.")
 
                 saved_ch = ""
                 if hasattr(self, "settings") and self.settings:
@@ -3617,15 +3621,22 @@ class MainWindow(QMainWindow):
                     # stable
                     return ("stable" in an) or (an == "assella.appimage") or not any(x in an for x in ("canary", "testing", "beta", "dev", "rc"))
 
+                download_url = ""
                 for asset in release_data.get("assets", []):
                     name = asset.get("name", "")
                     if _matches_dl_asset(name, active_ch):
-                        download_url = asset["browser_download_url"]
+                        download_url = asset.get("browser_download_url", "")
                         break
 
-
                 if not download_url:
-                    raise RuntimeError("No AppImage asset found in the release.")
+                    # Direct release asset download URL fallback (bypasses REST API rate limits)
+                    dl_tag = tag if tag else "latest"
+                    if dl_tag == "latest":
+                        download_url = "https://github.com/niwia/ASSella/releases/latest/download/ASSella.AppImage"
+                    else:
+                        clean_tag = dl_tag if dl_tag.startswith("v") else f"v{dl_tag}"
+                        download_url = f"https://github.com/niwia/ASSella/releases/download/{clean_tag}/ASSella.AppImage"
+                    logger.info(f"Using direct asset download URL: {download_url}")
 
                 logger.info(f"Self-update fallback: downloading from {download_url}")
                 dest_dir = Path(appimage_path).parent
