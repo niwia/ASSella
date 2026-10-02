@@ -19,6 +19,7 @@ from utils.helpers import get_base_path
 from utils.settings import get_settings
 from utils.yaml_config_manager import (
     ensure_plugins_enabled,
+    ensure_smart_tickets_enabled,
     get_sls_plugins_dirs,
     is_slssteam_plugins_enabled,
 )
@@ -245,6 +246,10 @@ def deploy_plugin(filename: str, force_download: bool = False) -> Tuple[bool, bo
         - skipped=True if all targets already had the exact matching SHA-256.
     """
     ensure_plugins_enabled()
+
+    # spliced-tickets.lua requires SmartTickets: 0x1 (SteamDRM) in SLS config
+    if filename == "spliced-tickets.lua":
+        ensure_smart_tickets_enabled()
 
     meta = get_manifest_plugin_info(filename)
     expected_sha256 = meta.get("sha256") if meta else None
