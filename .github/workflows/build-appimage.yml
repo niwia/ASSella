@@ -213,7 +213,7 @@ jobs:
     steps:
       - name: Install Pacman Packaging Tools
         run: |
-          pacman -Syu --noconfirm base-devel git zstd sudo
+          pacman -Syu --noconfirm base-devel git zstd sudo github-cli
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
@@ -330,21 +330,23 @@ jobs:
 
       - name: Update Rolling Arch Channel Release
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: arch-repo
-          name: "ASSella Arch Linux Rolling Repository"
-          body: "Rolling repository endpoint for Arch Linux Pacman (`/etc/pacman.conf`). Automatically updated with every build."
-          prerelease: true
-          make_latest: false
-          files: |
-            packaging/arch/*.pkg.tar.zst
-            packaging/arch/assella.db
-            packaging/arch/assella.db.tar.gz
-            packaging/arch/assella.files
-            packaging/arch/assella.files.tar.gz
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Ensure the arch-repo release exists
+          gh release view arch-repo >/dev/null 2>&1 || gh release create arch-repo \
+            --title "ASSella Arch Linux Rolling Repository" \
+            --notes "Rolling repository endpoint for Arch Linux Pacman (\`/etc/pacman.conf\`). Automatically updated with every build." \
+            --prerelease
+
+          # Upload Arch package and database files, replacing existing assets cleanly
+          gh release upload arch-repo \
+            packaging/arch/*.pkg.tar.zst \
+            packaging/arch/assella.db \
+            packaging/arch/assella.db.tar.gz \
+            packaging/arch/assella.files \
+            packaging/arch/assella.files.tar.gz \
+            --clobber
 
       - name: Deploy Arch Repo Documentation to GitHub Pages
         run: |
