@@ -181,21 +181,7 @@ jobs:
 
           # 8. Sanity check: Verify all required imports inside bundled AppDir runtime
           echo "Verifying AppDir runtime imports..."
-          AppDir/bin/.venv/bin/python3 -c "
-          import PyQt6.QtCore
-          import PyQt6.QtWidgets
-          import requests
-          import yaml
-          import PIL
-          import cryptography
-          import configobj
-          import urwid
-          import vdf
-          import steam
-          import zstandard
-          import curl_cffi
-          print('AppDir verification: All critical dependencies imported successfully!')
-          "
+          AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, PIL, cryptography, configobj, urwid, vdf, steam, zstandard, curl_cffi; print('AppDir verification: All critical dependencies imported successfully!')"
 
       - name: Build AppImage with ZSync Update Information
         run: |
