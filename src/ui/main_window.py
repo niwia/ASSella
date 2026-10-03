@@ -3546,109 +3546,151 @@ class MainWindow(QMainWindow):
 
         def _download_worker():
             import urllib.request
+            import urllib.error
             import json
             import os
             import stat
             import shutil
             import subprocess
+            import hashlib
             from pathlib import Path
 
             tmp_path = None
-            # Bypassed delta update since ZSync packages are deprecated starting v2.5.3
-            logger.info("ZSync updates deprecated. Performing full AppImage download update.")
 
-            # --- Fallback: full AppImage download ---
+            # Determine active channel from settings / local version string
+            saved_ch = ""
+            if hasattr(self, "settings") and self.settings:
+                saved_ch = str(self.settings.value("app_update_channel", "auto") or "auto").lower()
+            if saved_ch in ("canary", "beta", "stable"):
+                active_ch = saved_ch
+            elif any(x in local_clean.lower() for x in ("canary", "testing")):
+                active_ch = "canary"
+            elif any(x in local_clean.lower() for x in ("beta", "dev", "rc")):
+                active_ch = "beta"
+            else:
+                active_ch = "stable"
+
+            logger.info(f"Self-update starting: channel={active_ch}, tag={tag}")
+
+            def _matches_dl_asset(name: str, ch: str) -> bool:
+                an = name.lower()
+                if not an.endswith(".appimage") or "zsync" in an:
+                    return False
+                if ch == "canary":
+                    return any(x in an for x in ("canary", "testing")) or not any(x in an for x in ("beta", "stable"))
+                if ch == "beta":
+                    return any(x in an for x in ("beta", "dev", "rc")) or (an == "assella.appimage")
+                return ("stable" in an) or (an == "assella.appimage") or not any(x in an for x in ("canary", "testing", "beta", "dev", "rc"))
+
+            dest_dir = Path(appimage_path).parent
+
+            # ── Phase 1: Try zsync delta update ──────────────────────────────
+            update_tool = shutil.which("appimageupdatetool") or shutil.which("AppImageUpdate")
+            if update_tool:
+                try:
+                    QMetaObject.invokeMethod(progress, "setLabelText",
+                        Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Attempting delta (zsync) update..."))
+                    QMetaObject.invokeMethod(progress, "setValue",
+                        Qt.ConnectionType.QueuedConnection, Q_ARG(int, 5))
+                    result = subprocess.run(
+                        [update_tool, appimage_path],
+                        capture_output=True, text=True, timeout=300
+                    )
+                    if result.returncode == 0:
+                        logger.info("ZSync delta update succeeded.")
+                        QMetaObject.invokeMethod(progress, "setValue",
+                            Qt.ConnectionType.QueuedConnection, Q_ARG(int, 100))
+                        QMetaObject.invokeMethod(self, "_on_update_success",
+                            Qt.ConnectionType.QueuedConnection)
+                        return
+                    else:
+                        logger.warning(f"ZSync failed (rc={result.returncode}), falling back to full download. stderr: {result.stderr[:500]}")
+                except Exception as zsync_err:
+                    logger.warning(f"ZSync update tool error: {zsync_err}. Falling back to full download.")
+            else:
+                logger.info("appimageupdatetool not found — using full download path.")
+
+            # ── Phase 2: Resolve download URL ────────────────────────────────
             try:
                 QMetaObject.invokeMethod(progress, "setLabelText",
                     Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Fetching release info from GitHub..."))
+                QMetaObject.invokeMethod(progress, "setValue",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, 8))
 
                 release_data = {}
                 try:
                     if tag == "latest":
                         api_url = "https://api.github.com/repos/niwia/ASSella/releases"
-                        req = urllib.request.Request(
-                            api_url,
-                            headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                        )
+                        req = urllib.request.Request(api_url,
+                            headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"})
                         with urllib.request.urlopen(req, timeout=15) as resp:
                             releases_list = json.loads(resp.read().decode("utf-8"))
-                            release_data = releases_list[0] if releases_list else {}
+                            # Filter releases by channel
+                            for rel in releases_list:
+                                t = rel.get("tag_name", "").lower()
+                                if active_ch == "canary" and any(x in t for x in ("canary", "testing")):
+                                    release_data = rel
+                                    break
+                                elif active_ch == "beta" and any(x in t for x in ("beta", "dev", "rc")):
+                                    release_data = rel
+                                    break
+                                elif active_ch == "stable" and not any(x in t for x in ("canary", "testing", "beta", "dev", "rc")):
+                                    release_data = rel
+                                    break
+                            if not release_data and releases_list:
+                                release_data = releases_list[0]
                     else:
                         api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{tag}"
-                        req = urllib.request.Request(
-                            api_url,
-                            headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                        )
+                        req = urllib.request.Request(api_url,
+                            headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"})
                         try:
                             with urllib.request.urlopen(req, timeout=15) as resp:
                                 release_data = json.loads(resp.read().decode("utf-8"))
                         except urllib.error.HTTPError as err:
-                            if err.code == 404 and tag != "latest":
+                            if err.code == 404:
                                 alt_tag = tag[1:] if tag.startswith("v") else f"v{tag}"
-                                alt_api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{alt_tag}"
-                                logger.info(f"Release tag {tag} returned 404, retrying with alternate tag: {alt_tag}")
-                                req_alt = urllib.request.Request(
-                                    alt_api_url,
-                                    headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                                )
+                                alt_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{alt_tag}"
+                                req_alt = urllib.request.Request(alt_url,
+                                    headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"})
                                 with urllib.request.urlopen(req_alt, timeout=15) as resp:
                                     release_data = json.loads(resp.read().decode("utf-8"))
                             else:
                                 raise
                 except Exception as api_err:
-                    logger.warning(f"GitHub Releases API unavailable or rate-limited ({api_err}). Falling back to direct asset URL.")
-
-                saved_ch = ""
-                if hasattr(self, "settings") and self.settings:
-                    saved_ch = str(self.settings.value("app_update_channel", "auto") or "auto").lower()
-                if saved_ch in ("canary", "beta", "stable"):
-                    active_ch = saved_ch
-                elif any(x in local_clean.lower() for x in ("canary", "testing")):
-                    active_ch = "canary"
-                elif any(x in local_clean.lower() for x in ("beta", "dev", "rc")):
-                    active_ch = "beta"
-                else:
-                    active_ch = "stable"
-
-                def _matches_dl_asset(name: str, ch: str) -> bool:
-                    an = name.lower()
-                    if not an.endswith(".appimage") or "zsync" in an:
-                        return False
-                    if ch == "canary":
-                        return any(x in an for x in ("canary", "testing")) or not any(x in an for x in ("beta", "stable"))
-                    if ch == "beta":
-                        return any(x in an for x in ("beta", "dev", "rc")) or (an == "assella.appimage")
-                    # stable
-                    return ("stable" in an) or (an == "assella.appimage") or not any(x in an for x in ("canary", "testing", "beta", "dev", "rc"))
+                    logger.warning(f"GitHub Releases API unavailable ({api_err}). Using direct download URL.")
 
                 download_url = ""
+                sha256_url = ""
                 for asset in release_data.get("assets", []):
                     name = asset.get("name", "")
-                    if _matches_dl_asset(name, active_ch):
+                    if not download_url and _matches_dl_asset(name, active_ch):
                         download_url = asset.get("browser_download_url", "")
-                        break
+                    if not sha256_url and name.lower().endswith(".sha256") and "appimage" in name.lower() and "zsync" not in name.lower():
+                        sha256_url = asset.get("browser_download_url", "")
 
+                # Hard fallback: direct GitHub download URL
                 if not download_url:
-                    # Direct release asset download URL fallback (bypasses REST API rate limits)
                     dl_tag = tag if tag else "latest"
                     if dl_tag == "latest":
                         download_url = "https://github.com/niwia/ASSella/releases/latest/download/ASSella.AppImage"
                     else:
                         clean_tag = dl_tag if dl_tag.startswith("v") else f"v{dl_tag}"
                         download_url = f"https://github.com/niwia/ASSella/releases/download/{clean_tag}/ASSella.AppImage"
-                    logger.info(f"Using direct asset download URL: {download_url}")
+                        if not sha256_url:
+                            sha256_url = f"https://github.com/niwia/ASSella/releases/download/{clean_tag}/ASSella.AppImage.sha256"
+                    logger.info(f"Using direct asset URL: {download_url}")
 
-                logger.info(f"Self-update fallback: downloading from {download_url}")
-                dest_dir = Path(appimage_path).parent
+                # ── Phase 3: Full AppImage download ──────────────────────────
+                logger.info(f"Self-update: downloading from {download_url}")
                 tmp_path = dest_dir / "ASSella.AppImage.part"
 
                 QMetaObject.invokeMethod(progress, "setLabelText",
                     Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Downloading full AppImage..."))
                 QMetaObject.invokeMethod(progress, "setValue",
-                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, 10))
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, 12))
 
                 req2 = urllib.request.Request(download_url, headers={"User-Agent": "ASSella-Updater"})
-                with urllib.request.urlopen(req2, timeout=60) as response:
+                with urllib.request.urlopen(req2, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", 0))
                     downloaded = 0
                     chunk_size = 512 * 1024
@@ -3666,16 +3708,62 @@ class MainWindow(QMainWindow):
                             f.write(chunk)
                             downloaded += len(chunk)
                             if total > 0:
-                                pct = 10 + int((downloaded / total) * 85)
+                                pct = 12 + int((downloaded / total) * 78)
                                 QMetaObject.invokeMethod(progress, "setValue",
-                                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, min(pct, 94)))
+                                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, min(pct, 90)))
                                 mb_done = downloaded / 1_048_576
                                 mb_total = total / 1_048_576
                                 QMetaObject.invokeMethod(progress, "setLabelText",
                                     Qt.ConnectionType.QueuedConnection,
                                     Q_ARG(str, f"Downloading... {mb_done:.1f} / {mb_total:.1f} MB"))
 
+                # ── Phase 4: SHA-256 integrity verification ───────────────────
+                QMetaObject.invokeMethod(progress, "setLabelText",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Verifying integrity..."))
+                QMetaObject.invokeMethod(progress, "setValue",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(int, 92))
+
+                if sha256_url:
+                    try:
+                        req_sha = urllib.request.Request(sha256_url, headers={"User-Agent": "ASSella-Updater"})
+                        with urllib.request.urlopen(req_sha, timeout=20) as resp_sha:
+                            sha_content = resp_sha.read().decode("utf-8").strip()
+                        expected_sha = sha_content.split()[0].lower() if sha_content else ""
+                        if expected_sha and len(expected_sha) == 64:
+                            h = hashlib.sha256()
+                            with open(tmp_path, "rb") as f:
+                                for chunk in iter(lambda: f.read(1 << 20), b""):
+                                    h.update(chunk)
+                            actual_sha = h.hexdigest().lower()
+                            if actual_sha != expected_sha:
+                                try:
+                                    os.remove(tmp_path)
+                                except OSError:
+                                    pass
+                                raise RuntimeError(
+                                    f"SHA-256 mismatch — download may be corrupt.\n"
+                                    f"Expected: {expected_sha}\nGot: {actual_sha}"
+                                )
+                            logger.info(f"SHA-256 verified OK: {actual_sha}")
+                        else:
+                            logger.warning("Could not parse SHA-256 from release asset, skipping verification.")
+                    except RuntimeError:
+                        raise
+                    except Exception as sha_err:
+                        logger.warning(f"SHA-256 verification skipped: {sha_err}")
+                else:
+                    logger.warning("No SHA-256 asset found for this release, skipping integrity check.")
+
+                # ── Phase 5: Atomic replace (backup old, move new) ────────────
+                QMetaObject.invokeMethod(progress, "setLabelText",
+                    Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Installing update..."))
                 os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+                bak_path = dest_dir / "ASSella.AppImage.bak"
+                try:
+                    if Path(appimage_path).exists():
+                        shutil.copy2(appimage_path, bak_path)
+                except Exception:
+                    pass
                 shutil.move(str(tmp_path), appimage_path)
 
                 QMetaObject.invokeMethod(progress, "setValue",
@@ -3684,7 +3772,7 @@ class MainWindow(QMainWindow):
                     Qt.ConnectionType.QueuedConnection)
 
             except Exception as e:
-                logger.error(f"Full download fallback also failed: {e}", exc_info=True)
+                logger.error(f"Update failed: {e}", exc_info=True)
                 if tmp_path:
                     try:
                         os.remove(tmp_path)

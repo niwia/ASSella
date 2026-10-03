@@ -85,6 +85,7 @@ class HealthStatusTile(QPushButton):
 def create_rec_setting_row(title: str, desc: str, checkbox: QCheckBox) -> QWidget:
     row = QWidget()
     row.setObjectName("rec_setting_row")
+    row.setFixedHeight(52)
     row.setStyleSheet("""
         QWidget#rec_setting_row {
             background-color: rgba(255, 255, 255, 0.03);
@@ -97,17 +98,17 @@ def create_rec_setting_row(title: str, desc: str, checkbox: QCheckBox) -> QWidge
         }
     """)
     h = QHBoxLayout(row)
-    h.setContentsMargins(14, 8, 14, 8)
+    h.setContentsMargins(12, 6, 12, 6)
     h.setSpacing(12)
 
     col = QVBoxLayout()
-    col.setSpacing(2)
+    col.setSpacing(1)
 
     t_lbl = QLabel(title)
-    t_lbl.setStyleSheet("font-size: 9.5pt; font-weight: 600; color: #FFFFFF; border: none; background: transparent;")
+    t_lbl.setStyleSheet("font-size: 9pt; font-weight: 600; color: #FFFFFF; border: none; background: transparent;")
     d_lbl = QLabel(desc)
-    d_lbl.setStyleSheet("font-size: 8.2pt; color: rgba(255, 255, 255, 0.55); border: none; background: transparent;")
-    d_lbl.setWordWrap(True)
+    d_lbl.setStyleSheet("font-size: 7.8pt; color: rgba(255, 255, 255, 0.55); border: none; background: transparent;")
+    d_lbl.setWordWrap(False)
 
     col.addWidget(t_lbl)
     col.addWidget(d_lbl)
@@ -282,6 +283,7 @@ def create_health_tab(dialog) -> QWidget:
 
     # ── 3. Recommended Settings ──────────────────────────────
     rec_card, rec_layout = dialog._create_card_frame("")
+    rec_card.setContentsMargins(0, 0, 0, 0)
     rec_header_row = QHBoxLayout()
     rec_header_row.setContentsMargins(0, 0, 0, 2)
     rec_title_lbl = QLabel("Recommended Settings")

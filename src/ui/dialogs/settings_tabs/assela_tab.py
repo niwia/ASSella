@@ -133,22 +133,24 @@ def create_assela_tab(dialog) -> QWidget:
     test_bar_box.addWidget(test_bar_lbl)
 
     dialog.gateway_btn_row = QHBoxLayout()
-    dialog.gateway_btn_row.setSpacing(8)
+    dialog.gateway_btn_row.setSpacing(6)
 
+    # Uniform button style — all buttons same fixed width so they look identical
     base_btn_css = """
         QPushButton {
             background: rgba(255, 255, 255, 0.08);
             border: 1px solid rgba(255, 255, 255, 0.15);
             border-radius: 6px;
-            padding: 5px 8px;
             color: #e0e0e0;
             font-size: 8.5pt;
-            font-weight: 500;
-            min-height: 26px;
+            font-weight: 600;
+            min-height: 30px;
+            max-height: 30px;
         }
         QPushButton:hover {
             background: rgba(255, 255, 255, 0.15);
-            border: 1px solid rgba(255, 255, 255, 0.25);
+            border: 1px solid rgba(255, 255, 255, 0.30);
+            color: #ffffff;
         }
         QPushButton:disabled {
             background: rgba(255, 255, 255, 0.02);
@@ -156,30 +158,36 @@ def create_assela_tab(dialog) -> QWidget:
             color: rgba(255, 255, 255, 0.25);
         }
     """
+    _BTN_W = 80  # uniform width for all 4 gateway buttons
 
     dialog.test_direct_btn = QPushButton("Direct")
+    dialog.test_direct_btn.setFixedWidth(_BTN_W)
     dialog.test_direct_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.test_direct_btn.setStyleSheet(base_btn_css)
     dialog.test_direct_btn.clicked.connect(lambda: test_single_gateway(dialog, "direct", dialog.test_direct_btn, "Direct"))
     dialog.gateway_btn_row.addWidget(dialog.test_direct_btn)
 
     dialog.test_doh_btn = QPushButton("DoH")
+    dialog.test_doh_btn.setFixedWidth(_BTN_W)
     dialog.test_doh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.test_doh_btn.setStyleSheet(base_btn_css)
     dialog.test_doh_btn.clicked.connect(lambda: test_single_gateway(dialog, "doh", dialog.test_doh_btn, "DoH"))
     dialog.gateway_btn_row.addWidget(dialog.test_doh_btn)
 
     dialog.test_tor_btn = QPushButton("Tor")
+    dialog.test_tor_btn.setFixedWidth(_BTN_W)
     dialog.test_tor_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.test_tor_btn.setStyleSheet(base_btn_css)
     dialog.test_tor_btn.clicked.connect(lambda: test_single_gateway(dialog, "tor", dialog.test_tor_btn, "Tor"))
     dialog.gateway_btn_row.addWidget(dialog.test_tor_btn)
 
     dialog.test_wirecutter_btn = QPushButton("Wirecutter")
+    dialog.test_wirecutter_btn.setFixedWidth(_BTN_W)
     dialog.test_wirecutter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.test_wirecutter_btn.setStyleSheet(base_btn_css)
     dialog.test_wirecutter_btn.clicked.connect(lambda: test_single_gateway(dialog, "wirecutter", dialog.test_wirecutter_btn, "Wirecutter"))
     dialog.gateway_btn_row.addWidget(dialog.test_wirecutter_btn)
+    dialog.gateway_btn_row.addStretch()
 
     test_bar_box.addLayout(dialog.gateway_btn_row)
     isp_group.addLayout(test_bar_box)
