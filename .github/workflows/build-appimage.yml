@@ -122,27 +122,38 @@ jobs:
           mkdir -p AppDir/bin
           
           # 1. Desktop Entry & Icon
-          cat << 'EOF' > AppDir/ACCELA.desktop
+          cat << 'EOF' > AppDir/assella.desktop
           [Desktop Entry]
           Name=ASSella
           Comment=Steam Game & Depot Management Suite
           Exec=AppRun %U
-          Icon=accela
+          Icon=assella
           Terminal=false
           Type=Application
           Categories=Utility;Game;
+          # Must match QApplication::applicationName() in src/main.py, which is
+          # what the window manager matches against to pick the taskbar icon.
           StartupWMClass=ASSella
           MimeType=x-scheme-handler/accela;
           EOF
+          # Legacy alias: earlier builds shipped this name, and some launchers
+          # and .desktop entries still reference it.
+          cp AppDir/assella.desktop AppDir/ACCELA.desktop
           
-          # Copy icon
-          if [ -f "src/res/logo/accela.png" ]; then
-            cp "src/res/logo/accela.png" AppDir/accela.png
+          # Copy icon. Prefer icon.png (500x500) and keep the legacy accela.png name so
+          # existing desktop entries and icon caches still resolve.
+          if [ -f "src/res/logo/icon.png" ]; then
+            cp "src/res/logo/icon.png" AppDir/assella.png
+            cp "src/res/logo/icon.png" AppDir/.DirIcon
+          elif [ -f "src/res/logo/accela.png" ]; then
+            cp "src/res/logo/accela.png" AppDir/assella.png
             cp "src/res/logo/accela.png" AppDir/.DirIcon
           elif [ -f "assela_logo.png" ]; then
-            cp "assela_logo.png" AppDir/accela.png
+            cp "assela_logo.png" AppDir/assella.png
             cp "assela_logo.png" AppDir/.DirIcon
           fi
+          # Legacy icon alias.
+          [ -f AppDir/assella.png ] && cp AppDir/assella.png AppDir/accela.png
 
           # 2. AppRun Script
           cat << 'EOF' > AppDir/AppRun
@@ -372,24 +383,18 @@ jobs:
 
       - name: Prepare Arch Package Recipe & Metadata
         run: |
-          mkdir -p packaging/arch
-          cp dist/ASSella.AppImage packaging/arch/
-          chmod +x packaging/arch/ASSella.AppImage
-          cp src/res/logo/icon.png packaging/arch/assella.png
-
-          # Create desktop shortcut definition
-          cat << 'EOF' | sed 's/^          //' > packaging/arch/assella.desktop
-          [Desktop Entry]
-          Name=ASSella
-          Comment=Steam Game & Depot Management Suite
-          Exec=/usr/bin/assella %U
-          Icon=assella
-          Terminal=false
-          Type=Application
-          Categories=Utility;Game;
-          StartupWMClass=ASSella
-          MimeType=x-scheme-handler/accela;
-          EOF
+          set -euo pipefail
+          # packaging/arch/ holds the tracked PKGBUILD.in and assella.desktop
+          # templates, so build into a sibling directory rather than cleaning
+          # this one.
+          BUILD_DIR=packaging/arch-build
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
+          cp dist/ASSella.AppImage "$BUILD_DIR/"
+          chmod +x "$BUILD_DIR/ASSella.AppImage"
+          cp src/res/logo/icon.png "$BUILD_DIR/assella.png"
+          # Desktop entry is a tracked file so it can be reviewed and diffed.
+          cp packaging/arch/assella.desktop "$BUILD_DIR/assella.desktop"
 
           # Format clean semver for PKGBUILD (remove v prefix and dashes)
           RAW_TAG="${{ needs.build-appimage.outputs.tag }}"
@@ -398,52 +403,49 @@ jobs:
             CLEAN_VER="2.7.1beta"
           fi
 
-          cat << EOF | sed 's/^          //' > packaging/arch/PKGBUILD
-          # Maintainer: niwia <niwia@users.noreply.github.com>
-          pkgname=assella
-          pkgver=${CLEAN_VER}
-          pkgrel=1
-          pkgdesc="Steam Game & Depot Management Suite"
-          arch=('x86_64')
-          url="https://github.com/niwia/ASSella"
-          license=('GPL3')
-          depends=('fuse2')
-          provides=('assella')
-          conflicts=('assella-bin' 'assella-git')
-          source=("ASSella.AppImage" "assella.desktop" "assella.png")
-          sha256sums=('SKIP' 'SKIP' 'SKIP')
-          options=(!strip)
+          # Reject anything makepkg would refuse, rather than failing obscurely
+          # inside package(). pkgver may not contain hyphens, whitespace, or
+          # slashes.
+          if printf '%s' "$CLEAN_VER" | grep -qE '[^A-Za-z0-9._+~]'; then
+            echo "::error::Derived pkgver '$CLEAN_VER' from tag '$RAW_TAG' contains illegal characters"
+            exit 1
+          fi
 
-          package() {
-              install -dm755 "\$pkgdir/usr/lib/assella"
-              install -dm755 "\$pkgdir/usr/bin"
-              install -dm755 "\$pkgdir/usr/share/applications"
-              install -dm755 "\$pkgdir/usr/share/icons/hicolor/512x512/apps"
-              install -dm755 "\$pkgdir/usr/share/pixmaps"
+          # Real checksum instead of SKIP: the arch package must be verifiable.
+          APPIMAGE_SHA=$(sha256sum "$BUILD_DIR/ASSella.AppImage" | awk '{print $1}')
+          RELEASE_URL="https://github.com/niwia/ASSella/releases/download/${RAW_TAG}/ASSella.AppImage"
 
-              install -m755 "\$srcdir/ASSella.AppImage" "\$pkgdir/usr/lib/assella/ASSella.AppImage"
-              install -Dm644 "\$srcdir/assella.png" "\$pkgdir/usr/share/icons/hicolor/512x512/apps/assella.png"
-              install -Dm644 "\$srcdir/assella.png" "\$pkgdir/usr/share/pixmaps/assella.png"
-              ln -sf assella.png "\$pkgdir/usr/share/icons/hicolor/512x512/apps/assela.png"
-              ln -sf assella.png "\$pkgdir/usr/share/pixmaps/assela.png"
+          sed -e "s|@VERSION@|${CLEAN_VER}|g" \
+              -e "s|@SHA256@|${APPIMAGE_SHA}|g" \
+              -e "s|@RELEASE_URL@|${RELEASE_URL}|g" \
+              packaging/arch/PKGBUILD.in > "$BUILD_DIR/PKGBUILD"
 
-              printf '%s\\n' '#!/bin/sh' 'exec /usr/lib/assella/ASSella.AppImage "\$@"' > "\$pkgdir/usr/bin/assella"
-              chmod 755 "\$pkgdir/usr/bin/assella"
+          # Guard against an unsubstituted placeholder shipping to users.
+          if grep -q '@VERSION@\|@SHA256@\|@RELEASE_URL@' "$BUILD_DIR/PKGBUILD"; then
+            echo "::error::PKGBUILD still contains unsubstituted placeholders"
+            exit 1
+          fi
 
-              install -Dm644 "\$srcdir/assella.desktop" "\$pkgdir/usr/share/applications/assella.desktop"
-              ln -sf assella.desktop "\$pkgdir/usr/share/applications/assela.desktop"
-          }
-          EOF
-          chown -R builder:builder packaging/arch
+          # Lint the generated recipe before makepkg sees it.
+          bash -n "$BUILD_DIR/PKGBUILD"
+          if command -v desktop-file-validate &>/dev/null; then
+            desktop-file-validate "$BUILD_DIR/assella.desktop" \
+              || echo "::warning::desktop-file-validate reported issues"
+          fi
+
+          echo "--- generated pkgver: ${CLEAN_VER}"
+          echo "--- generated sha256: ${APPIMAGE_SHA}"
+          chown -R builder:builder "$BUILD_DIR"
+
 
       - name: Build Arch Package via makepkg
         run: |
-          su builder -c "cd packaging/arch && makepkg -f --nodeps"
+          su builder -c "cd packaging/arch-build && makepkg -f --nodeps --noconfirm"
 
       - name: Assemble Pacman Database Structure
         run: |
           mkdir -p repo/x86_64
-          cp packaging/arch/*.pkg.tar.zst repo/x86_64/
+          cp packaging/arch-build/*.pkg.tar.zst repo/x86_64/
           cd repo/x86_64
           repo-add assella.db.tar.gz *.pkg.tar.zst
 
@@ -453,20 +455,20 @@ jobs:
           cp -f assella.db.tar.gz assella.db
           cp -f assella.files.tar.gz assella.files
 
-          # Copy database files into packaging/arch for GitHub release assets
-          cp -f assella.db.tar.gz ../../packaging/arch/assella.db.tar.gz
-          cp -f assella.db ../../packaging/arch/assella.db
-          cp -f assella.files.tar.gz ../../packaging/arch/assella.files.tar.gz
-          cp -f assella.files ../../packaging/arch/assella.files
+          # Copy database files alongside the package for GitHub release assets
+          cp -f assella.db.tar.gz ../../packaging/arch-build/assella.db.tar.gz
+          cp -f assella.db ../../packaging/arch-build/assella.db
+          cp -f assella.files.tar.gz ../../packaging/arch-build/assella.files.tar.gz
+          cp -f assella.files ../../packaging/arch-build/assella.files
 
       - name: Upload Arch Package Artifact
         uses: actions/upload-artifact@v4
         with:
           name: assella-arch-package
           path: |
-            packaging/arch/*.pkg.tar.zst
-            packaging/arch/assella.db*
-            packaging/arch/assella.files*
+            packaging/arch-build/*.pkg.tar.zst
+            packaging/arch-build/assella.db*
+            packaging/arch-build/assella.files*
 
       - name: Attach Arch Package and Database to Version Release
         if: (startsWith(github.ref, 'refs/tags/') && needs.build-appimage.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && needs.build-appimage.outputs.publish == 'true')
@@ -474,11 +476,11 @@ jobs:
         with:
           tag_name: ${{ needs.build-appimage.outputs.tag }}
           files: |
-            packaging/arch/*.pkg.tar.zst
-            packaging/arch/assella.db
-            packaging/arch/assella.db.tar.gz
-            packaging/arch/assella.files
-            packaging/arch/assella.files.tar.gz
+            packaging/arch-build/*.pkg.tar.zst
+            packaging/arch-build/assella.db
+            packaging/arch-build/assella.db.tar.gz
+            packaging/arch-build/assella.files
+            packaging/arch-build/assella.files.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -499,11 +501,11 @@ jobs:
           # Upload Arch package and database files, replacing existing assets cleanly
           gh release upload arch-repo \
             --repo "${{ github.repository }}" \
-            packaging/arch/*.pkg.tar.zst \
-            packaging/arch/assella.db \
-            packaging/arch/assella.db.tar.gz \
-            packaging/arch/assella.files \
-            packaging/arch/assella.files.tar.gz \
+            packaging/arch-build/*.pkg.tar.zst \
+            packaging/arch-build/assella.db \
+            packaging/arch-build/assella.db.tar.gz \
+            packaging/arch-build/assella.files \
+            packaging/arch-build/assella.files.tar.gz \
             --clobber
 
       - name: Deploy Arch Repo Documentation to GitHub Pages

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=ASSella
+Comment=Steam Game & Depot Management Suite
+# Named assella.desktop to match setDesktopFileName() in src/main.py.
+Exec=/usr/bin/assella %U
+Icon=assella
+Terminal=false
+Categories=Utility;Game;
+# Must match QApplication::applicationName() in src/main.py for correct
+# window/icon association under Wayland compositors.
+StartupWMClass=ASSella
+MimeType=x-scheme-handler/accela;
