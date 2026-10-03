@@ -173,7 +173,27 @@ jobs:
           cp -r src AppDir/bin/
           find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
-          # 5. Bundle Tor Executable
+          # 5. Bundle appimageupdatetool (AppImageUpdate) for in-app delta updates.
+          # Ships as a self-contained AppImage in bin/; the app extracts and runs
+          # it on demand, so users need no system zsync/AppImageUpdate package.
+          if [ ! -f "AppDir/bin/appimageupdatetool" ]; then
+            echo "Downloading appimageupdatetool..."
+            curl -fsSL --retry 3 -o /tmp/appimageupdatetool \
+              "https://github.com/AppImageCommunity/AppImageUpdate/releases/download/continuous/appimageupdatetool-x86_64.AppImage" \
+              || curl -fsSL --retry 3 -o /tmp/appimageupdatetool \
+              "https://github.com/AppImage/appimageupdatetool/releases/download/continuous/appimageupdatetool-x86_64.AppImage"
+            chmod +x /tmp/appimageupdatetool
+            # Verify the download is a real AppImage before shipping it.
+            if ! /tmp/appimageupdatetool --appimage-extract >/dev/null 2>&1; then
+              echo "::error::appimageupdatetool failed extraction — refusing to ship"
+              exit 1
+            fi
+            cp squashfs-root/appimageupdatetool AppDir/bin/appimageupdatetool
+            rm -rf squashfs-root
+            chmod +x AppDir/bin/appimageupdatetool
+          fi
+
+          # 6. Bundle Tor Executable
           if [ -f "/usr/bin/tor" ]; then
             cp /usr/bin/tor AppDir/bin/tor
           elif [ -f "bin/tor" ]; then
@@ -181,20 +201,22 @@ jobs:
           fi
           chmod +x AppDir/bin/tor 2>/dev/null || true
 
-          # 6. Bundle Relocatable Standalone Python 3.13 Runtime
+          # 7. Bundle Relocatable Standalone Python 3.13 Runtime
           echo "Downloading relocatable python-build-standalone runtime (Python 3.13)..."
           curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.13.0+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz"
           tar -xzf /tmp/cpython-standalone.tar.gz -C AppDir/bin/
           mv AppDir/bin/python AppDir/bin/.venv
 
-          # 7. Install application dependencies into bundled runtime
+          # 8. Install application dependencies into bundled runtime
           AppDir/bin/.venv/bin/python3 -m pip install --upgrade pip setuptools wheel
           AppDir/bin/.venv/bin/python3 -m pip install -r requirements.txt
           find AppDir/bin/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
-          # 8. Sanity check: Verify all required imports inside bundled AppDir runtime
+          # 9. Sanity check: Verify all required imports inside bundled AppDir runtime
           echo "Verifying AppDir runtime imports..."
           AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, PIL, cryptography, configobj, urwid, vdf, steam, wsproto, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
+          test -x AppDir/bin/appimageupdatetool || { echo "::error::appimageupdatetool missing from AppDir"; exit 1; }
+          echo "appimageupdatetool present and executable."
 
       - name: Upload Assemble AppDir Log on Failure
         if: failure()
@@ -206,18 +228,92 @@ jobs:
       - name: Build AppImage with ZSync Update Information
         run: |
           CHANNEL="${{ steps.meta.outputs.channel }}"
-          
-          # Embed GitHub Releases zsync update info for delta update capabilities
-          UPDATE_INFO="gh-releases-zsync|niwia|ASSella|latest|ASSella.AppImage.zsync"
-          
+
+          # Embed GitHub Releases zsync update info for delta update capabilities.
+          #
+          # The 4th field is the release tag appimageupdatetool resolves. It MUST
+          # be channel-scoped, otherwise a canary user's updater follows the tag
+          # of whatever shipped most recently and silently crosses channels.
+          #
+          # It is deliberately NOT "latest": every release in this repo is marked
+          # prerelease=true, and GitHub's /releases/latest endpoint excludes
+          # prereleases, so "latest" resolves to HTTP 404. The in-app updater and
+          # any AppImageUpdate-based tool would then fail every update check.
+          # A wildcard tag makes each channel track only its own releases.
+          case "$CHANNEL" in
+            canary) UPDATE_TAG="*testing*" ;;
+            beta)   UPDATE_TAG="*beta*" ;;
+            *)      UPDATE_TAG="*" ;;
+          esac
+
+          UPDATE_INFO="gh-releases-zsync|niwia|ASSella|${UPDATE_TAG}|ASSella.AppImage.zsync"
+
+          echo "Channel: $CHANNEL"
           echo "Generating AppImage with update string: $UPDATE_INFO"
           ARCH=x86_64 appimagetool -n -u "$UPDATE_INFO" AppDir ASSella.AppImage
 
-          # Generate SHA256 checksums
+          # Regenerate the .zsync from the FINAL AppImage rather than trusting the
+          # one appimagetool emitted mid-build. appimagetool writes its .zsync
+          # before the runtime/pip payload is fully materialised, so the emitted
+          # file can describe a smaller/earlier image than the one we ship.
+          # That mismatch is what shipped in v2.7.0beta: the .zsync claimed
+          # Length 161573368 / SHA-1 910061bb... while the published AppImage was
+          # 301302976 bytes / c52815c1... A delta sync against that file produces
+          # a corrupt binary.
+          echo "Regenerating zsync index from final AppImage..."
+          rm -f ASSella.AppImage.zsync
+          zsyncmake -u "$UPDATE_INFO" -o ASSella.AppImage.zsync ASSella.AppImage
+
+          # Generate SHA256 checksums last, so they always describe the shipped bytes.
           sha256sum ASSella.AppImage > ASSella.AppImage.sha256
-          if [ -f "ASSella.AppImage.zsync" ]; then
-            sha256sum ASSella.AppImage.zsync > ASSella.AppImage.zsync.sha256
+          sha256sum ASSella.AppImage.zsync > ASSella.AppImage.zsync.sha256
+
+      - name: Verify Release Artifact Integrity
+        run: |
+          set -euo pipefail
+          echo "Cross-checking .zsync / .sha256 metadata against the actual AppImage..."
+
+          actual_size=$(stat -c%s ASSella.AppImage)
+          actual_sha1=$(sha1sum ASSella.AppImage | awk '{print $1}')
+
+          zsync_size=$(grep -i '^Length:' ASSella.AppImage.zsync | awk '{print $2}' | tr -d '\r')
+          zsync_sha1=$(grep -i '^SHA-1:' ASSella.AppImage.zsync | awk '{print $2}' | tr -d '\r')
+
+          fail=0
+          if [ "$zsync_size" != "$actual_size" ]; then
+            echo "::error::zsync Length mismatch — zsync=$zsync_size actual=$actual_size"
+            fail=1
+          else
+            echo "OK  zsync Length  = $actual_size"
           fi
+
+          if [ "$zsync_sha1" != "$actual_sha1" ]; then
+            echo "::error::zsync SHA-1 mismatch — zsync=$zsync_sha1 actual=$actual_sha1"
+            fail=1
+          else
+            echo "OK  zsync SHA-1   = $actual_sha1"
+          fi
+
+          if [ "$(awk '{print $1}' ASSella.AppImage.sha256)" != "$(sha256sum ASSella.AppImage | awk '{print $1}')" ]; then
+            echo "::error::ASSella.AppImage.sha256 does not match the AppImage"
+            fail=1
+          else
+            echo "OK  AppImage sha256 matches"
+          fi
+
+          # zsync must reference the delta target by the asset name actually published.
+          if ! grep -qi '^Filename:[[:space:]]*ASSella\.AppImage[[:space:]]*$' ASSella.AppImage.zsync; then
+            echo "::error::zsync Filename header does not match published asset name"
+            fail=1
+          else
+            echo "OK  zsync Filename header"
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Refusing to publish — delta updates would be corrupt."
+            exit 1
+          fi
+          echo "All release artifacts are internally consistent."
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
@@ -243,6 +339,11 @@ jobs:
             ASSella.AppImage.zsync
             ASSella.AppImage.sha256
             ASSella.AppImage.zsync.sha256
+          # Never let a stale asset from a previous run survive alongside a fresh
+          # AppImage — that is exactly how v2.7.0beta ended up with a .zsync that
+          # described a different binary.
+          fail_on_unmatched_files: true
+          overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
