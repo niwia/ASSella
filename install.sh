@@ -289,22 +289,114 @@ do_install() {
     echo -e "\n${YELLOW}[INFO] Installing / Updating ASSella...${NC}"
     mkdir -p "$INSTALL_DESTINATION"
 
-    # Backup existing ACCELA.AppImage if present
+    # NOTE: the existing binary is NOT backed up here. Rotation happens after
+    # the download has been verified, so a failed or corrupt install can never
+    # destroy the last known-good binary.
     if [ -f "$INSTALL_DESTINATION/ACCELA.AppImage" ] && [ ! -L "$INSTALL_DESTINATION/ACCELA.AppImage" ]; then
-        echo -e "${YELLOW}[INFO] Backing up existing ACCELA.AppImage to ACCELA.AppImage.bak...${NC}"
-        mv -f "$INSTALL_DESTINATION/ACCELA.AppImage" "$INSTALL_DESTINATION/ACCELA.AppImage.bak"
+        echo -e "${YELLOW}[INFO] Existing ACCELA.AppImage found (will back up after verification).${NC}"
     fi
 
-    # Fetch AppImage binary
+    # Fetch AppImage binary.
+    # Download to a temp file, verify, then move into place atomically. This
+    # prevents a truncated or corrupt download from ever becoming the installed
+    # binary, and stops a corrupt binary from being swept into the .bak
+    # rotation where --restore would later hand it back to the user.
     get_latest_github_version
     echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER)...${NC}"
-    if ! curl -fL -o "$INSTALL_DESTINATION/ASSella.AppImage" "$LATEST_URL"; then
-        echo -e "${RED}❌ Download failed! Please check your connection to GitHub.${NC}"
+
+    DL_TMP="$(mktemp "${INSTALL_DESTINATION}/.ASSella.AppImage.XXXXXX")" || {
+        echo -e "${RED}[ERROR] Could not create temp file in $INSTALL_DESTINATION${NC}"
+        pause_if_interactive
+        return 1
+    }
+
+    if ! curl -fL --progress-bar -o "$DL_TMP" "$LATEST_URL"; then
+        echo -e "${RED}[ERROR] Download failed! Please check your connection to GitHub.${NC}"
+        rm -f "$DL_TMP"
+        pause_if_interactive
+        return 1
+    fi
+
+    # --- Integrity check ----------------------------------------------------
+    # Each release publishes <asset>.sha256 next to the AppImage.
+    #
+    # Mismatch is fatal. A missing checksum is a warning only: older releases
+    # predate checksum publishing, and refusing them would lock users out of a
+    # perfectly working binary over absent metadata. Set ASSELLA_REQUIRE_SHA256=1
+    # to make a missing checksum fatal too, or ASSELLA_NO_VERIFY=1 to bypass.
+    local sha_state="missing"
+    local expected_sha="" actual_sha=""
+
+    if curl -fsL --max-time 20 -o "$DL_TMP.sha256" "${LATEST_URL}.sha256" 2>/dev/null; then
+        expected_sha=$(grep -oiE '[a-f0-9]{64}' "$DL_TMP.sha256" | head -n1)
+        if [ -z "$expected_sha" ]; then
+            sha_state="malformed"
+        else
+            if command -v sha256sum &>/dev/null; then
+                actual_sha=$(sha256sum "$DL_TMP" | awk '{print $1}')
+            elif command -v shasum &>/dev/null; then
+                actual_sha=$(shasum -a 256 "$DL_TMP" | awk '{print $1}')
+            fi
+            if [ -z "$actual_sha" ]; then
+                sha_state="notool"
+            elif [ "$(printf '%s' "$expected_sha" | tr 'A-F' 'a-f')" = "$(printf '%s' "$actual_sha" | tr 'A-F' 'a-f')" ]; then
+                sha_state="ok"
+            else
+                sha_state="mismatch"
+            fi
+        fi
+    fi
+    rm -f "$DL_TMP.sha256"
+
+    case "$sha_state" in
+        ok)
+            echo -e "${GREEN}[OK] SHA-256 verified: $actual_sha${NC}"
+            ;;
+        mismatch)
+            echo -e "${RED}${BOLD}[ERROR] CHECKSUM MISMATCH - download is corrupt or was tampered with.${NC}"
+            echo -e "${RED}  expected: $expected_sha${NC}"
+            echo -e "${RED}  actual:   $actual_sha${NC}"
+            if [ "${ASSELLA_NO_VERIFY:-0}" = "1" ]; then
+                echo -e "${YELLOW}ASSELLA_NO_VERIFY=1 set, continuing without verification.${NC}"
+            else
+                rm -f "$DL_TMP"
+                echo -e "${RED}Refusing to install. Your existing installation is untouched.${NC}"
+                echo -e "${YELLOW}If this release predates checksum publishing, re-run with${NC}"
+                echo -e "${YELLOW}ASSELLA_NO_VERIFY=1 to install it anyway.${NC}"
+                pause_if_interactive
+                return 1
+            fi
+            ;;
+        malformed|notool)
+            echo -e "${YELLOW}[WARN] Checksum unusable ($sha_state); cannot verify integrity.${NC}"
+            ;;
+        missing)
+            echo -e "${YELLOW}[WARN] No published .sha256 for this release; integrity NOT verified.${NC}"
+            if [ "${ASSELLA_REQUIRE_SHA256:-0}" = "1" ]; then
+                echo -e "${RED}[ERROR] ASSELLA_REQUIRE_SHA256=1 set, refusing unverified download.${NC}"
+                rm -f "$DL_TMP"
+                pause_if_interactive
+                return 1
+            fi
+            ;;
+    esac
+
+    # Promote the verified download into place, then rotate the previous binary
+    # into the .bak restore point so a previously-corrupt file is never kept.
+    if ! mv -f "$DL_TMP" "$INSTALL_DESTINATION/ASSella.AppImage"; then
+        echo -e "${RED}[ERROR] Failed to move the downloaded binary into place.${NC}"
+        rm -f "$DL_TMP"
         pause_if_interactive
         return 1
     fi
 
     chmod +x "$INSTALL_DESTINATION/ASSella.AppImage"
+
+    if [ -f "$INSTALL_DESTINATION/ACCELA.AppImage" ] && [ ! -L "$INSTALL_DESTINATION/ACCELA.AppImage" ]; then
+        echo -e "${YELLOW}[INFO] Backing up previous ACCELA.AppImage to ACCELA.AppImage.bak...${NC}"
+        mv -f "$INSTALL_DESTINATION/ACCELA.AppImage" "$INSTALL_DESTINATION/ACCELA.AppImage.bak"
+    fi
+
 
     # Save local version file
     echo "$LATEST_VER" > "$VERSION_FILE"
@@ -650,6 +742,10 @@ main() {
             echo "  --restore        Restore original ACCELA backup"
             echo "  --uninstall      Uninstall ASSella"
             echo "  --help, -h       Display this help message"
+            echo ""
+            echo "Environment:"
+            echo "  ASSELLA_REQUIRE_SHA256=1  Fail if a release publishes no .sha256"
+            echo "  ASSELLA_NO_VERIFY=1       Install even when the checksum mismatches"
             echo ""
             echo "Channels:"
             echo "  --stable         Target Stable releases (default if no branch keyword in tag)"
