@@ -24,8 +24,8 @@ def create_advanced_tab(dialog) -> QWidget:
     """Create the Advanced settings tab with specialized settings."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(24)
+    layout.setContentsMargins(12, 12, 12, 12)
+    layout.setSpacing(20)
 
     # Advanced Downloads Card
     adv_card, adv_layout = dialog._create_card_frame("Advanced Download Settings")
@@ -91,7 +91,7 @@ def create_advanced_tab(dialog) -> QWidget:
     ws_grid.setColumnStretch(0, 0)
     ws_grid.setColumnStretch(1, 1)
 
-    ws_max_dl_label = QLabel("Max Concurrent Workshop Downloads:")
+    ws_max_dl_label = QLabel("Concurrent Workshop Downloads:")
     ws_max_dl_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
 
     dialog.workshop_max_dl_slider = QSlider(Qt.Orientation.Horizontal)

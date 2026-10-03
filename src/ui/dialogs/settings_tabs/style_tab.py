@@ -22,10 +22,11 @@ def create_style_tab(dialog) -> QWidget:
     """Create the Theme settings tab."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(24)
+    layout.setContentsMargins(12, 12, 12, 12)
+    layout.setSpacing(20)
 
     desc_lbl = QLabel("Customize the visual appearance, accent colors, and font settings of ASSella.")
+    desc_lbl.setWordWrap(True)
     desc_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; border: none; background: transparent;")
     layout.addWidget(desc_lbl)
 

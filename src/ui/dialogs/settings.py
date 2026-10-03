@@ -47,9 +47,9 @@ class SettingsDialog(QDialog):
         self.sls_version_check_signal.connect(self._handle_sls_version_check_done)
         self._initial_tab = initial_tab
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(565)
+        self.setMinimumWidth(580)
         self.setMinimumHeight(530)
-        self.resize(565, 530)
+        self.resize(580, 530)
         self.settings = get_settings()
         self.main_window = parent
         self.accent_color = self.settings.value("accent_color", "#C06C84")
@@ -301,8 +301,8 @@ class SettingsDialog(QDialog):
         self._nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._nav_font = QFont()
-        self._nav_font.setPointSize(11)
-        self._nav_font.setBold(True)
+        self._nav_font.setPointSize(10)
+        self._nav_font.setWeight(QFont.Weight.Normal)
         self._nav_list.setFont(self._nav_font)
 
         self._nav_list.setStyleSheet(f"""

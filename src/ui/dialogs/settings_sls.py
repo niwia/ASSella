@@ -233,8 +233,8 @@ def create_sls_tab(dialog) -> QWidget:
     """Relocate Steam/SLS settings, ASShead fixer, and implement updater UI."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(24)
+    layout.setContentsMargins(12, 12, 12, 12)
+    layout.setSpacing(20)
 
     # 1. Integration Card
     int_card, int_layout = dialog._create_card_frame("SLS Settings")
@@ -323,7 +323,6 @@ def create_sls_tab(dialog) -> QWidget:
         online_ver_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 9.5pt;")
         updater_layout.addWidget(online_ver_label)
 
-        btn_layout = QHBoxLayout()
         check_btn = QPushButton("Check for Updates")
         update_btn = QPushButton("Update / Reinstall SLSsteam")
         update_btn.setEnabled(False)
@@ -401,8 +400,11 @@ def create_sls_tab(dialog) -> QWidget:
         check_btn.clicked.connect(trigger_check)
         update_btn.clicked.connect(trigger_update)
 
-        btn_layout.addWidget(check_btn)
-        btn_layout.addWidget(update_btn)
+        btn_layout_top = QHBoxLayout()
+        btn_layout_top.setSpacing(8)
+        btn_layout_top.addWidget(check_btn)
+        btn_layout_top.addWidget(update_btn)
+        updater_layout.addLayout(btn_layout_top)
         
         # ── Headcrab Button Placement ────────────────────────────────────
         headcrab_btn = QPushButton()
@@ -416,9 +418,12 @@ def create_sls_tab(dialog) -> QWidget:
 
         update_headcrab_btn_text()
         headcrab_btn.clicked.connect(lambda: run_headcrab(dialog, update_headcrab_btn_text))
-        btn_layout.addWidget(headcrab_btn)
-
-        updater_layout.addLayout(btn_layout)
+        
+        btn_layout_bottom = QHBoxLayout()
+        btn_layout_bottom.setSpacing(8)
+        btn_layout_bottom.addWidget(headcrab_btn)
+        btn_layout_bottom.addStretch()
+        updater_layout.addLayout(btn_layout_bottom)
 
         # Smart version prompt: if the local installation is missing a version tracking file
         # but exists on the system, suggest installing to create the register file.
@@ -457,6 +462,8 @@ def create_sls_tab(dialog) -> QWidget:
             online_ver_label.setText(f"Latest Online: Error ({update_error[:30]}...)")
             online_ver_label.setStyleSheet("color: #cc4444;")
 
+        layout.addWidget(updater_card)
+
     # 4. Generate & Share Tickets (Experimental) Card
     ticket_card, ticket_layout = dialog._create_card_frame("Generate & Share Tickets (Experimental)")
     ticket_layout.setSpacing(12)
@@ -486,6 +493,8 @@ def create_sls_tab(dialog) -> QWidget:
     combo_row.setSpacing(6)
 
     game_combo = QComboBox()
+    game_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    game_combo.setMinimumContentsLength(16)
     game_combo.setStyleSheet("""
         QComboBox {
             background: rgba(255, 255, 255, 0.08);
@@ -507,7 +516,8 @@ def create_sls_tab(dialog) -> QWidget:
     combo_row.addWidget(game_combo, 1)
 
     refresh_btn = QPushButton("Refresh")
-    refresh_btn.setFixedWidth(70)
+    refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    refresh_btn.setStyleSheet("padding: 5px 12px; font-size: 9pt;")
 
     def _refresh_tickets():
         game_combo.clear()
@@ -528,7 +538,7 @@ def create_sls_tab(dialog) -> QWidget:
     app_export_lay.setSpacing(6)
 
     appid_input = QLineEdit()
-    appid_input.setPlaceholderText("Or enter custom AppID (e.g. 1086940)")
+    appid_input.setPlaceholderText("Or enter AppID (e.g. 1086940)")
     appid_input.setStyleSheet("""
         QLineEdit {
             background: rgba(255, 255, 255, 0.08);
@@ -547,7 +557,8 @@ def create_sls_tab(dialog) -> QWidget:
 
     game_combo.currentIndexChanged.connect(_on_game_selected)
 
-    export_single_btn = QPushButton("Export Selected Ticket")
+    export_single_btn = QPushButton("Export Ticket")
+    export_single_btn.setToolTip("Export ownership ticket for the selected game or entered AppID.")
     export_single_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.15); color: #FFFFFF; border-radius: 4px; padding: 6px 12px;")
 
     def _do_export_single():

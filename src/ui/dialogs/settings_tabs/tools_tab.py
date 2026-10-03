@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QLabel,
     QComboBox,
     QPushButton,
@@ -30,15 +31,16 @@ def create_tools_tab(dialog) -> QWidget:
     """Create the Tools settings tab."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(24)
+    layout.setContentsMargins(12, 12, 12, 12)
+    layout.setSpacing(20)
 
     # Tools Card
     tools_card, tools_layout = dialog._create_card_frame("Tools")
 
-    tools_btn_row = QHBoxLayout()
-    tools_btn_row.setContentsMargins(0, 4, 0, 4)
-    tools_btn_row.setSpacing(10)
+    tools_btn_grid = QGridLayout()
+    tools_btn_grid.setContentsMargins(0, 4, 0, 4)
+    tools_btn_grid.setHorizontalSpacing(10)
+    tools_btn_grid.setVerticalSpacing(8)
 
     tool_btn_style = """
         QPushButton {
@@ -66,24 +68,23 @@ def create_tools_tab(dialog) -> QWidget:
     dialog.configure_achievements_btn.setStyleSheet(tool_btn_style)
     dialog.configure_achievements_btn.setToolTip("Perform one-time setup and authenticate Steam for achievements.")
     dialog.configure_achievements_btn.clicked.connect(lambda: run_schema_grabber_manually(dialog))
-    tools_btn_row.addWidget(dialog.configure_achievements_btn)
+    tools_btn_grid.addWidget(dialog.configure_achievements_btn, 0, 0)
 
     dialog.steamless_py_btn = QPushButton("Steamless (Python)")
     dialog.steamless_py_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.steamless_py_btn.setStyleSheet(tool_btn_style)
     dialog.steamless_py_btn.setToolTip("Run Steamless AIO (Python) manually on a game .exe.")
     dialog.steamless_py_btn.clicked.connect(lambda: run_steamless_aio_manually(dialog))
-    tools_btn_row.addWidget(dialog.steamless_py_btn)
+    tools_btn_grid.addWidget(dialog.steamless_py_btn, 0, 1)
 
     dialog.steamless_legacy_btn = QPushButton("Steamless (.NET CLI)")
     dialog.steamless_legacy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.steamless_legacy_btn.setStyleSheet(tool_btn_style)
     dialog.steamless_legacy_btn.setToolTip("Run Steamless (.NET 9 CLI) manually on a game .exe.")
     dialog.steamless_legacy_btn.clicked.connect(lambda: run_steamless_manually(dialog))
-    tools_btn_row.addWidget(dialog.steamless_legacy_btn)
+    tools_btn_grid.addWidget(dialog.steamless_legacy_btn, 1, 0)
 
-    tools_btn_row.addStretch()
-    tools_layout.addLayout(tools_btn_row)
+    tools_layout.addLayout(tools_btn_grid)
     layout.addWidget(tools_card)
 
 
@@ -110,12 +111,11 @@ def create_tools_tab(dialog) -> QWidget:
     # Logging Configuration Card
     log_card, log_layout = dialog._create_card_frame("Logging Configuration")
 
-    log_row = QHBoxLayout()
-    log_row.setContentsMargins(0, 4, 0, 4)
-    log_row.setSpacing(24)
+    log_grid = QGridLayout()
+    log_grid.setContentsMargins(0, 4, 0, 4)
+    log_grid.setHorizontalSpacing(12)
+    log_grid.setVerticalSpacing(8)
 
-    level_box = QHBoxLayout()
-    level_box.setSpacing(8)
     level_label = QLabel("Log Level:")
     level_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500;")
     level_label.setToolTip(
@@ -127,16 +127,15 @@ def create_tools_tab(dialog) -> QWidget:
     _current_level = dialog.settings.value("log_filter_level", "DEBUG") or "DEBUG"
     idx = dialog.log_level_combo.findText(_current_level)
     dialog.log_level_combo.setCurrentIndex(idx if idx >= 0 else 0)
-    level_box.addWidget(level_label)
-    level_box.addWidget(dialog.log_level_combo)
-    log_row.addLayout(level_box)
+    log_grid.addWidget(level_label, 0, 0)
+    log_grid.addWidget(dialog.log_level_combo, 0, 1)
 
-    cat_box = QHBoxLayout()
-    cat_box.setSpacing(8)
     cat_label = QLabel("Log Filter:")
     cat_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500;")
     cat_label.setToolTip("Restrict logs to a specific module group.")
     dialog.log_category_combo = QComboBox()
+    dialog.log_category_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    dialog.log_category_combo.setMinimumContentsLength(16)
     dialog.log_category_combo.addItems([
         "All Modules",
         "Only Steam Client & API",
@@ -146,12 +145,10 @@ def create_tools_tab(dialog) -> QWidget:
     _current_cat = dialog.settings.value("log_filter_category", "All Modules") or "All Modules"
     cat_idx = dialog.log_category_combo.findText(_current_cat)
     dialog.log_category_combo.setCurrentIndex(cat_idx if cat_idx >= 0 else 0)
-    cat_box.addWidget(cat_label)
-    cat_box.addWidget(dialog.log_category_combo)
-    log_row.addLayout(cat_box)
+    log_grid.addWidget(cat_label, 1, 0)
+    log_grid.addWidget(dialog.log_category_combo, 1, 1)
 
-    log_row.addStretch()
-    log_layout.addLayout(log_row)
+    log_layout.addLayout(log_grid)
 
     _log_note = QLabel("Changes take effect immediately when you click OK.")
     _log_note.setStyleSheet("color: #888888; font-size: 11px;")

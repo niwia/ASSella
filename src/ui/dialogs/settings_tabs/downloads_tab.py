@@ -26,8 +26,8 @@ def create_downloads_tab(dialog) -> QWidget:
     """Create the Downloads settings tab with General and Depot selection sub-tabs."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(16)
+    layout.setContentsMargins(10, 10, 10, 10)
+    layout.setSpacing(14)
 
     # Create sub-tabs inside Downloads
     dl_subtabs = QTabWidget()
@@ -86,20 +86,22 @@ def create_downloads_tab(dialog) -> QWidget:
     )
     dl_layout.addWidget(dialog.use_lancache_checkbox)
 
-    dl_layout.addSpacing(8)
+    dl_layout.addSpacing(6)
 
-    # Inputs Grid for Download Settings (Download Location, Max Downloads)
-    loc_row = QHBoxLayout()
-    loc_row.setContentsMargins(2, 2, 2, 2)
-    loc_row.setSpacing(10)
+    # Download Location (stacked label + combobox for robust fitting)
+    loc_box = QVBoxLayout()
+    loc_box.setContentsMargins(0, 2, 0, 4)
+    loc_box.setSpacing(6)
 
     dl_dir_label = QLabel("Default Download Location:")
     dl_dir_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
     dl_dir_label.setToolTip("Direct downloads to this folder/library instead of prompting for every game. Defaults to Ask Every Time.")
-    loc_row.addWidget(dl_dir_label, 1)
+    loc_box.addWidget(dl_dir_label)
 
     dialog.dl_location_combo = QComboBox()
     dialog.dl_location_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.dl_location_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    dialog.dl_location_combo.setMinimumContentsLength(18)
     dialog.dl_location_combo.addItem("Ask Every Time", "")
 
     def _fmt_path(p: str) -> str:
@@ -162,8 +164,8 @@ def create_downloads_tab(dialog) -> QWidget:
                 dialog.dl_location_combo.setCurrentIndex(0)
 
     dialog.dl_location_combo.currentIndexChanged.connect(on_dl_location_changed)
-    loc_row.addWidget(dialog.dl_location_combo)
-    dl_layout.addLayout(loc_row)
+    loc_box.addWidget(dialog.dl_location_combo)
+    dl_layout.addLayout(loc_box)
 
     slider_layout = QHBoxLayout()
     slider_layout.setContentsMargins(2, 2, 2, 2)
@@ -235,8 +237,9 @@ def create_downloads_tab(dialog) -> QWidget:
     hide_card_lay.addSpacing(6)
 
     grid = QGridLayout()
-    grid.setSpacing(10)
-    grid.setContentsMargins(4, 4, 4, 4)
+    grid.setHorizontalSpacing(8)
+    grid.setVerticalSpacing(8)
+    grid.setContentsMargins(2, 4, 2, 4)
 
     from utils.color_utils import get_best_foreground_color
     text_on_accent = get_best_foreground_color(dialog.accent_color, dark_color="#121214", light_color="#FFFFFF")
