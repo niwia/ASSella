@@ -47,9 +47,9 @@ class SettingsDialog(QDialog):
         self.sls_version_check_signal.connect(self._handle_sls_version_check_done)
         self._initial_tab = initial_tab
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(550)
+        self.setMinimumWidth(565)
         self.setMinimumHeight(530)
-        self.resize(550, 530)
+        self.resize(565, 530)
         self.settings = get_settings()
         self.main_window = parent
         self.accent_color = self.settings.value("accent_color", "#C06C84")
@@ -295,10 +295,16 @@ class SettingsDialog(QDialog):
 
         # Left nav sidebar
         self._nav_list = QListWidget()
-        self._nav_list.setFixedWidth(135)
+        self._nav_list.setFixedWidth(145)
         self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._nav_font = QFont()
+        self._nav_font.setPointSize(11)
+        self._nav_font.setBold(True)
+        self._nav_list.setFont(self._nav_font)
+
         self._nav_list.setStyleSheet(f"""
             QListWidget {{
                 background-color: rgba(0, 0, 0, 0.28);
@@ -308,11 +314,9 @@ class SettingsDialog(QDialog):
                 outline: none;
             }}
             QListWidget::item {{
-                color: rgba(255, 255, 255, 0.65);
-                padding: 9px 14px;
+                color: rgba(255, 255, 255, 0.70);
+                padding: 10px 16px;
                 border: none;
-                font-size: 10pt;
-                font-weight: bold;
                 letter-spacing: 0.2px;
                 border-radius: 0px;
             }}
@@ -324,9 +328,7 @@ class SettingsDialog(QDialog):
                 background-color: rgba(255, 255, 255, 0.04);
                 color: {ac};
                 border-left: 3.5px solid {ac};
-                padding-left: 10.5px;
-                font-size: 10pt;
-                font-weight: bold;
+                padding-left: 12.5px;
             }}
         """)
 
@@ -358,6 +360,7 @@ class SettingsDialog(QDialog):
 
                 idx = self._stack.addWidget(page)
                 item = QListWidgetItem(label)
+                item.setFont(self._nav.font())
                 item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                 self._nav.addItem(item)
                 self._tabs[label] = idx
