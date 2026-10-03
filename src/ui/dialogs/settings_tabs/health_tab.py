@@ -85,7 +85,7 @@ class HealthStatusTile(QPushButton):
 def create_rec_setting_row(title: str, desc: str, checkbox: QCheckBox) -> QWidget:
     row = QWidget()
     row.setObjectName("rec_setting_row")
-    row.setFixedHeight(52)
+    row.setMinimumHeight(48)
     row.setStyleSheet("""
         QWidget#rec_setting_row {
             background-color: rgba(255, 255, 255, 0.03);
@@ -102,13 +102,13 @@ def create_rec_setting_row(title: str, desc: str, checkbox: QCheckBox) -> QWidge
     h.setSpacing(12)
 
     col = QVBoxLayout()
-    col.setSpacing(1)
+    col.setSpacing(2)
 
     t_lbl = QLabel(title)
-    t_lbl.setStyleSheet("font-size: 9pt; font-weight: 600; color: #FFFFFF; border: none; background: transparent;")
+    t_lbl.setStyleSheet("font-size: 9.5pt; font-weight: 600; color: #FFFFFF; border: none; background: transparent;")
     d_lbl = QLabel(desc)
-    d_lbl.setStyleSheet("font-size: 7.8pt; color: rgba(255, 255, 255, 0.55); border: none; background: transparent;")
-    d_lbl.setWordWrap(False)
+    d_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.55); border: none; background: transparent;")
+    d_lbl.setWordWrap(True)
 
     col.addWidget(t_lbl)
     col.addWidget(d_lbl)
@@ -151,6 +151,7 @@ def create_health_tab(dialog) -> QWidget:
 
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
 
     container = QWidget()
@@ -163,7 +164,7 @@ def create_health_tab(dialog) -> QWidget:
 
     tiles_row = QHBoxLayout()
     tiles_row.setContentsMargins(0, 4, 0, 4)
-    tiles_row.setSpacing(12)
+    tiles_row.setSpacing(10)
 
     dialog.health_sls_bin_btn = HealthStatusTile("SLSsteam Binary")
     dialog.health_sls_bin_btn.clicked.connect(lambda: on_sls_bin_tile_clicked(dialog))
@@ -187,6 +188,7 @@ def create_health_tab(dialog) -> QWidget:
     dialog.health_sls_path_lbl = QLabel("Binary Path: Checking...")
     dialog.health_sls_path_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8.5pt; font-family: monospace; border: none; background: transparent;")
     dialog.health_sls_path_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    dialog.health_sls_path_lbl.setWordWrap(True)
     path_row.addWidget(dialog.health_sls_path_lbl, 1)
 
     dialog.health_refresh_btn = QPushButton("Refresh Status")
@@ -283,7 +285,6 @@ def create_health_tab(dialog) -> QWidget:
 
     # ── 3. Recommended Settings ──────────────────────────────
     rec_card, rec_layout = dialog._create_card_frame("")
-    rec_card.setContentsMargins(0, 0, 0, 0)
     rec_header_row = QHBoxLayout()
     rec_header_row.setContentsMargins(0, 0, 0, 2)
     rec_title_lbl = QLabel("Recommended Settings")

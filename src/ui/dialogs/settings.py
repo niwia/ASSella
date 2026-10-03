@@ -46,9 +46,9 @@ class SettingsDialog(QDialog):
         self.sls_version_check_signal.connect(self._handle_sls_version_check_done)
         self._initial_tab = initial_tab
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(525)
-        self.setMinimumHeight(650)
-        self.resize(525, 650)
+        self.setMinimumWidth(680)
+        self.setMinimumHeight(680)
+        self.resize(680, 680)
         self.settings = get_settings()
         self.main_window = parent
         self.accent_color = self.settings.value("accent_color", "#C06C84")
@@ -253,6 +253,26 @@ class SettingsDialog(QDialog):
                 border: 1px solid rgba(255, 255, 255, 0.12) !important;
                 color: rgba(255, 255, 255, 0.38) !important;
             }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+                min-height: 28px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: rgba(255, 255, 255, 0.30);
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+                background: none;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
         """)
 
         self.main_layout = QVBoxLayout(self)
@@ -274,35 +294,37 @@ class SettingsDialog(QDialog):
 
         # Left nav sidebar
         self._nav_list = QListWidget()
-        self._nav_list.setFixedWidth(130)
+        self._nav_list.setFixedWidth(160)
         self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav_list.setStyleSheet(f"""
             QListWidget {{
-                background-color: rgba(0, 0, 0, 0.25);
+                background-color: rgba(0, 0, 0, 0.28);
                 border: none;
-                border-right: 1px solid rgba(255, 255, 255, 0.07);
-                padding: 8px 0px;
+                border-right: 1px solid rgba(255, 255, 255, 0.08);
+                padding: 10px 0px;
                 outline: none;
             }}
             QListWidget::item {{
-                color: rgba(255, 255, 255, 0.55);
-                padding: 10px 14px;
+                color: rgba(255, 255, 255, 0.58);
+                padding: 12px 18px;
                 border: none;
-                font-size: 9pt;
+                font-size: 10.5pt;
                 font-weight: 600;
+                letter-spacing: 0.2px;
                 border-radius: 0px;
             }}
             QListWidget::item:hover {{
                 background-color: rgba(255, 255, 255, 0.07);
-                color: rgba(255, 255, 255, 0.85);
+                color: rgba(255, 255, 255, 0.90);
             }}
             QListWidget::item:selected {{
-                background-color: transparent;
+                background-color: rgba(255, 255, 255, 0.04);
                 color: {ac};
-                border-left: 3px solid {ac};
-                padding-left: 11px;
+                border-left: 3.5px solid {ac};
+                padding-left: 14.5px;
+                font-weight: 700;
             }}
         """)
 
