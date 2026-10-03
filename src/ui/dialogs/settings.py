@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -46,9 +47,9 @@ class SettingsDialog(QDialog):
         self.sls_version_check_signal.connect(self._handle_sls_version_check_done)
         self._initial_tab = initial_tab
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(680)
-        self.setMinimumHeight(680)
-        self.resize(680, 680)
+        self.setMinimumWidth(550)
+        self.setMinimumHeight(530)
+        self.resize(550, 530)
         self.settings = get_settings()
         self.main_window = parent
         self.accent_color = self.settings.value("accent_color", "#C06C84")
@@ -294,7 +295,7 @@ class SettingsDialog(QDialog):
 
         # Left nav sidebar
         self._nav_list = QListWidget()
-        self._nav_list.setFixedWidth(160)
+        self._nav_list.setFixedWidth(135)
         self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -303,28 +304,29 @@ class SettingsDialog(QDialog):
                 background-color: rgba(0, 0, 0, 0.28);
                 border: none;
                 border-right: 1px solid rgba(255, 255, 255, 0.08);
-                padding: 10px 0px;
+                padding: 6px 0px;
                 outline: none;
             }}
             QListWidget::item {{
-                color: rgba(255, 255, 255, 0.58);
-                padding: 12px 18px;
+                color: rgba(255, 255, 255, 0.65);
+                padding: 9px 14px;
                 border: none;
-                font-size: 10.5pt;
-                font-weight: 600;
+                font-size: 10pt;
+                font-weight: bold;
                 letter-spacing: 0.2px;
                 border-radius: 0px;
             }}
             QListWidget::item:hover {{
                 background-color: rgba(255, 255, 255, 0.07);
-                color: rgba(255, 255, 255, 0.90);
+                color: #FFFFFF;
             }}
             QListWidget::item:selected {{
                 background-color: rgba(255, 255, 255, 0.04);
                 color: {ac};
                 border-left: 3.5px solid {ac};
-                padding-left: 14.5px;
-                font-weight: 700;
+                padding-left: 10.5px;
+                font-size: 10pt;
+                font-weight: bold;
             }}
         """)
 
@@ -344,7 +346,17 @@ class SettingsDialog(QDialog):
                 self._tabs: dict[str, int] = {}
 
             def addTab(self, widget, label):
-                idx = self._stack.addWidget(widget)
+                if isinstance(widget, QScrollArea) or widget.findChild(QScrollArea):
+                    page = widget
+                else:
+                    scroll = QScrollArea()
+                    scroll.setWidgetResizable(True)
+                    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+                    scroll.setWidget(widget)
+                    page = scroll
+
+                idx = self._stack.addWidget(page)
                 item = QListWidgetItem(label)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                 self._nav.addItem(item)

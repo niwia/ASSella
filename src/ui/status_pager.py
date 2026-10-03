@@ -207,20 +207,20 @@ class StatusPagerWidget(QFrame):
         accent = settings.value("accent_color", "#C06C84")
         bg_color = settings.value("background_color", "#000000")
 
-        # Register bundled typewriter/calculator fonts if not already registered
+        # Register bundled digital LCD / calculator fonts if not already registered
         from PyQt6.QtGui import QFontDatabase
         from utils.helpers import get_base_path
         
-        trixie_path = get_base_path() / "src" / "res" / "TrixieCyrG-Plain Regular.otf"
-        if trixie_path.exists():
-            QFontDatabase.addApplicationFont(str(trixie_path))
+        digital_path = get_base_path() / "src" / "res" / "digital-7 (mono).ttf"
+        if digital_path.exists():
+            QFontDatabase.addApplicationFont(str(digital_path))
             
         sonic_path = get_base_path() / "src" / "res" / "sonic" / "sonic-1-hud-font.otf"
         if sonic_path.exists():
             QFontDatabase.addApplicationFont(str(sonic_path))
 
-        # Prioritize typewriter (TrixieCyrG-Plain) and calculator (Sonic 1 HUD Font)
-        font_family = "TrixieCyrG-Plain, Sonic 1 HUD Font, Courier New, Consolas, monospace"
+        # Prioritize LCD Digital font (Digital-7 Mono)
+        font_family = "'Digital-7 Mono', 'Sonic 1 HUD Font', 'Courier New', Consolas, monospace"
 
         # Retro LCD styling: dark recessed container, monospace text
         self.setStyleSheet(
@@ -234,8 +234,9 @@ class StatusPagerWidget(QFrame):
             QLabel {{
                 color: {accent};
                 font-family: {font_family};
-                font-size: 12px;
+                font-size: 13px;
                 font-weight: bold;
+                letter-spacing: 0.8px;
                 border: none;
                 background: transparent;
             }}

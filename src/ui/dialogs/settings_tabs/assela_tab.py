@@ -27,11 +27,15 @@ def create_assela_tab(dialog) -> QWidget:
     """Create the ASSella settings tab."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(24)
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(10)
+
+    _ROW_CONTROL_W = 160
+    _ROW_CONTROL_H = 32
 
     # Section 1 Card: ASSella Settings
     assella_card, assella_lay = dialog._create_card_frame("ASSella Settings")
+    assella_lay.setSpacing(10)
 
     # 1. Smart Selection
     dialog.smart_depot_selection_checkbox = create_checkbox_setting(
@@ -73,7 +77,8 @@ def create_assela_tab(dialog) -> QWidget:
     dialog.app_update_channel_combo.addItem("Beta", "beta")
     dialog.app_update_channel_combo.addItem("Canary", "canary")
     dialog.app_update_channel_combo.addItem("Stable", "stable")
-    dialog.app_update_channel_combo.setFixedWidth(135)
+    dialog.app_update_channel_combo.setFixedWidth(_ROW_CONTROL_W)
+    dialog.app_update_channel_combo.setFixedHeight(_ROW_CONTROL_H)
 
     saved_channel = dialog.settings.value("app_update_channel", "auto", type=str) or "auto"
     c_idx = dialog.app_update_channel_combo.findData(saved_channel)
@@ -105,7 +110,8 @@ def create_assela_tab(dialog) -> QWidget:
     dialog.isp_gateway_combo.addItem("DoH", "doh")
     dialog.isp_gateway_combo.addItem("Tor", "tor")
     dialog.isp_gateway_combo.addItem("Wire", "wirecutter")
-    dialog.isp_gateway_combo.setFixedWidth(115)
+    dialog.isp_gateway_combo.setFixedWidth(_ROW_CONTROL_W)
+    dialog.isp_gateway_combo.setFixedHeight(_ROW_CONTROL_H)
 
     # Load saved mode
     saved_mode = dialog.settings.value("isp_bypass_mode", "auto", type=str)
@@ -268,28 +274,8 @@ def create_assela_tab(dialog) -> QWidget:
     )
 
     dialog.update_provider_combo = QComboBox()
-    dialog.update_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-    dialog.update_provider_combo.setStyleSheet("""
-        QComboBox {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 6px;
-            padding: 4px 12px;
-            color: #FFFFFF;
-            font-size: 9pt;
-            min-width: 130px;
-        }
-        QComboBox:hover {
-            background: rgba(255, 255, 255, 0.08);
-            border-color: rgba(255, 255, 255, 0.25);
-        }
-        QComboBox QAbstractItemView {
-            background: #1e1e24;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            color: #FFFFFF;
-            selection-background-color: %s;
-        }
-    """ % dialog.accent_color)
+    dialog.update_provider_combo.setFixedWidth(_ROW_CONTROL_W)
+    dialog.update_provider_combo.setFixedHeight(_ROW_CONTROL_H)
     dialog.update_provider_combo.addItem("Auto (Hybrid)", "auto")
     dialog.update_provider_combo.addItem("SteamPICS", "steampics")
     dialog.update_provider_combo.addItem("SteamcmdAPI", "steamcmd")
@@ -323,7 +309,8 @@ def create_assela_tab(dialog) -> QWidget:
 
     dialog.spliced_ticket_btn = QPushButton("Spliced Ticket Plugin")
     dialog.spliced_ticket_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.spliced_ticket_btn.setFixedWidth(160)
+    dialog.spliced_ticket_btn.setFixedWidth(_ROW_CONTROL_W)
+    dialog.spliced_ticket_btn.setFixedHeight(_ROW_CONTROL_H)
     dialog.spliced_ticket_btn.clicked.connect(lambda: handle_spliced_ticket_click(dialog))
     spliced_row.addWidget(dialog.spliced_ticket_btn)
     assella_lay.addLayout(spliced_row)
@@ -557,9 +544,10 @@ def update_spliced_ticket_btn_state(dialog) -> None:
                     border: 1px solid rgba(46, 204, 113, 0.5);
                     border-radius: 8px;
                     color: #2ECC71;
-                    padding: 7px 14px;
-                    font-size: 9pt;
+                    padding: 5px 10px;
+                    font-size: 8.5pt;
                     font-weight: 600;
+                    min-height: 24px;
                 }
                 QPushButton:hover {
                     background-color: rgba(46, 204, 113, 0.25);
@@ -578,9 +566,10 @@ def update_spliced_ticket_btn_state(dialog) -> None:
                     border: 1px solid rgba(255, 255, 255, 0.18);
                     border-radius: 8px;
                     color: #FFFFFF;
-                    padding: 7px 14px;
-                    font-size: 9pt;
+                    padding: 5px 10px;
+                    font-size: 8.5pt;
                     font-weight: 500;
+                    min-height: 24px;
                 }
                 QPushButton:hover {
                     background-color: rgba(255, 255, 255, 0.16);
