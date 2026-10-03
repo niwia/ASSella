@@ -40,6 +40,13 @@ scratch/
 .DS_Store
 Thumbs.db
 
+# ── Local release build scratch ─────────────────────────────────────────────
+# packaging/arch/ holds tracked templates; packaging/arch-build/ is generated
+# by the release workflow and must never be committed.
+packaging/arch-build/
+verify-build/
+squashfs-root/
+
 # ── Local release verification scratch ──────────────────────────────────────
 # Build outputs from scripts/verify_release.sh
 verify-build/
