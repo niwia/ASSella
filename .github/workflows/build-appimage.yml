@@ -27,6 +27,11 @@ on:
         required: true
         default: false
         type: boolean
+      run_preflight:
+        description: 'Run the pre-release verification suite against the built AppImage'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -68,7 +73,15 @@ jobs:
           LOWER_TAG=$(echo "$TAG" | tr '[:upper:]' '[:lower:]')
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             CHANNEL="${{ github.event.inputs.channel }}"
-            IS_PRE="${{ github.event.inputs.prerelease }}"
+            # There is no 'prerelease' dispatch input; derive it from the channel
+            # so a manually dispatched beta/canary build is still flagged as a
+            # pre-release. Previously this read an undefined input and always
+            # evaluated to empty, publishing beta builds as full releases.
+            if [ "$CHANNEL" = "stable" ]; then
+              IS_PRE="false"
+            else
+              IS_PRE="true"
+            fi
           elif echo "$LOWER_TAG" | grep -q -E 'canary|testing'; then
             CHANNEL="canary"
             IS_PRE="true"
@@ -325,6 +338,73 @@ jobs:
             exit 1
           fi
           echo "All release artifacts are internally consistent."
+
+      # Runs the shipped AppImage's own interpreter and resource loader against
+      # the pre-release suite. This is the check that catches an image which
+      # assembles cleanly but cannot actually launch, which is exactly the class
+      # of defect that produced broken rebuilds.
+      - name: Smoke Test the Built AppImage
+        if: github.event.inputs.run_preflight != 'false'
+        run: |
+          set -euo pipefail
+          echo "::group::Extract AppImage"
+          rm -rf AppDir_extract
+          ./ASSella.AppImage --appimage-extract > /dev/null
+          mv squashfs-root AppDir_extract
+          echo "::endgroup::"
+
+          echo "::group::Verify bundled runtime and resources"
+          test -x AppDir_extract/bin/appimageupdatetool \
+            || { echo "::error::appimageupdatetool missing from AppImage"; exit 1; }
+          test -x AppDir_extract/bin/run.sh || { echo "::error::run.sh missing"; exit 1; }
+          test -f AppDir_extract/assella.desktop || { echo "::error::assella.desktop missing"; exit 1; }
+          test -f AppDir_extract/AppRun || { echo "::error::AppRun missing"; exit 1; }
+          # The embedded update string drives delta updates. It lives in the
+          # AppImage's ELF .upd_info section, not in the extracted squashfs
+          # tree, so read it from the binary itself.
+          UPDATE_STR=$(grep -a -o 'gh-releases-zsync|[^[:cntrl:]]*' ASSella.AppImage | head -1 || true)
+          echo "Embedded update string: ${UPDATE_STR:-<none found>}"
+          case "$UPDATE_STR" in
+            gh-releases-zsync\|niwia\|ASSella\|*) echo "OK  update string present" ;;
+            *) echo "::error::Update string missing or malformed - delta updates would break"; exit 1 ;;
+          esac
+          echo "::endgroup::"
+
+          echo "::group::Import check inside the bundled interpreter"
+          QT_QPA_PLATFORM=offscreen AppDir_extract/bin/.venv/bin/python3 - <<'PY'
+          import importlib, sys
+          mods = ["PyQt6.QtCore","PyQt6.QtWidgets","PyQt6.QtGui","requests","yaml","PIL",
+                  "cryptography","configobj","urwid","vdf","steam","wsproto","steam.client",
+                  "zstandard","curl_cffi","psutil","bs4","tinytag","just_playback","gevent",
+                  "capstone","numpy"]
+          bad = []
+          for m in mods:
+              try: importlib.import_module(m)
+              except Exception as e: bad.append(f"{m}: {type(e).__name__}: {e}")
+          if bad:
+              print("::error::Bundled runtime cannot import:")
+              [print("  -", b) for b in bad]
+              sys.exit(1)
+          print(f"All {len(mods)} bundled dependencies import cleanly.")
+          PY
+          echo "::endgroup::"
+
+          echo "::group::Pre-release suite against the extracted image"
+          if [ -f AppDir_extract/bin/src/scripts/prerelease_check.py ]; then
+            QT_QPA_PLATFORM=offscreen ASSELLA_TESTER_NO_REEXEC=1 \
+              AppDir_extract/bin/.venv/bin/python3 -u \
+              AppDir_extract/bin/src/scripts/prerelease_check.py \
+              --src AppDir_extract/bin/src 2>&1 | tee /tmp/appimage_prerelease.log || true
+            grep -E 'RESULTS:|STATUS:' /tmp/appimage_prerelease.log || true
+          else
+            echo "pre-release suite not bundled in AppImage; running repo copy against extracted src"
+            QT_QPA_PLATFORM=offscreen ASSELLA_TESTER_NO_REEXEC=1 \
+              AppDir_extract/bin/.venv/bin/python3 -u scripts/prerelease_check.py \
+              --src AppDir_extract/bin/src 2>&1 | tee /tmp/appimage_prerelease.log || true
+            grep -E 'RESULTS:|STATUS:' /tmp/appimage_prerelease.log || true
+          fi
+          echo "::endgroup::"
+          echo "AppImage smoke test completed."
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4

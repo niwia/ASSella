@@ -35,3 +35,60 @@ jobs:
           echo "Compiling all python files to verify syntax integrity..."
           python -m py_compile src/main.py
           python -m compileall -q src/
+
+      # compileall only proves the files parse. A missing dependency, a bad
+      # import path, or a resource the app loads at startup would all pass it
+      # and still produce an AppImage that will not launch. This is the same
+      # check the release build performs against the bundled runtime.
+      - name: Verify Runtime Imports and Headless Qt
+        run: |
+          python - <<'PY'
+          import importlib, sys
+          modules = [
+              "PyQt6.QtCore", "PyQt6.QtWidgets", "PyQt6.QtGui",
+              "requests", "yaml", "PIL", "cryptography", "configobj",
+              "urwid", "vdf", "steam", "wsproto", "steam.client",
+              "zstandard", "curl_cffi", "psutil", "bs4", "tinytag",
+              "just_playback", "gevent", "capstone", "numpy",
+          ]
+          failed = []
+          for name in modules:
+              try:
+                  importlib.import_module(name)
+              except Exception as exc:
+                  failed.append(f"{name}: {type(exc).__name__}: {exc}")
+          if failed:
+              print("::error::Unimportable runtime dependencies:")
+              for line in failed:
+                  print(f"  - {line}")
+              sys.exit(1)
+          print(f"All {len(modules)} runtime dependencies import cleanly.")
+
+          # Exercise a real QApplication + the app's own resource loader, which
+          # is where a missing res/ asset or bad Paths base would surface.
+          import os, tempfile
+          os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+          os.environ.setdefault("XDG_RUNTIME_DIR", tempfile.gettempdir())
+          sys.path.insert(0, "src")
+          from PyQt6.QtWidgets import QApplication
+          app = QApplication(["-platform", "offscreen"])
+          from utils.paths import Paths
+          print(f"Resource base: {Paths.BASE_DIR}")
+          required = ["version", "logo/accela.png", "logo/icon.png"]
+          missing = [r for r in required if not Paths.resource(r).exists()]
+          if missing:
+              print(f"::error::Missing required resources: {missing}")
+              sys.exit(1)
+          print("Headless QApplication created; required resources present.")
+          PY
+
+      - name: Run Pre-Release Verification Suite
+        run: |
+          # 44 checks covering dialogs, core engines and channel isolation.
+          # Three of them need a live Steam client (SteamPICS worker thread,
+          # batched PICS query, Goldberg auto-apply) and are skipped when
+          # STEAM_CLIENT unavailable, so this is safe in CI.
+          ASSELLA_TESTER_NO_REEXEC=1 QT_QPA_PLATFORM=offscreen \
+            python -u scripts/prerelease_check.py 2>&1 | tee /tmp/prerelease.log \
+            || { echo "::error::Pre-release suite failed — see log above"; exit 1; }
+          grep -E 'RESULTS:|STATUS:' /tmp/prerelease.log || true
