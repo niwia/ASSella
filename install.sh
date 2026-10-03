@@ -318,22 +318,138 @@ do_install() {
     echo -e "\n${YELLOW}[INFO] Installing / Updating ASSella...${NC}"
     mkdir -p "$INSTALL_DESTINATION"
 
-    # Backup existing ACCELA.AppImage if present
+    # NOTE: the existing binary is NOT backed up here. Rotation happens after the
+    # new download passes checksum verification, so a failed or corrupt install
+    # can never destroy the last known-good binary.
     if [ -f "$INSTALL_DESTINATION/ACCELA.AppImage" ] && [ ! -L "$INSTALL_DESTINATION/ACCELA.AppImage" ]; then
-        echo -e "${YELLOW}[INFO] Backing up existing ACCELA.AppImage to ACCELA.AppImage.bak...${NC}"
-        mv -f "$INSTALL_DESTINATION/ACCELA.AppImage" "$INSTALL_DESTINATION/ACCELA.AppImage.bak"
+        echo -e "${YELLOW}[INFO] Existing ASSELA.AppImage found (will back up after verification).${NC}"
     fi
 
     # Fetch AppImage binary
+    # Download to a temp file, verify checksum, then atomically move into place.
+    # This prevents a truncated/corrupt download from ever becoming the installed
+    # binary, and prevents a corrupt binary from being swept into the .bak rotation.
     get_latest_github_version
     echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER)...${NC}"
-    if ! curl -fL -o "$INSTALL_DESTINATION/ASSella.AppImage" "$LATEST_URL"; then
-        echo -e "${RED}[ERROR] Download failed! Please check your connection to GitHub.${NC}"
+
+    DL_TMP="$(mktemp "${INSTALL_DESTINATION}/.ASSella.AppImage.XXXXXX")" || {
+        echo -e "${RED}[ERROR] Could not create temp file in $INSTALL_DESTINATION${NC}"
+        pause_if_interactive
+        return 1
+    }
+
+    # --- Delta (zsync) fast path ---------------------------------------------
+    # If a matching .zsync is published and the zsync(1) tool is available, sync
+    # only the changed blocks instead of pulling the whole ~290MB image. Falls
+    # back to a plain download whenever zsync is unusable for any reason.
+    local used_zsync=false
+    if [ "${ASSELLA_NO_ZSYNC:-0}" != "1" ] && command -v zsync &>/dev/null && [ -f "$INSTALL_DESTINATION/ASSella.AppImage" ]; then
+        echo -e "${CYAN}[INFO] zsync delta update available — syncing changed blocks only.${NC}"
+        local zsync_url="${LATEST_URL}.zsync"
+        if curl -fsL --max-time 30 -o "${DL_TMP}.zsync" "$zsync_url" 2>/dev/null; then
+            # zsync exits 0 on success/"up to date", non-zero on failure.
+            # Capture the log separately: piping straight into sed would make
+            # $? reflect sed, masking a failed sync as success.
+            local zsync_log="${DL_TMP}.zsync.log"
+            if zsync -i "$INSTALL_DESTINATION/ASSella.AppImage" -o "$DL_TMP" "$zsync_url" >"$zsync_log" 2>&1; then
+                [ -s "$zsync_log" ] && sed 's/^/    /' "$zsync_log"
+                used_zsync=true
+                echo -e "${GREEN}[INFO] zsync delta sync complete.${NC}"
+            else
+                [ -s "$zsync_log" ] && sed 's/^/    /' "$zsync_log"
+                echo -e "${YELLOW}[WARN] zsync delta sync failed; falling back to full download.${NC}"
+                rm -f "$DL_TMP"
+            fi
+            rm -f "$zsync_log"
+        else
+            echo -e "${YELLOW}[INFO] No .zsync published for this release; using full download.${NC}"
+        fi
+        rm -f "${DL_TMP}.zsync"
+    elif [ "${ASSELLA_NO_ZSYNC:-0}" != "1" ] && ! command -v zsync &>/dev/null; then
+        echo -e "${YELLOW}[INFO] zsync not installed (apt install zsync) — using full download.${NC}"
+    fi
+
+    if [ "$used_zsync" = false ]; then
+        if ! curl -fL --progress-bar -o "$DL_TMP" "$LATEST_URL"; then
+            echo -e "${RED}[ERROR] Download failed! Please check your connection to GitHub.${NC}"
+            rm -f "$DL_TMP"
+            pause_if_interactive
+            return 1
+        fi
+    fi
+
+    # --- Integrity check -----------------------------------------------------
+    # Release assets publish "<asset>.sha256" alongside the AppImage. If present,
+    # a mismatch is fatal. If absent (older release), warn but continue so the
+    # installer still works; set ASSELLA_REQUIRE_SHA256=1 to make it strict.
+    local sha_state="missing"
+    local expected_sha="" actual_sha=""
+
+    if curl -fsL --max-time 20 -o "$DL_TMP.sha256" "${LATEST_URL}.sha256" 2>/dev/null; then
+        expected_sha=$(grep -oiE '[a-f0-9]{64}' "$DL_TMP.sha256" | head -n1)
+        if [ -z "$expected_sha" ]; then
+            sha_state="malformed"
+        else
+            if command -v sha256sum &>/dev/null; then
+                actual_sha=$(sha256sum "$DL_TMP" | awk '{print $1}')
+            elif command -v shasum &>/dev/null; then
+                actual_sha=$(shasum -a 256 "$DL_TMP" | awk '{print $1}')
+            fi
+            if [ -z "$actual_sha" ]; then
+                sha_state="notool"
+            elif [ "$(printf '%s' "$expected_sha" | tr 'A-F' 'a-f')" = "$(printf '%s' "$actual_sha" | tr 'A-F' 'a-f')" ]; then
+                sha_state="ok"
+            else
+                sha_state="mismatch"
+            fi
+        fi
+    fi
+    rm -f "$DL_TMP.sha256"
+
+    case "$sha_state" in
+        ok)
+            echo -e "${GREEN}[OK] SHA-256 verified: $actual_sha${NC}"
+            ;;
+        mismatch)
+            echo -e "${RED}${BOLD}[ERROR] CHECKSUM MISMATCH — download corrupted or tampered.${NC}"
+            echo -e "${RED}  expected: $expected_sha${NC}"
+            echo -e "${RED}  actual:   $actual_sha${NC}"
+            rm -f "$DL_TMP"
+            echo -e "${RED}Refusing to install. Existing installation left untouched.${NC}"
+            pause_if_interactive
+            return 1
+            ;;
+        malformed|notool)
+            echo -e "${RED}[WARN] Checksum file unusable ($sha_state); cannot verify integrity.${NC}"
+            ;;
+        missing)
+            echo -e "${YELLOW}[WARN] No published .sha256 for this release; integrity NOT verified.${NC}"
+            if [ "${ASSELLA_REQUIRE_SHA256:-0}" = "1" ]; then
+                echo -e "${RED}[ERROR] ASSELLA_REQUIRE_SHA256=1 set, refusing unverified download.${NC}"
+                rm -f "$DL_TMP"
+                pause_if_interactive
+                return 1
+            fi
+            ;;
+    esac
+
+    # Promote verified download into place, then fix up the backup rotation so a
+    # previously-corrupt binary is never preserved as the restore point.
+    if ! mv -f "$DL_TMP" "$INSTALL_DESTINATION/ASSella.AppImage"; then
+        echo -e "${RED}[ERROR] Failed to move verified binary into place.${NC}"
+        rm -f "$DL_TMP"
         pause_if_interactive
         return 1
     fi
 
     chmod +x "$INSTALL_DESTINATION/ASSella.AppImage"
+
+    # Now that the new binary is verified and in place, rotate the previous one
+    # into the .bak restore point.
+    if [ -f "$INSTALL_DESTINATION/ACCELA.AppImage" ] && [ ! -L "$INSTALL_DESTINATION/ACCELA.AppImage" ]; then
+        echo -e "${YELLOW}[INFO] Backing up previous ACCELA.AppImage to ACCELA.AppImage.bak...${NC}"
+        mv -f "$INSTALL_DESTINATION/ACCELA.AppImage" "$INSTALL_DESTINATION/ACCELA.AppImage.bak"
+    fi
 
     # Save local version file
     echo "$LATEST_VER" > "$VERSION_FILE"
