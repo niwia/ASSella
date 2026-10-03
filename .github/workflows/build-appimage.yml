@@ -68,7 +68,15 @@ jobs:
           LOWER_TAG=$(echo "$TAG" | tr '[:upper:]' '[:lower:]')
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             CHANNEL="${{ github.event.inputs.channel }}"
-            IS_PRE="${{ github.event.inputs.prerelease }}"
+            # There is no 'prerelease' dispatch input; derive it from the channel so a
+            # manually dispatched beta or canary build is still flagged as a
+            # pre-release. Reading the undefined input always evaluated empty,
+            # publishing beta builds as full releases.
+            if [ "$CHANNEL" = "stable" ]; then
+              IS_PRE="false"
+            else
+              IS_PRE="true"
+            fi
           elif echo "$LOWER_TAG" | grep -q -E 'canary|testing'; then
             CHANNEL="canary"
             IS_PRE="true"
