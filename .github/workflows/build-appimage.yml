@@ -205,19 +205,104 @@ jobs:
 
       - name: Build AppImage with ZSync Update Information
         run: |
+          set -euo pipefail
           CHANNEL="${{ steps.meta.outputs.channel }}"
-          
-          # Embed GitHub Releases zsync update info for delta update capabilities
-          UPDATE_INFO="gh-releases-zsync|niwia|ASSella|latest|ASSella.AppImage.zsync"
-          
+
+          # Embed GitHub Releases zsync update info for delta update capabilities.
+          #
+          # The 4th field is the release tag the client resolves. It must be
+          # channel-scoped: a hardcoded "latest" makes a beta build follow
+          # whatever shipped most recently (including canary), and resolves to
+          # HTTP 404 anyway because every release in this repo is marked
+          # prerelease and /releases/latest excludes prereleases.
+          case "$CHANNEL" in
+            canary) UPDATE_TAG="*testing*" ;;
+            beta)   UPDATE_TAG="*beta*" ;;
+            *)      UPDATE_TAG="*" ;;
+          esac
+
+          UPDATE_INFO="gh-releases-zsync|niwia|ASSella|${UPDATE_TAG}|ASSella.AppImage.zsync"
+
+          echo "Channel:   $CHANNEL"
+          echo "Update tag: $UPDATE_TAG"
           echo "Generating AppImage with update string: $UPDATE_INFO"
           ARCH=x86_64 appimagetool -n -u "$UPDATE_INFO" AppDir ASSella.AppImage
 
-          # Generate SHA256 checksums
+          # Regenerate the .zsync from the FINAL AppImage rather than trusting
+          # the one appimagetool emitted. appimagetool writes its .zsync before
+          # the AppDir payload is fully materialised (the standalone runtime and
+          # `pip install -r requirements.txt` are applied in the same assemble
+          # step, and the image is rebuilt afterwards), so the emitted file can
+          # describe an earlier, smaller image than the one shipped.
+          #
+          # That is exactly what shipped in v2.7.0beta: the .zsync claimed
+          # Length 161573368 / SHA-1 910061bb... while the published AppImage was
+          # 301302976 bytes / SHA-1 c52815c1... A delta sync against that index
+          # cannot produce a working binary.
+          echo "Regenerating zsync index from the final AppImage..."
+          rm -f ASSella.AppImage.zsync
+          zsyncmake -u "$UPDATE_INFO" -o ASSella.AppImage.zsync ASSella.AppImage
+
+          # Checksums last, so they always describe the shipped bytes.
           sha256sum ASSella.AppImage > ASSella.AppImage.sha256
-          if [ -f "ASSella.AppImage.zsync" ]; then
-            sha256sum ASSella.AppImage.zsync > ASSella.AppImage.zsync.sha256
+          sha256sum ASSella.AppImage.zsync > ASSella.AppImage.zsync.sha256
+
+      - name: Verify Release Artifact Integrity
+        run: |
+          set -euo pipefail
+          echo "Cross-checking .zsync / .sha256 metadata against the actual AppImage..."
+
+          actual_size=$(stat -c%s ASSella.AppImage)
+          actual_sha1=$(sha1sum ASSella.AppImage | awk '{print $1}')
+          actual_sha256=$(sha256sum ASSella.AppImage | awk '{print $1}')
+
+          zsync_size=$(grep -i '^Length:' ASSella.AppImage.zsync | awk '{print $2}' | tr -d '\r')
+          zsync_sha1=$(grep -i '^SHA-1:' ASSella.AppImage.zsync | awk '{print $2}' | tr -d '\r')
+
+          fail=0
+          if [ "$zsync_size" != "$actual_size" ]; then
+            echo "::error::zsync Length mismatch - zsync=$zsync_size actual=$actual_size"
+            fail=1
+          else
+            echo "OK  zsync Length = $actual_size"
           fi
+
+          if [ "$zsync_sha1" != "$actual_sha1" ]; then
+            echo "::error::zsync SHA-1 mismatch - zsync=$zsync_sha1 actual=$actual_sha1"
+            fail=1
+          else
+            echo "OK  zsync SHA-1  = $actual_sha1"
+          fi
+
+          if [ "$(awk '{print $1}' ASSella.AppImage.sha256)" != "$actual_sha256" ]; then
+            echo "::error::ASSella.AppImage.sha256 does not match the AppImage"
+            fail=1
+          else
+            echo "OK  AppImage sha256 matches"
+          fi
+
+          # The zsync must reference the delta target by the name actually published.
+          if ! grep -qi '^Filename:[[:space:]]*ASSella\.AppImage[[:space:]]*$' ASSella.AppImage.zsync; then
+            echo "::error::zsync Filename header does not match the published asset name"
+            fail=1
+          else
+            echo "OK  zsync Filename header"
+          fi
+
+          # The embedded update string drives delta updates; confirm it survived
+          # the build. It lives in the AppImage's ELF .upd_info section.
+          EMBEDDED=$(grep -a -o 'gh-releases-zsync|[^[:cntrl:]]*' ASSella.AppImage | head -1 || true)
+          echo "Embedded update string: ${EMBEDDED:-<none>}"
+          case "$EMBEDDED" in
+            gh-releases-zsync\|niwia\|ASSella\|*) echo "OK  update string embedded" ;;
+            *) echo "::error::update string missing or malformed - delta updates would break"; fail=1 ;;
+          esac
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Refusing to publish - delta updates would be corrupt."
+            exit 1
+          fi
+          echo "All release artifacts are internally consistent."
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
@@ -243,6 +328,11 @@ jobs:
             ASSella.AppImage.zsync
             ASSella.AppImage.sha256
             ASSella.AppImage.zsync.sha256
+          # Never let a stale asset from a previous run survive beside a fresh
+          # AppImage. That is how v2.7.0beta ended up with a .zsync describing a
+          # different binary than the one published.
+          fail_on_unmatched_files: true
+          overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

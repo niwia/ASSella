@@ -30,12 +30,17 @@ workshop_keys.txt
 # ── GIFs (large media) ──────────────────────────────────────────────────────
 gifs/
 
-# ── Local test scripts ───────────────────────────────────────────────────────
-scripts/*
-!scripts/setup_byparr.sh
-!scripts/prerelease_check.py
+# ── Local scratch space ─────────────────────────────────────────────────────
+# scripts/ is intentionally TRACKED — the pre-release checker and the release
+# verification harness are the gate against shipping a broken build, so they
+# belong in history. Only throwaway experiments go in scratch/.
 scratch/
 
 # ── OS junk ─────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# ── Local release verification scratch ──────────────────────────────────────
+# Build outputs from scripts/verify_release.sh
+verify-build/
+squashfs-root/
