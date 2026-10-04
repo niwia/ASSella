@@ -2805,32 +2805,53 @@ class TaskManager(QObject):
         if not self.download_task or not self.current_job:
             return
 
-        reply = QMessageBox.question(
-            self.main_window,
-            "Cancel Job",
-            f"Are you sure you want to cancel the download for '{os.path.basename(self.current_job)}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
+        game_name = self.game_data.get("game_name", os.path.basename(self.current_job)) if self.game_data else os.path.basename(self.current_job)
+        completed_bytes = getattr(self.download_task, "completed_so_far_for_this_job", 0)
+        total_bytes = getattr(self.download_task, "total_download_size_for_this_job", 0)
+        pct = int((completed_bytes / total_bytes) * 100) if total_bytes > 0 else 0
 
-        if reply == QMessageBox.StandardButton.No:
+        msg_box = QMessageBox(self.main_window)
+        msg_box.setWindowTitle("Stop Download")
+        msg_box.setText(f"<h3>Stop download for {game_name}?</h3>")
+        info_lines = [f"Progress: <b>{pct}%</b>"]
+        if completed_bytes > 0:
+            info_lines.append(f"({completed_bytes / (1024*1024):.1f} MB downloaded)")
+        info_lines.append("<br><br>Choose how you want to handle this download:")
+        msg_box.setInformativeText(" ".join(info_lines))
+
+        resume_btn = msg_box.addButton("Resume Later", QMessageBox.ButtonRole.AcceptRole)
+        delete_btn = msg_box.addButton("Cancel & Delete", QMessageBox.ButtonRole.DestructiveRole)
+        continue_btn = msg_box.addButton("Continue Downloading", QMessageBox.ButtonRole.RejectRole)
+        msg_box.setDefaultButton(continue_btn)
+
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+
+        if clicked == continue_btn or clicked is None:
             return
 
-        logger.info(f"--- Cancelling job: {os.path.basename(self.current_job)} ---")
+        is_resume_later = (clicked == resume_btn)
+        logger.info(f"--- Stopping job: {game_name} (Resume Later: {is_resume_later}) ---")
         self.is_cancelling = True
-        # Signal the finalize IO thread (if running) to abort immediately
         self._finalize_cancel_event.set()
         if self.download_runner is not None:
             self.is_awaiting_download_stop = True
 
-        existing_install = getattr(self, "_pre_existing_install", False)
-        if existing_install:
+        if is_resume_later:
             self._delete_files_on_cancel = False
+            if self.download_task:
+                self.download_task.stop(persist_pause=True)
         else:
-            self._delete_files_on_cancel = self._confirm_delete_on_cancel(existing_install)
+            self._delete_files_on_cancel = True
+            if self.download_task:
+                self.download_task.stop(persist_pause=False)
+                try:
+                    from managers.download_resume_manager import DownloadResumeManager
+                    if getattr(self.download_task, "download_dir", None):
+                        DownloadResumeManager.clear_download_state(self.download_task.download_dir)
+                except Exception:
+                    pass
 
-        if self.download_task:
-            self.download_task.stop()
         self._kill_download_process()
 
         if self.achievement_task:

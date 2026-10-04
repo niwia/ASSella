@@ -111,10 +111,34 @@ class DownloadDepotsTask(QObject):
             total_depots = len(commands)
             self.total_download_size_for_this_job = sum(depot_sizes)
             self.completed_so_far_for_this_job = 0
+            self.game_data = game_data
+            self.selected_depots = selected_depots
 
             logger.info(
                 f"Task tracking total download size: {self.total_download_size_for_this_job} bytes"
             )
+
+            # Smart depot resume: scan if any depots were already 100% completed in a previous session
+            from managers.download_resume_manager import DownloadResumeManager
+            already_done_bytes = 0
+            for k, cmd in enumerate(commands):
+                try:
+                    d_id = cmd[cmd.index("-depot") + 1]
+                    m_id = cmd[cmd.index("-manifest") + 1]
+                    if DownloadResumeManager.is_depot_completed(self.download_dir, d_id, m_id):
+                        already_done_bytes += depot_sizes[k]
+                except (ValueError, IndexError):
+                    pass
+
+            if already_done_bytes > 0:
+                self.completed_so_far_for_this_job = already_done_bytes
+                init_pct = int((self.completed_so_far_for_this_job / self.total_download_size_for_this_job) * 100) if self.total_download_size_for_this_job > 0 else 0
+                self.progress_percentage.emit(init_pct)
+                self.last_percentage = init_pct
+                self.progress.emit(
+                    f"--- Resuming download: {already_done_bytes / (1024*1024):.1f} MB already verified ({init_pct}% completed) ---"
+                )
+                logger.info(f"[DownloadDepotsTask] Resuming: {already_done_bytes} bytes already verified on disk ({init_pct}%)")
 
             # Track sidecar writes across all depots — determines DD_DELTA vs DD_FULL
             _sidecar_written_count = 0
@@ -129,7 +153,19 @@ class DownloadDepotsTask(QObject):
                     depot_id = current_cmd[current_cmd.index("-depot") + 1]
                 except (ValueError, IndexError):
                     depot_id = f"depot_{i}"
+                try:
+                    manifest_id = current_cmd[current_cmd.index("-manifest") + 1]
+                except (ValueError, IndexError):
+                    manifest_id = None
                 self.current_depot_size = depot_sizes[i]
+
+                # Skip if already fully downloaded and verified
+                if depot_id and manifest_id and DownloadResumeManager.is_depot_completed(self.download_dir, depot_id, manifest_id):
+                    self.progress.emit(
+                        f"--- Depot {depot_id} ({i + 1}/{total_depots}) already completed on disk. Skipping. ---"
+                    )
+                    logger.info(f"[DownloadDepotsTask] Depot {depot_id} already completed on disk. Skipping.")
+                    continue
 
                 self.progress.emit(
                     f"--- Starting download for depot {depot_id} "
@@ -407,6 +443,13 @@ class DownloadDepotsTask(QObject):
 
             self._copy_manifests_to_steam_depotcache()
             self._cleanup_temp_files()
+
+            try:
+                from managers.download_resume_manager import DownloadResumeManager
+                if getattr(self, "download_dir", None):
+                    DownloadResumeManager.clear_download_state(self.download_dir)
+            except Exception:
+                pass
 
             self.completed.emit()
 
@@ -1000,10 +1043,27 @@ class DownloadDepotsTask(QObject):
 
         return commands, skipped_depots, depot_sizes
 
-    def stop(self):
+    def stop(self, persist_pause: bool = True):
         """Signals the task to stop."""
         logger.debug("Stop signal received by download task.")
         self._is_running = False
+        if persist_pause and getattr(self, "download_dir", None) and getattr(self, "game_data", None):
+            try:
+                from managers.download_resume_manager import DownloadResumeManager
+                DownloadResumeManager.save_download_state(
+                    install_dir=self.download_dir,
+                    appid=self.game_data.get("appid", ""),
+                    game_name=self.game_data.get("game_name", ""),
+                    status="paused",
+                    branch=self.game_data.get("branch", "public"),
+                    total_size=self.total_download_size_for_this_job,
+                    completed_size=self.completed_so_far_for_this_job,
+                    selected_depots=getattr(self, "selected_depots", []),
+                    archive_path=self.game_data.get("archive_path") or getattr(self, "current_job", ""),
+                    extra_metadata=self.game_data,
+                )
+            except Exception as e:
+                logger.debug(f"Failed to persist paused state in stop(): {e}")
 
     def toggle_pause(self, pause: bool):
         """

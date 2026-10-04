@@ -226,6 +226,17 @@ def update_title(dialog) -> None:
     if is_dlc_only_mode(dialog.appid):
         display_parts.append("[DLC ONLY]")
 
+    try:
+        from managers.download_resume_manager import DownloadResumeManager
+        paused_state = DownloadResumeManager.get_paused_game_state(dialog.appid)
+        if paused_state:
+            tot = paused_state.get("total_size", 0)
+            done = paused_state.get("completed_size", 0)
+            pct = int((done / tot) * 100) if tot > 0 else 0
+            display_parts.append(f"<span style='color: #FFB84D; font-weight: bold;'>[PAUSED {pct}%]</span>")
+    except Exception:
+        pass
+
     if hasattr(dialog, "name_lbl") and dialog.name_lbl:
         dialog.name_lbl.setText(" ".join(display_parts))
 

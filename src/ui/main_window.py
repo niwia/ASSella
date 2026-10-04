@@ -1907,6 +1907,31 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Handle application shutdown."""
+        # Check if a download is actively running
+        if hasattr(self, "task_manager") and getattr(self.task_manager, "is_processing", False):
+            from PyQt6.QtWidgets import QMessageBox
+            gd = getattr(self.task_manager, "game_data", {}) or {}
+            gname = gd.get("game_name", "A download")
+            reply = QMessageBox.question(
+                self,
+                "Download in Progress",
+                f"{gname} is currently downloading.\n\n"
+                "Do you want to pause the download and exit?\n"
+                "You can safely resume it anytime next time you launch ASSella.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                return
+
+            # Gracefully signal download task to persist pause state
+            try:
+                if self.task_manager.download_task:
+                    self.task_manager.download_task.stop(persist_pause=True)
+            except Exception:
+                pass
+
         try:
             if hasattr(self, "web_server_manager") and self.web_server_manager:
                 self.web_server_manager.stop()

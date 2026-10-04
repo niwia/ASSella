@@ -289,45 +289,102 @@ def init_info_tab(dialog) -> None:
     panel_bg = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.04)"
     panel_border = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.15)"
 
-    dialog._uninstall_pill = QPushButton("Uninstall")
-    dialog._uninstall_pill.setFixedHeight(32)
-    dialog._uninstall_pill.setStyleSheet(f"""
-        QPushButton {{
-            background: {err_bg};
-            color: {err_color};
-            border: 1px solid {err_border};
-            border-radius: 6px;
-            font-weight: bold;
-            font-size: 9.5pt;
-            padding: 0 16px;
-        }}
-        QPushButton:hover {{ background: {err_hover}; }}
-    """)
-    dialog._uninstall_pill.clicked.connect(lambda: do_standard_uninstall(dialog))
-    btn_row.addWidget(dialog._uninstall_pill, 1)
+    from managers.download_resume_manager import DownloadResumeManager
+    paused_state = DownloadResumeManager.get_paused_game_state(dialog.appid)
 
-    dialog._adv_uninstall_btn = QPushButton("Advanced Uninstall")
-    dialog._adv_uninstall_btn.setFixedHeight(32)
-    dialog._adv_uninstall_btn.setCheckable(True)
-    dialog._adv_uninstall_btn.setStyleSheet(f"""
-        QPushButton {{
-            background: {adv_bg};
-            color: {err_color};
-            border: 1px solid {adv_border};
-            border-radius: 6px;
-            font-weight: bold;
-            font-size: 9.5pt;
-            padding: 0 16px;
-        }}
-        QPushButton:hover {{ background: {adv_hover}; }}
-        QPushButton:checked {{
-            background: {adv_checked_bg};
-            color: #FFFFFF;
-            border-color: {adv_checked_border};
-        }}
-    """)
-    dialog._adv_uninstall_btn.clicked.connect(lambda: toggle_uninstall_panel(dialog))
-    btn_row.addWidget(dialog._adv_uninstall_btn, 1)
+    if paused_state:
+        pct = paused_state.get("progress_pct", 0)
+        resume_text = f"▶ Resume Download ({pct:.0f}%)" if pct > 0 else "▶ Resume Download"
+        dialog._resume_pill = QPushButton(resume_text)
+        dialog._resume_pill.setFixedHeight(34)
+        dialog._resume_pill.setStyleSheet(f"""
+            QPushButton {{
+                background: {dialog.accent_color};
+                color: #FFFFFF;
+                border: none;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 10pt;
+                padding: 0 18px;
+            }}
+            QPushButton:hover {{
+                opacity: 0.9;
+            }}
+        """)
+        dialog._resume_pill.clicked.connect(lambda: _do_resume_download(dialog, paused_state))
+        btn_row.addWidget(dialog._resume_pill, 2)
+
+        dialog._cancel_dl_pill = QPushButton("Cancel Download")
+        dialog._cancel_dl_pill.setFixedHeight(34)
+        dialog._cancel_dl_pill.setStyleSheet(f"""
+            QPushButton {{
+                background: {err_bg};
+                color: {err_color};
+                border: 1px solid {err_border};
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 9.5pt;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{ background: {err_hover}; }}
+        """)
+        dialog._cancel_dl_pill.clicked.connect(lambda: _do_cancel_paused_download(dialog, paused_state))
+        btn_row.addWidget(dialog._cancel_dl_pill, 1)
+
+        # Disable quick setting tiles and scroll content for paused game
+        if hasattr(dialog, "status_tile"):
+            dialog.status_tile.setEnabled(False)
+            dialog.status_tile.update_state(False, "#e5a50a", active_sub="PAUSED", inactive_sub="PAUSED")
+        if hasattr(dialog, "dlc_tile"):
+            dialog.dlc_tile.setEnabled(False)
+        if hasattr(dialog, "pin_tile"):
+            dialog.pin_tile.setEnabled(False)
+        if hasattr(dialog, "update_all_tile"):
+            dialog.update_all_tile.setEnabled(False)
+        if hasattr(dialog, "folder_tile"):
+            dialog.folder_tile.setEnabled(False)
+        if hasattr(dialog, "scroll") and dialog.scroll and dialog.scroll.widget():
+            dialog.scroll.widget().setEnabled(False)
+    else:
+        dialog._uninstall_pill = QPushButton("Uninstall")
+        dialog._uninstall_pill.setFixedHeight(32)
+        dialog._uninstall_pill.setStyleSheet(f"""
+            QPushButton {{
+                background: {err_bg};
+                color: {err_color};
+                border: 1px solid {err_border};
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 9.5pt;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{ background: {err_hover}; }}
+        """)
+        dialog._uninstall_pill.clicked.connect(lambda: do_standard_uninstall(dialog))
+        btn_row.addWidget(dialog._uninstall_pill, 1)
+
+        dialog._adv_uninstall_btn = QPushButton("Advanced Uninstall")
+        dialog._adv_uninstall_btn.setFixedHeight(32)
+        dialog._adv_uninstall_btn.setCheckable(True)
+        dialog._adv_uninstall_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {adv_bg};
+                color: {err_color};
+                border: 1px solid {adv_border};
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 9.5pt;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{ background: {adv_hover}; }}
+            QPushButton:checked {{
+                background: {adv_checked_bg};
+                color: #FFFFFF;
+                border-color: {adv_checked_border};
+            }}
+        """)
+        dialog._adv_uninstall_btn.clicked.connect(lambda: toggle_uninstall_panel(dialog))
+        btn_row.addWidget(dialog._adv_uninstall_btn, 1)
 
     footer_layout.addLayout(btn_row)
 
@@ -1895,3 +1952,57 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
     finally:
         dialog.dlcdata_exp_btn.setEnabled(True)
         refresh_dlcdata_btn_text(dialog)
+
+
+def _do_resume_download(dialog, paused_state: dict) -> None:
+    """Resume a paused download by submitting the original archive back to the job queue."""
+    archive_path = paused_state.get("archive_path")
+    if not archive_path or not os.path.exists(archive_path):
+        QMessageBox.warning(
+            dialog,
+            "Cannot Resume",
+            f"Original archive file could not be found at:\n{archive_path}\n\nPlease re-download the archive file.",
+        )
+        return
+
+    dialog.accept()
+
+    # Submit job through parent window or main window
+    parent = getattr(dialog, "parent_window", None)
+    if parent:
+        if hasattr(parent, "_submit_job"):
+            parent._submit_job(str(archive_path), dialog.game_data, dialog)
+            return
+        main_win = getattr(parent, "main_window", parent)
+        if hasattr(main_win, "job_queue") and main_win.job_queue:
+            main_win.job_queue.add_job(str(archive_path))
+            return
+
+
+def _do_cancel_paused_download(dialog, paused_state: dict) -> None:
+    """Cancel a paused download and delete partial downloaded files."""
+    game_name = dialog.game_data.get("name", "this game")
+    reply = QMessageBox.question(
+        dialog,
+        "Cancel Download?",
+        f"Are you sure you want to cancel the download for {game_name}?\n\nThis will remove all downloaded files for this game.",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    if reply == QMessageBox.StandardButton.Yes:
+        install_dir = paused_state.get("install_dir")
+        from managers.download_resume_manager import DownloadResumeManager
+        DownloadResumeManager.clear_download_state(install_dir)
+        import shutil
+        if install_dir and os.path.exists(install_dir):
+            try:
+                shutil.rmtree(install_dir, ignore_errors=True)
+                logger.info(f"Cleaned up {install_dir} after cancelled download.")
+            except Exception as e:
+                logger.error(f"Failed to remove directory on cancel: {e}")
+
+        dialog.accept()
+        parent = getattr(dialog, "parent_window", None)
+        if parent and hasattr(parent, "refresh_game_list"):
+            parent.refresh_game_list()
+

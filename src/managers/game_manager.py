@@ -239,7 +239,7 @@ class GameManager(QObject):
             logger.info("Cancelling previous manifest check task")
             self.cancel_update_checks()
 
-        # Collect AppIDs of games currently downloading or in queue
+        # Collect AppIDs of games currently downloading, in queue, or paused
         active_appids = set()
         main_win = self.parent()
         if main_win:
@@ -253,6 +253,17 @@ class GameManager(QObject):
                     if meta_aid:
                         active_appids.add(str(meta_aid))
 
+        # Also exclude any games with an active paused download state
+        try:
+            from managers.download_resume_manager import DownloadResumeManager
+            for g in self.games:
+                aid = str(g.get("appid", ""))
+                idir = g.get("install_dir") or g.get("game_path")
+                if DownloadResumeManager.is_game_download_paused(aid, idir):
+                    active_appids.add(aid)
+        except Exception:
+            pass
+
         # Build filtered list according to smart skip logic
         games_to_check = []
         for g in self.games:
@@ -260,9 +271,9 @@ class GameManager(QObject):
             if appid in ("0", "N/A", "unknown"):
                 continue
 
-            # Skip checking games that are currently downloading or queued
+            # Skip checking games that are currently downloading, queued, or paused
             if str(appid) in active_appids:
-                logger.debug(f"Skipping update check for actively downloading/queued appid={appid}")
+                logger.debug(f"Skipping update check for actively downloading/queued/paused appid={appid}")
                 continue
 
             # Pinned build bypass

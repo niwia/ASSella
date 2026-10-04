@@ -376,6 +376,18 @@ class GameDetailsDialogV2(QDialog):
                 if is_dlc_only_mode(self.appid) or not self._has_workshop:
                     btn.setVisible(False)
 
+        # Check if game download is paused — if so, lock other tabs
+        try:
+            from managers.download_resume_manager import DownloadResumeManager
+            self.is_download_paused = DownloadResumeManager.is_game_download_paused(self.appid)
+            if self.is_download_paused:
+                for label, idx in self._pages_info:
+                    if idx > 0 and idx < len(self._tab_buttons):
+                        self._tab_buttons[idx].setEnabled(False)
+                        self._tab_buttons[idx].setToolTip("Game download is paused. Resume download to access options.")
+        except Exception:
+            pass
+
         tab_bar_layout.addStretch()
 
         close_btn = QPushButton("✕ Close")
