@@ -99,44 +99,93 @@ class DownloadResumeManager:
 
     @staticmethod
     def clear_download_state(install_dir: str) -> bool:
-        """Removes download_state.json when installation is completed or discarded."""
+        """Removes download_state.json and any .depot_done markers when installation is completed or discarded."""
         if not install_dir:
             return False
-        target_path = os.path.join(install_dir, DEPOT_DIRNAME, STATE_FILENAME)
+        depot_dir = os.path.join(install_dir, DEPOT_DIRNAME)
+        target_path = os.path.join(depot_dir, STATE_FILENAME)
+        removed = False
         if os.path.exists(target_path):
             try:
                 os.remove(target_path)
                 logger.info(f"[DownloadResumeManager] Cleared download state at {target_path}")
-                return True
+                removed = True
             except OSError as e:
                 logger.warning(f"[DownloadResumeManager] Failed to remove download state file: {e}")
+        # Clean up any .depot_done marker files
+        if os.path.isdir(depot_dir):
+            try:
+                for fname in os.listdir(depot_dir):
+                    if fname.endswith(".depot_done"):
+                        try:
+                            os.remove(os.path.join(depot_dir, fname))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+        return removed
+
+    @classmethod
+    def is_depot_completed(cls, install_dir: str, depot_id: str, manifest_id: Optional[str] = None) -> bool:
+        """
+        Checks if a depot was previously 100% completed.
+        A depot is ONLY considered complete if:
+        1. It has a verified .depot_done marker in .DepotDownloader, OR
+        2. It is explicitly listed in download_state.json under 'completed_depots'.
+        (Note: .manifest and .sha files are pre-seeded for delta updates and do NOT indicate completion).
+        """
+        if not install_dir or not depot_id:
+            return False
+
+        depot_str = str(depot_id).strip()
+        manifest_str = str(manifest_id).strip() if manifest_id else ""
+        depot_dir = os.path.join(install_dir, DEPOT_DIRNAME)
+
+        # 1. Check .depot_done marker files
+        if manifest_str:
+            marker_file = os.path.join(depot_dir, f"{depot_str}_{manifest_str}.depot_done")
+            if os.path.isfile(marker_file):
+                return True
+        marker_file_simple = os.path.join(depot_dir, f"{depot_str}.depot_done")
+        if os.path.isfile(marker_file_simple):
+            return True
+
+        # 2. Check download_state.json completed_depots list
+        st = cls.get_download_state(install_dir)
+        if st and isinstance(st.get("completed_depots"), list):
+            completed = [str(d).strip() for d in st["completed_depots"]]
+            if depot_str in completed:
+                return True
+            if manifest_str and f"{depot_str}_{manifest_str}" in completed:
+                return True
+
         return False
 
     @staticmethod
-    def is_depot_completed(install_dir: str, depot_id: str, manifest_id: str) -> bool:
+    def mark_depot_completed(install_dir: str, depot_id: str, manifest_id: Optional[str] = None) -> bool:
         """
-        Checks if a depot was previously 100% completed.
-        A depot is ONLY considered complete if both its manifest AND its .sha sidecar
-        exist in .DepotDownloader and are non-empty. (These are only written upon exit code 0).
+        Creates a .depot_done marker in {install_dir}/.DepotDownloader/
+        indicating this depot has completed download with exit code 0.
         """
-        if not install_dir or not depot_id or not manifest_id:
+        if not install_dir or not depot_id:
             return False
-
-        depot_dir = os.path.join(install_dir, DEPOT_DIRNAME)
-        manifest_path = os.path.join(depot_dir, f"{depot_id}_{manifest_id}.manifest")
-        sha_path = manifest_path + ".sha"
-
         try:
-            if (
-                os.path.isfile(manifest_path)
-                and os.path.getsize(manifest_path) > 0
-                and os.path.isfile(sha_path)
-                and os.path.getsize(sha_path) > 0
-            ):
-                return True
-        except OSError:
-            pass
-        return False
+            depot_dir = os.path.join(install_dir, DEPOT_DIRNAME)
+            os.makedirs(depot_dir, exist_ok=True)
+            depot_str = str(depot_id).strip()
+            manifest_str = str(manifest_id).strip() if manifest_id else ""
+            if manifest_str:
+                marker_file = os.path.join(depot_dir, f"{depot_str}_{manifest_str}.depot_done")
+                with open(marker_file, "w", encoding="utf-8") as f:
+                    f.write(str(int(time.time())))
+            marker_file_simple = os.path.join(depot_dir, f"{depot_str}.depot_done")
+            with open(marker_file_simple, "w", encoding="utf-8") as f:
+                f.write(str(int(time.time())))
+            logger.info(f"[DownloadResumeManager] Marked depot {depot_id} (manifest {manifest_id}) as completed on disk.")
+            return True
+        except Exception as e:
+            logger.warning(f"[DownloadResumeManager] Failed to mark depot {depot_id} completed: {e}")
+            return False
 
     @classmethod
     def is_game_download_paused(cls, appid: str, install_dir: Optional[str] = None) -> bool:

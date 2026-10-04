@@ -63,6 +63,7 @@ class DownloadDepotsTask(QObject):
         self._smooth_speed_bps = 0.0
         self._is_validating = False
         self._lancache_error_detected = False
+        self.completed_depots: List[str] = []
 
     @property
     def is_running_flag(self) -> bool:
@@ -136,12 +137,19 @@ class DownloadDepotsTask(QObject):
 
             # Smart depot resume: scan if any depots were already 100% completed in a previous session
             from managers.download_resume_manager import DownloadResumeManager
+            self.completed_depots = []
+            st = DownloadResumeManager.get_download_state(self.download_dir)
+            if st and isinstance(st.get("completed_depots"), list):
+                self.completed_depots = [str(d).strip() for d in st["completed_depots"]]
+
             already_done_bytes = 0
             for k, cmd in enumerate(commands):
                 try:
                     d_id = cmd[cmd.index("-depot") + 1]
                     m_id = cmd[cmd.index("-manifest") + 1]
                     if DownloadResumeManager.is_depot_completed(self.download_dir, d_id, m_id):
+                        if str(d_id) not in self.completed_depots:
+                            self.completed_depots.append(str(d_id))
                         already_done_bytes += depot_sizes[k]
                 except (ValueError, IndexError):
                     pass
@@ -177,7 +185,9 @@ class DownloadDepotsTask(QObject):
                 self.current_depot_size = depot_sizes[i]
 
                 # Skip if already fully downloaded and verified
-                if depot_id and manifest_id and DownloadResumeManager.is_depot_completed(self.download_dir, depot_id, manifest_id):
+                if depot_id and DownloadResumeManager.is_depot_completed(self.download_dir, depot_id, manifest_id):
+                    if str(depot_id) not in self.completed_depots:
+                        self.completed_depots.append(str(depot_id))
                     self.progress.emit(
                         f"--- Depot {depot_id} ({i + 1}/{total_depots}) already completed on disk. Skipping. ---"
                     )
@@ -386,6 +396,10 @@ class DownloadDepotsTask(QObject):
                     self.current_total_progress_bytes = self.completed_so_far_for_this_job
                     self._last_speed_calc_time = 0.0
                     self._smooth_speed_bps = 0.0
+
+                    if str(depot_id) not in self.completed_depots:
+                        self.completed_depots.append(str(depot_id))
+                    DownloadResumeManager.mark_depot_completed(self.download_dir, depot_id, manifest_id)
                     # Copy manifest and create .sha sidecar in .DepotDownloader to enable future delta updates
                     try:
                         # Safely extract manifest_id and manifest_file_path via flag names
@@ -1076,6 +1090,7 @@ class DownloadDepotsTask(QObject):
                     if os.path.exists(pkg_backup):
                         archive_path = pkg_backup
 
+                completed_depots = getattr(self, "completed_depots", [])
                 DownloadResumeManager.save_download_state(
                     install_dir=self.download_dir,
                     appid=self.game_data.get("appid", ""),
@@ -1084,6 +1099,7 @@ class DownloadDepotsTask(QObject):
                     branch=self.game_data.get("branch", "public"),
                     total_size=self.total_download_size_for_this_job,
                     completed_size=completed_size,
+                    completed_depots=list(completed_depots),
                     selected_depots=getattr(self, "selected_depots", []),
                     archive_path=archive_path,
                     extra_metadata=self.game_data,
