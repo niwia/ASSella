@@ -128,14 +128,20 @@ def init_hero_v2(dialog, root) -> None:
     ri, dialog.cached_val_lbl = _stat_item("MANIFEST", get_manifest_age(dialog))
     stats_row.addLayout(ri)
 
+    is_paused = False
+    if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict):
+        is_paused = dialog.game_data.get("is_paused") or dialog.game_data.get("update_status") == "paused"
+    if not is_paused and getattr(dialog, "is_download_paused", False):
+        is_paused = True
+
     installed_bid = dialog._get_installed_buildid()
-    bid_str = installed_bid if installed_bid else "Unknown"
-    initial_build_color = None
+    bid_str = installed_bid if installed_bid else ("Paused" if is_paused else "Unknown")
+    initial_build_color = "#FFB84D" if is_paused and not installed_bid else None
     if installed_bid:
         update_status = dialog.game_data.get("update_status", "") if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict) else ""
         if update_status == "up_to_date":
             initial_build_color = "#46b464"
-        elif update_status == "update_available":
+        elif update_status in ("update_available", "paused"):
             initial_build_color = "#FFB84D"
         else:
             cached_bid = str(dialog.game_data.get("buildid", "")) if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict) else ""
@@ -149,7 +155,9 @@ def init_hero_v2(dialog, root) -> None:
 
     ri, dialog.build_val_lbl = _stat_item("BUILD", bid_str, value_color=initial_build_color)
     dialog._hero_build_val_lbl = dialog.build_val_lbl
-    if installed_bid:
+    if is_paused:
+        dialog.build_val_lbl.setToolTip("Download is paused. Click Resume Download to continue.")
+    elif installed_bid:
         tip = f"Installed Build: {installed_bid}"
         if initial_build_color == "#FFB84D":
             tip += " (Update available)"

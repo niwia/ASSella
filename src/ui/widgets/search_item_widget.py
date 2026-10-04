@@ -11,12 +11,13 @@ from PyQt6.QtWidgets import (
 
 class SearchItemWidget(QWidget):
     """Custom widget for displaying polished search results — styled like the game library cards."""
-    def __init__(self, name: str, app_id: str, in_library: bool, is_cached: bool = False, parent=None):
+    def __init__(self, name: str, app_id: str, in_library: bool, is_cached: bool = False, is_paused: bool = False, parent=None):
         super().__init__(parent)
         self.name = name
         self.app_id = app_id
         self.in_library = in_library
         self.is_cached = is_cached
+        self.is_paused = is_paused
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 1, 16, 1)
@@ -50,7 +51,12 @@ class SearchItemWidget(QWidget):
         name_row.setContentsMargins(0, 0, 0, 0)
 
         self.name_lbl = QLabel(name)
-        name_color = "#77DD77" if in_library else "#FFFFFF"
+        if is_paused:
+            name_color = "#FFB84D"
+        elif in_library:
+            name_color = "#77DD77"
+        else:
+            name_color = "#FFFFFF"
         self.name_lbl.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {name_color};")
         self.name_lbl.setWordWrap(False)
         name_row.addWidget(self.name_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -79,12 +85,16 @@ class SearchItemWidget(QWidget):
         self.denuvo_lbl.setStyleSheet("font-size: 11px; font-weight: bold;")
         self.meta_row.addWidget(self.denuvo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        if in_library:
+        if is_paused:
+            self.paused_lbl = QLabel("•  Download Paused")
+            self.paused_lbl.setStyleSheet("font-size: 11px; color: #FFB84D; font-weight: bold;")
+            self.meta_row.addWidget(self.paused_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        elif in_library:
             self.in_lib_lbl = QLabel("•  In Library")
             self.in_lib_lbl.setStyleSheet("font-size: 11px; color: #81C784; font-weight: bold;")
             self.meta_row.addWidget(self.in_lib_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        if is_cached:
+        if is_cached and not is_paused:
             self.cached_lbl = QLabel("•  Cached")
             self.cached_lbl.setStyleSheet("font-size: 11px; color: #4FC3F7; font-weight: bold;")
             self.meta_row.addWidget(self.cached_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -99,6 +109,8 @@ class SearchItemWidget(QWidget):
 
     def set_cached(self, cached: bool = True):
         self.is_cached = cached
+        if getattr(self, "is_paused", False):
+            return
         if not hasattr(self, "cached_lbl"):
             self.cached_lbl = QLabel("•  Cached")
             self.cached_lbl.setStyleSheet("font-size: 11px; color: #4FC3F7; font-weight: bold;")

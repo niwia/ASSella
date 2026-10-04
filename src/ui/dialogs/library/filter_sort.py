@@ -33,6 +33,11 @@ class LibraryFilterSortMixin:
             except (ValueError, TypeError):
                 return 0
         if sort_option == "recently_installed":
+            if game.get("install_time"):
+                try:
+                    return float(game.get("install_time", 0))
+                except (ValueError, TypeError):
+                    pass
             path = (
                 game.get("accela_marker_path")
                 or game.get("depot_downloader_path")

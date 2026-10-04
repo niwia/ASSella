@@ -293,6 +293,8 @@ def init_info_tab(dialog) -> None:
     paused_state = DownloadResumeManager.get_paused_game_state(dialog.appid)
 
     if paused_state:
+        from utils.color_utils import get_best_foreground_color
+        resume_fg = get_best_foreground_color(dialog.accent_color)
         pct = paused_state.get("progress_pct", 0)
         resume_text = f"▶ Resume Download ({pct:.0f}%)" if pct > 0 else "▶ Resume Download"
         dialog._resume_pill = QPushButton(resume_text)
@@ -300,7 +302,7 @@ def init_info_tab(dialog) -> None:
         dialog._resume_pill.setStyleSheet(f"""
             QPushButton {{
                 background: {dialog.accent_color};
-                color: #FFFFFF;
+                color: {resume_fg};
                 border: none;
                 border-radius: 6px;
                 font-weight: bold;
@@ -1993,12 +1995,53 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
 def _do_resume_download(dialog, paused_state: dict) -> None:
     """Resume a paused download by submitting the original archive back to the job queue."""
     archive_path = paused_state.get("archive_path")
+    install_dir = paused_state.get("install_dir") or dialog.game_data.get("install_path")
+
+    # 1. Fallback to backup package in .DepotDownloader if original path is missing
     if not archive_path or not os.path.exists(archive_path):
-        QMessageBox.warning(
+        if install_dir:
+            backup_pkg = os.path.join(install_dir, ".DepotDownloader", "manifest_package.zip")
+            if os.path.isfile(backup_pkg) and os.path.getsize(backup_pkg) > 0:
+                archive_path = backup_pkg
+                logger.info(f"Using backed up manifest package for resume: {archive_path}")
+
+    # 2. Fallback to hubcap_manifests cache
+    if not archive_path or not os.path.exists(archive_path):
+        try:
+            from utils.helpers import get_base_path
+            hubcap_dir = get_base_path() / "hubcap_manifests"
+            if hubcap_dir.exists():
+                for f in hubcap_dir.iterdir():
+                    if f.name.startswith(f"accela_fetch_{dialog.appid}_") and f.suffix == ".zip":
+                        if f.stat().st_size > 0:
+                            archive_path = str(f)
+                            logger.info(f"Found cached manifest in hubcap_manifests for resume: {archive_path}")
+                            break
+        except Exception as e:
+            logger.debug(f"Error checking hubcap_manifests for resume archive: {e}")
+
+    # 3. If still not found, offer to automatically re-fetch the manifest
+    if not archive_path or not os.path.exists(archive_path):
+        game_name = dialog.game_data.get("game_name") or dialog.game_data.get("name") or "this game"
+        reply = QMessageBox.question(
             dialog,
-            "Cannot Resume",
-            f"Original archive file could not be found at:\n{archive_path}\n\nPlease re-download the archive file.",
+            "Manifest Archive Not Found",
+            f"The original manifest archive could not be found at:\n{archive_path or 'Unknown'}\n\n"
+            f"Would you like ASSella to re-fetch the manifest bundle for '{game_name}' to resume the download?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
         )
+        if reply == QMessageBox.StandardButton.Yes:
+            dialog.accept()
+            parent = getattr(dialog, "parent_window", None)
+            if parent and hasattr(parent, "_fetch_game_manifest"):
+                parent._fetch_game_manifest(dialog.game_data)
+            elif parent:
+                main_win = getattr(parent, "main_window", parent)
+                if hasattr(main_win, "_fetch_game_manifest"):
+                    main_win._fetch_game_manifest(dialog.game_data)
+                elif hasattr(main_win, "open_fetch_manifest_dialog"):
+                    main_win.open_fetch_manifest_dialog(dialog.appid)
         return
 
     dialog.accept()

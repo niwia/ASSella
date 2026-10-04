@@ -295,6 +295,8 @@ class TaskManager(QObject):
                     game_data["_is_rollback"] = True
 
         self.game_data = game_data
+        if self.game_data and self.current_job:
+            self.game_data["archive_path"] = str(self.current_job)
 
         if self.game_data and self.game_data.get("depots"):
 
@@ -2670,8 +2672,14 @@ class TaskManager(QObject):
             if is_paused:
                 dl_task = getattr(self, "download_task", None)
                 tot = getattr(dl_task, "total_download_size_for_this_job", 0) if dl_task else 0
-                done = getattr(dl_task, "completed_so_far_for_this_job", 0) if dl_task else 0
-                history_entry["progress_pct"] = int((done / tot) * 100) if tot > 0 else 0
+                done = (
+                    getattr(dl_task, "current_total_progress_bytes", 0)
+                    or getattr(dl_task, "completed_so_far_for_this_job", 0)
+                ) if dl_task else 0
+                pct = getattr(dl_task, "last_percentage", 0) if dl_task else 0
+                if pct <= 0 and tot > 0 and done > 0:
+                    pct = int((done / tot) * 100)
+                history_entry["progress_pct"] = pct
                 history_entry["download_size"] = done
                 history_entry["total_size"] = tot
 
@@ -2816,9 +2824,11 @@ class TaskManager(QObject):
             return
 
         game_name = self.game_data.get("game_name", os.path.basename(self.current_job)) if self.game_data else os.path.basename(self.current_job)
-        completed_bytes = getattr(self.download_task, "completed_so_far_for_this_job", 0)
+        completed_bytes = getattr(self.download_task, "current_total_progress_bytes", 0) or getattr(self.download_task, "completed_so_far_for_this_job", 0)
         total_bytes = getattr(self.download_task, "total_download_size_for_this_job", 0)
-        pct = int((completed_bytes / total_bytes) * 100) if total_bytes > 0 else 0
+        pct = getattr(self.download_task, "last_percentage", 0)
+        if pct <= 0 and total_bytes > 0 and completed_bytes > 0:
+            pct = int((completed_bytes / total_bytes) * 100)
 
         msg_box = QMessageBox(self.main_window)
         msg_box.setWindowTitle("Stop Download")

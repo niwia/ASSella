@@ -1514,7 +1514,8 @@ class LibraryActionsMixin:
             except Exception:
                 pass
 
-        is_verify = (game_data.get("update_status") != "update_available")
+        is_paused = bool(game_data.get("is_paused") or game_data.get("update_status") == "paused")
+        is_verify = (game_data.get("update_status") != "update_available") and not is_paused
         target_branch = game_data.get("branch") or (parsed_data.get("branch") if isinstance(parsed_data, dict) else "public") or "public"
         metadata = dict(game_data)
         metadata.update({
@@ -1602,6 +1603,20 @@ class LibraryActionsMixin:
                 acf_installed = game_info.get("installed_depots") if isinstance(game_info, dict) else None
                 if acf_installed and isinstance(acf_installed, list):
                     cached_selected = [str(d) for d in acf_installed]
+
+            if is_paused and not selected_depots:
+                paused_st = game_data.get("paused_state")
+                if not paused_st:
+                    try:
+                        from managers.download_resume_manager import DownloadResumeManager
+                        paused_st = DownloadResumeManager.get_paused_game_state(appid)
+                    except Exception:
+                        pass
+                if paused_st and paused_st.get("selected_depots"):
+                    cached_selected = [str(d) for d in paused_st.get("selected_depots")]
+                    selected_depots = [d for d in cached_selected if d in depots]
+                    should_prompt = False
+                    logger.info(f"Resuming download: Reusing previously selected depots for {appid}: {selected_depots}")
 
             if should_prompt:
                 if auto_skip and len(depots) == 1:

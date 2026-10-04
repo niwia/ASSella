@@ -851,9 +851,22 @@ class FetchManifestDialog(QDialog):
         name = self._extract_game_name(game) or "Unknown"
 
         in_library = False
+        is_paused = False
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
-            if self.parent_window.game_manager.get_game(app_id) is not None:
+            g = self.parent_window.game_manager.get_game(app_id)
+            if g is not None:
                 in_library = True
+                if g.get("is_paused") or g.get("update_status") == "paused":
+                    is_paused = True
+
+        if not in_library:
+            try:
+                from managers.download_resume_manager import DownloadResumeManager
+                if DownloadResumeManager.is_game_download_paused(app_id):
+                    in_library = True
+                    is_paused = True
+            except Exception:
+                pass
 
         is_cached = self._is_app_cached(app_id)
 
@@ -863,7 +876,7 @@ class FetchManifestDialog(QDialog):
         item.setData(Qt.ItemDataRole.UserRole, app_id)
         self.results_list.addItem(item)
 
-        widget = SearchItemWidget(name, app_id, in_library, is_cached=is_cached, parent=self)
+        widget = SearchItemWidget(name, app_id, in_library, is_cached=is_cached, is_paused=is_paused, parent=self)
         self.results_list.setItemWidget(item, widget)
 
         if delay_fetch:
@@ -1070,6 +1083,14 @@ class FetchManifestDialog(QDialog):
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
             if self.parent_window.game_manager.get_game(app_id) is not None:
                 in_library = True
+
+        if not in_library:
+            try:
+                from managers.download_resume_manager import DownloadResumeManager
+                if DownloadResumeManager.is_game_download_paused(app_id):
+                    in_library = True
+            except Exception:
+                pass
 
         if applist_2_0_enabled and in_library:
             self.accept()

@@ -53,6 +53,7 @@ class DownloadDepotsTask(QObject):
 
         self.total_download_size_for_this_job = 0
         self.completed_so_far_for_this_job = 0
+        self.current_total_progress_bytes = 0
         self.current_depot_size = 0
         self._last_log_time = 0
         self._log_buffer = []
@@ -111,8 +112,23 @@ class DownloadDepotsTask(QObject):
             total_depots = len(commands)
             self.total_download_size_for_this_job = sum(depot_sizes)
             self.completed_so_far_for_this_job = 0
+            self.current_total_progress_bytes = 0
             self.game_data = game_data
             self.selected_depots = selected_depots
+
+            # Ensure persistent backup of manifest package inside .DepotDownloader for resume support
+            try:
+                src_pkg = (self.game_data or {}).get("archive_path")
+                if self.download_dir and src_pkg and os.path.isfile(src_pkg):
+                    depot_dir = os.path.join(self.download_dir, ".DepotDownloader")
+                    os.makedirs(depot_dir, exist_ok=True)
+                    pkg_backup = os.path.join(depot_dir, "manifest_package.zip")
+                    if not os.path.exists(pkg_backup) or os.path.getsize(pkg_backup) == 0:
+                        import shutil
+                        shutil.copy2(src_pkg, pkg_backup)
+                        logger.info(f"[DownloadDepotsTask] Backed up manifest package to {pkg_backup}")
+            except Exception as e:
+                logger.debug(f"[DownloadDepotsTask] Could not back up manifest package: {e}")
 
             logger.info(
                 f"Task tracking total download size: {self.total_download_size_for_this_job} bytes"
@@ -132,6 +148,7 @@ class DownloadDepotsTask(QObject):
 
             if already_done_bytes > 0:
                 self.completed_so_far_for_this_job = already_done_bytes
+                self.current_total_progress_bytes = already_done_bytes
                 init_pct = int((self.completed_so_far_for_this_job / self.total_download_size_for_this_job) * 100) if self.total_download_size_for_this_job > 0 else 0
                 self.progress_percentage.emit(init_pct)
                 self.last_percentage = init_pct
@@ -366,6 +383,7 @@ class DownloadDepotsTask(QObject):
                         return
                 else:
                     self.completed_so_far_for_this_job += self.current_depot_size
+                    self.current_total_progress_bytes = self.completed_so_far_for_this_job
                     self._last_speed_calc_time = 0.0
                     self._smooth_speed_bps = 0.0
                     # Copy manifest and create .sha sidecar in .DepotDownloader to enable future delta updates
@@ -646,6 +664,7 @@ class DownloadDepotsTask(QObject):
                     total_progress_bytes = (
                         self.completed_so_far_for_this_job + progress_of_current_depot
                     )
+                    self.current_total_progress_bytes = int(total_progress_bytes)
 
                     total_percentage = int(
                         (total_progress_bytes / self.total_download_size_for_this_job)
@@ -1050,6 +1069,13 @@ class DownloadDepotsTask(QObject):
         if persist_pause and getattr(self, "download_dir", None) and getattr(self, "game_data", None):
             try:
                 from managers.download_resume_manager import DownloadResumeManager
+                completed_size = getattr(self, "current_total_progress_bytes", 0) or self.completed_so_far_for_this_job
+                archive_path = self.game_data.get("archive_path") or getattr(self, "current_job", "")
+                if not archive_path or not os.path.exists(archive_path):
+                    pkg_backup = os.path.join(self.download_dir, ".DepotDownloader", "manifest_package.zip")
+                    if os.path.exists(pkg_backup):
+                        archive_path = pkg_backup
+
                 DownloadResumeManager.save_download_state(
                     install_dir=self.download_dir,
                     appid=self.game_data.get("appid", ""),
@@ -1057,9 +1083,9 @@ class DownloadDepotsTask(QObject):
                     status="paused",
                     branch=self.game_data.get("branch", "public"),
                     total_size=self.total_download_size_for_this_job,
-                    completed_size=self.completed_so_far_for_this_job,
+                    completed_size=completed_size,
                     selected_depots=getattr(self, "selected_depots", []),
-                    archive_path=self.game_data.get("archive_path") or getattr(self, "current_job", ""),
+                    archive_path=archive_path,
                     extra_metadata=self.game_data,
                 )
             except Exception as e:

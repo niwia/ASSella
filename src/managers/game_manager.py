@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 import zipfile
 from pathlib import Path
 
@@ -998,21 +999,25 @@ class GameManager(QObject):
             if self._scan_cancelled:
                 return None
 
-            # Exclude paused/in-progress downloads from installed games library
+            # Check for paused/in-progress download state
+            paused_st = None
             try:
                 from managers.download_resume_manager import DownloadResumeManager
                 paused_st = DownloadResumeManager.get_download_state(game_path)
-                if paused_st and paused_st.get("status") == "paused":
-                    logger.debug(f"Excluding paused download directory '{game_name}' from installed games library")
-                    return None
             except Exception:
                 pass
 
             marker_path = marker_path or self._get_accela_marker_path(game_path)
-            is_accela_install = bool(marker_path)
+            is_accela_install = bool(marker_path) or bool(paused_st)
 
             # Try to read appmanifest to get AppID and other metadata
             appmanifest_path, appid = self._parse_acf_for_appid(library_path, game_name, acf_cache=acf_cache)
+
+            # If ACF is missing/unparsed, fallback to paused download state if available
+            if not appid and paused_st:
+                appid = str(paused_st.get("appid") or "")
+                if paused_st.get("game_name"):
+                    game_name = paused_st.get("game_name")
 
             # Try to load metadata.json if ACF is missing/invalid, only when experimental mode is enabled
             try:
@@ -1035,15 +1040,41 @@ class GameManager(QObject):
                 if appid:
                     logger.info(f"Resolved AppID {appid} from ACCELA metadata fallback for '{game_name}'")
 
-            # Check if this appid has a paused download state
-            if appid:
+            # If not detected via directory, check if this appid has a paused download state
+            if not paused_st and appid:
                 try:
                     from managers.download_resume_manager import DownloadResumeManager
                     if DownloadResumeManager.is_game_download_paused(appid, game_path):
-                        logger.debug(f"Excluding paused download for AppID {appid} ('{game_name}') from installed games library")
-                        return None
+                        paused_st = DownloadResumeManager.get_paused_game_state(appid)
                 except Exception:
                     pass
+
+            # If this is a paused download, construct its game data dictionary and return immediately
+            if paused_st and paused_st.get("status") == "paused":
+                pause_time = paused_st.get("timestamp") or (int(os.path.getmtime(game_path)) if os.path.exists(game_path) else int(time.time()))
+                completed_bytes = int(paused_st.get("completed_size", 0))
+                total_bytes = int(paused_st.get("total_size", 0))
+                logger.debug(f"Including paused download '{game_name}' ({appid}) in library with install_time={pause_time}")
+                return {
+                    "appid": str(appid or paused_st.get("appid", "0")),
+                    "game_name": paused_st.get("game_name", game_name),
+                    "install_dir": game_name,
+                    "install_path": game_path,
+                    "library_path": library_path,
+                    "library_index": get_library_index(library_path, steam_path),
+                    "size_on_disk": completed_bytes,
+                    "total_size": total_bytes,
+                    "source": "ACCELA",
+                    "is_accela_install": True,
+                    "depot_downloader_path": marker_path or "",
+                    "accela_marker_path": marker_path or "",
+                    "appmanifest_path": appmanifest_path or "",
+                    "is_paused": True,
+                    "update_status": "paused",
+                    "install_time": pause_time,
+                    "paused_time": pause_time,
+                    "paused_state": paused_st,
+                }
 
             # Warn if AppID could not be determined
             if not appid:
