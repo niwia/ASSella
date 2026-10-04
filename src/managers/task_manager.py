@@ -2654,6 +2654,7 @@ class TaskManager(QObject):
             # Format steamless
             steamless_status = self.parse_steamless_result()
 
+            is_paused = getattr(self, "_is_paused_cancel", False)
             history_entry = {
                 "game_name": game_name,
                 "appid": appid,
@@ -2663,8 +2664,16 @@ class TaskManager(QObject):
                 "ach_status": ach_status,
                 "steamless_status": steamless_status,
                 "timestamp": time.time(),
-                "success": ddm_ok
+                "success": ddm_ok or is_paused,
+                "status": "paused" if is_paused else ("completed" if ddm_ok else "failed"),
             }
+            if is_paused:
+                dl_task = getattr(self, "download_task", None)
+                tot = getattr(dl_task, "total_download_size_for_this_job", 0) if dl_task else 0
+                done = getattr(dl_task, "completed_so_far_for_this_job", 0) if dl_task else 0
+                history_entry["progress_pct"] = int((done / tot) * 100) if tot > 0 else 0
+                history_entry["download_size"] = done
+                history_entry["total_size"] = tot
 
             # Add to simplified terminal
             if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
@@ -2698,6 +2707,7 @@ class TaskManager(QObject):
         self.main_window.ui_state.set_download_controls_visible(False)
         self.download_task = None
         self.is_cancelling = False
+        self._is_paused_cancel = False
         self._delete_files_on_cancel = None
 
         if self.speed_monitor_task:
@@ -2833,6 +2843,7 @@ class TaskManager(QObject):
         is_resume_later = (clicked == resume_btn)
         logger.info(f"--- Stopping job: {game_name} (Resume Later: {is_resume_later}) ---")
         self.is_cancelling = True
+        self._is_paused_cancel = is_resume_later
         self._finalize_cancel_event.set()
         if self.download_runner is not None:
             self.is_awaiting_download_stop = True
@@ -2841,6 +2852,8 @@ class TaskManager(QObject):
             self._delete_files_on_cancel = False
             if self.download_task:
                 self.download_task.stop(persist_pause=True)
+            if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                self.main_window.simplified_terminal.update_history_display()
         else:
             self._delete_files_on_cancel = True
             if self.download_task:

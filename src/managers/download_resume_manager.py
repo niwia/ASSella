@@ -202,3 +202,33 @@ class DownloadResumeManager:
             logger.debug(f"[DownloadResumeManager] Error finding paused state for appid {appid}: {e}")
 
         return None
+
+    @classmethod
+    def get_all_paused_downloads(cls) -> List[Dict[str, Any]]:
+        """Scans all Steam libraries and returns a list of all active paused download state dicts."""
+        results = []
+        seen_appids = set()
+        try:
+            from core.steam_helpers import get_steam_libraries
+            libraries = get_steam_libraries() or []
+            for lib in libraries:
+                common_dir = os.path.join(lib, "steamapps", "common")
+                if not os.path.isdir(common_dir):
+                    continue
+                try:
+                    for entry in os.scandir(common_dir):
+                        if entry.is_dir():
+                            st = cls.get_download_state(entry.path)
+                            if st and st.get("status") == "paused":
+                                aid = str(st.get("appid", "")).strip()
+                                if aid and aid not in seen_appids:
+                                    seen_appids.add(aid)
+                                    tot = st.get("total_size", 0)
+                                    done = st.get("completed_size", 0)
+                                    st["progress_pct"] = int((done / tot * 100)) if tot > 0 else 0
+                                    results.append(st)
+                except (OSError, PermissionError):
+                    continue
+        except Exception as e:
+            logger.debug(f"[DownloadResumeManager] Error scanning all paused downloads: {e}")
+        return results

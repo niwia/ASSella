@@ -998,6 +998,16 @@ class GameManager(QObject):
             if self._scan_cancelled:
                 return None
 
+            # Exclude paused/in-progress downloads from installed games library
+            try:
+                from managers.download_resume_manager import DownloadResumeManager
+                paused_st = DownloadResumeManager.get_download_state(game_path)
+                if paused_st and paused_st.get("status") == "paused":
+                    logger.debug(f"Excluding paused download directory '{game_name}' from installed games library")
+                    return None
+            except Exception:
+                pass
+
             marker_path = marker_path or self._get_accela_marker_path(game_path)
             is_accela_install = bool(marker_path)
 
@@ -1024,6 +1034,16 @@ class GameManager(QObject):
                 appid = meta_data.get("appid")
                 if appid:
                     logger.info(f"Resolved AppID {appid} from ACCELA metadata fallback for '{game_name}'")
+
+            # Check if this appid has a paused download state
+            if appid:
+                try:
+                    from managers.download_resume_manager import DownloadResumeManager
+                    if DownloadResumeManager.is_game_download_paused(appid, game_path):
+                        logger.debug(f"Excluding paused download for AppID {appid} ('{game_name}') from installed games library")
+                        return None
+                except Exception:
+                    pass
 
             # Warn if AppID could not be determined
             if not appid:

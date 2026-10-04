@@ -65,14 +65,26 @@ class RecentActivityItemWidget(QFrame):
         display_name = format_game_display_name(game_data)
 
         success = self.entry.get("success", True)
-        if not success:
+        status = self.entry.get("status")
+        format_size = getattr(self.parent_terminal, "_format_size", self._format_size)
+        format_duration = getattr(self.parent_terminal, "_format_duration", self._format_duration)
+        format_speed = getattr(self.parent_terminal, "_format_speed", self._format_speed)
+
+        if status == "paused":
+            pct = self.entry.get("progress_pct", 0)
+            done_bytes = self.entry.get("download_size", 0)
+            tot_bytes = self.entry.get("total_size", 0)
+            size_part = f" • {format_size(done_bytes)} of {format_size(tot_bytes)}" if tot_bytes > 0 else ""
+            stat_text = f"<span style='color: #FFB84D; font-weight: bold;'>[PAUSED {pct}%]</span>{size_part} • Click to resume"
+            sub_text = "<span style='color: #FFB84D; font-size: 8pt;'>Download Paused • Ready to Resume</span>"
+        elif not success:
             stat_text = "<span style='color: #E74C3C;'>Installation Failed</span>"
+            ach_status = self.entry.get("ach_status", "Skipped")
+            steamless_status = self.entry.get("steamless_status", "Skipped")
+            sub_text = f"<span style='color: #AAAAAA; font-size: 8pt;'>Ach: {ach_status} • DRM: {steamless_status}</span>"
         else:
             dl_size = self.entry.get("download_size", 0)
             if dl_size > 0:
-                format_size = getattr(self.parent_terminal, "_format_size", self._format_size)
-                format_duration = getattr(self.parent_terminal, "_format_duration", self._format_duration)
-                format_speed = getattr(self.parent_terminal, "_format_speed", self._format_speed)
                 size_str = format_size(dl_size)
                 dur_str = format_duration(self.entry.get("download_duration", 0))
                 speed_str = format_speed(self.entry.get("avg_speed", 0))
@@ -81,9 +93,9 @@ class RecentActivityItemWidget(QFrame):
                 stat_text = "<span style='color: #2ECC71;'>Handed off to Steam</span>"
             else:
                 stat_text = "<span style='color: #2ECC71;'>Success</span> • Zip file"
-
-        ach_status = self.entry.get("ach_status", "Skipped")
-        steamless_status = self.entry.get("steamless_status", "Skipped")
+            ach_status = self.entry.get("ach_status", "Skipped")
+            steamless_status = self.entry.get("steamless_status", "Skipped")
+            sub_text = f"<span style='color: #AAAAAA; font-size: 8pt;'>Ach: {ach_status} • DRM: {steamless_status}</span>"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -98,7 +110,7 @@ class RecentActivityItemWidget(QFrame):
             <br/>
             <span style="color: #DDDDDD; font-size: 8pt;">{stat_text}</span>
             <br/>
-            <span style="color: #AAAAAA; font-size: 8pt;">Ach: {ach_status} • DRM: {steamless_status}</span>
+            {sub_text}
         </div>
         """)
         lbl.setWordWrap(True)
@@ -108,7 +120,10 @@ class RecentActivityItemWidget(QFrame):
 
         if self.is_game:
             self.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.setToolTip(f"Click to open Game Details for {game_name}")
+            tooltip_txt = f"Click to open Game Details for {game_name}"
+            if status == "paused":
+                tooltip_txt += " (Resume Download)"
+            self.setToolTip(tooltip_txt)
             self.setStyleSheet("""
                 RecentActivityItemWidget {
                     background-color: transparent;

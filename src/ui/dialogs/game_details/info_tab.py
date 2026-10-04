@@ -496,6 +496,15 @@ def silent_refresh_branches(dialog) -> None:
 
 
 def on_branches_loaded(dialog, branches_dict: dict) -> None:
+    try:
+        import sip
+        if sip.isdeleted(dialog):
+            return
+        if not hasattr(dialog, "branch_combo") or sip.isdeleted(dialog.branch_combo):
+            return
+    except Exception:
+        pass
+
     dialog._is_fetching_branches = False
     try:
         if not branches_dict or not isinstance(branches_dict, dict):
@@ -535,24 +544,35 @@ def on_branches_loaded(dialog, branches_dict: dict) -> None:
                 select_idx = idx
 
         dialog.branch_combo.setCurrentIndex(select_idx)
+    except RuntimeError:
+        return
     except Exception as e:
         logger.error(f"Error in _on_branches_loaded: {e}", exc_info=True)
-        dialog.branch_combo.clear()
-        fallback_branch = dialog.settings.value(f"selected_branch/{dialog.appid}", "", type=str) if dialog.settings else "public"
-        installed_bid = dialog.settings.value(f"installed_buildid/{dialog.appid}", str(dialog.game_data.get("buildid") or "")) if dialog.settings else ""
-        dialog.branch_combo.addItem(f"{fallback_branch} ({installed_bid})" if installed_bid else fallback_branch, fallback_branch)
-    finally:
-        dialog.branch_combo.blockSignals(False)
         try:
+            dialog.branch_combo.clear()
+            fallback_branch = dialog.settings.value(f"selected_branch/{dialog.appid}", "", type=str) if dialog.settings else "public"
+            installed_bid = dialog.settings.value(f"installed_buildid/{dialog.appid}", str(dialog.game_data.get("buildid") or "")) if dialog.settings else ""
+            dialog.branch_combo.addItem(f"{fallback_branch} ({installed_bid})" if installed_bid else fallback_branch, fallback_branch)
+        except (RuntimeError, Exception):
+            return
+    finally:
+        try:
+            dialog.branch_combo.blockSignals(False)
             on_branch_combo_changed(dialog)
-        except Exception as e:
-            logger.error(f"Error in on_branch_combo_changed: {e}", exc_info=True)
+        except (RuntimeError, Exception):
+            pass
 
 
 def on_branch_combo_changed(dialog) -> None:
-    sel_branch = dialog.branch_combo.currentData() or "public"
-    if dialog.settings:
-        dialog.settings.setValue(f"selected_branch/{dialog.appid}", sel_branch)
+    try:
+        import sip
+        if sip.isdeleted(dialog) or not hasattr(dialog, "branch_combo") or sip.isdeleted(dialog.branch_combo):
+            return
+        sel_branch = dialog.branch_combo.currentData() or "public"
+        if dialog.settings:
+            dialog.settings.setValue(f"selected_branch/{dialog.appid}", sel_branch)
+    except (RuntimeError, Exception):
+        return
 
     b_dict = getattr(dialog, "_branches_dict", {})
     b_info = b_dict.get(sel_branch, {}) if isinstance(b_dict, dict) else {}

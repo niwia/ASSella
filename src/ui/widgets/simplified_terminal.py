@@ -414,24 +414,48 @@ class SimplifiedTerminalWidget(QWidget):
 
     def update_history_display(self):
         from utils.history_cache import get_history_cache
+        from managers.download_resume_manager import DownloadResumeManager
+        import time
+
         history = get_history_cache().get_history()
+
+        # Discover active paused downloads from disk
+        paused_list = DownloadResumeManager.get_all_paused_downloads()
+        paused_appids = {str(p.get("appid", "")) for p in paused_list}
+
+        # Filter out old history entries that match an actively paused download to avoid duplicates
+        filtered_history = [h for h in history if str(h.get("appid", "")) not in paused_appids]
+
+        combined_entries = []
+        for p in paused_list:
+            combined_entries.append({
+                "game_name": p.get("game_name", f"App {p.get('appid')}"),
+                "appid": str(p.get("appid", "")),
+                "status": "paused",
+                "progress_pct": p.get("progress_pct", 0),
+                "download_size": p.get("completed_size", 0),
+                "total_size": p.get("total_size", 0),
+                "timestamp": p.get("timestamp", time.time()),
+                "success": True,
+            })
+        combined_entries.extend(filtered_history)
 
         while self.history_scroll_layout.count():
             child = self.history_scroll_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
 
-        if not history:
+        if not combined_entries:
             lbl = QLabel("No recent installation activity")
             lbl.setStyleSheet("color: #888888; font-style: italic; font-size: 9pt;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.history_scroll_layout.addWidget(lbl)
         else:
-            for i, entry in enumerate(history):
+            for i, entry in enumerate(combined_entries):
                 item_widget = RecentActivityItemWidget(entry, parent_terminal=self)
                 self.history_scroll_layout.addWidget(item_widget)
 
-                if i < len(history) - 1:
+                if i < len(combined_entries) - 1:
                     line = QFrame()
                     line.setFrameShape(QFrame.Shape.HLine)
                     line.setFrameShadow(QFrame.Shadow.Sunken)

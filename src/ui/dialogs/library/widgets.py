@@ -226,6 +226,7 @@ class GameItemWidget(QWidget):
             "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
             "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
             "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+            "paused": ("Download Paused", "#FFB84D", "rgba(255, 184, 77, 0.15)"),
         }
         text, color, bg_color = status_map.get(
             update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
@@ -370,6 +371,7 @@ class GameItemWidget(QWidget):
             "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
             "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
             "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
+            "paused": ("Download Paused", "#FFB84D", "rgba(255, 184, 77, 0.15)"),
         }
 
         text, color, bg_color = status_map.get(

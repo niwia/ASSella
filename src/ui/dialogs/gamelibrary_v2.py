@@ -554,7 +554,16 @@ class GameDetailsDialogV2(QDialog):
         silent_refresh_branches(self)
 
     def _on_branches_loaded(self, branches_dict: dict):
-        on_branches_loaded(self, branches_dict)
+        try:
+            import sip
+            if sip.isdeleted(self):
+                return
+        except Exception:
+            pass
+        try:
+            on_branches_loaded(self, branches_dict)
+        except RuntimeError:
+            pass
 
     def _on_branch_combo_changed(self):
         on_branch_combo_changed(self)

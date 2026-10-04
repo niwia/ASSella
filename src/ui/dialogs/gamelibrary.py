@@ -508,6 +508,24 @@ class GameLibraryDialog(
         if self.game_manager:
             game_data = self.game_manager.get_game(appid_str)
         if not game_data:
+            # Check for active paused download state
+            try:
+                from managers.download_resume_manager import DownloadResumeManager
+                pst = DownloadResumeManager.get_paused_game_state(appid_str)
+                if pst:
+                    game_data = {
+                        "appid": appid_str,
+                        "game_name": pst.get("game_name") or f"App {appid_str}",
+                        "is_installed": False,
+                        "installed": False,
+                        "install_path": pst.get("install_dir"),
+                        "source": "paused_download",
+                        "status": "paused",
+                    }
+            except Exception as e:
+                logger.debug(f"[GameLibrary] Paused state lookup fallback for {appid_str}: {e}")
+
+        if not game_data:
             # Fallback to local SQLite DatabaseManager & history cache for uninstalled games
             try:
                 from managers.db_manager import DatabaseManager
