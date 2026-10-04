@@ -616,8 +616,8 @@ class SettingsDialog(QDialog):
         return tabs.add_tool_button(layout, text, tooltip, slot)
 
     @staticmethod
-    def _launch_terminal_command(cmd: list, cwd: str, needs_env: bool = False) -> None:
-        tabs.launch_terminal_command(cmd, cwd, needs_env)
+    def _launch_terminal_command(cmd: list, cwd: str, needs_env: bool = False) -> bool:
+        return tabs.launch_terminal_command(cmd, cwd, needs_env)
 
     @staticmethod
     def _manage_registry(filename: str, success_msg: str) -> None:

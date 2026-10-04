@@ -210,8 +210,20 @@ def is_headcrab_installed() -> bool:
     return (os.path.exists(dgsc_path) and os.path.exists(dlm_path)) or os.path.exists(desktop_path)
 
 
-def run_headcrab(dialog, callback) -> None:
-    """Prompt and run Headcrab installation script inside a terminal."""
+def run_headcrab_and_quit(dialog) -> bool:
+    """Run Headcrab curl installer in terminal and gracefully quit ASSella."""
+    cmd = ["bash", "-c", "curl -fsSL headcrab.pages.dev | bash; echo; echo '--- Done. Press Enter to close ---'; read _"]
+    launched = dialog._launch_terminal_command(cmd, os.path.expanduser("~"))
+    if launched:
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication
+        QTimer.singleShot(600, QApplication.instance().quit)
+        return True
+    return False
+
+
+def run_headcrab(dialog, callback=None) -> None:
+    """Prompt and run Headcrab installation script inside a terminal, quitting ASSella upon launch."""
     already = is_headcrab_installed()
     verb = "re-run" if already else "install"
     reply = QMessageBox.question(
@@ -219,14 +231,15 @@ def run_headcrab(dialog, callback) -> None:
         "Run Headcrab",
         f"This will {verb} Headcrab via:\n"
         "  curl -fsSL headcrab.pages.dev | bash\n\n"
-        "A terminal window will open. Close it when finished.",
-        QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        "A terminal window will open and ASSella will close so Headcrab can safely update SLSsteam without file conflicts.\n\n"
+        "Proceed?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes,
     )
-    if reply != QMessageBox.StandardButton.Ok:
+    if reply != QMessageBox.StandardButton.Yes:
         return
-    cmd = ["bash", "-c", "curl -fsSL headcrab.pages.dev | bash; echo; echo '--- Done. Press Enter to close ---'; read _"]
-    dialog._launch_terminal_command(cmd, os.path.expanduser("~"))
-    callback()
+    if not run_headcrab_and_quit(dialog) and callback:
+        callback()
 
 
 def create_sls_tab(dialog) -> QWidget:
@@ -397,7 +410,24 @@ def create_sls_tab(dialog) -> QWidget:
             dialog.updater_worker.error_occurred.connect(on_worker_error)
             dialog.updater_worker.start()
 
-        check_btn.clicked.connect(trigger_check)
+        def on_check_btn_clicked():
+            if "Update Available" in check_btn.text():
+                reply = QMessageBox.question(
+                    dialog,
+                    "SLSsteam Update Available",
+                    "A newer SLSsteam build is available.\n\n"
+                    "Would you like to run the Headcrab setup script to update SLSsteam now?\n"
+                    "  curl -fsSL headcrab.pages.dev | bash\n\n"
+                    "ASSella will close while Headcrab runs in the terminal.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    run_headcrab_and_quit(dialog)
+                    return
+            trigger_check()
+
+        check_btn.clicked.connect(on_check_btn_clicked)
         update_btn.clicked.connect(trigger_update)
 
         btn_layout_top = QHBoxLayout()

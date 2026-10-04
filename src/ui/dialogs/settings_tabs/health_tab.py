@@ -472,19 +472,38 @@ def on_sls_bin_tile_clicked(dialog) -> None:
 def on_sls_version_tile_clicked(dialog) -> None:
     current_status = getattr(dialog.health_sls_ver_btn, "status_lbl", None)
     status_text = current_status.text() if current_status else ""
-    if "Update!" in status_text and hasattr(dialog, "tab_widget") and dialog.tab_widget:
-        reply = QMessageBox.question(
-            dialog,
-            "SLSsteam Update Available",
-            "A newer SLSsteam build is available. Switch to the SLS tab to install or update?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
+    if "Update!" in status_text:
+        msg_box = QMessageBox(dialog)
+        msg_box.setWindowTitle("SLSsteam Update Available")
+        msg_box.setText("A newer SLSsteam build is available.")
+        msg_box.setInformativeText(
+            "Would you like to run the Headcrab setup script to update SLSsteam now?\n"
+            "  curl -fsSL headcrab.pages.dev | bash\n\n"
+            "ASSella will close while Headcrab runs in the terminal."
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        run_btn = msg_box.addButton("Run Headcrab & Quit", QMessageBox.ButtonRole.AcceptRole)
+        sls_tab_btn = msg_box.addButton("Switch to SLS Tab", QMessageBox.ButtonRole.ActionRole)
+        cancel_btn = msg_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        msg_box.setDefaultButton(run_btn)
+        msg_box.exec()
+
+        clicked = msg_box.clickedButton()
+        if clicked == run_btn:
+            from ui.dialogs.settings_tabs.tools_tab import launch_terminal_command
+            cmd = ["bash", "-c", "curl -fsSL headcrab.pages.dev | bash; echo; echo '--- Done. Press Enter to close ---'; read _"]
+            launched = launch_terminal_command(cmd, os.path.expanduser("~"))
+            if launched:
+                from PyQt6.QtCore import QTimer
+                from PyQt6.QtWidgets import QApplication
+                QTimer.singleShot(600, QApplication.instance().quit)
+                return
+        elif clicked == sls_tab_btn and hasattr(dialog, "tab_widget") and dialog.tab_widget:
             for i in range(dialog.tab_widget.count()):
                 if dialog.tab_widget.tabText(i) == "SLS":
                     dialog.tab_widget.setCurrentIndex(i)
                     return
+        elif clicked == cancel_btn:
+            return
 
     if hasattr(dialog.health_sls_ver_btn, "title_lbl"):
         dialog.health_sls_ver_btn.title_lbl.setText("Version")
