@@ -637,8 +637,8 @@ def has_game_dlcs(appid: str, depots: Optional[Dict[str, Any]] = None) -> bool:
 
     # 3. Live Steam PICS / SteamCMD app info
     try:
-        from core.steam_api import get_app_info
-        api_info = get_app_info(appid_str)
+        from core.steam_api import get_depot_info_from_api
+        api_info = get_depot_info_from_api(appid_str)
         if api_info:
             if api_info.get("hasdepotsindlc") in (1, "1", True):
                 return True
