@@ -503,6 +503,7 @@ class SteamDBScraper:
                         "size_bytes": size_bytes,
                         "dl_str": dl_str,
                         "is_dlc": is_dlc,
+                        "source": "steamdb",
                     }
 
         logger.info(f"[SteamDB] Parsed {len(depots)} depots for App {appid_str}")
@@ -540,6 +541,7 @@ class SteamDBScraper:
                                     "size_bytes": 0,
                                     "dl_str": "",
                                     "is_dlc": True,
+                                    "source": "store",
                                 }
                                 try:
                                     from managers.db_manager import DatabaseManager
@@ -555,6 +557,7 @@ class SteamDBScraper:
                                                 "size_bytes": 0,
                                                 "dl_str": "",
                                                 "is_dlc": True,
+                                                "source": "store",
                                             }
                                 except Exception:
                                     pass

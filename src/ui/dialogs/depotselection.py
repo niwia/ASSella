@@ -329,6 +329,86 @@ class DepotCheckboxDelegate(QStyledItemDelegate):
             super().paint(painter, option, index)
 
 
+class DepotConfigDelegate(QStyledItemDelegate):
+    """Delegate for Configuration column. Renders depot text and an inline tiny SteamDB icon in brackets if retrieved from SteamDB."""
+
+    def __init__(self, dialog: "DepotSelectionDialog"):
+        super().__init__(dialog)
+        self.dialog = dialog
+        self._steamdb_pixmap = None
+        self._init_pixmap()
+
+    def _init_pixmap(self):
+        try:
+            from utils.paths import Paths
+            icon_path = Paths.icon("steamdb_logo.png")
+            if not os.path.exists(icon_path):
+                icon_path = os.path.expanduser("~/Downloads/steamdb_logo_icon_249512.png")
+            if os.path.exists(icon_path):
+                orig = QPixmap(str(icon_path))
+                if not orig.isNull():
+                    scaled = orig.scaled(13, 13, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    tinted = QPixmap(scaled.size())
+                    tinted.fill(Qt.GlobalColor.transparent)
+                    p = QPainter(tinted)
+                    p.drawPixmap(0, 0, scaled)
+                    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+                    p.fillRect(tinted.rect(), QColor("#4DA8DA"))
+                    p.end()
+                    self._steamdb_pixmap = tinted
+        except Exception as e:
+            logger.debug(f"[DepotConfigDelegate] SteamDB pixmap init failed: {e}")
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        widget = option.widget
+        style = widget.style() if widget else QApplication.style()
+
+        is_steamdb = (index.data(Qt.ItemDataRole.UserRole + 5) == "steamdb")
+        if not is_steamdb or not self._steamdb_pixmap or self._steamdb_pixmap.isNull():
+            super().paint(painter, option, index)
+            return
+
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_PanelItemViewItem, opt, painter, widget)
+        text_rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, opt, widget)
+        text = opt.text
+
+        painter.save()
+        painter.setFont(opt.font)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        fm = painter.fontMetrics()
+        text_w = fm.horizontalAdvance(text)
+        avail_w = text_rect.width()
+        badge_w = 4 + fm.horizontalAdvance("(") + 2 + self._steamdb_pixmap.width() + 2 + fm.horizontalAdvance(")")
+
+        if text_w + badge_w > avail_w:
+            text = fm.elidedText(text, Qt.TextElideMode.ElideRight, avail_w - badge_w)
+            text_w = fm.horizontalAdvance(text)
+
+        painter.setPen(opt.palette.text().color() if not (opt.state & QStyle.StateFlag.State_Selected) else QColor("#FFFFFF"))
+        style.drawItemText(painter, text_rect, opt.displayAlignment, opt.palette, True, text)
+
+        bracket_color = QColor(160, 160, 160)
+        bracket_x = text_rect.x() + text_w + 6
+        cy = text_rect.y() + (text_rect.height() - self._steamdb_pixmap.height()) // 2
+        text_baseline_y = text_rect.y() + (text_rect.height() + fm.ascent() - fm.descent()) // 2
+
+        painter.setPen(bracket_color)
+        painter.drawText(bracket_x, text_baseline_y, "(")
+        open_w = fm.horizontalAdvance("(")
+
+        icon_x = bracket_x + open_w + 2
+        painter.drawPixmap(icon_x, cy, self._steamdb_pixmap)
+
+        close_x = icon_x + self._steamdb_pixmap.width() + 2
+        painter.drawText(close_x, text_baseline_y, ")")
+
+        painter.restore()
+
+
 class DepotSelectionDialog(QDialog):
     _depots_enriched_signal = pyqtSignal(dict)
     _missing_contents_checked_signal = pyqtSignal(dict)
@@ -701,6 +781,7 @@ class DepotSelectionDialog(QDialog):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
 
         self.table_widget.setItemDelegateForColumn(0, DepotCheckboxDelegate(self))
+        self.table_widget.setItemDelegateForColumn(1, DepotConfigDelegate(self))
 
         self._hidden_depots_expanded = False
         self._populate_table()
@@ -755,10 +836,18 @@ class DepotSelectionDialog(QDialog):
 
         self._dlc_only_btn = QPushButton("DLC Only")
         is_single_depot = len(self.depots) <= 1
+        has_dlc = self._check_game_has_dlc()
+
         if is_single_depot:
             self._dlc_only_btn.setEnabled(False)
             self._dlc_only_btn.setCheckable(False)
             self._dlc_only_btn.setToolTip("DLC-Only mode is unavailable because this title only contains a single base depot.")
+            self._dlc_only_mode = False
+        elif not has_dlc:
+            self._dlc_only_btn.setEnabled(False)
+            self._dlc_only_btn.setCheckable(False)
+            self._dlc_only_btn.setToolTip("DLC-Only mode is unavailable because this game does not have any DLC.")
+            self._dlc_only_mode = False
         else:
             self._dlc_only_btn.setToolTip(
                 "Only select this if you own the base game separately.\n"
@@ -1076,6 +1165,9 @@ class DepotSelectionDialog(QDialog):
 
             config_item = ConfigTableWidgetItem(config_text, tier=0)
             config_item.setFlags(config_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if depot_data.get("source") == "steamdb":
+                config_item.setData(Qt.ItemDataRole.UserRole + 5, "steamdb")
+                config_item.setToolTip(f"{config_text}\n(Name retrieved from SteamDB)")
 
             raw_size = int(depot_data.get("size") or 0)
             size_item = NumericTableWidgetItem(size_str, raw_size, tier=0)
@@ -1578,6 +1670,8 @@ class DepotSelectionDialog(QDialog):
                             d_data["oslist"] = info["oslist"]
                         if info.get("is_dlc") or d_data.get("dlcappid"):
                             d_data["is_dlc"] = True
+                        if info.get("source"):
+                            d_data["source"] = info["source"]
         finally:
             if hasattr(self, "linux_button") and self.linux_button:
                 has_linux = self._has_native_linux_depots()
@@ -1693,6 +1787,10 @@ class DepotSelectionDialog(QDialog):
                             new_text = f"{tags}  {name}".strip() if tags else name
                             if config_item:
                                 config_item.setText(new_text)
+                                src = info.get("source") or d_data.get("source")
+                                if src == "steamdb":
+                                    config_item.setData(Qt.ItemDataRole.UserRole + 5, "steamdb")
+                                    config_item.setToolTip(f"{new_text}\n(Name retrieved from SteamDB)")
 
                 # Update size if missing
                 curr_size = size_item.text().strip() if size_item else ""
@@ -1702,6 +1800,18 @@ class DepotSelectionDialog(QDialog):
                             size_item.setText(info["size_str"])
                             if hasattr(size_item, "sort_value"):
                                 size_item.sort_value = int(info.get("size_bytes") or 0)
+
+        # If DLC Only was disabled because no DLC was previously known, re-evaluate and enable it
+        if hasattr(self, "_dlc_only_btn") and not self.is_single_depot:
+            if any(info.get("is_dlc") or info.get("dlcappid") for info in depots_info.values()):
+                if not self._dlc_only_btn.isEnabled():
+                    self._dlc_only_btn.setEnabled(True)
+                    self._dlc_only_btn.setCheckable(True)
+                    self._dlc_only_btn.setToolTip(
+                        "Only select this if you own the base game separately.\n"
+                        "Update checks will only compare the depots you select here."
+                    )
+                    self._refresh_dlc_only_style()
 
         self._update_table_headers()
         if getattr(self, "_dlc_only_mode", False) and not getattr(self, "_has_saved_selection", False) and not getattr(self, "_user_interacted", False):
@@ -2232,6 +2342,16 @@ class DepotSelectionDialog(QDialog):
         """Returns the list of custom checked relative file paths."""
         return self.selected_files
 
+    def _check_game_has_dlc(self) -> bool:
+        """
+        Reliably checks whether the game has DLCs using multiple sources:
+        1. Loaded depots in dialog (is_dlc, dlcappid, or DLC in name/desc).
+        2. Local SQLite database cache (hasdepotsindlc, listofdlc, depots).
+        3. Steam PICS / SteamCMD app info.
+        """
+        from utils.dlc_helpers import has_game_dlcs
+        return has_game_dlcs(str(self.app_id), self.depots)
+
     def _refresh_dlc_only_style(self) -> None:
         """Update the DLC Only button style to reflect its on/off state."""
         if not self._dlc_only_btn.isEnabled():
@@ -2278,9 +2398,10 @@ class DepotSelectionDialog(QDialog):
             """)
 
     def _on_dlc_only_toggled(self) -> None:
-        """Toggle DLC Only mode, show 3-second lockout warning, and auto-select DLC depots."""
+        """Toggle DLC Only mode, show warning with Proceed/Cancel confirmation, and auto-select DLC depots."""
         new_state = self._dlc_only_btn.isChecked()
         if new_state:
+            confirmed = False
             try:
                 warn_fn = show_dlc_mode_warning
                 if warn_fn is None:
@@ -2292,9 +2413,16 @@ class DepotSelectionDialog(QDialog):
                         except ImportError:
                             from dlc_warning_dialog import show_dlc_mode_warning as warn_fn
                 if warn_fn:
-                    warn_fn(self)
+                    confirmed = bool(warn_fn(self))
             except Exception as e:
                 logger.warning(f"DLC warning dialog error: {e}")
+                confirmed = False
+
+            if not confirmed:
+                self._dlc_only_btn.blockSignals(True)
+                self._dlc_only_btn.setChecked(False)
+                self._dlc_only_btn.blockSignals(False)
+                return
 
         self._dlc_only_mode = new_state
         self._refresh_dlc_only_style()

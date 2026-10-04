@@ -989,26 +989,10 @@ class FetchManifestDialog(QDialog):
 
         selected_branch = "public"
         if branches and len(branches) > 1:
-            from PyQt6.QtWidgets import QInputDialog
-            items = sorted(branches.keys(), key=lambda k: (0 if k == "public" else 1, k))
-
-            display_items = []
-            for b in items:
-                b_info = branches[b]
-                bid = b_info.get("buildid", "") if isinstance(b_info, dict) else ""
-                display_items.append(f"{b} (Build: {bid})" if bid else b)
-
-            item, ok = QInputDialog.getItem(
-                self,
-                "Select Branch",
-                f"Multiple branches found for AppID {app_id}.\nSelect which branch manifest to fetch:",
-                display_items,
-                0,
-                False
-            )
-            if ok and item:
-                idx = display_items.index(item)
-                selected_branch = items[idx]
+            from ui.dialogs.branch_selection_dialog import BranchSelectionDialog
+            branch_choice, ok = BranchSelectionDialog.select_branch(self, app_id=app_id, branches=branches)
+            if ok and branch_choice:
+                selected_branch = branch_choice
             else:
                 self.status_label.setText("Fetch cancelled.")
                 return
