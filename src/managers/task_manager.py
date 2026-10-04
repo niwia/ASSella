@@ -1024,6 +1024,19 @@ class TaskManager(QObject):
                 else:
                     self._job_steps_completed.add("achievements")
 
+        # Ensure any manifest symlinks (especially on Linux) are properly established
+        try:
+            from utils.manifest_resolver import restore_all_game_symlinks
+            install_dir = None
+            if self.game_data:
+                install_dir = self.game_data.get("install_dir") or self.game_data.get("game_path")
+            if install_dir and os.path.isdir(install_dir):
+                restored_links = restore_all_game_symlinks(install_dir)
+                if restored_links:
+                    logger.info(f"Restored {len(restored_links)} symlinks for {self.game_data.get('game_name', 'game')}")
+        except Exception as e:
+            logger.debug(f"Failed to restore symlinks in finalize_job_logic: {e}")
+
         # --- FINISH ---
         logger.info("All post-processing steps complete. Finishing job.")
         self.main_window.job_queue.jobs_completed_count += 1
