@@ -331,7 +331,7 @@ def init_info_tab(dialog) -> None:
         dialog._cancel_dl_pill.clicked.connect(lambda: _do_cancel_paused_download(dialog, paused_state))
         btn_row.addWidget(dialog._cancel_dl_pill, 1)
 
-        # Disable quick setting tiles and scroll content for paused game
+        # Disable quick setting tiles and inner controls for paused game
         if hasattr(dialog, "status_tile"):
             dialog.status_tile.setEnabled(False)
             dialog.status_tile.update_state(False, "#e5a50a", active_sub="PAUSED", inactive_sub="PAUSED")
@@ -343,8 +343,13 @@ def init_info_tab(dialog) -> None:
             dialog.update_all_tile.setEnabled(False)
         if hasattr(dialog, "folder_tile"):
             dialog.folder_tile.setEnabled(False)
-        if hasattr(dialog, "scroll") and dialog.scroll and dialog.scroll.widget():
-            dialog.scroll.widget().setEnabled(False)
+        if hasattr(dialog, "branch_combo"):
+            dialog.branch_combo.setEnabled(False)
+        if hasattr(dialog, "validate_btn"):
+            dialog.validate_btn.setEnabled(False)
+            pct = paused_state.get("progress_pct", 0)
+            dialog.validate_btn.setText(f"Download Paused ({pct:.0f}%)" if pct > 0 else "Download Paused")
+        inner.setEnabled(False)
     else:
         dialog._uninstall_pill = QPushButton("Uninstall")
         dialog._uninstall_pill.setFixedHeight(32)
@@ -709,6 +714,17 @@ def update_validate_button(dialog) -> None:
         palette = dialog.validate_btn.palette()
         palette.setColor(QPalette.ColorRole.Highlight, base_qcolor)
         dialog.validate_btn.setPalette(palette)
+
+    try:
+        from managers.download_resume_manager import DownloadResumeManager
+        paused_state = DownloadResumeManager.get_paused_game_state(dialog.appid)
+        if paused_state:
+            pct = paused_state.get("progress_pct", 0)
+            dialog.validate_btn.setText(f"Download Paused ({pct:.0f}%)" if pct > 0 else "Download Paused")
+            dialog.validate_btn.setEnabled(False)
+            return
+    except Exception:
+        pass
 
     is_installed = dialog.game_data.get("is_installed", True) and bool(dialog.game_data.get("install_path"))
 
@@ -2023,6 +2039,10 @@ def _do_cancel_paused_download(dialog, paused_state: dict) -> None:
 
         dialog.accept()
         parent = getattr(dialog, "parent_window", None)
-        if parent and hasattr(parent, "refresh_game_list"):
-            parent.refresh_game_list()
+        if parent:
+            if hasattr(parent, "refresh_game_list"):
+                parent.refresh_game_list()
+            main_win = getattr(parent, "main_window", parent)
+            if hasattr(main_win, "simplified_terminal") and main_win.simplified_terminal:
+                main_win.simplified_terminal.update_history_display()
 

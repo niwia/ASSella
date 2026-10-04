@@ -467,12 +467,41 @@ class SimplifiedTerminalWidget(QWidget):
         """Open Game Details page for a game clicked in the recent activity list."""
         if not appid or not str(appid).isdigit() or str(appid).lower() == "workshop":
             return
+        appid_str = str(appid).strip()
         try:
+            # 1. Check if this is an actively paused download
+            from managers.download_resume_manager import DownloadResumeManager
+            pst = DownloadResumeManager.get_paused_game_state(appid_str)
+            if pst:
+                from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+                game_data = {
+                    "appid": appid_str,
+                    "game_name": pst.get("game_name") or f"App {appid_str}",
+                    "install_path": pst.get("install_dir"),
+                    "is_installed": False,
+                    "installed": False,
+                    "source": "paused_download",
+                    "status": "paused",
+                }
+                dialog = GameDetailsDialogV2(self.main_window, game_data)
+                dialog.exec()
+                return
+
+            # 2. Check if game is in game_manager
+            gm = getattr(self.main_window, "game_manager", None)
+            game_data = gm.get_game(appid_str) if gm else None
+            if game_data:
+                from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+                dialog = GameDetailsDialogV2(self.main_window, game_data)
+                dialog.exec()
+                return
+
+            # 3. Fallback to opening library dialog
             from ui.dialogs.gamelibrary import GameLibraryDialog
-            dialog = GameLibraryDialog(self.main_window, show_details_for_appid=str(appid))
+            dialog = GameLibraryDialog(self.main_window, show_details_for_appid=appid_str)
             dialog.exec()
         except Exception as e:
-            logger.error(f"Failed to open game details from recent activity for {appid}: {e}")
+            logger.error(f"Failed to open game details from recent activity for {appid}: {e}", exc_info=True)
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
