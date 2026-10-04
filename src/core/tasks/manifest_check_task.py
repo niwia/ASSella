@@ -805,6 +805,32 @@ class ManifestCheckTask(QObject):
                 return "cannot_determine"
             diag_meta["reason"] = "manifests_match"
             _store_check_diag(appid, diag_meta)
+
+            # When manifests match the selected branch, sync the installed build ID
+            # so UI displays the branch's current build ID consistently
+            if branch_buildid and branch_buildid not in ("0", "Unknown"):
+                try:
+                    if installed_branch == selected_branch:
+                        settings.setValue(f"installed_buildid/{appid}/{selected_branch}", branch_buildid)
+                        settings.setValue(f"installed_buildid/{appid}", branch_buildid)
+                        game_data["buildid"] = branch_buildid
+                        # Update metadata.json if present
+                        install_path = game_data.get("install_path")
+                        if install_path:
+                            meta_file = Path(install_path) / ".DepotDownloader" / "metadata.json"
+                            if meta_file.exists():
+                                try:
+                                    import json
+                                    with open(meta_file, "r", encoding="utf-8") as mf:
+                                        m_json = json.load(mf)
+                                    m_json["buildid"] = branch_buildid
+                                    with open(meta_file, "w", encoding="utf-8") as mf:
+                                        json.dump(m_json, mf, indent=4)
+                                except Exception:
+                                    pass
+                except Exception as sync_bid_err:
+                    logger.debug(f"[UpdateCheck {appid}] Error syncing build ID on up_to_date: {sync_bid_err}")
+
             return "up_to_date"
 
         except Exception as e:

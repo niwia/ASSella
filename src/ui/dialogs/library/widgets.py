@@ -47,7 +47,7 @@ class ElidedLabel(QLabel):
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
         self._full_text = text
-        self.setWordWrap(True)
+        self.setWordWrap(False)
         self.setToolTip(text)
         
     def setText(self, text):
@@ -62,13 +62,7 @@ class ElidedLabel(QLabel):
     def sizeHint(self) -> QSize:
         sh = super().sizeHint()
         fm = QFontMetrics(self.font())
-        line_height = fm.lineSpacing()
-        # Report height of exactly 2 lines (or 1 if short)
-        w = self.width() or 400
-        if fm.horizontalAdvance(self._full_text) <= w:
-            sh.setHeight(line_height)
-        else:
-            sh.setHeight(line_height * 2)
+        sh.setHeight(fm.lineSpacing())
         return sh
 
     def minimumSizeHint(self) -> QSize:
@@ -79,45 +73,15 @@ class ElidedLabel(QLabel):
         fm = QFontMetrics(self.font())
         if not text:
             super().setText("")
-            self.setFixedHeight(fm.lineSpacing())
             return
             
         width = self.width()
         if width <= 10:
             super().setText(text)
-            self.setFixedHeight(fm.lineSpacing())
             return
             
-        if fm.horizontalAdvance(text) <= width:
-            super().setText(text)
-            self.setFixedHeight(fm.lineSpacing())
-            return
-            
-        # Simple line-breaking for up to 2 lines
-        words = text.split(" ")
-        lines = []
-        current_line = []
-        for word in words:
-            test_line = " ".join(current_line + [word]) if current_line else word
-            if fm.horizontalAdvance(test_line) <= width:
-                current_line.append(word)
-            else:
-                if len(lines) == 0:
-                    lines.append(" ".join(current_line))
-                    current_line = [word]
-                else:
-                    # Second line, we need to elide the rest
-                    remaining = " ".join(current_line + [word] + words[words.index(word)+1:])
-                    elided = fm.elidedText(remaining, Qt.TextElideMode.ElideRight, width)
-                    lines.append(elided)
-                    current_line = []
-                    break
-        if current_line:
-            if len(lines) < 2:
-                lines.append(" ".join(current_line))
-        elided_text = "\n".join(lines[:2])
-        super().setText(elided_text)
-        self.setFixedHeight(fm.lineSpacing() * len(lines[:2]))
+        elided = fm.elidedText(text, Qt.TextElideMode.ElideRight, width)
+        super().setText(elided)
 
 
 class BlurredHeaderWidget(QWidget):

@@ -118,6 +118,14 @@ def init_info_tab(dialog) -> None:
     dialog.dlc_tile.clicked.connect(lambda: on_dlc_only_toggled(dialog, dialog.dlc_tile.isChecked()))
     top_tiles_layout.addWidget(dialog.dlc_tile, 1)
 
+    try:
+        from utils.dlc_helpers import has_game_dlcs
+        if not has_game_dlcs(dialog.appid):
+            dialog.dlc_tile.setEnabled(False)
+            dialog.dlc_tile.setToolTip("DLC Mode is unavailable because this game has no DLCs.")
+    except Exception as e:
+        logger.debug(f"Error checking DLC availability for tile {dialog.appid}: {e}")
+
     dialog.pin_tile = MaterialTile("Pin Build", "Inactive", dialog, is_toggle=True)
     is_pinned = dialog.settings.value(f"pin_build/{dialog.appid}", False, type=bool) if dialog.settings else False
     dialog.pin_tile.update_state(is_pinned, dialog.accent_color)
@@ -501,20 +509,31 @@ def on_branch_combo_changed(dialog) -> None:
 
     if hasattr(dialog, "build_val_lbl"):
         if installed_bid:
-            is_older = False
-            if branch_bid and sel_branch == installed_branch:
-                try:
-                    is_older = int(installed_bid) < int(branch_bid)
-                except (ValueError, TypeError):
-                    is_older = (branch_bid != installed_bid)
-
             dialog.build_val_lbl.setText(installed_bid)
-            if is_older:
-                dialog.build_val_lbl.setStyleSheet("color: #FFB84D; font-size: 9.5pt; font-weight: bold; background: transparent;")
-                dialog.build_val_lbl.setToolTip(f"Installed Build: {installed_bid}\nLatest on Steam ({sel_branch}): Build {branch_bid} (Update available)")
+            if sel_branch == installed_branch:
+                is_older = False
+                update_status = dialog.game_data.get("update_status", "") if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict) else ""
+                if update_status == "up_to_date":
+                    is_older = False
+                elif update_status == "update_available":
+                    is_older = True
+                elif branch_bid:
+                    try:
+                        is_older = int(installed_bid) < int(branch_bid)
+                    except (ValueError, TypeError):
+                        is_older = (branch_bid != installed_bid)
+
+                if is_older:
+                    dialog.build_val_lbl.setStyleSheet("color: #FFB84D; font-size: 9.5pt; font-weight: bold; background: transparent;")
+                    dialog.build_val_lbl.setToolTip(f"Installed Build: {installed_bid}\nLatest on Steam ({sel_branch}): Build {branch_bid} (Update available)")
+                else:
+                    dialog.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold; background: transparent;")
+                    dialog.build_val_lbl.setToolTip(f"Installed Build: {installed_bid} (Up to date)")
             else:
-                dialog.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold; background: transparent;")
-                dialog.build_val_lbl.setToolTip(f"Installed Build: {installed_bid} (Up to date)")
+                # User selected a different branch than the one currently installed
+                dialog.build_val_lbl.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold; background: transparent;")
+                tip_branch = f"Build {branch_bid}" if branch_bid else "Unknown"
+                dialog.build_val_lbl.setToolTip(f"Installed: Build {installed_bid} (branch '{installed_branch}')\nSelected branch '{sel_branch}': {tip_branch}")
         else:
             if branch_bid:
                 dialog.build_val_lbl.setText(branch_bid)
@@ -1105,6 +1124,21 @@ def do_dlc_uninstall(dialog) -> None:
 def on_dlc_only_toggled(dialog, state: bool) -> None:
     if state:
         try:
+            from utils.dlc_helpers import has_game_dlcs
+            if not has_game_dlcs(dialog.appid):
+                if hasattr(dialog, "dlc_tile") and dialog.dlc_tile:
+                    dialog.dlc_tile.blockSignals(True)
+                    dialog.dlc_tile.setChecked(False)
+                    dialog.dlc_tile.update_state(False, dialog.accent_color)
+                    dialog.dlc_tile.setEnabled(False)
+                    dialog.dlc_tile.setToolTip("DLC Mode is unavailable because this game has no DLCs.")
+                    dialog.dlc_tile.blockSignals(False)
+                return
+        except Exception:
+            pass
+
+        confirmed = False
+        try:
             try:
                 from ui.dialogs.dlc_warning_dialog import show_dlc_mode_warning
             except ImportError:
@@ -1112,9 +1146,19 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
                     from ..dlc_warning_dialog import show_dlc_mode_warning
                 except ImportError:
                     from dlc_warning_dialog import show_dlc_mode_warning
-            show_dlc_mode_warning(dialog)
+            confirmed = bool(show_dlc_mode_warning(dialog))
         except Exception as e:
             logger.warning(f"DLC warning dialog error: {e}")
+            confirmed = False
+
+        if not confirmed:
+            if hasattr(dialog, "dlc_tile") and dialog.dlc_tile:
+                dialog.dlc_tile.blockSignals(True)
+                dialog.dlc_tile.setChecked(False)
+                dialog.dlc_tile.update_state(False, dialog.accent_color)
+                dialog.dlc_tile.blockSignals(False)
+            return
+
     if hasattr(dialog, "dlc_tile") and dialog.dlc_tile:
         dialog.dlc_tile.update_state(state, dialog.accent_color)
     if dialog.settings:

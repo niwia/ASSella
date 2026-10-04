@@ -132,14 +132,20 @@ def init_hero_v2(dialog, root) -> None:
     bid_str = installed_bid if installed_bid else "Unknown"
     initial_build_color = None
     if installed_bid:
-        cached_bid = str(dialog.game_data.get("buildid", "")) if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict) else ""
-        if cached_bid:
-            is_old = False
-            try:
-                is_old = int(installed_bid) < int(cached_bid)
-            except (ValueError, TypeError):
-                is_old = (cached_bid != installed_bid)
-            initial_build_color = "#FFB84D" if is_old else "#46b464"
+        update_status = dialog.game_data.get("update_status", "") if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict) else ""
+        if update_status == "up_to_date":
+            initial_build_color = "#46b464"
+        elif update_status == "update_available":
+            initial_build_color = "#FFB84D"
+        else:
+            cached_bid = str(dialog.game_data.get("buildid", "")) if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict) else ""
+            if cached_bid:
+                is_old = False
+                try:
+                    is_old = int(installed_bid) < int(cached_bid)
+                except (ValueError, TypeError):
+                    is_old = (cached_bid != installed_bid)
+                initial_build_color = "#FFB84D" if is_old else "#46b464"
 
     ri, dialog.build_val_lbl = _stat_item("BUILD", bid_str, value_color=initial_build_color)
     dialog._hero_build_val_lbl = dialog.build_val_lbl

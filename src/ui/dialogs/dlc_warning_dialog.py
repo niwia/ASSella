@@ -1,6 +1,7 @@
 """
 Modal warning dialog displayed when the user activates DLC-only mode.
-Enforces a 3-second lockout countdown before dismissal to ensure the user acknowledges the ownership and installation path instructions.
+Enforces a 3-second lockout countdown before enabling the 'Proceed' button to ensure
+the user acknowledges the ownership and installation path instructions, alongside a 'Cancel' button.
 """
 
 from PyQt6.QtWidgets import (
@@ -20,7 +21,8 @@ from utils.settings import get_settings
 
 class DlcModeWarningDialog(QDialog):
     """
-    Dialog informing the user about DLC-only mode requirements with a 3-second countdown timer.
+    Dialog informing the user about DLC-only mode requirements with Proceed and Cancel buttons.
+    The Proceed button is locked for 3 seconds before becoming clickable.
     """
 
     def __init__(self, parent=None):
@@ -30,10 +32,10 @@ class DlcModeWarningDialog(QDialog):
         self.setMinimumWidth(440)
         self.setMaximumWidth(520)
 
-        # Disable dialog close 'X' until countdown completes
         self.setWindowFlags(
             Qt.WindowType.Dialog
             | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowCloseButtonHint
             | Qt.WindowType.CustomizeWindowHint
         )
 
@@ -67,20 +69,45 @@ class DlcModeWarningDialog(QDialog):
         """)
         layout.addWidget(msg_lbl)
 
-        # Bottom action bar
+        # Bottom action bar with Cancel and Proceed buttons
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
         btn_layout.addStretch()
 
-        self.ok_btn = QPushButton("Understood (3s)")
-        self.ok_btn.setFixedHeight(34)
-        self.ok_btn.setMinimumWidth(150)
-        self.ok_btn.setEnabled(False)
-        self.ok_btn.clicked.connect(self.accept)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setFixedHeight(34)
+        self.cancel_btn.setMinimumWidth(100)
+        self.cancel_btn.clicked.connect(self.reject)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.06);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 9.5pt;
+                padding: 4px 16px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.12);
+                border-color: rgba(255, 255, 255, 0.25);
+            }
+            QPushButton:pressed {
+                background-color: rgba(255, 255, 255, 0.08);
+            }
+        """)
+        btn_layout.addWidget(self.cancel_btn)
 
-        # Initial disabled styling
+        self.proceed_btn = QPushButton("Proceed (3s)")
+        self.proceed_btn.setFixedHeight(34)
+        self.proceed_btn.setMinimumWidth(130)
+        self.proceed_btn.setEnabled(False)
+        self.proceed_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.proceed_btn)
+
+        # Initial disabled styling for Proceed button
         self._update_button_style()
 
-        btn_layout.addWidget(self.ok_btn)
         layout.addLayout(btn_layout)
 
         # Dialog styling
@@ -94,7 +121,7 @@ class DlcModeWarningDialog(QDialog):
 
     def _update_button_style(self):
         if self._countdown > 0:
-            self.ok_btn.setStyleSheet("""
+            self.proceed_btn.setStyleSheet("""
                 QPushButton {
                     background-color: rgba(255, 255, 255, 0.06);
                     color: rgba(255, 255, 255, 0.35);
@@ -106,7 +133,7 @@ class DlcModeWarningDialog(QDialog):
                 }
             """)
         else:
-            self.ok_btn.setStyleSheet(f"""
+            self.proceed_btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: {self.accent_color};
                     color: #FFFFFF;
@@ -142,36 +169,34 @@ class DlcModeWarningDialog(QDialog):
     def _on_tick(self):
         self._countdown -= 1
         if self._countdown > 0:
-            self.ok_btn.setText(f"Understood ({self._countdown}s)")
+            self.proceed_btn.setText(f"Proceed ({self._countdown}s)")
         else:
             self._timer.stop()
-            self.ok_btn.setText("Understood")
-            self.ok_btn.setEnabled(True)
+            self.proceed_btn.setText("Proceed")
+            self.proceed_btn.setEnabled(True)
             self._update_button_style()
-            # Enable default close behavior
-            self.setWindowFlags(
-                Qt.WindowType.Dialog
-                | Qt.WindowType.WindowTitleHint
-                | Qt.WindowType.WindowCloseButtonHint
-                | Qt.WindowType.CustomizeWindowHint
-            )
-            self.show()
 
     def closeEvent(self, event):
-        if self._countdown > 0:
-            event.ignore()
-        else:
-            event.accept()
+        # Allow closing via 'X' button to cancel anytime
+        self.reject()
+        event.accept()
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if self._countdown > 0:
                 event.ignore()
                 return
+            self.accept()
+            return
         super().keyPressEvent(event)
 
 
-def show_dlc_mode_warning(parent=None):
-    """Convenience helper to display the 3-second lockout DLC mode warning modal."""
+def show_dlc_mode_warning(parent=None) -> bool:
+    """Convenience helper to display the DLC mode warning modal with Proceed and Cancel buttons.
+    Returns True if user clicked Proceed, False if cancelled.
+    """
     dlg = DlcModeWarningDialog(parent)
-    dlg.exec()
+    return dlg.exec() == QDialog.DialogCode.Accepted
