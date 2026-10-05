@@ -591,9 +591,8 @@ def is_slssteam_plugins_enabled() -> bool:
 
 
 def sync_plugins_on_startup() -> bool:
-    """Check and update SLSsteam plugins on ASSella startup if enabled by the user."""
-    from utils.plugin_manager import sync_plugins_if_enabled
-    return sync_plugins_if_enabled()
+    """Startup auto-sync disabled to prevent destructive overwriting of custom plugins."""
+    return True
 
 
 
@@ -1097,27 +1096,6 @@ class BatchConfigEditor:
         if not _is_valid_hex64(key_str):
             logger.warning(f"Invalid AES decryption key (not 64 hex chars) for depot {depot_id_str}")
             return False
-
-        # Guard: never add a base game AppID into DecryptionKeys
-        if app_id and depot_id_str == str(app_id).strip():
-            logger.warning(f"Refusing to add base AppID '{depot_id_str}' to DecryptionKeys")
-            return False
-
-        bounds_apps = _get_section_bounds(self.content, "AdditionalApps")
-        if bounds_apps:
-            apps_text = self.content[bounds_apps[1] : bounds_apps[2]]
-            m_app = re.search(
-                rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}(?:[ \t]*#[ \t]*(.*))?$",
-                apps_text,
-                re.MULTILINE,
-            )
-            if m_app:
-                cm = (m_app.group(1) or "").lower()
-                if "dlc" not in cm:
-                    logger.warning(
-                        f"Refusing to add base AppID '{depot_id_str}' from AdditionalApps to DecryptionKeys"
-                    )
-                    return False
 
         shared_redists = {
             "228980", "1034630", "228981", "228982", "228983", "228984", "228985",

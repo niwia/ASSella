@@ -155,17 +155,21 @@ def register_plugin_game(
     clean_dlc_appids = [str(d).strip() for d in (dlc_appids or []) if str(d).strip().isdigit()]
     is_dlc_only = bool(clean_dlc_appids)
 
-    # Base AppIDs and DLC AppIDs must NEVER be in clean_depots or clean_keys
-    clean_depots = [
-        str(d).strip() for d in depot_ids
-        if str(d).strip().isdigit() and str(d).strip() != appid_str and str(d).strip() not in clean_dlc_appids
-    ]
+    # AdditionalDepots: Base AppIDs and DLC AppIDs must NEVER be in clean_depots
+    if is_dlc_only:
+        from utils.dlc_helpers import filter_dlc_depots_only
+        clean_depots = filter_dlc_depots_only(depot_ids, appid_str, dlc_appids=clean_dlc_appids)
+    else:
+        clean_depots = [
+            str(d).strip() for d in depot_ids
+            if str(d).strip().isdigit() and str(d).strip() != appid_str and str(d).strip() not in clean_dlc_appids
+        ]
     clean_keys = {}
     if decryption_keys:
         for did, key in decryption_keys.items():
             did_str = str(did).strip()
             key_str = str(key).strip().lower()
-            if did_str.isdigit() and len(key_str) == 64 and did_str != appid_str and did_str not in clean_dlc_appids:
+            if did_str.isdigit() and len(key_str) == 64 and did_str not in clean_dlc_appids:
                 clean_keys[did_str] = key_str
 
     clean_depot_names = {}
@@ -213,9 +217,11 @@ def register_plugin_game(
                     depot_comment = f"{name} - {d_name} ({did})" if d_name else f"{name} ({did})"
                 editor.add_depot(did, comment=depot_comment)
 
-            # Add decryption keys with game comment (never AppIDs!)
+            # Add decryption keys with game comment
             for did, key in clean_keys.items():
-                if did in SHARED_REDISTS:
+                if did == appid_str:
+                    key_comment = f"{name} [AppKey] ({appid_str})"
+                elif did in SHARED_REDISTS:
                     key_comment = "Steamworks Shared"
                 else:
                     d_name = clean_depot_names.get(did, "")

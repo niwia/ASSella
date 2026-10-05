@@ -260,13 +260,6 @@ def main():
                 check_and_merge_fakeappid_db(config_path)
             except Exception as ex:
                 logger.error(f"Failed to check and merge Fake AppID database: {ex}")
-
-        # Check and update SLSsteam plugins (download.lua, etc.) if plugins are enabled by the user
-        try:
-            from utils.yaml_config_manager import sync_plugins_on_startup
-            sync_plugins_on_startup()
-        except Exception as ex:
-            logger.error(f"Failed to sync SLSsteam plugins on startup: {ex}")
     except OSError as e:
         logger.error(f"Startup I/O error (Config/Backup): {e}")
 

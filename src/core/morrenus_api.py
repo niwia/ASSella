@@ -122,6 +122,9 @@ def _handle_request_exception(e: Exception, context: str) -> str:
     if "ssl" in error_str or "wrong_version_number" in error_str:
         return "SSL connection failed. Check proxy/firewall settings."
 
+    if "expecting value" in error_str or "line 1 column 1" in error_str or "blocked" in error_str:
+        return "Gateway returned HTML or invalid payload (ISP block detected. Try DoH/Wirecutter in Settings)."
+
     return f"Request Failed: {e}"
 
 
@@ -364,9 +367,11 @@ def check_health() -> Dict:
     """
     url = f"{BASE_URL}/health"
     try:
-        from utils.isp_bypass import execute_hubcap_request
+        from utils.isp_bypass import execute_hubcap_request, is_html_or_blocked_payload
         response = execute_hubcap_request(get_session(), "GET", url, timeout=5)
         response.raise_for_status()
+        if is_html_or_blocked_payload(response):
+            return {"status": "unhealthy", "error": "Gateway returned HTML payload (ISP block detected). Switch ISP bypass in Settings."}
         return response.json()
     except Exception as e:
         error_msg = _handle_request_exception(e, "Health check")

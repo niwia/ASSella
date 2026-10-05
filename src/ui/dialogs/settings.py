@@ -59,6 +59,7 @@ class SettingsDialog(QDialog):
         # Widget references populated by tabs
         self.library_mode_checkbox = None
         self.auto_skip_single_choice_checkbox = None
+        self.manifest_provider_combo = None
         self.smart_depot_selection_checkbox = None
         self.use_lancache_checkbox = None
         self.autofetch_manifests_checkbox = None
@@ -739,6 +740,11 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "auto_skip_single_choice",
                 self.auto_skip_single_choice_checkbox.isChecked(),
+            )
+        if hasattr(self, "manifest_provider_combo") and self.manifest_provider_combo is not None:
+            self.settings.setValue(
+                "manifest_provider",
+                self.manifest_provider_combo.currentData() or "auto",
             )
         if hasattr(self, "smart_depot_selection_checkbox") and self.smart_depot_selection_checkbox is not None:
             self.settings.setValue(

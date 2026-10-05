@@ -457,9 +457,9 @@ class NativeSteamDownloadTask(QObject):
                 m = depot_info.get("manifest_id") or depot_info.get("gid")
                 if m:
                     manifest_gids[str(depot_id)] = str(m)
-
-        # Base AppIDs MUST NEVER be added to depot_keys or AdditionalDepots/DecryptionKeys.
-
+        # Capture main AppID decryption key if available
+        if game_data.get("app_key"):
+            depot_keys[str(appid)] = game_data["app_key"]
         # 2. From DepotKeyManager (SQLite)
         try:
             from managers.depot_key_manager import DepotKeyManager
@@ -483,6 +483,8 @@ class NativeSteamDownloadTask(QObject):
                 for d, info in (parsed_gd.get("depots") or {}).items():
                     if isinstance(info, dict) and info.get("key"):
                         depot_keys.setdefault(str(d), info["key"])
+                if parsed_gd.get("app_key"):
+                    depot_keys.setdefault(str(appid), parsed_gd["app_key"])
                 for d, gid in (parsed_gd.get("manifests") or {}).items():
                     manifest_gids.setdefault(str(d), str(gid))
         except Exception as e:
@@ -514,6 +516,8 @@ class NativeSteamDownloadTask(QObject):
                     for d, info in gd.get("depots", {}).items():
                         if isinstance(info, dict) and info.get("key"):
                             depot_keys[str(d)] = info["key"]
+                    if gd.get("app_key"):
+                        depot_keys.setdefault(str(appid), gd["app_key"])
                     for d, gid in gd.get("manifests", {}).items():
                         manifest_gids[str(d)] = str(gid)
 
@@ -691,12 +695,24 @@ class NativeSteamDownloadTask(QObject):
         }
 
         # 3. Format AdditionalDepots with descriptive comments (ONLY depots, NEVER AppIDs!)
-        raw_candidates = set(str(d) for d in selected_depots) if selected_depots else (
-            set(str(d) for d in depot_keys.keys()) | (
-                set(str(d) for d in game_data["depots"].keys()) if (game_data and game_data.get("depots")) else set()
+        if is_dlc:
+            from utils.dlc_helpers import filter_dlc_depots_only
+            _d_meta = (game_data.get("depots") or {}) if game_data else {}
+            if selected_depots:
+                dlc_candidates = list(dict.fromkeys(str(d) for d in selected_depots))
+            else:
+                dlc_candidates = list(dict.fromkeys(
+                    [str(d) for d in depot_keys.keys()]
+                    + ([str(d) for d in game_data["depots"].keys()] if (game_data and game_data.get("depots")) else [])
+                ))
+            new_depot_ids = filter_dlc_depots_only(dlc_candidates, appid_str, depots_meta=_d_meta, dlc_appids=dlc_appids)
+        else:
+            raw_candidates = set(str(d) for d in selected_depots) if selected_depots else (
+                set(str(d) for d in depot_keys.keys()) | (
+                    set(str(d) for d in game_data["depots"].keys()) if (game_data and game_data.get("depots")) else set()
+                )
             )
-        )
-        new_depot_ids = [d for d in raw_candidates if d != appid_str and d not in dlc_appids]
+            new_depot_ids = [d for d in raw_candidates if d != appid_str and d not in dlc_appids]
 
         # Parse existing depots and comments
         existing_depots_comments: Dict[str, str] = {}
@@ -753,14 +769,17 @@ class NativeSteamDownloadTask(QObject):
             keys_text = content[bounds_keys[1] : bounds_keys[2]]
             for m in re.finditer(r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*['\"]?([a-fA-F0-9]{64})['\"]?(?:[ \t]*#[ \t]*(.*))?$", keys_text, re.MULTILINE):
                 did = m.group(1)
-                if did != appid_str and did not in dlc_appids:
+                if did not in dlc_appids:
                     all_keys[did] = m.group(2)
                     if m.group(3):
                         key_comments[did] = m.group(3).strip()
 
-        # Always strip appid_str from DecryptionKeys
-        all_keys.pop(appid_str, None)
-        key_comments.pop(appid_str, None)
+        # Retain root Game AppID in DecryptionKeys if available
+        app_key_val = depot_keys.get(appid_str) or (game_data.get("app_key") if game_data else None)
+        if app_key_val:
+            all_keys[appid_str] = str(app_key_val)
+            key_comments[appid_str] = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
+
         for da in dlc_appids:
             all_keys.pop(da, None)
             key_comments.pop(da, None)
@@ -775,7 +794,12 @@ class NativeSteamDownloadTask(QObject):
                         key_comments.pop(d, None)
             for d, k in depot_keys.items():
                 did_str = str(d)
-                if did_str == appid_str or did_str in dlc_appids:
+                if did_str in dlc_appids:
+                    continue
+                if did_str == appid_str:
+                    if k:
+                        all_keys[did_str] = str(k)
+                        key_comments[did_str] = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
                     continue
                 if k and (not selected_depots or did_str in set(new_depot_ids)):
                     all_keys[did_str] = str(k)
@@ -791,7 +815,12 @@ class NativeSteamDownloadTask(QObject):
         else:
             for d, k in depot_keys.items():
                 did_str = str(d)
-                if did_str == appid_str or did_str in dlc_appids:
+                if did_str in dlc_appids:
+                    continue
+                if did_str == appid_str:
+                    if k:
+                        all_keys[did_str] = str(k)
+                        key_comments[did_str] = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
                     continue
                 if k:
                     all_keys[did_str] = str(k)

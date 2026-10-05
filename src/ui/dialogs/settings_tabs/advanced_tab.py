@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSlider,
     QMessageBox,
+    QComboBox,
 )
 
 from utils.helpers import create_checkbox_setting
@@ -39,6 +40,61 @@ def create_advanced_tab(dialog) -> QWidget:
         show_description=False,
     )
     adv_layout.addWidget(dialog.auto_skip_single_choice_checkbox)
+
+    # Manifest / MRC Provider Row
+    manifest_provider_layout = QHBoxLayout()
+    manifest_provider_layout.setContentsMargins(0, 4, 0, 4)
+    manifest_provider_label = QLabel("Manifest / MRC Provider:")
+    manifest_provider_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+    manifest_provider_label.setToolTip(
+        "Selects the provider for fetching Steam manifest decryption codes (MRC).\n"
+        "• Auto (Race): Concurrently races Wudrm and ManifestDeX for the fastest response, with automatic fallback.\n"
+        "• Wudrm (Primary): Queries wudrm with Chrome TLS impersonation.\n"
+        "• ManifestDeX: Queries ManifestDeX provider.\n"
+        "• Hubcap Manifest (Direct API): Downloads decrypted manifests directly via Hubcap API."
+    )
+
+    dialog.manifest_provider_combo = QComboBox()
+    dialog.manifest_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+    dialog.manifest_provider_combo.setStyleSheet("""
+        QComboBox {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            padding: 4px 12px;
+            color: #FFFFFF;
+            font-size: 9pt;
+            min-width: 170px;
+        }
+        QComboBox:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.25);
+        }
+        QComboBox QAbstractItemView {
+            background: #1e1e24;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #FFFFFF;
+            selection-background-color: %s;
+        }
+    """ % getattr(dialog, "accent_color", "#C06C84"))
+    dialog.manifest_provider_combo.addItem("Auto (Race Wudrm & ManifestDeX)", "auto")
+    dialog.manifest_provider_combo.addItem("Wudrm (Primary)", "wudrm")
+    dialog.manifest_provider_combo.addItem("ManifestDeX", "manifestdex")
+    dialog.manifest_provider_combo.addItem("Hubcap Manifest (Direct API)", "hubcap")
+
+    current_provider = dialog.settings.value("manifest_provider", "auto", type=str).lower()
+    idx = dialog.manifest_provider_combo.findData(current_provider)
+    if idx >= 0:
+        dialog.manifest_provider_combo.setCurrentIndex(idx)
+    else:
+        dialog.manifest_provider_combo.setCurrentIndex(0)
+
+    dialog.manifest_provider_combo.setToolTip(manifest_provider_label.toolTip())
+
+    manifest_provider_layout.addWidget(manifest_provider_label)
+    manifest_provider_layout.addStretch(1)
+    manifest_provider_layout.addWidget(dialog.manifest_provider_combo)
+    adv_layout.addLayout(manifest_provider_layout)
 
     # Clear Update & Build ID Cache Row
     cache_layout = QHBoxLayout()

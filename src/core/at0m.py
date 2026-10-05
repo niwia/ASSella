@@ -253,18 +253,109 @@ class WudrmMRCFetcher:
 
         return None
 
-    def get_manifest_request_code(self, manifest_id: Union[str, int]) -> Optional[str]:
+    def fetch_wudrm(self, manifest_id_str: str) -> Optional[str]:
+        """Runs two-tier wudrm fetch (plain requests -> Chrome 120 TLS impersonation)."""
+        url = f"{self.base_url}{manifest_id_str}"
+        BASE_SLEEP = 0.5
+        MAX_SLEEP = 2.0
+
+        for attempt in range(1, self.max_tries + 1):
+            try:
+                mrc = self._fetch_tier1(url)
+                if mrc:
+                    logger.info(f"[MRC/Wudrm] ✅ Got MRC for {manifest_id_str} on attempt {attempt}")
+                    return mrc
+
+                logger.debug(f"[MRC/Wudrm] Tier 1 blocked/empty — trying Tier 2 for {manifest_id_str}")
+                mrc = self._fetch_tier2(url)
+                if mrc:
+                    logger.info(f"[MRC/Wudrm] ✅ Got MRC via cffi impersonate for {manifest_id_str} on attempt {attempt}")
+                    return mrc
+            except _WudrmFatal:
+                logger.info(f"[MRC/Wudrm] Wudrm returned 400/404 for manifest {manifest_id_str}")
+                return None
+            except Exception as e:
+                logger.debug(f"[MRC/Wudrm] Attempt {attempt} error: {e}")
+
+            if attempt < self.max_tries:
+                time.sleep(min(BASE_SLEEP * attempt, MAX_SLEEP))
+
+        return None
+
+    def fetch_manifestdex(self, manifest_id_str: str) -> Optional[str]:
+        """Fetch MRC from ManifestDeX provider (https://manifest.manifestdex.com/)."""
+        try:
+            url = f"https://manifest.manifestdex.com/{manifest_id_str}"
+            headers = {"User-Agent": "ManifestDeX/1.0", "Accept": "*/*"}
+            r = self.session.get(url, headers=headers, timeout=self.timeout)
+            if r.status_code == 200:
+                body = r.text.strip()
+                if self._is_valid_mrc(body):
+                    logger.info(f"[MRC/ManifestDeX] ✅ Got MRC from ManifestDeX for {manifest_id_str}")
+                    return body
+            else:
+                logger.debug(f"[MRC/ManifestDeX] HTTP {r.status_code} for {manifest_id_str}")
+        except Exception as e:
+            logger.debug(f"[MRC/ManifestDeX] Request error for {manifest_id_str}: {e}")
+        return None
+
+    def race_mrc(self, manifest_id_str: str, timeout: float = 4.0) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Races Wudrm and ManifestDeX concurrently.
+        Returns:
+            (winner_name, mrc) where winner_name is 'manifestdex' or 'wudrm'.
+            If both fail, returns (None, None).
+        """
+        import concurrent.futures
+
+        def _do_wudrm():
+            return "wudrm", self.fetch_wudrm(manifest_id_str)
+
+        def _do_dex():
+            return "manifestdex", self.fetch_manifestdex(manifest_id_str)
+
+        logger.info(f"[MRC/Race] Racing Wudrm vs ManifestDeX for manifest {manifest_id_str} (timeout={timeout}s)...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_to_name = {
+                executor.submit(_do_wudrm): "wudrm",
+                executor.submit(_do_dex): "manifestdex",
+            }
+
+            try:
+                for f in concurrent.futures.as_completed(future_to_name, timeout=timeout + 2.0):
+                    try:
+                        name, mrc = f.result()
+                        if mrc:
+                            logger.info(f"[MRC/Race] 🏁 Winner: {name} with MRC {mrc} for {manifest_id_str}")
+                            return name, mrc
+                    except Exception as ex:
+                        logger.debug(f"[MRC/Race] Task failed: {ex}")
+            except concurrent.futures.TimeoutError:
+                logger.warning(f"[MRC/Race] Race timed out after {timeout + 2.0}s for {manifest_id_str}")
+
+        logger.warning(f"[MRC/Race] Both providers failed in race for {manifest_id_str}")
+        return None, None
+
+    def fetch_mrc_single(self, manifest_id_str: str, provider: str) -> Optional[str]:
+        """Fetch MRC using a specific provider without racing."""
+        if provider == "manifestdex":
+            return self.fetch_manifestdex(manifest_id_str)
+        elif provider == "wudrm":
+            return self.fetch_wudrm(manifest_id_str)
+        return None
+
+    def get_manifest_request_code(self, manifest_id: Union[str, int], provider: Optional[str] = None) -> Optional[str]:
         """
         Fetches the 64-bit Manifest Request Code for a given manifest GID.
-
-        Checks in-memory and persistent SQLite cache first, then runs the
-        two-tier wudrm fetch (plain → Chrome 120 impersonate) with exponential
-        backoff between full attempts.
-
-        Returns the MRC string, or None if all attempts exhausted (triggers
-        Hubcap fallback in generate_single_manifest).
+        Checks in-memory and persistent SQLite cache first, then dispatches to
+        the configured provider ('auto', 'wudrm', 'manifestdex').
         """
         manifest_id_str = str(manifest_id).strip()
+        if provider is None:
+            provider = get_manifest_provider()
+
+        if provider == "hubcap":
+            return None
 
         # 1. Fast in-memory cache hit (0.001ms)
         if manifest_id_str in self._memory_cache:
@@ -278,52 +369,21 @@ class WudrmMRCFetcher:
             logger.info(f"[MRC Cache] DB hit for {manifest_id_str}: {cached_mrc}")
             return cached_mrc
 
-        # 3. Two-tier network fetch with retry budget
-        url = f"{self.base_url}{manifest_id_str}"
-        BASE_SLEEP = 1.0
-        MAX_SLEEP  = 8.0
+        # 3. Provider network fetch
+        if provider == "manifestdex":
+            mrc = self.fetch_manifestdex(manifest_id_str)
+        elif provider == "wudrm":
+            mrc = self.fetch_wudrm(manifest_id_str)
+        else:
+            _, mrc = self.race_mrc(manifest_id_str)
 
-        for attempt in range(1, self.max_tries + 1):
-            logger.debug(f"[MRC] Attempt {attempt}/{self.max_tries} for manifest {manifest_id_str}")
-
-            try:
-                # ── Tier 1: plain requests (fast path) ─────────────────────
-                mrc = self._fetch_tier1(url)
-                if mrc:
-                    logger.info(f"[MRC/Tier1] ✅ Got MRC for {manifest_id_str} on attempt {attempt}")
-                    self._memory_cache[manifest_id_str] = mrc
-                    self._save_cached_mrc(manifest_id_str, mrc)
-                    return mrc
-
-                # ── Tier 2: Chrome 120 TLS impersonation ───────────────────
-                logger.debug(f"[MRC/Tier1] Blocked — trying Tier 2 (Chrome 120 impersonate) for {manifest_id_str}")
-                mrc = self._fetch_tier2(url)
-                if mrc:
-                    logger.info(f"[MRC/Tier2] ✅ Got MRC via cffi impersonate for {manifest_id_str} on attempt {attempt}")
-                    self._memory_cache[manifest_id_str] = mrc
-                    self._save_cached_mrc(manifest_id_str, mrc)
-                    return mrc
-
-                logger.warning(
-                    f"[MRC] Both tiers failed for manifest {manifest_id_str} "
-                    f"(attempt {attempt}/{self.max_tries})"
-                )
-
-            except _WudrmFatal as e:
-                logger.warning(
-                    f"[MRC] Fatal HTTP {e.status_code} for manifest {manifest_id_str} "
-                    f"— wudrm does not know this manifest. Skipping to Hubcap."
-                )
-                return None
-
-            if attempt < self.max_tries:
-                sleep_time = min(BASE_SLEEP * (2 ** (attempt - 1)), MAX_SLEEP)
-                logger.debug(f"[MRC] Sleeping {sleep_time:.1f}s before attempt {attempt + 1}")
-                time.sleep(sleep_time)
+        if mrc:
+            self._memory_cache[manifest_id_str] = mrc
+            self._save_cached_mrc(manifest_id_str, mrc)
+            return mrc
 
         logger.error(
-            f"[MRC] All {self.max_tries} attempts (Tier1 + Tier2) exhausted for manifest {manifest_id_str}. "
-            f"Proceeding to Hubcap fallback."
+            f"[MRC] Retrieval failed for manifest {manifest_id_str} via {provider}."
         )
         return None
 
@@ -515,17 +575,30 @@ def _lookup_cached_depot_key(depot_id: Union[str, int]) -> Optional[str]:
     return None
 
 
+def get_manifest_provider() -> str:
+    """Reads user's configured manifest provider ('auto', 'wudrm', 'manifestdex', 'hubcap')."""
+    try:
+        from utils.settings import get_settings
+        s = get_settings()
+        val = s.value("manifest_provider", "auto", type=str)
+        return str(val).strip().lower() if val else "auto"
+    except Exception:
+        return "auto"
+
+
 def generate_single_manifest(
     depot_id: Union[str, int],
     manifest_id: Union[str, int],
     depot_key: Optional[Union[str, bytes]] = None,
     force_fallback: bool = False,
+    provider: Optional[str] = None,
 ) -> Tuple[Optional[bytes], Optional[str]]:
     """
     Retrieves a single depot manifest (current or historical).
 
     Primary method:
-      Fetches MRC from wudrm, downloads directly from Steam CDN, unpacks and decrypts.
+      Fetches MRC from configured provider (auto-race, wudrm, or manifestdex),
+      downloads directly from Steam CDN, unpacks and decrypts.
 
     Fallback method:
       If primary fails or force_fallback is True, delegates to Hubcap API (morrenus_api).
@@ -536,6 +609,12 @@ def generate_single_manifest(
     depot_str = str(depot_id).strip()
     manifest_str = str(manifest_id).strip()
 
+    if provider is None:
+        provider = get_manifest_provider()
+
+    if provider == "hubcap":
+        force_fallback = True
+
     # Automatically resolve depot key from cache if not provided by caller
     if not depot_key:
         resolved_key = _lookup_cached_depot_key(depot_str)
@@ -543,28 +622,71 @@ def generate_single_manifest(
             depot_key = resolved_key
             logger.debug(f"[Primary/at0-m] Auto-resolved cached depot key for Depot {depot_str}")
 
-    # ── Path 1: Primary (wudrm MRC + Steam CDN) ──────────────────────────────
+    # ── Path 1: Primary (MRC + Steam CDN) ────────────────────────────────────
     if not force_fallback:
-        logger.info(f"[Primary/at0-m] Requesting manifest for Depot {depot_str}, GID {manifest_str} via Steam CDN...")
-        mrc = _mrc_fetcher.get_manifest_request_code(manifest_str)
-        if mrc:
-            cdn_zip = _cdn_downloader.download_manifest_raw(depot_str, manifest_str, mrc)
+        logger.info(
+            f"[Primary/at0-m] Requesting manifest for Depot {depot_str}, GID {manifest_str} "
+            f"via Steam CDN (Provider: {provider})..."
+        )
+
+        def _try_download_and_unpack(mrc_val: str, prov_tag: str) -> Optional[bytes]:
+            cdn_zip = _cdn_downloader.download_manifest_raw(depot_str, manifest_str, mrc_val)
             if cdn_zip:
                 processed = unpack_and_process_manifest(cdn_zip, depot_key=depot_key)
                 if processed and len(processed) >= 4:
                     logger.info(
                         f"[Primary/at0-m] SUCCESS: Obtained {len(processed)} bytes manifest for "
-                        f"{depot_str}_{manifest_str}.manifest directly from Steam CDN!"
+                        f"{depot_str}_{manifest_str}.manifest via {prov_tag} MRC directly from Steam CDN!"
                     )
-                    return processed, None
+                    _mrc_fetcher._memory_cache[manifest_str] = mrc_val
+                    _mrc_fetcher._save_cached_mrc(manifest_str, mrc_val)
+                    return processed
                 else:
-                    logger.warning("[Primary/at0-m] Failed to unpack CDN manifest payload")
-                    _mrc_fetcher.invalidate_cached_mrc(manifest_str)
+                    logger.warning(f"[Primary/at0-m] Failed to unpack CDN manifest payload with {prov_tag} MRC")
             else:
-                logger.warning(f"[Primary/at0-m] Steam CDN download failed for depot {depot_str}")
-                _mrc_fetcher.invalidate_cached_mrc(manifest_str)
-        else:
-            logger.warning(f"[Primary/at0-m] MRC retrieval unavailable for manifest {manifest_str}")
+                logger.warning(f"[Primary/at0-m] Steam CDN download failed with {prov_tag} MRC")
+            return None
+
+        # Check existing cache first
+        cached_mrc = _mrc_fetcher._memory_cache.get(manifest_str) or _mrc_fetcher._get_cached_mrc(manifest_str)
+        if cached_mrc:
+            logger.debug(f"[Primary/at0-m] Found cached MRC {cached_mrc} for {manifest_str}")
+            res = _try_download_and_unpack(cached_mrc, "Cached")
+            if res:
+                return res, None
+            # If cached MRC was rejected by CDN, invalidate and proceed to fresh fetch
+            _mrc_fetcher.invalidate_cached_mrc(manifest_str)
+
+        # Fresh fetch based on provider
+        if provider == "auto":
+            # Concurrently race Wudrm vs ManifestDeX
+            winner_name, winner_mrc = _mrc_fetcher.race_mrc(manifest_str)
+            if winner_mrc:
+                res = _try_download_and_unpack(winner_mrc, winner_name or "Winner")
+                if res:
+                    return res, None
+                logger.warning(
+                    f"[Primary/at0-m] Winner '{winner_name}' MRC failed on Steam CDN. "
+                    f"Falling back to alternative provider..."
+                )
+
+            # Fallback to the other provider if winner failed on CDN
+            alt_name = "wudrm" if winner_name == "manifestdex" else "manifestdex"
+            logger.info(f"[Primary/at0-m] Trying alternative provider '{alt_name}' for manifest {manifest_str}...")
+            alt_mrc = _mrc_fetcher.fetch_mrc_single(manifest_str, provider=alt_name)
+            if alt_mrc and alt_mrc != winner_mrc:
+                res = _try_download_and_unpack(alt_mrc, alt_name)
+                if res:
+                    return res, None
+
+        elif provider in ("wudrm", "manifestdex"):
+            mrc = _mrc_fetcher.fetch_mrc_single(manifest_str, provider=provider)
+            if mrc:
+                res = _try_download_and_unpack(mrc, provider)
+                if res:
+                    return res, None
+
+        logger.warning(f"[Primary/at0-m] Primary CDN paths exhausted for {manifest_str}. Proceeding to Hubcap fallback.")
 
     # ── Path 2: Fallback (Hubcap API via morrenus_api) ────────────────────────
     logger.info(f"[Fallback/Hubcap] Falling back to Hubcap API for Depot {depot_str}, GID {manifest_str}...")

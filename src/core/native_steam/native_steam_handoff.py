@@ -278,22 +278,28 @@ def perform_steam_handoff(
         return False, f"No depot keys available for {game_name} ({appid})."
 
     # Resolve depots if none explicitly selected
+    from utils.dlc_helpers import is_dlc_only_mode, filter_dlc_depots_only
+    is_dlc = is_dlc_only_mode(appid) or bool(game_data.get("is_dlc_only"))
+    depots_meta = (game_data.get("depots") or {}) if game_data else {}
+
     if not selected_depots:
         all_d = set(str(d) for d in depot_keys.keys())
         if manifest_gids:
             all_d.update(str(d) for d in manifest_gids.keys())
         if game_data and game_data.get("depots"):
             all_d.update(str(d) for d in game_data["depots"].keys())
-        selected_depots = [d for d in all_d if str(d) != str(appid)]
+        if is_dlc:
+            selected_depots = filter_dlc_depots_only(all_d, appid, depots_meta=depots_meta)
+        else:
+            selected_depots = [d for d in all_d if str(d) != str(appid)]
+    elif is_dlc:
+        selected_depots = filter_dlc_depots_only(selected_depots, appid, depots_meta=depots_meta)
 
-    # AppIDs MUST NEVER be added into AdditionalDepots or DecryptionKeys.
-    # Only actual depot IDs and their AES decryption keys belong there.
-    active_keys = {str(d): k for d, k in depot_keys.items() if str(d) != str(appid)}
-    from utils.dlc_helpers import is_dlc_only_mode
-    is_dlc = is_dlc_only_mode(appid) or bool(game_data.get("is_dlc_only"))
+    # AdditionalDepots gets only actual depots. DecryptionKeys keeps depot keys AND the root AppID key.
+    active_keys = {str(d): k for d, k in depot_keys.items()}
     if is_dlc and selected_depots:
         sel_set = {str(d) for d in selected_depots}
-        active_keys = {d: k for d, k in active_keys.items() if str(d) in sel_set}
+        active_keys = {d: k for d, k in active_keys.items() if str(d) in sel_set or str(d) == str(appid)}
 
     # 4. Check pinned manifests
     pinned_manifests = resolve_pinned_manifests(game_data, appid)

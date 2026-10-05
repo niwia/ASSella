@@ -2418,9 +2418,9 @@ def on_move_to_vapor_clicked(dialog) -> None:
         from managers.depot_key_manager import DepotKeyManager
         stored_keys = DepotKeyManager.get_instance().get_depot_keys(appid)
         for did, key in stored_keys.items():
-            if str(did) != str(appid) and key:
+            if key:
                 decryption_keys[str(did)] = key
-                if str(did) not in depot_ids:
+                if str(did) != str(appid) and str(did) not in depot_ids:
                     depot_ids.append(str(did))
     except Exception as e:
         logger.debug(f"[VaporTransition] DepotKeyManager lookup error: {e}")
@@ -2428,12 +2428,9 @@ def on_move_to_vapor_clicked(dialog) -> None:
     def extract_keys_from_lua_text(lua_text: str):
         for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_text):
             did = m.group(1)
-            # AppIDs MUST NEVER be added to depot_ids or decryption_keys
-            if str(did) == str(appid):
-                continue
             key = m.group(2)
             decryption_keys[did] = key
-            if did not in depot_ids:
+            if str(did) != str(appid) and did not in depot_ids:
                 depot_ids.append(did)
 
     if lua_file.exists():
@@ -2453,9 +2450,10 @@ def on_move_to_vapor_clicked(dialog) -> None:
             pass
 
     # Check if this game is in DLC-only mode
-    from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
+    from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info, filter_dlc_depots_only
     dlc_appids = []
-    if is_dlc_only_mode(appid) or game_data.get("is_dlc_only"):
+    is_dlc = is_dlc_only_mode(appid) or game_data.get("is_dlc_only")
+    if is_dlc:
         try:
             d_info = get_dlc_only_info(appid)
             if d_info:
@@ -2470,9 +2468,12 @@ def on_move_to_vapor_clicked(dialog) -> None:
                 if dlc_id and dlc_id != str(appid) and dlc_id not in dlc_appids:
                     dlc_appids.append(dlc_id)
 
-    # Clean depot IDs and decryption keys to strictly exclude AppIDs and DLC AppIDs
-    depot_ids = [d for d in depot_ids if str(d) != str(appid) and str(d) not in dlc_appids]
-    decryption_keys = {d: k for d, k in decryption_keys.items() if str(d) != str(appid) and str(d) not in dlc_appids}
+    # Clean depot IDs and decryption keys (depot_ids never has AppIDs; decryption_keys retains AppID)
+    if is_dlc:
+        depot_ids = filter_dlc_depots_only(depot_ids, appid, depots_meta=game_data.get("depots"), dlc_appids=dlc_appids)
+    else:
+        depot_ids = [d for d in depot_ids if str(d) != str(appid) and str(d) not in dlc_appids]
+    decryption_keys = {d: k for d, k in decryption_keys.items() if str(d) not in dlc_appids}
 
     # If any depot is missing its decryption key, attempt an emergency fetch via Hubcap API
     missing_key_depots = [d for d in depot_ids if str(d) not in decryption_keys]
@@ -2490,14 +2491,14 @@ def on_move_to_vapor_clicked(dialog) -> None:
                             lua_txt = zf.read(name).decode("utf-8", errors="ignore")
                             for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_txt):
                                 did_found, k_found = m.group(1), m.group(2)
-                                if did_found != str(appid) and did_found not in dlc_appids:
+                                if did_found not in dlc_appids:
                                     fresh_keys[did_found] = k_found
                 if fresh_keys:
                     from managers.depot_key_manager import DepotKeyManager
                     DepotKeyManager.get_instance().save_depot_keys(appid, fresh_keys)
                     for did_f, k_f in fresh_keys.items():
                         decryption_keys[did_f] = k_f
-                        if did_f not in depot_ids:
+                        if did_f != str(appid) and did_f not in depot_ids:
                             depot_ids.append(did_f)
                     logger.info(f"[VaporTransition] Recovered {len(fresh_keys)} fresh key(s) from Hubcap bundle.")
         except Exception as e:

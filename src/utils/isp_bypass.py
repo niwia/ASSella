@@ -253,6 +253,41 @@ def categorize_error(e: Exception) -> str:
     return "ERR: Failed"
 
 
+def is_html_or_blocked_payload(resp: Optional[requests.Response]) -> bool:
+    """
+    Checks if a response is an HTML block page, captive portal, or Cloudflare challenge
+    rather than a legitimate JSON or binary API payload.
+    """
+    if resp is None:
+        return True
+    try:
+        ctype = (resp.headers.get("content-type") or "").lower()
+        if "text/html" in ctype:
+            return True
+
+        raw = resp.content.strip() if hasattr(resp, "content") else b""
+        if raw.startswith(b"\xef\xbb\xbf"):  # Strip UTF-8 BOM
+            raw = raw[3:].strip()
+
+        if len(raw) == 0:
+            return True
+
+        raw_lower = raw[:1024].lower()
+        if (
+            raw_lower.startswith(b"<")
+            or raw_lower.startswith(b"<!doctype")
+            or raw_lower.startswith(b"<html")
+            or b"<title>" in raw_lower
+            or (b"cloudflare" in raw_lower and b"blocked" in raw_lower)
+            or b"access denied" in raw_lower
+            or b"just a moment" in raw_lower
+        ):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 # --------------------------
 # Gateway Health Check API (for UI Buttons)
 # --------------------------
@@ -264,8 +299,7 @@ def test_gateway_direct() -> Tuple[bool, str, int]:
         url = "https://hubcapmanifest.com/api/v1/health"
         resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
         resp.raise_for_status()
-        content = resp.content.strip()
-        if len(content) == 0 or content.startswith(b"<") or content.startswith(b"<!DOCTYPE") or content.startswith(b"<html"):
+        if is_html_or_blocked_payload(resp):
             return False, "ERR: Blocked", int((time.time() - t0) * 1000)
         latency = int((time.time() - t0) * 1000)
         return True, f"OK ({latency}ms)", latency
@@ -405,6 +439,8 @@ def execute_hubcap_request(
     if mode == "direct" or mode == "disabled":
         resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
         resp.raise_for_status()
+        if not stream and is_html_or_blocked_payload(resp):
+            raise requests.exceptions.ConnectionError("Direct connection returned HTML/blocked payload (ISP block detected).")
         connection_status = "Direct"
         return resp
 
@@ -421,6 +457,8 @@ def execute_hubcap_request(
         try:
             resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
             resp.raise_for_status()
+            if not stream and is_html_or_blocked_payload(resp):
+                raise requests.exceptions.ConnectionError("DoH request returned empty or HTML payload.")
             connection_status = "DoH"
             return resp
         finally:
@@ -432,6 +470,8 @@ def execute_hubcap_request(
         tor_proxies = TorManager.get_tor_proxies()
         resp = session.request(method, url, headers=headers, params=params, proxies=tor_proxies, timeout=timeout + 5, stream=stream)
         resp.raise_for_status()
+        if not stream and is_html_or_blocked_payload(resp):
+            raise requests.exceptions.ConnectionError("Tor request returned empty or HTML payload.")
         connection_status = "Tor"
         return resp
 
@@ -439,6 +479,8 @@ def execute_hubcap_request(
         worker_url = rewrite_url_for_wirecutter(url)
         resp = session.request(method, worker_url, headers=headers, params=params, timeout=timeout + 3, stream=stream)
         resp.raise_for_status()
+        if not stream and is_html_or_blocked_payload(resp):
+            raise requests.exceptions.ConnectionError("Wirecutter request returned empty or HTML payload.")
         connection_status = "Wire"
         return resp
 
@@ -456,10 +498,8 @@ def execute_hubcap_request(
             resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
             resp.raise_for_status()
 
-            if not stream:
-                content_sample = resp.content.strip()
-                if len(content_sample) == 0 or content_sample.startswith(b"<") or content_sample.startswith(b"<!DOCTYPE") or content_sample.startswith(b"<html"):
-                    raise requests.exceptions.ConnectionError("Direct connection returned empty or HTML payload (ISP block detected).")
+            if not stream and is_html_or_blocked_payload(resp):
+                raise requests.exceptions.ConnectionError("Direct connection returned empty or HTML payload (ISP block detected).")
 
             connection_status = "Direct"
             _direct_connection_failed = False
@@ -493,10 +533,8 @@ def execute_hubcap_request(
             resp = session.request(method, url, headers=doh_headers, params=params, timeout=timeout, stream=stream)
             resp.raise_for_status()
 
-            if not stream:
-                content_sample = resp.content.strip()
-                if len(content_sample) == 0 or content_sample.startswith(b"<") or content_sample.startswith(b"<!DOCTYPE") or content_sample.startswith(b"<html"):
-                    raise requests.exceptions.ConnectionError("DoH request returned empty or HTML payload.")
+            if not stream and is_html_or_blocked_payload(resp):
+                raise requests.exceptions.ConnectionError("DoH request returned empty or HTML payload.")
 
             logger.info(f"[ISPBypass] DoH request to {url} SUCCESSFUL!")
             connection_status = "DoH"

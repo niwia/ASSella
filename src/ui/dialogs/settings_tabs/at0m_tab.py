@@ -81,14 +81,44 @@ def _get_detected_btn_style(dialog) -> str:
     """
 
 
+def _get_outdated_btn_style(dialog) -> str:
+    """Button style for plugins that are installed but differ from Cloud manifest (custom or outdated)."""
+    return """
+        QPushButton {
+            background-color: rgba(255, 171, 0, 0.18);
+            color: #FFD54F;
+            border: 1px solid rgba(255, 171, 0, 0.55);
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-size: 9pt;
+            font-weight: 600;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 171, 0, 0.32);
+            border-color: rgba(255, 171, 0, 0.85);
+            color: #FFFFFF;
+        }
+        QPushButton:disabled {
+            background-color: rgba(255, 171, 0, 0.08);
+            color: rgba(255, 213, 79, 0.5);
+            border-color: rgba(255, 171, 0, 0.2);
+        }
+    """
+
+
+def get_plugin_state(filename: str) -> str:
+    """Returns 'up_to_date', 'outdated', or 'missing' comparing with Cloud manifest."""
+    try:
+        from utils.plugin_manager import get_plugin_status
+        return get_plugin_status(filename)
+    except Exception as e:
+        logger.debug(f"[at0mTab] Check plugin status error: {e}")
+        return "missing"
+
+
 def is_plugin_detected(filename: str) -> bool:
     """Check if plugin file exists in SLSsteam plugins directory and is valid."""
-    try:
-        from utils.plugin_manager import is_plugin_installed_and_valid
-        return is_plugin_installed_and_valid(filename)
-    except Exception as e:
-        logger.debug(f"[at0mTab] Check plugin detected error: {e}")
-        return False
+    return get_plugin_state(filename) != "missing"
 
 
 def create_at0m_tab(dialog) -> QWidget:
@@ -308,20 +338,27 @@ def create_at0m_tab(dialog) -> QWidget:
             (spliced_plugin_btn, "spliced-tickets.lua", "Spliced Plugin"),
         ]
         detected_style = _get_detected_btn_style(dialog)
+        outdated_style = _get_outdated_btn_style(dialog)
         for btn, fname, label in items:
-            detected = is_plugin_detected(fname)
-            if detected:
-                btn.setText(f"{label} (Installed)")
+            state = get_plugin_state(fname)
+            if state == "up_to_date":
+                btn.setText(f"{label} (Up to date)")
                 btn.setStyleSheet(detected_style)
                 btn.setEnabled(True)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"{label} ({fname}) is installed and up to date. Click to re-check or update from the Cloud.")
+                btn.setToolTip(f"{label} ({fname}) is installed and up to date with the Cloud manifest. Click to re-fetch from the Cloud.")
+            elif state == "outdated":
+                btn.setText(f"Fetch & Apply {label} (Outdated / Custom)")
+                btn.setStyleSheet(outdated_style)
+                btn.setEnabled(True)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setToolTip(f"{label} ({fname}) differs from the Cloud manifest (custom or outdated). Click to fetch and apply the official Cloud version (backed up to .bak).")
             else:
-                btn.setText(f"Download & Deploy {label}")
+                btn.setText(f"Fetch & Apply {label} (Missing)")
                 btn.setStyleSheet(NORMAL_BTN_STYLE)
                 btn.setEnabled(True)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"Click to download {fname} on demand from the Cloud and deploy to SLSsteam plugins.")
+                btn.setToolTip(f"Click to download {fname} from the Cloud and deploy to SLSsteam plugins.")
 
     class DeployWorker(QThread):
         finished_signal = pyqtSignal(bool, bool, str, str, str)
@@ -397,7 +434,8 @@ def create_at0m_tab(dialog) -> QWidget:
             logger.debug(f"[at0mTab] Could not update Plugins in SLS config: {e}")
         if checked:
             for p_file in ("download.lua", "spliced-tickets.lua"):
-                deploy_sls_plugin(p_file)
+                if get_plugin_state(p_file) == "missing":
+                    deploy_sls_plugin(p_file)
         _refresh_deploy_buttons()
         _update_subwidget_states(checked)
 

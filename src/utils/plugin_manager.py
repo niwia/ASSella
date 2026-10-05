@@ -238,18 +238,58 @@ def are_plugins_present() -> bool:
     return True
 
 
-def deploy_plugin(filename: str, force_download: bool = False) -> Tuple[bool, bool, str]:
+def get_plugin_status(filename: str) -> str:
+    """
+    Returns the status of a plugin relative to the Cloud manifest:
+      - 'missing': Plugin file does not exist in any SLS plugins directory.
+      - 'outdated': Plugin file exists, but its SHA-256 does not match the Cloud manifest
+                    (either custom/locally modified or an older version).
+      - 'up_to_date': Plugin file exists and its SHA-256 matches the Cloud manifest.
+    """
+    target_dirs = get_sls_plugins_dirs()
+    if not target_dirs:
+        return "missing"
+
+    found_file = None
+    for tdir in target_dirs:
+        candidate = tdir / filename
+        if candidate.is_file():
+            found_file = candidate
+            break
+
+    if not found_file:
+        return "missing"
+
+    info = get_manifest_plugin_info(filename)
+    if not info or "sha256" not in info:
+        # If manifest is unreachable or lacks sha256, but file exists, treat as installed
+        return "up_to_date"
+
+    expected_sha = str(info["sha256"]).strip().lower()
+    local_sha = calculate_sha256(found_file)
+    if local_sha and local_sha.strip().lower() == expected_sha:
+        return "up_to_date"
+
+    return "outdated"
+
+
+def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: bool = False) -> Tuple[bool, bool, str]:
     """Ensure a plugin is downloaded from R2 and deployed into SLSsteam plugin directories.
 
     Returns:
         (success: bool, skipped: bool, message: str)
-        - skipped=True if all targets already had the exact matching SHA-256.
+        - skipped=True if all targets already had the exact matching SHA-256 or were already present when only_if_missing is True.
     """
     ensure_plugins_enabled()
 
     # spliced-tickets.lua requires SmartTickets: 0x1 (SteamDRM) in SLS config
     if filename == "spliced-tickets.lua":
         ensure_smart_tickets_enabled()
+
+    if only_if_missing:
+        status = get_plugin_status(filename)
+        if status != "missing":
+            return True, True, f"{filename} is already present; preserving local version."
 
     meta = get_manifest_plugin_info(filename)
     expected_sha256 = meta.get("sha256") if meta else None
@@ -317,8 +357,8 @@ def deploy_plugin(filename: str, force_download: bool = False) -> Tuple[bool, bo
     return True, False, f"Successfully deployed {filename} to SLSsteam."
 
 
-def deploy_all_plugins(force_download: bool = False) -> Tuple[bool, List[str]]:
-    """Deploy all required SLSsteam plugins from Cloudflare R2 on demand."""
+def deploy_all_plugins(force_download: bool = False, only_if_missing: bool = False) -> Tuple[bool, List[str]]:
+    """Deploy required SLSsteam plugins from Cloudflare R2 on demand."""
     ensure_plugins_enabled()
 
     manifest = fetch_plugins_manifest(force_refresh=force_download)
@@ -334,7 +374,7 @@ def deploy_all_plugins(force_download: bool = False) -> Tuple[bool, List[str]]:
     results = []
     overall_ok = True
     for p in plugin_list:
-        ok, skipped, msg = deploy_plugin(p, force_download=force_download)
+        ok, skipped, msg = deploy_plugin(p, force_download=force_download, only_if_missing=only_if_missing)
         results.append(msg)
         if not ok:
             overall_ok = False
@@ -343,13 +383,6 @@ def deploy_all_plugins(force_download: bool = False) -> Tuple[bool, List[str]]:
 
 
 def sync_plugins_if_enabled() -> bool:
-    """Sync SLSsteam plugins on startup if plugins are enabled by the user."""
-    if not is_slssteam_plugins_enabled():
-        logger.debug("[PluginManager] SLS plugins are not enabled; skipping sync.")
-        return True
-
-    logger.info("[PluginManager] SLS plugins enabled. Checking and syncing from Cloudflare R2...")
-    overall_ok, results = deploy_all_plugins(force_download=False)
-    for res in results:
-        logger.info(f"[PluginManager] {res}")
-    return overall_ok
+    """Startup auto-sync disabled to prevent destructive overwriting of custom plugins."""
+    logger.debug("[PluginManager] Startup plugin auto-sync is disabled to preserve custom user plugins.")
+    return True
