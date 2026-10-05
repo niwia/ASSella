@@ -2248,14 +2248,21 @@ def _ensure_acf_has_installed_depots(acf_path: str, appid: str, depot_ids: list,
         with open(acf_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
+        # Update StateFlags to 6 (Fully Installed + Update Required) so Steam marks it as update available
+        if re.search(r'"StateFlags"\s*"\d+"', content):
+            content = re.sub(r'"StateFlags"\s*"\d+"', '"StateFlags"\t\t"6"', content)
+        else:
+            content = re.sub(r'("AppState"\s*\{)', r'\1\n\t"StateFlags"\t\t"6"', content)
+
+        # Set AutoUpdateBehavior to 0
+        if re.search(r'"AutoUpdateBehavior"\s*"\d+"', content):
+            content = re.sub(r'"AutoUpdateBehavior"\s*"\d+"', '"AutoUpdateBehavior"\t\t"0"', content)
+
         has_depots = bool(re.search(r'"InstalledDepots"\s*\{[^}]*"\d+"', content))
         needs_size = False
         m_size = re.search(r'"SizeOnDisk"\s*"(\d+)"', content)
         if m_size and m_size.group(1) == "0":
             needs_size = True
-
-        if has_depots and not needs_size:
-            return
 
         install_path = game_data.get("install_path")
         if not install_path and game_data.get("library_path"):
@@ -2307,14 +2314,17 @@ def _ensure_acf_has_installed_depots(acf_path: str, appid: str, depot_ids: list,
                 new_depots_block = '\t"InstalledDepots"\n\t{\n' + "\n".join(depots_lines) + '\n\t}'
                 content = re.sub(r'"InstalledDepots"\s*\{\s*\}', new_depots_block, content)
 
-        if needs_size and actual_size > 0:
-            content = re.sub(r'"SizeOnDisk"\s*"\d+"', f'"SizeOnDisk"\t\t"{actual_size}"', content)
+        if (needs_size or not m_size) and actual_size > 0:
+            if m_size:
+                content = re.sub(r'"SizeOnDisk"\s*"\d+"', f'"SizeOnDisk"\t\t"{actual_size}"', content)
+            else:
+                content = re.sub(r'("AppState"\s*\{)', rf'\1\n\t"SizeOnDisk"\t\t"{actual_size}"', content)
 
         with open(acf_path, "w", encoding="utf-8") as f:
             f.write(content)
-        logger.info(f"[VaporTransition] Updated ACF file at {acf_path} with InstalledDepots and SizeOnDisk")
+        logger.info(f"[VaporTransition] Updated ACF file at {acf_path} with StateFlags=6 (Update Available), InstalledDepots, and SizeOnDisk")
     except Exception as e:
-        logger.error(f"[VaporTransition] Failed to update ACF {acf_path}: {e}")
+        logger.warning(f"[VaporTransition] Graceful fallback on updating ACF {acf_path}: {e}")
 
 
 def on_move_to_vapor_clicked(dialog) -> None:
@@ -2533,19 +2543,63 @@ def on_move_to_vapor_clicked(dialog) -> None:
     game_data["selected_branch"] = "public"
     game_data["installed_branch"] = "public"
 
-    # Ensure appmanifest InstalledDepots is populated for Steam native support
-    acf_path = game_data.get("appmanifest_path")
-    if not acf_path and game_data.get("library_path"):
-        cand = Path(game_data["library_path"]) / "steamapps" / f"appmanifest_{appid}.acf"
-        if cand.exists():
-            acf_path = str(cand)
-    _ensure_acf_has_installed_depots(acf_path, appid, depot_ids, game_data)
+    # Ensure appmanifest ACF has StateFlags=6 (Update Available) and InstalledDepots for Steam native support.
+    # If no ACF exists on disk, we log gracefully and fall back to triggering the install API directly without crashing.
+    try:
+        acf_path = game_data.get("appmanifest_path")
+        if not acf_path and game_data.get("library_path"):
+            cand = Path(game_data["library_path"]) / "steamapps" / f"appmanifest_{appid}.acf"
+            if cand.exists():
+                acf_path = str(cand)
+        if not acf_path:
+            from ui.dialogs.library.acf_scanner import get_steam_library_folders
+            for lib in get_steam_library_folders():
+                cand = Path(lib) / "steamapps" / f"appmanifest_{appid}.acf"
+                if cand.exists():
+                    acf_path = str(cand)
+                    break
+        if acf_path and os.path.exists(acf_path):
+            _ensure_acf_has_installed_depots(acf_path, appid, depot_ids, game_data)
+        else:
+            logger.info(f"[VaporTransition] No existing ACF found for {appid}; install API will handle clean adoption.")
+    except Exception as _acf_err:
+        logger.warning(f"[VaporTransition] ACF update fallback: {_acf_err}")
+
+    # Fast safeguard: verify manifests are seeded in Steam central depotcache
+    try:
+        from core.native_steam.native_steam_handoff import sync_manifests_to_depotcache
+        dest_lib = game_data.get("library_path") or game_data.get("install_path") or ""
+        sync_manifests_to_depotcache(appid, dest_lib)
+    except Exception as _e:
+        logger.debug(f"[VaporTransition] Manifest depotcache safeguard: {_e}")
+
+    # Trigger Steam install/discovery API after 5 seconds
+    # Allows SLSsteam inotify watcher to reload config.yaml and unlock licenses in memory
+    dest_lib = game_data.get("library_path") or ""
+    try:
+        from core.native_steam.native_steam_handoff import resolve_library_index
+        lib_idx = resolve_library_index(dest_lib)
+    except Exception:
+        lib_idx = 0
+
+    def _delayed_atom_api_worker():
+        import time
+        time.sleep(5)
+        try:
+            logger.info(f"[VaporTransition] Triggering delayed AT0-M install pipe for '{game_name}' ({appid}) into library index {lib_idx}...")
+            from core.steam_helpers import slssteam_api_send
+            slssteam_api_send(f"install|{appid}|{lib_idx}")
+        except Exception as _api_err:
+            logger.warning(f"[VaporTransition] Error sending delayed AT0-M API command: {_api_err}")
+
+    threading.Thread(target=_delayed_atom_api_worker, daemon=True).start()
 
     QMessageBox.information(
         dialog,
         "Moved to plugin AT0-M",
         f"'{game_name}' has been successfully moved to AT0-M mode.\n"
-        f"Registered {len(depot_ids)} depot(s) and {len(decryption_keys)} decryption key(s) into SLSsteam.",
+        f"Registered {len(depot_ids)} depot(s) and {len(decryption_keys)} decryption key(s) into SLSsteam.\n\n"
+        f"Steam will automatically verify and adopt the game files.",
     )
 
     # Close dialog and refresh parent

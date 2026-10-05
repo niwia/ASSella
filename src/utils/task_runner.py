@@ -98,53 +98,66 @@ class TaskRunner(QObject):
     def run(self, target_func, *args, on_finished=None, on_error=None, on_completed=None, **kwargs):
         self._ensure_shutdown_hook()
 
-        self._thread = QThread(self)
-        self.worker = Worker(target_func, *args, **kwargs)
-        self.worker.moveToThread(self._thread)
+        # Stop any active task on this runner before starting a new one
+        if self._thread is not None and self._thread.isRunning():
+            self.stop(wait_ms=500, terminate_on_timeout=True)
+
+        new_thread = QThread(self)
+        new_worker = Worker(target_func, *args, **kwargs)
+        self._thread = new_thread
+        self.worker = new_worker
+        new_worker.moveToThread(new_thread)
 
         if on_finished is not None:
-            self.worker.finished.connect(on_finished)
+            new_worker.finished.connect(on_finished)
         if on_error is not None:
-            self.worker.error.connect(on_error)
+            new_worker.error.connect(on_error)
         if on_completed is not None:
-            self.worker.completed.connect(on_completed)
+            new_worker.completed.connect(on_completed)
 
-        self._thread.started.connect(self.worker.run)
-        self.worker.completed.connect(self._thread.quit)
-        self._thread.finished.connect(self.worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
+        new_thread.started.connect(new_worker.run)
+        new_worker.completed.connect(new_thread.quit)
+        new_thread.finished.connect(new_worker.deleteLater)
+        new_thread.finished.connect(new_thread.deleteLater)
 
-        self._thread.finished.connect(self._cleanup)
+        def _handle_cleanup():
+            if self._thread is new_thread:
+                self._cleanup()
 
-        self._thread.finished.connect(self.cleanup_complete)
+        new_thread.finished.connect(_handle_cleanup)
+        new_thread.finished.connect(self.cleanup_complete)
 
-        self._thread.start()
+        new_thread.start()
         logger.info(
             f"Task for function '{target_func.__name__}' has been started in a new thread."
         )
 
-        TaskRunner._active_runners.append(self)
+        if self not in TaskRunner._active_runners:
+            TaskRunner._active_runners.append(self)
 
-        return self.worker
+        return new_worker
 
     def stop(self, wait_ms=2000, terminate_on_timeout=True):
         """Stop the current task and clean up resources safely."""
         self._request_task_stop()
-        if self._thread is not None and self._thread.isRunning():
-            try:
-                self._thread.quit()
-                if wait_ms is None:
-                    wait_ms = 2000
-                if wait_ms > 0 and not self._thread.wait(wait_ms):
-                    logger.warning("Thread did not finish in time during stop()")
-                    if terminate_on_timeout:
-                        self._thread.terminate()
-                        self._thread.wait()
-            except RuntimeError:
-                # Thread may have already been deleted by Qt
-                logger.debug("Thread was already deleted during stop()")
+        thread = self._thread
         self._thread = None
         self.worker = None
+        if thread is not None and thread.isRunning():
+            try:
+                thread.quit()
+                if wait_ms is None:
+                    wait_ms = 2000
+                if wait_ms > 0 and not thread.wait(wait_ms):
+                    logger.warning("Thread did not finish in time during stop()")
+                    if terminate_on_timeout:
+                        thread.terminate()
+                        thread.wait(500)
+            except (RuntimeError, Exception):
+                # Thread may have already been deleted by Qt
+                logger.debug("Thread was already deleted during stop()")
+        if self in TaskRunner._active_runners:
+            TaskRunner._active_runners.remove(self)
 
     def _cleanup(self):
         if self.worker:

@@ -890,7 +890,6 @@ class NativeSteamDownloadTask(QObject):
         Pulse the install command to /tmp/SLSsteam.API and Steam client every interval_sec
         until Steam confirms update started or ACF manifest appears on disk.
         """
-        from core.steam_helpers import dispatch_steam_url
 
         content_log = self._get_content_log_path()
         c_offset = content_log.stat().st_size if content_log and content_log.exists() else 0

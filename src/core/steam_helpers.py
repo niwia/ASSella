@@ -615,7 +615,10 @@ def dispatch_steam_url(url: str) -> bool:
 
 
 def trigger_steam_install(appid: str, library_index: int = 0) -> bool:
-    """Trigger Steam to begin downloading and installing an application via SLSsteam API."""
+    """Trigger Steam to begin downloading and installing an application.
+
+    Writes install|<appid>|<library_index> to /tmp/SLSsteam.API.
+    """
     appid_str = str(appid).strip()
     return slssteam_api_send(f"install|{appid_str}|{library_index}")
 

@@ -138,6 +138,8 @@ class FetchManifestDialog(QDialog):
             self.background_color = self.settings.value("background_color", "#111318")
 
         self.task_runner = TaskRunner()
+        self.search_task_runner = TaskRunner()
+        self.status_task_runner = TaskRunner()
         self._active_image_fetchers = {}
         self._pending_image_timers = []
         self._search_generation = 0
@@ -561,7 +563,7 @@ class FetchManifestDialog(QDialog):
     def _request_api_status_update(self):
         self.top_spinner.setVisible(True)
         self.api_status_dot.setVisible(False)
-        worker = self.task_runner.run(self._fetch_api_status)
+        worker = self.status_task_runner.run(self._fetch_api_status)
         worker.finished.connect(self._apply_api_status)
         worker.error.connect(self._on_api_status_error)
 
@@ -654,7 +656,7 @@ class FetchManifestDialog(QDialog):
         self._stop_active_image_fetchers()
         self.status_label.setText(f"Searching for '{query}'…")
         self._set_loading_active(True)
-        worker = self.task_runner.run(self._search_and_filter_results, query)
+        worker = self.search_task_runner.run(self._search_and_filter_results, query)
         worker.finished.connect(lambda res, g=gen: self.on_search_finished(res, g, is_live=True))
         worker.error.connect(self._on_live_search_error)
 
@@ -711,8 +713,8 @@ class FetchManifestDialog(QDialog):
         self._toggle_inputs(False)
         self.status_label.setText("Searching...")
 
-        # Run search + filtering in a worker thread.
-        worker = self.task_runner.run(self._search_and_filter_results, query)
+        # Run search + filtering in a dedicated search worker thread.
+        worker = self.search_task_runner.run(self._search_and_filter_results, query)
         worker.finished.connect(lambda res, g=gen: self.on_search_finished(res, g))
         worker.error.connect(self.on_task_error)
 
@@ -727,7 +729,7 @@ class FetchManifestDialog(QDialog):
             self.results_list.clear()
             self._stop_active_image_fetchers()
             self.status_label.setText(f"Searching for '{query}'...")
-            worker = self.task_runner.run(self._search_and_filter_results, query)
+            worker = self.search_task_runner.run(self._search_and_filter_results, query)
             worker.finished.connect(lambda res, g=gen: self.on_search_finished(res, g))
             worker.error.connect(self.on_task_error)
 
@@ -738,7 +740,7 @@ class FetchManifestDialog(QDialog):
         self.results_list.clear()
         self._stop_active_image_fetchers()
         self.status_label.setText(f"Searching for '{query}'...")
-        worker = self.task_runner.run(self._search_and_filter_results, query)
+        worker = self.search_task_runner.run(self._search_and_filter_results, query)
         worker.finished.connect(lambda res, g=gen: self.on_search_finished(res, g))
         worker.error.connect(self.on_task_error)
 
@@ -912,8 +914,11 @@ class FetchManifestDialog(QDialog):
 
         # Find fetcher and delete it safely
         sender = self.sender()
-        if sender:
-            sender.deleteLater()
+        if sender and isinstance(sender, ImageFetcher):
+            try:
+                sender.deleteLater()
+            except (RuntimeError, Exception):
+                pass
 
     # --------------------------
     # Download Logic
@@ -1171,8 +1176,27 @@ class FetchManifestDialog(QDialog):
                 self.settings.setValue("vapor_start_download_action", saved_val)
             auto_install = (act in (ACTION_DOWNLOAD, ACTION_TRACK))
 
+        selected_library_path = ""
+        if auto_install:
+            libraries = steam_helpers.get_steam_libraries()
+            if libraries:
+                auto_skip_single_choice = (
+                    self.settings.value("auto_skip_single_choice", False, type=bool)
+                    if self.settings
+                    else False
+                )
+                if auto_skip_single_choice and len(libraries) == 1:
+                    selected_library_path = libraries[0]
+                else:
+                    dialog = SteamLibraryDialog(libraries, self)
+                    if dialog.exec():
+                        selected_library_path = dialog.get_selected_path()
+                    else:
+                        self.status_label.setText("Download cancelled.")
+                        return
+
         logger.info(
-            f"[FetchManifest] Handing off {name} ({aid_str}) directly to Steam (auto_install={auto_install})"
+            f"[FetchManifest] Handing off {name} ({aid_str}) directly to Steam (auto_install={auto_install}, library={selected_library_path})"
         )
         self.accept()
 
@@ -1181,6 +1205,7 @@ class FetchManifestDialog(QDialog):
                 app_id=aid_str,
                 game_name=name,
                 auto_install=auto_install,
+                library_path=selected_library_path,
             )
 
     def _start_assella_flow(self, app_id: str):
@@ -1616,13 +1641,17 @@ class FetchManifestDialog(QDialog):
             self._origins_movie = None
         if hasattr(self, "_placeholder_timer") and self._placeholder_timer:
             self._placeholder_timer.stop()
+        if hasattr(self, "_live_search_timer") and self._live_search_timer:
+            self._live_search_timer.stop()
         self._stop_active_image_fetchers()
 
-        if self.task_runner:
-            try:
-                self.task_runner.stop()
-            except RuntimeError as e:
-                logger.debug(f"Error stopping task runner: {e}")
+        for runner_name in ("search_task_runner", "status_task_runner", "task_runner", "_parse_task_runner"):
+            runner = getattr(self, runner_name, None)
+            if runner:
+                try:
+                    runner.stop(wait_ms=0, terminate_on_timeout=True)
+                except (RuntimeError, Exception) as e:
+                    logger.debug(f"Error stopping {runner_name}: {e}")
 
         super().closeEvent(event)
 

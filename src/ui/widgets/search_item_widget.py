@@ -180,5 +180,11 @@ class SearchItemWidget(QWidget):
         self.proton_badge.show()
 
     def set_image(self, pixmap: QPixmap) -> None:
-        if pixmap and not pixmap.isNull():
-            self.img_lbl.setPixmap(pixmap)
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self):
+                return
+            if pixmap and not pixmap.isNull():
+                self.img_lbl.setPixmap(pixmap)
+        except (RuntimeError, Exception):
+            pass
