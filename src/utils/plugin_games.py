@@ -345,14 +345,17 @@ def sync_all_plugin_games_to_config() -> None:
                 editor.add_depot(did, comment=depot_comment)
 
             for did, key in game.get("keys", {}).items():
-                if str(did) == appid_str:
-                    continue  # Never add AppID to DecryptionKeys
-                if str(did) in SHARED_REDISTS:
+                did_str = str(did)
+                if did_str in game.get("dlc_appids", []):
+                    continue  # Never add DLC AppIDs to DecryptionKeys
+                if did_str == appid_str:
+                    key_comment = f"{name} [AppKey] ({appid_str})"
+                elif did_str in SHARED_REDISTS:
                     key_comment = "Steamworks Shared"
                 else:
-                    d_name = depot_names.get(did, "")
+                    d_name = depot_names.get(did_str, "")
                     key_comment = f"{name} - {d_name}" if d_name else name
-                editor.add_key(did, key, comment=key_comment)
+                editor.add_key(did_str, key, comment=key_comment)
 
         if editor.has_changes:
             SLSBridge.notify_reload()
