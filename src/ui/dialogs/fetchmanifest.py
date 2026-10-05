@@ -494,6 +494,8 @@ class FetchManifestDialog(QDialog):
                 color: rgba(255, 255, 255, 0.38) !important;
             }}
         """)
+        self.dl_btn.setAutoDefault(False)
+        self.dl_btn.setDefault(False)
         self.dl_btn.clicked.connect(self._download_workshop)
         
         self.workshop_status_label = QLabel()
@@ -791,7 +793,7 @@ class FetchManifestDialog(QDialog):
             return
 
         for idx, game in enumerate(filtered_results):
-            self._add_game_to_list(game, gen=gen, delay_fetch=(idx >= 4))
+            self._add_game_to_list(game, gen=gen, delay_fetch=(idx >= 4), fetch_index=idx)
 
         hidden_count = max(0, raw_total - len(filtered_results))
         status_msg = f"Found {len(filtered_results)} games"
@@ -804,7 +806,7 @@ class FetchManifestDialog(QDialog):
     _extract_app_id = staticmethod(extract_app_id)
     _is_blacklisted_result = staticmethod(is_blacklisted_result)
 
-    def _add_game_to_list(self, game: Dict, gen: int = 0, delay_fetch: bool = False):
+    def _add_game_to_list(self, game: Dict, gen: int = 0, delay_fetch: bool = False, fetch_index: int = 0):
         # Support both legacy and newer API response keys.
         app_id = self._extract_app_id(game)
         if not app_id:
@@ -834,7 +836,9 @@ class FetchManifestDialog(QDialog):
             timer.setSingleShot(True)
             timer.timeout.connect(lambda w=widget, a=app_id, g=gen, t=timer: self._delayed_fetch_callback(w, a, g, t))
             self._pending_image_timers.append(timer)
-            timer.start(1200)
+            # Stagger delayed fetches smoothly so network and UI aren't flooded at the exact same moment
+            delay_ms = min(3500, 200 + max(0, fetch_index - 4) * 60)
+            timer.start(delay_ms)
         else:
             self._fetch_item_image(widget, app_id, gen)
 
@@ -857,17 +861,22 @@ class FetchManifestDialog(QDialog):
 
     def _fetch_item_image(self, widget, app_id: str, gen: int = 0):
         url = ImageFetcher.get_header_image_url(app_id)
-        fetcher = ImageFetcher(url, ephemeral=True)
+        fetcher = ImageFetcher(url, ephemeral=True, parent=self)
 
         self._active_image_fetchers[app_id] = fetcher
 
-        # Connect signals directly with widget and generation check
-        fetcher.finished.connect(lambda data, w=widget, a=app_id, g=gen: self._on_image_ready(data, w, a, g))
+        # Connect signals directly with widget, generation check, and fetcher reference
+        fetcher.finished.connect(lambda data, w=widget, a=app_id, g=gen, f=fetcher: self._on_image_ready(data, w, a, g, f))
         fetcher.start()
 
-    def _on_image_ready(self, image_data, widget, app_id: str, gen: int = 0):
-        # Cleanup fetcher reference
+    def _on_image_ready(self, image_data, widget, app_id: str, gen: int = 0, fetcher: Optional[ImageFetcher] = None):
+        # Cleanup fetcher reference safely
         self._active_image_fetchers.pop(app_id, None)
+        if fetcher:
+            try:
+                fetcher.deleteLater()
+            except (RuntimeError, Exception):
+                pass
 
         if gen != self._search_generation:
             return
@@ -906,19 +915,12 @@ class FetchManifestDialog(QDialog):
                     gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
 
                     painter.fillRect(cropped_faded.rect(), QBrush(gradient))
-                    painter.end()
+                    if painter.isActive():
+                        painter.end()
 
                     widget.set_image(cropped_faded)
             except Exception as e:
                 logger.debug(f"Failed to process image for AppID {app_id}: {e}")
-
-        # Find fetcher and delete it safely
-        sender = self.sender()
-        if sender and isinstance(sender, ImageFetcher):
-            try:
-                sender.deleteLater()
-            except (RuntimeError, Exception):
-                pass
 
     # --------------------------
     # Download Logic
@@ -1619,6 +1621,28 @@ class FetchManifestDialog(QDialog):
         self._stop_active_image_fetchers()
         super().reject()
 
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # If results list has focus or selection, open/download that item
+            if self.results_list.hasFocus() or (self.results_list.currentItem() and not self.search_input.hasFocus()):
+                cur = self.results_list.currentItem()
+                if cur:
+                    self.on_item_double_clicked(cur)
+                    event.accept()
+                    return
+            # If search input has focus, trigger explicit search without closing dialog
+            if self.search_input.hasFocus():
+                self.on_search()
+                event.accept()
+                return
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event):
         if hasattr(self, "_origins_movie") and self._origins_movie:
             self._origins_movie.stop()
@@ -1633,7 +1657,7 @@ class FetchManifestDialog(QDialog):
             runner = getattr(self, runner_name, None)
             if runner:
                 try:
-                    runner.stop(wait_ms=0, terminate_on_timeout=True)
+                    runner.stop(wait_ms=100, terminate_on_timeout=False)
                 except (RuntimeError, Exception) as e:
                     logger.debug(f"Error stopping {runner_name}: {e}")
 

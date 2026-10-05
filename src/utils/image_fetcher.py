@@ -84,8 +84,8 @@ class ImageFetcher(QObject):
     finished = pyqtSignal(bytes)
     MAX_SESSION_CACHE_SIZE = 50
 
-    def __init__(self, url: str, ephemeral: bool = False):
-        super().__init__()
+    def __init__(self, url: str, ephemeral: bool = False, parent: Optional[QObject] = None):
+        super().__init__(parent)
         self.url = url
         self.ephemeral = ephemeral
         self._stopped = False
@@ -101,13 +101,19 @@ class ImageFetcher(QObject):
         # Build fallback list of URLs to try in sequence
         self.urls_to_try = [url]
         if self.app_id:
-            fallbacks = [
-                f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/header.jpg",
-                f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/library_capsule.jpg",
-                f"https://cdn.akamai.steamstatic.com/steam/apps/{self.app_id}/header.jpg",
-                f"https://cdn.akamai.steamstatic.com/steam/apps/{self.app_id}/capsule_231x87.jpg",
-                f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/library_hero.jpg"
-            ]
+            if self.ephemeral:
+                fallbacks = [
+                    f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/header.jpg",
+                    f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/library_capsule.jpg",
+                ]
+            else:
+                fallbacks = [
+                    f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/header.jpg",
+                    f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/library_capsule.jpg",
+                    f"https://cdn.akamai.steamstatic.com/steam/apps/{self.app_id}/header.jpg",
+                    f"https://cdn.akamai.steamstatic.com/steam/apps/{self.app_id}/capsule_231x87.jpg",
+                    f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{self.app_id}/library_hero.jpg"
+                ]
             for fb in fallbacks:
                 if fb not in self.urls_to_try:
                     self.urls_to_try.append(fb)
@@ -168,6 +174,7 @@ class ImageFetcher(QObject):
         if self._stopped or self._reply is None:
             if self._reply:
                 self._reply.deleteLater()
+                self._reply = None
             return
 
         reply = self._reply
@@ -179,7 +186,6 @@ class ImageFetcher(QObject):
                 logger.debug(
                     f"Failed to fetch image from {reply.url().toString()}: {reply.errorString()}"
                 )
-                reply.deleteLater()
                 self._fetch_next_url()
                 return
 

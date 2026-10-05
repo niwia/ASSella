@@ -100,7 +100,7 @@ class TaskRunner(QObject):
 
         # Stop any active task on this runner before starting a new one
         if self._thread is not None and self._thread.isRunning():
-            self.stop(wait_ms=500, terminate_on_timeout=True)
+            self.stop(wait_ms=300, terminate_on_timeout=False)
 
         new_thread = QThread(self)
         new_worker = Worker(target_func, *args, **kwargs)
@@ -137,20 +137,37 @@ class TaskRunner(QObject):
 
         return new_worker
 
-    def stop(self, wait_ms=2000, terminate_on_timeout=True):
+    def stop(self, wait_ms=2000, terminate_on_timeout=False):
         """Stop the current task and clean up resources safely."""
         self._request_task_stop()
+        worker = self.worker
         thread = self._thread
         self._thread = None
         self.worker = None
+
+        if worker is not None:
+            try:
+                worker.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                worker.error.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                worker.completed.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+
         if thread is not None and thread.isRunning():
             try:
                 thread.quit()
                 if wait_ms is None:
                     wait_ms = 2000
                 if wait_ms > 0 and not thread.wait(wait_ms):
-                    logger.warning("Thread did not finish in time during stop()")
+                    logger.debug("Thread did not finish in time during stop(), letting it exit in background.")
                     if terminate_on_timeout:
+                        logger.warning("Forcibly terminating thread on explicit request.")
                         thread.terminate()
                         thread.wait(500)
             except (RuntimeError, Exception):
@@ -186,7 +203,7 @@ class TaskRunner(QObject):
 
     def _on_destroyed(self, _obj=None):
         try:
-            self.stop(wait_ms=0, terminate_on_timeout=True)
+            self.stop(wait_ms=0, terminate_on_timeout=False)
         except RuntimeError:
             pass
 
@@ -195,7 +212,7 @@ class TaskRunner(QObject):
         runners = list(cls._active_runners)
         for runner in runners:
             try:
-                runner.stop(wait_ms=0, terminate_on_timeout=True)
+                runner.stop(wait_ms=0, terminate_on_timeout=False)
             except RuntimeError as e:
                 logger.debug(f"Failed to stop TaskRunner during shutdown: {e}")
 
