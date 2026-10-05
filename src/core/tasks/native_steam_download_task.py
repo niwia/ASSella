@@ -209,14 +209,18 @@ class NativeSteamDownloadTask(QObject):
             return
 
         # 4. Verify SLSsteam plugins are present
-        from utils.plugin_manager import are_plugins_present
+        from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
         if not are_plugins_present():
-            msg = "AT0-M plugins (download.lua / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings."
+            msg = "AT0-M plugins (download.lua / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
             self.error.emit((RuntimeError, msg, None))
             return
-        self.progress.emit("[Native Steam] AT0-M plugins verified")
+
+        if is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True):
+            self.progress.emit("[Native Steam] WARNING: Custom plugins active — third-party plugin support cannot be guaranteed!")
+        else:
+            self.progress.emit("[Native Steam] AT0-M plugins verified")
         if not self._is_running:
             self._cleanup_failure()
             return

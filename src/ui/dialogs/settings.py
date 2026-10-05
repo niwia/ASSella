@@ -60,6 +60,7 @@ class SettingsDialog(QDialog):
         self.library_mode_checkbox = None
         self.auto_skip_single_choice_checkbox = None
         self.manifest_provider_combo = None
+        self.custom_plugins_checkbox = None
         self.smart_depot_selection_checkbox = None
         self.use_lancache_checkbox = None
         self.autofetch_manifests_checkbox = None
@@ -745,6 +746,11 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "manifest_provider",
                 self.manifest_provider_combo.currentData() or "auto",
+            )
+        if hasattr(self, "custom_plugins_checkbox") and self.custom_plugins_checkbox is not None:
+            self.settings.setValue(
+                "custom_plugins_advanced",
+                self.custom_plugins_checkbox.isChecked(),
             )
         if hasattr(self, "smart_depot_selection_checkbox") and self.smart_depot_selection_checkbox is not None:
             self.settings.setValue(

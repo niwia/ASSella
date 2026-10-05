@@ -327,9 +327,11 @@ def perform_steam_handoff(
         set_manifest_ids(config_path, pinned_manifests, comment=f"{game_name} Pinned Build")
 
     # 6. Verify plugins are present
-    from utils.plugin_manager import are_plugins_present
+    from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
     if not are_plugins_present():
-        return False, "AT0-M plugins (download.lua / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings."
+        return False, "AT0-M plugins (download.lua / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
+    if is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True):
+        _emit("WARNING: Custom plugins active — third-party plugin support cannot be guaranteed.")
 
     # 7. Wait for license event
     _emit("Waiting for Steam license propagation...")

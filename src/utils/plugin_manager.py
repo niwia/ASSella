@@ -204,8 +204,20 @@ def is_plugin_installed_and_valid(filename: str, expected_sha256: Optional[str] 
     return True
 
 
-def are_all_plugins_installed() -> bool:
+def is_plugin_check_bypassed() -> bool:
+    """Check if the user has enabled 'I'm using custom plugins (Advanced)'."""
+    try:
+        from utils.settings import get_settings
+        return get_settings().value("custom_plugins_advanced", False, type=bool)
+    except Exception:
+        return False
+
+
+def are_all_plugins_installed(ignore_bypass: bool = False) -> bool:
     """Check if all required plugins are installed and up to date in SLSsteam."""
+    if not ignore_bypass and is_plugin_check_bypassed():
+        return True
+
     manifest = fetch_plugins_manifest()
     if manifest and "plugins" in manifest:
         required = [
@@ -222,8 +234,13 @@ def are_all_plugins_installed() -> bool:
     return True
 
 
-def are_plugins_present() -> bool:
-    """Check if all required SLSsteam plugins exist locally in the primary plugins directory."""
+def are_plugins_present(ignore_bypass: bool = False) -> bool:
+    """Check if all required SLSsteam plugins exist locally in the primary plugins directory.
+    If 'custom_plugins_advanced' setting is enabled and ignore_bypass is False, returns True.
+    """
+    if not ignore_bypass and is_plugin_check_bypassed():
+        return True
+
     target_dirs = get_sls_plugins_dirs()
     if not target_dirs:
         return False

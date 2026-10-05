@@ -330,6 +330,31 @@ def create_at0m_tab(dialog) -> QWidget:
 
 
     deploy_layout.addLayout(deploy_btns_row)
+
+    # Option: I'm using custom plugins (Advanced)
+    dialog.custom_plugins_checkbox = create_checkbox_setting(
+        "I'm using custom plugins (Advanced)",
+        "custom_plugins_advanced",
+        False,
+        dialog,
+        "Bypasses plugin missing checks for game transfers and native downloads. Warning: Third-party plugin support cannot be guaranteed!",
+        show_description=True,
+    )
+    deploy_layout.addWidget(dialog.custom_plugins_checkbox)
+
+    def _on_custom_plugins_toggled(checked: bool):
+        dialog.settings.setValue("custom_plugins_advanced", checked)
+        if checked:
+            QMessageBox.warning(
+                dialog,
+                "Custom Plugins (Advanced)",
+                "Bypassing plugin presence verification enables native downloads and game transfers with custom or third-party Lua plugins.\n\n"
+                "Please note: ASSella cannot guarantee compatibility, functionality, or stability with third-party plugins!"
+            )
+        _refresh_deploy_buttons()
+
+    dialog.custom_plugins_checkbox.checkbox.toggled.connect(_on_custom_plugins_toggled)
+
     layout.addWidget(deploy_card)
 
     def _refresh_deploy_buttons():
@@ -339,6 +364,7 @@ def create_at0m_tab(dialog) -> QWidget:
         ]
         detected_style = _get_detected_btn_style(dialog)
         outdated_style = _get_outdated_btn_style(dialog)
+        is_bypassed = dialog.settings.value("custom_plugins_advanced", False, type=bool)
         for btn, fname, label in items:
             state = get_plugin_state(fname)
             if state == "up_to_date":
@@ -354,11 +380,14 @@ def create_at0m_tab(dialog) -> QWidget:
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setToolTip(f"{label} ({fname}) differs from the Cloud manifest (custom or outdated). Click to fetch and apply the official Cloud version (backed up to .bak).")
             else:
-                btn.setText(f"Fetch & Apply {label} (Missing)")
+                if is_bypassed:
+                    btn.setText(f"Fetch & Apply {label} (Missing — Bypass Active)")
+                else:
+                    btn.setText(f"Fetch & Apply {label} (Missing)")
                 btn.setStyleSheet(NORMAL_BTN_STYLE)
                 btn.setEnabled(True)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"Click to download {fname} from the Cloud and deploy to SLSsteam plugins.")
+                btn.setToolTip(f"{label} ({fname}) is missing. Click to download from the Cloud and deploy to SLSsteam plugins.")
 
     class DeployWorker(QThread):
         finished_signal = pyqtSignal(bool, bool, str, str, str)

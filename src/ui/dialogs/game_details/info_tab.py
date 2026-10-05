@@ -2333,13 +2333,13 @@ def on_move_to_vapor_clicked(dialog) -> None:
     game_name = game_data.get("game_name") or f"App {appid}"
 
     # Verify plugins are present before converting to AT0-M
-    from utils.plugin_manager import are_plugins_present
+    from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
     if not are_plugins_present():
         box = QMessageBox(dialog)
         box.setWindowTitle("AT0-M Plugins Required")
         box.setIcon(QMessageBox.Icon.Warning)
         box.setText("AT0-M mode requires SLSsteam plugins (download.lua and spliced-tickets.lua).\n\nThe plugins were not found in your SLSsteam plugins directory.")
-        box.setInformativeText("Please go to Settings -> AT0-M and enable/deploy plugin support before moving games to AT0-M.")
+        box.setInformativeText("Please go to Settings -> AT0-M and enable/deploy plugin support (or enable 'I'm using custom plugins (Advanced)') before moving games to AT0-M.")
         settings_btn = box.addButton("Open AT0-M Settings", QMessageBox.ButtonRole.ActionRole)
         box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         box.exec()
@@ -2356,6 +2356,18 @@ def on_move_to_vapor_clicked(dialog) -> None:
                 except Exception as e:
                     logger.error(f"Error opening settings dialog: {e}")
         return
+
+    if is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True):
+        warn_box = QMessageBox.warning(
+            dialog,
+            "Custom Plugins Active",
+            "Custom plugins mode is active. Third-party plugin support and compatibility cannot be guaranteed.\n\n"
+            "Do you want to proceed with converting to AT0-M?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if warn_box != QMessageBox.StandardButton.Yes:
+            return
 
     reply = QMessageBox.question(
         dialog,

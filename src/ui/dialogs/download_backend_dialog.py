@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.settings import get_settings
-from utils.plugin_manager import are_plugins_present
+from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
 from utils.helpers import get_base_path
 from utils.color_utils import get_best_foreground_color
 
@@ -123,11 +123,17 @@ class DownloadBackendDialog(QDialog):
         steam_vbox.addWidget(steam_name, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.steam_status_lbl = QLabel()
-        self.steam_status_lbl.setStyleSheet("font-size: 7.5pt; color: #ff6b6b; border: none; background: transparent; font-weight: 500;")
         self.steam_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        if not self._plugins_available:
-            self.steam_status_lbl.setText("Plugins Missing")
-            self.steam_status_lbl.setVisible(True)
+        phys_present = are_plugins_present(ignore_bypass=True)
+        if not phys_present:
+            if is_plugin_check_bypassed():
+                self.steam_status_lbl.setStyleSheet("font-size: 7.5pt; color: #ffb74d; border: none; background: transparent; font-weight: 500;")
+                self.steam_status_lbl.setText("Custom Plugins")
+                self.steam_status_lbl.setVisible(True)
+            else:
+                self.steam_status_lbl.setStyleSheet("font-size: 7.5pt; color: #ff6b6b; border: none; background: transparent; font-weight: 500;")
+                self.steam_status_lbl.setText("Plugins Missing")
+                self.steam_status_lbl.setVisible(True)
         else:
             self.steam_status_lbl.setVisible(False)
         steam_vbox.addWidget(self.steam_status_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -215,6 +221,16 @@ class DownloadBackendDialog(QDialog):
         """ % (self.accent_color, self.accent_color))
         layout.addWidget(self.remember_chk)
 
+        # Custom plugin warning (visible only when Steam is chosen and bypass is active with physical plugins missing)
+        self.custom_plugin_warn_lbl = QLabel("⚠️ Custom plugins active — third-party plugin support cannot be guaranteed!")
+        self.custom_plugin_warn_lbl.setStyleSheet("font-size: 7.5pt; color: #ffb74d; border: none; background: transparent;")
+        self.custom_plugin_warn_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.custom_plugin_warn_lbl.setWordWrap(True)
+        self.custom_plugin_warn_lbl.setVisible(
+            self._selected_backend == BACKEND_NATIVE_STEAM and is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True)
+        )
+        layout.addWidget(self.custom_plugin_warn_lbl)
+
         # Bottom buttons row: Cancel / Proceed
         bot_layout = QHBoxLayout()
         bot_layout.setContentsMargins(0, 4, 0, 0)
@@ -289,6 +305,10 @@ class DownloadBackendDialog(QDialog):
         if backend == BACKEND_NATIVE_STEAM and not self._plugins_available:
             return
         self._selected_backend = backend
+        if hasattr(self, "custom_plugin_warn_lbl"):
+            self.custom_plugin_warn_lbl.setVisible(
+                backend == BACKEND_NATIVE_STEAM and is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True)
+            )
         self._update_cards_ui()
 
     def _update_cards_ui(self):
@@ -372,11 +392,28 @@ class DownloadBackendDialog(QDialog):
 
         # Re-check plugin availability
         self._plugins_available = are_plugins_present()
+        phys_present = are_plugins_present(ignore_bypass=True)
+        bypassed = is_plugin_check_bypassed()
         self.plugin_help_btn.setVisible(not self._plugins_available)
-        self.steam_status_lbl.setVisible(not self._plugins_available)
+        if not phys_present:
+            if bypassed:
+                self.steam_status_lbl.setStyleSheet("font-size: 7.5pt; color: #ffb74d; border: none; background: transparent; font-weight: 500;")
+                self.steam_status_lbl.setText("Custom Plugins")
+                self.steam_status_lbl.setVisible(True)
+            else:
+                self.steam_status_lbl.setStyleSheet("font-size: 7.5pt; color: #ff6b6b; border: none; background: transparent; font-weight: 500;")
+                self.steam_status_lbl.setText("Plugins Missing")
+                self.steam_status_lbl.setVisible(True)
+        else:
+            self.steam_status_lbl.setVisible(False)
+
         self.steam_card.setCursor(Qt.CursorShape.PointingHandCursor if self._plugins_available else Qt.CursorShape.ForbiddenCursor)
-        if self._plugins_available:
+        if self._plugins_available and self._selected_backend != BACKEND_ASSELLA:
             self._selected_backend = BACKEND_NATIVE_STEAM
+        if hasattr(self, "custom_plugin_warn_lbl"):
+            self.custom_plugin_warn_lbl.setVisible(
+                self._selected_backend == BACKEND_NATIVE_STEAM and bypassed and not phys_present
+            )
         self._update_cards_ui()
 
     def _on_proceed(self):
