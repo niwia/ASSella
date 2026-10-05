@@ -85,6 +85,7 @@ class HealthStatusTile(QPushButton):
 def create_rec_setting_row(title: str, desc: str, checkbox: QCheckBox) -> QWidget:
     row = QWidget()
     row.setObjectName("rec_setting_row")
+    row.setMinimumHeight(48)
     row.setStyleSheet("""
         QWidget#rec_setting_row {
             background-color: rgba(255, 255, 255, 0.03);

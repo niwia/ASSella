@@ -656,3 +656,94 @@ def get_dlc_uninstall_message(game_data: dict) -> str:
 
     confirm_msg += "This action cannot be undone!"
     return confirm_msg
+
+
+def has_game_dlcs(appid: str, depots: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    Reliably checks whether the game has DLCs using multiple sources:
+    1. In-memory depots dictionary (if provided).
+    2. Local SQLite database cache (hasdepotsindlc, listofdlc, depots).
+    3. Steam PICS / SteamCMD depot info from API.
+    4. Saved depots on disk ({appid}.depot).
+    """
+    appid_str = str(appid) if appid else ""
+    if not appid_str or appid_str in ("0", "N/A", "unknown"):
+        return False
+
+    # 1. In-memory depots
+    if depots and isinstance(depots, dict):
+        for did, d_data in depots.items():
+            if not isinstance(d_data, dict):
+                continue
+            desc = str(d_data.get("desc") or d_data.get("name") or "")
+            if is_base_game_main_depot(str(did), desc, appid_str):
+                continue
+            if (
+                d_data.get("is_dlc") is True
+                or bool(d_data.get("dlcappid"))
+                or "[dlc]" in desc.lower()
+                or bool(re.search(r"\bDLC\s+\d+", desc, re.IGNORECASE))
+            ):
+                return True
+
+    # 2. DatabaseManager cache
+    try:
+        from managers.db_manager import DatabaseManager
+        db = DatabaseManager()
+        app_info = db.get_app_info(appid_str, bypass_expiration=True)
+        if app_info:
+            if app_info.get("hasdepotsindlc") in (1, "1", True):
+                return True
+            listofdlc = app_info.get("listofdlc")
+            if listofdlc:
+                if isinstance(listofdlc, (list, tuple)) and len(listofdlc) > 0:
+                    return True
+                if isinstance(listofdlc, str) and any(c.isdigit() for c in listofdlc):
+                    return True
+                if isinstance(listofdlc, int) and listofdlc > 0:
+                    return True
+            db_depots = app_info.get("depots") or {}
+            for did, d_data in db_depots.items():
+                if isinstance(d_data, dict):
+                    desc = str(d_data.get("desc") or d_data.get("name") or "")
+                    if is_base_game_main_depot(str(did), desc, appid_str):
+                        continue
+                    if d_data.get("is_dlc") or d_data.get("dlcappid"):
+                        return True
+    except Exception as e:
+        logger.debug(f"[DLCMode] DB DLC check error for {appid_str}: {e}")
+
+    # 3. Live Steam PICS / SteamCMD app/depot info
+    try:
+        from core.steam_api import get_depot_info_from_api
+        api_info = get_depot_info_from_api(appid_str)
+        if api_info:
+            if api_info.get("hasdepotsindlc") in (1, "1", True):
+                return True
+            listofdlc = api_info.get("listofdlc")
+            if listofdlc:
+                if isinstance(listofdlc, (list, tuple)) and len(listofdlc) > 0:
+                    return True
+                if isinstance(listofdlc, str) and any(c.isdigit() for c in listofdlc):
+                    return True
+                if isinstance(listofdlc, int) and listofdlc > 0:
+                    return True
+    except Exception as e:
+        logger.debug(f"[DLCMode] API DLC check error for {appid_str}: {e}")
+
+    # 4. Check saved .depot file for multi-depot non-base entries
+    try:
+        from utils.helpers import get_base_path
+        depot_file = get_base_path() / "depots" / f"{appid_str}.depot"
+        if depot_file.exists():
+            lines = [l.strip() for l in depot_file.read_text().splitlines() if l.strip()]
+            if len(lines) > 1:
+                for line in lines:
+                    did = line.split(":", 1)[0].strip()
+                    if did and did != appid_str:
+                        return True
+    except Exception:
+        pass
+
+    return False
+

@@ -8,9 +8,13 @@ from PyQt6.QtGui import QColor, QFont, QMovie
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
+    QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
-    QTabWidget,
+    QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -43,9 +47,9 @@ class SettingsDialog(QDialog):
         self._initial_tab = initial_tab
         self.setWindowTitle("Settings")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setMinimumWidth(525)
-        self.setMinimumHeight(650)
-        self.resize(525, 650)
+        self.setMinimumWidth(680)
+        self.setMinimumHeight(680)
+        self.resize(680, 680)
         self.settings = get_settings()
         self.main_window = parent
         self.accent_color = self.settings.value("accent_color", "#C06C84")
@@ -155,11 +159,15 @@ class SettingsDialog(QDialog):
             from ui.dialogs.dialog_raiser import DialogRaiser
             DialogRaiser(self.parent(), self)
 
-        if self._initial_tab and self.tab_widget:
-            for i in range(self.tab_widget.count()):
-                if self.tab_widget.tabText(i).lower() == self._initial_tab.lower():
-                    self.tab_widget.setCurrentIndex(i)
-                    break
+        # Select first tab by default, or the requested initial tab
+        if self.tab_widget and self.tab_widget.count() > 0:
+            start_idx = 0
+            if self._initial_tab:
+                for i in range(self.tab_widget.count()):
+                    if self.tab_widget.tabText(i).lower() == self._initial_tab.lower():
+                        start_idx = i
+                        break
+            self.tab_widget.setCurrentIndex(start_idx)
 
     def _setup_ui(self) -> None:
         """Initialize the UI layout."""
@@ -265,6 +273,26 @@ class SettingsDialog(QDialog):
                 border: 1px solid rgba(255, 255, 255, 0.12) !important;
                 color: rgba(255, 255, 255, 0.38) !important;
             }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+                min-height: 28px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: rgba(255, 255, 255, 0.30);
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+                background: none;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
         """)
 
         self.main_layout = QVBoxLayout(self)
@@ -275,49 +303,100 @@ class SettingsDialog(QDialog):
         self.title_bar = DialogTitleBar(self, title="Settings", can_minimize=False, can_maximize=False, use_power_close=True)
         self.main_layout.addWidget(self.title_bar)
 
-        self.content_widget = QWidget()
-        self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setContentsMargins(12, 8, 12, 12)
-        self.content_layout.setSpacing(8)
-        self.main_layout.addWidget(self.content_widget, 1)
-
-        self._create_tab_widget()
-        self.content_layout.addWidget(self.tab_widget)
+        self._create_nav_layout()
         self._setup_tabs()
         self._create_dialog_buttons()
 
-    def _create_tab_widget(self) -> None:
-        """Create and style the tab widget with scroll buttons and clean spacing."""
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setUsesScrollButtons(True)
-        bg_color = self.settings.value("background_color", "#141416")
-        self.tab_widget.setStyleSheet(
-            f"""
-            QTabWidget::pane {{
+    def _create_nav_layout(self) -> None:
+        """Build the left-sidebar + stacked-page layout."""
+        ac = self.accent_color
+
+        # ── Content area: sidebar | pages ─────────────────────────────────
+        content_row = QHBoxLayout()
+        content_row.setContentsMargins(0, 0, 0, 0)
+        content_row.setSpacing(0)
+
+        # Left nav sidebar
+        self._nav_list = QListWidget()
+        self._nav_list.setFixedWidth(160)
+        self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._nav_list.setStyleSheet(f"""
+            QListWidget {{
+                background-color: rgba(0, 0, 0, 0.28);
                 border: none;
+                border-right: 1px solid rgba(255, 255, 255, 0.08);
+                padding: 10px 0px;
+                outline: none;
             }}
-            QTabBar::tab {{
-                background: {bg_color};
-                color: rgba(255, 255, 255, 0.6);
-                padding: 8px 14px;
+            QListWidget::item {{
+                color: rgba(255, 255, 255, 0.58);
+                padding: 12px 18px;
                 border: none;
-                font-weight: bold;
-                font-size: 9.5pt;
+                font-size: 10.5pt;
+                font-weight: 600;
+                letter-spacing: 0.2px;
+                border-radius: 0px;
             }}
-            QTabBar::tab:selected {{
-                color: {self.accent_color};
-                border-bottom: 2px solid {self.accent_color};
+            QListWidget::item:hover {{
+                background-color: rgba(255, 255, 255, 0.07);
+                color: rgba(255, 255, 255, 0.90);
             }}
-            QTabBar::tab:hover {{
-                color: #FFFFFF;
+            QListWidget::item:selected {{
+                background-color: rgba(255, 255, 255, 0.04);
+                color: {ac};
+                border-left: 3.5px solid {ac};
+                padding-left: 14.5px;
+                font-weight: 700;
             }}
-            QTabBar QToolButton {{
-                background: rgba(255, 255, 255, 0.06);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 4px;
-            }}
-        """
-        )
+        """)
+
+        # Right stacked widget
+        self._page_stack = QStackedWidget()
+        self._page_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        content_row.addWidget(self._nav_list)
+        content_row.addWidget(self._page_stack)
+
+        class _TabShim:
+            def __init__(self, nav_list, stack):
+                self._nav = nav_list
+                self._stack = stack
+                self._tabs: dict[str, int] = {}
+
+            def addTab(self, widget, label):
+                idx = self._stack.addWidget(widget)
+                item = QListWidgetItem(label)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                self._nav.addItem(item)
+                self._tabs[label] = idx
+                return idx
+
+            def count(self):
+                return self._stack.count()
+
+            def tabText(self, index):
+                item = self._nav.item(index)
+                return item.text() if item else ""
+
+            def setCurrentIndex(self, index):
+                self._nav.setCurrentRow(index)
+                self._stack.setCurrentIndex(index)
+
+            def currentIndex(self):
+                return self._stack.currentIndex()
+
+        self.tab_widget = _TabShim(self._nav_list, self._page_stack)
+
+        # Wire navigation clicks
+        self._nav_list.currentRowChanged.connect(self._page_stack.setCurrentIndex)
+        self._nav_list.currentRowChanged.connect(self._on_tab_changed)
+
+        content_widget = QWidget()
+        content_widget.setLayout(content_row)
+        content_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.main_layout.addWidget(content_widget, 1)
 
     def _create_card_frame(self, title_text: str = "") -> Tuple[QFrame, QVBoxLayout]:
         """Helper to create a compact Material 3 card container."""
@@ -409,10 +488,11 @@ class SettingsDialog(QDialog):
     def _create_dialog_buttons(self) -> None:
         """Create standard Ok/Cancel buttons."""
         buttons = create_standard_buttons(self.accept, self.reject)
-        if hasattr(self, "content_layout") and self.content_layout:
-            self.content_layout.addWidget(buttons)
-        elif self.main_layout:
-            self.main_layout.addWidget(buttons)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: rgba(255,255,255,0.08); margin: 0px;")
+        self.main_layout.addWidget(sep)
+        self.main_layout.addWidget(buttons)
 
     # ── Signal Handlers & Delegation Slots ────────────────────────────────
     @pyqtSlot(object)

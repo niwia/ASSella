@@ -408,6 +408,14 @@ class DownloadDepotsTask(QObject):
 
                             _sidecar_written_count += 1
                             logger.info(f"Successfully copied manifest and created SHA sidecar for depot {depot_id} to enable delta patching.")
+
+                            try:
+                                from utils.manifest_resolver import restore_depot_symlinks
+                                restored_symlinks = restore_depot_symlinks(dest_manifest_path, self.download_dir)
+                                if restored_symlinks:
+                                    logger.info(f"Restored {len(restored_symlinks)} symlinks for depot {depot_id}")
+                            except Exception as e:
+                                logger.debug(f"Failed restoring symlinks for depot {depot_id}: {e}")
                         else:
                             logger.warning(f"Manifest file not found at {manifest_file_path}, skipping delta manifest setup.")
                     except Exception as e:

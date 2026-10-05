@@ -85,6 +85,97 @@ def is_valid_manifest(data: Union[bytes, str, Path]) -> bool:
         return False
 
 
+def restore_depot_symlinks(manifest_source: Union[str, Path, bytes], install_dir: Union[str, Path]) -> List[Tuple[str, str]]:
+    """
+    Scans a Steam DepotManifest for symlink entries (flag 512 or linktarget specified)
+    and ensures proper symbolic links are created on disk within install_dir.
+    
+    If a 0-byte placeholder or regular dummy file exists where the symlink should be,
+    it is removed and replaced with the correct symbolic link.
+    
+    Returns a list of created/restored (link_path, target) tuples.
+    """
+    restored = []
+    try:
+        from steam.core.manifest import DepotManifest
+        if isinstance(manifest_source, (str, Path)):
+            p = Path(manifest_source)
+            if not p.is_file() or p.stat().st_size == 0:
+                return []
+            raw = p.read_bytes()
+        else:
+            raw = manifest_source
+            
+        if not raw or len(raw) < 16:
+            return []
+            
+        dm = DepotManifest(raw)
+        if not hasattr(dm, "payload") or not hasattr(dm.payload, "mappings"):
+            return []
+            
+        install_path = Path(install_dir)
+        if not install_path.exists():
+            return []
+            
+        for m in dm.payload.mappings:
+            is_symlink = bool(getattr(m, "flags", 0) & 512) or bool(getattr(m, "linktarget", None))
+            if not is_symlink or not getattr(m, "linktarget", None):
+                continue
+                
+            rel_path_str = m.filename.replace("\\", os.sep)
+            target_str = m.linktarget.replace("\\", "/")  # Unix relative target
+            dest_file = install_path / rel_path_str
+            
+            try:
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Check if it already exists as a symlink
+                if dest_file.is_symlink():
+                    try:
+                        current_target = os.readlink(dest_file)
+                        if current_target == target_str:
+                            continue  # already correct
+                    except OSError:
+                        pass
+                    dest_file.unlink(missing_ok=True)
+                elif dest_file.exists():
+                    # If it's a 0-byte placeholder regular file or broken entry, remove it
+                    if dest_file.is_file() and dest_file.stat().st_size == 0:
+                        dest_file.unlink()
+                    elif dest_file.is_dir():
+                        import shutil
+                        shutil.rmtree(dest_file, ignore_errors=True)
+                    else:
+                        dest_file.unlink(missing_ok=True)
+                        
+                os.symlink(target_str, dest_file)
+                restored.append((str(dest_file), target_str))
+                logger.info(f"[ManifestResolver] Restored symlink: {dest_file} -> {target_str}")
+            except Exception as e:
+                logger.warning(f"[ManifestResolver] Failed creating symlink {dest_file} -> {target_str}: {e}")
+                
+    except Exception as e:
+        logger.debug(f"[ManifestResolver] Error parsing manifest for symlinks: {e}")
+        
+    return restored
+
+
+def restore_all_game_symlinks(install_dir: Union[str, Path]) -> List[Tuple[str, str]]:
+    """
+    Checks .DepotDownloader/ in the game directory for all manifest files (*.manifest)
+    and restores symlinks for each.
+    """
+    install_path = Path(install_dir)
+    dd_dir = install_path / ".DepotDownloader"
+    if not dd_dir.is_dir():
+        return []
+    total_restored = []
+    for mf in dd_dir.glob("*.manifest"):
+        res = restore_depot_symlinks(mf, install_path)
+        total_restored.extend(res)
+    return total_restored
+
+
 def resolve_appid_from_depot(depot_id: str | int) -> Tuple[Optional[str], Optional[str]]:
     """Resolves the parent game AppID and game title from a Steam Depot ID.
     
