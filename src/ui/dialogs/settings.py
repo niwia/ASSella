@@ -47,9 +47,9 @@ class SettingsDialog(QDialog):
         self._initial_tab = initial_tab
         self.setWindowTitle("Settings")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setMinimumWidth(680)
+        self.setMinimumWidth(780)
         self.setMinimumHeight(680)
-        self.resize(680, 680)
+        self.resize(780, 700)
         self.settings = get_settings()
         self.main_window = parent
         self.accent_color = self.settings.value("accent_color", "#C06C84")

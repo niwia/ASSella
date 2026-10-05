@@ -23,23 +23,25 @@ class HealthStatusTile(QPushButton):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(68)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(64)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(3)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(2)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.title_lbl = QLabel(title)
         self.title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_lbl.setWordWrap(True)
         self.title_lbl.setStyleSheet("font-size: 8.5pt; font-weight: 600; color: rgba(255, 255, 255, 0.65); border: none; background: transparent;")
         self.title_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(self.title_lbl)
 
         self.status_lbl = QLabel("Checking...")
         self.status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_lbl.setStyleSheet("font-size: 10.5pt; font-weight: bold; color: #FFFFFF; border: none; background: transparent;")
+        self.status_lbl.setWordWrap(True)
+        self.status_lbl.setStyleSheet("font-size: 10pt; font-weight: bold; color: #FFFFFF; border: none; background: transparent;")
         self.status_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         layout.addWidget(self.status_lbl)
 
@@ -185,6 +187,7 @@ def create_health_tab(dialog) -> QWidget:
     path_row.setSpacing(10)
 
     dialog.health_sls_path_lbl = QLabel("Binary Path: Checking...")
+    dialog.health_sls_path_lbl.setWordWrap(True)
     dialog.health_sls_path_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8.5pt; font-family: monospace; border: none; background: transparent;")
     dialog.health_sls_path_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     path_row.addWidget(dialog.health_sls_path_lbl, 1)
@@ -480,9 +483,21 @@ def handle_sls_version_check_done(dialog, result: dict) -> None:
             dialog.health_sls_ver_btn.title_lbl.setText("Version")
         dialog.health_sls_ver_btn.set_state("neutral", "Not Installed")
     else:
-        if hasattr(dialog.health_sls_ver_btn, "title_lbl"):
-            dialog.health_sls_ver_btn.title_lbl.setText("Version")
-        dialog.health_sls_ver_btn.set_state("neutral", "Unknown")
+        from ui.dialogs.settings_sls import is_headcrab_installed, get_sls_paths
+        paths = get_sls_paths()
+        if paths.get("detected"):
+            if is_headcrab_installed():
+                if hasattr(dialog.health_sls_ver_btn, "title_lbl"):
+                    dialog.health_sls_ver_btn.title_lbl.setText("SLSsteam Version")
+                dialog.health_sls_ver_btn.set_state("ok", "Headcrab")
+            else:
+                if hasattr(dialog.health_sls_ver_btn, "title_lbl"):
+                    dialog.health_sls_ver_btn.title_lbl.setText("SLSsteam Version")
+                dialog.health_sls_ver_btn.set_state("ok", "Detected")
+        else:
+            if hasattr(dialog.health_sls_ver_btn, "title_lbl"):
+                dialog.health_sls_ver_btn.title_lbl.setText("Version")
+            dialog.health_sls_ver_btn.set_state("neutral", "Unknown")
 
 
 def on_sls_bin_tile_clicked(dialog) -> None:

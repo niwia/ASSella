@@ -378,11 +378,27 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
         else:
             result["status"] = "up_to_date"
 
+        if result["status"] == "up_to_date" and release_tag and version_file:
+            try:
+                os.makedirs(os.path.dirname(version_file), exist_ok=True)
+                with open(version_file, "w", encoding="utf-8") as vf:
+                    vf.write(release_tag)
+            except Exception:
+                pass
+
         with _binary_version_cache_lock:
             _binary_version_cache = {"timestamp": time.time(), "data": dict(result)}
 
     except Exception as exc:
         result["error"] = f"GitHub API error: {exc}"
+        if local_so and os.path.exists(local_so):
+            try:
+                from ui.dialogs.settings_sls import is_headcrab_installed
+                if is_headcrab_installed():
+                    result["status"] = "up_to_date"
+                    result["release_tag"] = "Headcrab"
+            except Exception:
+                pass
 
     return result
 

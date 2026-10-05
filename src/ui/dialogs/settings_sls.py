@@ -108,11 +108,25 @@ def get_local_sls_version() -> str:
     if os.path.exists(paths["version_file"]):
         try:
             with open(paths["version_file"], "r", encoding="utf-8") as f:
-                return f.read().strip() or "Installed (Version Unknown)"
+                val = f.read().strip()
+                if val:
+                    return val
         except Exception:
-            return "Installed (Version Unknown)"
-    
-    return "Installed (Version Unknown)"
+            pass
+
+    try:
+        from utils.slssteam_integration import _binary_version_cache
+        cached = _binary_version_cache.get("data", {})
+        if cached.get("release_tag"):
+            tag = cached["release_tag"]
+            return f"{tag} (Headcrab)" if is_headcrab_installed() else tag
+    except Exception:
+        pass
+
+    if is_headcrab_installed():
+        return "Headcrab Managed"
+
+    return "Installed"
 
 
 def run_boot_update_check() -> None:
