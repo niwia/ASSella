@@ -364,6 +364,7 @@ class SettingsDialog(QDialog):
                 self._nav = nav_list
                 self._stack = stack
                 self._tabs: dict[str, int] = {}
+                self.currentChanged = nav_list.currentRowChanged
 
             def addTab(self, widget, label):
                 idx = self._stack.addWidget(widget)
@@ -380,6 +381,9 @@ class SettingsDialog(QDialog):
                 item = self._nav.item(index)
                 return item.text() if item else ""
 
+            def widget(self, index):
+                return self._stack.widget(index)
+
             def setCurrentIndex(self, index):
                 self._nav.setCurrentRow(index)
                 self._stack.setCurrentIndex(index)
@@ -391,7 +395,6 @@ class SettingsDialog(QDialog):
 
         # Wire navigation clicks
         self._nav_list.currentRowChanged.connect(self._page_stack.setCurrentIndex)
-        self._nav_list.currentRowChanged.connect(self._on_tab_changed)
 
         content_widget = QWidget()
         content_widget.setLayout(content_row)
