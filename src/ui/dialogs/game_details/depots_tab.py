@@ -2,7 +2,7 @@
 Depots tab implementation for GameDetailsDialogV2.
 Modular inspector and configuration viewer for AT0-M / Native Steam mode games.
 Displays real-time status of AdditionalApps, AdditionalDepots, and DecryptionKeys
-specifically for the current game, with live/missing verification and in-place reinject/refetch controls.
+specifically for the current game, with circular indicators and unlockable custom depot selection.
 """
 
 import logging
@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PyQt6.QtCore import Qt, QObject, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget,
     QLabel,
@@ -25,6 +26,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QAbstractItemView,
+    QMessageBox,
 )
 
 from ui.dialogs.game_details.hero_header import section_title
@@ -51,43 +53,41 @@ class _WorkerBridge(QObject):
     finished = pyqtSignal(bool, str)
 
 
-def _make_badge(text: str, is_positive: bool) -> QWidget:
-    """Create a fixed-size status badge with ample breathing room to prevent clipping."""
+def _make_indicator(is_live: bool, is_ignored: bool = False) -> QWidget:
+    """Create a sleek, non-interactive round status indicator (green if live, red if ignored, nothing if missing)."""
     container = QWidget()
     container.setStyleSheet("background: transparent;")
     h_lay = QHBoxLayout(container)
     h_lay.setContentsMargins(0, 0, 0, 0)
     h_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-    lbl = QLabel(text)
-    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    lbl.setFixedHeight(22)
-    lbl.setFixedWidth(74)
-
-    if is_positive:
-        lbl.setStyleSheet("""
-            QLabel {
-                background-color: rgba(76, 175, 80, 0.18);
-                color: #81c784;
-                border: 1px solid rgba(76, 175, 80, 0.35);
-                border-radius: 4px;
-                font-size: 8.5pt;
-                font-weight: bold;
+    if is_live:
+        dot = QFrame()
+        dot.setFixedSize(14, 14)
+        dot.setStyleSheet("""
+            QFrame {
+                background-color: #4caf50;
+                border: 2px solid rgba(255, 255, 255, 0.25);
+                border-radius: 7px;
             }
         """)
+        h_lay.addWidget(dot)
+    elif is_ignored:
+        dot = QFrame()
+        dot.setFixedSize(14, 14)
+        dot.setStyleSheet("""
+            QFrame {
+                background-color: #f44336;
+                border: 2px solid rgba(255, 255, 255, 0.25);
+                border-radius: 7px;
+            }
+        """)
+        h_lay.addWidget(dot)
     else:
-        lbl.setStyleSheet("""
-            QLabel {
-                background-color: rgba(255, 152, 0, 0.18);
-                color: #ffb74d;
-                border: 1px solid rgba(255, 152, 0, 0.35);
-                border-radius: 4px;
-                font-size: 8.5pt;
-                font-weight: bold;
-            }
-        """)
+        # Missing: show nothing
+        empty = QLabel("")
+        h_lay.addWidget(empty)
 
-    h_lay.addWidget(lbl)
     return container
 
 
@@ -95,8 +95,14 @@ def _make_table(columns: List[str], accent_color: str) -> QTableWidget:
     """Create a styled table widget matching ASSella design conventions."""
     tbl = QTableWidget()
     tbl.setColumnCount(len(columns))
-    tbl.setHorizontalHeaderLabels(columns)
-    tbl.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    for c_idx, col_name in enumerate(columns):
+        item = QTableWidgetItem(col_name)
+        if col_name in ("Config", "Local"):
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        else:
+            item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        tbl.setHorizontalHeaderItem(c_idx, item)
+
     tbl.verticalHeader().setVisible(False)
     tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     tbl.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -160,59 +166,63 @@ def init_depots_tab(dialog) -> None:
     ac = dialog.accent_color
     appid_str = str(dialog.appid).strip()
 
+    # Advanced unlock and custom depot exclusion tracking
+    is_unlocked = False
+    ignored_depots: Set[str] = set()
+
     # Section 1: AdditionalApps (AppIDs & DLCs)
     layout.addWidget(section_title("AppIDs & Licenses (AdditionalApps)", ac))
-    apps_table = _make_table(["AppID", "Type / Description", "config.yaml"], ac)
+    apps_table = _make_table(["AppID", "Name", "Config"], ac)
     apps_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
     apps_table.setColumnWidth(0, 110)
     apps_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
     apps_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-    apps_table.setColumnWidth(2, 100)
+    apps_table.setColumnWidth(2, 75)
     layout.addWidget(apps_table)
 
     # Section 2: AdditionalDepots (Depots)
     layout.addWidget(section_title("Depots Registered (AdditionalDepots)", ac))
-    depots_table = _make_table(["Depot ID", "Name / Description", "config.yaml"], ac)
+    depots_table = _make_table(["Depot ID", "Depot names", "Config"], ac)
     depots_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
     depots_table.setColumnWidth(0, 110)
     depots_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
     depots_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-    depots_table.setColumnWidth(2, 100)
+    depots_table.setColumnWidth(2, 75)
     layout.addWidget(depots_table)
 
     # Section 3: DecryptionKeys (Keys)
     layout.addWidget(section_title("AES Decryption Keys (DecryptionKeys)", ac))
-    keys_table = _make_table(["Target ID", "AES Key", "config.yaml", "Local"], ac)
+    keys_table = _make_table(["Target ID", "AES keys", "Config", "Local"], ac)
     keys_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
     keys_table.setColumnWidth(0, 110)
     keys_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
     keys_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-    keys_table.setColumnWidth(2, 100)
+    keys_table.setColumnWidth(2, 75)
     keys_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-    keys_table.setColumnWidth(3, 100)
+    keys_table.setColumnWidth(3, 75)
     layout.addWidget(keys_table)
 
-    # Bottom Actions Bar
+    # Status Label
+    status_lbl = QLabel("")
+    status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(status_lbl)
+
+    # Bottom Actions Bar: 3 buttons filling the bar
     btn_bar = QFrame()
     btn_bar.setStyleSheet("background: transparent; border: none;")
     bar_lay = QHBoxLayout(btn_bar)
-    bar_lay.setContentsMargins(0, 8, 0, 0)
+    bar_lay.setContentsMargins(0, 4, 0, 0)
     bar_lay.setSpacing(10)
 
-    status_lbl = QLabel("")
-    status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
-    bar_lay.addWidget(status_lbl)
-    bar_lay.addStretch()
-
     refetch_btn = QPushButton("Refetch")
-    refetch_btn.setFixedHeight(30)
+    refetch_btn.setFixedHeight(34)
     refetch_btn.setStyleSheet("""
         QPushButton {
             background-color: rgba(255, 255, 255, 0.08);
             color: #FFFFFF;
             border: 1px solid rgba(255, 255, 255, 0.15);
             border-radius: 6px;
-            padding: 0 16px;
             font-size: 9pt;
             font-weight: 500;
         }
@@ -227,15 +237,45 @@ def init_depots_tab(dialog) -> None:
         }
     """)
 
-    reinject_btn = QPushButton("Reinject")
-    reinject_btn.setFixedHeight(30)
-    reinject_btn.setStyleSheet(f"""
+    unlock_btn = QPushButton("Unlock")
+    unlock_btn.setFixedHeight(34)
+    unlock_btn_style_locked = """
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.08);
+            color: #FFFFFF;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            font-size: 9pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.14);
+            border-color: rgba(255, 255, 255, 0.25);
+        }
+    """
+    unlock_btn_style_unlocked = """
+        QPushButton {
+            background-color: rgba(255, 152, 0, 0.18);
+            color: #ffb74d;
+            border: 1px solid rgba(255, 152, 0, 0.45);
+            border-radius: 6px;
+            font-size: 9pt;
+            font-weight: bold;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 152, 0, 0.26);
+        }
+    """
+    unlock_btn.setStyleSheet(unlock_btn_style_locked)
+
+    sync_btn = QPushButton("Sync")
+    sync_btn.setFixedHeight(34)
+    sync_btn.setStyleSheet(f"""
         QPushButton {{
             background-color: {ac};
             color: #000000;
             border: none;
             border-radius: 6px;
-            padding: 0 18px;
             font-size: 9pt;
             font-weight: bold;
         }}
@@ -248,8 +288,9 @@ def init_depots_tab(dialog) -> None:
         }}
     """)
 
-    bar_lay.addWidget(refetch_btn)
-    bar_lay.addWidget(reinject_btn)
+    bar_lay.addWidget(refetch_btn, 1)
+    bar_lay.addWidget(unlock_btn, 1)
+    bar_lay.addWidget(sync_btn, 1)
     layout.addWidget(btn_bar)
 
     scroll.setWidget(content_widget)
@@ -459,8 +500,8 @@ def init_depots_tab(dialog) -> None:
             apps_table.setItem(row, 1, desc_item)
 
             is_live = item["id"] in live_apps
-            badge = _make_badge("Live" if is_live else "Missing", is_live)
-            apps_table.setCellWidget(row, 2, badge)
+            indicator = _make_indicator(is_live=is_live)
+            apps_table.setCellWidget(row, 2, indicator)
 
         _set_table_height(apps_table, len(apps))
 
@@ -469,17 +510,28 @@ def init_depots_tab(dialog) -> None:
         live_depots = state["live_depots"]
         depots_table.setRowCount(len(depots))
         for row, item in enumerate(depots):
-            id_item = QTableWidgetItem(item["id"])
-            id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            depots_table.setItem(row, 0, id_item)
+            did = item["id"]
+            is_live = did in live_depots
+            is_ignored = did in ignored_depots
 
-            desc_item = QTableWidgetItem(item["desc"])
+            id_item = QTableWidgetItem(did)
+            id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            desc_txt = item["desc"]
+            if is_ignored:
+                desc_txt = f"{desc_txt} (Ignored)"
+            desc_item = QTableWidgetItem(desc_txt)
             desc_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            if is_ignored:
+                id_item.setForeground(QColor("#e57373"))
+                desc_item.setForeground(QColor("#e57373"))
+
+            depots_table.setItem(row, 0, id_item)
             depots_table.setItem(row, 1, desc_item)
 
-            is_live = item["id"] in live_depots
-            badge = _make_badge("Live" if is_live else "Missing", is_live)
-            depots_table.setCellWidget(row, 2, badge)
+            indicator = _make_indicator(is_live=is_live, is_ignored=is_ignored)
+            depots_table.setCellWidget(row, 2, indicator)
 
         _set_table_height(depots_table, len(depots))
 
@@ -492,23 +544,77 @@ def init_depots_tab(dialog) -> None:
             keys_table.setItem(row, 0, id_item)
 
             raw_key = item["key"]
-            short_key = f"{raw_key[:8]}..." if len(raw_key) >= 8 else (raw_key or "N/A")
+            short_key = f"{raw_key[:15]}..." if len(raw_key) >= 15 else (raw_key or "N/A")
             key_item = QTableWidgetItem(short_key)
             key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             keys_table.setItem(row, 1, key_item)
 
             is_cfg = item["in_config"]
-            cfg_badge = _make_badge("Live" if is_cfg else "Missing", is_cfg)
-            keys_table.setCellWidget(row, 2, cfg_badge)
+            cfg_ind = _make_indicator(is_live=is_cfg)
+            keys_table.setCellWidget(row, 2, cfg_ind)
 
             is_loc = item["in_local"]
-            loc_badge = _make_badge("Cached" if is_loc else "Missing", is_loc)
-            keys_table.setCellWidget(row, 3, loc_badge)
+            loc_ind = _make_indicator(is_live=is_loc)
+            keys_table.setCellWidget(row, 3, loc_ind)
 
         _set_table_height(keys_table, len(keys))
 
-    def _on_reinject():
-        """Reinject missing AppIDs, depots, and keys specifically for this game into config.yaml."""
+    def _on_depot_cell_clicked(row: int, _col: int):
+        """Toggle missing depot between included and ignored when in unlock mode."""
+        nonlocal is_unlocked
+        if not is_unlocked:
+            return
+        state = _collect_state()
+        depots = state["depots"]
+        if row < 0 or row >= len(depots):
+            return
+        item = depots[row]
+        did = item["id"]
+
+        # Only missing depots can be toggled
+        if did in state["live_depots"]:
+            return
+
+        if did in ignored_depots:
+            ignored_depots.remove(did)
+            status_lbl.setText(f"Depot {did} marked for injection.")
+        else:
+            ignored_depots.add(did)
+            status_lbl.setText(f"Depot {did} marked as ignored (will not be injected).")
+
+        sync_btn.setText("Sync Changes")
+        _refresh_ui()
+
+    depots_table.cellClicked.connect(_on_depot_cell_clicked)
+
+    def _on_unlock():
+        """Unlock custom depot selection after confirmation dialog."""
+        nonlocal is_unlocked
+        if not is_unlocked:
+            reply = QMessageBox.warning(
+                dialog,
+                "Advanced Configuration",
+                "Modifying depot selection is intended for advanced users only.\n\n"
+                "Excluding required depots or keys may prevent Steam from downloading or launching the game properly.\n\n"
+                "Do you want to unlock custom depot selection?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                is_unlocked = True
+                unlock_btn.setText("Unlocked")
+                unlock_btn.setStyleSheet(unlock_btn_style_unlocked)
+                status_lbl.setText("Custom depot selection unlocked. Click missing depots to toggle/ignore.")
+                _refresh_ui()
+        else:
+            is_unlocked = False
+            unlock_btn.setText("Unlock")
+            unlock_btn.setStyleSheet(unlock_btn_style_locked)
+            status_lbl.setText("Depot selection locked.")
+            _refresh_ui()
+
+    def _on_sync():
+        """Sync missing AppIDs, non-ignored depots, and keys specifically for this game into config.yaml."""
         state = _collect_state()
         cfg_path = get_user_config_path()
         if not cfg_path.exists():
@@ -529,10 +635,12 @@ def init_depots_tab(dialog) -> None:
                     editor.add_app(item["id"], comment=item["desc"])
                     added_apps += 1
 
-            # 2. Depots (only keyed depots belonging to this game)
+            # 2. Depots (only keyed depots belonging to this game, excluding ignored depots)
             valid_keys = set(item["id"] for item in state["keys"] if item["key"])
             for item in state["depots"]:
                 did = item["id"]
+                if did in ignored_depots:
+                    continue  # User explicitly ignored this depot
                 if did not in state["live_depots"] and did in valid_keys:
                     comment = f"{game_name} ({did})"
                     editor.add_depot(did, comment=comment)
@@ -549,16 +657,18 @@ def init_depots_tab(dialog) -> None:
 
         if editor.has_changes:
             SLSBridge.notify_reload()
-            status_lbl.setText(f"Injected: {added_apps} app(s), {added_depots} depot(s), {added_keys} key(s).")
+            status_lbl.setText(f"Synced: {added_apps} app(s), {added_depots} depot(s), {added_keys} key(s).")
         else:
-            status_lbl.setText("All items already live in config.yaml.")
+            status_lbl.setText("All eligible items are already live in Config.")
 
+        sync_btn.setText("Sync")
         _refresh_ui()
 
     def _on_refetch():
         """Refetch fresh Lua metadata and keys from Hubcap API."""
         refetch_btn.setEnabled(False)
-        reinject_btn.setEnabled(False)
+        unlock_btn.setEnabled(False)
+        sync_btn.setEnabled(False)
         status_lbl.setText("Refetching metadata from Hubcap...")
 
         bridge = _WorkerBridge()
@@ -594,7 +704,8 @@ def init_depots_tab(dialog) -> None:
 
         def _on_done(success: bool, msg: str):
             refetch_btn.setEnabled(True)
-            reinject_btn.setEnabled(True)
+            unlock_btn.setEnabled(True)
+            sync_btn.setEnabled(True)
             status_lbl.setText(msg)
             _refresh_ui()
 
@@ -602,7 +713,8 @@ def init_depots_tab(dialog) -> None:
         threading.Thread(target=_worker, daemon=True).start()
 
     refetch_btn.clicked.connect(_on_refetch)
-    reinject_btn.clicked.connect(_on_reinject)
+    unlock_btn.clicked.connect(_on_unlock)
+    sync_btn.clicked.connect(_on_sync)
 
     # Initial load
     _refresh_ui()
