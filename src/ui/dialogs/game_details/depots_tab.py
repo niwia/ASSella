@@ -2,7 +2,7 @@
 Depots tab implementation for GameDetailsDialogV2.
 Modular inspector and configuration viewer for AT0-M / Native Steam mode games.
 Displays real-time status of AdditionalApps, AdditionalDepots, and DecryptionKeys
-with live/missing verification and in-place reinject/refetch controls.
+specifically for the current game, with live/missing verification and in-place reinject/refetch controls.
 """
 
 import logging
@@ -25,7 +25,6 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QAbstractItemView,
-    QApplication,
 )
 
 from ui.dialogs.game_details.hero_header import section_title
@@ -36,11 +35,16 @@ from utils.yaml_config_manager import (
     get_decryption_keys,
     batch_config_edit,
     ensure_plugins_enabled,
+    _get_section_bounds,
 )
 from utils.sls_bridge import SLSBridge
-from utils.plugin_games import SHARED_REDISTS
+from utils.plugin_games import SHARED_REDISTS, load_plugin_library
+from ui.assets import DEPOT_BLACKLIST
 
 logger = logging.getLogger(__name__)
+
+# Unified set of shared redistributable depots across Steam
+ALL_SHARED_REDISTS = SHARED_REDISTS | {str(d) for d in DEPOT_BLACKLIST}
 
 
 class _WorkerBridge(QObject):
@@ -48,16 +52,17 @@ class _WorkerBridge(QObject):
 
 
 def _make_badge(text: str, is_positive: bool) -> QWidget:
-    """Create a clean status badge without icons or dots."""
+    """Create a fixed-size status badge with ample breathing room to prevent clipping."""
     container = QWidget()
     container.setStyleSheet("background: transparent;")
     h_lay = QHBoxLayout(container)
-    h_lay.setContentsMargins(4, 2, 4, 2)
+    h_lay.setContentsMargins(0, 0, 0, 0)
     h_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
     lbl = QLabel(text)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lbl.setFixedHeight(22)
+    lbl.setFixedWidth(74)
 
     if is_positive:
         lbl.setStyleSheet("""
@@ -66,7 +71,6 @@ def _make_badge(text: str, is_positive: bool) -> QWidget:
                 color: #81c784;
                 border: 1px solid rgba(76, 175, 80, 0.35);
                 border-radius: 4px;
-                padding: 0px 10px;
                 font-size: 8.5pt;
                 font-weight: bold;
             }
@@ -78,7 +82,6 @@ def _make_badge(text: str, is_positive: bool) -> QWidget:
                 color: #ffb74d;
                 border: 1px solid rgba(255, 152, 0, 0.35);
                 border-radius: 4px;
-                padding: 0px 10px;
                 font-size: 8.5pt;
                 font-weight: bold;
             }
@@ -99,6 +102,8 @@ def _make_table(columns: List[str], accent_color: str) -> QTableWidget:
     tbl.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     tbl.setShowGrid(False)
     tbl.setAlternatingRowColors(True)
+    tbl.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     tbl.setStyleSheet(f"""
         QTableWidget {{
@@ -111,7 +116,7 @@ def _make_table(columns: List[str], accent_color: str) -> QTableWidget:
             font-size: 9pt;
         }}
         QTableWidget::item {{
-            padding: 6px 10px;
+            padding: 4px 8px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.03);
         }}
         QTableWidget::item:selected {{
@@ -129,6 +134,15 @@ def _make_table(columns: List[str], accent_color: str) -> QTableWidget:
         }}
     """)
     return tbl
+
+
+def _set_table_height(tbl: QTableWidget, row_count: int) -> None:
+    """Set exact height to display all rows without internal scrollbar or clipping."""
+    header_h = 32
+    row_h = 32
+    padding = 8
+    total_h = header_h + (max(1, row_count) * row_h) + padding
+    tbl.setFixedHeight(total_h)
 
 
 def init_depots_tab(dialog) -> None:
@@ -149,26 +163,33 @@ def init_depots_tab(dialog) -> None:
     # Section 1: AdditionalApps (AppIDs & DLCs)
     layout.addWidget(section_title("AppIDs & Licenses (AdditionalApps)", ac))
     apps_table = _make_table(["AppID", "Type / Description", "config.yaml"], ac)
-    apps_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+    apps_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+    apps_table.setColumnWidth(0, 110)
     apps_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-    apps_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+    apps_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+    apps_table.setColumnWidth(2, 100)
     layout.addWidget(apps_table)
 
     # Section 2: AdditionalDepots (Depots)
     layout.addWidget(section_title("Depots Registered (AdditionalDepots)", ac))
     depots_table = _make_table(["Depot ID", "Name / Description", "config.yaml"], ac)
-    depots_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+    depots_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+    depots_table.setColumnWidth(0, 110)
     depots_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-    depots_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+    depots_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+    depots_table.setColumnWidth(2, 100)
     layout.addWidget(depots_table)
 
     # Section 3: DecryptionKeys (Keys)
     layout.addWidget(section_title("AES Decryption Keys (DecryptionKeys)", ac))
     keys_table = _make_table(["Target ID", "AES Key", "config.yaml", "Local"], ac)
-    keys_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+    keys_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+    keys_table.setColumnWidth(0, 110)
     keys_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-    keys_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-    keys_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+    keys_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+    keys_table.setColumnWidth(2, 100)
+    keys_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+    keys_table.setColumnWidth(3, 100)
     layout.addWidget(keys_table)
 
     # Bottom Actions Bar
@@ -235,18 +256,28 @@ def init_depots_tab(dialog) -> None:
     dialog.stacked.addWidget(scroll)
 
     def _collect_state() -> Dict[str, Any]:
-        """Collect and cross-reference data from config.yaml, SQLite, cached lua, and game_data."""
+        """Collect and cross-reference data strictly for THIS game."""
         cfg_path = get_user_config_path()
         live_apps = set(get_additional_apps(cfg_path)) if cfg_path.exists() else set()
         live_depots = set(get_additional_depots(cfg_path)) if cfg_path.exists() else set()
         live_keys = get_decryption_keys(cfg_path) if cfg_path.exists() else {}
 
-        # Local SQLite depot keys
+        # 1. Plugin Library record for THIS game
+        plugin_lib = load_plugin_library()
+        game_record = plugin_lib.get(appid_str, {})
+        game_name = dialog.game_data.get("game_name") or game_record.get("name") or f"App {appid_str}"
+
+        plugin_depots = {str(d) for d in game_record.get("depots", [])}
+        plugin_keys = {str(d): str(k).lower() for d, k in game_record.get("keys", {}).items()}
+        plugin_depot_names = {str(d): str(n) for d, n in game_record.get("depot_names", {}).items()}
+        plugin_dlcs = {str(d) for d in game_record.get("dlc_appids", [])}
+
+        # 2. Local SQLite depot keys for THIS appid
         from managers.depot_key_manager import DepotKeyManager
         dkm = DepotKeyManager.get_instance()
-        local_db_keys = dkm.get_keys_for_app(appid_str) or {}
+        local_db_keys = {str(d): str(k).lower() for d, k in (dkm.get_keys_for_app(appid_str) or {}).items()}
 
-        # Cached Lua parsing
+        # 3. Cached Lua parsing for THIS game
         from utils.helpers import get_base_path
         cached_lua_path = Path(get_base_path()) / "cached_luas" / f"{appid_str}.lua"
         lua_keys: Dict[str, str] = {}
@@ -259,18 +290,19 @@ def init_depots_tab(dialog) -> None:
                 txt = cached_lua_path.read_text(encoding="utf-8", errors="ignore")
                 for line in txt.splitlines():
                     if "blacklisted" in line.lower() and "depot" in line.lower():
-                        # Extract blacklisted depot numbers
                         for num in re.findall(r"\b(\d{4,9})\b", line):
                             blacklisted_depots.add(num)
 
                 # addappid keys
                 for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', txt):
                     did, key = m.group(1), m.group(2)
-                    lua_keys[did] = key.lower()
+                    lua_keys[str(did)] = key.lower()
 
                 from core.tasks.process_zip_task import ProcessZipTask
                 parsed: Dict[str, Any] = {}
                 ProcessZipTask._parse_lua(txt, parsed)
+                if parsed.get("app_key"):
+                    lua_keys[appid_str] = parsed["app_key"].lower()
                 if parsed.get("dlcs"):
                     for dlc_id, dlc_name in parsed["dlcs"].items():
                         lua_dlcs[str(dlc_id)] = str(dlc_name)
@@ -285,7 +317,7 @@ def init_depots_tab(dialog) -> None:
             except Exception as e:
                 logger.debug(f"[DepotsTab] Error parsing cached Lua: {e}")
 
-        # Merge game_data metadata
+        # 4. Merge game_data metadata
         gd = dialog.game_data or {}
         gd_dlcs = gd.get("dlcs") or {}
         for dlc_id, dlc_desc in gd_dlcs.items():
@@ -301,48 +333,101 @@ def init_depots_tab(dialog) -> None:
                 if k and len(str(k)) == 64:
                     lua_keys.setdefault(d_str, str(k).lower())
 
-        # Compile unified keys map
-        all_keys: Dict[str, str] = {}
-        all_keys.update(local_db_keys)
-        all_keys.update(lua_keys)
+        # 5. Check config.yaml entries specifically tagged with this game's name or AppID
+        tagged_depots_from_config: Set[str] = set()
+        tagged_keys_from_config: Dict[str, str] = {}
+        if cfg_path.exists():
+            try:
+                cfg_text = cfg_path.read_text(encoding="utf-8", errors="ignore")
+                dep_bounds = _get_section_bounds(cfg_text, "AdditionalDepots")
+                if dep_bounds:
+                    sec_dep = cfg_text[dep_bounds[1]:dep_bounds[2]]
+                    for line in sec_dep.splitlines():
+                        m = re.match(r"^[ \t]*-[ \t]*(\d+)[ \t]*(?:#[ \t]*(.*))?$", line)
+                        if m:
+                            did, comment = m.group(1), (m.group(2) or "")
+                            if (game_name and game_name.lower() in comment.lower()) or appid_str in comment:
+                                tagged_depots_from_config.add(did)
 
-        # Build AppIDs list
-        game_name = gd.get("game_name") or f"App {appid_str}"
+                key_bounds = _get_section_bounds(cfg_text, "DecryptionKeys")
+                if key_bounds:
+                    sec_key = cfg_text[key_bounds[1]:key_bounds[2]]
+                    for line in sec_key.splitlines():
+                        m = re.match(r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*['\"]?([a-fA-F0-9]{64})['\"]?[ \t]*(?:#[ \t]*(.*))?$", line)
+                        if m:
+                            did, kval, comment = m.group(1), m.group(2), (m.group(3) or "")
+                            if (game_name and game_name.lower() in comment.lower()) or appid_str in comment:
+                                tagged_keys_from_config[did] = kval.lower()
+            except Exception as e:
+                logger.debug(f"[DepotsTab] Error reading tagged config comments: {e}")
+
+        # Compile game-specific keys map (strictly excluding common shared redists)
+        game_keys: Dict[str, str] = {}
+        game_keys.update(local_db_keys)
+        game_keys.update(lua_keys)
+        game_keys.update(plugin_keys)
+        game_keys.update(tagged_keys_from_config)
+        game_keys = {d: k for d, k in game_keys.items() if d not in ALL_SHARED_REDISTS}
+
+        # DLC AppIDs set
+        dlc_id_set = set(lua_dlcs.keys()) | plugin_dlcs
+        dlc_id_set.discard(appid_str)
+
+        # Build AppIDs list: Base AppID + DLC AppIDs
         apps_list = [{"id": appid_str, "desc": f"{game_name} (Base)", "is_base": True}]
-        for dlc_id, dlc_name in sorted(lua_dlcs.items(), key=lambda x: x[0]):
-            if dlc_id != appid_str:
-                apps_list.append({"id": dlc_id, "desc": f"[DLC] {dlc_name}", "is_base": False})
+        for dlc_id in sorted(dlc_id_set, key=lambda x: int(x) if x.isdigit() else 0):
+            desc = lua_dlcs.get(dlc_id) or gd_dlcs.get(dlc_id) or f"DLC {dlc_id}"
+            apps_list.append({"id": dlc_id, "desc": f"[DLC] {desc}", "is_base": False})
 
-        # Build Depots list (Only depots that have keys or are shared redists, excluding AppIDs)
-        valid_key_depots = set(all_keys.keys()) | SHARED_REDISTS
+        # Build Depots list for THIS GAME ONLY:
+        # Candidate depots known to belong to this game (excluding shared redists, base appid, DLCs)
+        game_depots_set = (
+            set(lua_depots.keys())
+            | plugin_depots
+            | set(game_keys.keys())
+            | tagged_depots_from_config
+        ) - ALL_SHARED_REDISTS - {appid_str} - dlc_id_set
+
+        valid_key_depots = set(game_keys.keys())
         depots_list = []
-        all_candidate_depots = set(lua_depots.keys()) | set(all_keys.keys()) | set(live_depots)
-        dlc_id_set = set(lua_dlcs.keys())
-
-        for d in sorted(all_candidate_depots, key=lambda x: int(x) if x.isdigit() else 0):
-            if d == appid_str or d in dlc_id_set:
-                continue
-            if d in blacklisted_depots and d not in live_depots and d not in all_keys:
+        for d in sorted(game_depots_set, key=lambda x: int(x) if x.isdigit() else 0):
+            if d in blacklisted_depots and d not in live_depots and d not in valid_key_depots:
                 continue  # Blacklisted without keys
-            desc = lua_depots.get(d, "")
-            if not desc and d in SHARED_REDISTS:
-                desc = "Steamworks Shared"
+            desc = (
+                plugin_depot_names.get(d)
+                or lua_depots.get(d)
+                or (gd_depots.get(d, {}).get("desc") if isinstance(gd_depots.get(d), dict) else "")
+                or f"Depot {d}"
+            )
             depots_list.append({
                 "id": d,
-                "desc": desc or f"Depot {d}",
+                "desc": desc,
                 "has_key": (d in valid_key_depots),
             })
 
-        # Build Keys list
+        # Build Keys list for THIS GAME ONLY:
+        # Includes Root AppKey (if available) + this game's depot keys
         keys_list = []
-        all_key_targets = sorted(set(all_keys.keys()) | set(live_keys.keys()), key=lambda x: int(x) if x.isdigit() else 0)
-        for target_id in all_key_targets:
-            key_val = all_keys.get(target_id) or live_keys.get(target_id) or ""
+        if appid_str in game_keys or appid_str in live_keys:
+            root_k = game_keys.get(appid_str) or live_keys.get(appid_str) or ""
             keys_list.append({
-                "id": target_id,
-                "key": key_val,
-                "in_config": (target_id in live_keys),
-                "in_local": bool(target_id in local_db_keys or target_id in lua_keys),
+                "id": appid_str,
+                "key": root_k,
+                "is_appkey": True,
+                "in_config": (appid_str in live_keys),
+                "in_local": bool(appid_str in local_db_keys or appid_str in lua_keys or appid_str in plugin_keys),
+            })
+
+        for d in sorted(game_depots_set, key=lambda x: int(x) if x.isdigit() else 0):
+            key_val = game_keys.get(d) or (live_keys.get(d) if d in tagged_depots_from_config else "")
+            if not key_val and d not in game_keys and d not in live_keys:
+                continue
+            keys_list.append({
+                "id": d,
+                "key": key_val or live_keys.get(d, ""),
+                "is_appkey": False,
+                "in_config": (d in live_keys),
+                "in_local": bool(d in local_db_keys or d in lua_keys or d in plugin_keys),
             })
 
         return {
@@ -377,7 +462,7 @@ def init_depots_tab(dialog) -> None:
             badge = _make_badge("Live" if is_live else "Missing", is_live)
             apps_table.setCellWidget(row, 2, badge)
 
-        apps_table.setFixedHeight(max(70, min(240, (len(apps) * 32) + 36)))
+        _set_table_height(apps_table, len(apps))
 
         # 2. Populate AdditionalDepots Table
         depots = state["depots"]
@@ -396,7 +481,7 @@ def init_depots_tab(dialog) -> None:
             badge = _make_badge("Live" if is_live else "Missing", is_live)
             depots_table.setCellWidget(row, 2, badge)
 
-        depots_table.setFixedHeight(max(70, min(240, (len(depots) * 32) + 36)))
+        _set_table_height(depots_table, len(depots))
 
         # 3. Populate DecryptionKeys Table
         keys = state["keys"]
@@ -420,10 +505,10 @@ def init_depots_tab(dialog) -> None:
             loc_badge = _make_badge("Cached" if is_loc else "Missing", is_loc)
             keys_table.setCellWidget(row, 3, loc_badge)
 
-        keys_table.setFixedHeight(max(70, min(260, (len(keys) * 32) + 36)))
+        _set_table_height(keys_table, len(keys))
 
     def _on_reinject():
-        """Reinject missing AppIDs, depots, and keys into config.yaml."""
+        """Reinject missing AppIDs, depots, and keys specifically for this game into config.yaml."""
         state = _collect_state()
         cfg_path = get_user_config_path()
         if not cfg_path.exists():
@@ -444,12 +529,12 @@ def init_depots_tab(dialog) -> None:
                     editor.add_app(item["id"], comment=item["desc"])
                     added_apps += 1
 
-            # 2. Depots (only keyed depots or shared redists)
-            valid_keys = set(item["id"] for item in state["keys"] if item["key"]) | SHARED_REDISTS
+            # 2. Depots (only keyed depots belonging to this game)
+            valid_keys = set(item["id"] for item in state["keys"] if item["key"])
             for item in state["depots"]:
                 did = item["id"]
                 if did not in state["live_depots"] and did in valid_keys:
-                    comment = "Steamworks Shared" if did in SHARED_REDISTS else f"{game_name} ({did})"
+                    comment = f"{game_name} ({did})"
                     editor.add_depot(did, comment=comment)
                     added_depots += 1
 
