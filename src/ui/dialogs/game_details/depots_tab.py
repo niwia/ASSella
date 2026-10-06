@@ -2,7 +2,7 @@
 Depots tab implementation for GameDetailsDialogV2.
 Modular inspector and configuration viewer for AT0-M / Native Steam mode games.
 Displays real-time status of AdditionalApps, AdditionalDepots, and DecryptionKeys
-specifically for the current game, with circular indicators and unlockable custom depot selection.
+specifically for the current game, with sideways switch toggles and unlockable custom editing.
 """
 
 import logging
@@ -12,8 +12,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from PyQt6.QtCore import Qt, QObject, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtProperty, QPropertyAnimation, QEasingCurve
+from PyQt6.QtGui import QColor, QPainter, QBrush, QPen
 from PyQt6.QtWidgets import (
     QWidget,
     QLabel,
@@ -53,38 +53,152 @@ class _WorkerBridge(QObject):
     finished = pyqtSignal(bool, str)
 
 
-def _make_indicator(is_live: bool, is_ignored: bool = False) -> QWidget:
-    """Create a sleek, non-interactive round status indicator (green if live, red if ignored, nothing if missing)."""
+class MiniSwitchToggle(QWidget):
+    """
+    Minimal sideways switch toggle widget.
+    Turns Green (#4CAF50) when checked (enabled) and Red (#E53935) when unchecked (disabled).
+    Knob slides smoothly sideways with cubic easing.
+    In read-only mode (locked), user interaction is disabled.
+    """
+    toggled = pyqtSignal(bool)
+
+    def __init__(self, checked: bool = False, read_only: bool = True, parent=None):
+        super().__init__(parent)
+        self._checked = checked
+        self._read_only = read_only
+        self._hovered = False
+        self.setFixedSize(36, 18)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if not read_only else Qt.CursorShape.ArrowCursor)
+
+        # Knob slide range: unchecked = 2.0 (left), checked = 20.0 (right)
+        self._circle_pos = 20.0 if checked else 2.0
+        self._anim = QPropertyAnimation(self, b"circle_pos", self)
+        self._anim.setDuration(120)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+
+    @pyqtProperty(float)
+    def circle_pos(self) -> float:
+        return self._circle_pos
+
+    @circle_pos.setter
+    def circle_pos(self, pos: float) -> None:
+        self._circle_pos = pos
+        self.update()
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def setChecked(self, checked: bool, animate: bool = True) -> None:
+        if self._checked != checked:
+            self._checked = checked
+            target = 20.0 if checked else 2.0
+            if animate:
+                self._anim.stop()
+                self._anim.setStartValue(self._circle_pos)
+                self._anim.setEndValue(target)
+                self._anim.start()
+            else:
+                self._circle_pos = target
+                self.update()
+            self.toggled.emit(self._checked)
+
+    def setReadOnly(self, read_only: bool) -> None:
+        self._read_only = read_only
+        self.setCursor(Qt.CursorShape.PointingHandCursor if not read_only else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def isReadOnly(self) -> bool:
+        return self._read_only
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if not self._read_only:
+                self.setChecked(not self._checked)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        radius = h / 2.0
+
+        # Background track: Green if checked, Red if unchecked
+        track_color = QColor("#4CAF50") if self._checked else QColor("#E53935")
+        if self._read_only:
+            track_color.setAlpha(190)
+        else:
+            track_color.setAlpha(255)
+
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(track_color))
+        p.drawRoundedRect(0, 0, w, h, radius, radius)
+
+        # Subtle highlight border when hovering in interactive mode
+        if self._hovered and not self._read_only:
+            p.setPen(QPen(QColor(255, 255, 255, 120), 1.5))
+            p.drawRoundedRect(1, 1, w - 2, h - 2, radius - 1, radius - 1)
+
+        # White knob circle
+        knob_d = 14.0
+        knob_y = (h - knob_d) / 2.0
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor("#FFFFFF")))
+        p.drawEllipse(int(self._circle_pos), int(knob_y), int(knob_d), int(knob_d))
+        p.end()
+
+
+class _ToggleContainer(QWidget):
+    """Container widget to center the switch toggle inside a table cell and forward clicks."""
+    def __init__(self, toggle: MiniSwitchToggle, parent=None):
+        super().__init__(parent)
+        self.toggle = toggle
+        self.setStyleSheet("background: transparent;")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(toggle)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self.toggle.isReadOnly():
+            self.toggle.setChecked(not self.toggle.isChecked())
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+
+def _make_local_indicator(in_local: bool) -> QWidget:
+    """Create a sleek, non-interactive indicator for Local DB status (never toggleable)."""
     container = QWidget()
     container.setStyleSheet("background: transparent;")
     h_lay = QHBoxLayout(container)
     h_lay.setContentsMargins(0, 0, 0, 0)
     h_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-    if is_live:
+    if in_local:
         dot = QFrame()
-        dot.setFixedSize(14, 14)
+        dot.setFixedSize(10, 10)
         dot.setStyleSheet("""
             QFrame {
-                background-color: #4caf50;
-                border: 2px solid rgba(255, 255, 255, 0.25);
-                border-radius: 7px;
-            }
-        """)
-        h_lay.addWidget(dot)
-    elif is_ignored:
-        dot = QFrame()
-        dot.setFixedSize(14, 14)
-        dot.setStyleSheet("""
-            QFrame {
-                background-color: #f44336;
-                border: 2px solid rgba(255, 255, 255, 0.25);
-                border-radius: 7px;
+                background-color: #4CAF50;
+                border-radius: 5px;
             }
         """)
         h_lay.addWidget(dot)
     else:
-        # Missing: show nothing
         empty = QLabel("")
         h_lay.addWidget(empty)
 
@@ -166,9 +280,11 @@ def init_depots_tab(dialog) -> None:
     ac = dialog.accent_color
     appid_str = str(dialog.appid).strip()
 
-    # Advanced unlock and custom depot exclusion tracking
+    # Advanced unlock and desired states tracking
     is_unlocked = False
-    ignored_depots: Set[str] = set()
+    desired_apps: Dict[str, bool] = {}
+    desired_depots: Dict[str, bool] = {}
+    desired_keys: Dict[str, bool] = {}
 
     # Section 1: AdditionalApps (AppIDs & DLCs)
     layout.addWidget(section_title("AppIDs & Licenses (AdditionalApps)", ac))
@@ -208,7 +324,7 @@ def init_depots_tab(dialog) -> None:
     status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(status_lbl)
 
-    # Bottom Actions Bar: 3 buttons filling the bar
+    # Bottom Actions Bar: 3 buttons evenly filling the bar
     btn_bar = QFrame()
     btn_bar.setStyleSheet("background: transparent; border: none;")
     bar_lay = QHBoxLayout(btn_bar)
@@ -255,15 +371,15 @@ def init_depots_tab(dialog) -> None:
     """
     unlock_btn_style_unlocked = """
         QPushButton {
-            background-color: rgba(255, 152, 0, 0.18);
+            background-color: rgba(255, 152, 0, 0.22);
             color: #ffb74d;
-            border: 1px solid rgba(255, 152, 0, 0.45);
+            border: 1px solid rgba(255, 152, 0, 0.55);
             border-radius: 6px;
             font-size: 9pt;
             font-weight: bold;
         }
         QPushButton:hover {
-            background-color: rgba(255, 152, 0, 0.26);
+            background-color: rgba(255, 152, 0, 0.32);
         }
     """
     unlock_btn.setStyleSheet(unlock_btn_style_locked)
@@ -421,7 +537,6 @@ def init_depots_tab(dialog) -> None:
             apps_list.append({"id": dlc_id, "desc": f"[DLC] {desc}", "is_base": False})
 
         # Build Depots list for THIS GAME ONLY:
-        # Candidate depots known to belong to this game (excluding shared redists, base appid, DLCs)
         game_depots_set = (
             set(lua_depots.keys())
             | plugin_depots
@@ -447,7 +562,6 @@ def init_depots_tab(dialog) -> None:
             })
 
         # Build Keys list for THIS GAME ONLY:
-        # Includes Root AppKey (if available) + this game's depot keys
         keys_list = []
         if appid_str in game_keys or appid_str in live_keys:
             root_k = game_keys.get(appid_str) or live_keys.get(appid_str) or ""
@@ -480,58 +594,122 @@ def init_depots_tab(dialog) -> None:
             "live_keys": live_keys,
             "local_db_keys": local_db_keys,
             "lua_keys": lua_keys,
+            "game_keys": game_keys,
         }
+
+    def _update_sync_button_label(state: Dict[str, Any]) -> None:
+        """Check if desired states differ from live config state and update Sync button text."""
+        is_dirty = False
+        for item in state["apps"]:
+            aid = item["id"]
+            if aid in desired_apps and desired_apps[aid] != (aid in state["live_apps"]):
+                is_dirty = True
+                break
+        if not is_dirty:
+            for item in state["depots"]:
+                did = item["id"]
+                if did in desired_depots and desired_depots[did] != (did in state["live_depots"]):
+                    is_dirty = True
+                    break
+        if not is_dirty:
+            for item in state["keys"]:
+                kid = item["id"]
+                if kid in desired_keys and desired_keys[kid] != item["in_config"]:
+                    is_dirty = True
+                    break
+
+        if is_dirty:
+            sync_btn.setText("Sync Changes")
+        else:
+            sync_btn.setText("Sync")
 
     def _refresh_ui():
         """Populate table widgets with gathered data."""
         state = _collect_state()
+        live_apps = state["live_apps"]
+        live_depots = state["live_depots"]
+        game_keys = state["game_keys"]
+
+        # When locked, desired states always match live config
+        if not is_unlocked:
+            desired_apps.clear()
+            for item in state["apps"]:
+                desired_apps[item["id"]] = item["id"] in live_apps
+            desired_depots.clear()
+            for item in state["depots"]:
+                desired_depots[item["id"]] = item["id"] in live_depots
+            desired_keys.clear()
+            for item in state["keys"]:
+                desired_keys[item["id"]] = item["in_config"]
 
         # 1. Populate AdditionalApps Table
         apps = state["apps"]
-        live_apps = state["live_apps"]
         apps_table.setRowCount(len(apps))
         for row, item in enumerate(apps):
-            id_item = QTableWidgetItem(item["id"])
-            id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            apps_table.setItem(row, 0, id_item)
+            aid = item["id"]
+            is_base = item.get("is_base", False)
+            is_live = aid in live_apps
+            has_matching_key = (not is_base) and (aid in game_keys)
 
+            id_item = QTableWidgetItem(aid)
+            id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             desc_item = QTableWidgetItem(item["desc"])
             desc_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            # Greyscale DLCs whose AppID matches a depot key
+            if has_matching_key:
+                id_item.setForeground(QColor("#777777"))
+                desc_item.setForeground(QColor("#777777"))
+                desc_item.setToolTip("DLC has matching depot key. Decryption is handled via DecryptionKeys.")
+
+            apps_table.setItem(row, 0, id_item)
             apps_table.setItem(row, 1, desc_item)
 
-            is_live = item["id"] in live_apps
-            indicator = _make_indicator(is_live=is_live)
-            apps_table.setCellWidget(row, 2, indicator)
+            # Determine initial checked state:
+            # If in desired_apps, use that; otherwise live state
+            current_checked = desired_apps.get(aid, is_live)
+            toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
+
+            def _make_app_toggle_cb(app_id: str):
+                def _cb(checked: bool):
+                    desired_apps[app_id] = checked
+                    _update_sync_button_label(state)
+                    status_lbl.setText(f"App {app_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
+                return _cb
+
+            toggle.toggled.connect(_make_app_toggle_cb(aid))
+            apps_table.setCellWidget(row, 2, _ToggleContainer(toggle))
 
         _set_table_height(apps_table, len(apps))
 
         # 2. Populate AdditionalDepots Table
         depots = state["depots"]
-        live_depots = state["live_depots"]
         depots_table.setRowCount(len(depots))
         for row, item in enumerate(depots):
             did = item["id"]
             is_live = did in live_depots
-            is_ignored = did in ignored_depots
 
             id_item = QTableWidgetItem(did)
             id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
 
-            desc_txt = item["desc"]
-            if is_ignored:
-                desc_txt = f"{desc_txt} (Ignored)"
-            desc_item = QTableWidgetItem(desc_txt)
+            desc_item = QTableWidgetItem(item["desc"])
             desc_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-
-            if is_ignored:
-                id_item.setForeground(QColor("#e57373"))
-                desc_item.setForeground(QColor("#e57373"))
 
             depots_table.setItem(row, 0, id_item)
             depots_table.setItem(row, 1, desc_item)
 
-            indicator = _make_indicator(is_live=is_live, is_ignored=is_ignored)
-            depots_table.setCellWidget(row, 2, indicator)
+            current_checked = desired_depots.get(did, is_live)
+            toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
+
+            def _make_depot_toggle_cb(depot_id: str):
+                def _cb(checked: bool):
+                    desired_depots[depot_id] = checked
+                    _update_sync_button_label(state)
+                    status_lbl.setText(f"Depot {depot_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
+                return _cb
+
+            toggle.toggled.connect(_make_depot_toggle_cb(did))
+            depots_table.setCellWidget(row, 2, _ToggleContainer(toggle))
 
         _set_table_height(depots_table, len(depots))
 
@@ -539,64 +717,52 @@ def init_depots_tab(dialog) -> None:
         keys = state["keys"]
         keys_table.setRowCount(len(keys))
         for row, item in enumerate(keys):
-            id_item = QTableWidgetItem(item["id"])
+            kid = item["id"]
+            id_item = QTableWidgetItem(kid)
             id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             keys_table.setItem(row, 0, id_item)
 
             raw_key = item["key"]
-            short_key = f"{raw_key[:15]}..." if len(raw_key) >= 15 else (raw_key or "N/A")
+            short_key = f"{raw_key[:15]}..." if len(raw_key) > 15 else (raw_key or "N/A")
             key_item = QTableWidgetItem(short_key)
             key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            if raw_key:
+                key_item.setToolTip(raw_key)
             keys_table.setItem(row, 1, key_item)
 
+            # Config column (switch toggle)
             is_cfg = item["in_config"]
-            cfg_ind = _make_indicator(is_live=is_cfg)
-            keys_table.setCellWidget(row, 2, cfg_ind)
+            current_checked = desired_keys.get(kid, is_cfg)
+            toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
 
+            def _make_key_toggle_cb(key_id: str):
+                def _cb(checked: bool):
+                    desired_keys[key_id] = checked
+                    _update_sync_button_label(state)
+                    status_lbl.setText(f"Key {key_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
+                return _cb
+
+            toggle.toggled.connect(_make_key_toggle_cb(kid))
+            keys_table.setCellWidget(row, 2, _ToggleContainer(toggle))
+
+            # Local column (strictly non-interactive status indicator)
             is_loc = item["in_local"]
-            loc_ind = _make_indicator(is_live=is_loc)
+            loc_ind = _make_local_indicator(in_local=is_loc)
             keys_table.setCellWidget(row, 3, loc_ind)
 
         _set_table_height(keys_table, len(keys))
-
-    def _on_depot_cell_clicked(row: int, _col: int):
-        """Toggle missing depot between included and ignored when in unlock mode."""
-        nonlocal is_unlocked
-        if not is_unlocked:
-            return
-        state = _collect_state()
-        depots = state["depots"]
-        if row < 0 or row >= len(depots):
-            return
-        item = depots[row]
-        did = item["id"]
-
-        # Only missing depots can be toggled
-        if did in state["live_depots"]:
-            return
-
-        if did in ignored_depots:
-            ignored_depots.remove(did)
-            status_lbl.setText(f"Depot {did} marked for injection.")
-        else:
-            ignored_depots.add(did)
-            status_lbl.setText(f"Depot {did} marked as ignored (will not be injected).")
-
-        sync_btn.setText("Sync Changes")
-        _refresh_ui()
-
-    depots_table.cellClicked.connect(_on_depot_cell_clicked)
+        _update_sync_button_label(state)
 
     def _on_unlock():
-        """Unlock custom depot selection after confirmation dialog."""
+        """Unlock custom depot and configuration selection after confirmation dialog."""
         nonlocal is_unlocked
         if not is_unlocked:
             reply = QMessageBox.warning(
                 dialog,
                 "Advanced Configuration",
-                "Modifying depot selection is intended for advanced users only.\n\n"
+                "Modifying depot and configuration entries is intended for advanced users only.\n\n"
                 "Excluding required depots or keys may prevent Steam from downloading or launching the game properly.\n\n"
-                "Do you want to unlock custom depot selection?",
+                "Do you want to unlock custom configuration editing?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -604,17 +770,17 @@ def init_depots_tab(dialog) -> None:
                 is_unlocked = True
                 unlock_btn.setText("Unlocked")
                 unlock_btn.setStyleSheet(unlock_btn_style_unlocked)
-                status_lbl.setText("Custom depot selection unlocked. Click missing depots to toggle/ignore.")
+                status_lbl.setText("Custom editing unlocked. Switch toggles Green (enable) or Red (disable), then Sync.")
                 _refresh_ui()
         else:
             is_unlocked = False
             unlock_btn.setText("Unlock")
             unlock_btn.setStyleSheet(unlock_btn_style_locked)
-            status_lbl.setText("Depot selection locked.")
+            status_lbl.setText("Configuration locked.")
             _refresh_ui()
 
     def _on_sync():
-        """Sync missing AppIDs, non-ignored depots, and keys specifically for this game into config.yaml."""
+        """Sync desired additions and removals specifically for this game into config.yaml."""
         state = _collect_state()
         cfg_path = get_user_config_path()
         if not cfg_path.exists():
@@ -624,42 +790,94 @@ def init_depots_tab(dialog) -> None:
         ensure_plugins_enabled(cfg_path)
         game_name = dialog.game_data.get("game_name") or f"App {appid_str}"
 
-        added_apps = 0
-        added_depots = 0
-        added_keys = 0
+        added_count = 0
+        removed_count = 0
 
         with batch_config_edit(cfg_path) as editor:
-            # 1. Apps
-            for item in state["apps"]:
-                if item["id"] not in state["live_apps"]:
-                    editor.add_app(item["id"], comment=item["desc"])
-                    added_apps += 1
+            if is_unlocked:
+                # Custom unlocked sync: strictly follow user's toggle desired states
+                # 1. Apps (add if desired and missing, remove if unchecked and present)
+                for item in state["apps"]:
+                    aid = item["id"]
+                    desired = desired_apps.get(aid, aid in state["live_apps"])
+                    if desired and aid not in state["live_apps"]:
+                        editor.add_app(aid, comment=item["desc"])
+                        added_count += 1
+                    elif not desired and aid in state["live_apps"]:
+                        editor.remove_app(aid)
+                        removed_count += 1
 
-            # 2. Depots (only keyed depots belonging to this game, excluding ignored depots)
-            valid_keys = set(item["id"] for item in state["keys"] if item["key"])
-            for item in state["depots"]:
-                did = item["id"]
-                if did in ignored_depots:
-                    continue  # User explicitly ignored this depot
-                if did not in state["live_depots"] and did in valid_keys:
-                    comment = f"{game_name} ({did})"
-                    editor.add_depot(did, comment=comment)
-                    added_depots += 1
+                # 2. Depots (add if desired and missing, remove if unchecked and present)
+                for item in state["depots"]:
+                    did = item["id"]
+                    desired = desired_depots.get(did, did in state["live_depots"])
+                    if desired and did not in state["live_depots"]:
+                        comment = f"{game_name} ({did})"
+                        editor.add_depot(did, comment=comment)
+                        added_count += 1
+                    elif not desired and did in state["live_depots"]:
+                        editor.remove_depot(did, check_shared=True, excluding_appid=appid_str)
+                        removed_count += 1
 
-            # 3. Keys
-            for item in state["keys"]:
-                did = item["id"]
-                kval = item["key"]
-                if kval and not item["in_config"]:
-                    comment = f"{game_name} [AppKey]" if did == appid_str else f"{game_name} ({did})"
-                    editor.add_key(did, kval, comment=comment)
-                    added_keys += 1
+                # 3. Keys (add if desired and missing, remove if unchecked and present)
+                for item in state["keys"]:
+                    kid = item["id"]
+                    desired = desired_keys.get(kid, kid in state["live_keys"])
+                    kval = item["key"]
+                    if desired and not item["in_config"]:
+                        if kval:
+                            comment = f"{game_name} [AppKey]" if kid == appid_str else f"{game_name} ({kid})"
+                            editor.add_key(kid, kval, comment=comment)
+                            added_count += 1
+                    elif not desired and item["in_config"]:
+                        editor.remove_key(kid, check_shared=True, excluding_appid=appid_str)
+                        removed_count += 1
+            else:
+                # Standard locked sync: automatically add missing entries
+                # 1. Base AppID
+                if appid_str not in state["live_apps"]:
+                    editor.add_app(appid_str, comment=f"{game_name} (Base)")
+                    added_count += 1
+
+                # DLC AppIDs: ONLY add if NOT greyscaled (DLC does not match a depot key)
+                for item in state["apps"]:
+                    aid = item["id"]
+                    if item.get("is_base"):
+                        continue
+                    if aid in state["game_keys"]:
+                        continue  # Key matches DLC: managed via DecryptionKeys
+                    if aid not in state["live_apps"]:
+                        editor.add_app(aid, comment=item["desc"])
+                        added_count += 1
+
+                # 2. Depots: add missing depots that have valid keys
+                valid_keys = set(item["id"] for item in state["keys"] if item["key"])
+                for item in state["depots"]:
+                    did = item["id"]
+                    if did not in state["live_depots"] and did in valid_keys:
+                        comment = f"{game_name} ({did})"
+                        editor.add_depot(did, comment=comment)
+                        added_count += 1
+
+                # 3. Keys: add missing keys
+                for item in state["keys"]:
+                    kid = item["id"]
+                    kval = item["key"]
+                    if kval and not item["in_config"]:
+                        comment = f"{game_name} [AppKey]" if kid == appid_str else f"{game_name} ({kid})"
+                        editor.add_key(kid, kval, comment=comment)
+                        added_count += 1
 
         if editor.has_changes:
             SLSBridge.notify_reload()
-            status_lbl.setText(f"Synced: {added_apps} app(s), {added_depots} depot(s), {added_keys} key(s).")
+            parts = []
+            if added_count:
+                parts.append(f"{added_count} added")
+            if removed_count:
+                parts.append(f"{removed_count} removed")
+            status_lbl.setText(f"Synced changes: {', '.join(parts)}.")
         else:
-            status_lbl.setText("All eligible items are already live in Config.")
+            status_lbl.setText("Configuration is already up to date.")
 
         sync_btn.setText("Sync")
         _refresh_ui()
