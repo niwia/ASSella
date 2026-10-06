@@ -23,6 +23,7 @@ from ui.dialogs.game_details.hero_header import (
 )
 
 from ui.dialogs.game_details.info_tab import init_info_tab
+from ui.dialogs.game_details.depots_tab import init_depots_tab
 
 from ui.dialogs.game_details.builds_tab import (
     init_builds_tab,
@@ -85,6 +86,7 @@ __all__ = [
     "get_lua_age",
     "get_last_checked",
     "init_info_tab",
+    "init_depots_tab",
     "init_builds_tab",
     "fetch_steamdb_builds_async",
     "on_builds_loaded",

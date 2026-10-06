@@ -298,6 +298,15 @@ def perform_steam_handoff(
     elif is_dlc:
         selected_depots = filter_dlc_depots_only(selected_depots, appid, depots_meta=depots_meta)
 
+    # Exclude any depots without decryption keys (except shared redists) to avoid Steam DepotWithoutKey errors
+    from utils.plugin_games import SHARED_REDISTS
+    valid_keyed_depots = {str(d) for d, k in depot_keys.items() if k and str(d) != str(appid)} | SHARED_REDISTS
+    unkeyed_depots = [str(d) for d in selected_depots if str(d) not in valid_keyed_depots]
+    if unkeyed_depots:
+        _emit(f"Warning: Excluded {len(unkeyed_depots)} depot(s) without keys (e.g. blacklisted/unavailable): {unkeyed_depots}")
+        logger.warning(f"[SteamHandoff] Excluded {len(unkeyed_depots)} unkeyed depot(s) for {appid}: {unkeyed_depots}")
+        selected_depots = [d for d in selected_depots if str(d) in valid_keyed_depots]
+
     # AdditionalDepots gets only actual depots. DecryptionKeys keeps depot keys AND the root AppID key.
     active_keys = {str(d): k for d, k in depot_keys.items()}
     if is_dlc and selected_depots:

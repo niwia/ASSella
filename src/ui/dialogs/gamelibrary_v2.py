@@ -356,18 +356,45 @@ class GameDetailsDialogV2(QDialog):
         tab_bar_layout.setContentsMargins(8, 0, 8, 0)
         tab_bar_layout.setSpacing(2)
 
+        is_atom = bool(
+            self.game_data.get("is_atom")
+            or self.game_data.get("is_vapor")
+            or self.game_data.get("is_plugin_game")
+            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
+        )
+        self._is_atom = is_atom
+
         self._tab_buttons = []
-        self._pages_info = [
-            ("Info", 0),
-            ("Builds", 1),
-            ("Tools", 2),
-            ("Achievements", 3),
-            ("Workshop", 4),
-            ("Tickets", 5),
-        ]
-        self.achievements_page_index = 3
-        self.ws_page_index = 4
-        self._tickets_tab_index = 5
+        if is_atom:
+            self._pages_info = [
+                ("Info", 0),
+                ("Depots", 1),
+                ("Builds", 2),
+                ("Tools", 3),
+                ("Achievements", 4),
+                ("Workshop", 5),
+                ("Tickets", 6),
+            ]
+            self.depots_page_index = 1
+            self.builds_page_index = 2
+            self.achievements_page_index = 4
+            self.ws_page_index = 5
+            self._tickets_tab_index = 6
+        else:
+            self._pages_info = [
+                ("Info", 0),
+                ("Builds", 1),
+                ("Tools", 2),
+                ("Achievements", 3),
+                ("Workshop", 4),
+                ("Tickets", 5),
+            ]
+            self.depots_page_index = None
+            self.builds_page_index = 1
+            self.achievements_page_index = 3
+            self.ws_page_index = 4
+            self._tickets_tab_index = 5
 
         for label, idx in self._pages_info:
             btn = QPushButton(label)
@@ -381,14 +408,7 @@ class GameDetailsDialogV2(QDialog):
             if label == "Workshop":
                 self.ws_tab_btn = btn
                 from utils.dlc_helpers import is_dlc_only_mode
-                is_vapor = bool(
-                    self.game_data.get("is_atom")
-                    or self.game_data.get("is_vapor")
-                    or self.game_data.get("is_plugin_game")
-                    or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-                    or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-                )
-                if is_dlc_only_mode(self.appid) or not self._has_workshop or is_vapor:
+                if is_dlc_only_mode(self.appid) or not self._has_workshop or is_atom:
                     btn.setVisible(False)
 
         tab_bar_layout.addStretch()
@@ -413,6 +433,8 @@ class GameDetailsDialogV2(QDialog):
         self.stacked = QStackedWidget()
         self.stacked.setStyleSheet("background: transparent;")
         self._init_info_tab()
+        if is_atom:
+            self._init_depots_tab()
         self._init_builds_tab()
         self._init_tools_tab()
         self._init_achievements_tab()
@@ -449,7 +471,7 @@ class GameDetailsDialogV2(QDialog):
                     QPushButton:hover {{ color: {self.accent_color}; }}
                 """)
 
-        if index == 1:
+        if hasattr(self, "builds_page_index") and index == self.builds_page_index:
             self._ensure_builds_loaded()
         elif hasattr(self, "achievements_page_index") and index == self.achievements_page_index:
             self._ensure_achievements_loaded()
@@ -785,3 +807,11 @@ class GameDetailsDialogV2(QDialog):
 
     def _delete_installed_ticket(self):
         delete_installed_ticket(self)
+
+    # ──────────────────────────────────────────
+    #  Depots Tab Delegations (AT0-M mode)
+    # ──────────────────────────────────────────
+    def _init_depots_tab(self):
+        from ui.dialogs.game_details.depots_tab import init_depots_tab
+        init_depots_tab(self)
+

@@ -712,20 +712,6 @@ class NativeSteamDownloadTask(QObject):
             else:
                 content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
 
-            # Also ensure all DLC AppIDs for this game are added to AdditionalApps
-            dlcs_dict = (game_data.get("dlcs") or {}) if game_data else {}
-            for dlc_id, dlc_desc in dlcs_dict.items():
-                dlc_id_str = str(dlc_id).strip()
-                if not dlc_id_str or dlc_id_str == appid_str:
-                    continue
-                dlc_label = f"[DLC] {dlc_desc} / {game_name}" if game_name else f"[DLC] {dlc_desc}"
-                cur_bounds = _get_section_bounds(content, "AdditionalApps")
-                if cur_bounds:
-                    if not re.search(rf"^[ \t]*-[ \t]*{re.escape(dlc_id_str)}[ \t]*(?:#[^\r\n]*)?$", content[cur_bounds[1]:cur_bounds[2]], re.MULTILINE):
-                        content = _append_to_additional_apps(content, dlc_id_str, dlc_label, cur_bounds)
-                else:
-                    content = content.rstrip() + f"\n\nAdditionalApps:\n  - {dlc_id_str} # {dlc_label}\n"
-
         # 3. Format AdditionalDepots with descriptive comments
         # Define known shared redistributable depots
         shared_redists = {
@@ -754,6 +740,22 @@ class NativeSteamDownloadTask(QObject):
                 )
             )
             new_depot_ids = [d for d in raw_candidates if d != appid_str and d not in dlc_appids]
+
+        # In AT0-M mode: Only include depots that have decryption keys (or are shared redists)
+        # to prevent Steam "DepotWithoutKey" errors (e.g. blacklisted/missing depots like in 883710)
+        valid_keyed_depots = {str(d) for d, k in depot_keys.items() if k and str(d) != appid_str}
+        filtered_depots = []
+        excluded_missing = []
+        for d in new_depot_ids:
+            if d in shared_redists or d in valid_keyed_depots:
+                filtered_depots.append(d)
+            else:
+                excluded_missing.append(d)
+        if excluded_missing:
+            logger.warning(
+                f"[NativeSteamDL] Excluded {len(excluded_missing)} depot(s) without keys for {appid_str}: {excluded_missing}"
+            )
+        new_depot_ids = filtered_depots
 
         # Parse existing depots and comments
         existing_depots_comments: Dict[str, str] = {}

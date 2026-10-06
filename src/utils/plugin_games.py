@@ -172,6 +172,15 @@ def register_plugin_game(
             if did_str.isdigit() and len(key_str) == 64 and did_str not in clean_dlc_appids:
                 clean_keys[did_str] = key_str
 
+    # Safeguard AT0-M mode: Only include depots that have decryption keys (or are shared redists)
+    valid_depot_keys = set(clean_keys.keys()) | SHARED_REDISTS
+    excluded_unkeyed = [d for d in clean_depots if d not in valid_depot_keys]
+    if excluded_unkeyed:
+        logger.warning(
+            f"[PluginGames] Excluded {len(excluded_unkeyed)} unkeyed depot(s) from AdditionalDepots for {appid_str}: {excluded_unkeyed}"
+        )
+        clean_depots = [d for d in clean_depots if d in valid_depot_keys]
+
     clean_depot_names = {}
     if depot_names:
         for did, dname in depot_names.items():
@@ -273,6 +282,10 @@ def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool
                 # Ensure the game remains in AdditionalApps for ACCELA mode
                 if not target_game.get("dlc_only"):
                     editor.add_app(appid_str, comment=target_game.get("name", ""))
+                # Prune DLC AppIDs so regular ACCELA mode doesn't leave unnecessary DLC AppIDs
+                for dlc_id in target_game.get("dlc_appids", []):
+                    if dlc_id not in remaining_dlc_appids:
+                        editor.remove_app(dlc_id)
             else:
                 # Full unregistration/uninstall: remove from AdditionalApps
                 # 1a. Remove DLC AppIDs from AdditionalApps (DLC-only mode)

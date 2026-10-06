@@ -2516,6 +2516,19 @@ def on_move_to_vapor_clicked(dialog) -> None:
         except Exception as e:
             logger.warning(f"[VaporTransition] Failed to fetch missing keys from Hubcap: {e}")
 
+    # Warn and exclude depots with missing decryption keys (e.g. blacklisted/unavailable in Hubcap)
+    from utils.plugin_games import SHARED_REDISTS
+    unkeyed_depots = [d for d in depot_ids if str(d) not in decryption_keys and str(d) not in SHARED_REDISTS]
+    if unkeyed_depots:
+        logger.warning(f"[VaporTransition] Depots missing decryption keys: {unkeyed_depots}. Excluded to prevent Steam download errors.")
+        QMessageBox.warning(
+            dialog,
+            "Unkeyed Depots Excluded",
+            f"The following depot(s) have no decryption keys available (e.g. blacklisted in Hubcap):\n\n"
+            f"{', '.join(str(d) for d in unkeyed_depots)}\n\n"
+            f"These depots have been excluded so Steam will not fail with DepotWithoutKey.",
+        )
+
     # Register into plugin_library and config.yaml
     register_plugin_game(
         appid=appid,
