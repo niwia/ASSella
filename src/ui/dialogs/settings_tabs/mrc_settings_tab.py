@@ -8,7 +8,7 @@ and provides developer toggles to test one-time dialogs (Welcome screen, TWP, lo
 
 import logging
 import threading
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -47,6 +47,56 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     layout.setSpacing(8)
 
     cfg = MRCConfigManager.load_config()
+
+    from ui.dialogs.settings_tabs.at0m_tab import get_active_download_plugin
+    active_plugin = get_active_download_plugin() or ""
+    active_lower = active_plugin.lower()
+    is_spacetest = ("spacetest" in active_lower) or ("spacebunny" in active_lower)
+
+    # MRC Guard Card (shown when active plugin is not download-1.4.0-spacetest.lua / spacebunny)
+    guard_card, guard_layout = dialog._create_card_frame("MRC Configuration Guard")
+    guard_desc = QLabel(
+        f"<b>MRC Customization Inactive:</b> Active plugin is currently <code>{active_plugin or 'None'}</code>.<br><br>"
+        "Manifest Request Code (MRC) authority hierarchy, secondary rescue routing, and race parameters require "
+        "<b><code>download-1.4.0-spacetest.lua</code></b> (SpaceBunny / SpaceTest). Standard <code>download.lua</code> "
+        "does not read these parameters.<br><br>"
+        "These options are hidden to prevent incompatible configuration overrides."
+    )
+    guard_desc.setStyleSheet("color: rgba(255, 255, 255, 0.75); font-size: 8.5pt;")
+    guard_desc.setWordWrap(True)
+    guard_layout.addWidget(guard_desc)
+
+    goto_atom_btn = QPushButton("Go to at0-m Settings (Deploy SpaceTest)")
+    goto_atom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    goto_atom_btn.setStyleSheet("""
+        QPushButton {
+            background-color: rgba(33, 150, 243, 0.15);
+            color: #64B5F6;
+            border: 1px solid rgba(100, 181, 246, 0.45);
+            border-radius: 6px;
+            padding: 5px 12px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(33, 150, 243, 0.28);
+        }
+    """)
+    def _go_to_atom():
+        for i in range(dialog.tab_widget.count()):
+            if dialog.tab_widget.tabText(i).lower() in ("at0-m", "atom"):
+                dialog.tab_widget.setCurrentIndex(i)
+                break
+    goto_atom_btn.clicked.connect(_go_to_atom)
+    guard_layout.addWidget(goto_atom_btn)
+
+    layout.addWidget(guard_card)
+
+    # Container for Cards 1, 2, 3 and actions_row
+    mrc_box = QWidget()
+    mrc_layout = QVBoxLayout(mrc_box)
+    mrc_layout.setContentsMargins(0, 0, 0, 0)
+    mrc_layout.setSpacing(8)
 
     # -- 1. Provider Hierarchy Card --
     p_card, p_layout = dialog._create_card_frame("MRC Provider Hierarchy (Lua)")
@@ -89,7 +139,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     p_grid.addWidget(dialog.mrc_rescue_combo, 1, 1)
 
     p_layout.addLayout(p_grid)
-    layout.addWidget(p_card)
+    mrc_layout.addWidget(p_card)
 
     # -- 2. Tuning & Race Parameters Card --
     t_card, t_layout = dialog._create_card_frame("Race & Tuning Parameters")
@@ -146,7 +196,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     t_grid.addWidget(dialog.mrc_prov_spin, 1, 3)
 
     t_layout.addLayout(t_grid)
-    layout.addWidget(t_card)
+    mrc_layout.addWidget(t_card)
 
     # -- 3. Actions Row --
     actions_row = QHBoxLayout()
@@ -231,7 +281,28 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     actions_row.addWidget(reset_btn)
     actions_row.addWidget(status_lbl)
     actions_row.addStretch()
-    layout.addLayout(actions_row)
+    mrc_layout.addLayout(actions_row)
+
+    layout.addWidget(mrc_box)
+    mrc_box.setVisible(is_spacetest)
+    guard_card.setVisible(not is_spacetest)
+
+    def _refresh_mrc_guard():
+        cur_act = get_active_download_plugin() or ""
+        cur_low = cur_act.lower()
+        cur_st = ("spacetest" in cur_low) or ("spacebunny" in cur_low)
+        mrc_box.setVisible(cur_st)
+        guard_card.setVisible(not cur_st)
+        if not cur_st:
+            guard_desc.setText(
+                f"<b>MRC Customization Inactive:</b> Active plugin is currently <code>{cur_act or 'None'}</code>.<br><br>"
+                "Manifest Request Code (MRC) authority hierarchy, secondary rescue routing, and race parameters require "
+                "<b><code>download-1.4.0-spacetest.lua</code></b> (SpaceBunny / SpaceTest). Standard <code>download.lua</code> "
+                "does not read these parameters.<br><br>"
+                "These options are hidden to prevent incompatible configuration overrides."
+            )
+
+    tab.showEvent = lambda ev: (_refresh_mrc_guard(), QWidget.showEvent(tab, ev))
 
     settings = get_settings()
 
@@ -343,6 +414,12 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     test_proxy_btn.setEnabled(has_init_text)
     apply_proxy_btn.setEnabled(has_init_text)
 
+    class _ProxyBridge(QObject):
+        sig = pyqtSignal(bool, str, int)
+
+    test_bridge = _ProxyBridge(tab)
+    apply_bridge = _ProxyBridge(tab)
+
     def _on_proxy_url_changed(txt: str):
         valid = bool(txt.strip())
         test_proxy_btn.setEnabled(valid)
@@ -368,6 +445,18 @@ def create_mrc_settings_tab(dialog) -> QWidget:
 
     reset_proxy_btn.clicked.connect(_on_reset_proxy)
 
+    def _on_test_done(ok: bool, msg: str, lat: int):
+        test_proxy_btn.setEnabled(True)
+        apply_proxy_btn.setEnabled(bool(dialog.proxy_url_input.text().strip()))
+        if ok:
+            test_proxy_btn.setStyleSheet(SUCCESS_STYLE)
+            test_proxy_btn.setText(f"OK ({lat}ms) ✓")
+        else:
+            test_proxy_btn.setStyleSheet(FAIL_STYLE)
+            test_proxy_btn.setText(f"Failed ({msg}) ✗")
+
+    test_bridge.sig.connect(_on_test_done)
+
     def _on_test_proxy():
         url = dialog.proxy_url_input.text().strip()
         if not url:
@@ -378,20 +467,36 @@ def create_mrc_settings_tab(dialog) -> QWidget:
 
         def _bg():
             ok, msg, lat = test_gateway_wirecutter(url)
-            def _ui():
-                test_proxy_btn.setEnabled(True)
-                apply_proxy_btn.setEnabled(bool(dialog.proxy_url_input.text().strip()))
-                if ok:
-                    test_proxy_btn.setStyleSheet(SUCCESS_STYLE)
-                    test_proxy_btn.setText(f"OK ({lat}ms) ✓")
-                else:
-                    test_proxy_btn.setStyleSheet(FAIL_STYLE)
-                    test_proxy_btn.setText(f"Failed ({msg}) ✗")
-            QTimer.singleShot(0, _ui)
+            test_bridge.sig.emit(ok, msg, lat)
 
         threading.Thread(target=_bg, daemon=True).start()
 
     test_proxy_btn.clicked.connect(_on_test_proxy)
+
+    def _on_apply_done(ok: bool, msg: str, lat: int):
+        test_proxy_btn.setEnabled(True)
+        apply_proxy_btn.setEnabled(True)
+        url = dialog.proxy_url_input.text().strip()
+        if ok:
+            # Stage 2: Test = Success -> Apply to config
+            if url == get_default_wirecutter_endpoint():
+                settings.remove("wirecutter_url")
+            else:
+                settings.setValue("wirecutter_url", url)
+            settings.sync()
+
+            test_proxy_btn.setStyleSheet(SUCCESS_STYLE)
+            test_proxy_btn.setText(f"OK ({lat}ms) ✓")
+            apply_proxy_btn.setStyleSheet(SUCCESS_STYLE)
+            apply_proxy_btn.setText("Applied ✓")
+        else:
+            # Stage 2: Test = Failed -> Do nothing to settings
+            test_proxy_btn.setStyleSheet(FAIL_STYLE)
+            test_proxy_btn.setText(f"Failed ({msg}) ✗")
+            apply_proxy_btn.setStyleSheet(FAIL_STYLE)
+            apply_proxy_btn.setText("Test Failed (Not Applied) ✗")
+
+    apply_bridge.sig.connect(_on_apply_done)
 
     def _on_apply_proxy():
         url = dialog.proxy_url_input.text().strip()
@@ -405,28 +510,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
 
         def _bg():
             ok, msg, lat = test_gateway_wirecutter(url)
-            def _ui():
-                test_proxy_btn.setEnabled(True)
-                apply_proxy_btn.setEnabled(True)
-                if ok:
-                    # Stage 2: Test = Success -> Apply to config
-                    if url == get_default_wirecutter_endpoint():
-                        settings.remove("wirecutter_url")
-                    else:
-                        settings.setValue("wirecutter_url", url)
-                    settings.sync()
-
-                    test_proxy_btn.setStyleSheet(SUCCESS_STYLE)
-                    test_proxy_btn.setText(f"OK ({lat}ms) ✓")
-                    apply_proxy_btn.setStyleSheet(SUCCESS_STYLE)
-                    apply_proxy_btn.setText("Applied ✓")
-                else:
-                    # Stage 2: Test = Failed -> Do nothing to settings
-                    test_proxy_btn.setStyleSheet(FAIL_STYLE)
-                    test_proxy_btn.setText(f"Failed ({msg}) ✗")
-                    apply_proxy_btn.setStyleSheet(FAIL_STYLE)
-                    apply_proxy_btn.setText("Test Failed (Not Applied) ✗")
-            QTimer.singleShot(0, _ui)
+            apply_bridge.sig.emit(ok, msg, lat)
 
         threading.Thread(target=_bg, daemon=True).start()
 

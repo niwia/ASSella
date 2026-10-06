@@ -448,92 +448,115 @@ class NativeSteamDownloadTask(QObject):
     def _fetch_hubcap_keys(
         self, game_data: Dict[str, Any], appid: str
     ) -> Tuple[Dict[str, str], Dict[str, str]]:
-        """Fetch depot decryption keys and manifest GIDs, prioritizing local cache and DB."""
+        """Fetch depot decryption keys, DLC info, and manifest GIDs, prioritizing local cache and DB."""
         depot_keys: Dict[str, str] = {}
         manifest_gids: Dict[str, str] = {}
+        appid_str = str(appid).strip()
 
-        # 1. From game_data cache
-        for depot_id, depot_info in (game_data.get("depots") or {}).items():
-            if isinstance(depot_info, dict):
-                k = depot_info.get("key") or depot_info.get("decryption_key")
-                if k:
-                    depot_keys[str(depot_id)] = k
-                m = depot_info.get("manifest_id") or depot_info.get("gid")
-                if m:
-                    manifest_gids[str(depot_id)] = str(m)
-        # Capture main AppID decryption key if available
-        if game_data.get("app_key"):
-            depot_keys[str(appid)] = game_data["app_key"]
-        # 2. From DepotKeyManager (SQLite)
+        from utils.helpers import get_base_path
+        from core.tasks.process_zip_task import ProcessZipTask
+        from managers.depot_key_manager import DepotKeyManager
+
+        cached_lua = Path(get_base_path()) / "cached_luas" / f"{appid_str}.lua"
+        lua_txt = None
+
+        # 1. Try reading from cached_luas/{appid}.lua
+        if cached_lua.exists():
+            try:
+                lua_txt = cached_lua.read_text(encoding="utf-8", errors="ignore")
+                logger.info(f"[NativeSteamDL] Using local cached Lua: {cached_lua}")
+            except Exception as e:
+                logger.debug(f"[NativeSteamDL] Error reading cached_luas: {e}")
+
+        # 2. If not cached, fetch manifest from Hubcap API to obtain Lua and keys
+        if not lua_txt:
+            try:
+                from core import morrenus_api
+                logger.info(f"[NativeSteamDL] Resolving Lua metadata from Hubcap API for {appid_str}...")
+                branch = morrenus_api.get_selected_branch(appid_str)
+                zip_path, err = morrenus_api.download_manifest(appid_str, branch=branch)
+                if zip_path and os.path.exists(zip_path):
+                    with zipfile.ZipFile(zip_path, "r") as zf:
+                        lua_files = [f for f in zf.namelist() if f.endswith(".lua")]
+                        manifest_files = [f for f in zf.namelist() if f.endswith(".manifest")]
+
+                        if lua_files:
+                            lua_txt = zf.read(lua_files[0]).decode("utf-8", errors="ignore")
+                            try:
+                                cached_lua.parent.mkdir(parents=True, exist_ok=True)
+                                cached_lua.write_text(lua_txt, encoding="utf-8")
+                                logger.info(f"[NativeSteamDL] Saved Lua to cache: {cached_lua}")
+                            except Exception as e:
+                                logger.debug(f"[NativeSteamDL] Could not save Lua to cache: {e}")
+
+                        for mf in manifest_files:
+                            base = os.path.basename(mf).replace(".manifest", "")
+                            parts = base.split("_")
+                            if len(parts) == 2:
+                                manifest_gids.setdefault(parts[0], parts[1])
+                else:
+                    logger.warning(f"[NativeSteamDL] Hubcap download failed: {err}")
+            except Exception as e:
+                logger.exception(f"[NativeSteamDL] Hubcap fetch error: {e}")
+
+        # 3. Parse Lua if available to extract root app key, DLCs, and depot keys
+        if lua_txt:
+            parsed_gd: Dict[str, Any] = {}
+            try:
+                ProcessZipTask._parse_lua(lua_txt, parsed_gd)
+                if not game_data.get("game_name") and parsed_gd.get("game_name"):
+                    game_data["game_name"] = parsed_gd["game_name"]
+                if parsed_gd.get("app_key"):
+                    game_data["app_key"] = parsed_gd["app_key"]
+                    depot_keys[appid_str] = parsed_gd["app_key"]
+                if parsed_gd.get("dlcs"):
+                    game_data.setdefault("dlcs", {}).update(parsed_gd["dlcs"])
+                if parsed_gd.get("depots"):
+                    game_data.setdefault("depots", {}).update(parsed_gd["depots"])
+                    for d, info in parsed_gd["depots"].items():
+                        if isinstance(info, dict) and info.get("key"):
+                            depot_keys[str(d)] = info["key"]
+                if parsed_gd.get("manifests"):
+                    game_data.setdefault("manifests", {}).update(parsed_gd["manifests"])
+                    for d, gid in parsed_gd["manifests"].items():
+                        manifest_gids.setdefault(str(d), str(gid))
+
+                # Persist to DepotKeyManager (SQLite)
+                try:
+                    dkm = DepotKeyManager.get_instance()
+                    keys_to_save = {str(d): k for d, k in depot_keys.items()}
+                    if keys_to_save:
+                        dkm.save_depot_keys(appid_str, keys_to_save)
+                        logger.info(f"[NativeSteamDL] Persisted {len(keys_to_save)} keys to DepotKeyManager for {appid_str}")
+                except Exception as e:
+                    logger.debug(f"[NativeSteamDL] Error persisting keys to DepotKeyManager: {e}")
+
+            except Exception as e:
+                logger.error(f"[NativeSteamDL] Error parsing Lua content: {e}")
+
+        # 4. Fallback/merge from DepotKeyManager (SQLite) if any keys are missing
         try:
-            from managers.depot_key_manager import DepotKeyManager
             dkm = DepotKeyManager.get_instance()
-            cached_dkm_keys = dkm.get_keys_for_app(appid)
+            cached_dkm_keys = dkm.get_keys_for_app(appid_str)
             if cached_dkm_keys:
                 for d, k in cached_dkm_keys.items():
                     depot_keys.setdefault(str(d), k)
         except Exception as e:
             logger.debug(f"[NativeSteamDL] Error checking DepotKeyManager: {e}")
 
-        # 3. From cached_luas/{appid}.lua
-        try:
-            from utils.helpers import get_base_path
-            from core.tasks.process_zip_task import ProcessZipTask
-            cached_lua = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
-            if cached_lua.exists():
-                lua_txt = cached_lua.read_text(encoding="utf-8", errors="ignore")
-                parsed_gd: Dict[str, Any] = {}
-                ProcessZipTask._parse_lua(lua_txt, parsed_gd)
-                for d, info in (parsed_gd.get("depots") or {}).items():
-                    if isinstance(info, dict) and info.get("key"):
-                        depot_keys.setdefault(str(d), info["key"])
-                if parsed_gd.get("app_key"):
-                    depot_keys.setdefault(str(appid), parsed_gd["app_key"])
-                for d, gid in (parsed_gd.get("manifests") or {}).items():
-                    manifest_gids.setdefault(str(d), str(gid))
-        except Exception as e:
-            logger.debug(f"[NativeSteamDL] Error checking cached_luas: {e}")
+        # 5. Fallback/merge from game_data
+        for depot_id, depot_info in (game_data.get("depots") or {}).items():
+            if isinstance(depot_info, dict):
+                k = depot_info.get("key") or depot_info.get("decryption_key")
+                if k:
+                    depot_keys.setdefault(str(depot_id), k)
+                m = depot_info.get("manifest_id") or depot_info.get("gid")
+                if m:
+                    manifest_gids.setdefault(str(depot_id), str(m))
+        if game_data.get("app_key"):
+            depot_keys.setdefault(appid_str, game_data["app_key"])
 
-        if depot_keys:
-            logger.info(f"[NativeSteamDL] Retrieved {len(depot_keys)} keys from local cache / database")
-            return depot_keys, manifest_gids
-
-        # 4. Fallback to Hubcap API download
-        try:
-            from core import morrenus_api
-            from core.tasks.process_zip_task import ProcessZipTask
-
-            branch = morrenus_api.get_selected_branch(appid)
-            zip_path, err = morrenus_api.download_manifest(appid, branch=branch)
-            if not zip_path or not os.path.exists(zip_path):
-                logger.error(f"[NativeSteamDL] Hubcap download failed: {err}")
-                return depot_keys, manifest_gids
-
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                lua_files = [f for f in zf.namelist() if f.endswith(".lua")]
-                manifest_files = [f for f in zf.namelist() if f.endswith(".manifest")]
-
-                if lua_files:
-                    lua = zf.read(lua_files[0]).decode("utf-8", errors="ignore")
-                    gd: Dict = {}
-                    ProcessZipTask._parse_lua(lua, gd)
-                    for d, info in gd.get("depots", {}).items():
-                        if isinstance(info, dict) and info.get("key"):
-                            depot_keys[str(d)] = info["key"]
-                    if gd.get("app_key"):
-                        depot_keys.setdefault(str(appid), gd["app_key"])
-                    for d, gid in gd.get("manifests", {}).items():
-                        manifest_gids[str(d)] = str(gid)
-
-                for mf in manifest_files:
-                    base = os.path.basename(mf).replace(".manifest", "")
-                    parts = base.split("_")
-                    if len(parts) == 2:
-                        manifest_gids.setdefault(parts[0], parts[1])
-
-        except Exception as e:
-            logger.exception(f"[NativeSteamDL] Hubcap fetch error: {e}")
-
+        logger.info(f"[NativeSteamDL] Resolved {len(depot_keys)} depot keys and {len(game_data.get('dlcs', {}))} DLCs for {appid_str}")
         return depot_keys, manifest_gids
 
     def _deploy_plugin(self, plugins_dir: Path) -> bool:
@@ -688,6 +711,20 @@ class NativeSteamDownloadTask(QObject):
                     content = fixed_content
             else:
                 content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
+
+            # Also ensure all DLC AppIDs for this game are added to AdditionalApps
+            dlcs_dict = (game_data.get("dlcs") or {}) if game_data else {}
+            for dlc_id, dlc_desc in dlcs_dict.items():
+                dlc_id_str = str(dlc_id).strip()
+                if not dlc_id_str or dlc_id_str == appid_str:
+                    continue
+                dlc_label = f"[DLC] {dlc_desc} / {game_name}" if game_name else f"[DLC] {dlc_desc}"
+                cur_bounds = _get_section_bounds(content, "AdditionalApps")
+                if cur_bounds:
+                    if not re.search(rf"^[ \t]*-[ \t]*{re.escape(dlc_id_str)}[ \t]*(?:#[^\r\n]*)?$", content[cur_bounds[1]:cur_bounds[2]], re.MULTILINE):
+                        content = _append_to_additional_apps(content, dlc_id_str, dlc_label, cur_bounds)
+                else:
+                    content = content.rstrip() + f"\n\nAdditionalApps:\n  - {dlc_id_str} # {dlc_label}\n"
 
         # 3. Format AdditionalDepots with descriptive comments
         # Define known shared redistributable depots

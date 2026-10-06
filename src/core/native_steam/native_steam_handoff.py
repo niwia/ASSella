@@ -275,7 +275,10 @@ def perform_steam_handoff(
     depot_keys, manifest_gids = task_helper._fetch_hubcap_keys(game_data, appid)
 
     if not depot_keys:
-        return False, f"No depot keys available for {game_name} ({appid})."
+        return False, f"Cannot proceed with Steam handoff for {game_name} ({appid}): Missing Lua metadata and Hubcap API resolution failed."
+
+    if game_data.get("game_name") and game_name.startswith("App "):
+        game_name = game_data["game_name"]
 
     # Resolve depots if none explicitly selected
     from utils.dlc_helpers import is_dlc_only_mode, filter_dlc_depots_only
