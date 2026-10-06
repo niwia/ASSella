@@ -41,6 +41,16 @@ def create_advanced_tab(dialog) -> QWidget:
     )
     adv_layout.addWidget(dialog.auto_skip_single_choice_checkbox)
 
+    dialog.probe_cdn_checkbox = create_checkbox_setting(
+        "Probe CDN edge servers for fastest route",
+        "probe_cdn",
+        False,
+        dialog,
+        "Pings Steam CDN edge servers before downloading to select the lowest-latency route.",
+        show_description=False,
+    )
+    adv_layout.addWidget(dialog.probe_cdn_checkbox)
+
     # Manifest / MRC Provider Row
     manifest_provider_layout = QHBoxLayout()
     manifest_provider_layout.setContentsMargins(0, 4, 0, 4)
