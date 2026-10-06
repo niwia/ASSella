@@ -717,12 +717,17 @@ def init_depots_tab(dialog) -> None:
             apps_list.append({"id": dlc_id, "desc": f"[DLC] {desc}", "is_base": False})
 
         # Build Depots list for THIS GAME ONLY:
+        # Pure license DLCs have no dedicated depot payload or decryption key
+        content_dlcs = {d for d in dlc_id_set if (d in game_keys or d in lua_depots or d in gd_depots)}
+        pure_license_dlcs = dlc_id_set - content_dlcs
+
+        # Build Depots list for THIS GAME ONLY:
         game_depots_set = (
             set(lua_depots.keys())
             | plugin_depots
             | set(game_keys.keys())
             | tagged_depots_from_config
-        ) - ALL_SHARED_REDISTS - {appid_str} - dlc_id_set
+        ) - ALL_SHARED_REDISTS - {appid_str} - pure_license_dlcs
 
         valid_key_depots = set(game_keys.keys())
         depots_list = []
@@ -733,6 +738,7 @@ def init_depots_tab(dialog) -> None:
                 plugin_depot_names.get(d)
                 or lua_depots.get(d)
                 or (gd_depots.get(d, {}).get("desc") if isinstance(gd_depots.get(d), dict) else "")
+                or (f"[DLC] {lua_dlcs.get(d)}" if d in lua_dlcs else None)
                 or f"Depot {d}"
             )
             depots_list.append({
@@ -753,8 +759,9 @@ def init_depots_tab(dialog) -> None:
                 "in_local": bool(appid_str in local_db_keys or appid_str in lua_keys or appid_str in plugin_keys),
             })
 
-        for d in sorted(game_depots_set, key=lambda x: int(x) if x.isdigit() else 0):
-            key_val = game_keys.get(d) or (live_keys.get(d) if d in tagged_depots_from_config else "")
+        all_target_key_ids = (set(game_depots_set) | set(game_keys.keys()) | set(tagged_keys_from_config.keys())) - {appid_str} - ALL_SHARED_REDISTS
+        for d in sorted(all_target_key_ids, key=lambda x: int(x) if x.isdigit() else 0):
+            key_val = game_keys.get(d) or (live_keys.get(d) if d in tagged_keys_from_config else "")
             if not key_val and d not in game_keys and d not in live_keys:
                 continue
             keys_list.append({
@@ -846,8 +853,26 @@ def init_depots_tab(dialog) -> None:
             if aid in app_toggles:
                 app_toggles[aid].setChecked(checked, animate=True)
 
-            # Cascade disable if turning off
-            if not checked:
+            assoc_depots = app_to_depots.get(aid, set())
+            if checked:
+                # Auto-enable matching key in DecryptionKeys if valid key exists
+                if aid in key_toggles and not desired_keys.get(aid, False):
+                    key_meta = next((k for k in state["keys"] if k["id"] == aid), None)
+                    if key_meta and key_meta.get("key"):
+                        desired_keys[aid] = True
+                        key_toggles[aid].setChecked(True, animate=True)
+
+                # Auto-enable associated DLC depots and their keys
+                for did in assoc_depots:
+                    if did in depot_toggles and not desired_depots.get(did, False):
+                        desired_depots[did] = True
+                        depot_toggles[did].setChecked(True, animate=True)
+                    if did in key_toggles and not desired_keys.get(did, False):
+                        d_key_meta = next((k for k in state["keys"] if k["id"] == did), None)
+                        if d_key_meta and d_key_meta.get("key"):
+                            desired_keys[did] = True
+                            key_toggles[did].setChecked(True, animate=True)
+            else:
                 if aid in key_toggles and desired_keys.get(aid):
                     desired_keys[aid] = False
                     key_toggles[aid].setChecked(False, animate=True)
@@ -861,7 +886,7 @@ def init_depots_tab(dialog) -> None:
 
         _update_sync_button_label(state)
         _update_bulk_states(state)
-        status_lbl.setText(f"All AppIDs {'enabled' if checked else 'disabled (cascaded)'}. Click 'Sync Changes' to apply.")
+        status_lbl.setText(f"All AppIDs {'enabled (cascaded)' if checked else 'disabled (cascaded)'}. Click 'Sync Changes' to apply.")
 
     def _on_bulk_toggle_depots(checked: bool) -> None:
         if _internal_bulk_update or not is_unlocked:
@@ -982,15 +1007,36 @@ def init_depots_tab(dialog) -> None:
                 def _cb(checked: bool):
                     desired_apps[app_id] = checked
 
-                    # ONE-WAY DYNAMIC CASCADE: Disabling an app/DLC automatically disables its keys & depots
-                    if not checked:
+                    # ONE-WAY DYNAMIC CASCADE:
+                    # Enabling an app/DLC automatically enables its matching key & depots
+                    # Disabling an app/DLC automatically disables its matching key & depots
+                    assoc_depots = app_to_depots.get(app_id, set())
+
+                    if checked:
+                        # 1. Enable corresponding key in DecryptionKeys (if key exists)
+                        if app_id in key_toggles and not desired_keys.get(app_id, False):
+                            key_meta = next((k for k in state["keys"] if k["id"] == app_id), None)
+                            if key_meta and key_meta.get("key"):
+                                desired_keys[app_id] = True
+                                key_toggles[app_id].setChecked(True, animate=True)
+
+                        # 2. Enable associated DLC depots in AdditionalDepots and their keys in DecryptionKeys
+                        for did in assoc_depots:
+                            if did in depot_toggles and not desired_depots.get(did, False):
+                                desired_depots[did] = True
+                                depot_toggles[did].setChecked(True, animate=True)
+                            if did in key_toggles and not desired_keys.get(did, False):
+                                d_key_meta = next((k for k in state["keys"] if k["id"] == did), None)
+                                if d_key_meta and d_key_meta.get("key"):
+                                    desired_keys[did] = True
+                                    key_toggles[did].setChecked(True, animate=True)
+                    else:
                         # 1. Disable corresponding key in DecryptionKeys (if key ID == app_id)
                         if app_id in key_toggles and desired_keys.get(app_id):
                             desired_keys[app_id] = False
                             key_toggles[app_id].setChecked(False, animate=True)
 
                         # 2. Disable associated DLC depots in AdditionalDepots and their keys in DecryptionKeys
-                        assoc_depots = app_to_depots.get(app_id, set())
                         for did in assoc_depots:
                             if did in depot_toggles and desired_depots.get(did):
                                 desired_depots[did] = False
@@ -1002,7 +1048,7 @@ def init_depots_tab(dialog) -> None:
                     _update_sync_button_label(state)
                     _update_bulk_states(state)
                     status_lbl.setText(
-                        f"App {app_id} {'enabled' if checked else 'disabled (cascaded to depots/keys)'}. Click 'Sync Changes' to apply."
+                        f"App {app_id} {'enabled (cascaded to depots/keys)' if checked else 'disabled (cascaded to depots/keys)'}. Click 'Sync Changes' to apply."
                     )
                 return _cb
 
