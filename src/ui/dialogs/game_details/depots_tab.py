@@ -658,11 +658,24 @@ def init_depots_tab(dialog) -> None:
                     lua_keys.setdefault(d_str, str(k).lower())
 
         # 5. Check config.yaml entries specifically tagged with this game's name or AppID
+        tagged_apps_from_config: Dict[str, str] = {}
         tagged_depots_from_config: Set[str] = set()
         tagged_keys_from_config: Dict[str, str] = {}
         if cfg_path.exists():
             try:
                 cfg_text = cfg_path.read_text(encoding="utf-8", errors="ignore")
+                app_bounds = _get_section_bounds(cfg_text, "AdditionalApps")
+                if app_bounds:
+                    sec_app = cfg_text[app_bounds[1]:app_bounds[2]]
+                    for line in sec_app.splitlines():
+                        m = re.match(r"^[ \t]*-[ \t]*(\d+)[ \t]*(?:#[ \t]*(.*))?$", line)
+                        if m:
+                            aid, comment = m.group(1), (m.group(2) or "")
+                            if (game_name and game_name.lower() in comment.lower()) or appid_str in comment:
+                                if aid != appid_str:
+                                    clean_c = re.sub(r"^\[DLC\]\s*", "", comment.strip(), flags=re.IGNORECASE)
+                                    tagged_apps_from_config[aid] = clean_c or f"DLC {aid}"
+
                 dep_bounds = _get_section_bounds(cfg_text, "AdditionalDepots")
                 if dep_bounds:
                     sec_dep = cfg_text[dep_bounds[1]:dep_bounds[2]]
@@ -693,14 +706,14 @@ def init_depots_tab(dialog) -> None:
         game_keys.update(tagged_keys_from_config)
         game_keys = {d: k for d, k in game_keys.items() if d not in ALL_SHARED_REDISTS}
 
-        # DLC AppIDs set
-        dlc_id_set = set(lua_dlcs.keys()) | plugin_dlcs
+        # DLC AppIDs set (combining Lua, plugin library, and tagged AdditionalApps from config)
+        dlc_id_set = set(lua_dlcs.keys()) | plugin_dlcs | set(tagged_apps_from_config.keys())
         dlc_id_set.discard(appid_str)
 
         # Build AppIDs list: Base AppID + DLC AppIDs
         apps_list = [{"id": appid_str, "desc": f"{game_name} (Base)", "is_base": True}]
         for dlc_id in sorted(dlc_id_set, key=lambda x: int(x) if x.isdigit() else 0):
-            desc = lua_dlcs.get(dlc_id) or gd_dlcs.get(dlc_id) or f"DLC {dlc_id}"
+            desc = lua_dlcs.get(dlc_id) or gd_dlcs.get(dlc_id) or tagged_apps_from_config.get(dlc_id) or f"DLC {dlc_id}"
             apps_list.append({"id": dlc_id, "desc": f"[DLC] {desc}", "is_base": False})
 
         # Build Depots list for THIS GAME ONLY:
