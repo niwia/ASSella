@@ -2,7 +2,8 @@
 Depots tab implementation for GameDetailsDialogV2.
 Modular inspector and configuration viewer for AT0-M / Native Steam mode games.
 Displays real-time status of AdditionalApps, AdditionalDepots, and DecryptionKeys
-specifically for the current game, with sideways switch toggles and unlockable custom editing.
+specifically for the current game, with sideways switch toggles, bulk category toggles (>5 items),
+one-way dynamic cascade disabling, and unlockable custom editing.
 """
 
 import logging
@@ -265,6 +266,81 @@ def _set_table_height(tbl: QTableWidget, row_count: int) -> None:
     tbl.setFixedHeight(total_h)
 
 
+def _make_bulk_toggle_bar(category_name: str, on_toggle_cb) -> Tuple[QFrame, MiniSwitchToggle, QPushButton, QPushButton]:
+    """Create a sleek footer bar with a Select All / None switch and quick buttons for categories with >5 items."""
+    bar = QFrame()
+    bar.setStyleSheet("background: transparent; border: none;")
+    lay = QHBoxLayout(bar)
+    lay.setContentsMargins(4, 2, 4, 4)
+    lay.setSpacing(8)
+
+    lbl = QLabel(f"Select All / None ({category_name}):")
+    lbl.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    lay.addWidget(lbl)
+
+    toggle = MiniSwitchToggle(checked=False, read_only=True)
+    toggle.toggled.connect(on_toggle_cb)
+    lay.addWidget(toggle)
+
+    lay.addStretch()
+
+    btn_all = QPushButton("All")
+    btn_all.setFixedSize(38, 22)
+    btn_all.setStyleSheet("""
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.08);
+            color: rgba(255, 255, 255, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+            font-size: 8pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.15);
+            color: #FFFFFF;
+        }
+        QPushButton:disabled {
+            background-color: rgba(255, 255, 255, 0.03);
+            color: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.05);
+        }
+    """)
+
+    btn_none = QPushButton("None")
+    btn_none.setFixedSize(44, 22)
+    btn_none.setStyleSheet("""
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.08);
+            color: rgba(255, 255, 255, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+            font-size: 8pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.15);
+            color: #FFFFFF;
+        }
+        QPushButton:disabled {
+            background-color: rgba(255, 255, 255, 0.03);
+            color: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.05);
+        }
+    """)
+
+    def _do_toggle(val: bool):
+        toggle.setChecked(val)
+        on_toggle_cb(val)
+
+    btn_all.clicked.connect(lambda: _do_toggle(True))
+    btn_none.clicked.connect(lambda: _do_toggle(False))
+
+    lay.addWidget(btn_all)
+    lay.addWidget(btn_none)
+
+    return bar, toggle, btn_all, btn_none
+
+
 def init_depots_tab(dialog) -> None:
     """Initialize the modular Depots tab for AT0-M mode games."""
     scroll = QScrollArea()
@@ -286,6 +362,14 @@ def init_depots_tab(dialog) -> None:
     desired_depots: Dict[str, bool] = {}
     desired_keys: Dict[str, bool] = {}
 
+    # Active row switch references for dynamic cascade updates
+    app_toggles: Dict[str, MiniSwitchToggle] = {}
+    depot_toggles: Dict[str, MiniSwitchToggle] = {}
+    key_toggles: Dict[str, MiniSwitchToggle] = {}
+
+    # State flag to prevent recursive loops during bulk select
+    _internal_bulk_update = False
+
     # Section 1: AdditionalApps (AppIDs & DLCs)
     layout.addWidget(section_title("AppIDs & Licenses (AdditionalApps)", ac))
     apps_table = _make_table(["AppID", "Name", "Config"], ac)
@@ -296,6 +380,11 @@ def init_depots_tab(dialog) -> None:
     apps_table.setColumnWidth(2, 75)
     layout.addWidget(apps_table)
 
+    apps_bulk_bar, apps_bulk_toggle, apps_btn_all, apps_btn_none = _make_bulk_toggle_bar(
+        "AppIDs", lambda chk: _on_bulk_toggle_apps(chk)
+    )
+    layout.addWidget(apps_bulk_bar)
+
     # Section 2: AdditionalDepots (Depots)
     layout.addWidget(section_title("Depots Registered (AdditionalDepots)", ac))
     depots_table = _make_table(["Depot ID", "Depot names", "Config"], ac)
@@ -305,6 +394,11 @@ def init_depots_tab(dialog) -> None:
     depots_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
     depots_table.setColumnWidth(2, 75)
     layout.addWidget(depots_table)
+
+    depots_bulk_bar, depots_bulk_toggle, depots_btn_all, depots_btn_none = _make_bulk_toggle_bar(
+        "Depots", lambda chk: _on_bulk_toggle_depots(chk)
+    )
+    layout.addWidget(depots_bulk_bar)
 
     # Section 3: DecryptionKeys (Keys)
     layout.addWidget(section_title("AES Decryption Keys (DecryptionKeys)", ac))
@@ -317,6 +411,17 @@ def init_depots_tab(dialog) -> None:
     keys_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
     keys_table.setColumnWidth(3, 75)
     layout.addWidget(keys_table)
+
+    keys_bulk_bar, keys_bulk_toggle, keys_btn_all, keys_btn_none = _make_bulk_toggle_bar(
+        "Keys", lambda chk: _on_bulk_toggle_keys(chk)
+    )
+    layout.addWidget(keys_bulk_bar)
+
+    # Master Select All / None toggle bar at the bottom of the tab
+    tab_bulk_bar, tab_bulk_toggle, tab_btn_all, tab_btn_none = _make_bulk_toggle_bar(
+        "All Sections", lambda chk: _on_bulk_toggle_all(chk)
+    )
+    layout.addWidget(tab_bulk_bar)
 
     # Status Label
     status_lbl = QLabel("")
@@ -411,6 +516,68 @@ def init_depots_tab(dialog) -> None:
 
     scroll.setWidget(content_widget)
     dialog.stacked.addWidget(scroll)
+
+    def _build_app_to_depots_map(state_apps: List[Dict[str, Any]]) -> Dict[str, Set[str]]:
+        """
+        Dynamically map each AppID (base game and DLCs) to its associated depot IDs.
+        Used for one-way dynamic cascade disabling.
+        """
+        mapping: Dict[str, Set[str]] = {}
+
+        # 1. Check DatabaseManager SQLite records
+        try:
+            from managers.db_manager import DatabaseManager
+            db_info = DatabaseManager().get_app_info(appid_str)
+            if db_info and db_info.get("depots"):
+                for did, d_meta in db_info["depots"].items():
+                    did_str = str(did).strip()
+                    dlc_id = str(d_meta.get("dlcappid") or "").strip()
+                    if dlc_id and dlc_id.isdigit():
+                        mapping.setdefault(dlc_id, set()).add(did_str)
+                    elif d_meta.get("is_dlc"):
+                        desc = d_meta.get("name") or d_meta.get("desc") or ""
+                        m = re.search(r"\[DLC\s*(\d+)\]", desc)
+                        if m:
+                            mapping.setdefault(m.group(1), set()).add(did_str)
+        except Exception:
+            pass
+
+        # 2. Check game_data / installed_depots from ACF
+        gd = dialog.game_data or {}
+        inst_depots = gd.get("installed_depots") or {}
+        for did, dinfo in inst_depots.items():
+            did_str = str(did).strip()
+            if isinstance(dinfo, dict):
+                dlc_id = str(dinfo.get("dlcappid") or "").strip()
+                if dlc_id and dlc_id.isdigit():
+                    mapping.setdefault(dlc_id, set()).add(did_str)
+
+        # 3. Check cached Lua DLC sections
+        try:
+            from utils.helpers import get_base_path
+            lua_path = Path(get_base_path()) / "cached_luas" / f"{appid_str}.lua"
+            if lua_path.exists():
+                txt = lua_path.read_text(encoding="utf-8", errors="ignore")
+                current_dlc = None
+                for line in txt.splitlines():
+                    m_dlc = re.search(r"\(AppID:\s*(\d+)\)", line, re.IGNORECASE)
+                    if m_dlc:
+                        current_dlc = m_dlc.group(1)
+                    elif current_dlc:
+                        m_app = re.search(r"addappid\((\d+)", line)
+                        if m_app:
+                            mapping.setdefault(current_dlc, set()).add(m_app.group(1))
+                        elif line.startswith("-- MAIN") or line.startswith("-- SHARED"):
+                            current_dlc = None
+        except Exception:
+            pass
+
+        # 4. Direct match fallback: any depot with ID == DLC AppID
+        for item in state_apps:
+            aid = item["id"]
+            mapping.setdefault(aid, set()).add(aid)
+
+        return mapping
 
     def _collect_state() -> Dict[str, Any]:
         """Collect and cross-reference data strictly for THIS game."""
@@ -623,12 +790,141 @@ def init_depots_tab(dialog) -> None:
         else:
             sync_btn.setText("Sync")
 
+    def _update_bulk_states(state: Dict[str, Any]) -> None:
+        """Synchronize the checked state of the bulk Select All / None toggles."""
+        nonlocal _internal_bulk_update
+        _internal_bulk_update = True
+        try:
+            apps = state["apps"]
+            if len(apps) > 5:
+                all_apps_on = bool(apps) and all(desired_apps.get(item["id"], False) for item in apps)
+                apps_bulk_toggle.setChecked(all_apps_on, animate=False)
+
+            depots = state["depots"]
+            if len(depots) > 5:
+                all_depots_on = bool(depots) and all(desired_depots.get(item["id"], False) for item in depots)
+                depots_bulk_toggle.setChecked(all_depots_on, animate=False)
+
+            keys = state["keys"]
+            valid_keys = [k for k in keys if k.get("key")]
+            if len(keys) > 5:
+                all_keys_on = bool(valid_keys) and all(desired_keys.get(item["id"], False) for item in valid_keys)
+                keys_bulk_toggle.setChecked(all_keys_on, animate=False)
+
+            # Master tab toggle (if any category has >5 items)
+            if len(apps) > 5 or len(depots) > 5 or len(keys) > 5:
+                all_master_on = (
+                    (not apps or all(desired_apps.get(item["id"], False) for item in apps))
+                    and (not depots or all(desired_depots.get(item["id"], False) for item in depots))
+                    and (not valid_keys or all(desired_keys.get(item["id"], False) for item in valid_keys))
+                )
+                tab_bulk_toggle.setChecked(all_master_on, animate=False)
+        finally:
+            _internal_bulk_update = False
+
+    def _on_bulk_toggle_apps(checked: bool) -> None:
+        if _internal_bulk_update or not is_unlocked:
+            return
+        state = _collect_state()
+        app_to_depots = _build_app_to_depots_map(state["apps"])
+        for item in state["apps"]:
+            aid = item["id"]
+            desired_apps[aid] = checked
+            if aid in app_toggles:
+                app_toggles[aid].setChecked(checked, animate=True)
+
+            # Cascade disable if turning off
+            if not checked:
+                if aid in key_toggles and desired_keys.get(aid):
+                    desired_keys[aid] = False
+                    key_toggles[aid].setChecked(False, animate=True)
+                for did in app_to_depots.get(aid, set()):
+                    if did in depot_toggles and desired_depots.get(did):
+                        desired_depots[did] = False
+                        depot_toggles[did].setChecked(False, animate=True)
+                    if did in key_toggles and desired_keys.get(did):
+                        desired_keys[did] = False
+                        key_toggles[did].setChecked(False, animate=True)
+
+        _update_sync_button_label(state)
+        _update_bulk_states(state)
+        status_lbl.setText(f"All AppIDs {'enabled' if checked else 'disabled (cascaded)'}. Click 'Sync Changes' to apply.")
+
+    def _on_bulk_toggle_depots(checked: bool) -> None:
+        if _internal_bulk_update or not is_unlocked:
+            return
+        state = _collect_state()
+        for item in state["depots"]:
+            did = item["id"]
+            desired_depots[did] = checked
+            if did in depot_toggles:
+                depot_toggles[did].setChecked(checked, animate=True)
+
+        # STRICTLY ONE-WAY: does not touch AdditionalApps!
+        _update_sync_button_label(state)
+        _update_bulk_states(state)
+        status_lbl.setText(f"All Depots {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
+
+    def _on_bulk_toggle_keys(checked: bool) -> None:
+        if _internal_bulk_update or not is_unlocked:
+            return
+        state = _collect_state()
+        for item in state["keys"]:
+            kid = item["id"]
+            if checked and not item.get("key"):
+                continue  # Cannot enable missing keys
+            desired_keys[kid] = checked
+            if kid in key_toggles:
+                key_toggles[kid].setChecked(checked, animate=True)
+
+        # STRICTLY ONE-WAY: does not touch AdditionalApps!
+        _update_sync_button_label(state)
+        _update_bulk_states(state)
+        status_lbl.setText(f"All Keys {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
+
+    def _on_bulk_toggle_all(checked: bool) -> None:
+        if _internal_bulk_update or not is_unlocked:
+            return
+        state = _collect_state()
+        # 1. Apps
+        for item in state["apps"]:
+            aid = item["id"]
+            desired_apps[aid] = checked
+            if aid in app_toggles:
+                app_toggles[aid].setChecked(checked, animate=True)
+
+        # 2. Depots
+        for item in state["depots"]:
+            did = item["id"]
+            desired_depots[did] = checked
+            if did in depot_toggles:
+                depot_toggles[did].setChecked(checked, animate=True)
+
+        # 3. Keys
+        for item in state["keys"]:
+            kid = item["id"]
+            if checked and not item.get("key"):
+                continue  # Cannot enable missing keys
+            desired_keys[kid] = checked
+            if kid in key_toggles:
+                key_toggles[kid].setChecked(checked, animate=True)
+
+        _update_sync_button_label(state)
+        _update_bulk_states(state)
+        status_lbl.setText(f"All sections {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
+
     def _refresh_ui():
         """Populate table widgets with gathered data."""
         state = _collect_state()
         live_apps = state["live_apps"]
         live_depots = state["live_depots"]
         game_keys = state["game_keys"]
+        app_to_depots = _build_app_to_depots_map(state["apps"])
+
+        # Clear toggle references
+        app_toggles.clear()
+        depot_toggles.clear()
+        key_toggles.clear()
 
         # When locked, desired states always match live config
         if not is_unlocked:
@@ -665,22 +961,48 @@ def init_depots_tab(dialog) -> None:
             apps_table.setItem(row, 0, id_item)
             apps_table.setItem(row, 1, desc_item)
 
-            # Determine initial checked state:
-            # If in desired_apps, use that; otherwise live state
             current_checked = desired_apps.get(aid, is_live)
             toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
+            app_toggles[aid] = toggle
 
             def _make_app_toggle_cb(app_id: str):
                 def _cb(checked: bool):
                     desired_apps[app_id] = checked
+
+                    # ONE-WAY DYNAMIC CASCADE: Disabling an app/DLC automatically disables its keys & depots
+                    if not checked:
+                        # 1. Disable corresponding key in DecryptionKeys (if key ID == app_id)
+                        if app_id in key_toggles and desired_keys.get(app_id):
+                            desired_keys[app_id] = False
+                            key_toggles[app_id].setChecked(False, animate=True)
+
+                        # 2. Disable associated DLC depots in AdditionalDepots and their keys in DecryptionKeys
+                        assoc_depots = app_to_depots.get(app_id, set())
+                        for did in assoc_depots:
+                            if did in depot_toggles and desired_depots.get(did):
+                                desired_depots[did] = False
+                                depot_toggles[did].setChecked(False, animate=True)
+                            if did in key_toggles and desired_keys.get(did):
+                                desired_keys[did] = False
+                                key_toggles[did].setChecked(False, animate=True)
+
                     _update_sync_button_label(state)
-                    status_lbl.setText(f"App {app_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
+                    _update_bulk_states(state)
+                    status_lbl.setText(
+                        f"App {app_id} {'enabled' if checked else 'disabled (cascaded to depots/keys)'}. Click 'Sync Changes' to apply."
+                    )
                 return _cb
 
             toggle.toggled.connect(_make_app_toggle_cb(aid))
             apps_table.setCellWidget(row, 2, _ToggleContainer(toggle))
 
         _set_table_height(apps_table, len(apps))
+
+        # Bulk Select All/None for AdditionalApps (>5 items)
+        apps_bulk_bar.setVisible(len(apps) > 5)
+        apps_bulk_toggle.setReadOnly(not is_unlocked)
+        apps_btn_all.setEnabled(is_unlocked)
+        apps_btn_none.setEnabled(is_unlocked)
 
         # 2. Populate AdditionalDepots Table
         depots = state["depots"]
@@ -700,11 +1022,14 @@ def init_depots_tab(dialog) -> None:
 
             current_checked = desired_depots.get(did, is_live)
             toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
+            depot_toggles[did] = toggle
 
             def _make_depot_toggle_cb(depot_id: str):
                 def _cb(checked: bool):
                     desired_depots[depot_id] = checked
+                    # STRICTLY ONE-WAY: does not touch AdditionalApps
                     _update_sync_button_label(state)
+                    _update_bulk_states(state)
                     status_lbl.setText(f"Depot {depot_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
                 return _cb
 
@@ -712,6 +1037,12 @@ def init_depots_tab(dialog) -> None:
             depots_table.setCellWidget(row, 2, _ToggleContainer(toggle))
 
         _set_table_height(depots_table, len(depots))
+
+        # Bulk Select All/None for AdditionalDepots (>5 items)
+        depots_bulk_bar.setVisible(len(depots) > 5)
+        depots_bulk_toggle.setReadOnly(not is_unlocked)
+        depots_btn_all.setEnabled(is_unlocked)
+        depots_btn_none.setEnabled(is_unlocked)
 
         # 3. Populate DecryptionKeys Table
         keys = state["keys"]
@@ -734,11 +1065,14 @@ def init_depots_tab(dialog) -> None:
             is_cfg = item["in_config"]
             current_checked = desired_keys.get(kid, is_cfg)
             toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
+            key_toggles[kid] = toggle
 
             def _make_key_toggle_cb(key_id: str):
                 def _cb(checked: bool):
                     desired_keys[key_id] = checked
+                    # STRICTLY ONE-WAY: does not touch AdditionalApps
                     _update_sync_button_label(state)
+                    _update_bulk_states(state)
                     status_lbl.setText(f"Key {key_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
                 return _cb
 
@@ -751,7 +1085,22 @@ def init_depots_tab(dialog) -> None:
             keys_table.setCellWidget(row, 3, loc_ind)
 
         _set_table_height(keys_table, len(keys))
+
+        # Bulk Select All/None for DecryptionKeys (>5 items)
+        keys_bulk_bar.setVisible(len(keys) > 5)
+        keys_bulk_toggle.setReadOnly(not is_unlocked)
+        keys_btn_all.setEnabled(is_unlocked)
+        keys_btn_none.setEnabled(is_unlocked)
+
+        # Master Select All/None at bottom of tab (if any category has >5 items)
+        has_large = len(apps) > 5 or len(depots) > 5 or len(keys) > 5
+        tab_bulk_bar.setVisible(has_large)
+        tab_bulk_toggle.setReadOnly(not is_unlocked)
+        tab_btn_all.setEnabled(is_unlocked)
+        tab_btn_none.setEnabled(is_unlocked)
+
         _update_sync_button_label(state)
+        _update_bulk_states(state)
 
     def _on_unlock():
         """Unlock custom depot and configuration selection after confirmation dialog."""
@@ -834,7 +1183,7 @@ def init_depots_tab(dialog) -> None:
                         removed_count += 1
             else:
                 # Standard locked sync: automatically add missing entries
-                # 1. Base AppID (DLCs are never auto-added in default sync; user must unlock and manually enable them)
+                # 1. Base AppID ONLY (DLCs are never auto-added in default sync; user must unlock and manually enable them)
                 if appid_str not in state["live_apps"]:
                     editor.add_app(appid_str, comment=f"{game_name} (Base)")
                     added_count += 1
