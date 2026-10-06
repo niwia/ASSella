@@ -157,8 +157,8 @@ def create_health_tab(dialog) -> QWidget:
 
     container = QWidget()
     layout = QVBoxLayout(container)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(16)
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(8)
 
     # ── 1. SLSsteam Status (3-Button Status Row) ────────────────────────
     sls_card, sls_layout = dialog._create_card_frame("System & SLSsteam Status")

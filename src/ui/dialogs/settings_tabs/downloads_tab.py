@@ -27,8 +27,8 @@ def create_downloads_tab(dialog) -> QWidget:
     """Create the Downloads settings tab with General and Depot selection sub-tabs."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(16)
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(8)
 
     # Create sub-tabs inside Downloads
     dl_subtabs = QTabWidget()

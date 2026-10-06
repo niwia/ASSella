@@ -71,6 +71,7 @@ from ui.dialogs.settings_tabs.webui_tab import (
     update_service_status,
 )
 from ui.dialogs.settings_tabs.at0m_tab import create_at0m_tab, create_vapor_tab
+from ui.dialogs.settings_tabs.mrc_settings_tab import create_mrc_settings_tab
 
 __all__ = [
     "MorrenusStatsWidget",
@@ -86,4 +87,5 @@ __all__ = [
     "create_webui_tab",
     "create_at0m_tab",
     "create_vapor_tab",
+    "create_mrc_settings_tab",
 ]

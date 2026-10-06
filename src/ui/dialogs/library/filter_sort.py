@@ -95,6 +95,14 @@ class LibraryFilterSortMixin:
         self._refresh_game_list()
 
     def _on_search_changed(self) -> None:
+        query = self.search_input.text().strip().lower()
+        if query in ("wwssafafba", "wwssadadba"):
+            from utils.settings import get_settings
+            s = self.settings or get_settings()
+            if not s.value("konami_settings_unlocked", False, type=bool):
+                s.setValue("konami_settings_unlocked", True)
+                s.sync()
+                logger.info("[GameLibrary] Keyboard cheat code unlocked Settings tab.")
         self.search_timer.start(300)
 
     def _refresh_game_list(self) -> None:

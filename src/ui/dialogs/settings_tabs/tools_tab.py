@@ -30,8 +30,8 @@ def create_tools_tab(dialog) -> QWidget:
     """Create the Tools settings tab."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(24)
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(8)
 
     # Tools Card
     tools_card, tools_layout = dialog._create_card_frame("Tools")

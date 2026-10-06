@@ -633,6 +633,15 @@ class FetchManifestDialog(QDialog):
 
     def _on_search_text_changed(self, text: str) -> None:
         """Slot called on every keystroke — starts/restarts the 400ms debounce timer."""
+        text_clean = text.strip().lower()
+        if text_clean in ("wwssafafba", "wwssadadba"):
+            if self.settings and not self.settings.value("konami_settings_unlocked", False, type=bool):
+                self.settings.setValue("konami_settings_unlocked", True)
+                self.settings.sync()
+                self.status_label.setText("🎮 Cheat Code Activated: Settings tab unlocked!")
+                self.status_label.setStyleSheet("color: #81C784; font-weight: bold;")
+                logger.info("[FetchManifest] Keyboard cheat code unlocked Settings tab.")
+
         text = text.strip()
         # Don't fire live suggestions for numeric-only queries (those go via AppID
         # branch-check on Enter/Search press, not live suggestion mode)

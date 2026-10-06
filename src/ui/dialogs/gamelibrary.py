@@ -72,6 +72,9 @@ class GameLibraryDialog(
         self.main_window = main_window
         self.game_manager = getattr(main_window, "game_manager", None)
         self.settings = getattr(main_window, "settings", None)
+        if not self.settings:
+            from utils.settings import get_settings
+            self.settings = get_settings()
         self.executor = ThreadPoolExecutor(max_workers=4)
 
         # Load theme colors

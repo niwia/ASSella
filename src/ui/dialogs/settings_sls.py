@@ -260,8 +260,8 @@ def create_sls_tab(dialog) -> QWidget:
     """Relocate Steam/SLS settings, ASShead fixer, and implement updater UI."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(24)
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(8)
 
     # 1. Integration Card
     int_card, int_layout = dialog._create_card_frame("SLS Settings")

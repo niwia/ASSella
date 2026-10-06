@@ -27,8 +27,8 @@ def create_assela_tab(dialog) -> QWidget:
     """Create the ASSella settings tab."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(24)
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(8)
 
     # Section 1 Card: ASSella Settings
     assella_card, assella_lay = dialog._create_card_frame("ASSella Settings")

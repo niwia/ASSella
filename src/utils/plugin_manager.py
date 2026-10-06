@@ -320,10 +320,31 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
             needs_download = True
 
     if needs_download:
-        ok, downloaded_path, dl_msg = download_plugin(filename, expected_sha256)
-        if not ok or not downloaded_path:
-            return False, False, f"Failed downloading {filename}: {dl_msg}"
-        cache_path = downloaded_path
+        # Check if file exists in local plugins cache or known local paths first
+        alt_locations = [
+            get_base_path() / "plugins" / filename,
+            Path.home() / ".local" / "share" / "ACCELA" / "plugins" / filename,
+            Path.home() / ".config" / "SLSsteam" / "plugins" / filename,
+        ]
+        found_local = None
+        for alt in alt_locations:
+            if alt.is_file():
+                found_local = alt
+                break
+        if found_local and found_local != cache_path:
+            try:
+                shutil.copy2(found_local, cache_path)
+                needs_download = False
+            except Exception:
+                pass
+
+        if needs_download:
+            ok, downloaded_path, dl_msg = download_plugin(filename, expected_sha256)
+            if not ok or not downloaded_path:
+                if not cache_path.is_file():
+                    return False, False, f"Failed downloading {filename}: {dl_msg}"
+            else:
+                cache_path = downloaded_path
 
     src_hash = calculate_sha256(cache_path)
     if not src_hash:
@@ -340,6 +361,22 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
     for tdir in target_dirs:
         try:
             tdir.mkdir(parents=True, exist_ok=True)
+
+            # If deploying a download interceptor plugin, ensure exclusivity:
+            # deactivate/remove any alternative download interceptor plugins in tdir
+            if filename.startswith("download"):
+                for existing in tdir.glob("download*.lua"):
+                    if existing.name != filename:
+                        try:
+                            bak_file = tdir / f"{existing.name}.bak"
+                            shutil.copy2(existing, bak_file)
+                            existing.unlink()
+                            logger.info(
+                                f"[PluginManager] Deactivated alternative download plugin {existing.name} (backed up to {bak_file})"
+                            )
+                        except Exception as rem_err:
+                            logger.warning(f"[PluginManager] Could not deactivate {existing.name}: {rem_err}")
+
             dst_file = tdir / filename
             if dst_file.is_file():
                 dst_hash = calculate_sha256(dst_file)

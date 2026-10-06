@@ -106,6 +106,45 @@ def _get_outdated_btn_style(dialog) -> str:
     """
 
 
+def get_active_download_plugin() -> Optional[str]:
+    """Find the active download interceptor plugin filename in SLSsteam plugins directory."""
+    try:
+        from utils.yaml_config_manager import get_sls_plugins_dirs
+        for tdir in get_sls_plugins_dirs():
+            if tdir.is_dir():
+                for p in tdir.glob("download*.lua"):
+                    if not p.name.endswith(".bak"):
+                        return p.name
+    except Exception as e:
+        logger.debug(f"[at0mTab] Check active download plugin error: {e}")
+    return None
+
+
+def get_available_download_plugins() -> list[tuple[str, str]]:
+    """Return available download plugins as list of (display_name, filename)."""
+    options = [
+        ("download.lua", "download.lua"),
+        ("download-1.4.0-spacetest.lua", "download-1.4.0-spacetest.lua"),
+    ]
+    try:
+        from utils.helpers import get_base_path
+        from utils.yaml_config_manager import get_sls_plugins_dirs
+        known_filenames = {opt[1] for opt in options}
+        search_dirs = [
+            get_base_path() / "plugins",
+            Path.home() / ".local" / "share" / "ACCELA" / "plugins",
+        ] + get_sls_plugins_dirs()
+        for sdir in search_dirs:
+            if sdir.is_dir():
+                for f in sdir.glob("download*.lua"):
+                    if not f.name.endswith(".bak") and f.name not in known_filenames:
+                        options.append((f"{f.name}", f.name))
+                        known_filenames.add(f.name)
+    except Exception as e:
+        logger.debug(f"[at0mTab] Discover plugins error: {e}")
+    return options
+
+
 def get_plugin_state(filename: str) -> str:
     """Returns 'up_to_date', 'outdated', or 'missing' comparing with Cloud manifest."""
     try:
@@ -127,8 +166,8 @@ def create_at0m_tab(dialog) -> QWidget:
     """
     tab = QWidget()
     layout = QVBoxLayout(tab)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(16)
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(8)
 
     cfg_path = get_user_config_path()
 
@@ -201,18 +240,19 @@ def create_at0m_tab(dialog) -> QWidget:
 
     # Option 2: Default Download Behavior
     act_row = QHBoxLayout()
-    act_row.setContentsMargins(4, 4, 4, 4)
-    act_row.setSpacing(12)
+    act_row.setContentsMargins(2, 2, 2, 2)
+    act_row.setSpacing(10)
 
     act_title = QLabel("Default Download Behavior")
-    act_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9.5pt;")
+    act_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9pt;")
     act_row.addWidget(act_title, stretch=1)
 
     dialog.at0m_download_action_combo = QComboBox()
     dialog.at0m_download_action_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.at0m_download_action_combo.addItem("Ask every time", "ask")
-    dialog.at0m_download_action_combo.addItem("Always Native Steam (at0-m)", "native")
-    dialog.at0m_download_action_combo.addItem("Always ASSella Downloader", "assella")
+    dialog.at0m_download_action_combo.setFixedWidth(155)
+    dialog.at0m_download_action_combo.addItem("Always ask", "ask")
+    dialog.at0m_download_action_combo.addItem("Start Native (at0-m)", "native")
+    dialog.at0m_download_action_combo.addItem("Start ASSella", "assella")
     dialog.vapor_download_action_combo = dialog.at0m_download_action_combo
 
     saved_behavior = dialog.settings.value(
@@ -251,17 +291,18 @@ def create_at0m_tab(dialog) -> QWidget:
 
     # Option 3: Start download with Steam
     start_row = QHBoxLayout()
-    start_row.setContentsMargins(4, 4, 4, 4)
-    start_row.setSpacing(12)
+    start_row.setContentsMargins(2, 2, 2, 2)
+    start_row.setSpacing(10)
 
     start_title = QLabel("Start download with Steam")
-    start_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9.5pt;")
+    start_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9pt;")
     start_row.addWidget(start_title, stretch=1)
 
     dialog.at0m_start_mode_combo = QComboBox()
     dialog.at0m_start_mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.at0m_start_mode_combo.addItem("Always start download immediately", "immediate")
-    dialog.at0m_start_mode_combo.addItem("Always add to Steam only", "add_only")
+    dialog.at0m_start_mode_combo.setFixedWidth(155)
+    dialog.at0m_start_mode_combo.addItem("Start auto", "immediate")
+    dialog.at0m_start_mode_combo.addItem("Add only", "add_only")
     dialog.at0m_start_mode_combo.addItem("Always ask", "ask")
     dialog.vapor_start_mode_combo = dialog.at0m_start_mode_combo
 
@@ -309,36 +350,91 @@ def create_at0m_tab(dialog) -> QWidget:
 
     # -- 2. Deploy Card (Bottom Card) --
     deploy_card, deploy_layout = dialog._create_card_frame("Deploy")
+    deploy_layout.setSpacing(6)
 
     deploy_desc = QLabel(
-        "Manage Lua plugins for SLSsteam. Click to verify or fetch the latest updates from the Cloud."
+        "Manage Lua plugins for SLSsteam. Deploy or update interceptor and spliced ticket plugins."
     )
     deploy_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
     deploy_desc.setWordWrap(True)
     deploy_layout.addWidget(deploy_desc)
 
-    deploy_btns_row = QHBoxLayout()
-    deploy_btns_row.setSpacing(12)
+    # Row 1: All deploy controls grouped in the same row!
+    deploy_row = QHBoxLayout()
+    deploy_row.setContentsMargins(0, 2, 0, 2)
+    deploy_row.setSpacing(8)
 
-    # Button 1: Lua Plugin
-    lua_plugin_btn = QPushButton("Lua Plugin")
-    deploy_btns_row.addWidget(lua_plugin_btn)
+    deploy_lbl = QLabel("Deploy:")
+    deploy_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500;")
+    deploy_row.addWidget(deploy_lbl)
 
-    # Button 2: Spliced Plugin
-    spliced_plugin_btn = QPushButton("Spliced Plugin")
-    deploy_btns_row.addWidget(spliced_plugin_btn)
+    dialog.plugin_deploy_combo = QComboBox()
+    dialog.plugin_deploy_combo.setFixedWidth(145)
+    for disp, fn in get_available_download_plugins():
+        dialog.plugin_deploy_combo.addItem(disp, fn)
+    deploy_row.addWidget(dialog.plugin_deploy_combo)
 
+    dialog.deploy_plugin_btn = QPushButton("Deploy")
+    dialog.deploy_plugin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.deploy_plugin_btn.setStyleSheet("""
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.09);
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            border-radius: 6px;
+            color: #FFFFFF;
+            padding: 4px 10px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.18);
+        }
+    """)
+    deploy_row.addWidget(dialog.deploy_plugin_btn)
 
-    deploy_layout.addLayout(deploy_btns_row)
+    dialog.dl_status_badge = QLabel("Checking...")
+    dialog.dl_status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    deploy_row.addWidget(dialog.dl_status_badge)
 
-    # Option: I'm using custom plugins (Advanced)
+    deploy_row.addSpacing(10)
+
+    spliced_lbl = QLabel("Spliced:")
+    spliced_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500;")
+    deploy_row.addWidget(spliced_lbl)
+
+    dialog.spliced_status_badge = QLabel("Checking...")
+    dialog.spliced_status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    deploy_row.addWidget(dialog.spliced_status_badge)
+
+    dialog.deploy_spliced_btn = QPushButton("Deploy")
+    dialog.deploy_spliced_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.deploy_spliced_btn.setStyleSheet("""
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.09);
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            border-radius: 6px;
+            color: #FFFFFF;
+            padding: 4px 10px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.18);
+        }
+    """)
+    deploy_row.addWidget(dialog.deploy_spliced_btn)
+    deploy_row.addStretch(1)
+
+    deploy_layout.addLayout(deploy_row)
+
+    # Row 2 (Bottom line): Checkbox for custom plugins (Advanced)
     dialog.custom_plugins_checkbox = create_checkbox_setting(
         "I'm using custom plugins (Advanced)",
         "custom_plugins_advanced",
         False,
         dialog,
         "Bypasses plugin missing checks for game transfers and native downloads. Warning: Third-party plugin support cannot be guaranteed!",
-        show_description=True,
+        show_description=False,
     )
     deploy_layout.addWidget(dialog.custom_plugins_checkbox)
 
@@ -351,43 +447,92 @@ def create_at0m_tab(dialog) -> QWidget:
                 "Bypassing plugin presence verification enables native downloads and game transfers with custom or third-party Lua plugins.\n\n"
                 "Please note: ASSella cannot guarantee compatibility, functionality, or stability with third-party plugins!"
             )
-        _refresh_deploy_buttons()
+        _refresh_deploy_ui()
 
     dialog.custom_plugins_checkbox.checkbox.toggled.connect(_on_custom_plugins_toggled)
 
     layout.addWidget(deploy_card)
 
-    def _refresh_deploy_buttons():
-        items = [
-            (lua_plugin_btn, "download.lua", "Lua Plugin"),
-            (spliced_plugin_btn, "spliced-tickets.lua", "Spliced Plugin"),
-        ]
-        detected_style = _get_detected_btn_style(dialog)
-        outdated_style = _get_outdated_btn_style(dialog)
+    def _refresh_deploy_ui():
+        active_dl = get_active_download_plugin()
         is_bypassed = dialog.settings.value("custom_plugins_advanced", False, type=bool)
-        for btn, fname, label in items:
-            state = get_plugin_state(fname)
-            if state == "up_to_date":
-                btn.setText(f"{label} (Up to date)")
-                btn.setStyleSheet(detected_style)
-                btn.setEnabled(True)
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"{label} ({fname}) is installed and up to date with the Cloud manifest. Click to re-fetch from the Cloud.")
-            elif state == "outdated":
-                btn.setText(f"Fetch & Apply {label} (Outdated / Custom)")
-                btn.setStyleSheet(outdated_style)
-                btn.setEnabled(True)
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"{label} ({fname}) differs from the Cloud manifest (custom or outdated). Click to fetch and apply the official Cloud version (backed up to .bak).")
+        accent = getattr(dialog, "accent_color", "#ff7518")
+
+        if active_dl:
+            # User is using the plugin: show plugin name according to theme accent color
+            dialog.dl_status_badge.setText(active_dl)
+            dialog.dl_status_badge.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {accent};
+                    color: #000000;
+                    border: 1px solid {accent};
+                    border-radius: 5px;
+                    padding: 3px 8px;
+                    font-size: 8pt;
+                    font-weight: 700;
+                }}
+            """)
+            dialog.dl_status_badge.setToolTip(f"Active download interceptor plugin: {active_dl}")
+        else:
+            if is_bypassed:
+                # No plugin detected + selected custom plugin
+                dialog.dl_status_badge.setText("Unknown")
+                dialog.dl_status_badge.setStyleSheet("""
+                    QLabel {
+                        background-color: rgba(33, 150, 243, 0.18);
+                        color: #90CAF9;
+                        border: 1px solid rgba(144, 202, 249, 0.45);
+                        border-radius: 5px;
+                        padding: 3px 8px;
+                        font-size: 8pt;
+                        font-weight: 700;
+                    }
+                """)
+                dialog.dl_status_badge.setToolTip("No standard plugin detected. Custom plugin bypass is active.")
             else:
-                if is_bypassed:
-                    btn.setText(f"Fetch & Apply {label} (Missing — Bypass Active)")
-                else:
-                    btn.setText(f"Fetch & Apply {label} (Missing)")
-                btn.setStyleSheet(NORMAL_BTN_STYLE)
-                btn.setEnabled(True)
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(f"{label} ({fname}) is missing. Click to download from the Cloud and deploy to SLSsteam plugins.")
+                # No plugin detected + no custom plugin toggle
+                dialog.dl_status_badge.setText("Missing")
+                dialog.dl_status_badge.setStyleSheet("""
+                    QLabel {
+                        background-color: rgba(244, 67, 54, 0.15);
+                        color: #EF5350;
+                        border: 1px solid rgba(239, 83, 80, 0.45);
+                        border-radius: 5px;
+                        padding: 3px 8px;
+                        font-size: 8pt;
+                        font-weight: 700;
+                    }
+                """)
+                dialog.dl_status_badge.setToolTip("Download interceptor plugin is missing.")
+
+        # Spliced tickets status
+        spliced_state = get_plugin_state("spliced-tickets.lua")
+        if spliced_state != "missing":
+            dialog.spliced_status_badge.setText("spliced-tickets.lua")
+            dialog.spliced_status_badge.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(76, 175, 80, 0.18);
+                    color: #81C784;
+                    border: 1px solid rgba(129, 199, 132, 0.45);
+                    border-radius: 5px;
+                    padding: 3px 8px;
+                    font-size: 8pt;
+                    font-weight: 700;
+                }
+            """)
+        else:
+            dialog.spliced_status_badge.setText("Missing")
+            dialog.spliced_status_badge.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(244, 67, 54, 0.15);
+                    color: #EF5350;
+                    border: 1px solid rgba(239, 83, 80, 0.45);
+                    border-radius: 5px;
+                    padding: 3px 8px;
+                    font-size: 8pt;
+                    font-weight: 700;
+                }
+            """)
 
     class DeployWorker(QThread):
         finished_signal = pyqtSignal(bool, bool, str, str, str)
@@ -408,45 +553,41 @@ def create_at0m_tab(dialog) -> QWidget:
 
     def _deploy_single(filename: str, title: str, button: QPushButton):
         button.setEnabled(False)
-        button.setText("Checking Cloud...")
-        button.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(33, 150, 243, 0.22);
-                color: #90CAF9;
-                border: 1px solid rgba(144, 202, 249, 0.45);
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-size: 9pt;
-                font-weight: 600;
-            }
-        """)
+        orig_text = button.text()
+        button.setText("Deploying...")
 
         worker = DeployWorker(filename, title)
         dialog._active_deploy_worker = worker
 
         def _on_done(ok: bool, skipped: bool, msg: str, t: str, f: str):
-            _refresh_deploy_buttons()
+            button.setEnabled(True)
+            button.setText(orig_text)
+            _refresh_deploy_ui()
             if not ok:
                 QMessageBox.warning(dialog, t, f"Failed downloading/deploying {f}:\n{msg}")
             elif skipped:
                 QMessageBox.information(
                     dialog,
                     t,
-                    f"{t} ({f}) is already up to date from the Cloud.\nSHA-256 checksum matched."
+                    f"{t} ({f}) is already active and up to date."
                 )
             else:
                 QMessageBox.information(
                     dialog,
                     t,
-                    f"Successfully downloaded from the Cloud and deployed {t} ({f}) to SLSsteam plugins!"
+                    f"Successfully deployed {t} ({f}) to SLSsteam plugins!\nAny conflicting alternatives were deactivated."
                 )
             dialog._active_deploy_worker = None
 
         worker.finished_signal.connect(_on_done)
         worker.start()
 
-    lua_plugin_btn.clicked.connect(lambda: _deploy_single("download.lua", "Lua Plugin", lua_plugin_btn))
-    spliced_plugin_btn.clicked.connect(lambda: _deploy_single("spliced-tickets.lua", "Spliced Plugin", spliced_plugin_btn))
+    dialog.deploy_plugin_btn.clicked.connect(
+        lambda: _deploy_single(dialog.plugin_deploy_combo.currentData(), "Download Plugin", dialog.deploy_plugin_btn)
+    )
+    dialog.deploy_spliced_btn.clicked.connect(
+        lambda: _deploy_single("spliced-tickets.lua", "Spliced Plugin", dialog.deploy_spliced_btn)
+    )
 
     def _update_subwidget_states(enabled: bool):
         dialog.at0m_disable_updates_checkbox.setEnabled(enabled)
@@ -465,14 +606,14 @@ def create_at0m_tab(dialog) -> QWidget:
             for p_file in ("download.lua", "spliced-tickets.lua"):
                 if get_plugin_state(p_file) == "missing":
                     deploy_sls_plugin(p_file)
-        _refresh_deploy_buttons()
+        _refresh_deploy_ui()
         _update_subwidget_states(checked)
 
     dialog.enable_at0m_checkbox.toggled.connect(_on_enable_at0m_toggled)
     _update_subwidget_states(dialog.enable_at0m_checkbox.isChecked())
 
     # Initial state evaluation
-    _refresh_deploy_buttons()
+    _refresh_deploy_ui()
 
     layout.addStretch()
     dialog.tab_widget.addTab(tab, "at0-m")

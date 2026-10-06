@@ -47,9 +47,9 @@ class SettingsDialog(QDialog):
         self._initial_tab = initial_tab
         self.setWindowTitle("Settings")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setMinimumWidth(780)
-        self.setMinimumHeight(680)
-        self.resize(780, 700)
+        self.setMinimumWidth(630)
+        self.setMinimumHeight(480)
+        self.resize(640, 500)
         self.settings = get_settings()
         self.main_window = parent
         self.accent_color = self.settings.value("accent_color", "#C06C84")
@@ -187,12 +187,12 @@ class SettingsDialog(QDialog):
             QComboBox {{
                 background-color: rgba(255, 255, 255, 0.08) !important;
                 border: 1px solid rgba(255, 255, 255, 0.22) !important;
-                border-radius: 8px !important;
+                border-radius: 7px !important;
                 color: #FFFFFF !important;
-                padding: 6px 30px 6px 12px !important;
-                font-size: 9.5pt !important;
+                padding: 4px 26px 4px 10px !important;
+                font-size: 9pt !important;
                 font-weight: 500 !important;
-                min-height: 22px !important;
+                min-height: 20px !important;
             }}
             QComboBox:hover {{
                 background-color: rgba(255, 255, 255, 0.14) !important;
@@ -204,7 +204,7 @@ class SettingsDialog(QDialog):
             QComboBox::drop-down {{
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
-                width: 24px;
+                width: 22px;
                 border: none;
                 background: transparent;
             }}
@@ -238,10 +238,10 @@ class SettingsDialog(QDialog):
             QLineEdit {{
                 background-color: rgba(255, 255, 255, 0.07) !important;
                 border: 1px solid rgba(255, 255, 255, 0.2) !important;
-                border-radius: 8px !important;
+                border-radius: 7px !important;
                 color: #FFFFFF !important;
-                padding: 7px 12px !important;
-                font-size: 9.5pt !important;
+                padding: 4px 10px !important;
+                font-size: 9pt !important;
             }}
             QLineEdit:focus {{
                 border: 2px solid {self.accent_color} !important;
@@ -249,10 +249,10 @@ class SettingsDialog(QDialog):
             QTextEdit {{
                 background-color: rgba(255, 255, 255, 0.07) !important;
                 border: 1px solid rgba(255, 255, 255, 0.2) !important;
-                border-radius: 8px !important;
+                border-radius: 7px !important;
                 color: #FFFFFF !important;
-                padding: 8px !important;
-                font-size: 9.5pt !important;
+                padding: 6px !important;
+                font-size: 9pt !important;
             }}
             QTextEdit:focus {{
                 border: 2px solid {self.accent_color} !important;
@@ -260,10 +260,10 @@ class SettingsDialog(QDialog):
             QPushButton {{
                 background-color: rgba(255, 255, 255, 0.09) !important;
                 border: 1px solid rgba(255, 255, 255, 0.2) !important;
-                border-radius: 8px !important;
+                border-radius: 7px !important;
                 color: #FFFFFF !important;
-                padding: 7px 16px !important;
-                font-size: 9.5pt !important;
+                padding: 5px 14px !important;
+                font-size: 9pt !important;
                 font-weight: 500 !important;
             }}
             QPushButton:hover {{
@@ -320,36 +320,42 @@ class SettingsDialog(QDialog):
 
         # Left nav sidebar
         self._nav_list = QListWidget()
-        self._nav_list.setFixedWidth(160)
+        self._nav_list.setFixedWidth(135)
         self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self._nav_font = QFont()
+        self._nav_font.setPointSize(9)
+        self._nav_font.setWeight(QFont.Weight.DemiBold)
+        self._nav_list.setFont(self._nav_font)
+
         self._nav_list.setStyleSheet(f"""
             QListWidget {{
                 background-color: rgba(0, 0, 0, 0.28);
                 border: none;
                 border-right: 1px solid rgba(255, 255, 255, 0.08);
-                padding: 10px 0px;
+                padding: 6px 0px;
                 outline: none;
             }}
             QListWidget::item {{
-                color: rgba(255, 255, 255, 0.58);
-                padding: 12px 18px;
+                color: #EDEDED;
+                padding: 7px 12px;
                 border: none;
-                font-size: 10.5pt;
+                font-size: 9.5pt;
                 font-weight: 600;
                 letter-spacing: 0.2px;
                 border-radius: 0px;
             }}
             QListWidget::item:hover {{
-                background-color: rgba(255, 255, 255, 0.07);
-                color: rgba(255, 255, 255, 0.90);
+                background-color: rgba(255, 255, 255, 0.08);
+                color: #FFFFFF;
             }}
             QListWidget::item:selected {{
-                background-color: rgba(255, 255, 255, 0.04);
+                background-color: rgba(255, 255, 255, 0.05);
                 color: {ac};
                 border-left: 3.5px solid {ac};
-                padding-left: 14.5px;
+                padding-left: 10.5px;
                 font-weight: 700;
             }}
         """)
@@ -371,6 +377,7 @@ class SettingsDialog(QDialog):
             def addTab(self, widget, label):
                 idx = self._stack.addWidget(widget)
                 item = QListWidgetItem(label)
+                item.setFont(self._nav.font())
                 item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                 self._nav.addItem(item)
                 self._tabs[label] = idx
@@ -420,12 +427,12 @@ class SettingsDialog(QDialog):
             }
         """)
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(12, 10, 12, 10)
-        card_layout.setSpacing(6)
+        card_layout.setContentsMargins(10, 8, 10, 8)
+        card_layout.setSpacing(5)
 
         if title_text:
             title_lbl = QLabel(title_text)
-            title_lbl.setStyleSheet(f"font-size: 10pt; font-weight: bold; color: {self.accent_color}; margin-bottom: 2px; border: none; background: transparent;")
+            title_lbl.setStyleSheet(f"font-size: 9.5pt; font-weight: bold; color: {self.accent_color}; margin-bottom: 2px; border: none; background: transparent;")
             card_layout.addWidget(title_lbl)
 
         return card, card_layout
@@ -441,6 +448,10 @@ class SettingsDialog(QDialog):
         tabs.create_health_tab(self)
         tabs.create_tools_tab(self)
         tabs.create_style_tab(self)
+
+        # Modular Settings tab unlocked via Konami cheat code
+        if self.settings.value("konami_settings_unlocked", False, type=bool):
+            tabs.create_mrc_settings_tab(self)
 
         # Tab changed listener
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
