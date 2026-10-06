@@ -515,27 +515,9 @@ def create_sls_tab(dialog) -> QWidget:
             online_ver_label.setText(f"Latest Online: Error ({update_error[:30]}...)")
             online_ver_label.setStyleSheet("color: #cc4444;")
 
-    # 4. Generate & Share Tickets (Experimental) Card
-    ticket_card, ticket_layout = dialog._create_card_frame("Generate & Share Tickets (Experimental)")
-    ticket_layout.setSpacing(12)
-
-    # Experimental Warning Banner
-    warning_lbl = QLabel(
-        "<b>[Experimental Feature]</b> Export ticket tokens from owned Steam titles.\n"
-        "<b>Notice:</b> Generated tickets are temporary auth tokens issued by Steam for sharing ownership. "
-        "If not imported or used within <b>1 to 10 hours</b> of generation, Steam ownership tokens may expire and require re-exporting."
-    )
-    warning_lbl.setWordWrap(True)
-    warning_lbl.setStyleSheet(
-        "background: rgba(255, 170, 0, 0.08); "
-        "border: 1px solid rgba(255, 170, 0, 0.3); "
-        "border-radius: 6px; "
-        "padding: 10px; "
-        "color: #ffca28; "
-        "font-size: 9pt; "
-        "line-height: 1.4;"
-    )
-    ticket_layout.addWidget(warning_lbl)
+    # 4. Generate & Share Tickets Card
+    ticket_card, ticket_layout = dialog._create_card_frame("Generate & Share Tickets")
+    ticket_layout.setSpacing(8)
 
     # Dropdown Selection for Available Games with Tickets
     from utils.ticket_manager import get_available_ticket_games, export_ticket, export_all_tickets

@@ -349,40 +349,35 @@ def create_at0m_tab(dialog) -> QWidget:
     layout.addWidget(cfg_card)
 
     # -- 2. Deploy Card (Bottom Card) --
-    deploy_card, deploy_layout = dialog._create_card_frame("Deploy")
-    deploy_layout.setSpacing(6)
+    deploy_card, deploy_layout = dialog._create_card_frame("Deploy Lua Plugins")
+    deploy_layout.setSpacing(8)
 
-    deploy_desc = QLabel(
-        "Manage Lua plugins for SLSsteam. Deploy or update interceptor and spliced ticket plugins."
-    )
-    deploy_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
-    deploy_desc.setWordWrap(True)
-    deploy_layout.addWidget(deploy_desc)
+    # Row 1: Download Interceptor Plugin
+    interceptor_row = QHBoxLayout()
+    interceptor_row.setContentsMargins(0, 2, 0, 2)
+    interceptor_row.setSpacing(8)
 
-    # Row 1: All deploy controls grouped in the same row!
-    deploy_row = QHBoxLayout()
-    deploy_row.setContentsMargins(0, 2, 0, 2)
-    deploy_row.setSpacing(8)
-
-    deploy_lbl = QLabel("Deploy:")
-    deploy_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500;")
-    deploy_row.addWidget(deploy_lbl)
+    interceptor_lbl = QLabel("Interceptor:")
+    interceptor_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold;")
+    interceptor_lbl.setFixedWidth(80)
+    interceptor_row.addWidget(interceptor_lbl)
 
     dialog.plugin_deploy_combo = QComboBox()
-    dialog.plugin_deploy_combo.setFixedWidth(145)
+    dialog.plugin_deploy_combo.setFixedWidth(160)
     for disp, fn in get_available_download_plugins():
         dialog.plugin_deploy_combo.addItem(disp, fn)
-    deploy_row.addWidget(dialog.plugin_deploy_combo)
+    interceptor_row.addWidget(dialog.plugin_deploy_combo)
 
     dialog.deploy_plugin_btn = QPushButton("Deploy")
     dialog.deploy_plugin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.deploy_plugin_btn.setFixedWidth(65)
     dialog.deploy_plugin_btn.setStyleSheet("""
         QPushButton {
             background-color: rgba(255, 255, 255, 0.09);
             border: 1px solid rgba(255, 255, 255, 0.22);
             border-radius: 6px;
             color: #FFFFFF;
-            padding: 4px 10px;
+            padding: 4px 8px;
             font-size: 8.5pt;
             font-weight: 500;
         }
@@ -390,31 +385,40 @@ def create_at0m_tab(dialog) -> QWidget:
             background-color: rgba(255, 255, 255, 0.18);
         }
     """)
-    deploy_row.addWidget(dialog.deploy_plugin_btn)
+    interceptor_row.addWidget(dialog.deploy_plugin_btn)
+
+    interceptor_row.addStretch(1)
+
+    interceptor_status_lbl = QLabel("Active:")
+    interceptor_status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
+    interceptor_row.addWidget(interceptor_status_lbl)
 
     dialog.dl_status_badge = QLabel("Checking...")
     dialog.dl_status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    deploy_row.addWidget(dialog.dl_status_badge)
+    interceptor_row.addWidget(dialog.dl_status_badge)
 
-    deploy_row.addSpacing(10)
+    deploy_layout.addLayout(interceptor_row)
+
+    # Row 2: Spliced Tickets Plugin
+    spliced_row = QHBoxLayout()
+    spliced_row.setContentsMargins(0, 2, 0, 2)
+    spliced_row.setSpacing(8)
 
     spliced_lbl = QLabel("Spliced:")
-    spliced_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500;")
-    deploy_row.addWidget(spliced_lbl)
-
-    dialog.spliced_status_badge = QLabel("Checking...")
-    dialog.spliced_status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    deploy_row.addWidget(dialog.spliced_status_badge)
+    spliced_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold;")
+    spliced_lbl.setFixedWidth(80)
+    spliced_row.addWidget(spliced_lbl)
 
     dialog.deploy_spliced_btn = QPushButton("Deploy")
     dialog.deploy_spliced_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.deploy_spliced_btn.setFixedWidth(65)
     dialog.deploy_spliced_btn.setStyleSheet("""
         QPushButton {
             background-color: rgba(255, 255, 255, 0.09);
             border: 1px solid rgba(255, 255, 255, 0.22);
             border-radius: 6px;
             color: #FFFFFF;
-            padding: 4px 10px;
+            padding: 4px 8px;
             font-size: 8.5pt;
             font-weight: 500;
         }
@@ -422,12 +426,27 @@ def create_at0m_tab(dialog) -> QWidget:
             background-color: rgba(255, 255, 255, 0.18);
         }
     """)
-    deploy_row.addWidget(dialog.deploy_spliced_btn)
-    deploy_row.addStretch(1)
+    spliced_row.addWidget(dialog.deploy_spliced_btn)
 
-    deploy_layout.addLayout(deploy_row)
+    spliced_row.addStretch(1)
 
-    # Row 2 (Bottom line): Checkbox for custom plugins (Advanced)
+    spliced_status_lbl = QLabel("Status:")
+    spliced_status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
+    spliced_row.addWidget(spliced_status_lbl)
+
+    dialog.spliced_status_badge = QLabel("Checking...")
+    dialog.spliced_status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    spliced_row.addWidget(dialog.spliced_status_badge)
+
+    deploy_layout.addLayout(spliced_row)
+
+    # Separator
+    deploy_sep = QFrame()
+    deploy_sep.setFrameShape(QFrame.Shape.HLine)
+    deploy_sep.setStyleSheet("color: rgba(255,255,255,0.06); border: none; background: rgba(255,255,255,0.06); max-height: 1px;")
+    deploy_layout.addWidget(deploy_sep)
+
+    # Row 3 (Bottom line): Checkbox for custom plugins (Advanced)
     dialog.custom_plugins_checkbox = create_checkbox_setting(
         "I'm using custom plugins (Advanced)",
         "custom_plugins_advanced",

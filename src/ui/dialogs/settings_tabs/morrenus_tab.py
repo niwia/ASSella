@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QComboBox,
     QApplication,
+    QScrollArea,
 )
 
 from ui.dialogs.settings_tabs.morrenus_stats_widget import MorrenusStatsWidget
@@ -49,6 +50,14 @@ class MRCTestWorker(QThread):
                 headers = {"User-Agent": "ManifestDeX/1.0", "Accept": "*/*"}
                 r = requests.get(url, headers=headers, timeout=4.0)
                 ok = r.status_code < 500
+                if not ok:
+                    err = f"HTTP {r.status_code}"
+
+            elif self.provider == "hubcap":
+                # Hubcap health endpoint
+                url = "https://hubcapmanifest.com/api/v1/health"
+                r = requests.get(url, timeout=4.0)
+                ok = r.status_code == 200
                 if not ok:
                     err = f"HTTP {r.status_code}"
 
@@ -112,9 +121,7 @@ def create_api_key_setting(
 
     toggle_btn = QPushButton("Show")
     toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    toggle_btn.clicked.connect(
-        lambda: toggle_api_key_visibility(api_key_input, toggle_btn)
-    )
+    toggle_btn.clicked.connect(lambda: toggle_api_key_visibility(api_key_input, toggle_btn))
     btn_row.addWidget(toggle_btn)
 
     paste_btn = QPushButton("Paste")
@@ -145,9 +152,18 @@ def toggle_api_key_visibility(input_field: QLineEdit, toggle_btn: QPushButton) -
 
 
 def create_morrenus_tab(dialog) -> QWidget:
-    """Create the Morrenus / Hubcap Integrations settings tab."""
+    """Create the Morrenus / Hubcap Integrations settings tab with scrollable container."""
     tab = QWidget()
-    layout = QVBoxLayout(tab)
+    outer_layout = QVBoxLayout(tab)
+    outer_layout.setContentsMargins(0, 0, 0, 0)
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+    container = QWidget()
+    layout = QVBoxLayout(container)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)
 
@@ -197,6 +213,7 @@ def create_morrenus_tab(dialog) -> QWidget:
     dialog.manifest_provider_combo.addItem("Auto (Race Wudrm & ManifestDeX)", "auto")
     dialog.manifest_provider_combo.addItem("Wudrm (Primary)", "wudrm")
     dialog.manifest_provider_combo.addItem("ManifestDeX", "manifestdex")
+    dialog.manifest_provider_combo.addItem("Hubcap Manifest (Direct API)", "hubcap")
 
     current_provider = dialog.settings.value("manifest_provider", "auto", type=str).lower()
     idx = dialog.manifest_provider_combo.findData(current_provider)
@@ -249,6 +266,9 @@ def create_morrenus_tab(dialog) -> QWidget:
     layout.addWidget(mrc_card)
 
     layout.addStretch()
+
+    scroll.setWidget(container)
+    outer_layout.addWidget(scroll)
 
     # Connect tab change for lazy loading stats
     dialog.morrenus_tab_initialized = False

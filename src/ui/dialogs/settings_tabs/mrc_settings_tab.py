@@ -1,8 +1,9 @@
-"""Modular Testing tab for controlling MRC providers and parameters in Lua.
+"""Modular Testing tab for controlling MRC providers, race parameters, and developer utilities.
 
 Accessible when unlocked via the Konami cheat code (Testing).
 Manages provider hierarchy, fallback rescue order, race/timeout parameters,
-and synchronizes configuration to ~/.config/SLSsteam/mrc_config.lua.
+synchronizes configuration to ~/.config/SLSsteam/mrc_config.lua,
+and provides developer toggles to test one-time dialogs (Welcome screen, TWP, lock menu).
 """
 
 import logging
@@ -17,9 +18,12 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QPushButton,
     QMessageBox,
+    QScrollArea,
+    QFrame,
 )
 
 from managers.mrc_config_manager import MRCConfigManager
+from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +31,16 @@ logger = logging.getLogger(__name__)
 def create_mrc_settings_tab(dialog) -> QWidget:
     """Create the modular MRC Testing tab."""
     tab = QWidget()
-    layout = QVBoxLayout(tab)
+    outer_layout = QVBoxLayout(tab)
+    outer_layout.setContentsMargins(0, 0, 0, 0)
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+    container = QWidget()
+    layout = QVBoxLayout(container)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)
 
@@ -218,7 +231,126 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     actions_row.addStretch()
     layout.addLayout(actions_row)
 
+    # -- 4. Testing & Developer Utilities Card --
+    test_card, test_layout = dialog._create_card_frame("Testing & Developer Utilities")
+    test_desc = QLabel(
+        "Manage one-time onboarding states, launch test dialogs, and control secret menu access."
+    )
+    test_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    test_desc.setWordWrap(True)
+    test_layout.addWidget(test_desc)
+
+    t_grid = QGridLayout()
+    t_grid.setHorizontalSpacing(10)
+    t_grid.setVerticalSpacing(8)
+
+    settings = get_settings()
+
+    # 1. Welcome Screen
+    welcome_seen = settings.value("canary_welcome_seen", False, type=bool)
+    welcome_status = QLabel("Welcome: " + ("Seen" if welcome_seen else "Will show next boot"))
+    welcome_status.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
+    t_grid.addWidget(welcome_status, 0, 0)
+
+    reset_welcome_btn = QPushButton("Reset (Show Next Boot)")
+    reset_welcome_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    reset_welcome_btn.setStyleSheet("font-size: 8.5pt; padding: 4px 10px;")
+    def _on_reset_welcome():
+        settings.setValue("canary_welcome_seen", False)
+        settings.sync()
+        welcome_status.setText("Welcome: Will show next boot")
+        welcome_status.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: 500;")
+        QMessageBox.information(dialog, "Welcome Screen", "Welcome screen reset!\nIt will automatically show on the next launch.")
+    reset_welcome_btn.clicked.connect(_on_reset_welcome)
+    t_grid.addWidget(reset_welcome_btn, 0, 1)
+
+    launch_welcome_btn = QPushButton("Launch Welcome Now")
+    launch_welcome_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    launch_welcome_btn.setStyleSheet("font-size: 8.5pt; padding: 4px 10px;")
+    def _on_launch_welcome():
+        from ui.dialogs.canary_welcome_dialog import CanaryWelcomeDialog
+        w_dlg = CanaryWelcomeDialog(dialog)
+        w_dlg.exec()
+    launch_welcome_btn.clicked.connect(_on_launch_welcome)
+    t_grid.addWidget(launch_welcome_btn, 0, 2)
+
+    # 2. Training Wheels Protocol (TWP)
+    twp_seen = settings.value("assella_twp_seen", False, type=bool)
+    twp_status = QLabel("TWP: " + ("Seen" if twp_seen else "Will show next boot"))
+    twp_status.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
+    t_grid.addWidget(twp_status, 1, 0)
+
+    reset_twp_btn = QPushButton("Reset (Show Next Boot)")
+    reset_twp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    reset_twp_btn.setStyleSheet("font-size: 8.5pt; padding: 4px 10px;")
+    def _on_reset_twp():
+        settings.setValue("assella_twp_seen", False)
+        settings.sync()
+        twp_status.setText("TWP: Will show next boot")
+        twp_status.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: 500;")
+        QMessageBox.information(dialog, "Training Wheels", "Training Wheels Protocol reset!\nIt will trigger on the next launch.")
+    reset_twp_btn.clicked.connect(_on_reset_twp)
+    t_grid.addWidget(reset_twp_btn, 1, 1)
+
+    launch_twp_btn = QPushButton("Launch TWP Now")
+    launch_twp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    launch_twp_btn.setStyleSheet("font-size: 8.5pt; padding: 4px 10px;")
+    def _on_launch_twp():
+        from ui.dialogs.training_wheels import TrainingWheelsDialog
+        t_dlg = TrainingWheelsDialog(dialog)
+        t_dlg.exec()
+    launch_twp_btn.clicked.connect(_on_launch_twp)
+    t_grid.addWidget(launch_twp_btn, 1, 2)
+
+    # 3. Lock Secret Menu
+    lock_lbl = QLabel("Secret Menu:")
+    lock_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
+    t_grid.addWidget(lock_lbl, 2, 0)
+
+    lock_menu_btn = QPushButton("Lock Testing Menu")
+    lock_menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    lock_menu_btn.setStyleSheet("""
+        QPushButton {
+            background-color: rgba(244, 67, 54, 0.15);
+            color: #EF5350;
+            border: 1px solid rgba(239, 83, 80, 0.45);
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(244, 67, 54, 0.28);
+        }
+    """)
+    def _on_lock_menu():
+        settings.setValue("konami_settings_unlocked", False)
+        settings.sync()
+        QMessageBox.information(
+            dialog,
+            "Testing Menu Locked",
+            "The secret Testing menu has been locked!\nIt will be hidden when Settings is reopened.\n(Enter the cheatcode again to unlock)"
+        )
+    lock_menu_btn.clicked.connect(_on_lock_menu)
+    t_grid.addWidget(lock_menu_btn, 2, 1)
+
+    reset_theme_btn = QPushButton("Reset Seasonal Theme")
+    reset_theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    reset_theme_btn.setStyleSheet("font-size: 8.5pt; padding: 4px 10px;")
+    def _on_reset_theme():
+        settings.setValue("halloween_auto_applied", False)
+        settings.sync()
+        QMessageBox.information(dialog, "Seasonal Theme", "Seasonal theme auto-activation flag reset.")
+    reset_theme_btn.clicked.connect(_on_reset_theme)
+    t_grid.addWidget(reset_theme_btn, 2, 2)
+
+    test_layout.addLayout(t_grid)
+    layout.addWidget(test_card)
+
     layout.addStretch()
+
+    scroll.setWidget(container)
+    outer_layout.addWidget(scroll)
 
     # The tab is named "Testing"
     dialog.tab_widget.addTab(tab, "Testing")
