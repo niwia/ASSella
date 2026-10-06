@@ -49,39 +49,10 @@ def create_advanced_tab(dialog) -> QWidget:
         "Pings Steam CDN edge servers before downloading to select the lowest-latency route.",
         show_description=False,
     )
+    dialog.probe_cdn_checkbox.checkbox.toggled.connect(
+        lambda val: (dialog.settings.setValue("probe_cdn", val), dialog.settings.sync())
+    )
     adv_layout.addWidget(dialog.probe_cdn_checkbox)
-
-
-
-    # Clear Update & Build ID Cache Row
-    cache_layout = QHBoxLayout()
-    cache_layout.setContentsMargins(0, 6, 0, 2)
-    cache_desc = QLabel("Update & Build ID Cache:")
-    cache_desc.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
-    cache_desc.setToolTip("Clears local caches so game build IDs, branches, and update statuses are queried fresh from Steam.")
-    dialog.clear_update_cache_btn = QPushButton("Clear Cache")
-    dialog.clear_update_cache_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.clear_update_cache_btn.setToolTip("Purges cached build IDs, branch manifests, and update status entries.")
-    dialog.clear_update_cache_btn.setStyleSheet("""
-        QPushButton {
-            background: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 6px;
-            padding: 4px 14px;
-            color: #FFFFFF;
-            font-size: 9pt;
-            font-weight: 500;
-        }
-        QPushButton:hover {
-            background: rgba(255, 255, 255, 0.16);
-            border-color: rgba(255, 255, 255, 0.35);
-        }
-    """)
-    dialog.clear_update_cache_btn.clicked.connect(lambda: on_clear_update_cache_clicked(dialog))
-    cache_layout.addWidget(cache_desc)
-    cache_layout.addStretch(1)
-    cache_layout.addWidget(dialog.clear_update_cache_btn)
-    adv_layout.addLayout(cache_layout)
 
     layout.addWidget(adv_card)
 
@@ -196,39 +167,6 @@ def create_advanced_tab(dialog) -> QWidget:
 
     dialog.tab_widget.addTab(tab, "Advanced")
     return tab
-
-
-def on_clear_update_cache_clicked(dialog):
-    """Purges local update status cache, branch cache, and stored build IDs."""
-    try:
-        from utils.update_status_cache import get_update_cache
-        get_update_cache().clear_all()
-    except Exception as e:
-        logger.warning(f"Error clearing update_status_cache: {e}")
-
-    try:
-        from core.steam_api import clear_branch_cache
-        clear_branch_cache()
-    except Exception as e:
-        logger.warning(f"Error clearing branch cache: {e}")
-
-    for key in list(dialog.settings.allKeys()):
-        if key.startswith("last_checked_") or key.startswith("installed_buildid/"):
-            dialog.settings.remove(key)
-    dialog.settings.sync()
-
-    dialog.clear_update_cache_btn.setText("Cleared!")
-    dialog.clear_update_cache_btn.setEnabled(False)
-    QTimer.singleShot(2500, lambda: (
-        dialog.clear_update_cache_btn.setText("Clear Cache"),
-        dialog.clear_update_cache_btn.setEnabled(True)
-    ))
-    QMessageBox.information(
-        dialog,
-        "Cache Cleared",
-        "Update status, build ID, and branch caches have been cleared successfully.\n\n"
-        "Fresh live data will be queried next time you check for updates or open game details."
-    )
 
 
 def goldberg_checked_warning(dialog) -> None:

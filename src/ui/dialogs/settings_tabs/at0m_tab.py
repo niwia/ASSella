@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 import logging
 from typing import Optional
 from pathlib import Path
@@ -15,6 +16,8 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QPushButton,
     QMessageBox,
+    QMenu,
+    QFileDialog,
 )
 
 from utils.helpers import create_checkbox_setting
@@ -348,97 +351,46 @@ def create_at0m_tab(dialog) -> QWidget:
 
     layout.addWidget(cfg_card)
 
-    # -- 2. Deploy Card (Bottom Card) --
+    # -- 2. Deploy Card (Bottom Card with 3 Dynamic Buttons) --
     deploy_card, deploy_layout = dialog._create_card_frame("Deploy Lua Plugins")
     deploy_layout.setSpacing(8)
 
-    # Row 1: Download Interceptor Plugin
-    interceptor_row = QHBoxLayout()
-    interceptor_row.setContentsMargins(0, 2, 0, 2)
-    interceptor_row.setSpacing(8)
+    # Three Dynamic Buttons Row
+    buttons_row = QHBoxLayout()
+    buttons_row.setContentsMargins(0, 4, 0, 4)
+    buttons_row.setSpacing(8)
 
-    interceptor_lbl = QLabel("Interceptor:")
-    interceptor_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold;")
-    interceptor_lbl.setFixedWidth(80)
-    interceptor_row.addWidget(interceptor_lbl)
+    # 1. Standard Plugin button (status indicator + downloader)
+    dialog.btn_standard_plugin = QPushButton("Standard Plugin")
+    dialog.btn_standard_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
+    buttons_row.addWidget(dialog.btn_standard_plugin, 1)
 
-    dialog.plugin_deploy_combo = QComboBox()
-    dialog.plugin_deploy_combo.setFixedWidth(160)
-    for disp, fn in get_available_download_plugins():
-        dialog.plugin_deploy_combo.addItem(disp, fn)
-    interceptor_row.addWidget(dialog.plugin_deploy_combo)
-
-    dialog.deploy_plugin_btn = QPushButton("Deploy")
-    dialog.deploy_plugin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.deploy_plugin_btn.setFixedWidth(65)
-    dialog.deploy_plugin_btn.setStyleSheet("""
+    # 2. Select Plugin button (choice of 3 plugins: Standard, Experimental, Custom)
+    dialog.btn_select_plugin = QPushButton("Select Plugin ▾")
+    dialog.btn_select_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.btn_select_plugin.setStyleSheet("""
         QPushButton {
-            background-color: rgba(255, 255, 255, 0.09);
+            background-color: rgba(255, 255, 255, 0.08);
             border: 1px solid rgba(255, 255, 255, 0.22);
             border-radius: 6px;
             color: #FFFFFF;
-            padding: 4px 8px;
+            padding: 7px 12px;
             font-size: 8.5pt;
             font-weight: 500;
         }
         QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.18);
+            background-color: rgba(255, 255, 255, 0.16);
+            border-color: rgba(255, 255, 255, 0.35);
         }
     """)
-    interceptor_row.addWidget(dialog.deploy_plugin_btn)
+    buttons_row.addWidget(dialog.btn_select_plugin, 1)
 
-    interceptor_row.addStretch(1)
+    # 3. Spliced Tickets button
+    dialog.btn_spliced_tickets = QPushButton("Spliced Tickets")
+    dialog.btn_spliced_tickets.setCursor(Qt.CursorShape.PointingHandCursor)
+    buttons_row.addWidget(dialog.btn_spliced_tickets, 1)
 
-    interceptor_status_lbl = QLabel("Active:")
-    interceptor_status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
-    interceptor_row.addWidget(interceptor_status_lbl)
-
-    dialog.dl_status_badge = QLabel("Checking...")
-    dialog.dl_status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    interceptor_row.addWidget(dialog.dl_status_badge)
-
-    deploy_layout.addLayout(interceptor_row)
-
-    # Row 2: Spliced Tickets Plugin
-    spliced_row = QHBoxLayout()
-    spliced_row.setContentsMargins(0, 2, 0, 2)
-    spliced_row.setSpacing(8)
-
-    spliced_lbl = QLabel("Spliced:")
-    spliced_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: bold;")
-    spliced_lbl.setFixedWidth(80)
-    spliced_row.addWidget(spliced_lbl)
-
-    dialog.deploy_spliced_btn = QPushButton("Deploy")
-    dialog.deploy_spliced_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.deploy_spliced_btn.setFixedWidth(65)
-    dialog.deploy_spliced_btn.setStyleSheet("""
-        QPushButton {
-            background-color: rgba(255, 255, 255, 0.09);
-            border: 1px solid rgba(255, 255, 255, 0.22);
-            border-radius: 6px;
-            color: #FFFFFF;
-            padding: 4px 8px;
-            font-size: 8.5pt;
-            font-weight: 500;
-        }
-        QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.18);
-        }
-    """)
-    spliced_row.addWidget(dialog.deploy_spliced_btn)
-
-    spliced_row.addStretch(1)
-
-    spliced_status_lbl = QLabel("Status:")
-    spliced_status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
-    spliced_row.addWidget(spliced_status_lbl)
-
-    dialog.spliced_status_badge = QLabel("Checking...")
-    dialog.spliced_status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    spliced_row.addWidget(dialog.spliced_status_badge)
-
-    deploy_layout.addLayout(spliced_row)
+    deploy_layout.addLayout(buttons_row)
 
     # Separator
     deploy_sep = QFrame()
@@ -446,13 +398,13 @@ def create_at0m_tab(dialog) -> QWidget:
     deploy_sep.setStyleSheet("color: rgba(255,255,255,0.06); border: none; background: rgba(255,255,255,0.06); max-height: 1px;")
     deploy_layout.addWidget(deploy_sep)
 
-    # Row 3 (Bottom line): Checkbox for custom plugins (Advanced)
+    # Checkbox for custom plugins (Advanced)
     dialog.custom_plugins_checkbox = create_checkbox_setting(
         "I'm using custom plugins (Advanced)",
         "custom_plugins_advanced",
         False,
         dialog,
-        "Bypasses plugin missing checks for game transfers and native downloads. Warning: Third-party plugin support cannot be guaranteed!",
+        "Bypasses plugin missing checks for game transfers and native downloads. Disables standard download.lua enforcement.",
         show_description=False,
     )
     deploy_layout.addWidget(dialog.custom_plugins_checkbox)
@@ -473,83 +425,111 @@ def create_at0m_tab(dialog) -> QWidget:
     layout.addWidget(deploy_card)
 
     def _refresh_deploy_ui():
-        active_dl = get_active_download_plugin()
-        is_bypassed = dialog.settings.value("custom_plugins_advanced", False, type=bool)
-        accent = getattr(dialog, "accent_color", "#ff7518")
-
-        if active_dl:
-            # User is using the plugin: show plugin name according to theme accent color
-            dialog.dl_status_badge.setText(active_dl)
-            dialog.dl_status_badge.setStyleSheet(f"""
-                QLabel {{
-                    background-color: {accent};
-                    color: #000000;
-                    border: 1px solid {accent};
-                    border-radius: 5px;
-                    padding: 3px 8px;
-                    font-size: 8pt;
-                    font-weight: 700;
-                }}
-            """)
-            dialog.dl_status_badge.setToolTip(f"Active download interceptor plugin: {active_dl}")
-        else:
-            if is_bypassed:
-                # No plugin detected + selected custom plugin
-                dialog.dl_status_badge.setText("Unknown")
-                dialog.dl_status_badge.setStyleSheet("""
-                    QLabel {
-                        background-color: rgba(33, 150, 243, 0.18);
-                        color: #90CAF9;
-                        border: 1px solid rgba(144, 202, 249, 0.45);
-                        border-radius: 5px;
-                        padding: 3px 8px;
-                        font-size: 8pt;
-                        font-weight: 700;
-                    }
-                """)
-                dialog.dl_status_badge.setToolTip("No standard plugin detected. Custom plugin bypass is active.")
-            else:
-                # No plugin detected + no custom plugin toggle
-                dialog.dl_status_badge.setText("Missing")
-                dialog.dl_status_badge.setStyleSheet("""
-                    QLabel {
-                        background-color: rgba(244, 67, 54, 0.15);
-                        color: #EF5350;
-                        border: 1px solid rgba(239, 83, 80, 0.45);
-                        border-radius: 5px;
-                        padding: 3px 8px;
-                        font-size: 8pt;
-                        font-weight: 700;
-                    }
-                """)
-                dialog.dl_status_badge.setToolTip("Download interceptor plugin is missing.")
-
-        # Spliced tickets status
+        is_custom = dialog.settings.value("custom_plugins_advanced", False, type=bool)
+        std_state = get_plugin_state("download.lua")
         spliced_state = get_plugin_state("spliced-tickets.lua")
-        if spliced_state != "missing":
-            dialog.spliced_status_badge.setText("spliced-tickets.lua")
-            dialog.spliced_status_badge.setStyleSheet("""
-                QLabel {
-                    background-color: rgba(76, 175, 80, 0.18);
+        active_dl = get_active_download_plugin()
+
+        # 1. Standard Plugin button state & style
+        if is_custom:
+            dialog.btn_standard_plugin.setEnabled(False)
+            dialog.btn_standard_plugin.setText("Standard Plugin")
+            dialog.btn_standard_plugin.setToolTip("Custom plugins option is enabled. Standard download.lua downloader is bypassed.")
+            dialog.btn_standard_plugin.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(255, 255, 255, 0.03);
+                    color: rgba(255, 255, 255, 0.3);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    padding: 7px 12px;
+                    font-size: 8.5pt;
+                    font-weight: 500;
+                }
+            """)
+        elif std_state == "up_to_date":
+            # SHA match using cloudflare: show in green, cant click
+            dialog.btn_standard_plugin.setEnabled(False)
+            dialog.btn_standard_plugin.setText("Standard Plugin")
+            dialog.btn_standard_plugin.setToolTip("download.lua is installed and verified against Cloudflare manifest.")
+            dialog.btn_standard_plugin.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(76, 175, 80, 0.2);
                     color: #81C784;
-                    border: 1px solid rgba(129, 199, 132, 0.45);
-                    border-radius: 5px;
-                    padding: 3px 8px;
-                    font-size: 8pt;
-                    font-weight: 700;
+                    border: 1px solid rgba(129, 199, 132, 0.5);
+                    border-radius: 6px;
+                    padding: 7px 12px;
+                    font-size: 8.5pt;
+                    font-weight: 600;
                 }
             """)
         else:
-            dialog.spliced_status_badge.setText("Missing")
-            dialog.spliced_status_badge.setStyleSheet("""
-                QLabel {
-                    background-color: rgba(244, 67, 54, 0.15);
-                    color: #EF5350;
-                    border: 1px solid rgba(239, 83, 80, 0.45);
-                    border-radius: 5px;
-                    padding: 3px 8px;
-                    font-size: 8pt;
-                    font-weight: 700;
+            # Missing or outdated: show in orange, clickable downloader
+            dialog.btn_standard_plugin.setEnabled(True)
+            status_text = "Standard Plugin (Missing)" if std_state == "missing" else "Standard Plugin (Update)"
+            dialog.btn_standard_plugin.setText(status_text)
+            dialog.btn_standard_plugin.setToolTip("download.lua is missing or outdated. Click to download and install from Cloudflare.")
+            dialog.btn_standard_plugin.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(255, 171, 0, 0.18);
+                    color: #FFD54F;
+                    border: 1px solid rgba(255, 171, 0, 0.55);
+                    border-radius: 6px;
+                    padding: 7px 12px;
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 171, 0, 0.32);
+                    border-color: rgba(255, 171, 0, 0.85);
+                    color: #FFFFFF;
+                }
+            """)
+
+        # 2. Select Plugin button text
+        cur_selected = dialog.settings.value("selected_lua_plugin_type", "standard", type=str)
+        if active_dl:
+            dialog.btn_select_plugin.setText(f"{active_dl} ▾")
+        elif cur_selected == "experimental":
+            dialog.btn_select_plugin.setText("Experimental ▾")
+        elif cur_selected == "custom":
+            dialog.btn_select_plugin.setText("Custom Lua ▾")
+        else:
+            dialog.btn_select_plugin.setText("Select Plugin ▾")
+
+        # 3. Spliced Tickets button state & style
+        if spliced_state == "up_to_date":
+            dialog.btn_spliced_tickets.setEnabled(False)
+            dialog.btn_spliced_tickets.setText("Spliced Tickets")
+            dialog.btn_spliced_tickets.setToolTip("spliced-tickets.lua is deployed and active.")
+            dialog.btn_spliced_tickets.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(76, 175, 80, 0.2);
+                    color: #81C784;
+                    border: 1px solid rgba(129, 199, 132, 0.5);
+                    border-radius: 6px;
+                    padding: 7px 12px;
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                }
+            """)
+        else:
+            dialog.btn_spliced_tickets.setEnabled(True)
+            dialog.btn_spliced_tickets.setText("Spliced Tickets (Missing)")
+            dialog.btn_spliced_tickets.setToolTip("spliced-tickets.lua is not deployed. Click to download and install.")
+            dialog.btn_spliced_tickets.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(255, 171, 0, 0.18);
+                    color: #FFD54F;
+                    border: 1px solid rgba(255, 171, 0, 0.55);
+                    border-radius: 6px;
+                    padding: 7px 12px;
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 171, 0, 0.32);
+                    border-color: rgba(255, 171, 0, 0.85);
+                    color: #FFFFFF;
                 }
             """)
 
@@ -601,12 +581,115 @@ def create_at0m_tab(dialog) -> QWidget:
         worker.finished_signal.connect(_on_done)
         worker.start()
 
-    dialog.deploy_plugin_btn.clicked.connect(
-        lambda: _deploy_single(dialog.plugin_deploy_combo.currentData(), "Download Plugin", dialog.deploy_plugin_btn)
-    )
-    dialog.deploy_spliced_btn.clicked.connect(
-        lambda: _deploy_single("spliced-tickets.lua", "Spliced Plugin", dialog.deploy_spliced_btn)
-    )
+    def _on_standard_plugin_clicked():
+        conflicts = []
+        for pdir in get_sls_plugins_dirs():
+            if pdir.is_dir():
+                for f in pdir.glob("*.lua"):
+                    if f.name != "spliced-tickets.lua" and f.name != "download.lua" and not f.name.endswith(".bak"):
+                        conflicts.append(f)
+
+        if conflicts:
+            conflict_names = "\n".join(f"• {f.name}" for f in {p.name for p in conflicts})
+            reply = QMessageBox.warning(
+                dialog,
+                "Conflicting Plugins Detected",
+                f"The following other Lua plugin(s) were found in your SLSsteam plugins folder:\n\n{conflict_names}\n\n"
+                "Installing Standard Plugin will wipe these plugins and replace them with download.lua from Cloudflare.\n\n"
+                "Do you want to wipe other plugins and proceed?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            for f in conflicts:
+                try:
+                    f.unlink()
+                    logger.info(f"[at0mTab] Wiped alternative plugin: {f}")
+                except Exception as ex:
+                    logger.warning(f"[at0mTab] Error wiping {f}: {ex}")
+
+        _deploy_single("download.lua", "Standard Plugin", dialog.btn_standard_plugin)
+
+    def _on_select_plugin_clicked():
+        menu = QMenu(dialog)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1e1e24;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                color: #FFFFFF;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 16px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: rgba(255, 255, 255, 0.15);
+            }
+        """)
+
+        act1 = menu.addAction("1. Standard Plugin (download.lua)")
+        act2 = menu.addAction("2. Experimental Plugin (download-1.4.0-spacetest.lua)")
+        act3 = menu.addAction("3. Custom Plugin (.lua file)")
+
+        chosen = menu.exec(dialog.btn_select_plugin.mapToGlobal(dialog.btn_select_plugin.rect().bottomLeft()))
+        if not chosen:
+            return
+
+        if chosen == act1:
+            dialog.settings.setValue("selected_lua_plugin_type", "standard")
+            _on_standard_plugin_clicked()
+        elif chosen == act2:
+            dialog.settings.setValue("selected_lua_plugin_type", "experimental")
+            _deploy_single("download-1.4.0-spacetest.lua", "Experimental Plugin", dialog.btn_select_plugin)
+        elif chosen == act3:
+            dialog.settings.setValue("selected_lua_plugin_type", "custom")
+            filepath, _ = QFileDialog.getOpenFileName(
+                dialog,
+                "Select Custom Lua Plugin",
+                str(Path.home()),
+                "Lua Files (*.lua);;All Files (*)",
+            )
+            if filepath:
+                try:
+                    src_path = Path(filepath)
+                    for pdir in get_sls_plugins_dirs():
+                        pdir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_path, pdir / src_path.name)
+                    dialog.custom_plugins_checkbox.checkbox.setChecked(True)
+                    QMessageBox.information(
+                        dialog,
+                        "Custom Plugin Installed",
+                        f"Copied {src_path.name} to your SLSsteam plugins folder.\n'Custom plugins (Advanced)' mode has been enabled."
+                    )
+                except Exception as ex:
+                    QMessageBox.warning(dialog, "Error", f"Failed copying custom plugin: {ex}")
+            _refresh_deploy_ui()
+
+    def _on_spliced_tickets_clicked():
+        reply = QMessageBox.warning(
+            dialog,
+            "Legality Warning",
+            "Bypassing DRM is illegal in many countries, make sure you are aware of this!",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Ok:
+            return
+
+        try:
+            from utils.yaml_config_manager import ensure_plugins_enabled, ensure_smart_tickets_enabled
+            ensure_plugins_enabled()
+            ensure_smart_tickets_enabled()
+        except Exception as ex:
+            logger.warning(f"Could not update config.yaml for spliced tickets: {ex}")
+
+        _deploy_single("spliced-tickets.lua", "Spliced Tickets", dialog.btn_spliced_tickets)
+
+    dialog.btn_standard_plugin.clicked.connect(_on_standard_plugin_clicked)
+    dialog.btn_select_plugin.clicked.connect(_on_select_plugin_clicked)
+    dialog.btn_spliced_tickets.clicked.connect(_on_spliced_tickets_clicked)
 
     def _update_subwidget_states(enabled: bool):
         dialog.at0m_disable_updates_checkbox.setEnabled(enabled)

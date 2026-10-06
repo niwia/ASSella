@@ -47,9 +47,9 @@ class SettingsDialog(QDialog):
         self._initial_tab = initial_tab
         self.setWindowTitle("Settings")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setMinimumWidth(630)
-        self.setMinimumHeight(480)
-        self.resize(640, 500)
+        self.setMinimumWidth(660)
+        self.setMinimumHeight(505)
+        self.resize(672, 525)
         self.settings = get_settings()
         self.main_window = parent
         self.accent_color = self.settings.value("accent_color", "#C06C84")
@@ -59,6 +59,7 @@ class SettingsDialog(QDialog):
         # Widget references populated by tabs
         self.library_mode_checkbox = None
         self.auto_skip_single_choice_checkbox = None
+        self.probe_cdn_checkbox = None
         self.manifest_provider_combo = None
         self.custom_plugins_checkbox = None
         self.smart_depot_selection_checkbox = None
@@ -752,6 +753,11 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "auto_skip_single_choice",
                 self.auto_skip_single_choice_checkbox.isChecked(),
+            )
+        if hasattr(self, "probe_cdn_checkbox") and self.probe_cdn_checkbox is not None:
+            self.settings.setValue(
+                "probe_cdn",
+                self.probe_cdn_checkbox.isChecked(),
             )
         if hasattr(self, "manifest_provider_combo") and self.manifest_provider_combo is not None:
             self.settings.setValue(

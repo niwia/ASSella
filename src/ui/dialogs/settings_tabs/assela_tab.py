@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QMessageBox,
     QSizePolicy,
+    QScrollArea,
 )
 
 from utils.helpers import create_checkbox_setting
@@ -26,7 +27,16 @@ logger = logging.getLogger(__name__)
 def create_assela_tab(dialog) -> QWidget:
     """Create the ASSella settings tab."""
     tab = QWidget()
-    layout = QVBoxLayout(tab)
+    outer_layout = QVBoxLayout(tab)
+    outer_layout.setContentsMargins(0, 0, 0, 0)
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+    container = QWidget()
+    layout = QVBoxLayout(container)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)
 
@@ -211,17 +221,19 @@ def create_assela_tab(dialog) -> QWidget:
 
     # 4. Update Check Interval Slider
     slider_layout = QHBoxLayout()
-    slider_layout.setContentsMargins(2, 2, 2, 2)
+    slider_layout.setContentsMargins(0, 6, 0, 6)
     slider_label = QLabel("Update Check Interval:")
     slider_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
     slider_label.setToolTip("Set how often to check for game updates. Move to the leftmost position (0) to disable.")
 
     dialog.update_interval_slider = QSlider(Qt.Orientation.Horizontal)
     dialog.update_interval_slider.setRange(0, 20)
-    dialog.update_interval_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-    dialog.update_interval_slider.setTickInterval(1)
+    dialog.update_interval_slider.setMinimumHeight(24)
 
     dialog.update_interval_slider.setStyleSheet("""
+        QSlider {
+            min-height: 24px;
+        }
         QSlider::groove:horizontal {
             border: none;
             height: 6px;
@@ -349,6 +361,9 @@ def create_assela_tab(dialog) -> QWidget:
         """)
         uninstall_btn.clicked.connect(lambda: uninstall_assela(dialog))
         layout.addWidget(uninstall_btn)
+
+    scroll.setWidget(container)
+    outer_layout.addWidget(scroll)
 
     dialog.tab_widget.addTab(tab, "ASSella")
     return tab

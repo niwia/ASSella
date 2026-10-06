@@ -221,6 +221,8 @@ class CanaryWelcomeDialog(QDialog):
             }}
             QLabel {{
                 color: #FFFFFF;
+                border: none;
+                background: transparent;
             }}
             QLineEdit {{
                 background-color: rgba(255, 255, 255, 0.04);
@@ -714,11 +716,16 @@ class CanaryWelcomeDialog(QDialog):
 
         # Card 1: Linux & Steam System
         card1 = QFrame()
+        card1.setObjectName("WelcomeCard1")
         card1.setStyleSheet(f"""
-            QFrame {{
+            QFrame#WelcomeCard1 {{
                 background-color: {self.card_bg};
                 border: 1px solid {self.card_border};
                 border-radius: 8px;
+            }}
+            QLabel {{
+                border: none;
+                background: transparent;
             }}
         """)
         c1 = QVBoxLayout(card1)
@@ -763,11 +770,16 @@ class CanaryWelcomeDialog(QDialog):
 
         # Card 2: SLSsteam Integration Engine
         card2 = QFrame()
+        card2.setObjectName("WelcomeCard2")
         card2.setStyleSheet(f"""
-            QFrame {{
+            QFrame#WelcomeCard2 {{
                 background-color: {self.card_bg};
                 border: 1px solid {self.card_border};
                 border-radius: 8px;
+            }}
+            QLabel {{
+                border: none;
+                background: transparent;
             }}
         """)
         c2 = QVBoxLayout(card2)
@@ -975,11 +987,16 @@ class CanaryWelcomeDialog(QDialog):
 
         # Toggle Card
         card = QFrame()
+        card.setObjectName("WelcomeAt0mCard")
         card.setStyleSheet(f"""
-            QFrame {{
+            QFrame#WelcomeAt0mCard {{
                 background-color: {self.card_bg};
                 border: 1px solid {self.card_border};
                 border-radius: 8px;
+            }}
+            QLabel {{
+                border: none;
+                background: transparent;
             }}
         """)
         c_layout = QVBoxLayout(card)
@@ -994,7 +1011,8 @@ class CanaryWelcomeDialog(QDialog):
         c_layout.addWidget(self.chk_enable_at0m)
 
         self.lbl_at0m_feedback = QLabel("")
-        self.lbl_at0m_feedback.setStyleSheet(f"font-size: 9pt; color: {self.semantic.get('success', '#81c784')};")
+        self.lbl_at0m_feedback.setStyleSheet(f"font-size: 9pt; color: {self.semantic.get('success', '#81c784')}; border: none; background: transparent;")
+        self.lbl_at0m_feedback.hide()
         c_layout.addWidget(self.lbl_at0m_feedback)
 
         lbl_desc = QLabel(
@@ -1002,7 +1020,7 @@ class CanaryWelcomeDialog(QDialog):
             "directory and Plugins: yes is set in config.yaml. You can also configure this later in Settings → at0-m."
         )
         lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
+        lbl_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; border: none; background: transparent;")
         c_layout.addWidget(lbl_desc)
 
         layout.addWidget(card)
@@ -1065,8 +1083,10 @@ class CanaryWelcomeDialog(QDialog):
                     self.lbl_at0m_feedback.setText(f"Plugins notice: {msgs}")
             except Exception as e:
                 self.lbl_at0m_feedback.setText(f"Deployment error: {e}")
+            self.lbl_at0m_feedback.show()
         else:
             self.lbl_at0m_feedback.setText("at0-m disabled.")
+            self.lbl_at0m_feedback.show()
 
     def _advance_to_preferences(self) -> None:
         self.stack.setCurrentIndex(4)

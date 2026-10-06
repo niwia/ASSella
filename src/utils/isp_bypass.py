@@ -200,13 +200,32 @@ _WIRECUTTER_SALT = b"ASSella_Hubcap_Bypass_v261"
 
 
 def get_wirecutter_endpoint() -> str:
-    """Decrypts and returns the internal Wirecutter Cloudflare Worker endpoint."""
+    """Returns custom Wirecutter URL if configured in settings, or decrypts default endpoint."""
+    try:
+        from utils.settings import get_settings
+        custom_wc = get_settings().value("wirecutter_url", "", type=str)
+        if custom_wc and custom_wc.strip():
+            return custom_wc.strip().rstrip("/")
+    except Exception:
+        pass
     try:
         import base64
         raw = base64.b85decode(_WIRECUTTER_SECRET.encode("ascii"))
         return bytes(b ^ _WIRECUTTER_SALT[i % len(_WIRECUTTER_SALT)] for i, b in enumerate(raw)).decode("utf-8")
     except Exception:
         return "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev"
+
+
+def get_custom_proxy() -> Optional[str]:
+    """Returns user-configured custom proxy URL (e.g. http://127.0.0.1:7890 or socks5://...)."""
+    try:
+        from utils.settings import get_settings
+        p = get_settings().value("custom_proxy_url", "", type=str)
+        if p and p.strip():
+            return p.strip()
+    except Exception:
+        pass
+    return None
 
 
 def rewrite_url_for_wirecutter(url: str, worker_base: Optional[str] = None) -> str:
@@ -368,6 +387,23 @@ def test_gateway_wirecutter() -> Tuple[bool, str, int]:
         return False, categorize_error(e), latency
 
 
+def test_gateway_proxy(proxy_url: Optional[str] = None) -> Tuple[bool, str, int]:
+    """Tests custom proxy connectivity. Returns (success, display_status, latency_ms)."""
+    p = proxy_url or get_custom_proxy()
+    if not p:
+        return False, "ERR: No Proxy", 0
+    t0 = time.time()
+    try:
+        proxies = {"http": p, "https": p}
+        resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=8)
+        resp.raise_for_status()
+        latency = int((time.time() - t0) * 1000)
+        return True, f"OK ({latency}ms)", latency
+    except Exception as e:
+        latency = int((time.time() - t0) * 1000)
+        return False, categorize_error(e), latency
+
+
 def resolve_doh(domain: str = TARGET_DOMAIN) -> Optional[str]:
     """
     Resolves a domain name to an IPv4 string using Cloudflare or Google DoH over HTTPS.
@@ -482,6 +518,18 @@ def execute_hubcap_request(
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Wirecutter request returned empty or HTML payload.")
         connection_status = "Wire"
+        return resp
+
+    if mode in ("proxy", "custom_proxy"):
+        custom_p = get_custom_proxy()
+        if not custom_p:
+            raise requests.exceptions.ConnectionError("Custom proxy URL is not configured.")
+        proxies = {"http": custom_p, "https": custom_p}
+        resp = session.request(method, url, headers=headers, params=params, proxies=proxies, timeout=timeout + 5, stream=stream)
+        resp.raise_for_status()
+        if not stream and is_html_or_blocked_payload(resp):
+            raise requests.exceptions.ConnectionError("Custom proxy request returned empty or HTML payload.")
+        connection_status = "Proxy"
         return resp
 
     # --- Mode: 'auto' (Smart 4-Tier Fallback Pipeline) ---
