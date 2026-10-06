@@ -798,15 +798,16 @@ class GameManager(QObject):
                             acf_entry = acf_cache.get(game_name) or acf_cache.get(game_name.lower())
                             if acf_entry:
                                 appid_str = str(acf_entry[1])
-                                if appid_str in owned_appids:
-                                    logger.debug(f"  Skipped owned Steam game: {game_name} ({appid_str})")
-                                    continue
-                                elif (
+                                is_managed_target = (
                                     appid_str in additional_apps
                                     or appid_str in plugin_games_dict
                                     or appid_str in dlc_to_base.values()
-                                ):
+                                )
+                                if is_managed_target:
                                     is_vapor = True
+                                elif appid_str in owned_appids:
+                                    logger.debug(f"  Skipped owned Steam game: {game_name} ({appid_str})")
+                                    continue
                                 else:
                                     logger.debug(f"  Skipped non-ACCELA game: {game_name}")
                                     continue
@@ -844,7 +845,7 @@ class GameManager(QObject):
         # skipping any legitimately owned Steam games.
         all_target_apps = set(additional_apps) | set(plugin_games_dict.keys()) | set(dlc_to_base.values())
         for appid_str in all_target_apps:
-            if appid_str in owned_appids:
+            if appid_str in owned_appids and appid_str not in plugin_games_dict and appid_str not in dlc_to_base.values():
                 continue
             acf_info = acf_cache.get(f"appid:{appid_str}")
             if not acf_info:

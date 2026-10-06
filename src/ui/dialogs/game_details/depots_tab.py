@@ -834,21 +834,10 @@ def init_depots_tab(dialog) -> None:
                         removed_count += 1
             else:
                 # Standard locked sync: automatically add missing entries
-                # 1. Base AppID
+                # 1. Base AppID (DLCs are never auto-added in default sync; user must unlock and manually enable them)
                 if appid_str not in state["live_apps"]:
                     editor.add_app(appid_str, comment=f"{game_name} (Base)")
                     added_count += 1
-
-                # DLC AppIDs: ONLY add if NOT greyscaled (DLC does not match a depot key)
-                for item in state["apps"]:
-                    aid = item["id"]
-                    if item.get("is_base"):
-                        continue
-                    if aid in state["game_keys"]:
-                        continue  # Key matches DLC: managed via DecryptionKeys
-                    if aid not in state["live_apps"]:
-                        editor.add_app(aid, comment=item["desc"])
-                        added_count += 1
 
                 # 2. Depots: add missing depots that have valid keys
                 valid_keys = set(item["id"] for item in state["keys"] if item["key"])

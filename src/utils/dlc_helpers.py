@@ -180,13 +180,17 @@ def get_dlc_only_info(base_appid: str) -> List[Dict[str, str]]:
                 continue
             parts = line.split(":")
             if parts and parts[0].strip():
-                dlc_appid = parts[0].strip()
+                did = parts[0].strip()
 
                 # Skip main OS depots of the base game
-                depot_meta = base_depots_data.get(dlc_appid, {})
-                desc = depot_meta.get("desc", "")
-                if is_base_game_main_depot(dlc_appid, desc, base_appid):
+                depot_meta = base_depots_data.get(did, {})
+                desc = depot_meta.get("desc") or depot_meta.get("name") or ""
+                if is_base_game_main_depot(did, desc, base_appid, depot_meta=depot_meta):
                     continue
+
+                # Resolve actual DLC AppID if this depot belongs to a DLC
+                raw_dlc_id = str(depot_meta.get("dlcappid") or "").strip()
+                dlc_appid = raw_dlc_id if (raw_dlc_id and raw_dlc_id != base_appid) else did
 
                 dlc_name = ""
                 dlc_info = db.get_app_info(dlc_appid)
@@ -207,7 +211,7 @@ def get_dlc_only_info(base_appid: str) -> List[Dict[str, str]]:
                         pass
 
                 if not dlc_name and desc:
-                    dlc_name = desc.replace(" - Depot " + dlc_appid, "").strip()
+                    dlc_name = desc.replace(" - Depot " + did, "").strip()
                     dlc_name = re.sub(r"^\[(?:WINDOWS|LINUX|MACOS|OSX|ALL)\]\s*", "", dlc_name, flags=re.IGNORECASE).strip()
 
                 results.append({
