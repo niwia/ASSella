@@ -235,103 +235,209 @@ def create_mrc_settings_tab(dialog) -> QWidget:
 
     settings = get_settings()
 
-    # -- 4. Custom Proxy & Wirecutter Overrides Card --
-    proxy_card, proxy_layout = dialog._create_card_frame("Custom Proxy & Wirecutter Overrides")
+    # -- 4. Custom Proxy / Cloudflare Worker Card --
+    proxy_card, proxy_layout = dialog._create_card_frame("Custom Proxy / Cloudflare Worker")
     proxy_desc = QLabel(
-        "Configure custom HTTP/SOCKS proxy or override the Wirecutter Cloudflare Worker endpoint for Hubcap requests."
+        "Configure a custom proxy or Cloudflare Worker endpoint for bypassing ISP restrictions. "
+        "Any applied endpoint replaces the standard default and persists across ASSella updates."
     )
     proxy_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
     proxy_desc.setWordWrap(True)
     proxy_layout.addWidget(proxy_desc)
 
-    p_form = QGridLayout()
-    p_form.setHorizontalSpacing(8)
-    p_form.setVerticalSpacing(6)
+    from utils.isp_bypass import get_default_wirecutter_endpoint, test_gateway_wirecutter
 
-    # Custom Proxy URL
-    proxy_lbl = QLabel("Custom Proxy:")
-    proxy_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
-    dialog.custom_proxy_input = QLineEdit()
-    dialog.custom_proxy_input.setPlaceholderText("http://127.0.0.1:7890 or socks5://...")
-    dialog.custom_proxy_input.setText(settings.value("custom_proxy_url", "", type=str))
-    dialog.custom_proxy_input.textChanged.connect(
-        lambda txt: (settings.setValue("custom_proxy_url", txt.strip()), settings.sync())
-    )
+    dialog.proxy_url_input = QLineEdit()
+    dialog.proxy_url_input.setPlaceholderText(get_default_wirecutter_endpoint())
+    saved_proxy = settings.value("wirecutter_url", "", type=str).strip()
+    dialog.proxy_url_input.setText(saved_proxy or get_default_wirecutter_endpoint())
+    dialog.proxy_url_input.setStyleSheet("""
+        QLineEdit {
+            background-color: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            padding: 5px 8px;
+            color: #FFFFFF;
+            font-size: 8.5pt;
+        }
+        QLineEdit:focus {
+            border: 1px solid #64B5F6;
+        }
+    """)
+    proxy_layout.addWidget(dialog.proxy_url_input)
 
-    test_proxy_btn = QPushButton("Test Proxy")
+    btn_row = QHBoxLayout()
+    btn_row.setSpacing(8)
+
+    NEUTRAL_STYLE = """
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.08);
+            color: #FFFFFF;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            padding: 5px 14px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.16);
+        }
+        QPushButton:disabled {
+            color: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.08);
+            background-color: rgba(255, 255, 255, 0.03);
+        }
+    """
+
+    SUCCESS_STYLE = """
+        QPushButton {
+            background-color: rgba(76, 175, 80, 0.22);
+            color: #81C784;
+            border: 1px solid #81C784;
+            border-radius: 6px;
+            padding: 5px 14px;
+            font-size: 8.5pt;
+            font-weight: 600;
+        }
+        QPushButton:hover {
+            background-color: rgba(76, 175, 80, 0.32);
+        }
+        QPushButton:disabled {
+            color: rgba(129, 199, 132, 0.4);
+            border-color: rgba(129, 199, 132, 0.2);
+        }
+    """
+
+    FAIL_STYLE = """
+        QPushButton {
+            background-color: rgba(244, 67, 54, 0.22);
+            color: #EF5350;
+            border: 1px solid #EF5350;
+            border-radius: 6px;
+            padding: 5px 14px;
+            font-size: 8.5pt;
+            font-weight: 600;
+        }
+        QPushButton:hover {
+            background-color: rgba(244, 67, 54, 0.32);
+        }
+        QPushButton:disabled {
+            color: rgba(239, 83, 80, 0.4);
+            border-color: rgba(239, 83, 80, 0.2);
+        }
+    """
+
+    reset_proxy_btn = QPushButton("Reset (Default Proxy)")
+    reset_proxy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    reset_proxy_btn.setStyleSheet(NEUTRAL_STYLE)
+
+    test_proxy_btn = QPushButton("Test")
     test_proxy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    test_proxy_btn.setStyleSheet("font-size: 8.5pt; padding: 3px 8px;")
+    test_proxy_btn.setStyleSheet(NEUTRAL_STYLE)
 
-    proxy_res_lbl = QLabel("")
-    proxy_res_lbl.setStyleSheet("font-size: 8pt; color: #81C784;")
+    apply_proxy_btn = QPushButton("Apply")
+    apply_proxy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    apply_proxy_btn.setStyleSheet(NEUTRAL_STYLE)
 
-    def _test_custom_proxy():
-        p_val = dialog.custom_proxy_input.text().strip()
-        if not p_val:
-            proxy_res_lbl.setText("Enter proxy URL first")
-            proxy_res_lbl.setStyleSheet("color: #FFB74D; font-size: 8pt;")
+    has_init_text = bool(dialog.proxy_url_input.text().strip())
+    test_proxy_btn.setEnabled(has_init_text)
+    apply_proxy_btn.setEnabled(has_init_text)
+
+    def _on_proxy_url_changed(txt: str):
+        valid = bool(txt.strip())
+        test_proxy_btn.setEnabled(valid)
+        apply_proxy_btn.setEnabled(valid)
+        test_proxy_btn.setStyleSheet(NEUTRAL_STYLE)
+        test_proxy_btn.setText("Test")
+        apply_proxy_btn.setStyleSheet(NEUTRAL_STYLE)
+        apply_proxy_btn.setText("Apply")
+
+    dialog.proxy_url_input.textChanged.connect(_on_proxy_url_changed)
+
+    def _on_reset_proxy():
+        def_url = get_default_wirecutter_endpoint()
+        dialog.proxy_url_input.setText(def_url)
+        settings.remove("wirecutter_url")
+        settings.sync()
+        test_proxy_btn.setStyleSheet(NEUTRAL_STYLE)
+        test_proxy_btn.setText("Test")
+        test_proxy_btn.setEnabled(True)
+        apply_proxy_btn.setStyleSheet(NEUTRAL_STYLE)
+        apply_proxy_btn.setText("Apply")
+        apply_proxy_btn.setEnabled(True)
+
+    reset_proxy_btn.clicked.connect(_on_reset_proxy)
+
+    def _on_test_proxy():
+        url = dialog.proxy_url_input.text().strip()
+        if not url:
             return
         test_proxy_btn.setEnabled(False)
         test_proxy_btn.setText("Testing...")
+        apply_proxy_btn.setEnabled(False)
+
         def _bg():
-            from utils.isp_bypass import test_gateway_proxy
-            ok, msg, lat = test_gateway_proxy(p_val)
+            ok, msg, lat = test_gateway_wirecutter(url)
             def _ui():
                 test_proxy_btn.setEnabled(True)
-                test_proxy_btn.setText("Test Proxy")
-                color = "#81C784" if ok else "#EF5350"
-                proxy_res_lbl.setText(f"{msg}")
-                proxy_res_lbl.setStyleSheet(f"color: {color}; font-size: 8pt; font-weight: bold;")
+                apply_proxy_btn.setEnabled(bool(dialog.proxy_url_input.text().strip()))
+                if ok:
+                    test_proxy_btn.setStyleSheet(SUCCESS_STYLE)
+                    test_proxy_btn.setText(f"OK ({lat}ms) ✓")
+                else:
+                    test_proxy_btn.setStyleSheet(FAIL_STYLE)
+                    test_proxy_btn.setText(f"Failed ({msg}) ✗")
             QTimer.singleShot(0, _ui)
+
         threading.Thread(target=_bg, daemon=True).start()
 
-    test_proxy_btn.clicked.connect(_test_custom_proxy)
+    test_proxy_btn.clicked.connect(_on_test_proxy)
 
-    p_form.addWidget(proxy_lbl, 0, 0)
-    p_form.addWidget(dialog.custom_proxy_input, 0, 1)
-    p_form.addWidget(test_proxy_btn, 0, 2)
-    p_form.addWidget(proxy_res_lbl, 0, 3)
+    def _on_apply_proxy():
+        url = dialog.proxy_url_input.text().strip()
+        if not url:
+            return
+        # Stage 1: Test the endpoint first
+        apply_proxy_btn.setEnabled(False)
+        apply_proxy_btn.setText("Testing...")
+        test_proxy_btn.setEnabled(False)
+        test_proxy_btn.setText("Testing...")
 
-    # Wirecutter URL Override
-    wc_lbl = QLabel("Wirecutter Worker:")
-    wc_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
-    dialog.wirecutter_url_input = QLineEdit()
-    dialog.wirecutter_url_input.setPlaceholderText("https://<worker-name>.workers.dev")
-    dialog.wirecutter_url_input.setText(settings.value("wirecutter_url", "", type=str))
-    dialog.wirecutter_url_input.textChanged.connect(
-        lambda txt: (settings.setValue("wirecutter_url", txt.strip()), settings.sync())
-    )
-
-    test_wc_btn = QPushButton("Test Worker")
-    test_wc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    test_wc_btn.setStyleSheet("font-size: 8.5pt; padding: 3px 8px;")
-
-    wc_res_lbl = QLabel("")
-    wc_res_lbl.setStyleSheet("font-size: 8pt; color: #81C784;")
-
-    def _test_wc():
-        test_wc_btn.setEnabled(False)
-        test_wc_btn.setText("Testing...")
         def _bg():
-            from utils.isp_bypass import test_gateway_wirecutter
-            ok, msg, lat = test_gateway_wirecutter()
+            ok, msg, lat = test_gateway_wirecutter(url)
             def _ui():
-                test_wc_btn.setEnabled(True)
-                test_wc_btn.setText("Test Worker")
-                color = "#81C784" if ok else "#EF5350"
-                wc_res_lbl.setText(f"{msg}")
-                wc_res_lbl.setStyleSheet(f"color: {color}; font-size: 8pt; font-weight: bold;")
+                test_proxy_btn.setEnabled(True)
+                apply_proxy_btn.setEnabled(True)
+                if ok:
+                    # Stage 2: Test = Success -> Apply to config
+                    if url == get_default_wirecutter_endpoint():
+                        settings.remove("wirecutter_url")
+                    else:
+                        settings.setValue("wirecutter_url", url)
+                    settings.sync()
+
+                    test_proxy_btn.setStyleSheet(SUCCESS_STYLE)
+                    test_proxy_btn.setText(f"OK ({lat}ms) ✓")
+                    apply_proxy_btn.setStyleSheet(SUCCESS_STYLE)
+                    apply_proxy_btn.setText("Applied ✓")
+                else:
+                    # Stage 2: Test = Failed -> Do nothing to settings
+                    test_proxy_btn.setStyleSheet(FAIL_STYLE)
+                    test_proxy_btn.setText(f"Failed ({msg}) ✗")
+                    apply_proxy_btn.setStyleSheet(FAIL_STYLE)
+                    apply_proxy_btn.setText("Test Failed (Not Applied) ✗")
             QTimer.singleShot(0, _ui)
+
         threading.Thread(target=_bg, daemon=True).start()
 
-    test_wc_btn.clicked.connect(_test_wc)
+    apply_proxy_btn.clicked.connect(_on_apply_proxy)
 
-    p_form.addWidget(wc_lbl, 1, 0)
-    p_form.addWidget(dialog.wirecutter_url_input, 1, 1)
-    p_form.addWidget(test_wc_btn, 1, 2)
-    p_form.addWidget(wc_res_lbl, 1, 3)
+    btn_row.addWidget(reset_proxy_btn)
+    btn_row.addWidget(test_proxy_btn)
+    btn_row.addWidget(apply_proxy_btn)
+    btn_row.addStretch()
 
-    proxy_layout.addLayout(p_form)
+    proxy_layout.addLayout(btn_row)
     layout.addWidget(proxy_card)
 
     # -- 5. Testing & Developer Utilities Card --
@@ -483,6 +589,40 @@ def create_mrc_settings_tab(dialog) -> QWidget:
         QMessageBox.information(dialog, "Seasonal Theme", "Seasonal theme auto-activation flag reset.")
     reset_theme_btn.clicked.connect(_on_reset_theme)
     t_grid.addWidget(reset_theme_btn, 3, 2)
+
+    # 5. Byparr Cloudflare Solver
+    byparr_lbl = QLabel("Byparr Solver:")
+    byparr_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
+    t_grid.addWidget(byparr_lbl, 4, 0)
+
+    install_byparr_btn = QPushButton("Install Byparr (Cloudflare Solver)")
+    install_byparr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    install_byparr_btn.setToolTip("Downloads and runs setup_byparr.sh in a terminal to install Byparr solver.")
+    install_byparr_btn.setStyleSheet("""
+        QPushButton {
+            background-color: rgba(33, 150, 243, 0.15);
+            color: #64B5F6;
+            border: 1px solid rgba(100, 181, 246, 0.45);
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(33, 150, 243, 0.28);
+        }
+    """)
+    def _on_install_byparr():
+        import os
+        from ui.dialogs.settings_tabs.tools_tab import launch_terminal_command
+        cmd = [
+            "bash",
+            "-c",
+            "curl -sSL https://raw.githubusercontent.com/niwia/ASSella/c447a8a/scripts/setup_byparr.sh | bash; echo ''; echo 'Setup finished. Press Enter to close...'; read _"
+        ]
+        launch_terminal_command(cmd, os.path.expanduser("~"))
+    install_byparr_btn.clicked.connect(_on_install_byparr)
+    t_grid.addWidget(install_byparr_btn, 4, 1, 1, 2)
 
     test_layout.addLayout(t_grid)
     layout.addWidget(test_card)

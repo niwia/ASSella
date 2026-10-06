@@ -199,6 +199,16 @@ _WIRECUTTER_SECRET = "DJLftA68CqIusHL1zjsD3?2m*0df#fR{%CTApj2<6)P<VOjHyTG%FVuPXr
 _WIRECUTTER_SALT = b"ASSella_Hubcap_Bypass_v261"
 
 
+def get_default_wirecutter_endpoint() -> str:
+    """Returns the default embedded Wirecutter Cloudflare Worker endpoint."""
+    try:
+        import base64
+        raw = base64.b85decode(_WIRECUTTER_SECRET.encode("ascii"))
+        return bytes(b ^ _WIRECUTTER_SALT[i % len(_WIRECUTTER_SALT)] for i, b in enumerate(raw)).decode("utf-8")
+    except Exception:
+        return "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev"
+
+
 def get_wirecutter_endpoint() -> str:
     """Returns custom Wirecutter URL if configured in settings, or decrypts default endpoint."""
     try:
@@ -208,12 +218,7 @@ def get_wirecutter_endpoint() -> str:
             return custom_wc.strip().rstrip("/")
     except Exception:
         pass
-    try:
-        import base64
-        raw = base64.b85decode(_WIRECUTTER_SECRET.encode("ascii"))
-        return bytes(b ^ _WIRECUTTER_SALT[i % len(_WIRECUTTER_SALT)] for i, b in enumerate(raw)).decode("utf-8")
-    except Exception:
-        return "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev"
+    return get_default_wirecutter_endpoint()
 
 
 def get_custom_proxy() -> Optional[str]:
@@ -372,14 +377,35 @@ def test_gateway_tor() -> Tuple[bool, str, int]:
         return False, categorize_error(e), latency
 
 
-def test_gateway_wirecutter() -> Tuple[bool, str, int]:
-    """Tests internal Wirecutter Cloudflare Worker proxy. Returns (success, display_status, latency_ms)."""
+def test_gateway_wirecutter(custom_url: Optional[str] = None) -> Tuple[bool, str, int]:
+    """Tests Wirecutter Cloudflare Worker proxy connectivity. Returns (success, display_status, latency_ms)."""
     t0 = time.time()
     try:
-        worker_base = get_wirecutter_endpoint()
+        worker_base = (custom_url.strip().rstrip("/") if custom_url and custom_url.strip() else get_wirecutter_endpoint())
+        if worker_base.startswith("socks5://") or worker_base.startswith("socks4://"):
+            proxies = {"http": worker_base, "https": worker_base}
+            resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=8)
+            resp.raise_for_status()
+            latency = int((time.time() - t0) * 1000)
+            return True, f"OK ({latency}ms)", latency
+
+        if not worker_base.startswith("http://") and not worker_base.startswith("https://"):
+            worker_base = "https://" + worker_base
+
         health_url = f"{worker_base}/health"
-        resp = requests.get(health_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-        resp.raise_for_status()
+        try:
+            resp = requests.get(health_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+            resp.raise_for_status()
+        except requests.exceptions.HTTPError:
+            # Fallback to root endpoint if /health isn't mapped
+            resp = requests.get(worker_base, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+            resp.raise_for_status()
+        except requests.exceptions.RequestException:
+            # Check if user specified a forward HTTP proxy (e.g. http://127.0.0.1:7890)
+            proxies = {"http": worker_base, "https": worker_base}
+            resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=8)
+            resp.raise_for_status()
+
         latency = int((time.time() - t0) * 1000)
         return True, f"OK ({latency}ms)", latency
     except Exception as e:

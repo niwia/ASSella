@@ -711,11 +711,6 @@ class SettingsDialog(QDialog):
                 self.settings.setValue("use_wirecutter", self.use_wirecutter_checkbox.isChecked())
             except Exception:
                 pass
-        if hasattr(self, "wirecutter_url_input") and self.wirecutter_url_input is not None:
-            try:
-                self.settings.setValue("wirecutter_url", self.wirecutter_url_input.text().strip())
-            except Exception:
-                pass
         if hasattr(self, "steam_username_input") and self.steam_username_input is not None:
             self.settings.setValue("steam_username", self.steam_username_input.text().strip())
         if hasattr(self, "steam_password_input") and self.steam_password_input is not None:
