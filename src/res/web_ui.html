@@ -927,6 +927,42 @@
     </div>
 
     <script>
+        // Injected by the server when this page is served. Requests without it
+        // are rejected with 401.
+        const ASSELLA_TOKEN = '__ASSELLA_TOKEN__';
+
+        // Escapes text for safe interpolation into innerHTML / attributes.
+        function esc(value) {
+            if (value === null || value === undefined) return '';
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // Allows only http(s) URLs, so a crafted value can't become a
+        // javascript: or data: URL in src=/href=.
+        function safeUrl(value, fallback = '') {
+            const raw = String(value === null || value === undefined ? '' : value).trim();
+            if (/^https?:\/\//i.test(raw)) return raw;
+            return fallback;
+        }
+
+        // Numeric-only guard for AppIDs used in URLs and inline handlers.
+        function safeAppId(value) {
+            const raw = String(value === null || value === undefined ? '' : value).trim();
+            return /^\d{1,12}$/.test(raw) ? raw : '';
+        }
+
+        // Same-origin wrapper that attaches the session token.
+        async function apiFetch(url, options = {}) {
+            const opts = Object.assign({}, options);
+            opts.headers = Object.assign({ 'X-ASSella-Token': ASSELLA_TOKEN }, opts.headers || {});
+            return fetch(url, opts);
+        }
+
         let libraryData = [];
         let pollingInterval = null;
         let isPollingFast = false;
@@ -965,7 +1001,7 @@
 
         async function fetchLibrary() {
             try {
-                const response = await fetch('/api/library');
+                const response = await apiFetch('/api/library');
                 if (!response.ok) throw new Error('Failed to load library');
                 libraryData = await response.json();
                 sortAndRenderLibrary();
@@ -1028,31 +1064,37 @@
             emptyState.style.display = 'none';
             
             view.innerHTML = games.map(g => {
-                const badgeClass = g.update_status.replace(/_/g, '-');
-                const badgeLabel = g.update_status.replace(/_/g, ' ');
+                const appid = safeAppId(g.appid);
+                const badgeClass = String(g.update_status || '').replace(/[^a-z0-9-]/gi, '');
+                const badgeLabel = esc(String(g.update_status || '').replace(/_/g, ' '));
                 const isChecked = selectedAppIds.has(g.appid) ? 'checked' : '';
-                
+                const headerUrl = safeUrl(
+                    g.header_image_url,
+                    `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${appid}/header.jpg`
+                );
+                const fallbackUrl = `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${appid}/header.jpg`;
+
                 let btnHtml = '';
                 if (g.update_status === 'update_available') {
-                    btnHtml = `<button class="update-btn accent" onclick="updateGame('${g.appid}', this)">Update</button>`;
+                    btnHtml = `<button class="update-btn accent" onclick="updateGame('${appid}', this)">Update</button>`;
                 } else if (g.update_status === 'up_to_date') {
-                    btnHtml = `<button class="update-btn" onclick="updateGame('${g.appid}', this)">Re-download</button>`;
+                    btnHtml = `<button class="update-btn" onclick="updateGame('${appid}', this)">Re-download</button>`;
                 } else if (g.update_status === 'cannot_determine') {
-                    btnHtml = `<button class="update-btn" onclick="updateGame('${g.appid}', this)">Download</button>`;
+                    btnHtml = `<button class="update-btn" onclick="updateGame('${appid}', this)">Download</button>`;
                 }
                 
                 return `
-                    <div class="game-card" data-appid="${g.appid}">
+                    <div class="game-card" data-appid="${esc(appid)}">
                         <div class="card-checkbox-container" onclick="event.stopPropagation()">
-                            <input type="checkbox" class="card-checkbox" data-appid="${g.appid}" ${isChecked} onchange="toggleCardSelection('${g.appid}')">
+                            <input type="checkbox" class="card-checkbox" data-appid="${esc(appid)}" ${isChecked} onchange="toggleCardSelection('${esc(appid)}')">
                         </div>
-                        <img class="game-header-img" src="${g.header_image_url}" alt="${g.name}" onerror="this.src='https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${g.appid}/header.jpg'">
+                        <img class="game-header-img" src="${esc(headerUrl)}" alt="${esc(g.name)}" onerror="this.onerror=null;this.src='${esc(fallbackUrl)}'">
                         <div class="game-info">
-                            <div class="game-title" title="${g.name}">${g.name}</div>
+                            <div class="game-title" title="${esc(g.name)}">${esc(g.name)}</div>
                             <div class="game-meta">
                                 <div class="game-meta-row">
-                                    <span class="status-badge ${badgeClass}">${badgeLabel}</span>
-                                    ${g.size_bytes ? `<span class="game-card-size">${formatBytes(g.size_bytes)}</span>` : ''}
+                                    <span class="status-badge ${esc(badgeClass)}">${badgeLabel}</span>
+                                    ${g.size_bytes ? `<span class="game-card-size">${esc(formatBytes(g.size_bytes))}</span>` : ''}
                                 </div>
                                 ${btnHtml}
                             </div>
@@ -1104,11 +1146,11 @@
             let successCount = 0;
             for (const appid of appids) {
                 try {
-                    const response = await fetch(`/api/prepare-download?appid=${appid}`, { method: 'POST' });
+                    const response = await apiFetch(`/api/prepare-download?appid=${encodeURIComponent(safeAppId(appid))}`, { method: 'POST' });
                     if (!response.ok) throw new Error();
                     const prepData = await response.json();
                     
-                    const updateResponse = await fetch('/api/update', {
+                    const updateResponse = await apiFetch('/api/update', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -1170,7 +1212,7 @@
             searchBtn.textContent = 'Searching...';
             
             try {
-                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                const response = await apiFetch(`/api/search?q=${encodeURIComponent(query)}`);
                 if (!response.ok) throw new Error();
                 const results = await response.json();
                 
@@ -1188,14 +1230,20 @@
                 storeView.style.display = 'grid';
                 
                 storeView.innerHTML = results.map(g => {
+                    const appid = safeAppId(g.appid);
+                    const headerUrl = safeUrl(
+                        g.header_image_url,
+                        `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${appid}/header.jpg`
+                    );
+                    const fallbackUrl = `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${appid}/header.jpg`;
                     return `
-                        <div class="game-card" data-appid="${g.appid}">
-                            <img class="game-header-img" src="${g.header_image_url}" alt="${g.name}" onerror="this.src='https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${g.appid}/header.jpg'">
+                        <div class="game-card" data-appid="${esc(appid)}">
+                            <img class="game-header-img" src="${esc(headerUrl)}" alt="${esc(g.name)}" onerror="this.onerror=null;this.src='${esc(fallbackUrl)}'">
                             <div class="game-info">
-                                <div class="game-title" title="${g.name}">${g.name}</div>
+                                <div class="game-title" title="${esc(g.name)}">${esc(g.name)}</div>
                                 <div class="game-meta">
-                                    <span class="status-badge checking">AppID: ${g.appid}</span>
-                                    <button class="update-btn accent" onclick="updateGame('${g.appid}', this)">
+                                    <span class="status-badge checking">AppID: ${esc(appid)}</span>
+                                    <button class="update-btn accent" onclick="updateGame('${esc(appid)}', this)">
                                         Download
                                     </button>
                                 </div>
@@ -1231,7 +1279,7 @@
 
         async function fetchStatus() {
             try {
-                const response = await fetch('/api/status');
+                const response = await apiFetch('/api/status');
                 if (!response.ok) throw new Error('Status fetch failed');
                 const status = await response.json();
                 
@@ -1287,7 +1335,7 @@
             btn.textContent = 'Checking...';
             
             try {
-                const response = await fetch('/api/check-updates', { method: 'POST' });
+                const response = await apiFetch('/api/check-updates', { method: 'POST' });
                 if (!response.ok) throw new Error();
                 showToast('Update check started');
                 
@@ -1322,7 +1370,7 @@
             modal.classList.add('active');
             
             try {
-                const response = await fetch(`/api/prepare-download?appid=${appid}`, { method: 'POST' });
+                const response = await apiFetch(`/api/prepare-download?appid=${encodeURIComponent(safeAppId(appid))}`, { method: 'POST' });
                 if (!response.ok) {
                     const errObj = await response.json();
                     throw new Error(errObj.error || 'Failed to prepare download');
@@ -1361,14 +1409,15 @@
                 }
                 
                 body.innerHTML = activePrepData.depots.map(d => {
+                    const depotId = safeAppId(d.id);
                     const isChecked = (activePrepData.cached_selected.length === 0 || activePrepData.cached_selected.includes(d.id)) ? 'checked' : '';
-                    const sizeStr = d.size ? formatBytes(parseInt(d.size)) : 'Unknown size';
+                    const sizeStr = d.size ? esc(formatBytes(parseInt(d.size))) : 'Unknown size';
                     return `
-                        <label class="depot-item" for="depot-${d.id}">
-                            <input type="checkbox" id="depot-${d.id}" class="depot-checkbox" value="${d.id}" ${isChecked}>
+                        <label class="depot-item" for="depot-${esc(depotId)}">
+                            <input type="checkbox" id="depot-${esc(depotId)}" class="depot-checkbox" value="${esc(depotId)}" ${isChecked}>
                             <div class="depot-details">
-                                <span class="depot-desc">${d.desc}</span>
-                                <span class="depot-meta">ID: ${d.id} | Size: ${sizeStr}</span>
+                                <span class="depot-desc">${esc(d.desc)}</span>
+                                <span class="depot-meta">ID: ${esc(depotId)} | Size: ${sizeStr}</span>
                             </div>
                         </label>
                     `;
@@ -1384,7 +1433,7 @@
         }
 
         async function submitDownload(appid, localPath, depots) {
-            const response = await fetch('/api/update', {
+            const response = await apiFetch('/api/update', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1433,7 +1482,7 @@
             btn.disabled = true;
             
             try {
-                const response = await fetch('/api/update-all', { method: 'POST' });
+                const response = await apiFetch('/api/update-all', { method: 'POST' });
                 if (!response.ok) throw new Error();
                 showToast('All updates queued successfully', 'success');
                 

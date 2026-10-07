@@ -212,9 +212,33 @@ jobs:
               echo "::error::appimageupdatetool failed extraction — refusing to ship"
               exit 1
             fi
-            cp squashfs-root/appimageupdatetool AppDir/bin/appimageupdatetool
+            # Current AppImageUpdate builds are not a single static binary: the
+            # executable carries RUNPATH=$ORIGIN/../lib and dlopen()s its
+            # dependencies from usr/lib. Copying only the executable produces an
+            # AppImage whose delta updater dies with
+            # "error while loading shared libraries: libappimageupdate.so".
+            # Preserve the usr/bin + usr/lib layout the runpath expects.
+            mkdir -p AppDir/bin/appimageupdatetool-root/usr
+            cp -r squashfs-root/usr/bin AppDir/bin/appimageupdatetool-root/usr/bin
+            cp -r squashfs-root/usr/lib AppDir/bin/appimageupdatetool-root/usr/lib
+            cp squashfs-root/.DirIcon AppDir/bin/appimageupdatetool-root/.DirIcon 2>/dev/null || true
             rm -rf squashfs-root
+            # Thin launcher at the path the app probes for. It execs the real
+            # binary in-place so $ORIGIN resolves to its usr/bin directory.
+            cat << 'LAUNCHER' > AppDir/bin/appimageupdatetool
+            #!/bin/sh
+            # Resolves its own location so the AppDir can be moved anywhere.
+            HERE="$(dirname "$(readlink -f "$0")")"
+            exec "$HERE/appimageupdatetool-root/usr/bin/appimageupdatetool" "$@"
+            LAUNCHER
             chmod +x AppDir/bin/appimageupdatetool
+            # Prove the bundled updater actually executes. A present-but-broken
+            # binary silently disables delta updates for every user.
+            if ! AppDir/bin/appimageupdatetool --version >/dev/null 2>&1; then
+              echo "::error::Bundled appimageupdatetool fails to execute — delta updates would silently fall back"
+              exit 1
+            fi
+            echo "appimageupdatetool bundled and verified executable."
           fi
 
           # 6. Bundle Tor Executable
@@ -356,6 +380,14 @@ jobs:
           echo "::group::Verify bundled runtime and resources"
           test -x AppDir_extract/bin/appimageupdatetool \
             || { echo "::error::appimageupdatetool missing from AppImage"; exit 1; }
+          # Existence is not enough: a bundling mistake can ship an executable
+          # whose shared libraries were never copied, which fails only at update
+          # time on the user's machine. Require it to actually run.
+          if ! AppDir_extract/bin/appimageupdatetool --version >/dev/null 2>&1; then
+            echo "::error::Bundled appimageupdatetool present but fails to execute (missing shared libs?)"
+            exit 1
+          fi
+          echo "OK  appimageupdatetool executes"
           test -x AppDir_extract/bin/run.sh || { echo "::error::run.sh missing"; exit 1; }
           test -f AppDir_extract/assella.desktop || { echo "::error::assella.desktop missing"; exit 1; }
           test -f AppDir_extract/AppRun || { echo "::error::AppRun missing"; exit 1; }

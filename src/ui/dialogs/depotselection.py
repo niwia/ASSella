@@ -1477,6 +1477,7 @@ class DepotSelectionDialog(QDialog):
 
     def _on_missing_depots_updated(self):
         """Called on the main thread when async steamcmd metadata resolution finishes."""
+        darker_grey = QColor(135, 135, 135)
         if hasattr(self, "table_widget") and self.table_widget:
             for row in range(self.table_widget.rowCount()):
                 id_item = self.table_widget.item(row, 0)

@@ -665,7 +665,7 @@ class GameManager(QObject):
         # on the main event loop — it silently fires on the worker thread's
         # (non-existent) loop. invokeMethod with QueuedConnection is the correct
         # cross-thread signal dispatch mechanism.
-        from PyQt6.QtCore import QMetaObject, Qt as _Qt
+        from PyQt6.QtCore import Qt as _Qt
         QMetaObject.invokeMethod(
             self,
             "_emit_scan_signals",

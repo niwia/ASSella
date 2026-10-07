@@ -2495,7 +2495,6 @@ def on_move_to_vapor_clicked(dialog) -> None:
             from core import morrenus_api
             zip_res, z_err = morrenus_api.download_manifest(appid, force_update=True)
             if zip_res and os.path.exists(zip_res):
-                import zipfile
                 fresh_keys = {}
                 with zipfile.ZipFile(zip_res, "r") as zf:
                     for name in zf.namelist():

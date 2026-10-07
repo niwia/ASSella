@@ -523,7 +523,7 @@ class LibraryActionsMixin:
         if not install_path or not os.path.isdir(install_path):
             if is_vapor_mode or game_data.get("is_atom"):
                 from utils.plugin_games import get_atom_game_install_path
-                resolved_p = get_atom_game_install_path(appid)
+                resolved_p = get_atom_game_install_path(str(game_data.get("appid")))
                 if resolved_p:
                     install_path = resolved_p
                     game_data["install_path"] = resolved_p

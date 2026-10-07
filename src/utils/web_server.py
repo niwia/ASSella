@@ -1,7 +1,9 @@
 import os
 import sys
 import json
+import hmac
 import logging
+import secrets
 import socket
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -13,6 +15,14 @@ from managers.db_manager import DatabaseManager
 from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Default bind address is loopback only. Listening on 0.0.0.0 exposes the API to
+# every device on the network, so LAN access has to be opted into explicitly.
+DEFAULT_HOST = "127.0.0.1"
+
+# POST bodies here are small JSON blobs (appid + depot list). Anything larger is
+# rejected outright rather than buffered into memory.
+MAX_BODY_BYTES = 1 * 1024 * 1024
 
 
 def get_local_ip() -> str:
@@ -34,16 +44,68 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         # Redirect standard http.server logs to python logging framework
         logger.debug("%s - - %s" % (self.address_string(), format % args))
 
+    # -- security helpers ------------------------------------------------
+    def _is_authorized(self) -> bool:
+        """Constant-time token check against the session token for this server.
+
+        Without this, any web page the user visits can POST to the local API via
+        CORS, and anyone on the LAN can hit it directly.
+        """
+        expected = getattr(self.server, "auth_token", "")
+        if not expected:
+            return False
+        provided = self.headers.get("X-ASSella-Token", "")
+        if not provided:
+            # Allow ?token= for navigation (e.g. the LAN link opened in a browser).
+            provided = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+        return hmac.compare_digest(str(provided), str(expected))
+
+    def _require_auth(self) -> bool:
+        if self._is_authorized():
+            return True
+        logger.warning(
+            "Web UI: rejected unauthorized request from %s for %s",
+            self.client_address[0], self.path.split("?")[0],
+        )
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": "Unauthorized"}).encode("utf-8"))
+        return False
+
+    def _read_body(self):
+        """Read a POST body, capped at MAX_BODY_BYTES. Returns None if oversized."""
+        try:
+            content_length = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length > MAX_BODY_BYTES:
+            logger.warning("Web UI: rejected oversized body (%s bytes)", content_length)
+            return None
+        return self.rfile.read(content_length) if content_length > 0 else b""
+
+    def _send_error_safe(self, status: int, message: str, exc: Exception | None = None):
+        """Log the real cause but never echo internals back to the client."""
+        if exc is not None:
+            logger.error("Web UI: %s (%s: %s)", message, type(exc).__name__, exc, exc_info=True)
+        else:
+            logger.error("Web UI: %s", message)
+        self._set_headers(status=status)
+        self.wfile.write(json.dumps({"error": message}).encode("utf-8"))
+
     def _set_headers(self, content_type="application/json", status=200):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        # No Access-Control-Allow-Origin: this API must not be reachable from
+        # other origins. The bundled UI is served same-origin.
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
 
     def do_OPTIONS(self):
-        self._set_headers(status=204)
+        # Preflight is answered without permissive CORS headers, so browsers
+        # block cross-origin calls instead of allowing them.
+        self.send_response(204)
+        self.end_headers()
 
     def do_GET(self):
         parsed_url = urlparse(self.path)
@@ -51,33 +113,64 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed_url.query)
 
         if path == "/":
+            # The UI shell is public; the token is injected into the served HTML
+            # so the page itself can authenticate its API calls.
             self._serve_web_ui()
-        elif path == "/api/library":
-            self._handle_get_library()
-        elif path == "/api/status":
-            self._handle_get_status()
-        elif path == "/api/search":
-            self._handle_get_search(query)
-        elif path.startswith("/api/headers/"):
-            self._handle_header_redirect(path)
-        else:
-            self.send_error(404, "File Not Found")
+            return
+
+        if not self._require_auth():
+            return
+
+        try:
+            if path == "/api/library":
+                self._handle_get_library()
+            elif path == "/api/status":
+                self._handle_get_status()
+            elif path == "/api/search":
+                self._handle_get_search(query)
+            elif path.startswith("/api/headers/"):
+                self._handle_header_redirect(path)
+            else:
+                self.send_error(404, "File Not Found")
+        except Exception as e:
+            # Never let an unexpected error kill the connection mid-response.
+            self._send_error_safe(500, "Request failed", e)
 
     def do_POST(self):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         query = parse_qs(parsed_url.query)
 
-        if path == "/api/update":
-            self._handle_post_update(query)
-        elif path == "/api/prepare-download":
-            self._handle_post_prepare_download()
-        elif path == "/api/update-all":
-            self._handle_post_update_all()
-        elif path == "/api/check-updates":
-            self._handle_post_check_updates()
-        else:
-            self.send_error(404, "Endpoint Not Found")
+        if not self._require_auth():
+            return
+
+        # Enforce the cap centrally so it applies to every endpoint, including
+        # ones that never read the body (which would otherwise leave an
+        # oversized payload unread on the socket).
+        try:
+            declared = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            declared = 0
+        if declared > MAX_BODY_BYTES:
+            logger.warning("Web UI: rejected oversized body (%s bytes)", declared)
+            self._set_headers(status=413)
+            self.wfile.write(json.dumps({"error": "Request body too large"}).encode("utf-8"))
+            self.close_connection = True
+            return
+
+        try:
+            if path == "/api/update":
+                self._handle_post_update(query)
+            elif path == "/api/prepare-download":
+                self._handle_post_prepare_download()
+            elif path == "/api/update-all":
+                self._handle_post_update_all()
+            elif path == "/api/check-updates":
+                self._handle_post_check_updates()
+            else:
+                self.send_error(404, "Endpoint Not Found")
+        except Exception as e:
+            self._send_error_safe(500, "Request failed", e)
 
     def _serve_web_ui(self):
         try:
@@ -85,13 +178,17 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             if ui_path.exists():
                 with open(ui_path, "r", encoding="utf-8") as f:
                     html_content = f.read()
+                # Hand the session token to our own page so it can call the API.
+                token = getattr(self.server, "auth_token", "")
+                html_content = html_content.replace(
+                    "__ASSELLA_TOKEN__", token
+                )
                 self._set_headers("text/html", 200)
                 self.wfile.write(html_content.encode("utf-8"))
             else:
                 self.send_error(500, "Web UI Resource Missing")
         except Exception as e:
-            logger.error(f"Web UI: failed to serve HTML: {e}")
-            self.send_error(500, str(e))
+            self._send_error_safe(500, "Failed to serve web UI", e)
 
     def _handle_get_library(self):
         main_win = self.server.main_window
@@ -133,8 +230,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._set_headers()
             self.wfile.write(json.dumps(res).encode("utf-8"))
         except Exception as e:
-            logger.error(f"Web UI: failed to retrieve library: {e}", exc_info=True)
-            self.send_error(500, str(e))
+            self._send_error_safe(500, "Failed to retrieve library", e)
 
     def _handle_get_status(self):
         main_win = self.server.main_window
@@ -251,8 +347,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._set_headers()
             self.wfile.write(json.dumps(formatted_results).encode("utf-8"))
         except Exception as e:
-            logger.error(f"Web UI: search error: {e}", exc_info=True)
-            self.send_error(500, str(e))
+            self._send_error_safe(500, "Search failed", e)
 
     def _handle_header_redirect(self, path):
         try:
@@ -269,12 +364,14 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 return
             self.send_error(404, "Invalid Header Path")
         except Exception as e:
-            logger.error(f"Web UI: header redirect error: {e}")
-            self.send_error(500, str(e))
+            self._send_error_safe(500, "Header redirect failed", e)
 
     def _handle_post_update(self, query):
-        content_length = int(self.headers.get("Content-Length", 0))
-        post_data = self.rfile.read(content_length) if content_length > 0 else b""
+        post_data = self._read_body()
+        if post_data is None:
+            self._set_headers(status=413)
+            self.wfile.write(json.dumps({"error": "Request body too large"}).encode("utf-8"))
+            return
         
         appid = None
         selected_depots = None
@@ -310,8 +407,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"status": "queued_update_job", "appid": appid}).encode("utf-8"))
 
     def _handle_post_prepare_download(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        post_data = self.rfile.read(content_length) if content_length > 0 else b""
+        post_data = self._read_body()
+        if post_data is None:
+            self._set_headers(status=413)
+            self.wfile.write(json.dumps({"error": "Request body too large"}).encode("utf-8"))
+            return
         
         appid = None
         if post_data:
@@ -399,8 +499,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(res).encode("utf-8"))
 
         except Exception as e:
-            logger.error(f"Web UI: prepare-download error: {e}", exc_info=True)
-            self.send_error(500, str(e))
+            self._send_error_safe(500, "Prepare download failed", e)
 
     def _handle_post_update_all(self):
         threading.Thread(
@@ -417,11 +516,15 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
 
 class WebServer(ThreadingHTTPServer):
-    def __init__(self, main_window, web_command_queue, host="0.0.0.0", port=8765):
+    daemon_threads = True
+
+    def __init__(self, main_window, web_command_queue, host=DEFAULT_HOST, port=8765, auth_token=""):
         self.main_window = main_window
         self.web_command_queue = web_command_queue
         self.host = host
         self.port = port
+        # Per-session shared secret. Regenerated on every start.
+        self.auth_token = auth_token or secrets.token_urlsafe(32)
         super().__init__((host, port), WebRequestHandler)
 
 
@@ -432,7 +535,11 @@ class WebServerManager:
         self.server = None
         self.server_thread = None
 
-    def start(self, host="0.0.0.0", port=8765):
+    @property
+    def auth_token(self) -> str:
+        return getattr(self.server, "auth_token", "") if self.server else ""
+
+    def start(self, host=DEFAULT_HOST, port=8765):
         if self.server:
             logger.warning("Web server is already running.")
             return False
@@ -445,7 +552,9 @@ class WebServerManager:
             
             self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
             self.server_thread.start()
-            logger.info(f"Web server started on http://{host}:{port} (local network: http://{get_local_ip()}:{port})")
+            lan_url = f"http://{get_local_ip()}:{port}/?token={self.auth_token}"
+            logger.info(f"Web server started on http://{host}:{port} (LAN: {lan_url})")
+            logger.info("Web UI requires a per-session token; API calls without it are rejected.")
             return True
         except OSError as e:
             import errno

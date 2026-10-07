@@ -1097,6 +1097,28 @@ class BatchConfigEditor:
             logger.warning(f"Invalid AES decryption key (not 64 hex chars) for depot {depot_id_str}")
             return False
 
+        if app_id and depot_id_str == str(app_id).strip():
+            logger.warning(
+                f"Refusing to add base AppID '{depot_id_str}' to DecryptionKeys as depot key"
+            )
+            return False
+
+        bounds_apps = _get_section_bounds(self.content, "AdditionalApps")
+        if bounds_apps:
+            apps_text = self.content[bounds_apps[1] : bounds_apps[2]]
+            m_app = re.search(
+                rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}(?:[ \t]*#[ \t]*(.*))?$",
+                apps_text,
+                re.MULTILINE,
+            )
+            if m_app:
+                cm = (m_app.group(1) or "").lower()
+                if "dlc" not in cm:
+                    logger.warning(
+                        f"Refusing to add base AppID '{depot_id_str}' from AdditionalApps to DecryptionKeys"
+                    )
+                    return False
+
         shared_redists = {
             "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
             "228986", "228987", "228988", "228989", "228990", "229000", "229001",

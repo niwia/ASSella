@@ -20,6 +20,19 @@ jobs:
           python-version: "3.13"
           cache: "pip"
 
+      - name: Lint (ruff)
+        # F821/F823/F811 catch undefined names, use-before-assignment and
+        # shadowed re-imports. Those are the bug classes that compile fine and
+        # then raise NameError at runtime, which compileall cannot see.
+        # Rule set and exclusions live in ruff.toml.
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+          ruff check src/ --output-format=github
+          echo "::group::Unused imports (advisory, non-blocking)"
+          ruff check src/ --select F401 --statistics || true
+          echo "::endgroup::"
+
       - name: Install System Dependencies
         run: |
           sudo apt-get update

@@ -303,7 +303,7 @@ def main():
             main_win.hide()
             main_win.toggle_web_server(True, port=server_port)
             logger.info("========================================")
-            logger.info(f"ASSella running headless on http://0.0.0.0:{server_port}")
+            logger.info(f"ASSella running headless on http://127.0.0.1:{server_port} (token required for API access)")
             logger.info("========================================")
         else:
             main_win.show()

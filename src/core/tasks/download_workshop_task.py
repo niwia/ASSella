@@ -4,7 +4,7 @@ import subprocess
 import time
 import logging
 import requests
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 

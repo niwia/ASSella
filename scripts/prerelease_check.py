@@ -926,6 +926,79 @@ class PreReleaseTester:
             self.log_result("BatchConfigEditor In-Memory Atomicity & AppID Guard", False, str(e), duration=time.time() - t0)
 
     # =========================================================================
+    # PHASE 15: Extracted Widget Modules Construct Cleanly
+    # =========================================================================
+    def test_phase15_extracted_widget_modules(self):
+        """Construct the widgets split out of main_window.py.
+
+        These modules were extracted from one file into ui/widgets/. A name
+        imported only under TYPE_CHECKING but then *called* at runtime compiles
+        cleanly, passes ruff's F821, and only raises NameError once the code
+        path runs — which is how a broken AppImage shipped once already. The
+        download_size > 0 branch is the one that reaches the cross-module
+        formatter calls, so it is exercised explicitly.
+        """
+        print(f"\n{BOLD}{BLUE}--- Phase 15: Extracted Widget Modules ---{RESET}")
+        t0 = time.time()
+        try:
+            from PyQt6.QtWidgets import QVBoxLayout, QWidget
+
+            from ui.widgets.recent_activity_item import RecentActivityItemWidget
+            from ui.widgets.resize_handle import ResizeHandle
+            from ui.widgets.active_game_card import ActiveGameCard
+            from ui.widgets.updates_panel import UpdatesPanel, UpdateItemWidget
+            from ui.widgets.simplified_terminal import SimplifiedTerminalWidget
+
+            host = QWidget()
+            host.setLayout(QVBoxLayout())
+
+            ResizeHandle("bottom", host)
+
+            card = ActiveGameCard()
+            card.set_game("3375780", "Trails in the Sky 1st Chapter")
+            card.set_version_info("100", "101", "3375780")
+
+            UpdateItemWidget("3375780", "Trails in the Sky 1st Chapter", "#a1c9fd")
+
+            now = time.time()
+            # Covers all three stat_text branches: sized success, failure, handoff.
+            for entry in (
+                {
+                    "appid": "3375780", "game_name": "Trails in the Sky 1st Chapter",
+                    "timestamp": now - 3600, "success": True,
+                    "download_size": 34652867634, "download_duration": 925.5,
+                    "avg_speed": 37400000.0,
+                },
+                {"appid": "999", "game_name": "Failed Game", "timestamp": now - 60, "success": False},
+                {"appid": "workshop", "game_name": "Some Mod", "timestamp": now - 7200,
+                 "success": True, "handed_off": True},
+            ):
+                RecentActivityItemWidget(entry, parent_terminal=None)
+
+            # The panel and terminal need a MainWindow-shaped host, so only their
+            # classes are asserted to be importable and constructible-by-class.
+            assert callable(UpdatesPanel.__init__)
+            assert callable(SimplifiedTerminalWidget.__init__)
+            # Static formatters are called across module boundaries at runtime.
+            assert SimplifiedTerminalWidget._format_size(1024) == "1.0 KB"
+            assert SimplifiedTerminalWidget._format_duration(90) == "1m 30s"
+            assert SimplifiedTerminalWidget._format_speed(2048) == "2.00 KB/s"
+
+            self.log_result(
+                "Extracted Widget Modules Construct & Cross-Module Formatters Resolve",
+                True,
+                "ui/widgets/* instantiate; runtime cross-module calls resolve",
+                duration=time.time() - t0,
+            )
+        except Exception as e:
+            self.log_result(
+                "Extracted Widget Modules Construct & Cross-Module Formatters Resolve",
+                False,
+                f"{type(e).__name__}: {e}",
+                duration=time.time() - t0,
+            )
+
+    # =========================================================================
     # RUN ALL PHASES & DISPLAY SUMMARY REPORT
     # =========================================================================
     def run_all_tests(self):
@@ -950,6 +1023,7 @@ class PreReleaseTester:
         self.test_phase12_spliced_ticket_plugin()
         self.test_phase13_smart_acf_cleanup()
         self.test_phase14_batch_config_editor()
+        self.test_phase15_extracted_widget_modules()
 
         total_time = time.time() - self.start_time
         passed = sum(1 for r in self.results if r["success"] and not r.get("skipped"))
