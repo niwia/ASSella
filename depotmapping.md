@@ -152,11 +152,11 @@ When an AppID (`aid`) is toggled:
 
 When designing and improving the **DLC-Only Mode** in AT0-M, apply the following design rules:
 
-### Rule 1: Never Touch Base Game AppIDs or Base Depots
-In DLC-Only mode, the user owns the base game legitimately on Steam and has installed it via the official Steam client:
-- **Do NOT** add the base game AppID (`appid_str`) to `AdditionalApps`.
-- **Do NOT** add base game depots to `AdditionalDepots`.
-- Steam already possesses the licenses and manifests for base depots. Adding them to SLSsteam causes duplicate manifest requests and can trigger Steam client download loops.
+### Rule 1: Parent AppID & Base Depot Safeguards
+In DLC-Only mode, users are not artificially prevented from adding or retaining the parent/base game AppID in `AdditionalApps` if they wish to do so (e.g., for unlocking base features, family sharing licenses, or manual user preferences). However, the following safeguards strictly apply:
+- **Strict Safeguard in `AdditionalDepots`**: The parent AppID number is **NEVER** placed into `AdditionalDepots`.
+- **Safeguard for Base Depots**: Base game content/executable depots (e.g., Windows/Linux/Mac OS binaries) are not injected into `AdditionalDepots` in DLC-only mode.
+- **Safeguard in `DecryptionKeys`**: The base game AppKey is only retained if the user explicitly included the parent AppID; otherwise it is cleanly omitted.
 
 ### Rule 2: Separate "Content DLCs" vs "License-Only DLCs"
 - **Content DLCs** (e.g., expansion packs with custom levels/textures):

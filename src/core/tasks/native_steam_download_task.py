@@ -647,20 +647,23 @@ class NativeSteamDownloadTask(QObject):
                 appid_str, selected_items=selected_depots, game_data=game_data
             )
 
-            # In DLC mode: Remove base AppID from AdditionalApps, then add ONLY the
-            # resolved DLC AppIDs (never base appid, never depot IDs).
-            if app_bounds:
-                content = re.sub(
-                    rf"^[ \t]*-[ \t]*{re.escape(appid_str)}[ \t]*(?:#[^\r\n]*)?\r?\n?",
-                    "",
-                    fixed_content,
-                    flags=re.MULTILINE,
-                )
+            # In DLC mode: If parent AppID was NOT explicitly selected, remove it from AdditionalApps.
+            # If parent AppID WAS explicitly selected, keep/add it in AdditionalApps.
+            if appid_str not in sel_dlcs:
+                if app_bounds:
+                    content = re.sub(
+                        rf"^[ \t]*-[ \t]*{re.escape(appid_str)}[ \t]*(?:#[^\r\n]*)?\r?\n?",
+                        "",
+                        fixed_content,
+                        flags=re.MULTILINE,
+                    )
+                else:
+                    content = fixed_content
             else:
                 content = fixed_content
 
             for did, label in sel_dlcs.items():
-                comment = f"[DLC] {label} / {game_name}" if game_name else f"[DLC] {label}"
+                comment = f"[DLC] {label} / {game_name}" if (game_name and did != appid_str) else (label or game_name)
                 bounds = _get_section_bounds(content, "AdditionalApps")
                 if bounds:
                     if not re.search(rf"^[ \t]*-[ \t]*{re.escape(did)}[ \t]*(?:#[^\r\n]*)?$", content[bounds[1]:bounds[2]], re.MULTILINE):
@@ -793,9 +796,14 @@ class NativeSteamDownloadTask(QObject):
             key_comments.pop(da, None)
 
         if is_dlc:
-            # Strictly purge base game AppID key in DLC-only mode
-            all_keys.pop(appid_str, None)
-            key_comments.pop(appid_str, None)
+            if appid_str not in sel_dlcs:
+                all_keys.pop(appid_str, None)
+                key_comments.pop(appid_str, None)
+            else:
+                app_key_val = depot_keys.get(appid_str) or (game_data.get("app_key") if game_data else None)
+                if app_key_val:
+                    all_keys[appid_str] = str(app_key_val)
+                    key_comments[appid_str] = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
 
             if game_data and game_data.get("depots"):
                 all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str}
@@ -806,12 +814,14 @@ class NativeSteamDownloadTask(QObject):
                         key_comments.pop(d, None)
             for d, k in depot_keys.items():
                 did_str = str(d)
-                if did_str == appid_str:
-                    continue  # NEVER add root app key in DLC-only mode
+                if did_str == appid_str and appid_str not in sel_dlcs:
+                    continue  # do not add root app key unless parent was selected
                 if k and (did_str in set(new_depot_ids) or did_str in sel_dlcs):
                     all_keys[did_str] = str(k)
                     if did_str in shared_redists:
                         key_comments[did_str] = "Steamworks Shared"
+                    elif did_str == appid_str:
+                        key_comments[did_str] = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
                     else:
                         meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
                         desc = meta.get("desc", "") if isinstance(meta, dict) else ""

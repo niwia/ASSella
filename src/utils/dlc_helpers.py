@@ -318,14 +318,16 @@ def resolve_dlc_mapping_for_selection(
     base_depots = app_to_depots.get(appid_str, set())
 
     resolved_dlc_appids: Set[str] = set()
+    include_parent: bool = False
 
     if selected_items is not None:
         sel_list = [str(x).strip() for x in selected_items if str(x).strip().isdigit()]
         for x in sel_list:
             if x == appid_str:
-                continue  # Base game AppID is strictly ignored in DLC-only mode
+                include_parent = True
+                continue
             if x in base_depots:
-                continue  # Base game depot is strictly ignored in DLC-only mode
+                continue  # Base game depots are strictly ignored in DLC-only mode
 
             if x in dlc_apps_in_map or x in gd_dlcs:
                 resolved_dlc_appids.add(x)
@@ -337,13 +339,16 @@ def resolve_dlc_mapping_for_selection(
         resolved_dlc_appids.update(str(d).strip() for d in gd_dlcs.keys() if str(d).strip().isdigit())
         resolved_dlc_appids.discard(appid_str)
 
-    # Build selected DLC depots (ONLY depots belonging to resolved DLCs)
+    # Build selected DLC depots (ONLY depots belonging to resolved DLCs, NEVER parent AppID)
     resolved_dlc_depots: Set[str] = set()
     for dlc_id in resolved_dlc_appids:
         associated = app_to_depots.get(dlc_id, set())
         for did in associated:
             if did != appid_str and did not in base_depots:
                 resolved_dlc_depots.add(did)
+
+    # Strict safeguard: parent AppID is NEVER in AdditionalDepots
+    resolved_dlc_depots.discard(appid_str)
 
     # If user selected specific depots, and some were DLC depots, retain those specifically
     if selected_items is not None:
@@ -360,6 +365,11 @@ def resolve_dlc_mapping_for_selection(
         db = DatabaseManager()
     except Exception:
         pass
+
+    # If user explicitly included/selected the parent AppID, allow it in AdditionalApps
+    if include_parent:
+        parent_name = gd.get("game_name") or gd.get("name") or (db.get_app_info(appid_str, bypass_expiration=True).get("name") if db else "") or f"App {appid_str}"
+        selected_dlc_apps[appid_str] = str(parent_name).strip()
 
     for dlc_id in sorted(resolved_dlc_appids, key=lambda x: int(x) if x.isdigit() else 0):
         name = gd_dlcs.get(dlc_id) or gd_dlcs.get(int(dlc_id) if dlc_id.isdigit() else dlc_id)
@@ -756,26 +766,34 @@ def purge_and_sanitize_for_dlc_only(
         pass
 
     if config_path and config_path.exists():
-        # 1. Base AppID removed from AdditionalApps
-        if remove_additional_app(config_path, appid_str):
-            summary["base_app_removed"] = True
-
-        # 2. Resolve smart DLC & depot mapping (NEVER base appid, NEVER raw depot IDs)
+        # 1. Resolve smart DLC & depot mapping
         sel_dlcappid_set, sel_dlc_depots = resolve_dlc_mapping_for_selection(
             appid_str, selected_items=user_sel_set, game_data=game_data
         )
 
-        if len(sel_dlcappid_set) >= 64:
-            add_dlc_data_batch(config_path, appid_str, sel_dlcappid_set)
-            summary["dlcs_added"].extend(list(sel_dlcappid_set.keys()))
+        # Base AppID handling in AdditionalApps:
+        # If user explicitly selected/included the parent AppID, keep/add it in AdditionalApps.
+        # Otherwise, remove the base AppID from AdditionalApps.
+        if appid_str in sel_dlcappid_set:
+            parent_comment = game_name or f"App {appid_str}"
+            add_additional_app(config_path, appid_str, parent_comment)
+        else:
+            if remove_additional_app(config_path, appid_str):
+                summary["base_app_removed"] = True
+
+        pure_dlcs = {aid: dname for aid, dname in sel_dlcappid_set.items() if aid != appid_str}
+        if len(pure_dlcs) >= 64:
+            add_dlc_data_batch(config_path, appid_str, pure_dlcs)
+            summary["dlcs_added"].extend(list(pure_dlcs.keys()))
         else:
             remove_dlc_data(config_path, appid_str)
-            for did, dname in sel_dlcappid_set.items():
+            for did, dname in pure_dlcs.items():
                 comment = f"[DLC] {dname} / {game_name}" if game_name else f"[DLC] {dname}"
                 if add_additional_app(config_path, did, comment):
                     summary["dlcs_added"].append(did)
 
-        # 3. AdditionalDepots: ONLY selected DLC depots, NEVER base game main depots
+        # 2. AdditionalDepots: ONLY selected DLC depots, NEVER parent AppID and NEVER base game main depots!
+        sel_dlc_depots.discard(appid_str)
         existing_depots = get_additional_depots(config_path)
         for d in all_game_depots:
             if d in existing_depots and d not in sel_dlc_depots:
@@ -784,14 +802,16 @@ def purge_and_sanitize_for_dlc_only(
 
         depots_meta = (game_data.get("depots") or {}) if game_data else {}
         for d in sorted(sel_dlc_depots, key=lambda x: int(x) if x.isdigit() else 0):
+            if d == appid_str:
+                continue  # Safeguard: parent AppID is NEVER in AdditionalDepots
             meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
             desc = meta.get("desc", "") if isinstance(meta, dict) else ""
             comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
             add_additional_depot(config_path, d, comment=comment)
 
-        # 4. DecryptionKeys: Remove base game app key and unselected depot keys, then add keys for selected DLC depots
+        # 3. DecryptionKeys: Remove unselected depot keys, then add keys for selected DLC depots
         existing_keys = get_decryption_keys(config_path)
-        if appid_str in existing_keys:
+        if appid_str not in sel_dlcappid_set and appid_str in existing_keys:
             if remove_decryption_key(config_path, appid_str):
                 summary["base_keys_removed"].append(appid_str)
 
@@ -818,14 +838,17 @@ def purge_and_sanitize_for_dlc_only(
         except Exception as e:
             logger.debug(f"[DLCMode] Error querying DepotKeyManager for {appid_str}: {e}")
 
-        # Add decryption keys ONLY for selected DLC depots (and selected DLC appids if keyed)
+        # Add decryption keys for selected DLC depots (and selected DLC appids / parent if keyed)
         for d in (sel_dlc_depots | set(sel_dlcappid_set.keys())):
-            if str(d) in depot_keys and str(d) != appid_str:
+            if str(d) in depot_keys:
                 k = depot_keys[str(d)]
                 if k:
                     meta = depots_meta.get(d) or depots_meta.get(int(d) if str(d).isdigit() else d) or {}
                     desc = meta.get("desc", "") if isinstance(meta, dict) else ""
-                    comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
+                    if str(d) == appid_str:
+                        comment = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
+                    else:
+                        comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
                     if add_decryption_key(config_path, str(d), k, comment=comment):
                         summary.setdefault("keys_added", []).append(str(d))
 
