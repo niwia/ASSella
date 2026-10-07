@@ -465,13 +465,18 @@ class SettingsDialog(QDialog):
         try:
             from utils.yaml_config_manager import get_user_config_path
             from ui.dialogs.settings_sls import get_sls_paths
+            from utils.helpers import is_arm64
             config_path = get_user_config_path()
             sls_paths = get_sls_paths()
 
-            sls_detected = config_path.exists() and sls_paths.get("detected", False)
+            sls_detected = config_path.exists() and sls_paths.get("detected", False) and not is_arm64()
 
             if self.experimental_acf_independent_checkbox is not None:
-                if not sls_detected:
+                if is_arm64():
+                    self.experimental_acf_independent_checkbox.setChecked(False)
+                    self.experimental_acf_independent_checkbox.setEnabled(False)
+                    self.experimental_acf_independent_checkbox.setToolTip("Disabled: SLSsteam is unavailable on ARM64 architecture.")
+                elif not sls_detected:
                     self.experimental_acf_independent_checkbox.setChecked(False)
                     self.experimental_acf_independent_checkbox.setEnabled(False)
                     tooltip_msg = "Disabled: SLSsteam config.yaml or SLSsteam installation not detected."

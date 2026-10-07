@@ -52,6 +52,35 @@ def _get_user_dotnet_path() -> str:
         return os.path.expanduser("~/.dotnet/dotnet")
 
 
+def is_arm64() -> bool:
+    """Check if the current host architecture is ARM64 / aarch64.
+
+    Can be simulated on x86_64 machines via ASSELLA_FORCE_ARM64=1.
+    """
+    if os.environ.get("ASSELLA_FORCE_ARM64") in ("1", "true", "True"):
+        return True
+    return platform.machine().lower() in ("aarch64", "arm64", "armv8b", "armv8l")
+
+
+def is_armada_os() -> bool:
+    """Check if the current host is running Armada OS.
+
+    Can be simulated on other systems via ASSELLA_FORCE_ARMADA=1.
+    """
+    if os.environ.get("ASSELLA_FORCE_ARMADA") in ("1", "true", "True"):
+        return True
+    try:
+        for p in ("/etc/os-release", "/usr/lib/os-release"):
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    content = f.read().lower()
+                    if "id=armada" in content or 'name="armada"' in content or "armada-os" in content:
+                        return True
+    except Exception:
+        pass
+    return False
+
+
 def _get_user_dotnet_root() -> str:
     """Get the path to user's .dotnet root directory, platform-aware.
 
