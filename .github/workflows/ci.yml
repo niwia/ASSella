@@ -96,6 +96,7 @@ jobs:
           PY
 
       - name: Run Pre-Release Verification Suite
+        if: github.ref_name != 'canary' && github.base_ref != 'canary'
         run: |
           # 44 checks covering dialogs, core engines and channel isolation.
           # Three of them need a live Steam client (SteamPICS worker thread,

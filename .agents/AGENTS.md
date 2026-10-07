@@ -10,7 +10,7 @@ This file defines essential guidelines, build rules, versioning conventions, and
 - **System Inode Preservation**: When modifying SLSsteam configuration files (`~/.config/SLSsteam/config.yaml`), write updates **in-place** (or via `BatchConfigEditor` / `_atomic_write`) to preserve the file's system inode and prevent breaking SLSsteam's `inotify` file watcher.
 - **ACF-Independent Architecture & Smart Deletion**: ASSella writes and relies on local `metadata.json` files inside `{game_dir}/.DepotDownloader/`. During uninstall, poll Steam client up to 10s to delete the `.acf` manifest; if Steam fails to delete it, automatically discover and clean up candidate manifests across all Steam libraries.
 - **Spliced Ticket Plugin**: Managed under **Settings → ASSella tab** (below the SteamAPI provider selector). When toggling, enforce the legality warning dialog strictly without emojis: `"Bypassing DRM is illegal in many countries, make sure you are aware of this!"`. Automatically enables `Plugins: yes` and `SmartTickets: 0x1` in SLSsteam config.yaml.
-- **Pre-release Verification Suite**: Run `python3 scripts/prerelease_check.py` when explicitly validating builds. Do not execute it automatically after every minor task.
+- **Pre-release Verification Suite (`scripts/prerelease_check.py`)**: Do NOT run this test suite automatically. Never run it during development, after tasks, or on the `canary` branch unless the user explicitly and deliberately requests it. Automated CI also skips this suite on the `canary` branch.
 
 ---
 
