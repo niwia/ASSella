@@ -10,7 +10,7 @@ import shutil
 import logging
 import sqlite3
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set, Tuple
 
 from utils.settings import get_settings
 
@@ -135,6 +135,241 @@ def filter_dlc_depots_only(
                 filtered.append(d_str)
 
     return filtered
+
+
+def build_app_to_depots_map(
+    appid: Any,
+    game_data: Optional[Dict[str, Any]] = None,
+    extra_appids: Optional[Any] = None,
+    candidate_depots: Optional[Any] = None,
+) -> Dict[str, Set[str]]:
+    """
+    Dynamically map each AppID (base game and DLCs) to its associated depot IDs
+    using the 7-tier smart mapping pipeline.
+    Returns: { "appid_str": {base_depot_ids...}, "dlc_id_1": {dlc_depot_ids...}, ... }
+    """
+    appid_str = str(appid).strip()
+    mapping: Dict[str, Set[str]] = {}
+
+    target_apps: Set[str] = {appid_str}
+    if extra_appids:
+        for ea in extra_appids:
+            s_ea = str(ea).strip()
+            if s_ea and s_ea.isdigit():
+                target_apps.add(s_ea)
+
+    gd = game_data or {}
+    gd_dlcs = gd.get("dlcs") or {}
+    for dlc_id in gd_dlcs.keys():
+        s_dlc = str(dlc_id).strip()
+        if s_dlc and s_dlc.isdigit():
+            target_apps.add(s_dlc)
+
+    # 1. Check DatabaseManager SQLite records
+    try:
+        from managers.db_manager import DatabaseManager
+        db = DatabaseManager()
+        db_info = db.get_app_info(appid_str, bypass_expiration=True)
+        if db_info and db_info.get("depots"):
+            for did, d_meta in db_info["depots"].items():
+                did_str = str(did).strip()
+                dlc_id = str(d_meta.get("dlcappid") or "").strip()
+                if dlc_id and dlc_id.isdigit() and dlc_id != appid_str:
+                    mapping.setdefault(dlc_id, set()).add(did_str)
+                    target_apps.add(dlc_id)
+                elif d_meta.get("is_dlc"):
+                    desc = d_meta.get("name") or d_meta.get("desc") or ""
+                    m = re.search(r"\[DLC\s*(\d+)\]", desc)
+                    if m and m.group(1) != appid_str:
+                        mapping.setdefault(m.group(1), set()).add(did_str)
+                        target_apps.add(m.group(1))
+                    else:
+                        mapping.setdefault(appid_str, set()).add(did_str)
+                else:
+                    mapping.setdefault(appid_str, set()).add(did_str)
+
+        for aid in list(target_apps):
+            if aid != appid_str:
+                a_info = db.get_app_info(aid, bypass_expiration=True)
+                if a_info and a_info.get("depots"):
+                    for did in a_info["depots"].keys():
+                        mapping.setdefault(aid, set()).add(str(did).strip())
+    except Exception as e:
+        logger.debug(f"[DLCHelpers] DB map error for {appid_str}: {e}")
+
+    # 2. Check game_data / installed_depots from ACF & game_data depots
+    inst_depots = gd.get("installed_depots") or {}
+    for did, dinfo in inst_depots.items():
+        did_str = str(did).strip()
+        if isinstance(dinfo, dict):
+            dlc_id = str(dinfo.get("dlcappid") or "").strip()
+            if dlc_id and dlc_id.isdigit() and dlc_id != appid_str:
+                mapping.setdefault(dlc_id, set()).add(did_str)
+                target_apps.add(dlc_id)
+            else:
+                mapping.setdefault(appid_str, set()).add(did_str)
+        else:
+            mapping.setdefault(appid_str, set()).add(did_str)
+
+    gd_depots = gd.get("depots") or {}
+    for did, dinfo in gd_depots.items():
+        did_str = str(did).strip()
+        if isinstance(dinfo, dict):
+            dlc_id = str(dinfo.get("dlcappid") or "").strip()
+            if dlc_id and dlc_id.isdigit() and dlc_id != appid_str:
+                mapping.setdefault(dlc_id, set()).add(did_str)
+                target_apps.add(dlc_id)
+            else:
+                mapping.setdefault(appid_str, set()).add(did_str)
+
+    # 3. Check cached Lua DLC sections and MAIN GAME DEPOTS
+    try:
+        from utils.helpers import get_base_path
+        lua_path = Path(get_base_path()) / "cached_luas" / f"{appid_str}.lua"
+        if lua_path.exists():
+            txt = lua_path.read_text(encoding="utf-8", errors="ignore")
+            current_target_appid = None
+            for line in txt.splitlines():
+                m_dlc = re.search(r"\(AppID:\s*(\d+)\)", line, re.IGNORECASE)
+                if m_dlc:
+                    current_target_appid = m_dlc.group(1)
+                    if current_target_appid != appid_str:
+                        target_apps.add(current_target_appid)
+                elif line.startswith("-- MAIN") or "MAIN GAME" in line.upper():
+                    current_target_appid = appid_str
+                elif line.startswith("-- SHARED") or "SHARED REDIST" in line.upper():
+                    current_target_appid = None
+                elif current_target_appid:
+                    m_app = re.search(r"addappid\((\d+)", line)
+                    if m_app:
+                        mapping.setdefault(current_target_appid, set()).add(m_app.group(1))
+    except Exception as e:
+        logger.debug(f"[DLCHelpers] Lua parse error for {appid_str}: {e}")
+
+    # 4. Check Plugin Library for all target apps
+    try:
+        from utils.plugin_manager import load_plugin_library
+        plugin_lib = load_plugin_library()
+        for aid in list(target_apps):
+            rec = plugin_lib.get(aid, {})
+            for did in rec.get("depots", []):
+                mapping.setdefault(aid, set()).add(str(did).strip())
+            for dlc_id in rec.get("dlc_appids", []):
+                s_dlc = str(dlc_id).strip()
+                if s_dlc and s_dlc != appid_str:
+                    target_apps.add(s_dlc)
+    except Exception:
+        pass
+
+    # 5. Direct match: where DLC AppID == DepotID
+    for aid in target_apps:
+        mapping.setdefault(aid, set()).add(aid)
+
+    # 6. Fallback: Any remaining candidate depots not claimed by DLCs belong to base game
+    all_known_candidates: Set[str] = set()
+    if candidate_depots:
+        all_known_candidates.update(str(d).strip() for d in candidate_depots if str(d).strip().isdigit())
+    if gd_depots:
+        all_known_candidates.update(str(d).strip() for d in gd_depots.keys() if str(d).strip().isdigit())
+    if inst_depots:
+        all_known_candidates.update(str(d).strip() for d in inst_depots.keys() if str(d).strip().isdigit())
+
+    claimed_by_dlcs = set()
+    for aid, dids in mapping.items():
+        if aid != appid_str:
+            claimed_by_dlcs.update(dids)
+
+    for did in all_known_candidates:
+        if did and did not in claimed_by_dlcs:
+            mapping.setdefault(appid_str, set()).add(did)
+
+    return mapping
+
+
+def resolve_dlc_mapping_for_selection(
+    appid: Any,
+    selected_items: Optional[Any] = None,
+    game_data: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, str], Set[str]]:
+    """
+    Given a base game and user selection (which may contain DLC AppIDs and/or Depot IDs),
+    returns:
+      (selected_dlc_apps, selected_dlc_depots)
+      - selected_dlc_apps: { dlc_appid: label_for_comment } (NEVER base appid, NEVER raw depot IDs)
+      - selected_dlc_depots: { dlc_depot_id, ... }           (ONLY depots belonging to selected DLCs)
+    """
+    appid_str = str(appid).strip()
+    gd = game_data or {}
+    gd_dlcs = gd.get("dlcs") or {}
+
+    app_to_depots = build_app_to_depots_map(
+        appid_str, game_data=gd, candidate_depots=selected_items
+    )
+
+    # Build reverse depot -> DLC AppID mapping (excluding base game)
+    depot_to_dlc: Dict[str, str] = {}
+    dlc_apps_in_map: Set[str] = set()
+    for aid, dids in app_to_depots.items():
+        if aid != appid_str:
+            dlc_apps_in_map.add(aid)
+            for did in dids:
+                depot_to_dlc[did] = aid
+
+    base_depots = app_to_depots.get(appid_str, set())
+
+    resolved_dlc_appids: Set[str] = set()
+
+    if selected_items is not None:
+        sel_list = [str(x).strip() for x in selected_items if str(x).strip().isdigit()]
+        for x in sel_list:
+            if x == appid_str:
+                continue  # Base game AppID is strictly ignored in DLC-only mode
+            if x in base_depots:
+                continue  # Base game depot is strictly ignored in DLC-only mode
+
+            if x in dlc_apps_in_map or x in gd_dlcs:
+                resolved_dlc_appids.add(x)
+            elif x in depot_to_dlc:
+                resolved_dlc_appids.add(depot_to_dlc[x])
+    else:
+        # If no explicit selection provided, default to all known DLCs for this game
+        resolved_dlc_appids.update(dlc_apps_in_map)
+        resolved_dlc_appids.update(str(d).strip() for d in gd_dlcs.keys() if str(d).strip().isdigit())
+        resolved_dlc_appids.discard(appid_str)
+
+    # Build selected DLC depots (ONLY depots belonging to resolved DLCs)
+    resolved_dlc_depots: Set[str] = set()
+    for dlc_id in resolved_dlc_appids:
+        associated = app_to_depots.get(dlc_id, set())
+        for did in associated:
+            if did != appid_str and did not in base_depots:
+                resolved_dlc_depots.add(did)
+
+    # If user selected specific depots, and some were DLC depots, retain those specifically
+    if selected_items is not None:
+        sel_set = {str(x).strip() for x in selected_items if str(x).strip().isdigit()}
+        user_dlc_depots = {d for d in sel_set if d in resolved_dlc_depots}
+        if user_dlc_depots:
+            resolved_dlc_depots = user_dlc_depots
+
+    # Resolve readable names/descriptions for the DLC AppIDs
+    selected_dlc_apps: Dict[str, str] = {}
+    db = None
+    try:
+        from managers.db_manager import DatabaseManager
+        db = DatabaseManager()
+    except Exception:
+        pass
+
+    for dlc_id in sorted(resolved_dlc_appids, key=lambda x: int(x) if x.isdigit() else 0):
+        name = gd_dlcs.get(dlc_id) or gd_dlcs.get(int(dlc_id) if dlc_id.isdigit() else dlc_id)
+        if not name and db:
+            d_info = db.get_app_info(dlc_id, bypass_expiration=True)
+            if d_info:
+                name = d_info.get("name")
+        selected_dlc_apps[dlc_id] = str(name or f"DLC {dlc_id}").strip()
+
+    return selected_dlc_apps, resolved_dlc_depots
 
 
 def is_dlc_only_mode(appid: str) -> bool:
@@ -525,55 +760,10 @@ def purge_and_sanitize_for_dlc_only(
         if remove_additional_app(config_path, appid_str):
             summary["base_app_removed"] = True
 
-        # 2. Add ONLY the DLC AppIDs that correspond to the user's selected depots.
-        # Derive dlcappid from each selected depot's metadata — do NOT fetch all DLCs
-        # from Steam, as that would add unselected DLCs and potentially the base appid.
-        depots_meta_for_dlc = (game_data.get("depots") or {}) if game_data else {}
-        # Also pull from DB if game_data depots are sparse
-        try:
-            from managers.db_manager import DatabaseManager
-            _db = DatabaseManager()
-            _db_app = _db.get_app_info(appid_str, bypass_expiration=True)
-            if _db_app and _db_app.get("depots"):
-                for _did, _dinfo in _db_app["depots"].items():
-                    _did_str = str(_did)
-                    if _did_str not in depots_meta_for_dlc:
-                        depots_meta_for_dlc[_did_str] = _dinfo
-        except Exception:
-            pass
-
-        # Build set of app IDs to add to AdditionalApps from selected depots only.
-        # Priority:
-        #   1. dlcappid from depot metadata  → correct DLC AppID for SLSsteam to unlock
-        #   2. depot ID itself (fallback)    → if no dlcappid info, user selected it so add it directly
-        # The base appid is always excluded.
-        sel_dlcappid_set: dict = {}  # appid_to_add -> label (for comment)
-        if user_sel_set:
-            for sel_did in user_sel_set:
-                if sel_did == appid_str:
-                    continue  # never add base appid
-                meta = depots_meta_for_dlc.get(sel_did) or depots_meta_for_dlc.get(
-                    int(sel_did) if sel_did.isdigit() else sel_did, {}
-                )
-                desc = ""
-                dlcappid_val = ""
-                if isinstance(meta, dict):
-                    dlcappid_val = str(meta.get("dlcappid") or "").strip()
-                    desc = meta.get("desc", "")
-
-                if dlcappid_val and dlcappid_val != appid_str:
-                    # Preferred: use the proper DLC AppID that owns this depot
-                    sel_dlcappid_set[dlcappid_val] = desc or f"DLC {dlcappid_val}"
-                else:
-                    # Fallback: no dlcappid metadata — use the depot ID itself
-                    sel_dlcappid_set[sel_did] = desc or f"Depot {sel_did}"
-        else:
-            # Fallback when no depot selection provided: resolve from DLC list
-            dlc_list = get_all_dlcs_for_app(appid_str, game_data, allow_network=True)
-            for d in dlc_list:
-                did = str(d["dlc_appid"])
-                if did != appid_str:
-                    sel_dlcappid_set[did] = d.get("dlc_name") or f"DLC {did}"
+        # 2. Resolve smart DLC & depot mapping (NEVER base appid, NEVER raw depot IDs)
+        sel_dlcappid_set, sel_dlc_depots = resolve_dlc_mapping_for_selection(
+            appid_str, selected_items=user_sel_set, game_data=game_data
+        )
 
         if len(sel_dlcappid_set) >= 64:
             add_dlc_data_batch(config_path, appid_str, sel_dlcappid_set)
@@ -585,64 +775,59 @@ def purge_and_sanitize_for_dlc_only(
                 if add_additional_app(config_path, did, comment):
                     summary["dlcs_added"].append(did)
 
-        # 3. AdditionalDepots: User-selected depots ONLY
-        if user_sel_set is not None:
-            existing_depots = get_additional_depots(config_path)
-            # Remove any depot belonging to this game that user did NOT select
-            for d in all_game_depots:
-                if d in existing_depots and d not in user_sel_set:
-                    if remove_additional_depot(config_path, d):
-                        summary["base_depots_removed"].append(d)
-            # Ensure selected depots are added with comments (ONLY DLC depots, never base game main depots)
-            depots_meta = (game_data.get("depots") or {}) if game_data else {}
-            filtered_dlc_depots = filter_dlc_depots_only(user_sel_set, appid_str, depots_meta=depots_meta)
-            for d in filtered_dlc_depots:
-                meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
-                desc = meta.get("desc", "") if isinstance(meta, dict) else ""
-                comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
-                add_additional_depot(config_path, d, comment=comment)
+        # 3. AdditionalDepots: ONLY selected DLC depots, NEVER base game main depots
+        existing_depots = get_additional_depots(config_path)
+        for d in all_game_depots:
+            if d in existing_depots and d not in sel_dlc_depots:
+                if remove_additional_depot(config_path, d):
+                    summary["base_depots_removed"].append(d)
 
-        # 4. DecryptionKeys: Remove unselected depot keys, then add keys for selected depots & root AppID
+        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        for d in sorted(sel_dlc_depots, key=lambda x: int(x) if x.isdigit() else 0):
+            meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
+            desc = meta.get("desc", "") if isinstance(meta, dict) else ""
+            comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
+            add_additional_depot(config_path, d, comment=comment)
+
+        # 4. DecryptionKeys: Remove base game app key and unselected depot keys, then add keys for selected DLC depots
         existing_keys = get_decryption_keys(config_path)
-        if user_sel_set is not None:
-            for d in all_game_depots:
-                if d != appid_str and d in existing_keys and d not in user_sel_set:
-                    if remove_decryption_key(config_path, d):
-                        summary["base_keys_removed"].append(d)
+        if appid_str in existing_keys:
+            if remove_decryption_key(config_path, appid_str):
+                summary["base_keys_removed"].append(appid_str)
 
-            # Ensure keys for selected DLC depots are added so Steam can decrypt DLC content
-            depot_keys = {}
-            if game_data and game_data.get("depot_keys"):
-                depot_keys.update({str(k): v for k, v in game_data["depot_keys"].items()})
-            if game_data and game_data.get("depots"):
-                for did, dinfo in game_data["depots"].items():
-                    if isinstance(dinfo, dict) and dinfo.get("key"):
-                        depot_keys[str(did)] = dinfo["key"]
-            try:
-                from managers.depot_key_manager import DepotKeyManager
-                dkm = DepotKeyManager.get_instance()
-                cached_dkm = dkm.get_depot_keys(appid_str)
-                if cached_dkm:
-                    for k, v in cached_dkm.items():
-                        depot_keys.setdefault(str(k), v)
-            except Exception as e:
-                logger.debug(f"[DLCMode] Error querying DepotKeyManager for {appid_str}: {e}")
+        for d in all_game_depots:
+            if d in existing_keys and d not in sel_dlc_depots and d not in sel_dlcappid_set:
+                if remove_decryption_key(config_path, d):
+                    summary["base_keys_removed"].append(d)
 
-            for d in user_sel_set:
-                if d != appid_str and str(d) in depot_keys:
-                    k = depot_keys[str(d)]
-                    meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
+        # Ensure keys for selected DLC depots and DLC AppIDs are added so Steam can decrypt DLC content
+        depot_keys = {}
+        if game_data and game_data.get("depot_keys"):
+            depot_keys.update({str(k): v for k, v in game_data["depot_keys"].items()})
+        if game_data and game_data.get("depots"):
+            for did, dinfo in game_data["depots"].items():
+                if isinstance(dinfo, dict) and dinfo.get("key"):
+                    depot_keys[str(did)] = dinfo["key"]
+        try:
+            from managers.depot_key_manager import DepotKeyManager
+            dkm = DepotKeyManager.get_instance()
+            cached_dkm = dkm.get_depot_keys(appid_str)
+            if cached_dkm:
+                for k, v in cached_dkm.items():
+                    depot_keys.setdefault(str(k), v)
+        except Exception as e:
+            logger.debug(f"[DLCMode] Error querying DepotKeyManager for {appid_str}: {e}")
+
+        # Add decryption keys ONLY for selected DLC depots (and selected DLC appids if keyed)
+        for d in (sel_dlc_depots | set(sel_dlcappid_set.keys())):
+            if str(d) in depot_keys and str(d) != appid_str:
+                k = depot_keys[str(d)]
+                if k:
+                    meta = depots_meta.get(d) or depots_meta.get(int(d) if str(d).isdigit() else d) or {}
                     desc = meta.get("desc", "") if isinstance(meta, dict) else ""
                     comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
                     if add_decryption_key(config_path, str(d), k, comment=comment):
                         summary.setdefault("keys_added", []).append(str(d))
-
-            # Ensure root Game AppID key is also preserved/added if available
-            root_app_key = depot_keys.get(appid_str) or (game_data.get("app_key") if game_data else None)
-            if root_app_key:
-                comment = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
-                if add_decryption_key(config_path, appid_str, root_app_key, comment=comment):
-                    summary.setdefault("keys_added", []).append(appid_str)
 
         # 4b. Sync DLC manifests to Steam depotcache so Steam does not fail on MRC
         try:

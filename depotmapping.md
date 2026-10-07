@@ -184,6 +184,17 @@ When removing or deselecting a DLC:
 - If no other active DLC references the depot, remove it from `AdditionalDepots` and remove its key from `DecryptionKeys`.
 - Write `~/.config/SLSsteam/config.yaml` in-place preserving system inodes.
 
+### Reference Implementation: `resolve_dlc_mapping_for_selection()`
+The standard pipeline in `src/utils/dlc_helpers.py` provides:
+```python
+sel_dlc_apps, sel_dlc_depots = resolve_dlc_mapping_for_selection(
+    base_appid, selected_items=user_selection, game_data=game_data
+)
+```
+- `sel_dlc_apps`: `{ dlc_appid: comment_label }` containing strictly resolved DLC AppIDs (never base appid, never raw depot IDs).
+- `sel_dlc_depots`: `{ dlc_depot_id, ... }` containing strictly the content depots belonging to those selected DLCs.
+- `DecryptionKeys`: Scoped strictly to `sel_dlc_depots` and keyed DLC AppIDs, purging root `base_appid` key and base game depot keys.
+
 ---
 
 ## 5. Concrete Examples

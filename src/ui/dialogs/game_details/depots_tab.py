@@ -526,131 +526,13 @@ def init_depots_tab(dialog) -> None:
         Used for one-way dynamic cascade toggling across AdditionalApps,
         AdditionalDepots, and DecryptionKeys.
         """
-        mapping: Dict[str, Set[str]] = {}
-
-        # 1. Check DatabaseManager SQLite records for this game & all apps in state_apps
-        try:
-            from managers.db_manager import DatabaseManager
-            db = DatabaseManager()
-            db_info = db.get_app_info(appid_str)
-            if db_info and db_info.get("depots"):
-                for did, d_meta in db_info["depots"].items():
-                    did_str = str(did).strip()
-                    dlc_id = str(d_meta.get("dlcappid") or "").strip()
-                    if dlc_id and dlc_id.isdigit():
-                        mapping.setdefault(dlc_id, set()).add(did_str)
-                    elif d_meta.get("is_dlc"):
-                        desc = d_meta.get("name") or d_meta.get("desc") or ""
-                        m = re.search(r"\[DLC\s*(\d+)\]", desc)
-                        if m:
-                            mapping.setdefault(m.group(1), set()).add(did_str)
-                        else:
-                            mapping.setdefault(appid_str, set()).add(did_str)
-                    else:
-                        mapping.setdefault(appid_str, set()).add(did_str)
-
-            for item in state_apps:
-                aid = item["id"]
-                if aid != appid_str:
-                    a_info = db.get_app_info(aid)
-                    if a_info and a_info.get("depots"):
-                        for did in a_info["depots"].keys():
-                            mapping.setdefault(aid, set()).add(str(did).strip())
-        except Exception:
-            pass
-
-        # 2. Check game_data / installed_depots from ACF & game_data depots
-        gd = dialog.game_data or {}
-        inst_depots = gd.get("installed_depots") or {}
-        for did, dinfo in inst_depots.items():
-            did_str = str(did).strip()
-            if isinstance(dinfo, dict):
-                dlc_id = str(dinfo.get("dlcappid") or "").strip()
-                if dlc_id and dlc_id.isdigit():
-                    mapping.setdefault(dlc_id, set()).add(did_str)
-                else:
-                    mapping.setdefault(appid_str, set()).add(did_str)
-            else:
-                mapping.setdefault(appid_str, set()).add(did_str)
-
-        gd_depots = gd.get("depots") or {}
-        for did, dinfo in gd_depots.items():
-            did_str = str(did).strip()
-            if isinstance(dinfo, dict):
-                dlc_id = str(dinfo.get("dlcappid") or "").strip()
-                if dlc_id and dlc_id.isdigit():
-                    mapping.setdefault(dlc_id, set()).add(did_str)
-                else:
-                    mapping.setdefault(appid_str, set()).add(did_str)
-
-        # 3. Check cached Lua DLC sections and MAIN GAME DEPOTS
-        try:
-            from utils.helpers import get_base_path
-            lua_path = Path(get_base_path()) / "cached_luas" / f"{appid_str}.lua"
-            if lua_path.exists():
-                txt = lua_path.read_text(encoding="utf-8", errors="ignore")
-                current_target_appid = None
-                for line in txt.splitlines():
-                    m_dlc = re.search(r"\(AppID:\s*(\d+)\)", line, re.IGNORECASE)
-                    if m_dlc:
-                        current_target_appid = m_dlc.group(1)
-                    elif line.startswith("-- MAIN") or "MAIN GAME" in line.upper():
-                        current_target_appid = appid_str
-                    elif line.startswith("-- SHARED") or "SHARED REDIST" in line.upper():
-                        current_target_appid = None
-                    elif current_target_appid:
-                        m_app = re.search(r"addappid\((\d+)", line)
-                        if m_app:
-                            mapping.setdefault(current_target_appid, set()).add(m_app.group(1))
-        except Exception:
-            pass
-
-        # 4. Check Plugin Library for all apps in state_apps
-        try:
-            from utils.plugin_manager import load_plugin_library
-            plugin_lib = load_plugin_library()
-            for item in state_apps:
-                aid = item["id"]
-                rec = plugin_lib.get(aid, {})
-                for did in rec.get("depots", []):
-                    mapping.setdefault(aid, set()).add(str(did).strip())
-        except Exception:
-            pass
-
-        # 5. Check cached Lua files for secondary apps in state_apps if present
-        try:
-            from utils.helpers import get_base_path
-            base_luas = Path(get_base_path()) / "cached_luas"
-            for item in state_apps:
-                aid = item["id"]
-                if aid != appid_str:
-                    sec_lua = base_luas / f"{aid}.lua"
-                    if sec_lua.exists():
-                        txt = sec_lua.read_text(encoding="utf-8", errors="ignore")
-                        for line in txt.splitlines():
-                            m_app = re.search(r"addappid\((\d+)", line)
-                            if m_app:
-                                mapping.setdefault(aid, set()).add(m_app.group(1))
-        except Exception:
-            pass
-
-        # 6. Direct match: depot ID == AppID
-        for item in state_apps:
-            aid = item["id"]
-            mapping.setdefault(aid, set()).add(aid)
-
-        # 7. Fallback: Any remaining depots in state_depots not claimed by other apps belong to base game
-        if state_depots:
-            claimed_by_others = set()
-            for aid, dids in mapping.items():
-                if aid != appid_str:
-                    claimed_by_others.update(dids)
-            for d in state_depots:
-                did = str(d.get("id") or "").strip()
-                if did and did not in claimed_by_others:
-                    mapping.setdefault(appid_str, set()).add(did)
-
-        return mapping
+        from utils.dlc_helpers import build_app_to_depots_map
+        return build_app_to_depots_map(
+            appid_str,
+            game_data=dialog.game_data,
+            extra_appids=[item["id"] for item in state_apps],
+            candidate_depots=[d["id"] for d in state_depots] if state_depots else None,
+        )
 
     def _collect_state() -> Dict[str, Any]:
         """Collect and cross-reference data strictly for THIS game."""
