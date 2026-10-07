@@ -317,8 +317,89 @@ def make_build_card(dialog, idx: int, item: dict, current_bid: str, game_name: s
     row2.addStretch(1)
     layout.addLayout(row2)
 
+    # ─ Row 3: Depot badges with OS icons ─
+    card._depots_container = QWidget()
+    card._depots_container.setObjectName("card_depots_container")
+    card._depots_container.setStyleSheet("background: transparent; border: none;")
+    card._depots_layout = QHBoxLayout(card._depots_container)
+    card._depots_layout.setContentsMargins(0, 3, 0, 0)
+    card._depots_layout.setSpacing(6)
+    card._depots_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    card._depots_container.setVisible(False)
+    layout.addWidget(card._depots_container)
+
+    initial_depots = dialog._cached_build_depots.get(build_id) or item.get("depots")
+    if initial_depots:
+        update_card_depots(dialog, card, build_id, initial_depots)
+
     card.mousePressEvent = lambda _e, i=idx: on_build_card_clicked(dialog, i)
     return card
+
+
+def update_card_depots(dialog, card: QFrame, build_id: str, depots: dict) -> None:
+    """Renders depot preview badges with OS logos, names, and manifest IDs on a build card."""
+    if not card or not hasattr(card, "_depots_layout"):
+        return
+
+    while card._depots_layout.count():
+        it = card._depots_layout.takeAt(0)
+        if it.widget():
+            it.widget().deleteLater()
+
+    if not depots:
+        card._depots_container.setVisible(False)
+        return
+
+    try:
+        from utils.depot_utils import filter_build_depots
+        game_depots = dialog.game_data.get("depots") if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict) else {}
+        filtered = filter_build_depots(depots, appid=dialog.appid, game_depots=game_depots)
+    except Exception:
+        filtered = depots
+
+    if not filtered:
+        card._depots_container.setVisible(False)
+        return
+
+    d_items = list(filtered.items())
+    for did, dinfo in d_items[:3]:
+        det = dinfo.get("details") or {}
+        mid = dinfo.get("manifest_id") or ""
+        os_icon = det.get("os_icon") or "📦"
+        dname = det.get("name") or f"Depot {did}"
+        pill_txt = f"{os_icon} {did} • {dname}"
+        if len(pill_txt) > 28:
+            pill_txt = pill_txt[:26] + "…"
+        lbl = QLabel(pill_txt)
+        lbl.setStyleSheet("""
+            QLabel {
+                background-color: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 4px;
+                padding: 2px 7px;
+                font-size: 8pt;
+                color: rgba(255, 255, 255, 0.85);
+            }
+        """)
+        lbl.setToolTip(f"Depot: {did} ({det.get('os_badge', 'Content')})\nName: {det.get('name', dname)}\nManifest: {mid}")
+        card._depots_layout.addWidget(lbl)
+
+    if len(d_items) > 3:
+        more_lbl = QLabel(f"+{len(d_items) - 3} more")
+        more_lbl.setStyleSheet("""
+            QLabel {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 4px;
+                padding: 2px 6px;
+                font-size: 8pt;
+                color: rgba(255, 255, 255, 0.5);
+            }
+        """)
+        card._depots_layout.addWidget(more_lbl)
+
+    card._depots_layout.addStretch(1)
+    card._depots_container.setVisible(True)
 
 
 def fetch_steamdb_builds_async(dialog) -> None:
@@ -465,28 +546,131 @@ def on_build_depots_loaded(dialog, build_id: str, depots: dict) -> None:
     aid = int(dialog.appid) if dialog.appid.isdigit() else 0
     dialog.builds_cache.update_build_depots(aid, build_id, depots)
 
+    # Update depots badge preview on matching card
+    for card, item in dialog._build_cards:
+        if str(item.get("buildid")) == str(build_id):
+            update_card_depots(dialog, card, build_id, depots)
+            break
+
     if 0 <= dialog._selected_build_idx < len(dialog._build_cards):
         _, item = dialog._build_cards[dialog._selected_build_idx]
         if str(item.get("buildid")) == str(build_id):
             apply_depot_to_download_btn(dialog, build_id, depots)
 
 
-def on_build_depots_error(dialog, err_msg: str) -> None:
-    if 0 <= dialog._selected_build_idx < len(dialog._build_cards):
-        dialog.builds_download_btn.setText("Manifest Error")
-        dialog.builds_download_btn.setEnabled(False)
-        dialog.builds_download_btn.setToolTip(err_msg)
+class BuildDepotsSelectionDialog(QDialog):
+    """Dialog allowing users to see and select depots for a historical build with OS badges and manifests."""
 
+    def __init__(self, parent, build_id: str, depots: dict, appid: str = "", accent_color: str = "#4A90E2"):
+        super().__init__(parent)
+        self.setWindowTitle(f"Select Depots — Build {build_id}")
+        self.setMinimumWidth(540)
+        self.accent_color = accent_color
+        self.selected_depots: Dict[str, str] = {}
+        self.checkboxes: Dict[str, tuple] = {}
 
-def apply_depot_to_download_btn(dialog, build_id: str, depots: dict) -> None:
-    has_manifest = any(info.get("manifest_id") for info in depots.values()) if depots else False
-    action = get_build_action_label(dialog, build_id)
-    if has_manifest:
-        dialog.builds_download_btn.setText(f"{action} (Build {build_id})")
-        dialog.builds_download_btn.setEnabled(True)
-    else:
-        dialog.builds_download_btn.setText("No Manifests Found")
-        dialog.builds_download_btn.setEnabled(False)
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: #1a1b26;
+                color: #FFFFFF;
+            }}
+            QCheckBox {{
+                color: #FFFFFF;
+                font-size: 9pt;
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                background-color: rgba(255, 255, 255, 0.05);
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {accent_color};
+                border-color: {accent_color};
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(18, 18, 18, 18)
+
+        # Header
+        title = QLabel(f"<b>Build {build_id} Depots</b>")
+        title.setStyleSheet("font-size: 11pt; color: #FFFFFF;")
+        layout.addWidget(title)
+
+        desc = QLabel("Select which depots to download/rollback for this version:")
+        desc.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.6);")
+        layout.addWidget(desc)
+
+        # Depots scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; background-color: rgba(0, 0, 0, 0.2); }")
+
+        container = QWidget()
+        c_layout = QVBoxLayout(container)
+        c_layout.setContentsMargins(12, 12, 12, 12)
+        c_layout.setSpacing(10)
+
+        for did, info in depots.items():
+            det = info.get("details") or {}
+            mid = info.get("manifest_id") or ""
+            os_icon = det.get("os_icon", "📦")
+            os_badge = det.get("os_badge", "Content")
+            dname = det.get("name", f"Depot {did}")
+
+            cb = QCheckBox(f"{os_icon} {os_badge} • Depot {did}: {dname}")
+            cb.setToolTip(f"Manifest: {mid}\nDepot: {did}\nName: {dname}")
+            cb.setChecked(True)
+            self.checkboxes[str(did)] = (cb, str(mid))
+            c_layout.addWidget(cb)
+
+        c_layout.addStretch(1)
+        scroll.setWidget(container)
+        layout.addWidget(scroll, 1)
+
+        # Buttons
+        btn_box = QHBoxLayout()
+        btn_box.setSpacing(8)
+
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.setFixedHeight(32)
+        select_all_btn.setStyleSheet("background-color: rgba(255, 255, 255, 0.08); border-radius: 5px; color: #FFFFFF; font-size: 8.5pt; padding: 0 10px;")
+        select_all_btn.clicked.connect(self._select_all)
+        btn_box.addWidget(select_all_btn)
+
+        btn_box.addStretch(1)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedHeight(32)
+        cancel_btn.setStyleSheet("background-color: rgba(255, 255, 255, 0.08); border-radius: 5px; color: #FFFFFF; font-size: 8.5pt; padding: 0 12px;")
+        cancel_btn.clicked.connect(self.reject)
+        btn_box.addWidget(cancel_btn)
+
+        from utils.color_utils import get_best_foreground_color
+        fg_color = get_best_foreground_color(accent_color)
+        confirm_btn = QPushButton("Download Selected")
+        confirm_btn.setFixedHeight(32)
+        confirm_btn.setStyleSheet(f"background-color: {accent_color}; color: {fg_color}; font-weight: bold; border-radius: 5px; font-size: 8.5pt; padding: 0 14px;")
+        confirm_btn.clicked.connect(self._confirm)
+        btn_box.addWidget(confirm_btn)
+
+        layout.addLayout(btn_box)
+
+    def _select_all(self):
+        all_checked = all(cb.isChecked() for cb, _ in self.checkboxes.values())
+        for cb, _ in self.checkboxes.values():
+            cb.setChecked(not all_checked)
+
+    def _confirm(self):
+        self.selected_depots = {did: mid for did, (cb, mid) in self.checkboxes.items() if cb.isChecked()}
+        if not self.selected_depots:
+            QMessageBox.warning(self, "No Depots Selected", "Please select at least one depot to proceed.")
+            return
+        self.accept()
 
 
 def on_builds_download_clicked(dialog) -> None:
@@ -500,35 +684,10 @@ def on_builds_download_clicked(dialog) -> None:
         QMessageBox.warning(dialog, "No Manifest", "No depot manifests found for this build.")
         return
 
-    installed_depots = dialog.game_data.get("installed_depots", {})
-    selected_depot_id = None
-
-    for d_id in depots.keys():
-        if d_id in installed_depots:
-            selected_depot_id = d_id
-            break
-
-    if not selected_depot_id and len(depots) == 1:
-        selected_depot_id = list(depots.keys())[0]
-
-    if not selected_depot_id and len(depots) > 1:
-        items = [f"Depot {d_id}  (Manifest: {info.get('manifest_id')})"
-                 for d_id, info in depots.items() if info.get("manifest_id")]
-        if items:
-            chosen, ok = QInputDialog.getItem(
-                dialog, "Select Depot",
-                "Multiple depots found. Select depot to download:", items, 0, False)
-            if not ok or not chosen:
-                return
-            selected_depot_id = chosen.split(" ")[1]
-
-    if not selected_depot_id:
-        selected_depot_id = list(depots.keys())[0]
-
-    manifest_id = depots[selected_depot_id].get("manifest_id")
-    if not manifest_id:
-        QMessageBox.warning(dialog, "No Manifest ID", f"Could not find manifest ID for depot {selected_depot_id}.")
-        return
+    # Filter depots respecting the user's platform visibility preferences
+    from utils.depot_utils import filter_build_depots
+    game_depots = dialog.game_data.get("depots") if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict) else {}
+    valid_depots = filter_build_depots(depots, appid=dialog.appid, game_depots=game_depots)
 
     action = get_build_action_label(dialog, build_id)
     if action == "Downgrade":
@@ -538,4 +697,24 @@ def on_builds_download_clicked(dialog) -> None:
     else:
         should_pin = False
 
-    dialog._trigger_rollback_job(str(selected_depot_id), str(build_id), str(manifest_id), pin_build=should_pin)
+    # If only 1 depot matches the user's platform/settings, proceed directly without prompt
+    if len(valid_depots) == 1:
+        did = next(iter(valid_depots.keys()))
+        mid = valid_depots[did].get("manifest_id")
+        if not mid:
+            QMessageBox.warning(dialog, "No Manifest ID", f"Could not find manifest ID for depot {did}.")
+            return
+        dialog._trigger_rollback_job(str(did), str(build_id), str(mid), pin_build=should_pin)
+        return
+
+    # If multiple depots match, show multi-selection dialog with OS logos and descriptions
+    dlg = BuildDepotsSelectionDialog(dialog, build_id, valid_depots, appid=dialog.appid, accent_color=dialog.accent_color)
+    if not dlg.exec():
+        return
+
+    chosen_depots = dlg.selected_depots
+    if len(chosen_depots) == 1:
+        did, mid = next(iter(chosen_depots.items()))
+        dialog._trigger_rollback_job(str(did), str(build_id), str(mid), pin_build=should_pin)
+    else:
+        dialog._trigger_rollback_job(chosen_depots, str(build_id), pin_build=should_pin)

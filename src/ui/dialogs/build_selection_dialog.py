@@ -391,6 +391,27 @@ class BuildSelectionDialog(QDialog):
                 title_lbl.setWordWrap(True)
                 card_layout.addWidget(title_lbl)
 
+            # Depot badges row
+            card._depots_container = QWidget()
+            card._depots_container.setObjectName("card_depots_container")
+            card._depots_container.setStyleSheet("background: transparent; border: none;")
+            card._depots_layout = QHBoxLayout(card._depots_container)
+            card._depots_layout.setContentsMargins(0, 3, 0, 0)
+            card._depots_layout.setSpacing(6)
+            card._depots_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            card._depots_container.setVisible(False)
+            card_layout.addWidget(card._depots_container)
+
+            card_depots = item.get("depots")
+            if not card_depots:
+                try:
+                    from core.steamdb_scraper import SteamDBBuildsCache
+                    card_depots = SteamDBBuildsCache().get_build_depots(build_id)
+                except Exception:
+                    card_depots = None
+            if card_depots:
+                self._update_card_depots(card, build_id, card_depots)
+
             card.mousePressEvent = lambda _e, i=idx: self._on_card_clicked(i)
 
             self.cards_layout.insertWidget(idx, card)
@@ -401,6 +422,68 @@ class BuildSelectionDialog(QDialog):
                 self._on_card_clicked(idx)
             elif is_current and self._selected_build_idx == -1:
                 self._on_card_clicked(idx)
+
+    def _update_card_depots(self, card: QFrame, build_id: str, depots: dict):
+        if not card or not hasattr(card, "_depots_layout"):
+            return
+        while card._depots_layout.count():
+            it = card._depots_layout.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+
+        if not depots:
+            card._depots_container.setVisible(False)
+            return
+
+        try:
+            from utils.depot_utils import filter_build_depots
+            filtered = filter_build_depots(depots, appid=self.app_id, game_depots=self.depots_dict)
+        except Exception:
+            filtered = depots
+
+        if not filtered:
+            card._depots_container.setVisible(False)
+            return
+
+        d_items = list(filtered.items())
+        for did, dinfo in d_items[:3]:
+            det = dinfo.get("details") or {}
+            mid = dinfo.get("manifest_id") or ""
+            os_icon = det.get("os_icon") or "📦"
+            dname = det.get("name") or f"Depot {did}"
+            pill_txt = f"{os_icon} {did} • {dname}"
+            if len(pill_txt) > 28:
+                pill_txt = pill_txt[:26] + "…"
+            lbl = QLabel(pill_txt)
+            lbl.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(255, 255, 255, 0.05);
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    border-radius: 4px;
+                    padding: 2px 7px;
+                    font-size: 8pt;
+                    color: rgba(255, 255, 255, 0.85);
+                }
+            """)
+            lbl.setToolTip(f"Depot: {did} ({det.get('os_badge', 'Content')})\nName: {det.get('name', dname)}\nManifest: {mid}")
+            card._depots_layout.addWidget(lbl)
+
+        if len(d_items) > 3:
+            more_lbl = QLabel(f"+{len(d_items) - 3} more")
+            more_lbl.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(255, 255, 255, 0.03);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 4px;
+                    padding: 2px 6px;
+                    font-size: 8pt;
+                    color: rgba(255, 255, 255, 0.5);
+                }
+            """)
+            card._depots_layout.addWidget(more_lbl)
+
+        card._depots_layout.addStretch(1)
+        card._depots_container.setVisible(True)
 
     def _on_card_clicked(self, idx: int):
         if 0 <= self._selected_build_idx < len(self._build_cards):
@@ -469,6 +552,10 @@ class BuildSelectionDialog(QDialog):
             SteamDBBuildsCache().update_build_depots(aid_int, build_id, depots)
         except Exception:
             pass
+        for card, item in self._build_cards:
+            if str(item.get("buildid")) == str(build_id):
+                self._update_card_depots(card, build_id, depots)
+                break
         self.accept()
 
     def _on_manual_clicked(self):

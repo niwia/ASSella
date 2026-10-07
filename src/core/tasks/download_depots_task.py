@@ -53,6 +53,10 @@ class DownloadDepotsTask(QObject):
         self.process: Optional[subprocess.Popen] = None
 
         self.total_download_size_for_this_job = 0
+        self.actual_download_bytes_for_this_job = 0
+        self.actual_uncompressed_bytes_for_this_job = 0
+        self._current_depot_downloaded_bytes = 0
+        self._current_depot_uncompressed_bytes = 0
         self.completed_so_far_for_this_job = 0
         self.current_depot_size = 0
         self._last_log_time = 0
@@ -114,6 +118,8 @@ class DownloadDepotsTask(QObject):
 
             total_depots = len(commands)
             self.total_download_size_for_this_job = sum(depot_sizes)
+            self.actual_download_bytes_for_this_job = 0
+            self.actual_uncompressed_bytes_for_this_job = 0
             self.completed_so_far_for_this_job = 0
 
             logger.info(
@@ -143,6 +149,8 @@ class DownloadDepotsTask(QObject):
                 self._current_depot_key_denied = False
                 self._current_depot_error_reason = ""
                 self._current_depot_zero_downloaded = False
+                self._current_depot_downloaded_bytes = 0
+                self._current_depot_uncompressed_bytes = 0
 
                 # Determine creation flags for Windows to hide the console window
                 creation_flags = 0
@@ -200,6 +208,8 @@ class DownloadDepotsTask(QObject):
                     self.last_percentage = -1
                     self._is_validating = False
                     self._lancache_error_detected = False
+                    self._current_depot_downloaded_bytes = 0
+                    self._current_depot_uncompressed_bytes = 0
 
                     self.process = subprocess.Popen(
                         fallback_cmd,
@@ -315,6 +325,8 @@ class DownloadDepotsTask(QObject):
                     if recovered_manifest and self._is_running:
                         self.last_percentage = -1
                         self._is_validating = False
+                        self._current_depot_downloaded_bytes = 0
+                        self._current_depot_uncompressed_bytes = 0
                         retry_cmd = [arg for arg in current_cmd if arg != "-use-lancache"]
                         self.process = subprocess.Popen(
                             retry_cmd,
@@ -373,6 +385,10 @@ class DownloadDepotsTask(QObject):
                         return
                 else:
                     self.completed_so_far_for_this_job += self.current_depot_size
+                    self.actual_download_bytes_for_this_job += self._current_depot_downloaded_bytes
+                    self.actual_uncompressed_bytes_for_this_job += self._current_depot_uncompressed_bytes
+                    self._current_depot_downloaded_bytes = 0
+                    self._current_depot_uncompressed_bytes = 0
                     self._last_speed_calc_time = 0.0
                     self._smooth_speed_bps = 0.0
                     # Copy manifest and create .sha sidecar in .DepotDownloader to enable future delta updates
@@ -625,8 +641,15 @@ class DownloadDepotsTask(QObject):
         if "no valid depot key" in lower_line or ("depot key" in lower_line and "accessdenied" in lower_line) or "result: accessdenied" in lower_line:
             self._current_depot_key_denied = True
             self._current_depot_error_reason = line
-        if "total downloaded: 0 bytes" in lower_line and "from 0 depots" in lower_line:
-            self._current_depot_zero_downloaded = True
+        if "total downloaded:" in lower_line:
+            if "from 0 depots" in lower_line and "0 bytes" in lower_line:
+                self._current_depot_zero_downloaded = True
+            m_wire = re.search(r"total downloaded:\s*(\d+)\s*bytes", lower_line)
+            if m_wire:
+                self._current_depot_downloaded_bytes = int(m_wire.group(1))
+            m_uncomp = re.search(r"\(\s*(\d+)\s*bytes uncompressed\)", lower_line)
+            if m_uncomp:
+                self._current_depot_uncompressed_bytes = int(m_uncomp.group(1))
 
         # Check validation phase vs real chunk download
         is_validation_line = line.startswith("Validating ") or line.startswith("Checking ")

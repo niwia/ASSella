@@ -71,6 +71,8 @@ class NativeSteamDownloadTask(QObject):
         self.process = None
         self.process_pid = None
         self.total_download_size_for_this_job = 0
+        self.actual_download_bytes_for_this_job = 0
+        self.actual_uncompressed_bytes_for_this_job = 0
         self.completed_so_far_for_this_job = 0
         self.current_depot_size = 0
         self._config_backup_path: Optional[Path] = None
@@ -1071,6 +1073,7 @@ class NativeSteamDownloadTask(QObject):
                             total = int(total_m.group(1))
                             done = int(done_m.group(1))
                             self.total_download_size_for_this_job = total
+                            self.actual_download_bytes_for_this_job = total
                             self.completed_so_far_for_this_job = done
                             if total > 0:
                                 pct = min(99, int(done * 100 / total))

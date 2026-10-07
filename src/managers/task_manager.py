@@ -127,6 +127,8 @@ class TaskManager(QObject):
         self._download_end_time = 0.0
         self._last_download_duration = 0.0
         self._last_download_size = 0
+        self._last_total_size = 0
+        self._last_uncompressed_size = 0
         self._last_download_avg_speed = 0.0
 
         self._delete_files_on_cancel: Optional[bool] = None
@@ -638,6 +640,8 @@ class TaskManager(QObject):
         self._download_end_time = 0.0
         self._last_download_duration = 0.0
         self._last_download_size = 0
+        self._last_total_size = 0
+        self._last_uncompressed_size = 0
         self._last_download_avg_speed = 0.0
         # Determine labels based on job type
         job_type = self.game_data.get("job_type", "download") if self.game_data else "download"
@@ -1150,12 +1154,19 @@ class TaskManager(QObject):
             duration = 0.1
 
         total_size = 0
+        actual_size = 0
+        actual_uncompressed = 0
         if self.download_task:
-            total_size = self.download_task.total_download_size_for_this_job
+            total_size = getattr(self.download_task, "total_download_size_for_this_job", 0)
+            actual_size = getattr(self.download_task, "actual_download_bytes_for_this_job", 0)
+            actual_uncompressed = getattr(self.download_task, "actual_uncompressed_bytes_for_this_job", 0)
 
+        effective_download_size = actual_size if actual_size > 0 else total_size
         self._last_download_duration = duration
-        self._last_download_size = total_size
-        self._last_download_avg_speed = total_size / duration
+        self._last_download_size = effective_download_size
+        self._last_total_size = total_size
+        self._last_uncompressed_size = actual_uncompressed
+        self._last_download_avg_speed = effective_download_size / duration
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
             self.main_window.simplified_terminal.set_stage_status("download", "completed")
@@ -1696,9 +1707,6 @@ class TaskManager(QObject):
             return
 
         temp_manifest_dir = os.path.join(tempfile.gettempdir(), "mistwalker_manifests")
-        if not os.path.exists(temp_manifest_dir):
-            return
-
         target_depotcache_dir = os.path.join(self.current_dest_path, "depotcache")
 
         # Copy to Steam's central depotcache if Let SLS handle ACF (experimental_acf_independent) is enabled
@@ -1721,27 +1729,49 @@ class TaskManager(QObject):
                     logger.error(f"Failed to create central depotcache directory: {e}")
                     central_depotcache_dir = None
 
+        from utils.steam_manifest import get_install_folder_name
+        install_folder = get_install_folder_name(self.game_data)
+        game_ddm_dir = os.path.join(self.current_dest_path, "steamapps", "common", install_folder, ".DepotDownloader") if install_folder else ""
+
+        global_manifests_dir = str(get_base_path() / "manifests")
+        candidate_dirs = [d for d in (temp_manifest_dir, game_ddm_dir, global_manifests_dir) if d and os.path.exists(d)]
+
         try:
             os.makedirs(target_depotcache_dir, exist_ok=True)
             manifests_map = self.game_data.get("manifests", {})
             if not manifests_map:
-                shutil.rmtree(temp_manifest_dir)
+                if os.path.exists(temp_manifest_dir):
+                    shutil.rmtree(temp_manifest_dir, ignore_errors=True)
                 return
 
             for depot_id, manifest_gid in manifests_map.items():
                 manifest_filename = f"{depot_id}_{manifest_gid}.manifest"
-                source_path = os.path.join(temp_manifest_dir, manifest_filename)
                 dest_path = os.path.join(target_depotcache_dir, manifest_filename)
-                if os.path.exists(source_path):
+
+                # Find source file in candidate directories
+                source_path = None
+                for c_dir in candidate_dirs:
+                    cand = os.path.join(c_dir, manifest_filename)
+                    if os.path.exists(cand):
+                        source_path = cand
+                        break
+
+                if source_path:
                     if central_depotcache_dir:
                         try:
                             shutil.copy2(source_path, os.path.join(central_depotcache_dir, manifest_filename))
                             logger.info(f"Copied manifest {manifest_filename} to Steam's central depotcache")
                         except Exception as e:
                             logger.error(f"Failed to copy manifest to central depotcache: {e}")
-                    shutil.move(source_path, dest_path)
 
-            shutil.rmtree(temp_manifest_dir)
+                    if not os.path.exists(dest_path) or not os.path.samefile(source_path, dest_path):
+                        try:
+                            shutil.copy2(source_path, dest_path)
+                        except Exception as e:
+                            logger.error(f"Failed to copy manifest to target depotcache: {e}")
+
+            if os.path.exists(temp_manifest_dir):
+                shutil.rmtree(temp_manifest_dir, ignore_errors=True)
         except OSError as e:
             logger.error(f"Failed to move manifests to depotcache: {e}")
 
@@ -1789,8 +1819,12 @@ class TaskManager(QObject):
             manifest_filename = f"{depot_id}_{manifest_gid}.manifest"
             src = os.path.join(depotcache_dir, manifest_filename)
             if not os.path.exists(src):
-                logger.debug(f"Delta cache: manifest not found in depotcache, skipping: {manifest_filename}")
-                continue
+                fallback_src = get_base_path() / "manifests" / manifest_filename
+                if fallback_src.exists():
+                    src = str(fallback_src)
+                else:
+                    logger.debug(f"Delta cache: manifest not found in depotcache, skipping: {manifest_filename}")
+                    continue
 
             dst = os.path.join(ddm_dir, manifest_filename)
             sha_dst = dst + ".sha"
@@ -3039,14 +3073,18 @@ class TaskManager(QObject):
             game_name = self.game_data.get("game_name", "Unknown")
             appid = self.game_data.get("appid", "N/A")
 
-            # Format download duration
+            # Format download metrics
             download_duration = getattr(self, "_last_download_duration", 0)
             download_size = getattr(self, "_last_download_size", 0)
+            total_size = getattr(self, "_last_total_size", 0)
+            uncompressed_size = getattr(self, "_last_uncompressed_size", 0)
             avg_speed_bps = getattr(self, "_last_download_avg_speed", 0)
 
             # Reset these variables for the next job
             self._last_download_duration = 0.0
             self._last_download_size = 0
+            self._last_total_size = 0
+            self._last_uncompressed_size = 0
             self._last_download_avg_speed = 0.0
 
             # Format achievements
@@ -3073,6 +3111,8 @@ class TaskManager(QObject):
                 "game_name": game_name,
                 "appid": appid,
                 "download_size": download_size,
+                "total_size": total_size,
+                "uncompressed_download_size": uncompressed_size,
                 "download_duration": download_duration,
                 "avg_speed": avg_speed_bps,
                 "ach_status": ach_status,

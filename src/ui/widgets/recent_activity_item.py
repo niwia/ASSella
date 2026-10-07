@@ -40,6 +40,8 @@ class RecentActivityItemWidget(QFrame):
             stat_text = "<span style='color: #E74C3C;'>Installation Failed</span>"
         else:
             dl_size = self.entry.get("download_size", 0)
+            total_size = self.entry.get("total_size", 0)
+            uncompressed_size = self.entry.get("uncompressed_download_size", 0)
             if dl_size > 0:
                 # Imported here rather than at module scope: simplified_terminal
                 # imports this module, so a top-level import would be circular.
@@ -48,7 +50,24 @@ class RecentActivityItemWidget(QFrame):
                 size_str = SimplifiedTerminalWidget._format_size(dl_size)
                 dur_str = SimplifiedTerminalWidget._format_duration(self.entry.get("download_duration", 0))
                 speed_str = SimplifiedTerminalWidget._format_speed(self.entry.get("avg_speed", 0))
-                stat_text = f"<span style='color: #2ECC71;'>Success</span> • {size_str} in {dur_str} ({speed_str})"
+
+                is_patch = False
+                if total_size > 0:
+                    if 0 < uncompressed_size < total_size * 0.95:
+                        is_patch = True
+                    elif dl_size < total_size * 0.65:
+                        is_patch = True
+
+                if is_patch:
+                    tot_str = SimplifiedTerminalWidget._format_size(total_size)
+                    stat_text = f"<span style='color: #2ECC71;'>Success</span> • {size_str} patch ({tot_str}) in {dur_str} ({speed_str})"
+                else:
+                    stat_text = f"<span style='color: #2ECC71;'>Success</span> • {size_str} in {dur_str} ({speed_str})"
+            elif total_size > 0:
+                from ui.widgets.simplified_terminal import SimplifiedTerminalWidget
+                tot_str = SimplifiedTerminalWidget._format_size(total_size)
+                dur_str = SimplifiedTerminalWidget._format_duration(self.entry.get("download_duration", 0))
+                stat_text = f"<span style='color: #2ECC71;'>Success</span> • Up to date ({tot_str}) in {dur_str}"
             elif self.entry.get("handed_off"):
                 stat_text = "<span style='color: #2ECC71;'>Handed off to Steam</span>"
             else:

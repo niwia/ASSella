@@ -346,3 +346,152 @@ def check_hubcap_vs_steam_depots(
         "missing_for_fetch": missing_for_fetch,
         "extra_in_hubcap": extra_in_hubcap,
     }
+
+
+def resolve_depot_details(
+    appid: Union[str, int],
+    depot_id: Union[str, int],
+    game_depots: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Resolves human-readable depot metadata, OS platform tag, and emoji badge."""
+    aid_str = str(appid).strip() if appid is not None else ""
+    did_str = str(depot_id).strip()
+    dinfo = {}
+
+    if isinstance(game_depots, dict):
+        dinfo = game_depots.get(did_str) or game_depots.get(int(did_str) if did_str.isdigit() else 0) or {}
+
+    if not dinfo and aid_str.isdigit():
+        try:
+            from managers.db_manager import DatabaseManager
+            db = DatabaseManager()
+            with db._conn_lock:
+                cur = db.conn.cursor()
+                cur.execute("SELECT depots_json FROM apps WHERE appid = ?", (int(aid_str),))
+                row = cur.fetchone()
+                if row and row["depots_json"]:
+                    decomp = db._decompress_depots(row["depots_json"], aid_str)
+                    if decomp and isinstance(decomp, dict):
+                        dinfo = decomp.get(did_str) or {}
+        except Exception:
+            pass
+
+    raw_name = (dinfo.get("name") if isinstance(dinfo, dict) else "") or ""
+    if not raw_name or raw_name.lower().startswith("depot "):
+        try:
+            from core.ini_parser import parse_depots_ini
+            ini_map = parse_depots_ini()
+            if did_str in ini_map:
+                raw_name = ini_map[did_str]
+        except Exception:
+            pass
+
+    oslist = ""
+    if isinstance(dinfo, dict):
+        oslist = str(dinfo.get("oslist") or "").strip().lower()
+
+    name_lower = raw_name.lower()
+    os_type = "all"
+    os_badge = "📦 Content"
+    os_icon = "📦"
+
+    if oslist in ("macos", "macosx") or "[macos]" in name_lower or "[macosx]" in name_lower or " mac " in name_lower:
+        os_type = "macos"
+        os_badge = "🍎 macOS"
+        os_icon = "🍎"
+    elif "windows" in oslist and "linux" in oslist:
+        os_type = "windows"
+        os_badge = "🪟 Windows / 🐧 Linux"
+        os_icon = "🪟🐧"
+    elif oslist == "linux" or "[linux]" in name_lower:
+        os_type = "linux"
+        os_badge = "🐧 Linux"
+        os_icon = "🐧"
+    elif oslist == "windows" or "[windows]" in name_lower or "win32" in name_lower or "win64" in name_lower:
+        os_type = "windows"
+        os_badge = "🪟 Windows"
+        os_icon = "🪟"
+    elif oslist == "android" or "[android]" in name_lower:
+        os_type = "android"
+        os_badge = "🤖 Android"
+        os_icon = "🤖"
+
+    # Clean display name
+    clean_name = raw_name
+    for tag in ("[WINDOWS]", "[LINUX]", "[MACOS]", "[MACOSX]", "[ANDROID]", f"Depot {did_str}:", f"Depot {did_str}"):
+        if tag.lower() in clean_name.lower():
+            import re
+            clean_name = re.sub(re.escape(tag), "", clean_name, flags=re.IGNORECASE).strip()
+    clean_name = clean_name.strip(" -:–—")
+    if not clean_name:
+        clean_name = f"Depot {did_str}"
+
+    is_soundtrack = "soundtrack" in name_lower or " ost" in name_lower
+    is_dlc = bool(dinfo.get("is_dlc") or dinfo.get("dlcappid")) if isinstance(dinfo, dict) else False
+
+    return {
+        "depot_id": did_str,
+        "name": clean_name,
+        "raw_name": raw_name,
+        "os": os_type,
+        "os_badge": os_badge,
+        "os_icon": os_icon,
+        "is_soundtrack": is_soundtrack,
+        "is_dlc": is_dlc,
+    }
+
+
+def filter_build_depots(
+    depots: Dict[str, Any],
+    appid: Union[str, int] = "",
+    game_depots: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Filters build depots according to the user's platform visibility preferences."""
+    if not depots:
+        return {}
+
+    try:
+        from utils.settings import get_settings
+        settings = get_settings()
+        hide_macos = settings.value("hide_macos_depots", True, type=bool)
+        hide_android = settings.value("hide_android_depots", True, type=bool)
+        hide_windows = settings.value("hide_windows_depots", False, type=bool)
+        hide_linux = settings.value("hide_linux_depots", False, type=bool)
+        filter_soundtracks = settings.value("filter_soundtracks", True, type=bool)
+    except Exception:
+        hide_macos = True
+        hide_android = True
+        hide_windows = False
+        hide_linux = False
+        filter_soundtracks = True
+
+    filtered: Dict[str, Dict[str, Any]] = {}
+    for did, info in depots.items():
+        did_str = str(did).strip()
+        info_dict = dict(info) if isinstance(info, dict) else {"manifest_id": str(info)}
+        details = resolve_depot_details(appid, did_str, game_depots=game_depots)
+        info_dict["details"] = details
+
+        # Apply visibility toggles
+        if hide_macos and details["os"] == "macos":
+            continue
+        if hide_android and details["os"] == "android":
+            continue
+        if hide_windows and details["os"] == "windows":
+            continue
+        if hide_linux and details["os"] == "linux":
+            continue
+        if filter_soundtracks and details["is_soundtrack"]:
+            continue
+
+        filtered[did_str] = info_dict
+
+    # Safety fallback: if everything got filtered out, return all with details
+    if not filtered:
+        for did, info in depots.items():
+            did_str = str(did).strip()
+            info_dict = dict(info) if isinstance(info, dict) else {"manifest_id": str(info)}
+            info_dict["details"] = resolve_depot_details(appid, did_str, game_depots=game_depots)
+            filtered[did_str] = info_dict
+
+    return filtered

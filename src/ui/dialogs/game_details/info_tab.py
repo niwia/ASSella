@@ -1042,22 +1042,30 @@ def on_steamdb_history_clicked(dialog) -> None:
     dlg.exec()
 
 
-def trigger_rollback_job(dialog, depot_id: str, build_id: str, manifest_id: str, pin_build: bool = True) -> None:
-    if not depot_id or not build_id or not manifest_id:
+def trigger_rollback_job(dialog, depot_id, build_id: str, manifest_id: str = None, pin_build: bool = True) -> None:
+    if isinstance(depot_id, dict):
+        depots_map = {str(k): str(v) for k, v in depot_id.items()}
+    elif depot_id and manifest_id:
+        depots_map = {str(depot_id): str(manifest_id)}
+    else:
         QMessageBox.warning(dialog, "Missing Fields", "Please specify Depot ID, Build ID, and Manifest ID.")
         return
 
     dialog._last_rollback_pin_build = pin_build
 
-    manifest_filename = f"{depot_id}_{manifest_id}.manifest"
     global_manifests_dir = get_base_path() / "manifests"
-    src_manifest_path = global_manifests_dir / manifest_filename
+    global_manifests_dir.mkdir(parents=True, exist_ok=True)
 
-    if src_manifest_path.exists():
-        do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filename, depot_id, build_id, manifest_id, pin_build=pin_build)
+    missing_manifests = {
+        did: mid for did, mid in depots_map.items()
+        if not (global_manifests_dir / f"{did}_{mid}.manifest").exists()
+    }
+
+    if not missing_manifests:
+        do_package_and_submit_manual_job(dialog, None, None, depots_map, build_id, pin_build=pin_build)
         return
 
-    progress = QProgressDialog("Generating manifest from Hubcap...", None, 0, 0, dialog)
+    progress = QProgressDialog(f"Generating {len(missing_manifests)} manifest(s) from Hubcap...", None, 0, len(missing_manifests), dialog)
     progress.setWindowModality(Qt.WindowModality.WindowModal)
     progress.setCancelButton(None)
     progress.show()
@@ -1066,50 +1074,43 @@ def trigger_rollback_job(dialog, depot_id: str, build_id: str, manifest_id: str,
         error_msg = None
         try:
             from core.morrenus_api import get_session, _get_headers
+            from utils.isp_bypass import execute_hubcap_request
             headers = _get_headers()
             if not headers:
                 error_msg = "API key not configured in settings."
             else:
-                url = f"https://hubcapmanifest.com/api/v1/generate/manifest?depot_id={depot_id}&manifest_id={manifest_id}"
-                from utils.isp_bypass import execute_hubcap_request
-                r = execute_hubcap_request(get_session(), "GET", url, headers=headers, timeout=30)
-                if r.status_code == 200:
-                    global_manifests_dir.mkdir(parents=True, exist_ok=True)
-                    with open(src_manifest_path, "wb") as f:
-                        f.write(r.content)
-                else:
-                    try:
-                        detail = r.json().get("detail", r.text)
-                    except Exception:
-                        detail = r.text
-                    error_msg = f"Hubcap returned status code {r.status_code}: {detail}"
+                for idx, (d_id, m_id) in enumerate(missing_manifests.items()):
+                    mf_dest = global_manifests_dir / f"{d_id}_{m_id}.manifest"
+                    if mf_dest.exists():
+                        continue
+                    url = f"https://hubcapmanifest.com/api/v1/generate/manifest?depot_id={d_id}&manifest_id={m_id}"
+                    r = execute_hubcap_request(get_session(), "GET", url, headers=headers, timeout=30)
+                    if r.status_code == 200:
+                        with open(mf_dest, "wb") as f:
+                            f.write(r.content)
+                    else:
+                        try:
+                            detail = r.json().get("detail", r.text)
+                        except Exception:
+                            detail = r.text
+                        error_msg = f"Hubcap returned status code {r.status_code} for depot {d_id}: {detail}"
+                        break
         except Exception as e:
-            logger.error(f"Error generating manifest from Hubcap: {e}", exc_info=True)
+            logger.error(f"Error generating manifests from Hubcap: {e}", exc_info=True)
             error_msg = str(e)
 
-        if hasattr(dialog, "manifest_fetch_completed"):
-            dialog.manifest_fetch_completed.emit(
-                error_msg or "",
-                str(src_manifest_path),
-                manifest_filename,
-                str(depot_id),
-                str(build_id),
-                str(manifest_id),
-                progress
-            )
-        else:
-            QMetaObject.invokeMethod(
-                dialog,
-                "_on_manifest_fetch_completed",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, error_msg or ""),
-                Q_ARG(str, str(src_manifest_path)),
-                Q_ARG(str, manifest_filename),
-                Q_ARG(str, str(depot_id)),
-                Q_ARG(str, str(build_id)),
-                Q_ARG(str, str(manifest_id)),
-                Q_ARG(object, progress)
-            )
+        def _finish_on_main():
+            if progress:
+                try:
+                    progress.close()
+                except Exception:
+                    pass
+            if error_msg:
+                QMessageBox.critical(dialog, "Manifest Retrieval Failed", f"Failed to download manifest from Hubcap:\n\n{error_msg}")
+                return
+            do_package_and_submit_manual_job(dialog, None, None, depots_map, build_id, pin_build=pin_build)
+
+        QMetaObject.invokeMethod(dialog, _finish_on_main, Qt.ConnectionType.QueuedConnection)
 
     threading.Thread(target=_fetch_thread, daemon=True).start()
 
@@ -1139,17 +1140,29 @@ def on_manifest_fetch_completed(dialog, error_msg, src_manifest_path_str, manife
     do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filename, depot_id, build_id, manifest_id, pin_build=pin_build)
 
 
-def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filename, depot_id, build_id, manifest_id, pin_build: bool = True) -> None:
+def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filename, depot_id, build_id, manifest_id=None, pin_build: bool = True) -> None:
     import zipfile
     import shutil
 
+    if isinstance(depot_id, dict):
+        depots_map = {str(k): str(v) for k, v in depot_id.items()}
+    else:
+        depots_map = {str(depot_id): str(manifest_id)}
+
+    global_manifests_dir = get_base_path() / "manifests"
     manifests_dir = get_base_path() / "hubcap_manifests"
     manifests_dir.mkdir(parents=True, exist_ok=True)
     local_zip_path = manifests_dir / f"accela_fetch_{dialog.appid}_branch_manual.zip"
 
     try:
         with zipfile.ZipFile(local_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_ref:
-            zip_ref.write(src_manifest_path, manifest_filename)
+            for did, mid in depots_map.items():
+                mf_name = f"{did}_{mid}.manifest"
+                mf_p = global_manifests_dir / mf_name
+                if mf_p.exists():
+                    zip_ref.write(mf_p, mf_name)
+                elif src_manifest_path and manifest_filename == mf_name:
+                    zip_ref.write(src_manifest_path, manifest_filename)
 
         specific_zip_path = manifests_dir / f"accela_fetch_{dialog.appid}_build_{build_id}.zip"
         shutil.copy(local_zip_path, specific_zip_path)
@@ -1184,25 +1197,26 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
 
         dest_path = dialog.game_data.get("install_path") or dialog.game_data.get("dest_path") or ""
         depotcache_dirs = get_depotcache_dirs(dest_path)
-        for ddir in depotcache_dirs:
-            try:
-                ddir.mkdir(parents=True, exist_ok=True)
-                target_mf = ddir / manifest_filename
-                shutil.copy2(src_manifest_path, target_mf)
-                logger.info(f"[NativeRollback] Copied {manifest_filename} to {target_mf}")
-            except Exception as ce:
-                logger.warning(f"[NativeRollback] Could not copy manifest to {ddir}: {ce}")
+        for did, mid in depots_map.items():
+            mf_name = f"{did}_{mid}.manifest"
+            mf_p = global_manifests_dir / mf_name
+            if mf_p.exists():
+                for ddir in depotcache_dirs:
+                    try:
+                        ddir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(mf_p, ddir / mf_name)
+                    except Exception as ce:
+                        logger.warning(f"[NativeRollback] Could not copy manifest to {ddir}: {ce}")
 
         config_path = get_user_config_path()
         game_name = dialog.game_data.get("game_name", f"App {dialog.appid}")
-        manifest_map = {str(depot_id): str(manifest_id)}
         comment = f"{game_name} ({dialog.appid}) [Build {build_id}]"
-        set_manifest_ids(config_path, manifest_map, comment=comment)
+        set_manifest_ids(config_path, depots_map, comment=comment)
 
         msg = (
             f"<b>Native Steam Rollback Configured!</b><br><br>"
-            f"Depot <b>{depot_id}</b> has been locked to Manifest <b>{manifest_id}</b> (Build <b>{build_id}</b>) in SLSsteam.<br><br>"
-            f"The manifest was seeded into Steam's depotcache.<br><br>"
+            f"{len(depots_map)} depot(s) locked to Build <b>{build_id}</b> in SLSsteam.<br><br>"
+            f"The manifest(s) were seeded into Steam's depotcache.<br><br>"
             f"<i>Steam will apply this build automatically on next launch or update.</i>"
         )
         QMessageBox.information(dialog, "Native Rollback Applied", msg)
@@ -1212,7 +1226,8 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
     game_data["buildid"] = build_id
     game_data["branch"] = "public"
     game_data["_is_rollback"] = True
-    game_data.setdefault("manifests", {})[depot_id] = manifest_id
+    for did, mid in depots_map.items():
+        game_data.setdefault("manifests", {})[str(did)] = str(mid)
 
     depots_dict = {}
     try:

@@ -619,7 +619,7 @@ class GameDetailsDialogV2(QDialog):
     def _on_steamdb_history_clicked(self):
         on_steamdb_history_clicked(self)
 
-    def _trigger_rollback_job(self, depot_id: str, build_id: str, manifest_id: str, pin_build: bool = True):
+    def _trigger_rollback_job(self, depot_id, build_id: str, manifest_id: str = None, pin_build: bool = True):
         trigger_rollback_job(self, depot_id, build_id, manifest_id, pin_build)
 
     @pyqtSlot(str, str, str, str, str, str, object)
