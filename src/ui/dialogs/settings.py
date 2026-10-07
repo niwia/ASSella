@@ -93,6 +93,7 @@ class SettingsDialog(QDialog):
         self.accent_reset_button = None
         self.all_games_online_checkbox = None
         self.enable_eosproxy_default_checkbox = None
+        self.experimental_ddm_checkbox = None
         self.bg_color_button = None
         self.bg_reset_button = None
         self.titlebar_position_checkbox = None
@@ -768,6 +769,11 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "smart_depot_selection",
                 self.smart_depot_selection_checkbox.isChecked(),
+            )
+        if hasattr(self, "experimental_ddm_checkbox") and self.experimental_ddm_checkbox is not None:
+            self.settings.setValue(
+                "use_experimental_ddm",
+                self.experimental_ddm_checkbox.isChecked(),
             )
         if self.use_lancache_checkbox is not None:
             self.settings.setValue(

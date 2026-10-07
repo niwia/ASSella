@@ -73,6 +73,56 @@ def create_assela_tab(dialog) -> QWidget:
     )
     assella_lay.addWidget(dialog.enable_eosproxy_default_checkbox)
 
+    # 4. Experimental DepotDownloader (Testing)
+    def _is_download_in_progress() -> bool:
+        main_win = getattr(dialog, "main_window", None)
+        if not main_win:
+            return False
+        tm = getattr(main_win, "task_manager", None)
+        if not tm:
+            return False
+        if getattr(tm, "download_task", None) is not None:
+            return True
+        if getattr(tm, "workshop_task", None) is not None:
+            return True
+        if getattr(tm, "is_processing", False):
+            return True
+        return False
+
+    dialog.experimental_ddm_checkbox = create_checkbox_setting(
+        "Experimental DepotDownloader (Testing)",
+        "use_experimental_ddm",
+        False,
+        dialog,
+        "Enable patched DepotDownloader with chunk deduplication, on-disk length validation, safe chunk relocation, and decaying CDN host penalties. (Testing only)",
+    )
+
+    def _on_experimental_ddm_toggled(checked: bool):
+        if _is_download_in_progress():
+            dialog.experimental_ddm_checkbox.setChecked(not checked)
+            dialog.experimental_ddm_checkbox.setLocked(
+                True, "Cannot switch DepotDownloader while an active download is in progress."
+            )
+            QMessageBox.warning(
+                dialog,
+                "Download In Progress",
+                "Cannot switch DepotDownloader while an active download is running.\n\n"
+                "Please wait for the download to finish or cancel it before switching downloaders.",
+            )
+            return
+
+        dialog.settings.setValue("use_experimental_ddm", checked)
+        logger.info(f"[Settings] Switched DepotDownloader mode: use_experimental_ddm={checked}")
+
+    dialog.experimental_ddm_checkbox.toggled.connect(_on_experimental_ddm_toggled)
+
+    if _is_download_in_progress():
+        dialog.experimental_ddm_checkbox.setLocked(
+            True, "Cannot switch DepotDownloader while an active download is in progress."
+        )
+
+    assella_lay.addWidget(dialog.experimental_ddm_checkbox)
+
     # 4. Download Animation (Test/Halloween styles)
     anim_row = QHBoxLayout()
     anim_row.setContentsMargins(0, 2, 0, 2)

@@ -433,6 +433,14 @@ def ensure_dotnet_availability() -> bool:
 
 def resource_path(relative_path: str) -> Path:
     """Get absolute path to resource, works for dev and for PyInstaller."""
+    norm = str(relative_path).replace("\\", "/")
+    if norm in ("deps/DepotDownloader.dll", "deps/depotdownloader.dll"):
+        try:
+            from utils.paths import Paths
+            return Paths.depot_downloader_dll()
+        except Exception:
+            pass
+
     base_path = getattr(sys, "_MEIPASS", None)
     if base_path is None:
         base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
