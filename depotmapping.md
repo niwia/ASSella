@@ -225,3 +225,44 @@ sel_dlc_apps, sel_dlc_depots = resolve_dlc_mapping_for_selection(
 - **Behavior**:
   - Toggling `1942280` off disables only Steampunk depots and Steampunk decryption keys.
   - Base game depots remain untouched.
+
+---
+
+## 6. Depots Tab Eligibility for ASSella-Mode Games
+
+Historically, the **Depots** tab in `GameDetailsDialogV2` was restricted exclusively to AT0-M / Vapor / Plugin games (`is_atom = True`). For standard ASSella-mode games (downloaded via DepotDownloader or managed locally), the tab was hidden.
+
+### Qualification Criteria (`has_game_config_entries`)
+ASSella-mode games now qualify to display the **Depots** tab if they have active, game-specific entries in `~/.config/SLSsteam/config.yaml`:
+1. **AdditionalApps**: The game's base AppID or any of its DLC AppIDs is listed.
+2. **AdditionalDepots**: Any non-shared depot belonging to the game is present (excluding universal shared redists).
+3. **DecryptionKeys**: The game's root AppKey or any non-shared depot decryption key is present.
+4. **dlc_data**: A batch DLC block for the AppID exists in `config.yaml`.
+5. **Tagged Comments**: Any entry in `AdditionalApps`, `AdditionalDepots`, or `DecryptionKeys` has comments explicitly referencing the game's AppID or title.
+6. **Plugin Registration**: The game is registered in `plugin_library.json`.
+
+If a game meets any of these criteria (excluding common shared redists like `228980`), the Depots tab is automatically displayed in the game details dialog.
+
+---
+
+## 7. Shared Depot Architecture & Protection
+
+### Definition of Shared Depots
+Steam games frequently share common runtime environments, DirectX installers, and Visual C++ redistributable packages:
+- **`ALL_SHARED_REDISTS`**: Unified set combining `SHARED_REDISTS` (e.g., `228980` Steamworks Shared, `228981`...`229032`) and `DEPOT_BLACKLIST`.
+
+### Protection Principles
+1. **Exclusion from Game-Specific Tables**:
+   - Shared redists are strictly excluded from the game's Depots table in the UI. This prevents clutter and prevents users from accidentally disabling shared runtimes while configuring a specific game.
+2. **Guaranteed Auto-Enable on Sync (`game_shared_depots`)**:
+   - When a game is synced (locked or unlocked), ASSella inspects all depots referenced by the game (via Lua metadata, game data, or plugin definitions).
+   - If the game requires any shared redistributables, ASSella automatically ensures they are added to `AdditionalDepots` with comment `# Steamworks Shared`.
+3. **Multi-Layer Preservation Guard (`is_depot_shared_with_other_games`)**:
+   - Whenever any depot or key removal is requested (via toggle or DLC sanitization), `is_depot_shared_with_other_games` enforces strict protection:
+     * **Known Common Redists**: Never removed.
+     * **Other Registered Games**: If another game in `plugin_library.json` references the depot or key, removal is aborted.
+     * **Installed Steam Manifests**: If another game's `appmanifest_*.acf` lists the depot under `InstalledDepots`, removal is aborted.
+     * **Cross-Game Config Comments**: If the comment in `config.yaml` tags another AppID, removal is aborted.
+4. **UI Indicator**:
+   - Depots shared with other registered games are clearly marked with `[Shared]` in the Depots table, with a tooltip explaining that removal is protected.
+

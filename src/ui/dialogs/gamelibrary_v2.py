@@ -365,8 +365,12 @@ class GameDetailsDialogV2(QDialog):
         )
         self._is_atom = is_atom
 
+        from utils.yaml_config_manager import has_game_config_entries
+        has_depots = is_atom or has_game_config_entries(self.appid, self.game_data)
+        self._has_depots = has_depots
+
         self._tab_buttons = []
-        if is_atom:
+        if has_depots:
             self._pages_info = [
                 ("Info", 0),
                 ("Depots", 1),
@@ -433,7 +437,7 @@ class GameDetailsDialogV2(QDialog):
         self.stacked = QStackedWidget()
         self.stacked.setStyleSheet("background: transparent;")
         self._init_info_tab()
-        if is_atom:
+        if has_depots:
             self._init_depots_tab()
         self._init_builds_tab()
         self._init_tools_tab()

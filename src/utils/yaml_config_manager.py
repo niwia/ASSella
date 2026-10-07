@@ -4,7 +4,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from utils.settings import get_settings
 
@@ -1625,6 +1625,7 @@ def is_depot_shared_with_other_games(
       1. It is a known Steam common redistributable depot (Steamworks Shared, DirectX, VC++, etc.).
       2. It is referenced by any other registered game in plugin_library.json.
       3. It is listed under InstalledDepots in any other game's appmanifest_*.acf on disk.
+      4. It is tagged for another AppID or marked as Steamworks Shared in SLSsteam config.yaml comments.
     """
     depot_id_str = str(depot_id).strip()
     if not depot_id_str:
@@ -1633,16 +1634,14 @@ def is_depot_shared_with_other_games(
     # 1. Known redistributables / shared runtime depots
     try:
         from ui.assets import DEPOT_BLACKLIST
-        shared_known = {str(d) for d in DEPOT_BLACKLIST} | {
+        from utils.plugin_games import SHARED_REDISTS
+        shared_known = {str(d) for d in DEPOT_BLACKLIST} | {str(d) for d in SHARED_REDISTS}
+    except Exception:
+        shared_known = {
             "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
             "228986", "228987", "228988", "228989", "228990", "229000", "229001",
             "229002", "229003", "229004", "229005", "229006", "229007", "229010",
             "229011", "229012", "229020", "229030", "229031", "229032"
-        }
-    except Exception:
-        shared_known = {
-            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
-            "228986", "228987", "228988", "228989", "228990"
         }
 
     if depot_id_str in shared_known:
@@ -1700,7 +1699,186 @@ def is_depot_shared_with_other_games(
     except Exception as e:
         logger.debug(f"[SharedDepotCheck] Error checking Steam ACF manifests: {e}")
 
+    # 4. Check SLSsteam config.yaml comments for other AppIDs or Steamworks Shared
+    try:
+        cfg_path = get_user_config_path()
+        if cfg_path and cfg_path.exists():
+            cfg_text = cfg_path.read_text(encoding="utf-8", errors="ignore")
+            # Check AdditionalDepots section
+            depot_bounds = _get_section_bounds(cfg_text, "AdditionalDepots")
+            if depot_bounds:
+                sec_depots = cfg_text[depot_bounds[1]:depot_bounds[2]]
+                m = re.search(
+                    rf"^[ \t]*-[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*(?:#[ \t]*(.*))?$",
+                    sec_depots,
+                    re.MULTILINE,
+                )
+                if m:
+                    comment = (m.group(1) or "").strip()
+                    if "steamworks shared" in comment.lower():
+                        return True
+                    app_matches = re.findall(r"\b(\d{4,9})\b", comment)
+                    for found_aid in app_matches:
+                        if ex_aid_str and found_aid != ex_aid_str:
+                            logger.debug(
+                                f"[SharedDepotCheck] Depot {depot_id_str} tagged for other AppID {found_aid} in config.yaml"
+                            )
+                            return True
+
+            # Check DecryptionKeys section
+            key_bounds = _get_section_bounds(cfg_text, "DecryptionKeys")
+            if key_bounds:
+                sec_keys = cfg_text[key_bounds[1]:key_bounds[2]]
+                m = re.search(
+                    rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[ \t]*(.*))?$",
+                    sec_keys,
+                    re.MULTILINE,
+                )
+                if m:
+                    comment = (m.group(1) or "").strip()
+                    if "steamworks shared" in comment.lower():
+                        return True
+                    app_matches = re.findall(r"\b(\d{4,9})\b", comment)
+                    for found_aid in app_matches:
+                        if ex_aid_str and found_aid != ex_aid_str:
+                            logger.debug(
+                                f"[SharedDepotCheck] Depot {depot_id_str} key tagged for other AppID {found_aid} in config.yaml"
+                            )
+                            return True
+    except Exception as e:
+        logger.debug(f"[SharedDepotCheck] Error checking config.yaml comments: {e}")
+
     return False
+
+
+def has_game_config_entries(
+    appid: Union[str, int], game_data: Optional[Dict[str, Any]] = None
+) -> bool:
+    """Check if an ASSella-mode game has active entries in SLSsteam config.yaml.
+    Strictly ignores universal shared redistributables.
+
+    Returns True if the game qualifies by having:
+      - Its AppID in AdditionalApps
+      - Any DLC AppID in AdditionalApps or dlc_data
+      - Any non-shared depot in AdditionalDepots
+      - Any non-shared decryption key in DecryptionKeys (including root AppKey)
+      - Explicitly tagged comments referencing the AppID or game name in config.yaml
+      - Or registration in plugin_library.json
+    """
+    appid_str = str(appid).strip()
+    if not appid_str or not appid_str.isdigit():
+        return False
+
+    cfg_path = get_user_config_path()
+    if not cfg_path or not cfg_path.exists():
+        return False
+
+    try:
+        from ui.assets import DEPOT_BLACKLIST
+        from utils.plugin_games import SHARED_REDISTS, load_plugin_library
+        all_shared = {str(d) for d in DEPOT_BLACKLIST} | {str(d) for d in SHARED_REDISTS}
+    except Exception:
+        all_shared = {
+            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
+            "228986", "228987", "228988", "228989", "229000", "229001", "229002",
+            "229003", "229004", "229005", "229006", "229007", "229010", "229011",
+            "229012", "229020", "229030", "229031", "229032"
+        }
+
+    # 1. Plugin library registration
+    try:
+        from utils.plugin_games import load_plugin_library
+        lib = load_plugin_library()
+        if appid_str in lib:
+            return True
+    except Exception:
+        pass
+
+    # 2. Check dlc_data batch block in config.yaml
+    try:
+        dlc_data = get_dlc_data(cfg_path)
+        if appid_str in dlc_data:
+            return True
+    except Exception:
+        pass
+
+    # 3. Check AdditionalApps
+    try:
+        live_apps = get_additional_apps(cfg_path)
+        if appid_str in live_apps:
+            return True
+        gd = game_data or {}
+        gd_dlcs = gd.get("dlcs") or {}
+        for dlc_id in gd_dlcs.keys():
+            if str(dlc_id).strip() in live_apps:
+                return True
+    except Exception:
+        pass
+
+    # Gather known depots for this game
+    game_depots: Set[str] = set()
+    gd = game_data or {}
+    if gd.get("depots"):
+        game_depots.update(str(d).strip() for d in gd["depots"].keys())
+
+    try:
+        from managers.depot_key_manager import DepotKeyManager
+        dkm = DepotKeyManager.get_instance()
+        local_keys = dkm.get_keys_for_app(appid_str)
+        if local_keys:
+            game_depots.update(str(d).strip() for d in local_keys.keys())
+    except Exception:
+        pass
+
+    non_shared_game_depots = (game_depots - all_shared) - {appid_str}
+
+    # 4. Check AdditionalDepots (strictly non-shared)
+    try:
+        live_depots = get_additional_depots(cfg_path)
+        if any(d in live_depots for d in non_shared_game_depots):
+            return True
+    except Exception:
+        pass
+
+    # 5. Check DecryptionKeys (strictly non-shared)
+    try:
+        live_keys = get_decryption_keys(cfg_path)
+        if appid_str in live_keys:
+            return True
+        if any(d in live_keys for d in non_shared_game_depots):
+            return True
+    except Exception:
+        pass
+
+    # 6. Check tagged comments specifically mentioning appid_str or game_name
+    try:
+        txt = cfg_path.read_text(encoding="utf-8", errors="ignore")
+        game_name = (
+            (game_data.get("game_name") or game_data.get("name") or "").strip().lower()
+            if game_data
+            else ""
+        )
+
+        for sec_name in ("AdditionalApps", "AdditionalDepots", "DecryptionKeys"):
+            bounds = _get_section_bounds(txt, sec_name)
+            if not bounds:
+                continue
+            sec_text = txt[bounds[1]:bounds[2]]
+            for line in sec_text.splitlines():
+                m = re.match(r"^[ \t]*-[ \t]*['\"]?(\d+)['\"]?[ \t]*(?:#[ \t]*(.*))?$", line)
+                if not m:
+                    m = re.match(r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[ \t]*(.*))?$", line)
+                if m:
+                    item_id, comment = m.group(1), (m.group(2) or "").lower()
+                    if sec_name in ("AdditionalDepots", "DecryptionKeys") and item_id in all_shared:
+                        continue
+                    if appid_str in comment or (game_name and len(game_name) > 3 and game_name in comment):
+                        return True
+    except Exception:
+        pass
+
+    return False
+
 
 
 def add_additional_depot(config_path: Path, depot_id: Union[str, int], comment: str = "") -> bool:

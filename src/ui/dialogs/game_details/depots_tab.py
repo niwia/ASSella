@@ -677,12 +677,24 @@ def init_depots_tab(dialog) -> None:
         pure_license_dlcs = dlc_id_set - content_dlcs
 
         # Build Depots list for THIS GAME ONLY:
+        # Collect any shared redistributables explicitly required/referenced by this game
+        all_referenced_depots = (
+            set(lua_depots.keys())
+            | plugin_depots
+            | set(game_keys.keys())
+            | tagged_depots_from_config
+            | set(gd_depots.keys())
+        )
+        game_shared_depots = (all_referenced_depots & ALL_SHARED_REDISTS) - {appid_str}
+
         game_depots_set = (
             set(lua_depots.keys())
             | plugin_depots
             | set(game_keys.keys())
             | tagged_depots_from_config
         ) - ALL_SHARED_REDISTS - {appid_str} - pure_license_dlcs
+
+        from utils.yaml_config_manager import is_depot_shared_with_other_games
 
         valid_key_depots = set(game_keys.keys())
         depots_list = []
@@ -696,10 +708,12 @@ def init_depots_tab(dialog) -> None:
                 or (f"[DLC] {lua_dlcs.get(d)}" if d in lua_dlcs else None)
                 or f"Depot {d}"
             )
+            is_shared = is_depot_shared_with_other_games(d, excluding_appid=appid_str)
             depots_list.append({
                 "id": d,
                 "desc": desc,
                 "has_key": (d in valid_key_depots),
+                "is_shared": is_shared,
             })
 
         # Build Keys list for THIS GAME ONLY:
@@ -737,6 +751,7 @@ def init_depots_tab(dialog) -> None:
             "local_db_keys": local_db_keys,
             "lua_keys": lua_keys,
             "game_keys": game_keys,
+            "game_shared_depots": game_shared_depots,
         }
 
     def _update_sync_button_label(state: Dict[str, Any]) -> None:
@@ -1028,8 +1043,13 @@ def init_depots_tab(dialog) -> None:
             id_item = QTableWidgetItem(did)
             id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
 
-            desc_item = QTableWidgetItem(item["desc"])
+            desc_text = item["desc"]
+            if item.get("is_shared"):
+                desc_text = f"{desc_text} [Shared]"
+            desc_item = QTableWidgetItem(desc_text)
             desc_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            if item.get("is_shared"):
+                desc_item.setToolTip("Shared with another game / protected from removal")
 
             depots_table.setItem(row, 0, id_item)
             depots_table.setItem(row, 1, desc_item)
@@ -1038,16 +1058,19 @@ def init_depots_tab(dialog) -> None:
             toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
             depot_toggles[did] = toggle
 
-            def _make_depot_toggle_cb(depot_id: str):
+            def _make_depot_toggle_cb(depot_id: str, is_sh: bool):
                 def _cb(checked: bool):
                     desired_depots[depot_id] = checked
                     # STRICTLY ONE-WAY: does not touch AdditionalApps
                     _update_sync_button_label(state)
                     _update_bulk_states(state)
-                    status_lbl.setText(f"Depot {depot_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
+                    if not checked and is_sh:
+                        status_lbl.setText(f"Depot {depot_id} is shared with other games. It will remain protected in config.")
+                    else:
+                        status_lbl.setText(f"Depot {depot_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
                 return _cb
 
-            toggle.toggled.connect(_make_depot_toggle_cb(did))
+            toggle.toggled.connect(_make_depot_toggle_cb(did, bool(item.get("is_shared"))))
             depots_table.setCellWidget(row, 2, _ToggleContainer(toggle))
 
         _set_table_height(depots_table, len(depots))
@@ -1198,7 +1221,8 @@ def init_depots_tab(dialog) -> None:
             else:
                 # Standard locked sync: automatically add missing entries
                 # 1. Base AppID ONLY (DLCs are never auto-added in default sync; user must unlock and manually enable them)
-                if appid_str not in state["live_apps"]:
+                from utils.dlc_helpers import is_dlc_only_mode
+                if not is_dlc_only_mode(appid_str) and appid_str not in state["live_apps"]:
                     editor.add_app(appid_str, comment=f"{game_name} (Base)")
                     added_count += 1
 
@@ -1219,6 +1243,20 @@ def init_depots_tab(dialog) -> None:
                         comment = f"{game_name} [AppKey]" if kid == appid_str else f"{game_name} ({kid})"
                         editor.add_key(kid, kval, comment=comment)
                         added_count += 1
+
+            # Always ensure any shared redistributables required by this game are enabled
+            for s_did in sorted(state.get("game_shared_depots", set())):
+                if s_did not in state["live_depots"]:
+                    editor.add_depot(s_did, comment="Steamworks Shared")
+                    added_count += 1
+                s_key = (
+                    state.get("lua_keys", {}).get(s_did)
+                    or state.get("game_keys", {}).get(s_did)
+                    or state.get("local_db_keys", {}).get(s_did)
+                )
+                if s_key and s_did not in state["live_keys"]:
+                    editor.add_key(s_did, s_key, comment="Steamworks Shared")
+                    added_count += 1
 
         if editor.has_changes:
             SLSBridge.notify_reload()

@@ -797,7 +797,7 @@ def purge_and_sanitize_for_dlc_only(
         existing_depots = get_additional_depots(config_path)
         for d in all_game_depots:
             if d in existing_depots and d not in sel_dlc_depots:
-                if remove_additional_depot(config_path, d):
+                if remove_additional_depot(config_path, d, excluding_appid=appid_str):
                     summary["base_depots_removed"].append(d)
 
         depots_meta = (game_data.get("depots") or {}) if game_data else {}
@@ -812,12 +812,12 @@ def purge_and_sanitize_for_dlc_only(
         # 3. DecryptionKeys: Remove unselected depot keys, then add keys for selected DLC depots
         existing_keys = get_decryption_keys(config_path)
         if appid_str not in sel_dlcappid_set and appid_str in existing_keys:
-            if remove_decryption_key(config_path, appid_str):
+            if remove_decryption_key(config_path, appid_str, excluding_appid=appid_str):
                 summary["base_keys_removed"].append(appid_str)
 
         for d in all_game_depots:
             if d in existing_keys and d not in sel_dlc_depots and d not in sel_dlcappid_set:
-                if remove_decryption_key(config_path, d):
+                if remove_decryption_key(config_path, d, excluding_appid=appid_str):
                     summary["base_keys_removed"].append(d)
 
         # Ensure keys for selected DLC depots and DLC AppIDs are added so Steam can decrypt DLC content
