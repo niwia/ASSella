@@ -266,15 +266,31 @@ def create_sls_tab(dialog) -> QWidget:
     # 1. Integration Card
     int_card, int_layout = dialog._create_card_frame("SLS Settings")
 
+    from utils.helpers import is_arm64, is_armada_os
+    if is_arm64():
+        os_name = "Armada OS" if is_armada_os() else "ARM64 Linux"
+        arm_badge = QLabel(
+            f"ℹ️ <b>{os_name} (ARM64)</b>: SLSsteam is an x86_64 library injector and is not available "
+            "on ARM64. ASSella is running in <b>Standalone Mode</b> (Direct Depot Downloads, Local Manifest Management, "
+            "and Non-Steam Game launching)."
+        )
+        arm_badge.setStyleSheet(
+            "background-color: rgba(64, 150, 255, 0.15); border: 1px solid rgba(64, 150, 255, 0.4); "
+            "border-radius: 6px; padding: 8px; color: #E0E0E0; font-size: 8.5pt;"
+        )
+        arm_badge.setWordWrap(True)
+        int_layout.addWidget(arm_badge)
+
     if sys.platform == "linux":
         wrapper_name = "SLSsteam"
         dialog.sls_mode_checkbox = None
-        linux_hint = QLabel(
-            "SLSsteam is enabled automatically for Steam library installs on Linux."
-        )
-        linux_hint.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
-        linux_hint.setWordWrap(True)
-        int_layout.addWidget(linux_hint)
+        if not is_arm64():
+            linux_hint = QLabel(
+                "SLSsteam is enabled automatically for Steam library installs on Linux."
+            )
+            linux_hint.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt;")
+            linux_hint.setWordWrap(True)
+            int_layout.addWidget(linux_hint)
     else:
         wrapper_name = "GreenLuma"
         wrapper_full = "GreenLuma Wrapper Mode"
