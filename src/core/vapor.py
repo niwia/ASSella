@@ -673,24 +673,30 @@ def fetch_workshop_manifest(
                             pass
 
                 if consumer_app and hcontent and hcontent != "0":
-                    logger.info(
-                        f"[Workshop/Vapor] Resolved Workshop {wid_str} -> App: {consumer_app}, "
-                        f"Manifest GID: {hcontent}"
-                    )
-                    raw_bytes, err = generate_single_manifest(
-                        consumer_app, hcontent, depot_key=depot_key, force_fallback=False
-                    )
-                    if raw_bytes and not err:
-                        target_dir = Path(dest_dir or ACCELA_ROOT / "manifests")
-                        mf, _ = save_manifest_with_sidecar(consumer_app, hcontent, raw_bytes, target_dir)
-                        logger.info(f"[Workshop/Vapor] Successfully fetched workshop manifest via Vapor CDN!")
-                        return {
-                            "appid": consumer_app,
-                            "manifest_id": hcontent,
-                            "depot_key": depot_key,
-                            "manifest_path": str(mf),
-                            "title": details.get("title", ""),
-                        }, None
+                    if not depot_key:
+                        logger.info(
+                            f"[Workshop/Vapor] Resolved Workshop {wid_str} -> App: {consumer_app}, "
+                            f"Manifest GID: {hcontent}, but depot key is not cached. Delegating to Hubcap to acquire key..."
+                        )
+                    else:
+                        logger.info(
+                            f"[Workshop/Vapor] Resolved Workshop {wid_str} -> App: {consumer_app}, "
+                            f"Manifest GID: {hcontent}"
+                        )
+                        raw_bytes, err = generate_single_manifest(
+                            consumer_app, hcontent, depot_key=depot_key, force_fallback=False
+                        )
+                        if raw_bytes and not err:
+                            target_dir = Path(dest_dir or ACCELA_ROOT / "manifests")
+                            mf, _ = save_manifest_with_sidecar(consumer_app, hcontent, raw_bytes, target_dir)
+                            logger.info(f"[Workshop/Vapor] Successfully fetched workshop manifest via Vapor CDN!")
+                            return {
+                                "appid": consumer_app,
+                                "manifest_id": hcontent,
+                                "depot_key": depot_key,
+                                "manifest_path": str(mf),
+                                "title": details.get("title", ""),
+                            }, None
     except Exception as e:
         logger.warning(f"[Workshop/Vapor] Primary workshop resolution failed ({e}), falling back to Hubcap")
 
