@@ -328,14 +328,21 @@ class DownloadWorkshopTask(QObject):
             self.log(f"  ✓ App ID     : {appid}\n  ✓ Manifest ID: {manifest_id}\n  ✓ Manifest   : {manifest_path}")
 
             if not depot_key:
-                self.log("  ✗ No depot key in response. Skipping.")
-                continue
+                from core.vapor import _lookup_cached_depot_key
+                depot_key = _lookup_cached_depot_key(appid)
 
-            if not self.key_exists(appid):
-                self.save_key(appid, depot_key)
-                self.log(f"  ✓ Key saved  : {appid};{depot_key[:10]}…")
+            if not depot_key:
+                if self.key_exists(appid):
+                    self.log(f"  ✓ Depot key for App ID {appid} already cached in keys file.")
+                else:
+                    self.log("  ✗ No depot key found for App ID. Skipping.")
+                    continue
             else:
-                self.log(f"  ✓ Depot key for App ID {appid} already cached.")
+                if not self.key_exists(appid):
+                    self.save_key(appid, depot_key)
+                    self.log(f"  ✓ Key saved  : {appid};{depot_key[:10]}…")
+                else:
+                    self.log(f"  ✓ Depot key for App ID {appid} already cached.")
 
             if steam_integration and dest_path:
                 out_dir = os.path.join(dest_path, "steamapps", "workshop", "content", appid, wid)
