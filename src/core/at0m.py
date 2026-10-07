@@ -785,6 +785,16 @@ def fetch_workshop_manifest(
                 consumer_app = str(details.get("consumer_app_id") or details.get("creator_app_id") or "").strip()
                 hcontent = str(details.get("hcontent_file") or "").strip()
                 depot_key = known_keys.get(consumer_app)
+                if not depot_key and consumer_app:
+                    depot_key = _lookup_cached_depot_key(consumer_app)
+                    if depot_key:
+                        try:
+                            os.makedirs(os.path.dirname(workshop_keys_file), exist_ok=True)
+                            with open(workshop_keys_file, "a", encoding="utf-8") as f:
+                                f.write(f"{consumer_app};{depot_key}\n")
+                            logger.info(f"[Workshop/at0-m] Auto-resolved and cached depot key for App {consumer_app}")
+                        except Exception:
+                            pass
 
                 if consumer_app and hcontent and hcontent != "0":
                     logger.info(
