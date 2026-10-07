@@ -28,7 +28,7 @@ class DownloadWorkshopTask(QObject):
         self.process: Optional[subprocess.Popen] = None
         self.ddm_exe = str(Paths.deps("DepotDownloader.dll"))
         self.manifests_dir = os.path.join(get_base_path(), "manifests")
-        self.keys_file = os.path.join(get_base_path(), "workshop_keys.txt")
+        self.keys_file = str(Paths.workshop_keys())
         os.makedirs(self.manifests_dir, exist_ok=True)
 
     @property
