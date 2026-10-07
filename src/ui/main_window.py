@@ -54,6 +54,12 @@ from utils.version import app_version
 
 logger = logging.getLogger(__name__)
 
+# How long Update All waits for the user to answer a depot-selection dialog
+# before giving up on that game. Must comfortably exceed human reaction time —
+# a short wait returns while the dialog is still open, which silently skips the
+# game while leaving a stale dialog on screen.
+DIALOG_WAIT_SECONDS = 300
+
 
 def _extract_semver(raw: str) -> str:
     """Strip build-date prefix (e.g. '20260608+ASSella-') returning just the version tag."""
@@ -1916,30 +1922,66 @@ class MainWindow(QMainWindow):
                                 result_holder = [None]
                                 done_event = threading.Event()
 
-                                def _show_depot_dialog():
+                                # Bind every loop-scoped value as a default
+                                # argument. The emit below is a queued
+                                # cross-thread signal, so if the 300ms wait below
+                                # times out the callback can still run after this
+                                # iteration has finished and the loop has moved
+                                # on — a plain closure would then build the dialog
+                                # from the *last* iteration's game.
+                                def _show_depot_dialog(
+                                    _appid=appid,
+                                    _game_name=parsed_data.get("game_name", name),
+                                    _depots=depots,
+                                    _header_url=parsed_data.get("header_url"),
+                                    _prev_selected=prev_selected,
+                                    _missing_hubcap=parsed_data.get("missing_depots_from_hubcap"),
+                                    _missing_info=parsed_data.get("missing_depots_info"),
+                                    _refetched=parsed_data.get("refetched_depots"),
+                                    _result_holder=result_holder,
+                                    _done_event=done_event,
+                                ):
                                     try:
                                         depot_dialog = DepotSelectionDialog(
-                                            appid,
-                                            parsed_data.get("game_name", name),
-                                            depots,
-                                            parsed_data.get("header_url"),
+                                            _appid,
+                                            _game_name,
+                                            _depots,
+                                            _header_url,
                                             self,
-                                            selected_depots=prev_selected,
-                                            is_single_depot=(len(depots) == 1),
-                                            missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
-                                            missing_depots_info=parsed_data.get("missing_depots_info"),
-                                            refetched_depots=parsed_data.get("refetched_depots"),
+                                            selected_depots=_prev_selected,
+                                            is_single_depot=(len(_depots) == 1),
+                                            missing_hubcap_depots=_missing_hubcap,
+                                            missing_depots_info=_missing_info,
+                                            refetched_depots=_refetched,
                                         )
                                         if depot_dialog.exec():
-                                            result_holder[0] = depot_dialog.get_selected_depots()
+                                            _result_holder[0] = depot_dialog.get_selected_depots()
                                     except Exception as err:
-                                        logger.error(f"Error displaying depot selection dialog in Update All: {err}")
+                                        logger.error(
+                                            f"Error displaying depot selection dialog for {_appid} "
+                                            f"in Update All: {err}"
+                                        )
                                     finally:
-                                        done_event.set()
+                                        _done_event.set()
 
                                 self._main_thread_callable.emit(_show_depot_dialog)
-                                done_event.wait(timeout=300)
-                                selected_depots = result_holder[0]
+                                # The dialog is modal and needs real user
+                                # interaction, so this must wait far longer than
+                                # a dispatch timeout. A short wait here returned
+                                # before the user had chosen anything, which made
+                                # the game look uncancellable-free but actually
+                                # skipped it ("no depots selected") and left the
+                                # dialog running against a stale iteration.
+                                # Only a hard failure should give up early;
+                                # otherwise wait for the user.
+                                if not done_event.wait(timeout=DIALOG_WAIT_SECONDS):
+                                    logger.warning(
+                                        f"Update All: depot dialog for {appid} did not report back "
+                                        f"within {DIALOG_WAIT_SECONDS}s; skipping this game"
+                                    )
+                                    selected_depots = None
+                                else:
+                                    selected_depots = result_holder[0]
 
                         if not selected_depots:
                             logger.info(f"Update All: skipping {name} — depot selection cancelled or no depots selected")
