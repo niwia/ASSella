@@ -2557,7 +2557,7 @@ def on_move_to_vapor_clicked(dialog) -> None:
     # Remove ACCELA markers from install folder
     install_path = game_data.get("install_path")
     if install_path and os.path.isdir(install_path):
-        for marker_name in (".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
+        for marker_name in (".assella", ".ASSELLA", ".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
             m_path = os.path.join(install_path, marker_name)
             if os.path.exists(m_path):
                 try:

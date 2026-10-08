@@ -824,13 +824,16 @@ class LibraryActionsMixin:
                 logger.error(f"Error restoring Goldberg backups for {appid}: {gb_err}")
                 errors.append(f"Goldberg restore: {gb_err}")
 
-        # 5. Remove .DepotDownloader and .ACCELA folders (leave game files intact)
+        # 5. Remove .DepotDownloader, .assella and legacy marker folders (leave game files intact)
         if install_path and os.path.isdir(install_path):
-            for marker_name in (".DepotDownloader", ".ACCELA"):
+            for marker_name in (".assella", ".ASSELLA", ".DepotDownloader", ".ACCELA", ".accela"):
                 marker_path = os.path.join(install_path, marker_name)
                 if os.path.exists(marker_path):
                     try:
-                        shutil.rmtree(marker_path)
+                        if os.path.isdir(marker_path):
+                            shutil.rmtree(marker_path)
+                        else:
+                            os.remove(marker_path)
                         logger.info(f"I bought the game: Removed {marker_name} from {install_path}")
                     except Exception as e:
                         logger.error(f"Error removing {marker_name}: {e}")
