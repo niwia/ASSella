@@ -63,6 +63,7 @@ class SettingsDialog(QDialog):
         self.manifest_provider_combo = None
         self.custom_plugins_checkbox = None
         self.smart_depot_selection_checkbox = None
+        self.modern_depot_selection_checkbox = None
         self.use_lancache_checkbox = None
         self.autofetch_manifests_checkbox = None
         self.smart_update_mode_checkbox = None
@@ -779,6 +780,11 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "use_experimental_ddm",
                 self.experimental_ddm_checkbox.isChecked(),
+            )
+        if hasattr(self, "modern_depot_selection_checkbox") and self.modern_depot_selection_checkbox is not None:
+            self.settings.setValue(
+                "use_modern_depot_dialog",
+                self.modern_depot_selection_checkbox.isChecked(),
             )
         if self.use_lancache_checkbox is not None:
             self.settings.setValue(

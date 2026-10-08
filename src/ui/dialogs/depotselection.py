@@ -432,6 +432,19 @@ class DepotSelectionDialog(QDialog):
             from ui.dialogs.single_depot_dialog import SingleDepotSelectionDialog
             return SingleDepotSelectionDialog(*args, **kwargs)
 
+        # Check experimental modern depot selection dialog toggle
+        try:
+            from utils.settings import get_settings
+            _s = get_settings()
+            if _s.value("use_modern_depot_dialog", False, type=bool):
+                aid = kwargs.get("app_id", args[0] if args else "")
+                filtered = {k: v for k, v in (depots or {}).items() if str(k) != str(aid)}
+                if len(filtered) > 2 and not is_single:
+                    from ui.dialogs.modern_depot_selection import ModernDepotSelectionDialog
+                    return ModernDepotSelectionDialog(*args, **kwargs)
+        except Exception as _m_err:
+            logger.warning(f"[DepotSelectionDialog] Modern dialog routing fallback: {_m_err}")
+
         return super().__new__(cls)
 
     def __init__(
