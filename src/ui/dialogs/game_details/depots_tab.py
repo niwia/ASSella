@@ -54,6 +54,63 @@ class _WorkerBridge(QObject):
     finished = pyqtSignal(bool, str)
 
 
+class _EnrichmentBridge(QObject):
+    enriched = pyqtSignal()
+
+
+def _format_enriched_depot_desc(depot_id: str, fallback_desc: str, enrich_data: Optional[Dict[str, Any]] = None) -> str:
+    """Format depot title with OS, language, DLC badges, and enriched name from Steam PICS / SteamDB."""
+    if not enrich_data:
+        return fallback_desc
+
+    raw_name = enrich_data.get("name") or ""
+    # Strip redundant DLC prefix if present in scraped name
+    cleaned_name = re.sub(r"^DLC\s+\d+\s*-?\s*", "", str(raw_name), flags=re.IGNORECASE).strip()
+
+    # Determine base descriptive text
+    if cleaned_name and not re.match(r"^(?:Depot|App)\s+\d+$", cleaned_name, re.IGNORECASE):
+        base_desc = cleaned_name
+    elif fallback_desc and not re.match(r"^Depot\s+\d+$", fallback_desc, re.IGNORECASE):
+        base_desc = fallback_desc
+    else:
+        base_desc = f"Depot {depot_id}"
+
+    oslist = str(enrich_data.get("oslist") or "").lower()
+    os_tag = ""
+    if oslist == "windows":
+        os_tag = "[Windows]"
+    elif oslist == "linux":
+        os_tag = "[Linux]"
+    elif oslist in ("macos", "macosx"):
+        os_tag = "[macOS]"
+    elif "windows" in oslist and "linux" in oslist:
+        os_tag = "[Windows, Linux]"
+    elif "all" in oslist:
+        os_tag = "[All]"
+
+    lang = str(enrich_data.get("language") or "").strip()
+    lang_tag = f"[{lang.capitalize()}]" if lang and lang.lower() not in ("english", "none", "") else ""
+
+    is_dlc = enrich_data.get("is_dlc")
+    dlc_id = enrich_data.get("dlcappid")
+    dlc_tag = ""
+    if is_dlc:
+        dlc_tag = f"[DLC {dlc_id}]" if dlc_id and str(dlc_id).isdigit() else "[DLC]"
+
+    tags = []
+    base_lower = base_desc.lower()
+    if os_tag and os_tag.lower() not in base_lower:
+        tags.append(os_tag)
+    if lang_tag and lang_tag.lower() not in base_lower:
+        tags.append(lang_tag)
+    if dlc_tag and dlc_tag.lower() not in base_lower:
+        tags.append(dlc_tag)
+
+    if tags:
+        return f"{' '.join(tags)}  {base_desc}".strip()
+    return base_desc
+
+
 class MiniSwitchToggle(QWidget):
     """
     Minimal sideways switch toggle widget.
@@ -695,6 +752,11 @@ def init_depots_tab(dialog) -> None:
         ) - ALL_SHARED_REDISTS - {appid_str} - pure_license_dlcs
 
         from utils.yaml_config_manager import is_depot_shared_with_other_games
+        from managers.db_manager import DatabaseManager
+        db_mgr = DatabaseManager()
+        cached_enrichments = db_mgr.get_depot_enrichments(appid_str) or {}
+        cached_app_info = db_mgr.get_app_info(appid_str) or {}
+        cached_app_depots = (cached_app_info.get("depots") or {}) if isinstance(cached_app_info, dict) else {}
 
         valid_key_depots = set(game_keys.keys())
         depots_list = []
@@ -708,12 +770,27 @@ def init_depots_tab(dialog) -> None:
                 or (f"[DLC] {lua_dlcs.get(d)}" if d in lua_dlcs else None)
                 or f"Depot {d}"
             )
+            enrich_info = cached_enrichments.get(d) or cached_app_depots.get(d)
+            enriched_desc = _format_enriched_depot_desc(d, desc, enrich_info)
+
+            size_str = ""
+            if enrich_info:
+                size_str = enrich_info.get("size_str") or ""
+                if not size_str and enrich_info.get("size_bytes"):
+                    from utils.helpers import format_bytes
+                    size_str = format_bytes(enrich_info["size_bytes"])
+                elif not size_str and enrich_info.get("size") and str(enrich_info["size"]).isdigit():
+                    from utils.helpers import format_bytes
+                    size_str = format_bytes(int(enrich_info["size"]))
+
             is_shared = is_depot_shared_with_other_games(d, excluding_appid=appid_str)
             depots_list.append({
                 "id": d,
-                "desc": desc,
+                "desc": enriched_desc,
+                "raw_desc": desc,
                 "has_key": (d in valid_key_depots),
                 "is_shared": is_shared,
+                "size_str": size_str,
             })
 
         # Build Keys list for THIS GAME ONLY:
@@ -1048,8 +1125,12 @@ def init_depots_tab(dialog) -> None:
                 desc_text = f"{desc_text} [Shared]"
             desc_item = QTableWidgetItem(desc_text)
             desc_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            tooltip_parts = [desc_text]
+            if item.get("size_str"):
+                tooltip_parts.append(f"Size: {item['size_str']}")
             if item.get("is_shared"):
-                desc_item.setToolTip("Shared with another game / protected from removal")
+                tooltip_parts.append("Shared with another game / protected from removal")
+            desc_item.setToolTip("\n".join(tooltip_parts))
 
             depots_table.setItem(row, 0, id_item)
             depots_table.setItem(row, 1, desc_item)
@@ -1088,6 +1169,12 @@ def init_depots_tab(dialog) -> None:
             kid = item["id"]
             id_item = QTableWidgetItem(kid)
             id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            # Add depot/app description tooltip for quick identification
+            matching_desc = next((d["desc"] for d in state["depots"] if d["id"] == kid), None)
+            if not matching_desc and kid == appid_str:
+                matching_desc = f"{game_name} (AppKey)"
+            if matching_desc:
+                id_item.setToolTip(matching_desc)
             keys_table.setItem(row, 0, id_item)
 
             raw_key = item["key"]
@@ -1324,5 +1411,67 @@ def init_depots_tab(dialog) -> None:
     unlock_btn.clicked.connect(_on_unlock)
     sync_btn.clicked.connect(_on_sync)
 
+    enrichment_bridge = _EnrichmentBridge()
+    enrichment_bridge.enriched.connect(_refresh_ui)
+
+    def _run_background_enrichment():
+        try:
+            from core.steam_api import get_depot_info_from_api
+            from core.steamdb_scraper import SteamDBScraper, ByparrManager
+            from managers.db_manager import DatabaseManager
+            db = DatabaseManager()
+            new_enrichments: Dict[str, dict] = {}
+
+            # 1. Query SteamCMD / Steam PICS
+            api_info = get_depot_info_from_api(int(appid_str) if appid_str.isdigit() else appid_str)
+            if api_info and isinstance(api_info, dict) and api_info.get("depots"):
+                for did, ddata in api_info["depots"].items():
+                    if isinstance(ddata, dict):
+                        new_enrichments[str(did)] = {
+                            "depot_id": str(did),
+                            "name": ddata.get("name") or "",
+                            "oslist": ddata.get("oslist") or "",
+                            "language": ddata.get("language") or "",
+                            "is_dlc": bool(ddata.get("is_dlc")),
+                            "dlcappid": ddata.get("dlcappid") or "",
+                            "size_str": "",
+                            "size_bytes": ddata.get("size") or 0,
+                            "dl_str": "",
+                        }
+
+            # 2. Query SteamDB if Byparr is active
+            if ByparrManager.is_running():
+                try:
+                    scraper = SteamDBScraper()
+                    sdb_depots = scraper.get_app_depots(appid_str)
+                    if sdb_depots:
+                        for did, sdata in sdb_depots.items():
+                            if did in new_enrichments:
+                                if sdata.get("name"):
+                                    new_enrichments[did]["name"] = sdata["name"]
+                                if sdata.get("oslist"):
+                                    new_enrichments[did]["oslist"] = sdata["oslist"]
+                                if sdata.get("size_str"):
+                                    new_enrichments[did]["size_str"] = sdata["size_str"]
+                            else:
+                                new_enrichments[did] = sdata
+                except Exception as e:
+                    logger.debug(f"[DepotsTab] SteamDB enrichment failed: {e}")
+
+            if new_enrichments:
+                db.save_depot_enrichments(appid_str, new_enrichments)
+                enrichment_bridge.enriched.emit()
+        except Exception as e:
+            logger.debug(f"[DepotsTab] Background depot enrichment error: {e}")
+
     # Initial load
     _refresh_ui()
+
+    # Check if any depots are still generic and trigger async enrichment if needed
+    initial_state = _collect_state()
+    needs_enrichment = any(
+        bool(re.match(r"^(?:\[.*?\]\s*)?Depot\s+\d+$", item.get("desc", ""), re.IGNORECASE))
+        for item in initial_state.get("depots", [])
+    )
+    if needs_enrichment:
+        threading.Thread(target=_run_background_enrichment, daemon=True).start()
