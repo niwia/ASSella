@@ -964,6 +964,76 @@ class DepotSelectionDialog(QDialog):
                 return True
         return False
 
+    def _build_config_text(self, d_id, d_data, is_first=False) -> str:
+        original_desc = d_data.get("desc") or d_data.get("name") or ""
+        for p in ("[Checking]", "[Missing]", "[Recovered]", "[No Key]", "[Missing from Hubcap]", "[Unavailable on Hubcap (404)]"):
+            original_desc = original_desc.replace(p, "").strip()
+        original_desc = re.sub(
+            r"\s*-\s*Depot\s*" + re.escape(str(d_id)),
+            "",
+            original_desc,
+            flags=re.IGNORECASE,
+        )
+        tags = ""
+        base_desc = original_desc.strip()
+        tags_match = re.match(r"^((?:\[.*?]\s*)*)(.*)", original_desc)
+        if tags_match:
+            tags = tags_match.group(1).strip()
+            base_desc = tags_match.group(2).strip()
+
+        is_generic_fallback = bool(
+            re.fullmatch(r"Depot \d+", base_desc, re.IGNORECASE)
+        )
+
+        if is_first:
+            if is_generic_fallback:
+                final_desc = f"{self.game_name}".strip()
+            else:
+                final_desc = base_desc
+        else:
+            if is_generic_fallback:
+                final_desc = ""
+            else:
+                final_desc = base_desc
+
+        is_dlc = d_data.get("is_dlc", False) or "[dlc]" in original_desc.lower() or bool(d_data.get("dlcappid"))
+        dlc_id = str(d_data.get("dlcappid") or "")
+        final_desc = re.sub(r"^DLC\s+\d+\s*-?\s*", "", final_desc, flags=re.IGNORECASE).strip()
+        if not final_desc and d_data.get("name"):
+            final_desc = d_data["name"]
+
+        oslist = (d_data.get("oslist") or "").lower()
+        os_tag = ""
+        if oslist == "windows":
+            os_tag = "[Windows]"
+        elif oslist == "linux":
+            os_tag = "[Linux]"
+        elif oslist in ("macos", "macosx"):
+            os_tag = "[macOS]"
+        elif "windows" in oslist and "linux" in oslist:
+            os_tag = "[Windows, Linux]"
+        elif "all" in oslist:
+            os_tag = "[All]"
+
+        display_tags = tags if tags else os_tag
+        if os_tag and os_tag.lower() not in display_tags.lower() and "[all]" not in display_tags.lower():
+            display_tags = f"{os_tag} {display_tags}".strip() if display_tags else os_tag
+
+        if is_dlc:
+            dlc_tag = f"[DLC {dlc_id}]" if dlc_id and dlc_id.isdigit() else "[DLC]"
+            if dlc_tag.lower() not in display_tags.lower() and "[dlc" not in display_tags.lower() and dlc_tag.lower() not in final_desc.lower() and "[dlc" not in final_desc.lower():
+                display_tags = f"{display_tags} {dlc_tag}".strip() if display_tags else dlc_tag
+
+        if display_tags:
+            cfg_text = f"{display_tags}  {final_desc}".strip()
+        else:
+            cfg_text = final_desc.strip()
+
+        if not cfg_text or cfg_text == display_tags.strip():
+            cfg_text = f"{display_tags}  Depot {d_id}".strip() if display_tags else f"Depot {d_id}"
+
+        return cfg_text
+
     def _populate_table(self):
         self.table_widget.setSortingEnabled(False)
         self.table_widget.clearContents()
@@ -1068,74 +1138,6 @@ class DepotSelectionDialog(QDialog):
                 logger.debug(f"[DepotSelection] Steam recommended depots lookup failed: {_e}")
                 pre_selected_set = set(get_smart_default_depots(self.depots, target_platform="linux"))
 
-        def _build_config_text(d_id, d_data, is_first=False):
-            original_desc = d_data.get("desc", "")
-            original_desc = re.sub(
-                r"\s*-\s*Depot\s*" + re.escape(str(d_id)),
-                "",
-                original_desc,
-                flags=re.IGNORECASE,
-            )
-            tags = ""
-            base_desc = original_desc.strip()
-            tags_match = re.match(r"^((?:\[.*?]\s*)*)(.*)", original_desc)
-            if tags_match:
-                tags = tags_match.group(1).strip()
-                base_desc = tags_match.group(2).strip()
-
-            is_generic_fallback = bool(
-                re.fullmatch(r"Depot \d+", base_desc, re.IGNORECASE)
-            )
-
-            if is_first:
-                if is_generic_fallback:
-                    final_desc = f"{self.game_name}".strip()
-                else:
-                    final_desc = base_desc
-            else:
-                if is_generic_fallback:
-                    final_desc = ""
-                else:
-                    final_desc = base_desc
-
-            is_dlc = d_data.get("is_dlc", False) or "[dlc]" in original_desc.lower()
-            dlc_id = str(d_data.get("dlcappid") or "")
-            final_desc = re.sub(r"^DLC\s+\d+\s*-?\s*", "", final_desc, flags=re.IGNORECASE).strip()
-            if not final_desc and d_data.get("name"):
-                final_desc = d_data["name"]
-
-            oslist = (d_data.get("oslist") or "").lower()
-            os_tag = ""
-            if oslist == "windows":
-                os_tag = "[Windows]"
-            elif oslist == "linux":
-                os_tag = "[Linux]"
-            elif oslist in ("macos", "macosx"):
-                os_tag = "[macOS]"
-            elif "windows" in oslist and "linux" in oslist:
-                os_tag = "[Windows, Linux]"
-            elif "all" in oslist:
-                os_tag = "[All]"
-
-            display_tags = tags if tags else os_tag
-            if os_tag and os_tag.lower() not in display_tags.lower() and "[all]" not in display_tags.lower():
-                display_tags = f"{os_tag} {display_tags}".strip() if display_tags else os_tag
-
-            if is_dlc:
-                dlc_tag = f"[DLC {dlc_id}]" if dlc_id and dlc_id.isdigit() else "[DLC]"
-                if dlc_tag.lower() not in display_tags.lower() and "[dlc" not in display_tags.lower() and dlc_tag.lower() not in final_desc.lower() and "[dlc" not in final_desc.lower():
-                    display_tags = f"{display_tags} {dlc_tag}".strip() if display_tags else dlc_tag
-
-            if display_tags:
-                cfg_text = f"{display_tags}  {final_desc}".strip()
-            else:
-                cfg_text = final_desc.strip()
-
-            if not cfg_text or cfg_text == display_tags.strip():
-                cfg_text = f"{display_tags}  Depot {d_id}".strip() if display_tags else f"Depot {d_id}"
-
-            return cfg_text
-
         include_hidden = getattr(self, "_show_hidden_depots", False) and bool(hidden_depots)
         total_rows = len(active_depots) + len(self.missing_hubcap_depots)
         if include_hidden:
@@ -1147,7 +1149,7 @@ class DepotSelectionDialog(QDialog):
 
         # 1. Tier 0: Populate Active Depots
         for depot_id, depot_data in active_depots:
-            config_text = _build_config_text(depot_id, depot_data, is_first=is_first_depot)
+            config_text = self._build_config_text(depot_id, depot_data, is_first=is_first_depot)
             is_first_depot = False
 
             size_str = ""
@@ -1218,10 +1220,8 @@ class DepotSelectionDialog(QDialog):
             else:
                 tag = "[Missing]"
 
-            if mname:
-                mconfig_text = f"{tag}  {mname}"
-            else:
-                mconfig_text = f"{tag}  Depot {did}"
+            base_mcfg = self._build_config_text(did, minfo)
+            mconfig_text = f"{tag}  {base_mcfg}"
 
             mid_val = int(did) if str(did).isdigit() else 0
             mid_item = NumericTableWidgetItem(str(did), mid_val, tier=1)
@@ -1415,19 +1415,17 @@ class DepotSelectionDialog(QDialog):
                                     break
                     if sz:
                         info["size"] = sz
-                if not info.get("name") and src.get("name"):
-                    info["name"] = src["name"]
-                if not info.get("oslist") and src.get("oslist"):
-                    info["oslist"] = src["oslist"]
+                for field in ("name", "desc", "oslist", "dlcappid", "is_dlc"):
+                    if not info.get(field) and src.get(field):
+                        info[field] = src[field]
 
             if did_str in cached_enrichments and isinstance(cached_enrichments[did_str], dict):
                 src = cached_enrichments[did_str]
-                if not info.get("name") and src.get("name"):
-                    info["name"] = src["name"]
+                for field in ("name", "desc", "oslist", "dlcappid", "is_dlc"):
+                    if not info.get(field) and src.get(field):
+                        info[field] = src[field]
                 if not info.get("size") and src.get("size_bytes"):
                     info["size"] = src["size_bytes"]
-                if not info.get("oslist") and src.get("oslist"):
-                    info["oslist"] = src["oslist"]
 
             if not info.get("name"):
                 try:
@@ -1491,7 +1489,8 @@ class DepotSelectionDialog(QDialog):
                                     break
                     msize_str = format_size(mraw_size) if mraw_size > 0 else "0 B"
                     tag = "[Checking]" if getattr(self, "_is_checking_missing_contents", False) else "[Missing]"
-                    cfg_text = f"{tag}  {mname}" if mname else f"{tag}  Depot {did}"
+                    base_cfg = self._build_config_text(did, minfo)
+                    cfg_text = f"{tag}  {base_cfg}"
                     cfg_item = self.table_widget.item(row, 1)
                     if cfg_item:
                         cfg_item.setText(cfg_text)
@@ -1585,8 +1584,8 @@ class DepotSelectionDialog(QDialog):
                 if id_item and id_item.data(Qt.ItemDataRole.UserRole + 2) == "missing":
                     did_str = str(id_item.data(Qt.ItemDataRole.UserRole))
                     minfo = self.missing_depots_info.get(did_str, {})
-                    mname = minfo.get("name")
-                    cfg_text = f"[Missing]  {mname}" if mname else f"[Missing]  Depot {did_str}"
+                    base_cfg = self._build_config_text(did_str, minfo)
+                    cfg_text = f"[Missing]  {base_cfg}"
 
                     config_item = self.table_widget.item(row, 1)
                     if config_item:
@@ -1612,6 +1611,25 @@ class DepotSelectionDialog(QDialog):
             if did_str in self.missing_hubcap_depots:
                 self.missing_hubcap_depots.remove(did_str)
 
+            # Resolve depot metadata for the recovered depot
+            d_data = dict(self.depots.get(did_str) or self.depots.get(int(did_str) if did_str.isdigit() else None) or {})
+            if not d_data:
+                d_data = dict(self.missing_depots_info.get(did_str) or {})
+
+            try:
+                from managers.db_manager import DatabaseManager
+                app_info = DatabaseManager().get_app_info(str(self.app_id))
+                if app_info and isinstance(app_info.get("depots"), dict):
+                    db_depot = app_info["depots"].get(did_str) or app_info["depots"].get(int(did_str) if did_str.isdigit() else None)
+                    if db_depot and isinstance(db_depot, dict):
+                        for k, v in db_depot.items():
+                            if not d_data.get(k) and v:
+                                d_data[k] = v
+            except Exception as e:
+                logger.debug(f"[DepotSelection] DB lookup for recovered depot {did_str} failed: {e}")
+
+            self.depots[did_str] = d_data
+
             for row in range(self.table_widget.rowCount()):
                 id_item = self.table_widget.item(row, 0)
                 if id_item and str(id_item.data(Qt.ItemDataRole.UserRole)) == did_str:
@@ -1623,10 +1641,8 @@ class DepotSelectionDialog(QDialog):
                     id_item.setForeground(QColor(255, 255, 255))
 
                     if config_item:
-                        txt = config_item.text()
-                        for prefix in ("[Checking]", "[Missing]", "[Missing from Hubcap]", "[Unavailable on Hubcap (404)]"):
-                            txt = txt.replace(prefix, "").strip()
-                        config_item.setText(f"[Recovered]  {txt}")
+                        base_txt = self._build_config_text(did_str, d_data)
+                        config_item.setText(f"[Recovered]  {base_txt}")
                         config_item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
                         config_item.setForeground(QColor(255, 255, 255))
                         f = config_item.font()
@@ -1639,6 +1655,21 @@ class DepotSelectionDialog(QDialog):
                         sf = size_item.font()
                         sf.setItalic(False)
                         size_item.setFont(sf)
+                        mraw_size = int(d_data.get("size") or 0)
+                        if not mraw_size and isinstance(d_data.get("manifests"), dict):
+                            manifests = d_data["manifests"]
+                            b_entry = manifests.get(self.branch) or manifests.get("public")
+                            if isinstance(b_entry, dict):
+                                mraw_size = int(b_entry.get("size") or b_entry.get("download") or 0)
+                            if not mraw_size:
+                                for m_val in manifests.values():
+                                    if isinstance(m_val, dict) and (m_val.get("size") or m_val.get("download")):
+                                        mraw_size = int(m_val.get("size") or m_val.get("download") or 0)
+                                        break
+                        if mraw_size > 0:
+                            size_item.setText(format_size(mraw_size))
+                            if hasattr(size_item, "sort_value"):
+                                size_item.sort_value = mraw_size
                     break
 
         if hasattr(self, "linux_button") and self.linux_button:
