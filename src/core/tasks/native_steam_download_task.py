@@ -834,8 +834,6 @@ class NativeSteamDownloadTask(QObject):
         else:
             for d, k in depot_keys.items():
                 did_str = str(d)
-                if did_str in dlc_appids:
-                    continue
                 if did_str == appid_str:
                     if k:
                         all_keys[did_str] = str(k)

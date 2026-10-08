@@ -169,7 +169,7 @@ def register_plugin_game(
         for did, key in decryption_keys.items():
             did_str = str(did).strip()
             key_str = str(key).strip().lower()
-            if did_str.isdigit() and len(key_str) == 64 and did_str not in clean_dlc_appids:
+            if did_str.isdigit() and len(key_str) == 64:
                 clean_keys[did_str] = key_str
 
     # Safeguard AT0-M mode: Only include depots that have decryption keys (or are shared redists)
@@ -359,8 +359,6 @@ def sync_all_plugin_games_to_config() -> None:
 
             for did, key in game.get("keys", {}).items():
                 did_str = str(did)
-                if did_str in game.get("dlc_appids", []):
-                    continue  # Never add DLC AppIDs to DecryptionKeys
                 if did_str == appid_str:
                     key_comment = f"{name} [AppKey] ({appid_str})"
                 elif did_str in SHARED_REDISTS:

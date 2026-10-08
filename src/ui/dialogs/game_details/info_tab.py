@@ -2500,7 +2500,7 @@ def on_move_to_vapor_clicked(dialog) -> None:
         depot_ids = filter_dlc_depots_only(depot_ids, appid, depots_meta=game_data.get("depots"), dlc_appids=dlc_appids)
     else:
         depot_ids = [d for d in depot_ids if str(d) != str(appid) and str(d) not in dlc_appids]
-    decryption_keys = {d: k for d, k in decryption_keys.items() if str(d) not in dlc_appids}
+    decryption_keys = {d: k for d, k in decryption_keys.items()}
 
     # If any depot is missing its decryption key, attempt an emergency fetch via Hubcap API
     missing_key_depots = [d for d in depot_ids if str(d) not in decryption_keys]
@@ -2516,9 +2516,7 @@ def on_move_to_vapor_clicked(dialog) -> None:
                         if name.endswith(".lua"):
                             lua_txt = zf.read(name).decode("utf-8", errors="ignore")
                             for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_txt):
-                                did_found, k_found = m.group(1), m.group(2)
-                                if did_found not in dlc_appids:
-                                    fresh_keys[did_found] = k_found
+                                fresh_keys[did_found] = k_found
                 if fresh_keys:
                     from managers.depot_key_manager import DepotKeyManager
                     DepotKeyManager.get_instance().save_depot_keys(appid, fresh_keys)
