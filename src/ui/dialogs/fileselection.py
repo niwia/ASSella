@@ -133,12 +133,20 @@ class FileSelectionDialog(QDialog):
                 border: 1px solid rgba(255, 255, 255, 0.059);
                 border-radius: 6px;
                 color: #FFFFFF;
+                selection-background-color: transparent;
+                selection-color: #FFFFFF;
+            }}
+            QTreeView::item {{
+                border: 1.5px solid transparent;
+                border-radius: 4px;
             }}
             QTreeView::item:hover {{
                 background-color: rgba(255, 255, 255, 0.039);
+                border: 1.5px solid rgba(255, 255, 255, 0.10);
             }}
             QTreeView::item:selected {{
                 background-color: rgba(255, 255, 255, 0.059);
+                border: 1.5px solid {self.accent_color};
                 color: #FFFFFF;
             }}
             QPushButton {{

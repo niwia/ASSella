@@ -223,6 +223,11 @@ def _apply_stylesheet(
             border: 1.5px solid {accent_color.name()};
         }}
 
+        QCheckBox::indicator:checked:hover {{
+            background: {accent_light};
+            border: 1.5px solid {accent_light};
+        }}
+
         QCheckBox::indicator:hover {{
             border: 1.5px solid {accent_light};
             background: rgba({accent_r}, {accent_g}, {accent_b}, 20);
@@ -244,6 +249,11 @@ def _apply_stylesheet(
         QListWidget::indicator:checked {{
             background-color: {accent_color.name()};
             border: 1.5px solid {accent_color.name()};
+        }}
+
+        QListWidget::indicator:checked:hover {{
+            background-color: {accent_light};
+            border: 1.5px solid {accent_light};
         }}
 
         QListWidget::indicator:hover {{
@@ -285,7 +295,7 @@ def _apply_stylesheet(
             color: {accent_color.name()};
         }}
 
-        QListWidget, QTreeWidget, QTableView {{
+        QListWidget, QTreeWidget, QTableView, QTableWidget {{
             background-color: {surface_variant};
             color: {accent_color.name()};
             border-radius: 12px;
@@ -293,29 +303,35 @@ def _apply_stylesheet(
             border: none;
             padding: 4px;
             font-size: {font_size_queue}pt;
+            selection-background-color: transparent;
+            selection-color: {accent_light};
         }}
 
-        QListWidget::item, QTreeWidget::item {{
+        QListWidget::item, QTreeWidget::item, QTableView::item, QTableWidget::item {{
             background-color: transparent;
             color: {accent_color.name()};
             border-radius: 8px;
             padding: 8px 12px;
             margin: 2px 0px;
             font-size: {font_size_queue}pt;
+            border: 1.5px solid transparent;
         }}
 
-        QListWidget::item:hover, QTreeWidget::item:hover {{
+        QListWidget::item:hover, QTreeWidget::item:hover, QTableView::item:hover, QTableWidget::item:hover {{
             background-color: {hover_bg};
             color: {accent_light};
+            border: 1.5px solid rgba(255, 255, 255, 0.12);
         }}
 
-        QListWidget::item:selected, QTreeWidget::item:selected {{
-            background-color: {selected_bg};
+        QListWidget::item:selected, QTreeWidget::item:selected, QTableView::item:selected, QTableWidget::item:selected {{
+            background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.12);
             color: {accent_light};
+            border: 1.5px solid {accent_color.name()};
+            border-radius: 6px;
             font-weight: bold;
         }}
 
-        QListWidget::item:checked {{
+        QListWidget::item:checked, QTreeWidget::item:checked, QTableView::item:checked, QTableWidget::item:checked {{
             background-color: {hover_bg};
             color: {accent_color.name()};
             font-weight: bold;
