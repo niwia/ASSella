@@ -146,7 +146,6 @@ class At0mUpdateChecker(QObject):
             if k.startswith("dlc_only_mode/"):
                 aid = k.split("/", 1)[1]
                 if aid.isdigit() and settings.value(k, False, type=bool):
-                    if aid not in accela_installed:
                         if aid in discovered:
                             discovered[aid]["is_dlc_only"] = True
                         else:
@@ -156,6 +155,56 @@ class At0mUpdateChecker(QObject):
                                 "source": "dlc_mode",
                                 "is_dlc_only": True,
                             }
+
+        # 5. Smart Config Discovery: Games in AdditionalApps that have matching decryption keys
+        # (discovers games added outside ASSella, e.g. manual edits or external tools)
+        try:
+            cfg_path = get_user_config_path()
+            if cfg_path and cfg_path.exists():
+                cfg_apps = get_additional_apps(cfg_path)
+                cfg_keys = get_decryption_keys(cfg_path)
+                cfg_key_ids = set(str(k) for k in cfg_keys.keys())
+
+                for aid in cfg_apps:
+                    aid_str = str(aid)
+                    if not aid_str.isdigit() or aid_str in accela_installed or aid_str in discovered:
+                        continue
+
+                    # Heuristic: Is this appid in DecryptionKeys (AppKey) OR
+                    # does it have any associated content depots in DecryptionKeys?
+                    has_key = (aid_str in cfg_key_ids)
+                    app_info = self.db.get_app_info(aid_str) or {}
+                    if not has_key and app_info:
+                        deps = app_info.get("depots") or {}
+                        for did in deps.keys():
+                            if str(did) in cfg_key_ids and str(did) not in ALL_SHARED_REDISTS:
+                                has_key = True
+                                break
+
+                    if not has_key:
+                        # Check comments in config.yaml for AppID reference
+                        try:
+                            cfg_text = cfg_path.read_text(encoding="utf-8", errors="ignore")
+                            for kid in cfg_key_ids:
+                                if kid in ALL_SHARED_REDISTS:
+                                    continue
+                                if re.search(rf"^[ \t]*['\"]?{re.escape(kid)}['\"]?[ \t]*:[ \t]*[^\r\n]*#{re.escape(aid_str)}", cfg_text, re.MULTILINE):
+                                    has_key = True
+                                    break
+                        except Exception:
+                            pass
+
+                    if has_key:
+                        name = app_info.get("name") or f"App {aid_str}"
+                        discovered[aid_str] = {
+                            "appid": aid_str,
+                            "name": name,
+                            "source": "config_atom",
+                            "is_dlc_only": False,
+                        }
+                        logger.debug(f"[At0mChecker] Smart discovered external AT0-M game from config: {name} ({aid_str})")
+        except Exception as e:
+            logger.debug(f"[At0mChecker] Error in smart config discovery: {e}")
 
         return discovered
 
