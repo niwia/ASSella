@@ -484,6 +484,20 @@ def init_depots_tab(dialog) -> None:
     status_lbl = QLabel("")
     status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
     status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    try:
+        from managers.db_manager import DatabaseManager
+        at0m_stat = DatabaseManager().get_at0m_update_status(appid_str)
+        if at0m_stat:
+            if at0m_stat.get("status") == "update_available":
+                new_deps = at0m_stat.get("new_depots", [])
+                cnt = len(new_deps) if isinstance(new_deps, list) else 1
+                status_lbl.setText(f"★ Update Available: {cnt} new depot key(s) ready on Hubcap! Click 'Refetch' to fetch keys.")
+                status_lbl.setStyleSheet("color: #4DD0E1; font-size: 8.5pt; font-weight: bold;")
+            elif at0m_stat.get("status") == "key_pending":
+                status_lbl.setText("ℹ Steam has updated depots, but keys are pending on Hubcap (cooldown active).")
+                status_lbl.setStyleSheet("color: #FFB74D; font-size: 8.5pt;")
+    except Exception:
+        pass
     layout.addWidget(status_lbl)
 
     # Bottom Actions Bar: 3 buttons evenly filling the bar
@@ -1396,6 +1410,12 @@ def init_depots_tab(dialog) -> None:
                             if fresh_keys:
                                 from managers.depot_key_manager import DepotKeyManager
                                 DepotKeyManager.get_instance().save_depot_keys(appid_str, fresh_keys)
+
+                    try:
+                        from managers.db_manager import DatabaseManager
+                        DatabaseManager().save_at0m_update_status(appid=appid_str, status="up_to_date", new_depots=[])
+                    except Exception:
+                        pass
 
                     bridge.finished.emit(True, "Refetch successful. Local cache updated.")
                 else:

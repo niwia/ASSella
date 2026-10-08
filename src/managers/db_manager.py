@@ -636,3 +636,127 @@ class DatabaseManager:
                 logger.info(f"[DBManager] Cleared all missing-depot records for App {appid}")
         except Exception as e:
             logger.error(f"[DBManager] Failed to clear all missing depots for {appid}: {e}")
+
+    # ── AT0-M / Depot Update Status Tracking ────────────────────────────────
+    def _ensure_at0m_update_table(self, cur):
+        """Creates the at0m_update_status table if it doesn't exist yet."""
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS at0m_update_status (
+                appid TEXT PRIMARY KEY,
+                game_title TEXT,
+                last_timeupdated INTEGER DEFAULT 0,
+                last_checked INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'up_to_date',
+                new_depots TEXT DEFAULT '[]',
+                cooldown_until INTEGER DEFAULT 0
+            )
+        """)
+
+    def save_at0m_update_status(
+        self,
+        appid: str,
+        game_title: str = "",
+        last_timeupdated: int = 0,
+        status: str = "up_to_date",
+        new_depots: Optional[List[Any]] = None,
+        cooldown_until: int = 0,
+    ) -> None:
+        """Persists AT0-M update status and depot diff cache for an appid."""
+        if not self.conn or not appid:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_at0m_update_table(cur)
+                now = int(time.time())
+                depots_json = json.dumps(new_depots or [])
+                cur.execute("""
+                    INSERT INTO at0m_update_status
+                        (appid, game_title, last_timeupdated, last_checked, status, new_depots, cooldown_until)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(appid) DO UPDATE SET
+                        game_title = CASE WHEN excluded.game_title != '' THEN excluded.game_title ELSE at0m_update_status.game_title END,
+                        last_timeupdated = CASE WHEN excluded.last_timeupdated > 0 THEN excluded.last_timeupdated ELSE at0m_update_status.last_timeupdated END,
+                        last_checked = excluded.last_checked,
+                        status = excluded.status,
+                        new_depots = excluded.new_depots,
+                        cooldown_until = excluded.cooldown_until
+                """, (
+                    str(appid),
+                    str(game_title or ""),
+                    int(last_timeupdated or 0),
+                    now,
+                    str(status or "up_to_date"),
+                    depots_json,
+                    int(cooldown_until or 0),
+                ))
+                self.conn.commit()
+                logger.debug(f"[DBManager] Saved AT0-M update status for {appid}: {status}")
+        except Exception as e:
+            logger.error(f"[DBManager] Failed to save AT0-M update status for {appid}: {e}")
+
+    def get_at0m_update_status(self, appid: str) -> Optional[Dict[str, Any]]:
+        """Returns the AT0-M update status record for an appid, or None if not found."""
+        if not self.conn or not appid:
+            return None
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_at0m_update_table(cur)
+                cur.execute("""
+                    SELECT appid, game_title, last_timeupdated, last_checked, status, new_depots, cooldown_until
+                    FROM at0m_update_status
+                    WHERE appid = ?
+                """, (str(appid),))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                try:
+                    depots = json.loads(row[5]) if row[5] else []
+                except Exception:
+                    depots = []
+                return {
+                    "appid": str(row[0]),
+                    "game_title": row[1] or "",
+                    "last_timeupdated": int(row[2] or 0),
+                    "last_checked": int(row[3] or 0),
+                    "status": row[4] or "up_to_date",
+                    "new_depots": depots,
+                    "cooldown_until": int(row[6] or 0),
+                }
+        except Exception as e:
+            logger.debug(f"[DBManager] Failed to get AT0-M update status for {appid}: {e}")
+            return None
+
+    def get_all_at0m_update_statuses(self) -> Dict[str, Dict[str, Any]]:
+        """Returns all cached AT0-M update statuses keyed by appid."""
+        if not self.conn:
+            return {}
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_at0m_update_table(cur)
+                cur.execute("""
+                    SELECT appid, game_title, last_timeupdated, last_checked, status, new_depots, cooldown_until
+                    FROM at0m_update_status
+                """)
+                rows = cur.fetchall()
+                result = {}
+                for row in rows:
+                    try:
+                        depots = json.loads(row[5]) if row[5] else []
+                    except Exception:
+                        depots = []
+                    result[str(row[0])] = {
+                        "appid": str(row[0]),
+                        "game_title": row[1] or "",
+                        "last_timeupdated": int(row[2] or 0),
+                        "last_checked": int(row[3] or 0),
+                        "status": row[4] or "up_to_date",
+                        "new_depots": depots,
+                        "cooldown_until": int(row[6] or 0),
+                    }
+                return result
+        except Exception as e:
+            logger.debug(f"[DBManager] Failed to get all AT0-M update statuses: {e}")
+            return {}

@@ -117,6 +117,34 @@ class UpdateItemWidget(QFrame):
         self.lbl.setWordWrap(True)
         lay.addWidget(self.lbl, 1)
 
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            try:
+                main_win = None
+                p = self.parent()
+                while p:
+                    if hasattr(p, "game_manager"):
+                        main_win = p
+                        break
+                    p = p.parent()
+                if not main_win:
+                    from PyQt6.QtWidgets import QApplication
+                    for w in QApplication.topLevelWidgets():
+                        if hasattr(w, "game_manager"):
+                            main_win = w
+                            break
+                if main_win and hasattr(main_win, "game_manager"):
+                    game = main_win.game_manager.get_game(self.appid)
+                    if game:
+                        from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+                        dlg = GameDetailsDialogV2(main_win, game)
+                        dlg.exec()
+            except Exception:
+                pass
+
     def enterEvent(self, event):
         super().enterEvent(event)
         self.update()

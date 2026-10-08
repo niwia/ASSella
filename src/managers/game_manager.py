@@ -289,6 +289,18 @@ class GameManager(QObject):
         if not self._games_to_check:
             logger.info("No games need an update check at this time")
             self.all_updates_checked.emit()
+            # Still run At0mUpdateChecker in case AT0-M games need a check
+            try:
+                from managers.at0m_update_checker import At0mUpdateChecker
+                at0m_checker = At0mUpdateChecker.get_instance()
+                try:
+                    at0m_checker.game_checked.disconnect(self._on_at0m_game_checked)
+                except Exception:
+                    pass
+                at0m_checker.game_checked.connect(self._on_at0m_game_checked)
+                at0m_checker.check_all_games_async(force_refresh=force_refresh)
+            except Exception as e:
+                logger.debug(f"Error launching At0mUpdateChecker: {e}")
             return
 
         logger.info(
@@ -297,6 +309,19 @@ class GameManager(QObject):
         )
 
         self.update_check_started.emit()
+
+        # Also trigger smart AT0-M / DLC update checking in the background
+        try:
+            from managers.at0m_update_checker import At0mUpdateChecker
+            at0m_checker = At0mUpdateChecker.get_instance()
+            try:
+                at0m_checker.game_checked.disconnect(self._on_at0m_game_checked)
+            except Exception:
+                pass
+            at0m_checker.game_checked.connect(self._on_at0m_game_checked)
+            at0m_checker.check_all_games_async(force_refresh=force_refresh)
+        except Exception as e:
+            logger.debug(f"Error launching At0mUpdateChecker: {e}")
 
         # Create new task with trigger provenance
         trigger = "USER_MANUAL" if force_refresh else ("AUTO_TIMER" if is_periodic else "BACKGROUND_SCAN")
@@ -319,6 +344,17 @@ class GameManager(QObject):
         )
         self.manifest_check_runner.run(self.manifest_check_task.run)
 
+    def _on_at0m_game_checked(self, appid: str, status: str, details: dict):
+        """Handle results from At0mUpdateChecker for an AT0-M / DLC game."""
+        appid_str = str(appid)
+        game = self._games_by_appid.get(appid_str) or self.get_game(appid_str)
+        if game:
+            game["update_status"] = status
+            if details:
+                game["at0m_update_details"] = details
+            logger.info(f"AT0-M check result for {game.get('game_name', appid_str)} ({appid_str}): {status}")
+            self.game_update_status_changed.emit(appid_str, status)
+
     def check_single_game_update(self, appid: str) -> None:
         """
         Trigger an update check for a single game by appid.
@@ -333,11 +369,21 @@ class GameManager(QObject):
             logger.warning(f"check_single_game_update: appid {appid} not found")
             return
 
-        # AT0-M / Plugin games bypass
+        # AT0-M / Plugin games: run smart At0mUpdateChecker
         if game.get("is_atom") or game.get("is_vapor") or game.get("is_plugin_game") or game.get("update_status") in ("vapor", "at0m", "at0-m"):
-            logger.info(f"check_single_game_update: appid {appid} is an AT0-M/Plugin game. Updates handled natively by Steam.")
-            game["update_status"] = UPDATE_STATUS.get("AT0M", "at0m")
-            self.game_update_status_changed.emit(appid, UPDATE_STATUS.get("AT0M", "at0m"))
+            logger.info(f"check_single_game_update: appid {appid} is AT0-M/Plugin game, running At0mUpdateChecker.")
+            game["update_status"] = UPDATE_STATUS["CHECKING"]
+            self.game_update_status_changed.emit(appid, UPDATE_STATUS["CHECKING"])
+            import threading
+            def _check_single_at0m():
+                try:
+                    from managers.at0m_update_checker import At0mUpdateChecker
+                    status, details = At0mUpdateChecker.get_instance().check_game(appid, game_title=game.get("game_name", ""), force_refresh=True)
+                    self._on_at0m_game_checked(appid, status, details)
+                except Exception as _e:
+                    logger.debug(f"Error in single AT0-M check for {appid}: {_e}")
+                    self._on_at0m_game_checked(appid, "up_to_date", {})
+            threading.Thread(target=_check_single_at0m, daemon=True).start()
             return
 
         # Pinned build bypass
@@ -1363,9 +1409,19 @@ class GameManager(QObject):
             else:
                 game_data["size_on_disk"] = size_on_disk
 
-            # If this is an AT0-M or Plugin-managed game, mark update_status as 'at0m' and force public branch
+            # If this is an AT0-M or Plugin-managed game, restore any cached AT0-M status and force public branch
             if is_vapor or is_plugin_game:
-                game_data["update_status"] = UPDATE_STATUS.get("AT0M", "at0m")
+                at0m_status = UPDATE_STATUS.get("AT0M", "at0m")
+                if appid and appid not in ("0", "N/A", "unknown"):
+                    try:
+                        from managers.db_manager import DatabaseManager
+                        stat = DatabaseManager().get_at0m_update_status(appid)
+                        if stat and stat.get("status") in ("update_available", "key_pending"):
+                            at0m_status = stat["status"]
+                            game_data["at0m_update_details"] = stat
+                    except Exception:
+                        pass
+                game_data["update_status"] = at0m_status
                 game_data["installed_branch"] = "public"
                 game_data["selected_branch"] = "public"
                 if appid and appid not in ("0", "N/A", "unknown"):
