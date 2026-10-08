@@ -1224,6 +1224,29 @@ class GameManager(QObject):
 
             is_plugin_game = bool(plugin_record)
 
+            # Smart correlation: If not in plugin library and no physical marker, check if configured in SLSsteam with DecryptionKeys
+            if not is_plugin_game and not is_accela_install and appid and appid not in ("0", "N/A", "unknown"):
+                try:
+                    from utils.yaml_config_manager import get_user_config_path, get_additional_apps, get_decryption_keys
+                    cfg_path = get_user_config_path()
+                    if cfg_path and cfg_path.exists():
+                        cfg_apps = set(get_additional_apps(cfg_path))
+                        if appid in cfg_apps:
+                            cfg_keys = get_decryption_keys(cfg_path)
+                            if appid in cfg_keys:
+                                is_plugin_game = True
+                            else:
+                                from managers.db_manager import DatabaseManager
+                                c_info = DatabaseManager().get_app_info(appid) or {}
+                                c_deps = c_info.get("depots") or {}
+                                from utils.plugin_games import SHARED_REDISTS
+                                for did in c_deps.keys():
+                                    if str(did) in cfg_keys and str(did) not in SHARED_REDISTS:
+                                        is_plugin_game = True
+                                        break
+                except Exception as _e:
+                    logger.debug(f"[GameManager] Smart config correlation check error for {appid}: {_e}")
+
             # Smart Conflict Resolution between ACCELA physical marker and AT0-M plugin record
             if is_accela_install and is_plugin_game:
                 plugin_ts = 0

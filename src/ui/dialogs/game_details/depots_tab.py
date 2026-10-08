@@ -500,93 +500,131 @@ def init_depots_tab(dialog) -> None:
         pass
     layout.addWidget(status_lbl)
 
-    # Bottom Actions Bar: 3 buttons evenly filling the bar
+    # Persistent Bottom Actions Bar
     btn_bar = QFrame()
     btn_bar.setStyleSheet("background: transparent; border: none;")
     bar_lay = QHBoxLayout(btn_bar)
-    bar_lay.setContentsMargins(0, 4, 0, 0)
-    bar_lay.setSpacing(10)
+    bar_lay.setContentsMargins(0, 0, 0, 0)
+    bar_lay.setSpacing(8)
 
-    refetch_btn = QPushButton("Refetch")
-    refetch_btn.setFixedHeight(34)
+    refetch_btn = QPushButton("API Refetch")
+    refetch_btn.setFixedHeight(28)
     refetch_btn.setStyleSheet("""
         QPushButton {
-            background-color: rgba(255, 255, 255, 0.08);
-            color: #FFFFFF;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 6px;
-            font-size: 9pt;
+            background-color: rgba(255, 255, 255, 0.07);
+            color: rgba(255, 255, 255, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 4px;
+            font-size: 8.5pt;
             font-weight: 500;
+            padding: 2px 12px;
         }
         QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.14);
-            border-color: rgba(255, 255, 255, 0.25);
+            background-color: rgba(255, 255, 255, 0.12);
+            border-color: rgba(255, 255, 255, 0.22);
+            color: #FFFFFF;
         }
         QPushButton:disabled {
-            background-color: rgba(255, 255, 255, 0.03);
-            color: rgba(255, 255, 255, 0.3);
+            background-color: rgba(255, 255, 255, 0.02);
+            color: rgba(255, 255, 255, 0.25);
             border-color: rgba(255, 255, 255, 0.05);
         }
     """)
 
     unlock_btn = QPushButton("Unlock")
-    unlock_btn.setFixedHeight(34)
+    unlock_btn.setFixedHeight(28)
     unlock_btn_style_locked = """
         QPushButton {
-            background-color: rgba(255, 255, 255, 0.08);
-            color: #FFFFFF;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 6px;
-            font-size: 9pt;
+            background-color: rgba(255, 255, 255, 0.07);
+            color: rgba(255, 255, 255, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 4px;
+            font-size: 8.5pt;
             font-weight: 500;
+            padding: 2px 12px;
         }
         QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.14);
-            border-color: rgba(255, 255, 255, 0.25);
+            background-color: rgba(255, 255, 255, 0.12);
+            border-color: rgba(255, 255, 255, 0.22);
+            color: #FFFFFF;
         }
     """
     unlock_btn_style_unlocked = """
         QPushButton {
-            background-color: rgba(255, 152, 0, 0.22);
+            background-color: rgba(255, 152, 0, 0.18);
             color: #ffb74d;
-            border: 1px solid rgba(255, 152, 0, 0.55);
-            border-radius: 6px;
-            font-size: 9pt;
+            border: 1px solid rgba(255, 152, 0, 0.45);
+            border-radius: 4px;
+            font-size: 8.5pt;
             font-weight: bold;
+            padding: 2px 12px;
         }
         QPushButton:hover {
-            background-color: rgba(255, 152, 0, 0.32);
+            background-color: rgba(255, 152, 0, 0.26);
         }
     """
     unlock_btn.setStyleSheet(unlock_btn_style_locked)
 
     sync_btn = QPushButton("Sync")
-    sync_btn.setFixedHeight(34)
+    sync_btn.setFixedHeight(28)
     sync_btn.setStyleSheet(f"""
         QPushButton {{
             background-color: {ac};
             color: #000000;
             border: none;
-            border-radius: 6px;
-            font-size: 9pt;
+            border-radius: 4px;
+            font-size: 8.5pt;
             font-weight: bold;
+            padding: 2px 12px;
         }}
         QPushButton:hover {{
-            background-color: rgba(255, 255, 255, 0.9);
+            background-color: rgba(255, 255, 255, 0.92);
         }}
         QPushButton:disabled {{
-            background-color: rgba(255, 255, 255, 0.1);
-            color: rgba(255, 255, 255, 0.3);
+            background-color: rgba(255, 255, 255, 0.08);
+            color: rgba(255, 255, 255, 0.25);
         }}
     """)
 
     bar_lay.addWidget(refetch_btn, 1)
     bar_lay.addWidget(unlock_btn, 1)
     bar_lay.addWidget(sync_btn, 1)
-    layout.addWidget(btn_bar)
+
+    # Initial check of Hubcap token quota to reflect availability on button
+    try:
+        from core import morrenus_api
+        init_stats = morrenus_api.get_user_stats()
+        init_rem = max(0, (init_stats.get("daily_limit") or 135) - init_stats.get("daily_usage", 0))
+        if init_rem <= 0 or not init_stats.get("can_make_requests", True):
+            refetch_btn.setEnabled(False)
+            refetch_btn.setToolTip("Daily Hubcap API token limit reached.")
+    except Exception:
+        pass
+
+    tab_container = QWidget()
+    tab_container.setStyleSheet("background: transparent;")
+    tab_layout = QVBoxLayout(tab_container)
+    tab_layout.setContentsMargins(0, 0, 0, 0)
+    tab_layout.setSpacing(0)
 
     scroll.setWidget(content_widget)
-    dialog.stacked.addWidget(scroll)
+    tab_layout.addWidget(scroll, 1)
+
+    footer_bar = QFrame()
+    footer_bar.setStyleSheet("""
+        QFrame {
+            background-color: rgba(18, 18, 24, 0.96);
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+    """)
+    footer_lay = QVBoxLayout(footer_bar)
+    footer_lay.setContentsMargins(16, 6, 16, 10)
+    footer_lay.setSpacing(6)
+    footer_lay.addWidget(status_lbl)
+    footer_lay.addWidget(btn_bar)
+
+    tab_layout.addWidget(footer_bar, 0)
+    dialog.stacked.addWidget(tab_container)
 
     def _build_app_to_depots_map(
         state_apps: List[Dict[str, Any]],
@@ -730,6 +768,21 @@ def init_depots_tab(dialog) -> None:
         game_keys.update(lua_keys)
         game_keys.update(plugin_keys)
         game_keys.update(tagged_keys_from_config)
+
+        # Also correlate live_keys from config that match this game's depots or AppID
+        for d in (set(gd_depots.keys()) | set(lua_depots.keys()) | {appid_str}):
+            if d in live_keys and d not in ALL_SHARED_REDISTS:
+                k = live_keys[d]
+                if k and len(k) == 64:
+                    game_keys.setdefault(d, k.lower())
+                    if d not in local_db_keys:
+                        # Auto-seed into local DB (depot_keys.db)
+                        try:
+                            dkm.save_depot_keys(appid_str, {d: k.lower()})
+                            local_db_keys[d] = k.lower()
+                        except Exception as e:
+                            logger.debug(f"[DepotsTab] Auto-seed local key failed: {e}")
+
         game_keys = {d: k for d, k in game_keys.items() if d not in ALL_SHARED_REDISTS}
 
         # DLC AppIDs set (combining Lua, plugin library, and tagged AdditionalApps from config)
@@ -1385,6 +1438,20 @@ def init_depots_tab(dialog) -> None:
                     editor.add_key(s_did, s_key, comment="Steamworks Shared")
                     added_count += 1
 
+        # Always persist all valid keys from state/config to DepotKeyManager (local DB)
+        try:
+            from managers.depot_key_manager import DepotKeyManager
+            keys_to_persist = {}
+            for item in state.get("keys", []):
+                kid = item["id"]
+                kval = item.get("key") or state.get("live_keys", {}).get(kid)
+                if kval and len(str(kval)) == 64:
+                    keys_to_persist[kid] = str(kval).lower()
+            if keys_to_persist:
+                DepotKeyManager.get_instance().save_depot_keys(appid_str, keys_to_persist)
+        except Exception as e:
+            logger.debug(f"[DepotsTab] Error persisting keys to local DB on sync: {e}")
+
         if editor.has_changes:
             SLSBridge.notify_reload()
             parts = []
@@ -1401,6 +1468,38 @@ def init_depots_tab(dialog) -> None:
 
     def _on_refetch():
         """Refetch fresh Lua metadata and keys from Hubcap API."""
+        from core import morrenus_api
+        from PyQt6.QtWidgets import QMessageBox
+
+        stats = morrenus_api.get_user_stats()
+        daily_limit = stats.get("daily_limit") or stats.get("role_daily_limit") or 135
+        daily_usage = stats.get("daily_usage", 0)
+        can_make_requests = stats.get("can_make_requests", True)
+        remaining = max(0, daily_limit - daily_usage)
+
+        if not can_make_requests or remaining <= 0:
+            QMessageBox.warning(
+                dialog,
+                "API Token Limit Reached",
+                f"Daily Hubcap API token limit reached (0/{daily_limit} tokens remaining).\n\n"
+                f"Please wait for your daily quota to reset, or change your ISP bypass settings in Settings.",
+            )
+            refetch_btn.setEnabled(False)
+            status_lbl.setText(f"API token limit reached (0/{daily_limit}). Please wait for daily reset.")
+            return
+
+        reply = QMessageBox.question(
+            dialog,
+            "Confirm API Refetch",
+            f"This action will consume your daily Hubcap API tokens.\n\n"
+            f"You have {remaining}/{daily_limit} tokens remaining.\n\n"
+            f"Do you want to continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
         refetch_btn.setEnabled(False)
         unlock_btn.setEnabled(False)
         sync_btn.setEnabled(False)
@@ -1410,7 +1509,6 @@ def init_depots_tab(dialog) -> None:
 
         def _worker():
             try:
-                from core import morrenus_api
                 zip_path, err = morrenus_api.download_manifest(appid_str, force_update=True)
                 if zip_path and os.path.exists(zip_path):
                     import zipfile
@@ -1439,15 +1537,33 @@ def init_depots_tab(dialog) -> None:
 
                     bridge.finished.emit(True, "Refetch successful. Local cache updated.")
                 else:
-                    bridge.finished.emit(False, f"Refetch failed: {err or 'Unknown error'}")
+                    err_str = str(err or "")
+                    if "404" in err_str or "not found" in err_str.lower():
+                        bridge.finished.emit(False, "Hubcap returned 404 (Manifest not found on server).")
+                    elif "429" in err_str or "limit" in err_str.lower():
+                        bridge.finished.emit(False, f"Daily API token limit exceeded ({err}).")
+                    else:
+                        bridge.finished.emit(False, f"Refetch failed: {err_str or 'Unknown error'}")
             except Exception as e:
-                bridge.finished.emit(False, f"Refetch error: {e}")
+                err_str = str(e)
+                if "404" in err_str or "not found" in err_str.lower():
+                    bridge.finished.emit(False, "Hubcap returned 404 (Manifest not found).")
+                else:
+                    bridge.finished.emit(False, f"Refetch error: {e}")
 
         def _on_done(success: bool, msg: str):
             refetch_btn.setEnabled(True)
             unlock_btn.setEnabled(True)
             sync_btn.setEnabled(True)
             status_lbl.setText(msg)
+            try:
+                st = morrenus_api.get_user_stats(force=True)
+                rem = max(0, (st.get("daily_limit") or 135) - st.get("daily_usage", 0))
+                if rem <= 0 or not st.get("can_make_requests", True):
+                    refetch_btn.setEnabled(False)
+                    refetch_btn.setToolTip("API token limit reached.")
+            except Exception:
+                pass
             _refresh_ui()
 
         bridge.finished.connect(_on_done)
