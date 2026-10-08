@@ -123,6 +123,16 @@ def create_assela_tab(dialog) -> QWidget:
 
     assella_lay.addWidget(dialog.experimental_ddm_checkbox)
 
+    # 5. Modern Depot Selection Dialog (Experimental)
+    dialog.modern_depot_selection_checkbox = create_checkbox_setting(
+        "Modern Depot Selection Dialog (Experimental)",
+        "use_modern_depot_dialog",
+        False,
+        dialog,
+        "Enable the experimental modern two-column layout for depot selection (games with more than 2 depots).",
+    )
+    assella_lay.addWidget(dialog.modern_depot_selection_checkbox)
+
     # 4. Download Animation (Test/Halloween styles)
     anim_row = QHBoxLayout()
     anim_row.setContentsMargins(0, 2, 0, 2)
