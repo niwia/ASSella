@@ -92,77 +92,70 @@ class At0mUpdateChecker(QObject):
 
     def get_all_at0m_games(self) -> Dict[str, Dict[str, Any]]:
         """
-        Discovers all AT0-M and DLC-mode games across:
-        1. SLSsteam config.yaml (AdditionalApps)
-        2. plugins/atom_games.json (plugin library)
-        3. Local cached Luas (cached_luas/)
-        4. DLC-only mode settings
-
-        Returns dict: {appid: {"name": str, "source": str, "is_dlc_only": bool}}
+        Discovers all REAL AT0-M and DLC-mode games.
+        CRITICAL: Normal ACCELA-mode games must be strictly excluded.
         """
         discovered: Dict[str, Dict[str, Any]] = {}
+        accela_installed: Set[str] = set()
 
-        # 1. SLSsteam config.yaml AdditionalApps
-        cfg_path = get_user_config_path()
-        if cfg_path and cfg_path.exists():
-            try:
-                content = cfg_path.read_text(encoding="utf-8", errors="ignore")
-                for line in content.splitlines():
-                    # Parse line like: "  - 1091500 # Cyberpunk 2077"
-                    m = re.match(r"^[ \t]*-[ \t]*(\d+)[ \t]*(?:#[ \t]*(.*))?$", line)
-                    if m:
-                        aid, comment = m.group(1), (m.group(2) or "").strip()
-                        # Exclude shared redists or obvious non-game entries
-                        if aid not in ALL_SHARED_REDISTS and aid != "0":
-                            name = comment or f"App {aid}"
-                            # Strip tags like [DLC]
-                            is_dlc = "[dlc]" in name.lower()
-                            clean_name = re.sub(r"^\[DLC\]\s*", "", name, flags=re.IGNORECASE)
-                            discovered[aid] = {
-                                "appid": aid,
-                                "name": clean_name,
-                                "source": "config.yaml",
-                                "is_dlc_only": is_dlc,
-                            }
-            except Exception as e:
-                logger.debug(f"[At0mChecker] Error reading config.yaml: {e}")
+        # 1. Collect all installed physical ACCELA games so we NEVER touch them
+        from utils.games_cache import get_games_cache
+        try:
+            for g in get_games_cache().get_games():
+                if g.get("accela_marker_path") or g.get("source") == "ACCELA":
+                    aid = str(g.get("appid", ""))
+                    if aid and aid != "0":
+                        accela_installed.add(aid)
+        except Exception as e:
+            logger.debug(f"[At0mChecker] Error reading games cache for exclusions: {e}")
 
-        # 2. plugins/atom_games.json
+        # 2. Add installed AT0-M / Plugin games
+        try:
+            for g in get_games_cache().get_games():
+                aid = str(g.get("appid", ""))
+                if aid and aid != "0" and aid not in accela_installed:
+                    if g.get("source") == "at0-m" or g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"):
+                        discovered[aid] = {
+                            "appid": aid,
+                            "name": g.get("game_name", f"App {aid}"),
+                            "source": "installed_atom",
+                            "is_dlc_only": bool(g.get("is_dlc_only")),
+                        }
+        except Exception as e:
+            logger.debug(f"[At0mChecker] Error collecting installed AT0-M games: {e}")
+
+        # 3. Add registered games from atom_games.json / plugin_library.json that are NOT ACCELA installs
         try:
             plugin_lib = load_plugin_library()
             for aid_str, prec in plugin_lib.items():
                 if aid_str and aid_str.isdigit() and aid_str not in ALL_SHARED_REDISTS:
-                    name = prec.get("name") or prec.get("game_name") or f"App {aid_str}"
-                    discovered.setdefault(aid_str, {
-                        "appid": aid_str,
-                        "name": name,
-                        "source": "plugin_library",
-                        "is_dlc_only": False,
-                    })
+                    if aid_str not in accela_installed and aid_str not in discovered:
+                        name = prec.get("name") or prec.get("game_name") or f"App {aid_str}"
+                        discovered[aid_str] = {
+                            "appid": aid_str,
+                            "name": name,
+                            "source": "plugin_library",
+                            "is_dlc_only": False,
+                        }
         except Exception as e:
             logger.debug(f"[At0mChecker] Error reading plugin library: {e}")
 
-        # 3. Local cached_luas directory
-        try:
-            luas_dir = Path(get_base_path()) / "cached_luas"
-            if luas_dir.exists():
-                for f in luas_dir.glob("*.lua"):
-                    aid = f.stem
-                    if aid.isdigit() and aid not in ALL_SHARED_REDISTS:
-                        discovered.setdefault(aid, {
-                            "appid": aid,
-                            "name": f"App {aid}",
-                            "source": "cached_lua",
-                            "is_dlc_only": False,
-                        })
-        except Exception as e:
-            logger.debug(f"[At0mChecker] Error scanning cached_luas: {e}")
-
-        # 4. Check DLC-only flags in settings
+        # 4. Check DLC-only games in settings (only if not an ACCELA game)
         settings = get_settings()
-        for aid in list(discovered.keys()):
-            if settings.value(f"dlc_only_mode/{aid}", False, type=bool):
-                discovered[aid]["is_dlc_only"] = True
+        for k in settings.allKeys():
+            if k.startswith("dlc_only_mode/"):
+                aid = k.split("/", 1)[1]
+                if aid.isdigit() and settings.value(k, False, type=bool):
+                    if aid not in accela_installed:
+                        if aid in discovered:
+                            discovered[aid]["is_dlc_only"] = True
+                        else:
+                            discovered[aid] = {
+                                "appid": aid,
+                                "name": f"App {aid}",
+                                "source": "dlc_mode",
+                                "is_dlc_only": True,
+                            }
 
         return discovered
 
@@ -178,7 +171,7 @@ class At0mUpdateChecker(QObject):
 
         # A. keys.db (DepotKeyManager)
         try:
-            db_keys = DepotKeyManager.get_instance().get_all_keys(appid_str)
+            db_keys = DepotKeyManager.get_instance().get_depot_keys(appid_str)
             for d, k in db_keys.items():
                 d_str = str(d)
                 known_depots.add(d_str)
@@ -222,12 +215,19 @@ class At0mUpdateChecker(QObject):
         try:
             plugin_lib = load_plugin_library()
             prec = plugin_lib.get(appid_str, {})
-            p_depots = prec.get("depots", {})
-            for d, dinfo in p_depots.items():
-                d_str = str(d)
-                known_depots.add(d_str)
-                if isinstance(dinfo, dict):
-                    k = dinfo.get("key") or dinfo.get("decryption_key")
+            p_deps = prec.get("depots", [])
+            if isinstance(p_deps, list):
+                for d in p_deps:
+                    known_depots.add(str(d))
+            elif isinstance(p_deps, dict):
+                for d in p_deps.keys():
+                    known_depots.add(str(d))
+
+            p_keys = prec.get("keys", {})
+            if isinstance(p_keys, dict):
+                for d, k in p_keys.items():
+                    d_str = str(d)
+                    known_depots.add(d_str)
                     if k and len(str(k)) == 64:
                         known_keys[d_str] = str(k).lower()
         except Exception as e:
