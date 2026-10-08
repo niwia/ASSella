@@ -741,21 +741,21 @@ class DepotSelectionDialog(QDialog):
                 selection-background-color: transparent;
                 selection-color: #FFFFFF;
             }}
-            QTableWidget::item {
+            QTableWidget::item {{
                 padding: 6px 10px;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.02);
                 border: none;
-            }
-            QTableWidget::item:hover {
+            }}
+            QTableWidget::item:hover {{
                 background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.06);
                 border: none;
-            }
-            QTableWidget::item:selected {
+            }}
+            QTableWidget::item:selected {{
                 background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.16) !important;
                 border: none !important;
                 color: #FFFFFF !important;
-            }
-            QHeaderView::section {
+            }}
+            QHeaderView::section {{
                 background-color: rgba(255, 255, 255, 0.04);
                 color: #FFFFFF;
                 padding: 6px 10px;
@@ -763,7 +763,7 @@ class DepotSelectionDialog(QDialog):
                 font-size: 8.5pt;
                 font-weight: bold;
                 text-transform: uppercase;
-            }
+            }}
             {"" if (self._settings and self._settings.value("material_preset", "ocean", type=str) == "halloween" or str(self.accent_color).lower() in ("#ffb77d", "#ff7518") or (self._settings and self._settings.value("theme_checkbox_unlit", "", type=str) and os.path.exists(self._settings.value("theme_checkbox_unlit", "", type=str)))) else f"""
             QTableWidget::indicator, QTableView::indicator {{
                 width: 14px;
