@@ -230,19 +230,30 @@ def build_app_to_depots_map(
             txt = lua_path.read_text(encoding="utf-8", errors="ignore")
             current_target_appid = None
             for line in txt.splitlines():
-                m_dlc = re.search(r"\(AppID:\s*(\d+)\)", line, re.IGNORECASE)
+                sline = line.strip()
+                m_dlc = re.search(r"\(AppID:\s*(\d+)\)", sline, re.IGNORECASE)
                 if m_dlc:
                     current_target_appid = m_dlc.group(1)
                     if current_target_appid != appid_str:
                         target_apps.add(current_target_appid)
-                elif line.startswith("-- MAIN") or "MAIN GAME" in line.upper():
+                elif sline.startswith(("-- MAIN APP", "-- MAIN APPLICATION", "-- MAIN GAME")):
                     current_target_appid = appid_str
-                elif line.startswith("-- SHARED") or "SHARED REDIST" in line.upper():
+                elif (
+                    sline.startswith("-- DLCS WITH")
+                    or sline.startswith("-- DLCS WITHOUT")
+                    or sline.startswith("-- DLCS EXCLUDED")
+                    or sline.startswith("-- EMPTY DEPOTS")
+                    or sline.startswith("-- SHARED")
+                    or "SHARED REDIST" in sline.upper()
+                ):
                     current_target_appid = None
                 elif current_target_appid:
-                    m_app = re.search(r"addappid\((\d+)", line)
+                    # Anchor strictly to uncommented addappid statements
+                    m_app = re.match(r"^\s*addappid\((\d+)", sline)
                     if m_app:
-                        mapping.setdefault(current_target_appid, set()).add(m_app.group(1))
+                        did = m_app.group(1)
+                        if did != appid_str:
+                            mapping.setdefault(current_target_appid, set()).add(did)
     except Exception as e:
         logger.debug(f"[DLCHelpers] Lua parse error for {appid_str}: {e}")
 
@@ -253,7 +264,9 @@ def build_app_to_depots_map(
         for aid in list(target_apps):
             rec = plugin_lib.get(aid, {})
             for did in rec.get("depots", []):
-                mapping.setdefault(aid, set()).add(str(did).strip())
+                did_s = str(did).strip()
+                if did_s != appid_str:
+                    mapping.setdefault(aid, set()).add(did_s)
             for dlc_id in rec.get("dlc_appids", []):
                 s_dlc = str(dlc_id).strip()
                 if s_dlc and s_dlc != appid_str:
@@ -261,9 +274,10 @@ def build_app_to_depots_map(
     except Exception:
         pass
 
-    # 5. Direct match: where DLC AppID == DepotID
+    # 5. Direct match: where DLC AppID == DepotID (strictly for DLCs, NEVER base game)
     for aid in target_apps:
-        mapping.setdefault(aid, set()).add(aid)
+        if aid != appid_str:
+            mapping.setdefault(aid, set()).add(aid)
 
     # 6. Fallback: Any remaining candidate depots not claimed by DLCs belong to base game
     all_known_candidates: Set[str] = set()
@@ -280,7 +294,7 @@ def build_app_to_depots_map(
             claimed_by_dlcs.update(dids)
 
     for did in all_known_candidates:
-        if did and did not in claimed_by_dlcs:
+        if did and did != appid_str and did not in claimed_by_dlcs:
             mapping.setdefault(appid_str, set()).add(did)
 
     return mapping

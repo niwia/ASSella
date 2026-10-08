@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Set, Union
 from utils.helpers import get_base_path
 from utils.sls_bridge import SLSBridge
 from utils.yaml_config_manager import (
+    SHARED_REDISTS,
     add_additional_app,
     add_additional_depot,
     add_decryption_key,
@@ -125,12 +126,7 @@ def build_dlc_reverse_map() -> Dict[str, str]:
     return result
 
 
-SHARED_REDISTS: Set[str] = {
-    "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
-    "228986", "228987", "228988", "228989", "228990", "229000", "229001",
-    "229002", "229003", "229004", "229005", "229006", "229007", "229010",
-    "229011", "229012", "229020", "229030", "229031", "229032"
-}
+# SHARED_REDISTS is imported above canonically from utils.yaml_config_manager
 
 
 def register_plugin_game(
@@ -279,9 +275,8 @@ def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool
     if cfg_path.exists():
         with batch_config_edit(cfg_path) as editor:
             if keep_in_additional_apps:
-                # Ensure the game remains in AdditionalApps for ACCELA mode
-                if not target_game.get("dlc_only"):
-                    editor.add_app(appid_str, comment=target_game.get("name", ""))
+                # Ensure the game remains/is added in AdditionalApps for ACCELA mode
+                editor.add_app(appid_str, comment=target_game.get("name", ""))
                 # Prune DLC AppIDs so regular ACCELA mode doesn't leave unnecessary DLC AppIDs
                 for dlc_id in target_game.get("dlc_appids", []):
                     if dlc_id not in remaining_dlc_appids:

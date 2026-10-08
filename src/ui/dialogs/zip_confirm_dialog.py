@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
 from ui.material_progress import MaterialSpinner
 from utils.color_utils import get_best_foreground_color
 from utils.settings import get_settings
+from utils.lua_parsing import find_live
 
 logger = logging.getLogger("ACCELA.zip_confirm")
 
@@ -499,7 +500,7 @@ class ZipImportConfirmationDialog(QDialog):
                     elif name.endswith(".lua"):
                         try:
                             content = zf.read(name).decode("utf-8", errors="ignore")
-                            m_app = re.search(r"addappid\((\d+),\s*1", content)
+                            m_app = find_live(content, r"addappid\((\d+),\s*1")
                             if m_app:
                                 appid = m_app.group(1)
                             lines = [line.strip() for line in content.splitlines() if line.strip()]

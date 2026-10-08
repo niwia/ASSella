@@ -10,6 +10,14 @@ from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Unified canonical set of Steamworks shared redistributable depot IDs (27 IDs)
+SHARED_REDISTS: Set[str] = {
+    "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
+    "228986", "228987", "228988", "228989", "228990", "229000", "229001",
+    "229002", "229003", "229004", "229005", "229006", "229007", "229010",
+    "229011", "229012", "229020", "229030", "229031", "229032",
+}
+
 # Note: helpers keep repeated guard/IO logic centralized for clarity.
 
 
@@ -82,8 +90,8 @@ def _validate_yaml_content(content: str) -> bool:
         logger.error(f"YAML validation failed: {e}")
         return False
 
-    # Check for duplicate top-level keys (safe_load silently allows duplicate keys)
-    top_keys = re.findall(r"^[A-Za-z0-9_]+(?=[ \t]*:)", content, re.MULTILINE)
+    # Check for duplicate top-level keys at column 0 (safe_load silently allows duplicate keys)
+    top_keys = re.findall(r"^['\"]?([A-Za-z0-9_]+)['\"]?(?=[ \t]*:)", content, re.MULTILINE)
     seen = set()
     dupes = set()
     for k in top_keys:
@@ -630,7 +638,7 @@ def get_user_config_path() -> Path:
         return config_dir / "config.yaml"
 
 
-TOP_LEVEL_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_]+[ \t]*:", re.MULTILINE)
+TOP_LEVEL_KEY_PATTERN = re.compile(r"^['\"]?[A-Za-z0-9_]+['\"]?[ \t]*:", re.MULTILINE)
 
 
 def _get_section_bounds(content: str, section_name: str) -> Optional[Tuple[int, int, int]]:
@@ -641,7 +649,7 @@ def _get_section_bounds(content: str, section_name: str) -> Optional[Tuple[int, 
     section_end: index of the start of the next top-level key line or EOF.
     """
     header_pattern = re.compile(
-        r"^[ \t]*" + re.escape(section_name) + r"[ \t]*:[ \t]*(?:\[[ \t]*\]|\{[ \t]*\})?[ \t]*(?:#[^\r\n]*)?$",
+        r"^[ \t]*['\"]?" + re.escape(section_name) + r"['\"]?[ \t]*:[ \t]*(?:\[[ \t]*\]|\{[ \t]*\})?[ \t]*(?:#[^\r\n]*)?$",
         re.MULTILINE,
     )
     match = header_pattern.search(content)
@@ -1016,6 +1024,17 @@ class BatchConfigEditor:
             logger.warning(f"Refusing to add base AppID '{depot_id_str}' to AdditionalDepots")
             return False
 
+        # Guard: never add any registered base game AppID from plugin_library
+        try:
+            from utils.plugin_games import load_plugin_library
+            plib = load_plugin_library()
+            if depot_id_str in plib and not plib[depot_id_str].get("dlc_only"):
+                logger.warning(f"Refusing to add registered base AppID '{depot_id_str}' to AdditionalDepots")
+                return False
+        except Exception:
+            pass
+
+        # Guard: check AdditionalApps (reject base AppIDs, allow verified DLC AppIDs)
         bounds_apps = _get_section_bounds(self.content, "AdditionalApps")
         if bounds_apps:
             apps_text = self.content[bounds_apps[1] : bounds_apps[2]]
@@ -1025,10 +1044,32 @@ class BatchConfigEditor:
                 re.MULTILINE,
             )
             if m_app:
-                logger.warning(
-                    f"Refusing to add AppID '{depot_id_str}' from AdditionalApps to AdditionalDepots"
-                )
-                return False
+                is_known_dlc = False
+                try:
+                    from utils.plugin_games import build_dlc_reverse_map
+                    if depot_id_str in build_dlc_reverse_map():
+                        is_known_dlc = True
+                except Exception:
+                    pass
+
+                if not is_known_dlc and app_id:
+                    try:
+                        from utils.dlc_helpers import is_dlc_depot
+                        if is_dlc_depot(depot_id_str, base_appid=app_id):
+                            is_known_dlc = True
+                    except Exception:
+                        pass
+
+                if not is_known_dlc:
+                    cm = (m_app.group(1) or "").lower()
+                    if "dlc" in cm:
+                        is_known_dlc = True
+
+                if not is_known_dlc:
+                    logger.warning(
+                        f"Refusing to add base AppID '{depot_id_str}' from AdditionalApps to AdditionalDepots"
+                    )
+                    return False
 
         bounds_main = _get_section_bounds(self.content, "AppIds")
         if bounds_main:
@@ -1043,13 +1084,7 @@ class BatchConfigEditor:
                 )
                 return False
 
-        shared_redists = {
-            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
-            "228986", "228987", "228988", "228989", "228990", "229000", "229001",
-            "229002", "229003", "229004", "229005", "229006", "229007", "229010",
-            "229011", "229012", "229020", "229030", "229031", "229032"
-        }
-        if depot_id_str in shared_redists:
+        if depot_id_str in SHARED_REDISTS:
             comment_clean = "Steamworks Shared"
         else:
             comment_clean = _sanitize_comment(comment)
@@ -1108,13 +1143,7 @@ class BatchConfigEditor:
             logger.warning(f"Invalid AES decryption key (not 64 hex chars) for depot {depot_id_str}")
             return False
 
-        shared_redists = {
-            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
-            "228986", "228987", "228988", "228989", "228990", "229000", "229001",
-            "229002", "229003", "229004", "229005", "229006", "229007", "229010",
-            "229011", "229012", "229020", "229030", "229031", "229032"
-        }
-        if depot_id_str in shared_redists:
+        if depot_id_str in SHARED_REDISTS:
             comment_clean = "Steamworks Shared"
         else:
             comment_clean = _sanitize_comment(comment)
@@ -1623,15 +1652,9 @@ def is_depot_shared_with_other_games(
     # 1. Known redistributables / shared runtime depots
     try:
         from ui.assets import DEPOT_BLACKLIST
-        from utils.plugin_games import SHARED_REDISTS
-        shared_known = {str(d) for d in DEPOT_BLACKLIST} | {str(d) for d in SHARED_REDISTS}
+        shared_known = {str(d) for d in DEPOT_BLACKLIST} | SHARED_REDISTS
     except Exception:
-        shared_known = {
-            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
-            "228986", "228987", "228988", "228989", "228990", "229000", "229001",
-            "229002", "229003", "229004", "229005", "229006", "229007", "229010",
-            "229011", "229012", "229020", "229030", "229031", "229032"
-        }
+        shared_known = SHARED_REDISTS
 
     if depot_id_str in shared_known:
         logger.debug(f"[SharedDepotCheck] Depot {depot_id_str} is a known common redistributable.")
@@ -1688,7 +1711,7 @@ def is_depot_shared_with_other_games(
     except Exception as e:
         logger.debug(f"[SharedDepotCheck] Error checking Steam ACF manifests: {e}")
 
-    # 4. Check SLSsteam config.yaml comments for other AppIDs or Steamworks Shared
+    # 4. Check SLSsteam config.yaml comments strictly for explicit Steamworks Shared marker
     try:
         cfg_path = get_user_config_path()
         if cfg_path and cfg_path.exists():
@@ -1706,13 +1729,6 @@ def is_depot_shared_with_other_games(
                     comment = (m.group(1) or "").strip()
                     if "steamworks shared" in comment.lower():
                         return True
-                    app_matches = re.findall(r"\b(\d{4,9})\b", comment)
-                    for found_aid in app_matches:
-                        if ex_aid_str and found_aid != ex_aid_str:
-                            logger.debug(
-                                f"[SharedDepotCheck] Depot {depot_id_str} tagged for other AppID {found_aid} in config.yaml"
-                            )
-                            return True
 
             # Check DecryptionKeys section
             key_bounds = _get_section_bounds(cfg_text, "DecryptionKeys")
@@ -1727,13 +1743,6 @@ def is_depot_shared_with_other_games(
                     comment = (m.group(1) or "").strip()
                     if "steamworks shared" in comment.lower():
                         return True
-                    app_matches = re.findall(r"\b(\d{4,9})\b", comment)
-                    for found_aid in app_matches:
-                        if ex_aid_str and found_aid != ex_aid_str:
-                            logger.debug(
-                                f"[SharedDepotCheck] Depot {depot_id_str} key tagged for other AppID {found_aid} in config.yaml"
-                            )
-                            return True
     except Exception as e:
         logger.debug(f"[SharedDepotCheck] Error checking config.yaml comments: {e}")
 
@@ -1764,15 +1773,9 @@ def has_game_config_entries(
 
     try:
         from ui.assets import DEPOT_BLACKLIST
-        from utils.plugin_games import SHARED_REDISTS, load_plugin_library
-        all_shared = {str(d) for d in DEPOT_BLACKLIST} | {str(d) for d in SHARED_REDISTS}
+        all_shared = {str(d) for d in DEPOT_BLACKLIST} | SHARED_REDISTS
     except Exception:
-        all_shared = {
-            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
-            "228986", "228987", "228988", "228989", "229000", "229001", "229002",
-            "229003", "229004", "229005", "229006", "229007", "229010", "229011",
-            "229012", "229020", "229030", "229031", "229032"
-        }
+        all_shared = SHARED_REDISTS
 
     # 1. Plugin library registration
     try:

@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
 from utils.image_fetcher import ImageFetcher
 from utils.settings import get_settings
 from utils.color_utils import get_best_foreground_color
+from utils.lua_parsing import find_live
 from core.steam_helpers import find_steam_install
 
 try:
@@ -1374,7 +1375,7 @@ class ModernDepotSelectionDialog(QDialog):
             try:
                 with open(str(lua_files[0]), "r", encoding="utf-8") as lf:
                     lua_content = lf.read()
-                    m = re.search(r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)", lua_content)
+                    m = find_live(lua_content, r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)")
                     if m:
                         depot_key = m.group(1)
             except Exception:

@@ -9,6 +9,7 @@ from ui.assets import DEPOT_BLACKLIST
 from core.steam_api import get_depot_info_from_api
 from core.ini_parser import parse_depots_ini
 from utils.helpers import get_base_path
+from utils.lua_parsing import is_placeholder_key, iter_live_matches
 from utils.yaml_config_manager import (
     get_user_config_path,
     add_app_token,
@@ -32,8 +33,12 @@ class ProcessZipTask:
         game_data.setdefault("manifest_sizes", {})
 
         try:
+            # Commented-out addappid() lines are how the manifest generator disables
+            # depots it cannot serve (MISSING_KEY / empty depots). They must never be
+            # parsed, otherwise disabled depots leak into game_data["depots"] with a
+            # fake key or into game_data["dlcs"] as bogus DLC AppIDs.
             all_app_matches = list(
-                re.finditer(r"addappid\((.*?)\)(.*)", content, re.IGNORECASE)
+                iter_live_matches(content, r"addappid\((.*?)\)(.*)", re.IGNORECASE)
             )
             if not all_app_matches:
                 raise ValueError("LUA file is invalid; no 'addappid' entries found.")
@@ -58,7 +63,12 @@ class ProcessZipTask:
             # Capture main application decryption key if defined
             if len(args_list) > 2 and args_list[2].strip('"'):
                 main_app_key = args_list[2].strip('"')
-                game_data["app_key"] = main_app_key
+                if not is_placeholder_key(main_app_key):
+                    game_data["app_key"] = main_app_key
+                else:
+                    logger.warning(
+                        f"Ignoring placeholder AppKey for {game_data.get('appid')}: {main_app_key!r}"
+                    )
             for match in all_app_matches:
                 args_str = match.group(1).strip()
                 args = [arg.strip() for arg in args_str.split(",")]
@@ -70,14 +80,23 @@ class ProcessZipTask:
 
                 if len(args) > 2 and args[2].strip('"'):
                     depot_key = args[2].strip('"')
-                    game_data["depots"][app_id] = {"key": depot_key, "desc": desc}
+                    if is_placeholder_key(depot_key):
+                        # Sentinel (e.g. "MISSING_KEY"), not a usable key. Treat the
+                        # entry as a keyless entry so it is not registered as a depot
+                        # we can actually serve.
+                        logger.warning(
+                            f"Ignoring placeholder decryption key for depot {app_id}: {depot_key!r}"
+                        )
+                        game_data["dlcs"][app_id] = desc
+                    else:
+                        game_data["depots"][app_id] = {"key": depot_key, "desc": desc}
                 else:
                     game_data["dlcs"][app_id] = desc
 
             manifest_size_matches = list(
-                re.finditer(
-                    r'setManifestid\(\s*(\d+)\s*,\s*".*?"\s*,\s*(\d+)\s*\)',
+                iter_live_matches(
                     content,
+                    r'setManifestid\(\s*(\d+)\s*,\s*".*?"\s*,\s*(\d+)\s*\)',
                     re.IGNORECASE,
                 )
             )
@@ -92,9 +111,9 @@ class ProcessZipTask:
             # Parse manifest GIDs from LUA file (for branch/LUA-only matching)
             game_data.setdefault("manifests", {})
             manifest_gid_matches = list(
-                re.finditer(
-                    r'setManifestid\(\s*(\d+)\s*,\s*"([^"]+)"',
+                iter_live_matches(
                     content,
+                    r'setManifestid\(\s*(\d+)\s*,\s*"([^"]+)"',
                     re.IGNORECASE,
                 )
             )

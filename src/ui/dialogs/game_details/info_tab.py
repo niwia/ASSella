@@ -34,6 +34,7 @@ from ui.dialogs.game_details.widgets import CenteredComboBox, MaterialTile
 from ui.dialogs.game_details.hero_header import thin_line, get_last_checked
 from ui.progress_button import ProgressButton
 from utils.helpers import get_base_path
+from utils.lua_parsing import iter_live_matches
 from utils.yaml_config_manager import (
     get_user_config_path, add_fake_app_id, remove_fake_app_id,
     get_fake_appid, is_slssteam_config_management_enabled,
@@ -2453,7 +2454,7 @@ def on_move_to_vapor_clicked(dialog) -> None:
         logger.debug(f"[VaporTransition] DepotKeyManager lookup error: {e}")
 
     def extract_keys_from_lua_text(lua_text: str):
-        for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_text):
+        for m in iter_live_matches(lua_text, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'):
             did = m.group(1)
             key = m.group(2)
             decryption_keys[did] = key
@@ -2495,6 +2496,19 @@ def on_move_to_vapor_clicked(dialog) -> None:
                 if dlc_id and dlc_id != str(appid) and dlc_id not in dlc_appids:
                     dlc_appids.append(dlc_id)
 
+    # Respect user's saved depot selection if available
+    from utils.dlc_helpers import get_saved_depot_selection
+    saved_selection = get_saved_depot_selection(appid)
+    if not saved_selection and game_data:
+        saved_selection = game_data.get("selected_depots") or (
+            game_data.get("metadata", {}).get("selected_depots_list")
+        )
+    if saved_selection:
+        saved_depot_set = {str(d) for d in saved_selection}
+        user_depots = [d for d in depot_ids if str(d) in saved_depot_set]
+        if user_depots:
+            depot_ids = user_depots
+
     # Clean depot IDs and decryption keys (depot_ids never has AppIDs; decryption_keys retains AppID)
     if is_dlc:
         depot_ids = filter_dlc_depots_only(depot_ids, appid, depots_meta=game_data.get("depots"), dlc_appids=dlc_appids)
@@ -2515,7 +2529,8 @@ def on_move_to_vapor_clicked(dialog) -> None:
                     for name in zf.namelist():
                         if name.endswith(".lua"):
                             lua_txt = zf.read(name).decode("utf-8", errors="ignore")
-                            for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_txt):
+                            for m in iter_live_matches(lua_txt, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'):
+                                did_found, k_found = m.group(1), m.group(2)
                                 fresh_keys[did_found] = k_found
                 if fresh_keys:
                     from managers.depot_key_manager import DepotKeyManager
@@ -2533,6 +2548,7 @@ def on_move_to_vapor_clicked(dialog) -> None:
     unkeyed_depots = [d for d in depot_ids if str(d) not in decryption_keys and str(d) not in SHARED_REDISTS]
     if unkeyed_depots:
         logger.warning(f"[VaporTransition] Depots missing decryption keys: {unkeyed_depots}. Excluded to prevent Steam download errors.")
+        depot_ids = [d for d in depot_ids if d not in unkeyed_depots]
         QMessageBox.warning(
             dialog,
             "Unkeyed Depots Excluded",

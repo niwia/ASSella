@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.image_fetcher import ImageFetcher
+from utils.lua_parsing import find_live
 from utils.settings import get_settings
 from ui.dialogs.dialog_helpers import create_standard_buttons
 
@@ -2696,7 +2697,10 @@ class DepotSelectionDialog(QDialog):
             try:
                 with open(str(lua_files[0]), "r", encoding="utf-8") as lf:
                     lua_content = lf.read()
-                    match = re.search(r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)", lua_content)
+                    match = find_live(
+                        lua_content,
+                        r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)",
+                    )
                     if match:
                         depot_key = match.group(1)
             except Exception as e:
