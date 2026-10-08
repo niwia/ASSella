@@ -383,7 +383,7 @@ class LibraryActionsMixin:
 
                 selected_depots = None
 
-                smart_active = settings.value("smart_depot_selection", False, type=bool)
+                smart_active = settings.value("smart_depot_selection", True, type=bool)
                 val = settings.value(f"depot_selection/{appid}", "", type=str)
                 should_prompt = True
 
@@ -1638,7 +1638,7 @@ class LibraryActionsMixin:
 
             selected_depots = None
 
-            smart_active = settings.value("smart_depot_selection", False, type=bool)
+            smart_active = settings.value("smart_depot_selection", True, type=bool)
             val = settings.value(f"depot_selection/{appid}", "", type=str)
             should_prompt = True
 

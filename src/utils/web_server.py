@@ -471,7 +471,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
             # Load smart selection & auto skip choices
             settings = get_settings()
-            smart_active = settings.value("smart_depot_selection", False, type=bool)
+            smart_active = settings.value("smart_depot_selection", True, type=bool)
             auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
             
             cached_val = settings.value(f"depot_selection/{appid}", "", type=str)

@@ -123,12 +123,8 @@ class SwitchToggle(QWidget):
         p.setBrush(QBrush(track_color))
         p.drawRoundedRect(0, 0, w, h, radius, radius)
 
-        # Hover outline indicator
-        if self._hovered and not self._read_only:
-            p.setPen(QPen(QColor(255, 255, 255, 140), 1.5))
-            p.drawRoundedRect(1, 1, w - 2, h - 2, radius - 1, radius - 1)
-        elif not self._checked:
-            # Subtle border around unselected track for crisp definition
+        # Subtle border around unselected track for crisp definition
+        if not self._checked:
             p.setPen(QPen(QColor(255, 255, 255, 35), 1.0))
             p.drawRoundedRect(0, 0, w, h, radius, radius)
 

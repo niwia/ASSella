@@ -325,7 +325,7 @@ class TrainingWheelsDialog(QDialog):
     def _build_settings_card(self) -> QFrame:
         card, layout = self._make_card("Recommended Settings")
 
-        curr_smart = self.settings.value("smart_depot_selection", False, type=bool)
+        curr_smart = self.settings.value("smart_depot_selection", True, type=bool)
         curr_gateway = self.settings.value("isp_bypass_mode", "auto", type=str) or "auto"
         curr_sls_api = self.settings.value("experimental_acf_independent", False, type=bool)
         curr_achievements = self.settings.value("generate_achievements", True, type=bool)
