@@ -51,6 +51,16 @@ def write_accela_metadata(
             
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=4)
+
+        # Write .assella marker in the game root folder
+        try:
+            game_folder_path = os.path.join(dest_path, "steamapps", "common", install_folder_name)
+            if os.path.isdir(game_folder_path):
+                marker_path = os.path.join(game_folder_path, ".assella")
+                with open(marker_path, "w", encoding="utf-8") as mf:
+                    mf.write(f"appid={game_data.get('appid')}\n")
+        except Exception:
+            pass
             
         logger.info(f"Successfully saved ACCELA metadata to {metadata_path}")
         return metadata_path
@@ -65,18 +75,18 @@ def load_accela_metadata(game_path: str) -> Optional[Dict[str, Any]]:
     if not game_path or not os.path.exists(game_path):
         return None
         
-    metadata_path = os.path.join(game_path, ".DepotDownloader", "metadata.json")
-    if not os.path.exists(metadata_path):
-        return None
-        
-    try:
-        with open(metadata_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            # Ensure basic fields exist
-            if "appid" in data:
-                return data
-    except Exception as e:
-        logger.error(f"Failed to read/parse ACCELA metadata at {metadata_path}: {e}")
+    for sub in (".DepotDownloader", ".assella", ".accela"):
+        metadata_path = os.path.join(game_path, sub, "metadata.json")
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # Ensure basic fields exist
+                    if "appid" in data:
+                        return data
+            except Exception as e:
+                logger.error(f"Failed to read/parse metadata at {metadata_path}: {e}")
+    return None
         
     return None
 
