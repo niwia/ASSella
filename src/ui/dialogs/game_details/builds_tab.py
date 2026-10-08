@@ -5,6 +5,7 @@ Handles SteamDB patch history, build cards, depot inspection, and version rollba
 
 import threading
 import logging
+from typing import Dict, Any, Optional, Tuple
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget,
@@ -18,6 +19,8 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QMessageBox,
     QSizePolicy,
+    QDialog,
+    QCheckBox,
 )
 
 from ui.material_progress import MaterialSpinner
@@ -556,6 +559,20 @@ def on_build_depots_loaded(dialog, build_id: str, depots: dict) -> None:
         _, item = dialog._build_cards[dialog._selected_build_idx]
         if str(item.get("buildid")) == str(build_id):
             apply_depot_to_download_btn(dialog, build_id, depots)
+
+
+def apply_depot_to_download_btn(dialog, build_id: str, depots: dict) -> None:
+    action = get_build_action_label(dialog, build_id)
+    dialog.builds_download_btn.setText(f"{action} (Build {build_id})")
+    dialog.builds_download_btn.setEnabled(bool(depots))
+
+
+def on_build_depots_error(dialog, err_msg: str) -> None:
+    logger.warning(f"[BuildsTab] Error resolving depots: {err_msg}")
+    if hasattr(dialog, "builds_download_btn"):
+        dialog.builds_download_btn.setText("Manifest Unavailable")
+        dialog.builds_download_btn.setEnabled(False)
+        dialog.builds_download_btn.setToolTip(err_msg)
 
 
 class BuildDepotsSelectionDialog(QDialog):
