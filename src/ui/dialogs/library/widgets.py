@@ -289,7 +289,12 @@ class GameItemWidget(QWidget):
         if not is_steam_tab:
             # Update status badge
             update_status = self.game_data.get("update_status", "cannot_determine")
-            if self.game_data.get("is_atom") or self.game_data.get("is_vapor") or self.game_data.get("is_plugin_game"):
+            is_at0m_game = bool(
+                self.game_data.get("is_atom")
+                or self.game_data.get("is_vapor")
+                or self.game_data.get("is_plugin_game")
+            )
+            if is_at0m_game and update_status not in ("update_available", "key_pending"):
                 update_status = "at0m"
 
             is_at0m = update_status in ("vapor", "at0m", "at0-m")
@@ -305,12 +310,17 @@ class GameItemWidget(QWidget):
             else:
                 status_map = {
                     "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
+                    "key_pending": ("Keys Pending", "#FFB74D", "rgba(255, 183, 77, 0.15)"),
                     "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
                     "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
                 }
                 text, color, bg_color = status_map.get(
                     update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
                 )
+                if is_at0m_game and update_status == "update_available":
+                    text = "AT0-M: Keys Ready"
+                elif is_at0m_game and update_status == "key_pending":
+                    text = "AT0-M: Keys Pending"
                 self.status_label.setText(text)
                 self.status_label.setStyleSheet(
                     f"color: {color}; "
@@ -436,7 +446,12 @@ class GameItemWidget(QWidget):
 
     def update_status(self, update_status: str) -> None:
         """Update update and manifest status labels in-place."""
-        if self.game_data.get("is_atom") or self.game_data.get("is_vapor") or self.game_data.get("is_plugin_game"):
+        is_at0m_game = bool(
+            self.game_data.get("is_atom")
+            or self.game_data.get("is_vapor")
+            or self.game_data.get("is_plugin_game")
+        )
+        if is_at0m_game and update_status not in ("update_available", "key_pending"):
             update_status = "at0m"
 
         self.game_data["update_status"] = update_status
@@ -455,6 +470,7 @@ class GameItemWidget(QWidget):
         else:
             status_map = {
                 "update_available": ("New version available", "#FF8A80", "rgba(229, 115, 115, 0.15)"),
+                "key_pending": ("Keys Pending", "#FFB74D", "rgba(255, 183, 77, 0.15)"),
                 "up_to_date": ("Up to date", "#81C784", "rgba(129, 199, 132, 0.15)"),
                 "checking": ("Checking for updates...", "#FFA726", "rgba(255, 167, 38, 0.12)"),
             }
@@ -462,6 +478,10 @@ class GameItemWidget(QWidget):
             text, color, bg_color = status_map.get(
                 update_status, ("Unable to check updates", "#B0BEC5", "rgba(176, 190, 197, 0.12)")
             )
+            if is_at0m_game and update_status == "update_available":
+                text = "AT0-M: Keys Ready"
+            elif is_at0m_game and update_status == "key_pending":
+                text = "AT0-M: Keys Pending"
 
             if hasattr(self, "status_label") and self.status_label:
                 self.status_label.setText(text)
