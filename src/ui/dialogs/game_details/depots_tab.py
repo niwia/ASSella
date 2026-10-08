@@ -590,16 +590,35 @@ def init_depots_tab(dialog) -> None:
     bar_lay.addWidget(unlock_btn, 1)
     bar_lay.addWidget(sync_btn, 1)
 
-    # Initial check of Hubcap token quota to reflect availability on button
+    # Non-blocking check of Hubcap token quota (instant cached read + async background refresh)
     try:
-        from core import morrenus_api
-        init_stats = morrenus_api.get_user_stats()
-        init_rem = max(0, (init_stats.get("daily_limit") or 135) - init_stats.get("daily_usage", 0))
-        if init_rem <= 0 or not init_stats.get("can_make_requests", True):
-            refetch_btn.setEnabled(False)
-            refetch_btn.setToolTip("Daily Hubcap API token limit reached.")
+        from utils.settings import get_settings
+        cached_stats = get_settings().value("last_cached_user_stats", None)
+        if isinstance(cached_stats, dict) and cached_stats:
+            init_rem = max(0, (cached_stats.get("daily_limit") or 135) - cached_stats.get("daily_usage", 0))
+            if init_rem <= 0 or not cached_stats.get("can_make_requests", True):
+                refetch_btn.setEnabled(False)
+                refetch_btn.setToolTip("Daily Hubcap API token limit reached.")
     except Exception:
         pass
+
+    def _check_hubcap_quota_async():
+        try:
+            from core import morrenus_api
+            from PyQt6.QtCore import QTimer
+            st = morrenus_api.get_user_stats()
+            if isinstance(st, dict) and st:
+                rem = max(0, (st.get("daily_limit") or 135) - st.get("daily_usage", 0))
+                if rem <= 0 or not st.get("can_make_requests", True):
+                    QTimer.singleShot(0, lambda: (
+                        refetch_btn.setEnabled(False),
+                        refetch_btn.setToolTip("Daily Hubcap API token limit reached.")
+                    ))
+        except Exception:
+            pass
+
+    import threading
+    threading.Thread(target=_check_hubcap_quota_async, daemon=True).start()
 
     tab_container = QWidget()
     tab_container.setStyleSheet("background: transparent;")
