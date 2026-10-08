@@ -609,20 +609,20 @@ class DepotSelectionDialog(QDialog):
 
             self.branch_combo = QComboBox()
             self.branch_combo.setFixedHeight(28)
-            self.branch_combo.setMinimumWidth(110)
+            self.branch_combo.setMinimumWidth(120)
             self.branch_combo.setStyleSheet(f"""
                 QComboBox {{
                     background-color: rgba(255, 255, 255, 0.06);
                     border: 1px solid rgba(255, 255, 255, 0.16);
                     border-radius: 6px;
                     color: #FFFFFF;
-                    padding: 2px 10px;
+                    padding: 2px 12px;
                     font-size: 8.5pt;
                     font-weight: 600;
                 }}
                 QComboBox:hover {{
-                    border-color: rgba(255, 255, 255, 0.3);
-                    background-color: rgba(255, 255, 255, 0.10);
+                    border-color: rgba(255, 255, 255, 0.35);
+                    background-color: rgba(255, 255, 255, 0.12);
                 }}
                 QComboBox::drop-down {{
                     border: none;
@@ -631,7 +631,8 @@ class DepotSelectionDialog(QDialog):
                 QComboBox QAbstractItemView {{
                     background-color: #1a1c23;
                     color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
+                    selection-background-color: transparent;
+                    selection-color: #FFFFFF;
                     border: 1px solid rgba(255, 255, 255, 0.15);
                 }}
             """)
@@ -646,50 +647,20 @@ class DepotSelectionDialog(QDialog):
             branch_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.7);")
             controls_row.addWidget(branch_lbl)
 
-        controls_row.addSpacing(4)
+        controls_row.addSpacing(6)
 
         display_bid = self.current_build_id or "Latest"
         self.builds_btn = QPushButton(f"Build: {display_bid}")
         self.builds_btn.setFixedHeight(28)
-        self.builds_btn.setMinimumWidth(110)
+        self.builds_btn.setMinimumWidth(140)
+        self.builds_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.builds_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._update_build_btn_style()
         self.builds_btn.clicked.connect(self._on_builds_clicked)
         controls_row.addWidget(self.builds_btn)
 
-        if not self.is_single_depot:
-            controls_row.addSpacing(10)
-            self.show_hidden_chk = QCheckBox("Show Hidden Depots")
-            self.show_hidden_chk.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.show_hidden_chk.setChecked(self._show_hidden_depots)
-            self.show_hidden_chk.toggled.connect(self._on_show_hidden_toggled)
-            self.show_hidden_chk.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.8);")
-            controls_row.addWidget(self.show_hidden_chk)
-
-            controls_row.addSpacing(8)
-            self.smart_select_btn = QPushButton("Smart Select (Beta)")
-            self.smart_select_btn.setFixedHeight(28)
-            self.smart_select_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.smart_select_btn.setToolTip("Auto-detect depots Steam normally installs from package info, overwriting current selection")
-            self.smart_select_btn.setStyleSheet("""
-                QPushButton {
-                    background: rgba(255, 255, 255, 0.08);
-                    border: 1px solid rgba(255, 255, 255, 0.18);
-                    border-radius: 4px;
-                    padding: 3px 8px;
-                    color: #FFFFFF;
-                    font-size: 8.5pt;
-                }
-                QPushButton:hover {
-                    background: rgba(255, 255, 255, 0.15);
-                    border-color: rgba(255, 255, 255, 0.35);
-                }
-            """)
-            self.smart_select_btn.clicked.connect(self._on_smart_select_clicked)
-            controls_row.addWidget(self.smart_select_btn)
-        else:
-            self.show_hidden_chk = None
-            self.smart_select_btn = None
+        self.show_hidden_chk = None
+        self.smart_select_btn = None
 
         if self.branch and self.branch != "public":
             self._on_branch_changed(self.branch)
@@ -756,22 +727,21 @@ class DepotSelectionDialog(QDialog):
                 selection-background-color: transparent;
                 selection-color: #FFFFFF;
             }}
-            QTableWidget::item {{
+            QTableWidget::item {
                 padding: 6px 10px;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.02);
-                border: 1.5px solid transparent;
-            }}
-            QTableWidget::item:hover {{
-                background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.047);
-                border: 1.5px solid rgba(255, 255, 255, 0.10);
-            }}
-            QTableWidget::item:selected {{
-                background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.12) !important;
-                border: 1.5px solid {self.accent_color} !important;
-                border-radius: 4px;
+                border: none;
+            }
+            QTableWidget::item:hover {
+                background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.06);
+                border: none;
+            }
+            QTableWidget::item:selected {
+                background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.16) !important;
+                border: none !important;
                 color: #FFFFFF !important;
-            }}
-            QHeaderView::section {{
+            }
+            QHeaderView::section {
                 background-color: rgba(255, 255, 255, 0.04);
                 color: #FFFFFF;
                 padding: 6px 10px;
@@ -779,7 +749,7 @@ class DepotSelectionDialog(QDialog):
                 font-size: 8.5pt;
                 font-weight: bold;
                 text-transform: uppercase;
-            }}
+            }
             {"" if (self._settings and self._settings.value("material_preset", "ocean", type=str) == "halloween" or str(self.accent_color).lower() in ("#ffb77d", "#ff7518") or (self._settings and self._settings.value("theme_checkbox_unlit", "", type=str) and os.path.exists(self._settings.value("theme_checkbox_unlit", "", type=str)))) else f"""
             QTableWidget::indicator, QTableView::indicator {{
                 width: 14px;
@@ -790,14 +760,17 @@ class DepotSelectionDialog(QDialog):
             }}
             QTableWidget::indicator:unchecked, QTableView::indicator:unchecked {{
                 background-color: transparent;
+                border: 1.5px solid rgba({accent_r}, {accent_g}, {accent_b}, 0.47);
             }}
-            QTableWidget::indicator:checked, QTableView::indicator:checked {{
-                background-color: {self.accent_color};
-                border: 1.5px solid {self.accent_color};
-            }}
-            QTableWidget::indicator:hover, QTableView::indicator:hover {{
+            QTableWidget::indicator:unchecked:hover, QTableView::indicator:unchecked:hover {{
                 border: 1.5px solid rgba({accent_r}, {accent_g}, {accent_b}, 1.0);
                 background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.078);
+            }}
+            QTableWidget::indicator:checked, QTableView::indicator:checked,
+            QTableWidget::indicator:checked:hover, QTableView::indicator:checked:hover,
+            QTableWidget::indicator:checked:selected, QTableView::indicator:checked:selected {{
+                background-color: {self.accent_color} !important;
+                border: 1.5px solid {self.accent_color} !important;
             }}
             """}
         """)
@@ -3027,11 +3000,12 @@ class DepotSelectionDialog(QDialog):
                     border-radius: 6px;
                     color: {self.accent_color};
                     font-size: 8.5pt;
-                    font-weight: bold;
-                    padding: 2px 10px;
+                    font-weight: 600;
+                    padding: 2px 12px;
                 }}
                 QPushButton:hover {{
                     background-color: rgba(255, 255, 255, 0.14);
+                    border: 1px solid {self.accent_color};
                 }}
             """)
         else:
@@ -3043,13 +3017,15 @@ class DepotSelectionDialog(QDialog):
                     color: #FFFFFF;
                     font-size: 8.5pt;
                     font-weight: 600;
-                    padding: 2px 10px;
+                    padding: 2px 12px;
                 }}
                 QPushButton:hover {{
                     background-color: rgba(255, 255, 255, 0.12);
-                    border-color: rgba(255, 255, 255, 0.3);
+                    border-color: rgba(255, 255, 255, 0.35);
                 }}
             """)
+        if hasattr(self, "builds_btn") and self.builds_btn is not None:
+            self.builds_btn.adjustSize()
 
     def _apply_build_selection(self, selected_bid: str, patch_depots: dict):
         if not selected_bid:

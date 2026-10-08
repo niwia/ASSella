@@ -43,13 +43,13 @@ def create_assela_tab(dialog) -> QWidget:
     # Section 1 Card: ASSella Settings
     assella_card, assella_lay = dialog._create_card_frame("ASSella Settings")
 
-    # 1. Smart Selection
+    # 1. Smart Depot Selection (Experimental)
     dialog.smart_depot_selection_checkbox = create_checkbox_setting(
-        "Smart Selection",
+        "Smart Depot Selection (Experimental)",
         "smart_depot_selection",
-        False,
+        True,
         dialog,
-        "Automatically reuse previously chosen depots on update, unless a brand new depot is added.",
+        "Auto-detect depots Steam normally installs from package info and appcache. Enabled by default.",
     )
     assella_lay.addWidget(dialog.smart_depot_selection_checkbox)
 

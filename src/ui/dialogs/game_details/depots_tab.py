@@ -205,10 +205,6 @@ class MiniSwitchToggle(QWidget):
         p.setBrush(QBrush(track_color))
         p.drawRoundedRect(0, 0, w, h, radius, radius)
 
-        # Subtle highlight border when hovering in interactive mode
-        if self._hovered and not self._read_only:
-            p.setPen(QPen(QColor(255, 255, 255, 120), 1.5))
-            p.drawRoundedRect(1, 1, w - 2, h - 2, radius - 1, radius - 1)
 
         # White knob circle
         knob_d = 14.0
@@ -298,12 +294,11 @@ def _make_table(columns: List[str], accent_color: str) -> QTableWidget:
         QTableWidget::item {{
             padding: 4px 8px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-            border: 1.5px solid transparent;
+            border: none;
         }}
         QTableWidget::item:selected {{
-            background-color: rgba(255, 255, 255, 0.05);
-            border: 1.5px solid {accent_color};
-            border-radius: 4px;
+            background-color: rgba(255, 255, 255, 0.06);
+            border: none;
             color: #FFFFFF;
         }}
         QHeaderView::section {{

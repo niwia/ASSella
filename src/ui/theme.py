@@ -218,23 +218,18 @@ def _apply_stylesheet(
             border-radius: 4px;
         }}
 
-        QCheckBox::indicator:checked {{
+        QCheckBox::indicator:checked, QCheckBox::indicator:checked:hover, QCheckBox::indicator:checked:selected {{
             background: {accent_color.name()};
             border: 1.5px solid {accent_color.name()};
         }}
 
-        QCheckBox::indicator:checked:hover {{
-            background: {accent_light};
-            border: 1.5px solid {accent_light};
-        }}
-
-        QCheckBox::indicator:hover {{
+        QCheckBox::indicator:unchecked:hover {{
             border: 1.5px solid {accent_light};
             background: rgba({accent_r}, {accent_g}, {accent_b}, 20);
         }}
         """
         list_indicator_css = f"""
-        QListWidget::indicator {{
+        QListWidget::indicator, QTableWidget::indicator, QTableView::indicator {{
             width: 14px;
             height: 14px;
             background: transparent;
@@ -242,21 +237,18 @@ def _apply_stylesheet(
             border-radius: 4px;
         }}
 
-        QListWidget::indicator:unchecked {{
+        QListWidget::indicator:unchecked, QTableWidget::indicator:unchecked, QTableView::indicator:unchecked {{
             background-color: transparent;
         }}
 
-        QListWidget::indicator:checked {{
+        QListWidget::indicator:checked, QTableWidget::indicator:checked, QTableView::indicator:checked,
+        QListWidget::indicator:checked:hover, QTableWidget::indicator:checked:hover, QTableView::indicator:checked:hover,
+        QListWidget::indicator:checked:selected, QTableWidget::indicator:checked:selected, QTableView::indicator:checked:selected {{
             background-color: {accent_color.name()};
             border: 1.5px solid {accent_color.name()};
         }}
 
-        QListWidget::indicator:checked:hover {{
-            background-color: {accent_light};
-            border: 1.5px solid {accent_light};
-        }}
-
-        QListWidget::indicator:hover {{
+        QListWidget::indicator:unchecked:hover, QTableWidget::indicator:unchecked:hover, QTableView::indicator:unchecked:hover {{
             border: 1.5px solid {accent_light};
             background-color: rgba({accent_r}, {accent_g}, {accent_b}, 20);
         }}
@@ -295,7 +287,7 @@ def _apply_stylesheet(
             color: {accent_color.name()};
         }}
 
-        QListWidget, QTreeWidget, QTableView, QTableWidget {{
+        QListWidget, QTreeWidget {{
             background-color: {surface_variant};
             color: {accent_color.name()};
             border-radius: 12px;
@@ -307,27 +299,53 @@ def _apply_stylesheet(
             selection-color: {accent_light};
         }}
 
-        QListWidget::item, QTreeWidget::item, QTableView::item, QTableWidget::item {{
-            background-color: transparent;
+        QTableView, QTableWidget {{
+            background-color: {surface_variant};
             color: {accent_color.name()};
             border-radius: 8px;
+            outline: 0;
+            border: none;
+            padding: 0px;
+            font-size: {font_size_queue}pt;
+            selection-background-color: transparent;
+            selection-color: {accent_light};
+        }}
+
+        QListWidget::item, QTreeWidget::item {{
+            background-color: transparent;
+            color: {accent_color.name()};
+            border-radius: 6px;
             padding: 8px 12px;
             margin: 2px 0px;
             font-size: {font_size_queue}pt;
-            border: 1.5px solid transparent;
+            border: none;
         }}
 
-        QListWidget::item:hover, QTreeWidget::item:hover, QTableView::item:hover, QTableWidget::item:hover {{
+        QTableView::item, QTableWidget::item {{
+            background-color: transparent;
+            color: {accent_color.name()};
+            padding: 6px 10px;
+            margin: 0px;
+            font-size: {font_size_queue}pt;
+            border: none;
+        }}
+
+        QListWidget::item:hover, QTreeWidget::item:hover {{
             background-color: {hover_bg};
             color: {accent_light};
-            border: 1.5px solid rgba(255, 255, 255, 0.12);
+            border: none;
+        }}
+
+        QTableView::item:hover, QTableWidget::item:hover {{
+            background-color: {hover_bg};
+            color: {accent_light};
+            border: none;
         }}
 
         QListWidget::item:selected, QTreeWidget::item:selected, QTableView::item:selected, QTableWidget::item:selected {{
-            background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.12);
+            background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.16);
             color: {accent_light};
-            border: 1.5px solid {accent_color.name()};
-            border-radius: 6px;
+            border: none;
             font-weight: bold;
         }}
 
@@ -335,6 +353,7 @@ def _apply_stylesheet(
             background-color: {hover_bg};
             color: {accent_color.name()};
             font-weight: bold;
+            border: none;
         }}
 
         {list_indicator_css}
