@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from utils.helpers import get_base_path
+from utils.lua_parsing import is_placeholder_key, iter_live_matches
 from utils.settings import get_settings
 
 try:
@@ -126,7 +127,9 @@ class ImportManager:
             "manifest_gids": {},
         }
 
-        all_app_matches = list(re.finditer(r"addappid\((.*?)\)(.*)", text, re.IGNORECASE))
+        all_app_matches = list(
+            iter_live_matches(text, r"addappid\((.*?)\)(.*)", re.IGNORECASE)
+        )
         if not all_app_matches:
             return None
 
@@ -148,7 +151,7 @@ class ImportManager:
             args_str = match.group(1).strip()
             args = [arg.strip().strip('"').strip("'") for arg in args_str.split(",")]
             did = args[0]
-            if len(args) > 2 and args[2]:
+            if len(args) > 2 and args[2] and not is_placeholder_key(args[2]):
                 result["depot_keys"][did] = args[2]
 
         # Extract app token

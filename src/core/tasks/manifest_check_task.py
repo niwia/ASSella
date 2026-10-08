@@ -9,6 +9,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from utils.branch_helpers import resolve_branch_manifest_gid
 from utils.helpers import get_base_path
+from utils.lua_parsing import iter_live_matches
 from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -174,7 +175,7 @@ class ManifestCheckTask(QObject):
                     lua_file = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
                     if lua_file.exists():
                         try:
-                            for m in re.finditer(r"addappid\(\s*(\d+)", lua_file.read_text()):
+                            for m in iter_live_matches(lua_file.read_text(), r"addappid\(\s*(\d+)"):
                                 additional_appids.add(m.group(1))
                         except Exception as e:
                             logger.error(f"Error parsing cached LUA for DLC appids ({appid}): {e}")

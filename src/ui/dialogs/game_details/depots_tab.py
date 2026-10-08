@@ -42,6 +42,7 @@ from utils.yaml_config_manager import (
 )
 from utils.sls_bridge import SLSBridge
 from utils.plugin_games import SHARED_REDISTS, load_plugin_library
+from utils.lua_parsing import iter_live_matches
 from ui.assets import DEPOT_BLACKLIST
 
 logger = logging.getLogger(__name__)
@@ -701,7 +702,7 @@ def init_depots_tab(dialog) -> None:
                             blacklisted_depots.add(num)
 
                 # addappid keys
-                for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', txt):
+                for m in iter_live_matches(txt, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'):
                     did, key = m.group(1), m.group(2)
                     lua_keys[str(did)] = key.lower()
 
@@ -1472,6 +1473,34 @@ def init_depots_tab(dialog) -> None:
             logger.debug(f"[DepotsTab] Error persisting keys to local DB on sync: {e}")
 
         if editor.has_changes:
+            # Keep plugin_library.json in sync with live depots and keys for this game
+            try:
+                from utils.plugin_games import load_plugin_library, save_plugin_library
+                plib = load_plugin_library()
+                if appid_str in plib:
+                    live_cfg_depots = set(get_additional_depots(cfg_path))
+                    live_cfg_keys = get_decryption_keys(cfg_path)
+                    # Retain any active depots present in config
+                    existing_active = [d for d in plib[appid_str].get("depots", []) if d in live_cfg_depots]
+                    toggled_active = [d["id"] for d in state.get("depots", []) if d["id"] in live_cfg_depots]
+                    updated_rec_depots = sorted(list(set(existing_active) | set(toggled_active)))
+
+                    updated_rec_keys = dict(plib[appid_str].get("keys", {}))
+                    for k in state.get("keys", []):
+                        kid = k["id"]
+                        if kid in live_cfg_keys:
+                            kval = k.get("key") or live_cfg_keys.get(kid)
+                            if kval:
+                                updated_rec_keys[kid] = str(kval).lower()
+                        else:
+                            updated_rec_keys.pop(kid, None)
+
+                    plib[appid_str]["depots"] = updated_rec_depots
+                    plib[appid_str]["keys"] = updated_rec_keys
+                    save_plugin_library(plib)
+            except Exception as e:
+                logger.debug(f"[DepotsTab] Error updating plugin library on sync: {e}")
+
             SLSBridge.notify_reload()
             parts = []
             if added_count:
@@ -1542,11 +1571,43 @@ def init_depots_tab(dialog) -> None:
 
                             # Extract and persist keys to SQLite
                             fresh_keys = {}
-                            for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_data):
+                            for m in iter_live_matches(lua_data, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'):
                                 fresh_keys[m.group(1)] = m.group(2).lower()
                             if fresh_keys:
                                 from managers.depot_key_manager import DepotKeyManager
                                 DepotKeyManager.get_instance().save_depot_keys(appid_str, fresh_keys)
+
+                                # Sync fresh keys and depots to config.yaml and plugin library
+                                try:
+                                    from utils.yaml_config_manager import (
+                                        get_user_config_path,
+                                        batch_config_edit,
+                                        SHARED_REDISTS,
+                                    )
+                                    from utils.sls_bridge import SLSBridge
+                                    from utils.plugin_games import load_plugin_library, save_plugin_library
+
+                                    cfg_path = get_user_config_path()
+                                    lib = load_plugin_library()
+                                    rec = lib.get(appid_str)
+                                    is_dlc_only = rec.get("dlc_only", False) if rec else False
+
+                                    if cfg_path and cfg_path.exists():
+                                        with batch_config_edit(cfg_path) as editor:
+                                            for did, k in fresh_keys.items():
+                                                if did not in SHARED_REDISTS:
+                                                    if did != appid_str and not is_dlc_only:
+                                                        editor.add_depot(did, comment=f"{game_name} ({did})", app_id=appid_str)
+                                                    key_comment = f"{game_name} [AppKey]" if did == appid_str else f"{game_name} ({did})"
+                                                    editor.add_key(did, k, comment=key_comment)
+                                        if editor.has_changes:
+                                            SLSBridge.notify_reload()
+
+                                    if rec:
+                                        rec.setdefault("keys", {}).update(fresh_keys)
+                                        save_plugin_library(lib)
+                                except Exception as sync_err:
+                                    logger.debug(f"[DepotsTab] Error syncing refetched keys to config: {sync_err}")
 
                     try:
                         from managers.db_manager import DatabaseManager
@@ -1554,7 +1615,7 @@ def init_depots_tab(dialog) -> None:
                     except Exception:
                         pass
 
-                    bridge.finished.emit(True, "Refetch successful. Local cache updated.")
+                    bridge.finished.emit(True, "Refetch successful. Local cache and configuration updated.")
                 else:
                     err_str = str(err or "")
                     if "404" in err_str or "not found" in err_str.lower():

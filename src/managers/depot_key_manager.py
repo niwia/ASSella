@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Optional, Set
 
 from utils.helpers import get_base_path
+from utils.lua_parsing import is_placeholder_key, iter_live_matches
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +160,14 @@ class DepotKeyManager:
                 return {}
             text = target_file.read_text(encoding="utf-8", errors="ignore")
             keys = {}
-            for m in re.finditer(r'addappid\(\s*(\d+)\s*,\s*1\s*,\s*["\']([^"\']+)["\']', text, re.IGNORECASE):
+            for m in iter_live_matches(
+                text, r'addappid\(\s*(\d+)\s*,\s*1\s*,\s*["\']([^"\']+)["\']', re.IGNORECASE
+            ):
                 did, k = m.group(1), m.group(2)
+                # Never persist generator sentinels (e.g. "MISSING_KEY") as keys.
+                if is_placeholder_key(k):
+                    logger.debug(f"[DepotKeyManager] Skipping placeholder key for depot {did}")
+                    continue
                 keys[did] = k
             if keys:
                 mtime = int(target_file.stat().st_mtime)

@@ -136,6 +136,7 @@ class NativeSteamDownloadTask(QObject):
             self.error.emit((RuntimeError, msg, None))
             return
         self._sls_config_dir = sls_config_dir
+        config_path = sls_config_dir / "config.yaml"
 
         steamapps_dir = self._get_primary_steamapps(dest_path)
         if not steamapps_dir:
@@ -271,7 +272,7 @@ class NativeSteamDownloadTask(QObject):
         # 8. Finalize / Cleanup
         if success and self._is_running:
             self.progress.emit(f"[Native Steam] Download complete: {game_name}")
-            self._cleanup_success(config_path, plugins_dir)
+            self._cleanup_success(config_path)
 
             # Register into plugin_library so AT0-M tracks it
             try:
@@ -690,13 +691,8 @@ class NativeSteamDownloadTask(QObject):
                 content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
 
         # 3. Format AdditionalDepots with descriptive comments
-        # Define known shared redistributable depots
-        shared_redists = {
-            "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
-            "228986", "228987", "228988", "228989", "228990", "229000", "229001",
-            "229002", "229003", "229004", "229005", "229006", "229007", "229010",
-            "229011", "229012", "229020", "229030", "229031", "229032"
-        }
+        from utils.yaml_config_manager import SHARED_REDISTS
+        shared_redists = SHARED_REDISTS
 
         # 3. Format AdditionalDepots with descriptive comments (ONLY depots, NEVER AppIDs!)
         if is_dlc:
@@ -792,10 +788,6 @@ class NativeSteamDownloadTask(QObject):
             if app_key_val:
                 all_keys[appid_str] = str(app_key_val)
                 key_comments[appid_str] = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
-
-        for da in dlc_appids:
-            all_keys.pop(da, None)
-            key_comments.pop(da, None)
 
         if is_dlc:
             if appid_str not in sel_dlcs:
@@ -1071,7 +1063,7 @@ class NativeSteamDownloadTask(QObject):
                             total = int(total_m.group(1))
                             done = int(done_m.group(1))
                             self.total_download_size_for_this_job = total
-                            self.actual_download_bytes_for_this_job = total
+                            self.actual_download_bytes_for_this_job = done
                             self.completed_so_far_for_this_job = done
                             if total > 0:
                                 pct = min(99, int(done * 100 / total))
@@ -1150,7 +1142,7 @@ class NativeSteamDownloadTask(QObject):
                 return candidate
         return None
 
-    def _cleanup_success(self, config_path: Path, plugins_dir: Path):
+    def _cleanup_success(self, config_path: Optional[Path] = None, plugins_dir: Optional[Path] = None):
         """
         Clean up after a successful download:
         - Keep AppID in AdditionalApps (so the game stays unlocked).

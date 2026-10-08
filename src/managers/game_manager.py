@@ -13,6 +13,7 @@ from core.steam_helpers import (
 )
 from core.tasks.manifest_check_task import ManifestCheckTask
 from utils.helpers import get_base_path
+from utils.lua_parsing import is_placeholder_key, iter_live_matches
 from utils.task_runner import TaskRunner
 from utils.settings import get_settings
 from utils.update_status_cache import get_update_cache
@@ -2446,7 +2447,7 @@ class GameManager(QObject):
             return []
 
         app_matches = list(
-            re.finditer(r"addappid\((.*?)\)(.*)", lua_content, re.IGNORECASE)
+            iter_live_matches(lua_content, r"addappid\((.*?)\)(.*)", re.IGNORECASE)
         )
         if len(app_matches) < 2:
             return []
@@ -2467,7 +2468,11 @@ class GameManager(QObject):
                 continue
 
             candidate_id = args[0].strip('"')
-            has_depot_key = len(args) > 2 and bool(args[2].strip('"'))
+            has_depot_key = (
+                len(args) > 2
+                and bool(args[2].strip('"'))
+                and not is_placeholder_key(args[2])
+            )
             if has_depot_key:
                 continue
             if not candidate_id.isdigit():

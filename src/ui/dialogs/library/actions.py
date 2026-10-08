@@ -1108,6 +1108,7 @@ class LibraryActionsMixin:
                                     decryption_keys=rec.get("keys", {}),
                                     installdir=game_data.get("install_dir", ""),
                                     depot_names=d_names,
+                                    dlc_appids=rec.get("dlc_appids", []),
                                 )
                             except Exception as _e:
                                 logger.warning(f"Could not sync AT0-M depots after selection: {_e}")

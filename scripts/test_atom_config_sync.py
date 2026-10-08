@@ -37,6 +37,9 @@ from utils.yaml_config_manager import (
     get_additional_apps,
     get_additional_depots,
     get_decryption_keys,
+    is_depot_shared_with_other_games,
+    _get_section_bounds,
+    _validate_yaml_content,
     _atomic_write,
 )
 from utils.plugin_games import (
@@ -310,6 +313,84 @@ def run_tests() -> bool:
                 log_fail("CRITICAL: Strict guard failed! Base AppID was allowed in AdditionalDepots!")
                 test_passed = False
 
+            # 3d. Verify sole depot with self-referencing comment is removable (not falsely marked shared)
+            log_info(f"Verifying depot '{depot_2}' for game '{appid_2}' can be removed when sole-owned...")
+            is_shared_check = is_depot_shared_with_other_games(depot_2, excluding_appid=appid_2)
+            if not is_shared_check:
+                log_pass(f"Depot '{depot_2}' correctly identified as NOT shared with other games")
+            else:
+                log_fail(f"CRITICAL: Depot '{depot_2}' was FALSELY identified as shared with other games!")
+                test_passed = False
+
+            res_remove_depot = editor.remove_depot(depot_2, check_shared=True, excluding_appid=appid_2)
+            if res_remove_depot:
+                log_pass(f"Depot '{depot_2}' successfully removed from AdditionalDepots (self-referencing comment bug fix confirmed)")
+            else:
+                log_fail(f"CRITICAL: Failed to remove depot '{depot_2}' from AdditionalDepots!")
+                test_passed = False
+
+            # 3e. Quoted section headers in YAML engine
+            log_info("Verifying quoted section header parsing in YAML engine...")
+            sample_quoted_yaml = "'AdditionalDepots':\n  - 1111\n'DecryptionKeys':\n  2222: 1234567890123456789012345678901234567890123456789012345678901234\n"
+            b_depots = _get_section_bounds(sample_quoted_yaml, "AdditionalDepots")
+            b_keys = _get_section_bounds(sample_quoted_yaml, "DecryptionKeys")
+            if b_depots and b_keys:
+                log_pass("Quoted section bounds successfully resolved for 'AdditionalDepots' and 'DecryptionKeys'")
+            else:
+                log_fail("CRITICAL: Failed to resolve bounds for single-quoted YAML sections!")
+                test_passed = False
+
+            sample_dupe_yaml = "'AdditionalDepots':\n  - 1111\nAdditionalDepots:\n  - 2222\n"
+            dupe_valid = _validate_yaml_content(sample_dupe_yaml)
+            if not dupe_valid:
+                log_pass("YAML validator successfully detected duplicate section with mixed quoting")
+            else:
+                log_fail("CRITICAL: YAML validator allowed duplicate top-level keys with mixed quoting!")
+                test_passed = False
+
+            # 3f. DLC AppID in AdditionalDepots allowance (like Isaac 250900 DLC 401920)
+            log_info("Verifying DLC AppID can be added to AdditionalDepots while base AppID is rejected...")
+            editor.add_app("401920", comment="Isaac DLC (401920)")
+            dlc_depot_ok = editor.add_depot("401920", comment="Isaac DLC Depot (401920)", app_id="250900")
+            if dlc_depot_ok:
+                log_pass("DLC AppID '401920' was successfully allowed in AdditionalDepots for game '250900'")
+            else:
+                log_fail("CRITICAL: DLC AppID was incorrectly blocked from AdditionalDepots!")
+                test_passed = False
+
+            base_depot_blocked = editor.add_depot("250900", comment="Isaac Base Depot", app_id="250900")
+            if not base_depot_blocked:
+                log_pass("Base AppID '250900' was strictly blocked from AdditionalDepots")
+            else:
+                log_fail("CRITICAL: Base AppID '250900' was allowed in AdditionalDepots!")
+                test_passed = False
+
+            # 3g. Verifying foreign base AppID in AdditionalApps is rejected even if app_id mismatch
+            editor.add_app("1145360", comment="Hades")
+            foreign_base_blocked = editor.add_depot("1145360", comment="Hades Depot", app_id="250900")
+            if not foreign_base_blocked:
+                log_pass("Foreign base AppID '1145360' was strictly blocked from AdditionalDepots despite app_id mismatch")
+            else:
+                log_fail("CRITICAL: Foreign base AppID '1145360' was permitted in AdditionalDepots!")
+                test_passed = False
+            # 3h. Verifying DLC-only transition to ACCELA mode retains base AppID in AdditionalApps
+            test_dlc_game = "999001"
+            test_dlc_child = "999002"
+            register_plugin_game(
+                appid=test_dlc_game,
+                name="Test DLC Game",
+                depot_ids=["999003"],
+                decryption_keys={"999003": "a" * 64},
+                dlc_appids=[test_dlc_child],
+            )
+            added_test_appids.append(test_dlc_game)
+            unregister_plugin_game(test_dlc_game, keep_in_additional_apps=True)
+            apps_after_transition = get_additional_apps(cfg_path)
+            if test_dlc_game in apps_after_transition and test_dlc_child not in apps_after_transition:
+                log_pass("DLC-only transition to ACCELA mode cleanly restored base AppID and pruned DLC AppID")
+            else:
+                log_fail(f"CRITICAL: Transition to ACCELA mode failed to retain base AppID! Apps: {apps_after_transition}")
+                test_passed = False
     finally:
         # ---------------------------------------------------------------------
         # TEST 4: Cleanup & State Reversal

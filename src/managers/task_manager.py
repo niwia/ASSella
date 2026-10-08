@@ -1607,24 +1607,26 @@ class TaskManager(QObject):
 
         appid = self.game_data.get("appid")
 
-        # 1. Always write/update our local metadata.json fallback
-        try:
-            from utils.assella_metadata import write_accela_metadata
-            write_accela_metadata(self.current_dest_path, self.game_data, size_on_disk)
-        except Exception as e:
-            logger.error(f"Failed to write metadata JSON file: {e}")
-
         # If NativeSteamDownloadTask was used, Steam already natively generated the ACF
+        # and manages the installation. Skip writing custom ACF and ACCELA metadata markers
+        # to prevent subsequent library scans from misidentifying native games as ACCELA.
         try:
             from core.tasks.native_steam_download_task import NativeSteamDownloadTask
             if isinstance(self.download_task, NativeSteamDownloadTask):
                 logger.info(
                     f"Native Steam download backend was used for {appid} - "
-                    "Steam natively generated the manifest. Skipping custom ACF writing."
+                    "Steam natively generated the manifest. Skipping custom ACF and ACCELA metadata writing."
                 )
                 return
         except Exception:
             pass
+
+        # 1. Always write/update our local metadata.json fallback for non-native downloads
+        try:
+            from utils.assella_metadata import write_accela_metadata
+            write_accela_metadata(self.current_dest_path, self.game_data, size_on_disk)
+        except Exception as e:
+            logger.error(f"Failed to write metadata JSON file: {e}")
 
         # 2. If ACF-Independent mode is active, delegate manifest creation entirely to Steam natively.
         #    Exception: pinned/older builds must use the fallback ACF writer so the pinned buildid

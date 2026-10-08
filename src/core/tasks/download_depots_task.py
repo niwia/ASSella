@@ -20,6 +20,7 @@ from utils.helpers import (
     get_base_path,
 )
 from utils.settings import get_settings
+from utils.lua_parsing import iter_live_matches
 
 # Third-party imports
 try:
@@ -835,7 +836,7 @@ class DownloadDepotsTask(QObject):
                                 for name in zf.namelist():
                                     if name.endswith(".lua"):
                                         lua_txt = zf.read(name).decode("utf-8", errors="ignore")
-                                        for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_txt):
+                                        for m in iter_live_matches(lua_txt, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'):
                                             if m.group(1) != str(appid_str):
                                                 recovered_keys[m.group(1)] = m.group(2)
                             if recovered_keys:

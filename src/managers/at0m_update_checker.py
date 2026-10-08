@@ -28,6 +28,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from managers.db_manager import DatabaseManager
 from managers.depot_key_manager import DepotKeyManager
 from utils.helpers import get_base_path
+from utils.lua_parsing import is_placeholder_key, iter_live_matches
 from utils.paths import Paths
 from utils.plugin_games import SHARED_REDISTS, load_plugin_library
 from utils.settings import get_settings
@@ -234,11 +235,16 @@ class At0mUpdateChecker(QObject):
             lua_file = Path(get_base_path()) / "cached_luas" / f"{appid_str}.lua"
             if lua_file.exists():
                 lua_text = lua_file.read_text(encoding="utf-8", errors="ignore")
-                for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_text):
+                for m in iter_live_matches(
+                    lua_text, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'
+                ):
                     did, key = m.group(1), m.group(2).lower()
                     known_depots.add(did)
                     known_keys[did] = key
-                for m in re.finditer(r'addappid\((\d+)', lua_text):
+                # Depot IDs only (no key arg). Commented-out lines must be excluded,
+                # otherwise a depot the generator disabled counts as "already known"
+                # and its update is silently suppressed forever.
+                for m in iter_live_matches(lua_text, r'addappid\((\d+)'):
                     known_depots.add(m.group(1))
         except Exception as e:
             logger.debug(f"[At0mChecker] Error reading cached lua for {appid_str}: {e}")
@@ -515,7 +521,9 @@ class At0mUpdateChecker(QObject):
                     lua_data = zf.read(lua_files[0]).decode("utf-8", errors="ignore")
                     dest_lua.write_text(lua_data, encoding="utf-8")
 
-                    for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_data):
+                    for m in iter_live_matches(
+                            lua_data, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'
+                        ):
                         fresh_keys[m.group(1)] = m.group(2).lower()
 
                     if fresh_keys:

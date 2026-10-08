@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 from ui.dialogs.depotselection import format_size
 from utils.image_fetcher import ImageFetcher
 from utils.logger import logger
+from utils.lua_parsing import find_live
 
 
 class SingleDepotSelectionDialog(QDialog):
@@ -736,7 +737,7 @@ class SingleDepotSelectionDialog(QDialog):
         if lua_files:
             try:
                 content = lua_files[0].read_text(encoding="utf-8", errors="ignore")
-                m = re.search(r"addappid\(\s*" + re.escape(str(self.single_depot_id)) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)", content)
+                m = find_live(content, r"addappid\(\s*" + re.escape(str(self.single_depot_id)) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)")
                 if not m:
                     m = re.search(rf'\["?{self.single_depot_id}"?\]\s*=\s*"(.*?)"', content)
                 if m:
