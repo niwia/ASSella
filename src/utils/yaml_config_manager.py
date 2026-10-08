@@ -1028,12 +1028,23 @@ class BatchConfigEditor:
                 re.MULTILINE,
             )
             if m_app:
-                cm = (m_app.group(1) or "").lower()
-                if "dlc" not in cm:
-                    logger.warning(
-                        f"Refusing to add base AppID '{depot_id_str}' from AdditionalApps to AdditionalDepots"
-                    )
-                    return False
+                logger.warning(
+                    f"Refusing to add AppID '{depot_id_str}' from AdditionalApps to AdditionalDepots"
+                )
+                return False
+
+        bounds_main = _get_section_bounds(self.content, "AppIds")
+        if bounds_main:
+            main_text = self.content[bounds_main[1] : bounds_main[2]]
+            if re.search(
+                rf"^[ \t]*-[ \t]*{re.escape(depot_id_str)}(?:[ \t]*#[ \t]*(.*))?$",
+                main_text,
+                re.MULTILINE,
+            ):
+                logger.warning(
+                    f"Refusing to add AppID '{depot_id_str}' from AppIds to AdditionalDepots"
+                )
+                return False
 
         shared_redists = {
             "228980", "1034630", "228981", "228982", "228983", "228984", "228985",
@@ -1707,11 +1718,16 @@ def is_depot_shared_with_other_games(
     return False
 
 
-def add_additional_depot(config_path: Path, depot_id: Union[str, int], comment: str = "") -> bool:
+def add_additional_depot(
+    config_path: Path,
+    depot_id: Union[str, int],
+    comment: str = "",
+    app_id: Optional[Union[str, int]] = None,
+) -> bool:
     """Add a DepotID to the AdditionalDepots list in SLSsteam config.yaml."""
     ensure_plugins_enabled(config_path)
     with batch_config_edit(config_path) as editor:
-        res = editor.add_depot(depot_id, comment)
+        res = editor.add_depot(depot_id, comment, app_id=app_id)
     return res and editor.committed_successfully
 
 
