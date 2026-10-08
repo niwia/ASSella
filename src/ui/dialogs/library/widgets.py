@@ -289,10 +289,12 @@ class GameItemWidget(QWidget):
         if not is_steam_tab:
             # Update status badge
             update_status = self.game_data.get("update_status", "cannot_determine")
-            is_at0m_game = bool(
+            is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
+            is_at0m_game = not is_accela and bool(
                 self.game_data.get("is_atom")
                 or self.game_data.get("is_vapor")
                 or self.game_data.get("is_plugin_game")
+                or self.game_data.get("source") == "at0-m"
             )
             if is_at0m_game and update_status not in ("update_available", "key_pending"):
                 update_status = "at0m"
@@ -446,10 +448,12 @@ class GameItemWidget(QWidget):
 
     def update_status(self, update_status: str) -> None:
         """Update update and manifest status labels in-place."""
-        is_at0m_game = bool(
+        is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
+        is_at0m_game = not is_accela and bool(
             self.game_data.get("is_atom")
             or self.game_data.get("is_vapor")
             or self.game_data.get("is_plugin_game")
+            or self.game_data.get("source") == "at0-m"
         )
         if is_at0m_game and update_status not in ("update_available", "key_pending"):
             update_status = "at0m"

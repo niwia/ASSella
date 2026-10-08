@@ -268,7 +268,8 @@ class GameManager(QObject):
                 continue
 
             # Vapor / AT0-M / Plugin games bypass — Steam manages updates natively
-            if g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game") or g.get("update_status") in ("vapor", "at0m", "at0-m"):
+            is_atom = (g.get("source") == "at0-m" or (g.get("is_atom") and not g.get("accela_marker_path")))
+            if is_atom and not (g.get("accela_marker_path") or g.get("source") == "ACCELA"):
                 logger.debug(f"Skipping update check for AT0-M/Plugin game: {g.get('game_name')} ({appid})")
                 continue
 
@@ -349,6 +350,10 @@ class GameManager(QObject):
         appid_str = str(appid)
         game = self._games_by_appid.get(appid_str) or self.get_game(appid_str)
         if game:
+            # STRICT GUARD: Never apply AT0-M status to an ACCELA physical installation!
+            if game.get("accela_marker_path") or game.get("source") == "ACCELA":
+                logger.warning(f"Refusing to apply AT0-M update status to ACCELA game {game.get('game_name')} ({appid_str})")
+                return
             game["update_status"] = status
             if details:
                 game["at0m_update_details"] = details
@@ -369,8 +374,9 @@ class GameManager(QObject):
             logger.warning(f"check_single_game_update: appid {appid} not found")
             return
 
-        # AT0-M / Plugin games: run smart At0mUpdateChecker
-        if game.get("is_atom") or game.get("is_vapor") or game.get("is_plugin_game") or game.get("update_status") in ("vapor", "at0m", "at0-m"):
+        # AT0-M / Plugin games: run smart At0mUpdateChecker only if NOT an ACCELA physical install
+        is_atom = (game.get("source") == "at0-m" or (game.get("is_atom") and not game.get("accela_marker_path")))
+        if is_atom and not (game.get("accela_marker_path") or game.get("source") == "ACCELA"):
             logger.info(f"check_single_game_update: appid {appid} is AT0-M/Plugin game, running At0mUpdateChecker.")
             game["update_status"] = UPDATE_STATUS["CHECKING"]
             self.game_update_status_changed.emit(appid, UPDATE_STATUS["CHECKING"])
@@ -1286,11 +1292,11 @@ class GameManager(QObject):
                 "library_path": library_path,
                 "library_index": get_library_index(library_path, steam_path),
                 "size_on_disk": 0,  # Will be calculated below
-                "source": "at0-m" if (is_vapor or is_plugin_game) else ("ACCELA" if is_accela_install else "Steam"),
+                "source": "at0-m" if ((is_vapor or is_plugin_game) and not is_accela_install) else ("ACCELA" if is_accela_install else "Steam"),
                 "is_accela_install": is_managed,
-                "is_vapor": is_vapor or is_plugin_game,
-                "is_atom": is_vapor or is_plugin_game,
-                "is_plugin_game": is_plugin_game,
+                "is_vapor": (is_vapor or is_plugin_game) and not is_accela_install,
+                "is_atom": (is_vapor or is_plugin_game) and not is_accela_install,
+                "is_plugin_game": is_plugin_game and not is_accela_install,
                 "plugin_record": plugin_record or {},
                 "depot_downloader_path": marker_path or "",
                 "accela_marker_path": marker_path or "",
@@ -1410,7 +1416,7 @@ class GameManager(QObject):
                 game_data["size_on_disk"] = size_on_disk
 
             # If this is an AT0-M or Plugin-managed game, restore any cached AT0-M status and force public branch
-            if is_vapor or is_plugin_game:
+            if (is_vapor or is_plugin_game) and not is_accela_install:
                 at0m_status = UPDATE_STATUS.get("AT0M", "at0m")
                 if appid and appid not in ("0", "N/A", "unknown"):
                     try:
