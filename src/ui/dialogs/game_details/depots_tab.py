@@ -277,7 +277,7 @@ def _make_table(columns: List[str], accent_color: str) -> QTableWidget:
 
     tbl.verticalHeader().setVisible(False)
     tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-    tbl.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    tbl.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
     tbl.setShowGrid(False)
     tbl.setAlternatingRowColors(True)
     tbl.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -292,13 +292,18 @@ def _make_table(columns: List[str], accent_color: str) -> QTableWidget:
             outline: 0;
             color: #FFFFFF;
             font-size: 9pt;
+            selection-background-color: transparent;
+            selection-color: #FFFFFF;
         }}
         QTableWidget::item {{
             padding: 4px 8px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            border: 1.5px solid transparent;
         }}
         QTableWidget::item:selected {{
-            background-color: rgba(255, 255, 255, 0.08);
+            background-color: rgba(255, 255, 255, 0.05);
+            border: 1.5px solid {accent_color};
+            border-radius: 4px;
             color: #FFFFFF;
         }}
         QHeaderView::section {{

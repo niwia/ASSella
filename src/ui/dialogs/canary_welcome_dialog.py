@@ -48,6 +48,8 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 
+from ui.widgets.switch_toggle import SwitchToggle
+
 from utils.settings import get_settings
 from utils.paths import Paths
 from utils.color_utils import get_semantic_colors
@@ -1004,11 +1006,36 @@ class CanaryWelcomeDialog(QDialog):
         c_layout.setSpacing(10)
 
         is_enabled = self.settings.value("enable_at0m", self.settings.value("enable_vapor", False, type=bool), type=bool)
-        self.chk_enable_at0m = QCheckBox("Enable at0-m (Native Steam Client Downloads)")
-        self.chk_enable_at0m.setChecked(is_enabled)
-        self.chk_enable_at0m.setStyleSheet("font-size: 10.5pt; font-weight: bold; color: #FFFFFF;")
-        self.chk_enable_at0m.toggled.connect(self._on_at0m_toggled)
-        c_layout.addWidget(self.chk_enable_at0m)
+        
+        toggle_row = QHBoxLayout()
+        toggle_row.setSpacing(12)
+        toggle_row.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+
+        self.toggle_enable_at0m = SwitchToggle(
+            checked=is_enabled,
+            active_color="#4CAF50",
+            inactive_color="#374151",
+            width=44,
+            height=22,
+            parent=self,
+        )
+        self.chk_enable_at0m = self.toggle_enable_at0m  # Compatibility alias
+
+        lbl_toggle = QLabel("Enable at0-m (Native Steam Client Downloads)")
+        lbl_toggle.setStyleSheet("font-size: 10.5pt; font-weight: bold; color: #FFFFFF;")
+        lbl_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        lbl_toggle.mousePressEvent = lambda _ev: self.toggle_enable_at0m.setChecked(not self.toggle_enable_at0m.isChecked())
+
+        self.lbl_at0m_badge = QLabel("ENABLED" if is_enabled else "DISABLED")
+        self.lbl_at0m_badge.setStyleSheet(self._at0m_badge_style(is_enabled))
+
+        toggle_row.addWidget(self.toggle_enable_at0m)
+        toggle_row.addWidget(lbl_toggle)
+        toggle_row.addWidget(self.lbl_at0m_badge)
+        toggle_row.addStretch()
+        c_layout.addLayout(toggle_row)
+
+        self.toggle_enable_at0m.toggled.connect(self._on_at0m_toggled)
 
         self.lbl_at0m_feedback = QLabel("")
         self.lbl_at0m_feedback.setStyleSheet(f"font-size: 9pt; color: {self.semantic.get('success', '#81c784')}; border: none; background: transparent;")
@@ -1064,10 +1091,29 @@ class CanaryWelcomeDialog(QDialog):
 
         return widget
 
+    def _at0m_badge_style(self, enabled: bool) -> str:
+        if enabled:
+            return (
+                "font-size: 8pt; font-weight: bold; color: #81c784; "
+                "background-color: rgba(76, 175, 80, 0.16); "
+                "border: 1px solid rgba(76, 175, 80, 0.4); "
+                "border-radius: 4px; padding: 2px 7px;"
+            )
+        return (
+            "font-size: 8pt; font-weight: bold; color: rgba(255, 255, 255, 0.5); "
+            "background-color: rgba(255, 255, 255, 0.06); "
+            "border: 1px solid rgba(255, 255, 255, 0.15); "
+            "border-radius: 4px; padding: 2px 7px;"
+        )
+
     def _on_at0m_toggled(self, checked: bool) -> None:
         self.settings.setValue("enable_at0m", checked)
         self.settings.setValue("enable_vapor", checked)
         self.settings.sync()
+
+        if hasattr(self, "lbl_at0m_badge"):
+            self.lbl_at0m_badge.setText("ENABLED" if checked else "DISABLED")
+            self.lbl_at0m_badge.setStyleSheet(self._at0m_badge_style(checked))
 
         if checked:
             try:

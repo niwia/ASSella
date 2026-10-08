@@ -753,16 +753,22 @@ class DepotSelectionDialog(QDialog):
                 gridline-color: transparent;
                 outline: 0;
                 color: #FFFFFF;
+                selection-background-color: transparent;
+                selection-color: #FFFFFF;
             }}
             QTableWidget::item {{
                 padding: 6px 10px;
                 border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+                border: 1.5px solid transparent;
             }}
             QTableWidget::item:hover {{
                 background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.047);
+                border: 1.5px solid rgba(255, 255, 255, 0.10);
             }}
             QTableWidget::item:selected {{
-                background-color: {sel_bg_hex} !important;
+                background-color: rgba({accent_r}, {accent_g}, {accent_b}, 0.12) !important;
+                border: 1.5px solid {self.accent_color} !important;
+                border-radius: 4px;
                 color: #FFFFFF !important;
             }}
             QHeaderView::section {{
