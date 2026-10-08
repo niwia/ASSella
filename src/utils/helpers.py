@@ -52,6 +52,23 @@ def _get_user_dotnet_path() -> str:
         return os.path.expanduser("~/.dotnet/dotnet")
 
 
+def format_bytes(num_bytes: int) -> str:
+    """Format byte count into human-readable string (B, KB, MB, GB, TB)."""
+    try:
+        num = float(num_bytes)
+    except (ValueError, TypeError):
+        return ""
+    if num >= 1024**4:
+        return f"{num / (1024**4):.2f} TB"
+    elif num >= 1024**3:
+        return f"{num / (1024**3):.2f} GB"
+    elif num >= 1024**2:
+        return f"{num / (1024**2):.1f} MB"
+    elif num >= 1024:
+        return f"{num / 1024:.1f} KB"
+    return f"{int(num)} B"
+
+
 def is_arm64() -> bool:
     """Check if the current host architecture is ARM64 / aarch64.
 
