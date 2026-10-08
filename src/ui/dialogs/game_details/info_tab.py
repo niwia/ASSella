@@ -6,6 +6,7 @@ rollbacks, uninstallation, SLS Online, Netsock, and EOS Proxy.
 
 import os
 import re
+import time
 import platform
 import logging
 import shutil
@@ -2257,24 +2258,56 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
         refresh_dlcdata_btn_text(dialog)
 
 
+def _atomic_write_acf(acf_path: str, content: str) -> bool:
+    """Back up and atomically replace a Steam ACF.
+
+    Steam parses ``appmanifest_*.acf`` strictly; a partial write can make it drop
+    the app from the library entirely. Write to a sibling temp file, fsync, then
+    ``os.replace`` so Steam only ever observes a complete file. A timestamped
+    backup is kept because we are editing Steam's own state.
+    """
+    path = Path(acf_path)
+    if not path.exists():
+        return False
+    try:
+        stamp = int(time.time())
+        backup = path.with_suffix(path.suffix + f".assella-bak-{stamp}")
+        shutil.copy2(path, backup)
+    except Exception as e:
+        logger.warning(f"[VaporTransition] Could not back up ACF {acf_path}: {e}")
+        return False
+
+    tmp = path.with_suffix(path.suffix + f".tmp-{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        logger.warning(f"[VaporTransition] Atomic ACF write failed for {acf_path}: {e}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
+
+
 def _ensure_acf_has_installed_depots(acf_path: str, appid: str, depot_ids: list, game_data: dict) -> None:
+    """Make Steam adopt an already-downloaded (ACCELA/DepotDownloader) install.
+
+    Deliberately does NOT touch StateFlags or AutoUpdateBehavior. The files on
+    disk are current for the pinned build, so declaring "update required" only
+    invites Steam to re-fetch a manifest for content we already have. All Steam
+    ACFs on this machine sit at StateFlags=4; leaving them alone is correct.
+    """
     if not acf_path or not os.path.exists(acf_path):
         return
     try:
         with open(acf_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
-        # Update StateFlags to 6 (Fully Installed + Update Required) so Steam marks it as update available
-        if re.search(r'"StateFlags"\s*"\d+"', content):
-            content = re.sub(r'"StateFlags"\s*"\d+"', '"StateFlags"\t\t"6"', content)
-        else:
-            content = re.sub(r'("AppState"\s*\{)', r'\1\n\t"StateFlags"\t\t"6"', content)
-
-        # Set AutoUpdateBehavior to 0
-        if re.search(r'"AutoUpdateBehavior"\s*"\d+"', content):
-            content = re.sub(r'"AutoUpdateBehavior"\s*"\d+"', '"AutoUpdateBehavior"\t\t"0"', content)
-
-        has_depots = bool(re.search(r'"InstalledDepots"\s*\{[^}]*"\d+"', content))
         needs_size = False
         m_size = re.search(r'"SizeOnDisk"\s*"(\d+)"', content)
         if m_size and m_size.group(1) == "0":
@@ -2300,35 +2333,43 @@ def _ensure_acf_has_installed_depots(acf_path: str, appid: str, depot_ids: list,
             except Exception as e:
                 logger.warning(f"[VaporTransition] Error calculating size: {e}")
 
-        manifests = dict(game_data.get("manifests") or {})
-        try:
-            from managers.db_manager import DatabaseManager
-            db = DatabaseManager()
-            app_info = db.get_app_info(appid, bypass_expiration=True)
-            if app_info and app_info.get("depots"):
-                for did, dinfo in app_info["depots"].items():
-                    did_str = str(did)
-                    if did_str not in manifests and isinstance(dinfo, dict) and dinfo.get("manifests"):
-                        public_m = dinfo["manifests"].get("public")
-                        if public_m:
-                            manifests[did_str] = str(public_m)
-        except Exception:
-            pass
+        # No manifest handling here, ever.
+        #
+        # `setManifestid` in a Hubcap Lua is a *pinning* directive, not download
+        # metadata. Writing it into a Steam ACF (or config.yaml) makes Steam
+        # verify against that exact manifest, which fights the live branch and
+        # triggers needless re-downloads. Build pinning is handled exclusively by
+        # core.native_steam.steam_manifest_pinning via the ManifestIds section,
+        # and only when the user opts into "Pin build". This function therefore
+        # never reads, resolves, or writes manifest GIDs -- Steam derives them
+        # itself from the depotcache/CDN during adoption.
+        wanted = [str(d).strip() for d in (depot_ids or []) if str(d).strip() and str(d).strip() != str(appid)]
 
-        if not has_depots and depot_ids:
+        has_entries = bool(
+            re.search(r'"InstalledDepots"\s*\{[^}]*"\d+"\s*\n\s*\{', content)
+        )
+
+        if not has_entries and wanted:
             depots_lines = []
-            for did in depot_ids:
-                did_str = str(did)
-                if did_str == str(appid):
-                    continue
-                mgid = manifests.get(did_str) or "0"
-                dsize = actual_size if len(depot_ids) == 1 else (actual_size // max(1, len(depot_ids)))
+            per_depot = actual_size // max(1, len(wanted))
+            for did_str in wanted:
+                dsize = actual_size if len(wanted) == 1 else per_depot
+                # "0" tells Steam "manifest unknown, verify it yourself". This is
+                # the correct hint: Steam then matches the depot against the
+                # files already on disk instead of pinning a stale GID.
                 depots_lines.append(
-                    f'\t\t"{did_str}"\n\t\t{{\n\t\t\t"manifest"\t\t"{mgid}"\n\t\t\t"size"\t\t"{dsize}"\n\t\t}}'
+                    f'\t\t"{did_str}"\n\t\t{{\n\t\t\t"manifest"\t\t"0"\n\t\t\t"size"\t\t"{dsize}"\n\t\t}}'
                 )
             if depots_lines:
-                new_depots_block = '\t"InstalledDepots"\n\t{\n' + "\n".join(depots_lines) + '\n\t}'
-                content = re.sub(r'"InstalledDepots"\s*\{\s*\}', new_depots_block, content)
+                new_block = '\t"InstalledDepots"\n\t{\n' + "\n".join(depots_lines) + '\n\t}'
+                if re.search(r'"InstalledDepots"\s*\{\s*\}', content):
+                    content = re.sub(
+                        r'"InstalledDepots"\s*\{\s*\}', new_block.replace("\\", "\\\\"), content, count=1
+                    )
+                else:
+                    content = re.sub(
+                        r'("AppState"\s*\{)', rf'\1\n{new_block}', content, count=1
+                    )
 
         if (needs_size or not m_size) and actual_size > 0:
             if m_size:
@@ -2336,9 +2377,13 @@ def _ensure_acf_has_installed_depots(acf_path: str, appid: str, depot_ids: list,
             else:
                 content = re.sub(r'("AppState"\s*\{)', rf'\1\n\t"SizeOnDisk"\t\t"{actual_size}"', content)
 
-        with open(acf_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        logger.info(f"[VaporTransition] Updated ACF file at {acf_path} with StateFlags=6 (Update Available), InstalledDepots, and SizeOnDisk")
+        if not _atomic_write_acf(acf_path, content):
+            return
+        logger.info(
+            f"[VaporTransition] Updated ACF {acf_path}: "
+            f"{len(wanted)} depot(s) listed "
+            "(StateFlags and manifests left untouched)"
+        )
     except Exception as e:
         logger.warning(f"[VaporTransition] Graceful fallback on updating ACF {acf_path}: {e}")
 
@@ -2597,7 +2642,8 @@ def on_move_to_vapor_clicked(dialog) -> None:
     game_data["selected_branch"] = "public"
     game_data["installed_branch"] = "public"
 
-    # Ensure appmanifest ACF has StateFlags=6 (Update Available) and InstalledDepots for Steam native support.
+    # Ensure the appmanifest ACF lists the installed depots so Steam adopts the
+    # existing files. StateFlags/AutoUpdateBehavior are intentionally not touched.
     # If no ACF exists on disk, we log gracefully and fall back to triggering the install API directly without crashing.
     try:
         acf_path = game_data.get("appmanifest_path")
