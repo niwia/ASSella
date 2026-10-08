@@ -19,7 +19,7 @@ Every Lua scan in the codebase should therefore go through
 
 import bisect
 import re
-from typing import Iterator, List, Pattern, Tuple, Union
+from typing import Any, Iterator, List, Pattern, Tuple, Union
 
 __all__ = [
     "comment_spans",
