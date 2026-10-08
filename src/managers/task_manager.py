@@ -729,7 +729,7 @@ class TaskManager(QObject):
                     try:
                         game_dir = get_game_directory(dest_path, self.game_data)
                         if game_dir and os.path.isdir(game_dir):
-                            for m in (".accela", ".depotdownloader", ".ACCELA", ".DepotDownloader"):
+                            for m in (".assella", ".ASSELLA", ".accela", ".depotdownloader", ".ACCELA", ".DepotDownloader"):
                                 if os.path.exists(os.path.join(game_dir, m)):
                                     is_accela_game = True
                                     break
@@ -1842,6 +1842,15 @@ class TaskManager(QObject):
                 logger.debug(f"Delta cache seeded: {manifest_filename} → .DepotDownloader/")
             except OSError as e:
                 logger.warning(f"Failed to seed delta cache for {manifest_filename}: {e}")
+
+        # Ensure .assella marker is written for ASSella managed games
+        try:
+            marker_file = os.path.join(game_install_dir, ".assella")
+            if not os.path.exists(marker_file):
+                with open(marker_file, "w", encoding="utf-8") as f:
+                    f.write(f"appid={self.game_data.get('appid')}\n")
+        except Exception:
+            pass
 
         if seeded:
             logger.info(

@@ -993,8 +993,8 @@ class GameManager(QObject):
 
     @staticmethod
     def _get_accela_marker_path(game_path):
-        """Return the ACCELA marker folder path for a game, if present."""
-        for marker_name in (".ACCELA", ".DepotDownloader", ".accela", ".depotdownloader"):
+        """Return the ACCELA/ASSella marker folder/file path for a game, if present."""
+        for marker_name in (".assella", ".ASSELLA", ".ACCELA", ".DepotDownloader", ".accela", ".depotdownloader"):
             marker_path = os.path.join(game_path, marker_name)
             if os.path.exists(marker_path):
                 return marker_path
@@ -1971,16 +1971,20 @@ class GameManager(QObject):
                         os.remove(acf_path)
                         logger.info(f"Removed ACF file: {acf_path}")
 
-            # Clean up .DepotDownloader folder if remove_sls is True and the folder is not already removed
+            # Clean up .assella and legacy marker folders/files if remove_sls is True
             if remove_sls and install_path and os.path.exists(install_path):
-                dd_path = os.path.join(install_path, ".DepotDownloader")
-                if os.path.exists(dd_path):
-                    try:
-                        import shutil
-                        shutil.rmtree(dd_path)
-                        logger.info(f"Removed .DepotDownloader folder: {dd_path}")
-                    except Exception as e:
-                        logger.warning(f"Could not remove .DepotDownloader folder: {e}")
+                for m_name in (".assella", ".ASSELLA", ".DepotDownloader", ".accela", ".ACCELA"):
+                    m_path = os.path.join(install_path, m_name)
+                    if os.path.exists(m_path):
+                        try:
+                            import shutil
+                            if os.path.isdir(m_path):
+                                shutil.rmtree(m_path)
+                            else:
+                                os.remove(m_path)
+                            logger.info(f"Removed marker {m_name}: {m_path}")
+                        except Exception as e:
+                            logger.warning(f"Could not remove marker {m_name}: {e}")
 
             # Remove depot file
             if (

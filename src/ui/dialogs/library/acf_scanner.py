@@ -141,7 +141,7 @@ def scan_acf_files(
 
                 # Check for physical ACCELA marker on disk
                 accela_marker_path = None
-                for marker in (".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
+                for marker in (".assella", ".ASSELLA", ".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
                     cand = install_path / marker
                     if cand.exists():
                         accela_marker_path = cand

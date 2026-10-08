@@ -387,8 +387,13 @@ def ensure_depot_keys_for_app(appid: str, depot_id: Optional[str] = None) -> Tup
     except Exception as e:
         logger.debug(f"[ManifestResolver] Cached LUA parse failed: {e}")
 
-    # 3. If keys or latest_manifests still missing, fetch current bundle from Hubcap via morrenus_api
-    if not keys or (depot_id and str(depot_id) not in keys) or not latest_manifests:
+    # If depot keys are already known locally, DO NOT spend an API token downloading the bundle
+    if keys and (depot_id is None or str(depot_id) in keys):
+        logger.info(f"[ManifestResolver] Depot keys for AppID {appid} already satisfied locally ({len(keys)} keys). Skipping Hubcap API download.")
+        return keys, token, latest_manifests
+
+    # 3. Only if keys are missing locally, fetch current bundle from Hubcap via morrenus_api
+    if not keys or (depot_id and str(depot_id) not in keys):
         try:
             from core import morrenus_api
             from core.tasks.process_zip_task import ProcessZipTask

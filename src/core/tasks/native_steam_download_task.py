@@ -324,7 +324,7 @@ class NativeSteamDownloadTask(QObject):
                         game_folder = Path(dest_lib) / "steamapps" / "common" / installdir
                         if game_folder.is_dir():
                             import shutil
-                            for marker_name in (".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
+                            for marker_name in (".assella", ".ASSELLA", ".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
                                 m_path = game_folder / marker_name
                                 if m_path.exists():
                                     if m_path.is_dir():
