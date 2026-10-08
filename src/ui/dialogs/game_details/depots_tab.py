@@ -777,11 +777,17 @@ def init_depots_tab(dialog) -> None:
             if enrich_info:
                 size_str = enrich_info.get("size_str") or ""
                 if not size_str and enrich_info.get("size_bytes"):
-                    from utils.helpers import format_bytes
-                    size_str = format_bytes(enrich_info["size_bytes"])
+                    try:
+                        from utils.helpers import format_bytes
+                        size_str = format_bytes(enrich_info["size_bytes"])
+                    except Exception:
+                        size_str = str(enrich_info["size_bytes"])
                 elif not size_str and enrich_info.get("size") and str(enrich_info["size"]).isdigit():
-                    from utils.helpers import format_bytes
-                    size_str = format_bytes(int(enrich_info["size"]))
+                    try:
+                        from utils.helpers import format_bytes
+                        size_str = format_bytes(int(enrich_info["size"]))
+                    except Exception:
+                        size_str = str(enrich_info["size"])
 
             is_shared = is_depot_shared_with_other_games(d, excluding_appid=appid_str)
             depots_list.append({
