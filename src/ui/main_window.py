@@ -1773,6 +1773,9 @@ class MainWindow(QMainWindow):
         updateable_games = []
         for g in games:
             if g.get("update_status") == "update_available":
+                # AT0-M / Vapor games are managed by Steam and must not be queued for DDM
+                if g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"):
+                    continue
                 appid = str(g.get("appid", ""))
                 if self.settings.value(f"exclude_from_update_all/{appid}", False, type=bool):
                     continue

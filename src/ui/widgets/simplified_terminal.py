@@ -272,10 +272,11 @@ class SimplifiedTerminalWidget(QWidget):
             self.updates_scroll_layout.addWidget(lbl)
             return
 
-        # Only include updates for games NOT excluded from "Update All" and NOT pinned
+        # Only include updates for games NOT excluded from "Update All" and NOT pinned (AT0-M games are managed by Steam)
         games_with_updates = [
             g for g in games
             if g.get("update_status") == "update_available"
+            and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
             and not settings.value(
                 f"exclude_from_update_all/{g.get('appid', '')}", False, type=bool
             )
