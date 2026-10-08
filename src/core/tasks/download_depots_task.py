@@ -17,6 +17,7 @@ from utils.helpers import (
     ensure_dotnet_availability,
     get_dotnet_path,
     get_dotnet_env,
+    get_base_path,
 )
 from utils.settings import get_settings
 
