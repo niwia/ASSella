@@ -763,7 +763,7 @@ def init_depots_tab(dialog) -> None:
             | plugin_depots
             | set(game_keys.keys())
             | tagged_depots_from_config
-        ) - ALL_SHARED_REDISTS - {appid_str} - pure_license_dlcs
+        ) - ALL_SHARED_REDISTS - {appid_str} - dlc_id_set
 
         from utils.yaml_config_manager import is_depot_shared_with_other_games
         from managers.db_manager import DatabaseManager
@@ -839,6 +839,7 @@ def init_depots_tab(dialog) -> None:
             })
 
         return {
+            "game_name": game_name,
             "apps": apps_list,
             "depots": depots_list,
             "keys": keys_list,
@@ -1021,6 +1022,7 @@ def init_depots_tab(dialog) -> None:
     def _refresh_ui():
         """Populate table widgets with gathered data."""
         state = _collect_state()
+        game_name = state.get("game_name") or dialog.game_data.get("game_name") or f"App {appid_str}"
         live_apps = state["live_apps"]
         live_depots = state["live_depots"]
         game_keys = state["game_keys"]
@@ -1191,8 +1193,12 @@ def init_depots_tab(dialog) -> None:
             id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             # Add depot/app description tooltip for quick identification
             matching_desc = next((d["desc"] for d in state["depots"] if d["id"] == kid), None)
-            if not matching_desc and kid == appid_str:
+            if not matching_desc and (kid == appid_str or item.get("is_appkey")):
                 matching_desc = f"{game_name} (AppKey)"
+            elif not matching_desc:
+                matching_app = next((a["desc"] for a in state.get("apps", []) if a["id"] == kid), None)
+                if matching_app:
+                    matching_desc = f"{matching_app} (Key)"
             if matching_desc:
                 id_item.setToolTip(matching_desc)
             keys_table.setItem(row, 0, id_item)
@@ -1300,13 +1306,20 @@ def init_depots_tab(dialog) -> None:
                         editor.remove_app(aid)
                         removed_count += 1
 
+                # Cleanup safeguard: if base appid was accidentally in live AdditionalDepots, prune it
+                if appid_str in state["live_depots"]:
+                    editor.remove_depot(appid_str, check_shared=False)
+                    removed_count += 1
+
                 # 2. Depots (add if desired and missing, remove if unchecked and present)
                 for item in state["depots"]:
                     did = item["id"]
+                    if did == appid_str:
+                        continue  # Safeguard: AppIDs must never be in AdditionalDepots
                     desired = desired_depots.get(did, did in state["live_depots"])
                     if desired and did not in state["live_depots"]:
                         comment = f"{game_name} ({did})"
-                        editor.add_depot(did, comment=comment)
+                        editor.add_depot(did, comment=comment, app_id=appid_str)
                         added_count += 1
                     elif not desired and did in state["live_depots"]:
                         editor.remove_depot(did, check_shared=True, excluding_appid=appid_str)
@@ -1327,6 +1340,11 @@ def init_depots_tab(dialog) -> None:
                         removed_count += 1
             else:
                 # Standard locked sync: automatically add missing entries
+                # Cleanup safeguard: if base appid was accidentally in live AdditionalDepots, prune it
+                if appid_str in state["live_depots"]:
+                    editor.remove_depot(appid_str, check_shared=False)
+                    removed_count += 1
+
                 # 1. Base AppID ONLY (DLCs are never auto-added in default sync; user must unlock and manually enable them)
                 from utils.dlc_helpers import is_dlc_only_mode
                 if not is_dlc_only_mode(appid_str) and appid_str not in state["live_apps"]:
@@ -1337,9 +1355,11 @@ def init_depots_tab(dialog) -> None:
                 valid_keys = set(item["id"] for item in state["keys"] if item["key"])
                 for item in state["depots"]:
                     did = item["id"]
+                    if did == appid_str:
+                        continue  # Safeguard: AppIDs must never be in AdditionalDepots
                     if did not in state["live_depots"] and did in valid_keys:
                         comment = f"{game_name} ({did})"
-                        editor.add_depot(did, comment=comment)
+                        editor.add_depot(did, comment=comment, app_id=appid_str)
                         added_count += 1
 
                 # 3. Keys: add missing keys

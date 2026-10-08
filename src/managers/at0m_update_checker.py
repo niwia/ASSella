@@ -481,8 +481,10 @@ class At0mUpdateChecker(QObject):
                 with batch_config_edit(cfg_path) as editor:
                     for did, k in fresh_keys.items():
                         if did not in ALL_SHARED_REDISTS:
-                            editor.add_depot(did, comment=f"{game_title} ({did})")
-                            editor.add_key(did, k, comment=f"{game_title} ({did})")
+                            if did != appid_str:
+                                editor.add_depot(did, comment=f"{game_title} ({did})", app_id=appid_str)
+                            key_comment = f"{game_title} [AppKey]" if did == appid_str else f"{game_title} ({did})"
+                            editor.add_key(did, k, comment=key_comment)
 
                 if editor.has_changes:
                     SLSBridge.notify_reload()
