@@ -271,6 +271,7 @@ def make_build_card(dialog, idx: int, item: dict, current_bid: str, game_name: s
     title_lbl = QLabel(short_title)
     title_lbl.setStyleSheet("color: #FFFFFF; font-size: 10pt; font-weight: bold; border: none; background: transparent;")
     title_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+    title_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
     row1.addWidget(title_lbl, 1)
 
     if is_current:
@@ -285,6 +286,7 @@ def make_build_card(dialog, idx: int, item: dict, current_bid: str, game_name: s
             font-weight: 600;
         """)
         badge.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         row1.addWidget(badge, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     layout.addLayout(row1)
@@ -364,15 +366,38 @@ def update_card_depots(dialog, card: QFrame, build_id: str, depots: dict) -> Non
         card._depots_container.setVisible(False)
         return
 
-    d_items = list(filtered.items())
-    for did, dinfo in d_items[:3]:
+    game_name = (dialog.game_data.get("game_name") or "") if hasattr(dialog, "game_data") else ""
+
+    # Sort so base game depots come FIRST, and DLC depots come after
+    d_items = sorted(
+        filtered.items(),
+        key=lambda item: (
+            bool((item[1].get("details") or {}).get("is_dlc")),
+            int(item[0]) if str(item[0]).isdigit() else 999999999,
+        ),
+    )
+
+    # Show at most 2 compact preview pills on the card so it never overflows the dialog viewport
+    max_pills = 2
+    for did, dinfo in d_items[:max_pills]:
         det = dinfo.get("details") or {}
         mid = dinfo.get("manifest_id") or ""
         os_icon = det.get("os_icon") or "📦"
         dname = det.get("name") or f"Depot {did}"
-        pill_txt = f"{os_icon} {did} • {dname}"
-        if len(pill_txt) > 28:
-            pill_txt = pill_txt[:26] + "…"
+
+        # Strip game name prefix if present to keep preview pill compact
+        if game_name:
+            for sep in (" - ", ": ", " – ", " — ", " / ", " "):
+                prefix = game_name + sep
+                if dname.lower().startswith(prefix.lower()):
+                    dname = dname[len(prefix):].strip()
+                    break
+
+        label_type = "DLC" if det.get("is_dlc") else did
+        pill_txt = f"{os_icon} {label_type} • {dname}"
+        if len(pill_txt) > 22:
+            pill_txt = pill_txt[:20] + "…"
+
         lbl = QLabel(pill_txt)
         lbl.setStyleSheet("""
             QLabel {
@@ -387,8 +412,8 @@ def update_card_depots(dialog, card: QFrame, build_id: str, depots: dict) -> Non
         lbl.setToolTip(f"Depot: {did} ({det.get('os_badge', 'Content')})\nName: {det.get('name', dname)}\nManifest: {mid}")
         card._depots_layout.addWidget(lbl)
 
-    if len(d_items) > 3:
-        more_lbl = QLabel(f"+{len(d_items) - 3} more")
+    if len(d_items) > max_pills:
+        more_lbl = QLabel(f"+{len(d_items) - max_pills} more")
         more_lbl.setStyleSheet("""
             QLabel {
                 background-color: rgba(255, 255, 255, 0.03);
