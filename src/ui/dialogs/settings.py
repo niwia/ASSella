@@ -676,11 +676,54 @@ class SettingsDialog(QDialog):
         tabs.toggle_api_key_visibility(input_field, toggle_btn)
 
     # ── Dialog Lifecycle & Persistence ────────────────────────────────────
+    def _stop_background_workers(self, timeout_ms: int = 5000) -> None:
+        """Wait out any running QThread before this dialog is destroyed.
+
+        A QThread that is still running when its parent QObject is destroyed
+        makes Qt abort the whole process ("QThread: Destroyed while thread is
+        still running") - a hard crash, not an exception, so nothing upstream
+        can catch it. The optional-components card starts a background manifest
+        fetch as soon as the Tools tab is shown, so closing Settings quickly
+        after opening that tab hits this reliably.
+        """
+        workers = []
+        worker = getattr(self, "_manifest_worker", None)
+        if worker is not None:
+            workers.append(worker)
+        for worker in (getattr(self, "_component_workers", None) or {}).values():
+            if worker is not None:
+                workers.append(worker)
+
+        for w in workers:
+            try:
+                if w.isRunning():
+                    w.requestInterruption()
+            except RuntimeError:
+                # Already torn down; nothing to wait for.
+                pass
+
+        for w in workers:
+            try:
+                if w.isRunning() and not w.wait(timeout_ms):
+                    logger.warning(
+                        "[Settings] Background worker still running after %dms; "
+                        "detaching it so Qt does not abort on teardown.",
+                        timeout_ms,
+                    )
+            except RuntimeError:
+                pass
+
+    def closeEvent(self, event) -> None:
+        """Ensure no worker thread outlives this dialog."""
+        self._stop_background_workers()
+        super().closeEvent(event)
+
     def accept(self) -> None:
         """Save all settings and close."""
         try:
             if hasattr(self, "service_poll_timer") and self.service_poll_timer:
                 self.service_poll_timer.stop()
+            self._stop_background_workers()
             self._save_general_settings()
             self._save_download_settings()
             self._save_vapor_settings()
@@ -700,6 +743,7 @@ class SettingsDialog(QDialog):
 
     def reject(self) -> None:
         """Revert settings on cancel."""
+        self._stop_background_workers()
         self.settings.setValue("morrenus_api_key", self._original_morrenus_key)
         self.settings.setValue("titlebar_position", self._original_titlebar_position)
         if self.main_window and hasattr(self.main_window, "reposition_titlebar"):

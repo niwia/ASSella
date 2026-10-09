@@ -1569,7 +1569,10 @@ class TaskManager(
         ):
             return
 
-        self.slssteam_download_task = DownloadSLSsteamTask(steam_path=steam_path)
+        # DownloadSLSsteamTask does not exist anywhere in the tree and nothing
+        # calls this method (download_slssteam_button is only ever set to None).
+        # Dead code kept for now rather than deleted blind - see #TODO(slssteam-dl).
+        self.slssteam_download_task = DownloadSLSsteamTask(steam_path=steam_path)  # noqa: F821
         self.slssteam_download_task.progress.connect(self._handle_slssteam_progress)
         self.slssteam_download_task.progress_percentage.connect(
             self._handle_slssteam_progress_percentage

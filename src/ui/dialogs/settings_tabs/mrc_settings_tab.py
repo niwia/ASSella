@@ -566,38 +566,10 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     launch_welcome_btn.clicked.connect(_on_launch_welcome)
     t_grid.addWidget(launch_welcome_btn, 0, 2)
 
-    # 2. Training Wheels Protocol (TWP)
-    twp_seen = settings.value("assella_twp_seen", False, type=bool)
-    twp_status = QLabel("TWP: " + ("Seen" if twp_seen else "Will show next boot"))
-    twp_status.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
-    t_grid.addWidget(twp_status, 1, 0)
-
-    reset_twp_btn = QPushButton("Reset (Show Next Boot)")
-    reset_twp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    reset_twp_btn.setStyleSheet("font-size: 8.5pt; padding: 4px 10px;")
-    def _on_reset_twp():
-        settings.setValue("assella_twp_seen", False)
-        settings.sync()
-        twp_status.setText("TWP: Will show next boot")
-        twp_status.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: 500;")
-        QMessageBox.information(dialog, "Training Wheels", "Training Wheels Protocol reset!\nIt will trigger on the next launch.")
-    reset_twp_btn.clicked.connect(_on_reset_twp)
-    t_grid.addWidget(reset_twp_btn, 1, 1)
-
-    launch_twp_btn = QPushButton("Launch TWP Now")
-    launch_twp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    launch_twp_btn.setStyleSheet("font-size: 8.5pt; padding: 4px 10px;")
-    def _on_launch_twp():
-        from ui.dialogs.training_wheels import TrainingWheelsDialog
-        t_dlg = TrainingWheelsDialog(dialog)
-        t_dlg.exec()
-    launch_twp_btn.clicked.connect(_on_launch_twp)
-    t_grid.addWidget(launch_twp_btn, 1, 2)
-
-    # 3. Clear Build ID & Update Cache
+    # 2. Clear Build ID & Update Cache
     cache_lbl = QLabel("Update & Build ID Cache:")
     cache_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
-    t_grid.addWidget(cache_lbl, 2, 0)
+    t_grid.addWidget(cache_lbl, 1, 0)
 
     clear_cache_btn = QPushButton("Clear Cache")
     clear_cache_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -631,12 +603,12 @@ def create_mrc_settings_tab(dialog) -> QWidget:
             "Fresh live data will be queried next time you check for updates or open game details."
         )
     clear_cache_btn.clicked.connect(_on_clear_cache)
-    t_grid.addWidget(clear_cache_btn, 2, 1)
+    t_grid.addWidget(clear_cache_btn, 1, 1)
 
-    # 4. Lock Secret Menu & Seasonal Theme
+    # 3. Lock Secret Menu & Seasonal Theme
     lock_lbl = QLabel("Secret Menu:")
     lock_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
-    t_grid.addWidget(lock_lbl, 3, 0)
+    t_grid.addWidget(lock_lbl, 2, 0)
 
     lock_menu_btn = QPushButton("Lock Testing Menu")
     lock_menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -663,7 +635,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
             "The secret Testing menu has been locked!\nIt will be hidden when Settings is reopened.\n(Enter the cheatcode again to unlock)"
         )
     lock_menu_btn.clicked.connect(_on_lock_menu)
-    t_grid.addWidget(lock_menu_btn, 3, 1)
+    t_grid.addWidget(lock_menu_btn, 2, 1)
 
     reset_theme_btn = QPushButton("Reset Seasonal Theme")
     reset_theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -673,12 +645,12 @@ def create_mrc_settings_tab(dialog) -> QWidget:
         settings.sync()
         QMessageBox.information(dialog, "Seasonal Theme", "Seasonal theme auto-activation flag reset.")
     reset_theme_btn.clicked.connect(_on_reset_theme)
-    t_grid.addWidget(reset_theme_btn, 3, 2)
+    t_grid.addWidget(reset_theme_btn, 2, 2)
 
-    # 5. Byparr Cloudflare Solver
+    # 4. Byparr Cloudflare Solver
     byparr_lbl = QLabel("Byparr Solver:")
     byparr_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
-    t_grid.addWidget(byparr_lbl, 4, 0)
+    t_grid.addWidget(byparr_lbl, 3, 0)
 
     install_byparr_btn = QPushButton("Install Byparr (Cloudflare Solver)")
     install_byparr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -707,11 +679,11 @@ def create_mrc_settings_tab(dialog) -> QWidget:
         ]
         launch_terminal_command(cmd, os.path.expanduser("~"))
     install_byparr_btn.clicked.connect(_on_install_byparr)
-    t_grid.addWidget(install_byparr_btn, 4, 1, 1, 2)
+    t_grid.addWidget(install_byparr_btn, 3, 1, 1, 2)
 
     test_layout.addLayout(t_grid)
 
-    # 6. Testing Toggles: SteamDB Scraping & Demo Mode
+    # 5. Testing Toggles: SteamDB Scraping & Demo Mode
     sep_line = QFrame()
     sep_line.setFrameShape(QFrame.Shape.HLine)
     sep_line.setStyleSheet("background-color: rgba(255, 255, 255, 0.08); margin: 6px 0;")

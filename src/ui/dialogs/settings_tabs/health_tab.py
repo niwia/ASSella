@@ -612,7 +612,6 @@ def apply_health_recommended_settings(dialog) -> None:
     dialog.settings.setValue("generate_achievements", False)
     dialog.settings.setValue("hide_macos_depots", True)
     dialog.settings.setValue("hide_android_depots", True)
-    dialog.settings.setValue("assella_twp_seen", True)
     dialog.settings.sync()
 
     if hasattr(dialog, "smart_depot_selection_checkbox") and dialog.smart_depot_selection_checkbox:

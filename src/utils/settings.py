@@ -129,12 +129,6 @@ def check_and_apply_halloween_theme(settings: QSettings) -> bool:
     return False
 
 
-def is_twp_needed() -> bool:
-    """True if the Training Wheels Protocol should be shown (first ASSella launch / transition from ACCELA)."""
-    s = get_settings()
-    return not s.value("assella_twp_seen", False, type=bool)
-
-
 def is_canary_welcome_needed() -> bool:
     """True if the Canary Welcome Slideshow should be shown (first Canary launch / onboarding)."""
     s = get_settings()

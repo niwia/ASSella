@@ -1277,8 +1277,21 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
         return False, "Config is up to date and healthy!", []
 
 
-def repair_and_sync_config(config_path: Optional[Path] = None, online: bool = True) -> Tuple[bool, str, Optional[Path]]:
-    """Repair and synchronize config with upstream template in-place."""
+def repair_and_sync_config(
+    config_path: Optional[Path] = None,
+    online: bool = True,
+    template_url: str = TEMPLATE_SOURCE_URL,
+) -> Tuple[bool, str, Optional[Path]]:
+    """Repair and synchronize config with upstream template in-place.
+
+    ``template_url`` was previously referenced inside the ``online`` branch but
+    was not a parameter, so the lookup raised NameError. The bare
+    ``except Exception: pass`` around that block swallowed it, which meant the
+    "fetch the current template from upstream" path never actually ran and it
+    silently fell through to the bundled local template every time. Settings ->
+    Health -> Repair, the training-wheels dialog and the Asshead migration all
+    take this path.
+    """
     if config_path is None:
         try:
             from utils.yaml_config_manager import get_user_config_path
@@ -1377,7 +1390,8 @@ def has_config_backup(config_path: Optional[Path] = None) -> bool:
 
 
 def run_asshead_migration(config_path: Path, template_url: str = TEMPLATE_SOURCE_URL) -> tuple[bool, str, Optional[Path]]:
-    return repair_and_sync_config(config_path, online=True)
+    # template_url used to be accepted and then dropped on the floor.
+    return repair_and_sync_config(config_path, online=True, template_url=template_url)
 
 
 # ──────────────────────────────────────────────────────────────

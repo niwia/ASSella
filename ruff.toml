@@ -19,9 +19,10 @@ exclude = ["src/deps", ".venv", "__pycache__"]
 select = ["F821", "F823", "F811", "TC003"]
 
 [lint.per-file-ignores]
-# Modules outside the current lint scope. Each still contains real undefined
-# names that are tracked separately; they are excluded here so the F821 gate
-# stays enforceable for the rest of the tree.
-"src/core/tasks/native_steam_download_task.py" = ["F821"]
-"src/managers/task_manager.py" = ["F821"]
-"src/utils/assfixer.py" = ["F821"]
+# Intentionally empty.
+#
+# This used to blanket-exclude three files from the F821 gate, which hid a live
+# NameError in utils/assfixer.py (the Settings -> Health -> Repair path) behind
+# a bare `except Exception: pass`. A file-wide ignore cannot be reviewed; a
+# targeted `# noqa: F821` on the offending line can. Add an entry here only
+# with a comment saying exactly what is wrong and why it is not being fixed.
