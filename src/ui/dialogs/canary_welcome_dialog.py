@@ -447,7 +447,7 @@ class CanaryWelcomeDialog(QDialog):
     def _start_gif(self) -> None:
         gif_candidates = [
             Paths.resource("intro/skyrim_awake.gif"),
-            Path("/home/aiwin/Pictures/hey-you-youre-finally-awake-skyrim.gif"),
+            Path.home() / "Pictures" / "hey-you-youre-finally-awake-skyrim.gif",
         ]
 
         target_path = None
