@@ -80,15 +80,10 @@ def create_tools_tab(dialog) -> QWidget:
     dialog.steamless_py_btn.clicked.connect(lambda: run_steamless_aio_manually(dialog))
     tools_btn_row.addWidget(dialog.steamless_py_btn)
 
-    from utils.component_manager import is_component_available
-    if is_component_available("steamless"):
-        dialog.steamless_legacy_btn = QPushButton("Steamless (.NET CLI)")
-        dialog.steamless_legacy_btn.setToolTip("Run Steamless (.NET 9 CLI) manually on a game .exe.")
-    else:
-        dialog.steamless_legacy_btn = QPushButton("Download Steamless (.NET CLI)")
-        dialog.steamless_legacy_btn.setToolTip("Download Steamless (.NET CLI) from Optional Components below.")
+    dialog.steamless_legacy_btn = QPushButton("Steamless (.NET CLI)")
     dialog.steamless_legacy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.steamless_legacy_btn.setStyleSheet(tool_btn_style)
+    dialog.steamless_legacy_btn.setToolTip("Run Steamless (.NET 9 CLI) manually on a game .exe.")
     dialog.steamless_legacy_btn.clicked.connect(lambda: run_steamless_manually(dialog))
     tools_btn_row.addWidget(dialog.steamless_legacy_btn)
 

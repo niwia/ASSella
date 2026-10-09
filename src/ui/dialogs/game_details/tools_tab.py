@@ -245,26 +245,16 @@ def init_tools_tab(dialog) -> None:
     dialog.gb_apply_btn.clicked.connect(_apply_gb)
     dialog.gb_remove_btn.clicked.connect(_remove_gb)
 
-    # The button only makes sense once the component is downloaded; reflect that
-    # so the row does not advertise an action that will bounce the user away.
+    dialog.gb_apply_btn.setText("Apply Goldberg")
+    dialog.gb_apply_btn.setToolTip("Apply Goldberg Steam emulator to this game")
     if is_component_available("goldberg"):
-        dialog.gb_apply_btn.setText("Apply Goldberg")
-        dialog.gb_apply_btn.setToolTip("Apply Goldberg Steam emulator to this game")
         dialog.gb_remove_btn.setToolTip("Remove Goldberg Steam emulator from this game")
     else:
-        dialog.gb_apply_btn.setText("Download Goldberg")
-        dialog.gb_apply_btn.setToolTip(
-            "Download Goldberg from Settings -> Tools, then apply it here."
-        )
         dialog.gb_remove_btn.setToolTip("Goldberg is not downloaded on this machine.")
         dialog.gb_remove_btn.setEnabled(False)
 
-    if is_component_available("steamless"):
-        dialog.b_steamless_cli.setText("Steamless (.NET CLI)")
-        dialog.b_steamless_cli.setToolTip("Remove Steam DRM using .NET 9 Steamless CLI")
-    else:
-        dialog.b_steamless_cli.setText("Download Steamless (.NET CLI)")
-        dialog.b_steamless_cli.setToolTip("Download Steamless from Settings -> Tools, then run it here.")
+    dialog.b_steamless_cli.setText("Steamless (.NET CLI)")
+    dialog.b_steamless_cli.setToolTip("Remove Steam DRM using .NET 9 Steamless CLI")
 
     gb_row_widget = QWidget()
     gb_row = QHBoxLayout(gb_row_widget)

@@ -4,11 +4,14 @@ Extracted from ``managers/task_manager.py``. Composed back into TaskManager via
 ``AchievementsMixin`` so the public API is unchanged.
 """
 
+import json
 import logging
 import os
+import re
+import threading
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from typing import Optional, Tuple
 
 from PyQt6.QtCore import QTimer, QMetaObject, Qt, pyqtSlot, pyqtSignal

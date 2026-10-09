@@ -337,7 +337,6 @@ class TaskManager(
     def _show_depot_selection_dialog(self):
         # Deferred import to prevent circular dependency
         from ui.dialogs.depotselection import DepotSelectionDialog
-        import json
 
         game_data = self.game_data
         if not game_data:

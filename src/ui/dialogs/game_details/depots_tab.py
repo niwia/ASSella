@@ -618,7 +618,6 @@ def init_depots_tab(dialog) -> None:
         except Exception:
             pass
 
-    import threading
     threading.Thread(target=_check_hubcap_quota_async, daemon=True).start()
 
     tab_container = QWidget()
@@ -1591,6 +1590,7 @@ def init_depots_tab(dialog) -> None:
                                     lib = load_plugin_library()
                                     rec = lib.get(appid_str)
                                     is_dlc_only = rec.get("dlc_only", False) if rec else False
+                                    game_name = dialog.game_data.get("game_name") or f"App {appid_str}"
 
                                     if cfg_path and cfg_path.exists():
                                         with batch_config_edit(cfg_path) as editor:
