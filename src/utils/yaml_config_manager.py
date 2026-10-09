@@ -1268,11 +1268,10 @@ class BatchConfigEditor:
         return False
 
     def remove_dlc(
-        self, parent_app_id: Union[str, int], dlc_id: Union[str, int]
+        self, parent_app_id: Union[str, int], dlc_id: Optional[Union[str, int]] = None
     ) -> bool:
         parent_str = _sanitize_id(parent_app_id)
-        dlc_str = _sanitize_id(dlc_id)
-        if not parent_str or not dlc_str:
+        if not parent_str:
             return False
         bounds = _get_section_bounds(self.content, "DlcData")
         if not bounds:
@@ -1284,6 +1283,7 @@ class BatchConfigEditor:
         if not parent_match:
             return False
 
+        p_line_start = dlc_start + parent_match.start()
         p_start = dlc_start + parent_match.end()
         if p_start < len(self.content) and self.content[p_start] == "\r":
             p_start += 1
@@ -1292,13 +1292,23 @@ class BatchConfigEditor:
 
         p_after = self.content[p_start:dlc_end]
         next_parent = re.search(r"^[ \t]+[0-9A-Za-z_]+:[ \t]*(?:#[^\r\n]*)?$", p_after, re.MULTILINE)
-        parent_end = (p_start + next_parent.start()) if next_parent else dlc_end
+        p_block_end = (p_start + next_parent.start()) if next_parent else dlc_end
+
+        if dlc_id is None:
+            # Remove entire parent section
+            self.content = self.content[:p_line_start] + self.content[p_block_end:]
+            self.has_changes = True
+            return True
+
+        dlc_str = _sanitize_id(dlc_id)
+        if not dlc_str:
+            return False
 
         dlc_item_pattern = re.compile(
             rf'^[ \t]*{re.escape(dlc_str)}[ \t]*:[ \t]*"[^"\r\n]*"(?:#[^\r\n]*)?$',
             re.MULTILINE,
         )
-        parent_block = self.content[p_start:parent_end]
+        parent_block = self.content[p_start:p_block_end]
         match = dlc_item_pattern.search(parent_block)
         if not match:
             return False
@@ -1338,11 +1348,45 @@ class BatchConfigEditor:
         if not app_id_str:
             return False
         pattern = re.compile(
-            rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
+            rf"^[ \t]*(?:['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+|[^\r\n#:]+[ \t]*:[ \t]*['\"]?{re.escape(app_id_str)}['\"]?)(?:#[^\r\n]*)?$",
             re.MULTILINE,
         )
         new_content, removed = _remove_entry_in_memory(
             self.content, "FakeAppIds", pattern
+        )
+        if removed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def remove_app_token(self, app_id: Union[str, int]) -> bool:
+        app_id_str = _sanitize_id(app_id)
+        if not app_id_str:
+            return False
+        pattern = re.compile(
+            rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        new_content, removed = _remove_entry_in_memory(
+            self.content, "AppTokens", pattern
+        )
+        if removed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    def remove_secondary_entry(self, section_name: str, item_id: Union[str, int]) -> bool:
+        item_id_str = _sanitize_id(item_id)
+        if not item_id_str:
+            return False
+        pattern = re.compile(
+            rf"^[ \t]*(?:-[ \t]*)?['\"]?{re.escape(item_id_str)}['\"]?[ \t]*(?::[^\r\n#]*|$)(?:#[^\r\n]*)?$",
+            re.MULTILINE,
+        )
+        new_content, removed = _remove_entry_in_memory(
+            self.content, section_name, pattern
         )
         if removed:
             self.content = new_content
@@ -1924,6 +1968,93 @@ def has_game_config_entries(
     return False
 
 
+def has_game_decryption_keys(
+    appid: Union[str, int], game_data: Optional[Dict[str, Any]] = None
+) -> bool:
+    """Check if an ASSella-mode game has an active, non-shared DecryptionKey in SLSsteam config.yaml.
+    Strictly ignores universal shared redistributables.
+
+    Returns True if:
+      - The root AppKey (appid) is present in DecryptionKeys (non-shared)
+      - Any known non-shared depot belonging to this game has a key in DecryptionKeys
+      - Any non-shared key entry in DecryptionKeys has a comment explicitly referencing
+        the AppID or game name
+    """
+    appid_str = str(appid).strip()
+    if not appid_str or not appid_str.isdigit():
+        return False
+
+    cfg_path = get_user_config_path()
+    if not cfg_path or not cfg_path.exists():
+        return False
+
+    try:
+        from ui.assets import DEPOT_BLACKLIST
+        all_shared = {str(d) for d in DEPOT_BLACKLIST} | SHARED_REDISTS
+    except Exception:
+        all_shared = SHARED_REDISTS
+
+    live_keys = get_decryption_keys(cfg_path)
+    if not live_keys:
+        return False
+
+    # 1. Root AppKey in DecryptionKeys (strictly non-shared)
+    if appid_str in live_keys and appid_str not in all_shared:
+        return True
+
+    # 2. Collect known depots for this game
+    game_depots: Set[str] = set()
+    gd = game_data or {}
+    if gd.get("depots"):
+        game_depots.update(str(d).strip() for d in gd["depots"].keys())
+
+    try:
+        from managers.depot_key_manager import DepotKeyManager
+        dkm = DepotKeyManager.get_instance()
+        local_keys = dkm.get_keys_for_app(appid_str)
+        if local_keys:
+            game_depots.update(str(d).strip() for d in local_keys.keys())
+    except Exception:
+        pass
+
+    try:
+        from utils.plugin_games import load_plugin_library
+        lib = load_plugin_library()
+        if appid_str in lib:
+            game_depots.update(str(d).strip() for d in lib[appid_str].get("depots", []))
+            game_depots.update(str(d).strip() for d in lib[appid_str].get("keys", {}).keys())
+    except Exception:
+        pass
+
+    non_shared_game_depots = (game_depots - all_shared) - {appid_str}
+    if any(d in live_keys for d in non_shared_game_depots):
+        return True
+
+    # 3. Check inline comments in DecryptionKeys specifically referencing appid_str or game_name
+    try:
+        txt = cfg_path.read_text(encoding="utf-8", errors="ignore")
+        bounds = _get_section_bounds(txt, "DecryptionKeys")
+        if bounds:
+            sec_text = txt[bounds[1]:bounds[2]]
+            game_name = (
+                (gd.get("game_name") or gd.get("name") or "").strip().lower()
+                if gd else ""
+            )
+            for line in sec_text.splitlines():
+                m = re.match(r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[ \t]*(.*))?$", line)
+                if m:
+                    item_id, comment = m.group(1), (m.group(2) or "").lower()
+                    if item_id in all_shared:
+                        continue
+                    if appid_str in comment or (game_name and len(game_name) > 3 and game_name in comment):
+                        return True
+    except Exception:
+        pass
+
+    return False
+
+
+
 
 def add_additional_depot(
     config_path: Path,
@@ -2461,7 +2592,7 @@ def remove_fake_app_id(config_path: Path, app_id: str, fake_appid: str = "") -> 
         )
     else:
         app_id_pattern = re.compile(
-            rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:[ \t]*[^\r\n#]+[ \t]*(?:#[^\r\n]*)?$",
+            rf"^[ \t]*(?:['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:[ \t]*[^\r\n#]+|[^\r\n#:]+[ \t]*:[ \t]*['\"]?{re.escape(str(app_id))}['\"]?)[ \t]*(?:#[^\r\n]*)?$",
             re.MULTILINE,
         )
     return _remove_entry_from_section(

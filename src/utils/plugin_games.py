@@ -19,6 +19,7 @@ from utils.helpers import get_base_path
 from utils.sls_bridge import SLSBridge
 from utils.yaml_config_manager import (
     SHARED_REDISTS,
+    _get_section_bounds,
     add_additional_app,
     add_additional_depot,
     add_decryption_key,
@@ -255,24 +256,63 @@ def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool
     """
     appid_str = str(appid).strip()
     lib = load_plugin_library()
-    if appid_str not in lib:
-        logger.debug(f"[PluginGames] AppID '{appid_str}' not in plugin library")
-        return False
-
-    target_game = lib.pop(appid_str)
-    save_plugin_library(lib)
+    target_game = lib.pop(appid_str, None)
+    if target_game:
+        save_plugin_library(lib)
+    else:
+        target_game = {"appid": appid_str, "name": ""}
 
     # Collect depots, keys, and DLC AppIDs still required by remaining games
     remaining_depots: Set[str] = set()
     remaining_keys: Set[str] = set()
     remaining_dlc_appids: Set[str] = set()
     for g in lib.values():
-        remaining_depots.update(g.get("depots", []))
-        remaining_keys.update(g.get("keys", {}).keys())
-        remaining_dlc_appids.update(g.get("dlc_appids", []))
+        remaining_depots.update(str(d) for d in g.get("depots", []))
+        remaining_keys.update(str(k) for k in g.get("keys", {}).keys())
+        remaining_dlc_appids.update(str(a) for a in g.get("dlc_appids", []))
+
+    # Discover all candidate depots and keys for the target game
+    target_depots: Set[str] = {str(d) for d in target_game.get("depots", [])}
+    target_keys: Set[str] = {str(d) for d in target_game.get("keys", {}).keys()}
+    target_keys.add(appid_str)  # Root AppKey in DecryptionKeys
+
+    # Also discover depots from local SQLite DB for this appid
+    try:
+        from managers.depot_key_manager import DepotKeyManager
+        dkm = DepotKeyManager.get_instance()
+        local_keys = dkm.get_keys_for_app(appid_str) or {}
+        for did in local_keys.keys():
+            did_str = str(did).strip()
+            if did_str:
+                target_depots.add(did_str)
+                target_keys.add(did_str)
+    except Exception:
+        pass
 
     cfg_path = get_user_config_path()
     if cfg_path.exists():
+        # Scan config.yaml comments for depots/keys mentioning appid_str or game_name
+        try:
+            txt = cfg_path.read_text(encoding="utf-8", errors="ignore")
+            gname = (target_game.get("name") or "").strip().lower()
+            for sec in ("AdditionalDepots", "DecryptionKeys"):
+                bounds = _get_section_bounds(txt, sec)
+                if not bounds:
+                    continue
+                for line in txt[bounds[1]:bounds[2]].splitlines():
+                    m = re.match(r"^[ \t]*-[ \t]*['\"]?(\d+)['\"]?[ \t]*(?:#[ \t]*(.*))?$", line)
+                    if not m:
+                        m = re.match(r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[ \t]*(.*))?$", line)
+                    if m:
+                        item_id, comment = m.group(1), (m.group(2) or "").lower()
+                        if appid_str in comment or (gname and len(gname) > 3 and gname in comment):
+                            if sec == "AdditionalDepots":
+                                target_depots.add(item_id)
+                            else:
+                                target_keys.add(item_id)
+        except Exception as e:
+            logger.debug(f"[PluginGames] Error scanning config comments: {e}")
+
         with batch_config_edit(cfg_path) as editor:
             if keep_in_additional_apps:
                 # Ensure the game remains/is added in AdditionalApps for ACCELA mode
@@ -292,20 +332,54 @@ def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool
                 if not target_game.get("dlc_only"):
                     editor.remove_app(appid_str)
 
+                # 1c. Remove FakeAppIds, AppTokens, LaunchOptions, and DlcData
+                editor.remove_fake_app_id(appid_str)
+                editor.remove_app_token(appid_str)
+                editor.remove_launch_option(appid_str)
+                editor.remove_dlc(appid_str)
+                for dlc_id in target_game.get("dlc_appids", []):
+                    editor.remove_fake_app_id(dlc_id)
+                    editor.remove_app_token(dlc_id)
+                    editor.remove_launch_option(dlc_id)
+
+                # 1d. Remove secondary sections (GameTitles, ManifestIds, CDKeys, etc.)
+                for sec in (
+                    "GameTitles",
+                    "ManifestIds",
+                    "DepotBlacklist",
+                    "CDKeys",
+                    "FakeOffline",
+                    "SubscriptionTimestamps",
+                    "DenuvoGames",
+                ):
+                    editor.remove_secondary_entry(sec, appid_str)
+                    for dlc_id in target_game.get("dlc_appids", []):
+                        editor.remove_secondary_entry(sec, dlc_id)
+                    for did in target_depots:
+                        editor.remove_secondary_entry(sec, did)
+
             # 2. Remove depots that are not shared with any other registered game
-            for did in target_game.get("depots", []):
+            for did in target_depots:
                 if did not in remaining_depots:
                     editor.remove_depot(did, check_shared=True, excluding_appid=appid_str)
 
             # 3. Remove decryption keys that are not shared
-            for did in target_game.get("keys", {}).keys():
+            for did in target_keys:
                 if did not in remaining_keys:
                     editor.remove_key(did, check_shared=True, excluding_appid=appid_str)
 
-        # 4. Notify bridge / SLSsteam of update
+        # 4. Remove any pinned build manifests for this game's depots
+        try:
+            from core.native_steam.steam_manifest_pinning import remove_manifest_ids
+            remove_manifest_ids(cfg_path, list(target_depots))
+        except Exception as e:
+            logger.debug(f"[PluginGames] Error removing pinned manifests for {appid_str}: {e}")
+
+        # 5. Notify bridge / SLSsteam of update
         SLSBridge.notify_reload()
 
-    logger.info(f"[PluginGames] Successfully unregistered '{target_game.get('name')}' ({appid_str}) [keep_apps={keep_in_additional_apps}]")
+    game_label = target_game.get("name") or appid_str
+    logger.info(f"[PluginGames] Successfully unregistered '{game_label}' ({appid_str}) [keep_apps={keep_in_additional_apps}]")
     return True
 
 

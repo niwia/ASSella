@@ -10,6 +10,7 @@ from typing import List, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from utils.activity import is_our_logger
 from utils.helpers import get_base_path
 
 # Constants
@@ -100,9 +101,20 @@ class SanitizingFormatter(logging.Formatter):
 
 
 class QtLogHandler(QObject, logging.Handler):
-    """Custom logging handler that emits signals to Qt widgets."""
+    """Emit log records to Qt widgets with their structure intact.
 
-    new_record = pyqtSignal(str)
+    Emits a dict, not a pre-rendered string. The status pager used to
+    substring-match the formatted text against a list of "interesting" keywords,
+    which silently dropped real events when wording changed and flickered noise
+    whenever a message happened to contain a word like "run". Carrying the
+    level and the ``user_visible``/``category`` fields lets the widget select on
+    intent instead of guessing from prose.
+
+    Keys: ``text``, ``level``, ``levelname``, ``user_visible``, ``category``,
+    ``logger``.
+    """
+
+    new_record = pyqtSignal(object)
     flushOnClose = False
 
     def __init__(self):
@@ -114,9 +126,28 @@ class QtLogHandler(QObject, logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            msg = self.format(record)
-            msg = SensitiveDataFilter.sanitize_text(msg)
-            self.new_record.emit(msg)
+            text = SensitiveDataFilter.sanitize_text(self.format(record))
+            explicit = getattr(record, "user_visible", None)
+            if explicit is None:
+                # No explicit intent on the record. Show our own INFO and above,
+                # but never a dependency: a third-party warning carries message
+                # shapes we do not control and belongs in the file, not a
+                # user-facing strip.
+                visible = (
+                    record.levelno >= logging.INFO
+                    and is_our_logger(record.name)
+                )
+            else:
+                visible = bool(explicit)
+            payload = {
+                "text": text,
+                "level": record.levelno,
+                "levelname": record.levelname,
+                "user_visible": visible,
+                "category": getattr(record, "category", "general"),
+                "logger": record.name,
+            }
+            self.new_record.emit(payload)
         except RuntimeError:
             pass
 
@@ -250,24 +281,37 @@ def update_log_filters():
             if not has_sensitive_filter:
                 handler.addFilter(SensitiveDataFilter())
 
-            # Add updated category and level filter
-            handler.addFilter(LogCategoryFilter(level_str, category_str))
+            # The file is the bug-report artifact. It keeps redaction but opts
+            # out of the display filters: applying the user's on-screen level or
+            # category to it would strip DEBUG from the very file people attach
+            # when asking for help. Both are display concerns.
+            is_file = isinstance(handler, LineRotatingFileHandler)
 
-            # Update handler level
-            if level_str.upper() == "NONE":
-                level_num = 100
+            if not is_file:
+                handler.addFilter(LogCategoryFilter(level_str, category_str))
+                if level_str.upper() == "NONE":
+                    level_num = 100
+                else:
+                    level_num = getattr(logging, level_str.upper(), logging.INFO)
+                handler.setLevel(level_num)
             else:
-                level_num = getattr(logging, level_str.upper(), logging.INFO)
-            handler.setLevel(level_num)
+                handler.setLevel(logging.DEBUG)
 
     except Exception as e:
         print(f"Error updating log filters: {e}", file=sys.stderr)
 
 
 def _create_file_handler(log_path: Path) -> Optional[LineRotatingFileHandler]:
-    """Attempt to create a line rotating file handler at the specified path."""
+    """Attempt to create a line rotating file handler at the specified path.
+
+    The file is pinned to DEBUG and deliberately does NOT follow the user's
+    display level: it is the artifact attached to a bug report, so thinning it
+    based on a cosmetic preference loses exactly the detail needed to diagnose
+    the problem. The console and the status pager are what that setting is for.
+    """
     formatter = SanitizingFormatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        "%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)-34s | %(message)s",
+        datefmt="%H:%M:%S",
     )
     try:
         handler = LineRotatingFileHandler(
@@ -277,7 +321,7 @@ def _create_file_handler(log_path: Path) -> Optional[LineRotatingFileHandler]:
             max_lines=10000,
             delay=False,
         )
-        handler.setLevel(logging.INFO)
+        handler.setLevel(logging.DEBUG)
         handler.setFormatter(formatter)
         handler.addFilter(SensitiveDataFilter())
         print(f"Log file created: {log_path}", file=sys.stderr)
@@ -377,14 +421,55 @@ def _install_global_exception_hooks() -> None:
         pass
 
 
+# Third-party loggers that were measured flooding the file. The root logger sits
+# at DEBUG so our own diagnostics are complete, which means these inherited that
+# too: urllib3.connectionpool alone produced 551 lines and SteamClient 130 in a
+# single session - about 23% of the file, all of it connection-pool bookkeeping.
+#
+# They stay visible when the user explicitly asks for a debug log, because that
+# is exactly the situation where transport-level detail is useful.
+_THIRD_PARTY_LOGGERS = (
+    "urllib3",
+    "requests",
+    "SteamClient",
+    # Emitted by SteamClient's transport, not by us. Found still leaking two
+    # lines per session before being added.
+    "Connection",
+    "chardet",
+    "charset_normalizer",
+    "PIL",
+    "asyncio",
+    "websockets",
+    "hpack",
+    "httpcore",
+    "vdf",
+    "capstone",
+)
+
+
+def _quiet_third_party(level: int = logging.WARNING) -> None:
+    """Raise the floor for third-party loggers so they stop dominating the file."""
+    for name in _THIRD_PARTY_LOGGERS:
+        logging.getLogger(name).setLevel(level)
+
+
+def set_third_party_level(level: int) -> None:
+    """Enable third-party debug output, e.g. when writing a diagnostic log."""
+    _quiet_third_party(level)
+
+
 def setup_logging() -> logging.Logger:
-    """Setup logging with timestamped log files and sensitive data redaction."""
     cleanup_old_logs()
 
     log_path = get_log_path()
     system_platform = platform.system()
+    # Message first so the file stays greppable without reading timestamps.
+    # Milliseconds are kept because interleaved worker-thread output is hard to
+    # read without them, but the date is dropped from every line and written
+    # once in the header instead - it never changes within a session.
     formatter = SanitizingFormatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        "%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)-34s | %(message)s",
+        datefmt="%H:%M:%S",
     )
 
     handlers: List[logging.Handler] = []
@@ -422,6 +507,7 @@ def setup_logging() -> logging.Logger:
 
     # Reduce noise from third-party libraries when offline
     logging.getLogger("CMServerList").setLevel(logging.CRITICAL)
+    _quiet_third_party()
 
     # Clear existing handlers to avoid duplicates
     for handler in root_logger.handlers[:]:

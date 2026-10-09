@@ -105,8 +105,29 @@ jobs:
           ASSELLA_NO_REEXEC=1 QT_QPA_PLATFORM=offscreen \
             python -u scripts/smoke_import_check.py
 
+      # Behavioural suites. All are hermetic: no Steam install, no network, no
+      # display and no pre-existing SLSsteam config, so they are safe on a clean
+      # runner. They cover the logic that regresses silently - depot->app
+      # mapping, config sync, the optional-component install pipeline, and the
+      # structured logging the status pager depends on.
+      #
+      # Each prints a [FAIL] line and exits non-zero on failure. Suites needing
+      # local data (the cached_luas corpus sweep) skip explicitly rather than
+      # pretending to pass.
+      - name: Behavioural Test Suites
+        run: |
+          set -e
+          for suite in test_depot_mapping test_atom_config_sync test_components_ui \
+                       test_logging test_pager_display test_boxart_revalidate; do
+            echo "::group::$suite"
+            QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp \
+              python -u "scripts/$suite.py"
+            echo "::endgroup::"
+          done
+
       - name: QThread Teardown Regression
         run: |
-          # Runs in its own step to verify GUI thread teardown isolation
+          # Its own step: a Qt teardown failure is SIGABRT, which aborts the
+          # whole runner process instead of failing one command.
           QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp \
             python -u scripts/test_manifest_worker.py close-while-running

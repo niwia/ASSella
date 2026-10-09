@@ -127,79 +127,57 @@ class StatusPagerWidget(QFrame):
         self._critical_warning_active = True
         self._handle_broadcast(message, duration, "critical")
 
-    @pyqtSlot(str)
-    def on_new_log(self, raw_msg: str) -> None:
-        """Filter log stream and show human-readable status changes."""
+    @pyqtSlot(object)
+    def on_new_log(self, payload) -> None:
+        """Show user-facing log events on the single-line status strip.
+
+        Selection is by intent, not by wording. The handler marks each record
+        with ``user_visible``; this previously had to substring-match the
+        message against a list of keywords, which dropped real events when the
+        wording drifted and flickered noise whenever a line happened to contain
+        a word like "run" or "start".
+
+        Accepts a plain string too so a caller pushing text directly still works.
+        """
         if self._broadcast_active:
             return
-        msg = raw_msg.strip()
+
+        if isinstance(payload, dict):
+            if not payload.get("user_visible"):
+                return
+            msg = str(payload.get("text", "")).strip()
+            is_warn_log = int(payload.get("level", logging.INFO)) >= logging.WARNING
+        else:
+            # Back-compat path: no metadata, so be conservative and only surface
+            # genuine warnings rather than showing every line that reaches us.
+            msg = str(payload or "").strip()
+            is_warn_log = "[WARNING]" in msg.upper() or "[ERROR]" in msg.upper()
+            if not is_warn_log:
+                return
+
         if not msg:
             return
 
-        msg_lower = msg.lower()
+        # The Qt formatter already prefixes warnings; strip it so the label is
+        # just the sentence.
+        if msg.startswith("[") and "]" in msg:
+            idx = msg.find("]")
+            if msg[1:idx].upper() in ("INFO", "WARNING", "ERROR", "CRITICAL", "DEBUG"):
+                is_warn_log = is_warn_log or msg[1:idx].upper() in (
+                    "WARNING",
+                    "ERROR",
+                    "CRITICAL",
+                )
+                msg = msg[idx + 1 :].strip()
 
-        # Clean/exclude traces and verbose library logs
-        exclusions = [
-            "debug",
-            "traceback",
-            "file \"",
-            "line ",
-            "connection pool",
-            "urllib3",
-            "http/1.1",
-            "get_user_stats",
-            "heartbeat",
-        ]
-        if any(exc in msg_lower for exc in exclusions):
-            return
+        if "crashed" in msg.lower() or "filewatcher" in msg.lower():
+            is_warn_log = True
 
-        # Check for interesting user-facing keywords
-        interesting_keywords = [
-            "download",
-            "depot",
-            "manifest",
-            "fetch",
-            "drm",
-            "steamless",
-            "achievement",
-            "scheevo",
-            "zip",
-            "extract",
-            "install",
-            "finaliz",
-            "success",
-            "fail",
-            "error",
-            "warn",
-            "start",
-            "complet",
-            "run",
-            "pause",
-            "resum",
-            "stop",
-            "block",
-            "optimal",
-        ]
+        # Keep it single-line.
+        if len(msg) > 90:
+            msg = msg[:87] + "..."
 
-        if any(kw in msg_lower for kw in interesting_keywords):
-            # Clean up prefix like "[INFO] " or "[WARNING] "
-            cleaned = msg
-            is_warn_log = False
-            if cleaned.startswith("[") and "]" in cleaned:
-                idx = cleaned.find("]")
-                prefix = cleaned[1:idx].upper()
-                if "WARN" in prefix or "ERROR" in prefix:
-                    is_warn_log = True
-                cleaned = cleaned[idx + 1 :].strip()
-
-            if "crashed" in cleaned.lower() or "filewatcher" in cleaned.lower():
-                is_warn_log = True
-
-            # Limit length to keep it single-line
-            if len(cleaned) > 90:
-                cleaned = cleaned[:87] + "..."
-
-            self.set_status(cleaned, is_warning=is_warn_log)
+        self.set_status(msg, is_warning=is_warn_log)
 
     def update_style(self) -> None:
         """Apply theme color choices to the LCD container and text."""

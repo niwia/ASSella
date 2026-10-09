@@ -90,6 +90,7 @@ class ImageFetcher(QObject):
         self.ephemeral = ephemeral
         self._stopped = False
         self._reply: Optional[QNetworkReply] = None
+        self._rev: Optional[QNetworkReply] = None
         self._start_time: Optional[float] = None
 
         # Parse AppID from URL
@@ -118,11 +119,76 @@ class ImageFetcher(QObject):
                 if fb not in self.urls_to_try:
                     self.urls_to_try.append(fb)
 
+    @staticmethod
+    def _schedule_revalidation(app_id: str, url: str) -> None:
+        """Quietly ask whether the cached box art is still current.
+
+        Runs at most once per ``image_revalidate.REVALIDATE_DAYS`` per game, and
+        sends ``If-Modified-Since`` so an unchanged image costs a 304 with no
+        body rather than a 34 KB download. Steam's CDN ignores ``If-None-Match``
+        but honours this - see utils/image_revalidate.py for the measurements.
+        """
+        from utils import image_revalidate
+
+        cache_dir = ImageFetcher.get_cache_dir()
+        last_mod = image_revalidate.due_for_check(app_id, cache_dir)
+        if last_mod is None:
+            # Never checked, or checked too long ago. Without a stored
+            # Last-Modified there is nothing to send, so just record that we
+            # looked once the ordinary fetch below updates it.
+            return
+
+        try:
+            manager = get_network_manager()
+            request = QNetworkRequest(QUrl(url))
+            request.setRawHeader(b"User-Agent", b"Mozilla/5.0")
+            request.setRawHeader(b"If-Modified-Since", last_mod.encode())
+            reply = manager.get(request)
+        except Exception as e:
+            logger.debug(f"Box-art revalidation could not start for {app_id}: {e}")
+            return
+
+        holder = {}
+
+        def _done() -> None:
+            try:
+                if reply.error() != QNetworkReply.NetworkError.NoError:
+                    return
+                status = reply.attribute(
+                    QNetworkRequest.Attribute.HttpStatusCodeAttribute
+                )
+                if status == 304:
+                    image_revalidate.mark_checked(app_id, cache_dir)
+                    logger.debug(f"Box art for {app_id} unchanged (304)")
+                    return
+                data = bytes(reply.readAll())
+                if not data:
+                    return
+                ImageFetcher.save_to_cache(app_id, data)
+                new_lm = reply.rawHeader(b"Last-Modified")
+                image_revalidate.record(
+                    app_id,
+                    cache_dir,
+                    new_lm.decode(errors="ignore") if new_lm else None,
+                    url,
+                )
+                logger.info(
+                    f"Box art updated for {app_id} ({len(data)} bytes)"
+                )
+            except Exception as e:
+                logger.debug(f"Box-art revalidation failed for {app_id}: {e}")
+            finally:
+                reply.deleteLater()
+
+        reply.finished.connect(_done)
+        holder["reply"] = reply
+
     def stop(self) -> None:
         """Abort the request and prevent signal emission."""
         self._stopped = True
         if self._reply is not None:
             self._reply.abort()
+        self._rev.reply and self._rev.abort()
 
     def start(self) -> None:
         """Start the async fetch using RAM cache, disk cache, or QNetworkAccessManager."""
@@ -143,6 +209,10 @@ class ImageFetcher(QObject):
                     data = cached_path.read_bytes()
                     if data and not self._stopped:
                         ImageFetcher.put_to_session_cache(self.app_id, data)
+                        # Show the cached artwork immediately, then quietly
+                        # revalidate in the background so a redesigned capsule
+                        # is picked up without ever blocking the UI.
+                        ImageFetcher._schedule_revalidation(self.app_id, self.urls_to_try[0])
                         QTimer.singleShot(0, lambda: self.finished.emit(data))
                         return
                 except Exception as e:
@@ -190,6 +260,12 @@ class ImageFetcher(QObject):
                 return
 
             # Success Path
+            status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+            if status == 304:
+                # Revalidation said "nothing changed"; the disk copy stands.
+                reply.deleteLater()
+                return
+
             data = reply.readAll().data()  # .data() returns Python bytes
 
             if self.app_id and data:
@@ -199,6 +275,20 @@ class ImageFetcher(QObject):
                 # Only persist to permanent disk cache if not ephemeral (e.g. library / installed games)
                 if not self.ephemeral:
                     ImageFetcher.save_to_cache(self.app_id, data)
+                    # Remember what the server said, so future checks can ask
+                    # "still current?" without downloading the image again.
+                    from utils import image_revalidate
+
+                    raw_lm = reply.rawHeader(b"Last-Modified")
+                    try:
+                        image_revalidate.record(
+                            self.app_id,
+                            ImageFetcher.get_cache_dir(),
+                            raw_lm.decode(errors="ignore") if raw_lm else None,
+                            reply.url().toString(),
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not record box-art metadata: {e}")
 
             if self._start_time:
                 download_time = (time.time() - self._start_time) * 1000

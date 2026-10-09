@@ -253,7 +253,14 @@ def run_headless_update_check(logger):
     task.game_update_checked.connect(game_manager._on_game_update_checked)
 
     def on_progress(current, total):
-        logger.info(f"Update check progress: {current}/{total}")
+        # Was INFO, once per game. With a large library that produced ~390 lines
+        # of "Update check progress: N/N" in a single session, all of it noise.
+        # Throttle to deciles and keep it out of the status pager.
+        if total <= 0:
+            return
+        step = max(1, total // 10)
+        if current == total or current % step == 0:
+            logger.debug(f"Update check progress: {current}/{total}")
     task.progress.connect(on_progress)
 
     try:
