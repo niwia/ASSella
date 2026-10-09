@@ -1706,10 +1706,10 @@ def on_eos_btn_clicked(dialog) -> None:
             if success:
                 QMessageBox.information(dialog, "EOS Proxy", "Epic Online Services proxy enabled successfully.")
             else:
-                from utils.paths import Paths
-                proxy_src = Paths.deps("EOSSDK-Win64-Shipping.dll")
-                if not proxy_src.exists():
-                    QMessageBox.critical(dialog, "Error", "Bundled proxy file EOSSDK-Win64-Shipping.dll not found in deps folder.")
+                from utils.eos_detector import ensure_eos_proxy_dll
+                proxy_src = ensure_eos_proxy_dll()
+                if not proxy_src or not proxy_src.exists():
+                    QMessageBox.critical(dialog, "Error", "EOS proxy DLL (EOSSDK-Win64-Shipping.dll) could not be found or downloaded.")
                 else:
                     QMessageBox.warning(dialog, "EOS Proxy", "No target EOSSDK-Win64-Shipping.dll found to replace.")
     except Exception as e:
