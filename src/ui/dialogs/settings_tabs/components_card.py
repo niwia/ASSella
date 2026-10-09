@@ -38,8 +38,8 @@ class _DownloadWorker(QThread):
     finished_ok = pyqtSignal(str, str)   # key, message
     failed = pyqtSignal(str, str)       # key, message
 
-    def __init__(self, key: str, manifest: dict, parent=None):
-        super().__init__(parent)
+    def __init__(self, key: str, manifest: dict):
+        super().__init__()
         self._key = key
         self._manifest = manifest
 
@@ -56,6 +56,29 @@ class _DownloadWorker(QThread):
         self.progress.emit(int(done), int(total))
 
 
+# Threads deliberately have NO QObject parent.
+#
+# A QThread that is still running when its parent is destroyed makes Qt abort
+# the entire process: "QThread: Destroyed while thread is still running". That
+# is a hard crash, not an exception, so nothing upstream can catch it.
+# Parenting them to the dialog only moves the problem - the dialog can be
+# destroyed via deleteLater() (which bypasses closeEvent) or simply closed
+# faster than any bounded wait.
+#
+# So the thread is kept alive by this module-level set instead, and dropped when
+# it finishes. A dialog can then be destroyed at any moment with no abort. The
+# callbacks guard themselves against widgets that no longer exist.
+_live_workers: set = set()
+
+
+def _spawn_worker(worker: QThread) -> QThread:
+    """Start an unparented worker and keep it alive until it finishes."""
+    _live_workers.add(worker)
+    worker.finished.connect(lambda: _live_workers.discard(worker))
+    worker.start()
+    return worker
+
+
 class _ManifestWorker(QThread):
     """Fetches component manifest asynchronously so Settings dialog never freezes."""
 
@@ -64,9 +87,13 @@ class _ManifestWorker(QThread):
     def run(self) -> None:
         try:
             m = fetch_manifest()
-            self.manifest_ready.emit(m)
         except Exception:
-            self.manifest_ready.emit(None)
+            m = None
+        try:
+            self.manifest_ready.emit(m)
+        except RuntimeError:
+            # The dialog was destroyed while the fetch was in flight.
+            logger.debug("[Components] Manifest arrived after dialog closed")
 
 
 def _accent(dialog) -> str:
@@ -218,19 +245,22 @@ def _refresh_components(dialog, force: bool = False, fetch_remote: bool = True) 
         worker = getattr(dialog, "_manifest_worker", None)
         if worker and worker.isRunning():
             return
-        worker = _ManifestWorker(dialog)
-        dialog._manifest_worker = worker
+        worker = _ManifestWorker()
 
         def _on_manifest_ready(m):
-            dialog._component_manifest = m
-            for k, w in dialog._component_rows.items():
-                t, l, en = _describe(dialog, k)
-                w["status"].setText(t)
-                w["button"].setText(l)
-                w["button"].setEnabled(en and not _busy(dialog, k))
+            # The dialog may already be closing; the widgets would be gone.
+            try:
+                dialog._component_manifest = m
+                for k, w in dialog._component_rows.items():
+                    t, l, en = _describe(dialog, k)
+                    w["status"].setText(t)
+                    w["button"].setText(l)
+                    w["button"].setEnabled(en and not _busy(dialog, k))
+            except RuntimeError:
+                logger.debug("[Components] Manifest arrived after dialog closed")
 
         worker.manifest_ready.connect(_on_manifest_ready)
-        worker.start()
+        _spawn_worker(worker)
 
 
 def _busy(dialog, key: str) -> bool:
@@ -258,13 +288,13 @@ def _on_component_button(dialog, key: str) -> None:
     widgets["button"].setEnabled(False)
     widgets["status"].setText("Downloading...")
 
-    worker = _DownloadWorker(key, manifest, dialog)
+    worker = _DownloadWorker(key, manifest)
     dialog._component_workers[key] = worker
     worker.progress.connect(lambda d, t, b=bar: _on_progress(b, d, t))
     worker.finished_ok.connect(lambda k, m: _on_done(dialog, k, m, True))
     worker.failed.connect(lambda k, m: _on_done(dialog, k, m, False))
     worker.finished.connect(lambda k=key: _on_worker_finished(dialog, k))
-    worker.start()
+    _spawn_worker(worker)
 
 
 def _on_progress(bar: QProgressBar, done: int, total: int) -> None:

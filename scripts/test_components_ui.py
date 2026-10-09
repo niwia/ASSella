@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Test the optional-components UI wiring (Settings -> Tools card + guards).
 
-Runs headless against a local HTTP server so no R2 access is needed.
+Hermetic by design: it builds its own tiny component payloads and serves them
+from a loopback HTTP server. It does NOT use cloud/*.tar.gz, because those are
+gitignored build artefacts (35 MB) and are absent on a clean CI runner.
 
     QT_QPA_PLATFORM=offscreen python3 scripts/test_components_ui.py
 """
 import functools
 import http.server
+import io
 import json
 import shutil
 import socketserver
 import sys
+import tarfile
 import tempfile
 import threading
 from pathlib import Path
@@ -20,8 +24,6 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-ARCHIVE_DIR = REPO_ROOT / "cloud"
-
 _failures = []
 
 
@@ -30,6 +32,54 @@ def check(cond: bool, label: str) -> bool:
     if not cond:
         _failures.append(label)
     return cond
+
+
+def _build_fixtures(dest: Path) -> dict:
+    """Write tiny component archives + a manifest, mirroring the real format.
+
+    Uses the same deterministic packing as cloud/generate_components_manifest.py
+    so the code under test sees a genuine archive, but with a handful of bytes
+    instead of 35 MB so this stays fast on CI.
+    """
+    sys.path.insert(0, str(REPO_ROOT / "cloud"))
+    from generate_components_manifest import make_archive
+
+    fixtures = {
+        "goldberg": "Goldberg",
+        "steamless": "Steamless",
+        "slscheevo": "SLScheevo",
+    }
+    components = {}
+    for key, folder in fixtures.items():
+        # The folder name becomes the archive root, which must match
+        # install_dir in the manifest - exactly as in the real generator.
+        payload = dest / folder
+        (payload / "linux").mkdir(parents=True, exist_ok=True)
+        (payload / "steam_appid.txt").write_text(f"{1000 + len(key)}\n", encoding="utf-8")
+        (payload / "version").write_text("test-fixture\n", encoding="utf-8")
+        # An executable, to prove the mode bit survives install.
+        exe = payload / "linux" / "generate_interfaces_x64"
+        exe.write_bytes(b"\x7fELF-test-binary\n")
+        exe.chmod(0o755)
+
+        archive = dest / f"{key}.tar.gz"
+        sha, size, count = make_archive(payload, archive)
+        components[key] = {
+            "name": f"{folder} fixture",
+            "description": "test fixture",
+            "archive": archive.name,
+            "sha256": sha,
+            "size_bytes": size,
+            "file_count": count,
+            "install_dir": folder,
+            "optional": True,
+        }
+        shutil.rmtree(payload, ignore_errors=True)
+
+    manifest = {"manifest_version": 1, "updated_at": "1970-01-01T00:00:00Z",
+                "components": components}
+    (dest / "components_manifest.json").write_text(json.dumps(manifest, indent=2))
+    return manifest
 
 
 def main() -> int:
@@ -47,7 +97,13 @@ def main() -> int:
     from utils.paths import Paths
     from ui.dialogs.settings_tabs import components_card as cc
 
-    manifest = json.loads((ARCHIVE_DIR / "components_manifest.json").read_text())
+    # Build our own archives so this test never depends on the gitignored
+    # cloud/*.tar.gz build artefacts being present.
+    archive_dir = Path(tempfile.mkdtemp(prefix="assella_component_fixtures_"))
+    manifest = _build_fixtures(archive_dir)
+    print(f"=== fixtures built in {archive_dir} ===")
+    for key, entry in manifest["components"].items():
+        print(f"    {key:10} {entry['file_count']} files, {entry['size_bytes']} bytes")
 
     # ---------------------------------------------------------------------
     # Sandbox the install location.
@@ -64,9 +120,9 @@ def main() -> int:
     print(f"=== sandbox: components install to {Paths.DEPS} (repo untouched) ===")
     assert str(Paths.DEPS) != str(real_deps), "sandbox failed to take effect"
 
-    # Serve cloud/ over loopback so downloads work without touching R2.
+    # Serve the fixtures over loopback so downloads work without touching R2.
     handler = functools.partial(
-        http.server.SimpleHTTPRequestHandler, directory=str(ARCHIVE_DIR)
+        http.server.SimpleHTTPRequestHandler, directory=str(archive_dir)
     )
     srv = socketserver.TCPServer(("127.0.0.1", 0), handler)
     port = srv.server_address[1]
@@ -178,13 +234,20 @@ def main() -> int:
     # ---------------------------------------------------------------- worker
     print("\n=== download worker runs off the GUI thread ===")
     dlg._component_manifest = manifest
-    worker = cc._DownloadWorker("steamless", manifest, dlg)
+    worker = cc._DownloadWorker("steamless", manifest)
     results = []
     worker.finished_ok.connect(lambda k, m: results.append(("ok", k, m)))
     worker.failed.connect(lambda k, m: results.append(("fail", k, m)))
-    worker.start()
+    # _spawn_worker keeps it alive until done - same path the card uses.
+    cc._spawn_worker(worker)
     assert worker.wait(120_000), "worker timed out"
     app.processEvents()
+    print(f"    worker registered while alive: {worker in cc._live_workers}")
+    check(worker in cc._live_workers or not worker.isRunning(),
+          "download worker was tracked in _live_workers")
+    app.processEvents()
+    check(worker not in cc._live_workers,
+          "download worker released from _live_workers once finished")
     print(f"    {results}")
     check(bool(results) and results[0][0] == "ok", "steamless installed via worker")
     check(is_component_available("steamless"), "steamless files on disk")

@@ -106,7 +106,6 @@ class CanaryWelcomeDialog(QDialog):
         # Watermark is written immediately so that first-time launch is permanent
         if not self.manual:
             self.settings.setValue("canary_welcome_seen", True)
-            self.settings.setValue("assella_twp_seen", True)
             self.settings.sync()
 
         # Connect signals
@@ -1351,7 +1350,6 @@ class CanaryWelcomeDialog(QDialog):
         self.settings.setValue("font", chosen_font)
 
         self.settings.setValue("canary_welcome_seen", True)
-        self.settings.setValue("assella_twp_seen", True)
         self.settings.sync()
 
         logger.info("[CanaryWelcome] All onboarding preferences saved successfully.")

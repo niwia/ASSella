@@ -302,12 +302,13 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=run_boot_checks, daemon=True).start()
 
-        # Check if Canary Welcome Slideshow or Training Wheels Protocol should be shown
-        from utils.settings import is_canary_welcome_needed, is_twp_needed
+        # Show the Canary welcome slideshow on first launch. This replaced the
+        # older Training Wheels Protocol dialog, which was removed: every action
+        # it offered (recommended settings, config check/repair, SLS install +
+        # version tiles, SLS inheritance) already exists in Settings -> Health.
+        from utils.settings import is_canary_welcome_needed
         if is_canary_welcome_needed():
             QTimer.singleShot(1000, self._show_canary_welcome)
-        elif is_twp_needed():
-            QTimer.singleShot(1000, self._show_training_wheels)
 
     def _show_canary_welcome(self) -> None:
         """Display the Canary Welcome Slideshow onboarding dialog."""
@@ -317,16 +318,6 @@ class MainWindow(QMainWindow):
             dlg.exec()
         except Exception as e:
             logger.error(f"Failed to display Canary Welcome dialog: {e}", exc_info=True)
-
-    def _show_training_wheels(self) -> None:
-        """Display the Training Wheels Protocol transition and quickstart dialog."""
-        try:
-            from ui.dialogs.training_wheels import TrainingWheelsDialog
-            dlg = TrainingWheelsDialog(parent=self, manual=False)
-            dlg.exec()
-        except Exception as e:
-            logger.error(f"Failed to display Training Wheels Protocol dialog: {e}", exc_info=True)
-
 
     def _prompt_experimental_features_once_if_needed(self):
         """Prompt user once on startup to try experimental features if not already enabled."""
