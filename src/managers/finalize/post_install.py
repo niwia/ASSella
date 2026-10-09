@@ -23,6 +23,7 @@ from PyQt6.QtCore import QTimer, QMetaObject, Qt, pyqtSlot, pyqtSignal
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 from core import steam_helpers
+from utils.activity import COMPONENT, CONFIG, log_step
 from utils.helpers import get_base_path
 from utils.paths import Paths
 from utils.steam_manifest import get_game_directory, write_acf_file
@@ -118,27 +119,38 @@ class PostInstallMixin:
         try:
             if self._finalize_cancel_event.is_set() or self.is_cancelling:
                 return
-            self._finalize_acf_and_manifests(size_on_disk)
+            # Bracket the whole phase so the log reads as a narrative and the
+            # status pager shows what is happening instead of going stale while
+            # several slow I/O steps run back to back.
+            #
+            # The steps run in a fixed order and each checks for cancellation.
+            # A `return` inside the `with` would run the context manager's
+            # success path and log "done" for a cancelled job, so the loop
+            # breaks out instead and the outcome is recorded explicitly.
+            cancelled = False
+            with log_step(
+                "Finalizing install",
+                category=CONFIG,
+                skipped_message="cancelled",
+            ) as step:
+                for name, run_step in (
+                    ("manifests", lambda: self._finalize_acf_and_manifests(size_on_disk)),
+                    ("wrapper metadata", self._persist_wrapper_metadata),
+                    ("platform specifics", lambda: self._finalize_platform_specifics(config_enabled)),
+                    ("emulation", lambda: self._finalize_goldberg(auto_apply_goldberg)),
+                    ("eosproxy", self._finalize_eosproxy),
+                    ("greenluma", lambda: self._finalize_greenluma(config_enabled)),
+                ):
+                    if self._finalize_cancel_event.is_set() or self.is_cancelling:
+                        cancelled = True
+                        break
+                    logger.debug("Finalize step: %s", name)
+                    run_step()
 
-            if self._finalize_cancel_event.is_set() or self.is_cancelling:
-                return
-            self._persist_wrapper_metadata()
-
-            if self._finalize_cancel_event.is_set() or self.is_cancelling:
-                return
-            self._finalize_platform_specifics(config_enabled)
-
-            if self._finalize_cancel_event.is_set() or self.is_cancelling:
-                return
-            self._finalize_goldberg(auto_apply_goldberg)
-
-            if self._finalize_cancel_event.is_set() or self.is_cancelling:
-                return
-            self._finalize_eosproxy()
-
-            if self._finalize_cancel_event.is_set() or self.is_cancelling:
-                return
-            self._finalize_greenluma(config_enabled)
+                if cancelled:
+                    step["result"] = "cancelled"
+                else:
+                    step["result"] = "complete"
 
         except Exception as e:
             logger.error(

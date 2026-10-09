@@ -164,12 +164,20 @@ class DatabaseManager:
                 last_updated = row["last_updated"] or 0
                 age = int(time.time()) - last_updated
 
-                if age > EXPIRATION_SECONDS:
-                    logger.debug(
-                        f"Header URL for AppID {safe_appid} is stale. Refreshing."
-                    )
-                    return None
-
+                # No age check. This used to return None once a stored URL passed a
+                # 14-day "expiry", but nothing ever refreshed that stamp except
+                # the appinfo path - so 99.8% of rows sat permanently expired
+                # and every game tile logged a line. Measured on the live DB:
+                # 217270 of 217695 rows expired, 488 log lines per session.
+                #
+                # The URL the caller used instead works fine (verified live:
+                # HTTP 200), and for 24% of games the stored path carries
+                # Steam's content hash, which pins an OLDER box art than the
+                # plain URL serves. The "expiry" could only make it worse.
+                #
+                # Keeping boxes current is handled properly by the image cache,
+                # which revalidates with If-Modified-Since; see
+                # utils/image_fetcher.py.
                 return _construct_full_url(row["header_path"])
 
         except Exception as e:
