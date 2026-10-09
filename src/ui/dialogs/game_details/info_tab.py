@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QVBoxLayout,
+    QGridLayout,
     QScrollArea,
     QMessageBox,
     QProgressDialog,
@@ -308,15 +309,17 @@ def init_info_tab(dialog) -> None:
     lay.addSpacing(8)
 
     # ── Bottom Row Section (SLSonline & EOS Proxy) ───────────
+    # ── Bottom Row Section (SLSonline, EOS Proxy, Netsock, EOS Experimental) ───────────
     bottom_tiles_widget = QWidget()
-    bottom_tiles_layout = QHBoxLayout(bottom_tiles_widget)
-    bottom_tiles_layout.setContentsMargins(0, 0, 0, 0)
-    bottom_tiles_layout.setSpacing(10)
+    dialog.bottom_tiles_widget = bottom_tiles_widget
+    dialog.bottom_tiles_layout = QGridLayout(bottom_tiles_widget)
+    dialog.bottom_tiles_layout.setContentsMargins(0, 0, 0, 0)
+    dialog.bottom_tiles_layout.setSpacing(10)
 
-    sls_container = QFrame()
-    sls_container.setFixedHeight(44)
-    sls_container.setStyleSheet("QFrame { background: transparent; border: none; }")
-    sls_container_layout = QHBoxLayout(sls_container)
+    dialog.sls_container = QFrame()
+    dialog.sls_container.setFixedHeight(44)
+    dialog.sls_container.setStyleSheet("QFrame { background: transparent; border: none; }")
+    sls_container_layout = QHBoxLayout(dialog.sls_container)
     sls_container_layout.setContentsMargins(0, 0, 0, 0)
     sls_container_layout.setSpacing(0)
 
@@ -362,15 +365,21 @@ def init_info_tab(dialog) -> None:
     dialog.sls_input_container.setVisible(False)
     sls_container_layout.addWidget(dialog.sls_input_container)
 
-    bottom_tiles_layout.addWidget(sls_container, 1)
+    dialog.bottom_tiles_layout.addWidget(dialog.sls_container, 0, 0)
 
     dialog.netsock_tile = MaterialTile("Netsock", "Inactive", dialog, is_toggle=True)
     dialog.netsock_tile.setVisible(False)
-    bottom_tiles_layout.addWidget(dialog.netsock_tile, 1)
+    dialog.bottom_tiles_layout.addWidget(dialog.netsock_tile, 0, 1)
 
     dialog.eos_tile = MaterialTile("EOS Proxy", "Inactive", dialog, is_toggle=True)
     dialog.eos_tile.setVisible(False)
-    bottom_tiles_layout.addWidget(dialog.eos_tile, 1)
+    dialog.bottom_tiles_layout.addWidget(dialog.eos_tile, 0, 1)
+
+    dialog.eos_exp_tile = MaterialTile("EOS Experimental", "Placeholder", dialog, is_toggle=False)
+    dialog.eos_exp_tile.setEnabled(False)
+    dialog.eos_exp_tile.setToolTip("Experimental EOS feature (Placeholder)")
+    dialog.eos_exp_tile.setVisible(False)
+    dialog.bottom_tiles_layout.addWidget(dialog.eos_exp_tile, 1, 1)
 
     lay.addWidget(bottom_tiles_widget)
     lay.addSpacing(12)
@@ -439,9 +448,16 @@ def init_info_tab(dialog) -> None:
     panel_bg = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.04)"
     panel_border = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.15)"
 
+    from utils.dlc_helpers import is_dlc_only_mode
+    is_vapor_dlc = is_vapor_mode and (
+        is_dlc_only_mode(dialog.appid)
+        or bool(dialog.game_data.get("dlc_only"))
+        or bool(dialog.game_data.get("is_dlc_only"))
+    )
+
     dialog._uninstall_pill = QPushButton("Uninstall")
     dialog._uninstall_pill.setFixedHeight(32)
-    if is_vapor_mode:
+    if is_vapor_dlc:
         dialog._uninstall_pill.setEnabled(False)
         dialog._uninstall_pill.setStyleSheet("""
             QPushButton, QPushButton:disabled {
@@ -454,7 +470,7 @@ def init_info_tab(dialog) -> None:
                 padding: 0 16px;
             }
         """)
-        dialog._uninstall_pill.setToolTip("Uninstall is managed directly through Steam for AT0-M games.")
+        dialog._uninstall_pill.setToolTip("Uninstall is managed directly through Steam for DLC-only AT0-M games.")
     else:
         dialog._uninstall_pill.setStyleSheet(f"""
             QPushButton {{
@@ -473,8 +489,8 @@ def init_info_tab(dialog) -> None:
 
     dialog._adv_uninstall_btn = QPushButton("Advanced Uninstall")
     dialog._adv_uninstall_btn.setFixedHeight(32)
-    dialog._adv_uninstall_btn.setCheckable(not is_vapor_mode)
-    if is_vapor_mode:
+    dialog._adv_uninstall_btn.setCheckable(not is_vapor_dlc)
+    if is_vapor_dlc:
         dialog._adv_uninstall_btn.setEnabled(False)
         dialog._adv_uninstall_btn.setStyleSheet("""
             QPushButton, QPushButton:disabled {
@@ -487,7 +503,7 @@ def init_info_tab(dialog) -> None:
                 padding: 0 16px;
             }
         """)
-        dialog._adv_uninstall_btn.setToolTip("Advanced uninstall is disabled for AT0-M games.")
+        dialog._adv_uninstall_btn.setToolTip("Advanced uninstall is disabled for DLC-only AT0-M games.")
     else:
         dialog._adv_uninstall_btn.setStyleSheet(f"""
             QPushButton {{
@@ -1520,6 +1536,9 @@ def update_eos_btn_state(dialog) -> None:
         if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
             dialog.netsock_tile.setEnabled(False)
             dialog.netsock_tile.setToolTip("Not available in DLC-Only mode")
+        if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
+            dialog.eos_exp_tile.setEnabled(False)
+            dialog.eos_exp_tile.setToolTip("Not available in DLC-Only mode")
         return
 
     install_path = dialog.game_data.get("install_path")
@@ -1528,18 +1547,43 @@ def update_eos_btn_state(dialog) -> None:
             dialog.eos_tile.setVisible(False)
         if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
             dialog.netsock_tile.setVisible(False)
+        if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
+            dialog.eos_exp_tile.setVisible(False)
         return
 
     from utils.eos_detector import EOSDetector
     status = EOSDetector.get_proxy_status(install_path)
     is_sls_active = dialog.sls_tile.isChecked() if hasattr(dialog, "sls_tile") else False
 
-    if status != "none":
-        if hasattr(dialog, "eos_tile") and dialog.eos_tile:
-            dialog.eos_tile.setVisible(True)
-        if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
-            dialog.netsock_tile.setVisible(False)
+    # Reposition layout based on whether EOS Proxy is available
+    if hasattr(dialog, "bottom_tiles_layout") and hasattr(dialog, "sls_container"):
+        if status != "none":
+            # 2x2 grid:
+            # Top-left: SLSonline, Top-right: EOS Proxy
+            # Bottom-left: Netsock (just below SLSonline), Bottom-right: EOS Experimental
+            dialog.bottom_tiles_layout.addWidget(dialog.sls_container, 0, 0)
+            if hasattr(dialog, "eos_tile") and dialog.eos_tile:
+                dialog.bottom_tiles_layout.addWidget(dialog.eos_tile, 0, 1)
+                dialog.eos_tile.setVisible(True)
+            if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
+                dialog.bottom_tiles_layout.addWidget(dialog.netsock_tile, 1, 0)
+                dialog.netsock_tile.setVisible(True)
+            if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
+                dialog.bottom_tiles_layout.addWidget(dialog.eos_exp_tile, 1, 1)
+                dialog.eos_exp_tile.setVisible(True)
+        else:
+            # Single row: Left = SLSonline, Right = Netsock
+            dialog.bottom_tiles_layout.addWidget(dialog.sls_container, 0, 0)
+            if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
+                dialog.bottom_tiles_layout.addWidget(dialog.netsock_tile, 0, 1)
+                dialog.netsock_tile.setVisible(True)
+            if hasattr(dialog, "eos_tile") and dialog.eos_tile:
+                dialog.eos_tile.setVisible(False)
+            if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
+                dialog.eos_exp_tile.setVisible(False)
 
+    # Update EOS Proxy button state if applicable
+    if status != "none" and hasattr(dialog, "eos_tile") and dialog.eos_tile:
         if status == "active":
             dialog.eos_tile.setEnabled(True)
             dialog.eos_tile.update_state(True, dialog.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
@@ -1557,35 +1601,32 @@ def update_eos_btn_state(dialog) -> None:
                 dialog.eos_tile.setEnabled(True)
                 dialog.eos_tile.update_state(False, dialog.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
                 dialog.eos_tile.setToolTip("Apply Epic Online Services proxy DLL.")
-    else:
-        if hasattr(dialog, "eos_tile") and dialog.eos_tile:
-            dialog.eos_tile.setVisible(False)
-        if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
-            dialog.netsock_tile.setVisible(True)
 
-            from utils.yaml_config_manager import get_user_config_path, get_launch_option
-            cfg_path = get_user_config_path()
-            cur_opt = get_launch_option(cfg_path, str(dialog.appid)) if cfg_path.exists() else None
-            is_netsock_configured = bool(cur_opt and "netsock.so" in cur_opt)
+    # Always update Netsock state
+    if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
+        from utils.yaml_config_manager import get_user_config_path, get_launch_option
+        cfg_path = get_user_config_path()
+        cur_opt = get_launch_option(cfg_path, str(dialog.appid)) if cfg_path.exists() else None
+        is_netsock_configured = bool(cur_opt and "netsock.so" in cur_opt)
 
-            if not is_sls_active:
-                dialog.netsock_tile.setEnabled(False)
-                dialog.netsock_tile.setChecked(False)
-                dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Enable SLSonline")
-                dialog.netsock_tile.setToolTip("Activate SLSonline first to enable Netsock.")
+        if not is_sls_active:
+            dialog.netsock_tile.setEnabled(False)
+            dialog.netsock_tile.setChecked(False)
+            dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Enable SLSonline")
+            dialog.netsock_tile.setToolTip("Activate SLSonline first to enable Netsock.")
+        else:
+            dialog.netsock_tile.setEnabled(True)
+            dialog.netsock_tile.setChecked(is_netsock_configured)
+            dialog.netsock_tile.update_state(
+                is_netsock_configured,
+                dialog.accent_color,
+                active_sub="Active",
+                inactive_sub="Inactive"
+            )
+            if is_netsock_configured:
+                dialog.netsock_tile.setToolTip("Netsock LD_AUDIT patch active for multiplayer sockets. Click to disable.")
             else:
-                dialog.netsock_tile.setEnabled(True)
-                dialog.netsock_tile.setChecked(is_netsock_configured)
-                dialog.netsock_tile.update_state(
-                    is_netsock_configured,
-                    dialog.accent_color,
-                    active_sub="Active",
-                    inactive_sub="Inactive"
-                )
-                if is_netsock_configured:
-                    dialog.netsock_tile.setToolTip("Netsock LD_AUDIT patch active for multiplayer sockets. Click to disable.")
-                else:
-                    dialog.netsock_tile.setToolTip("Enable Netsock LD_AUDIT patch for Steam Networking Sockets.")
+                dialog.netsock_tile.setToolTip("Enable Netsock LD_AUDIT patch for Steam Networking Sockets.")
 
 
 def on_netsock_btn_clicked(dialog) -> None:
