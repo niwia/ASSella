@@ -37,6 +37,9 @@ zstandard==0.25.0
 # breaks CLI mode with a bare ModuleNotFoundError at import time.
 urwid==2.6.16
 
+# wsproto is required by steam.client for Steam WebSocket protocol support
+wsproto==1.2.0
+
 # Removed as unused - verified no imports anywhere outside src/deps/ vendored
 # sample scripts (see docs/DEPENDENCIES.md):
 #   numpy, Pillow, tinytag, just-playback,
