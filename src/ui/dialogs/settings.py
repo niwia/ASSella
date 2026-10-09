@@ -505,13 +505,18 @@ class SettingsDialog(QDialog):
 
     def _on_tab_changed(self, index: int) -> None:
         """Handle tab change events."""
+        tab_name = self.tab_widget.tabText(index)
         if (
-            self.tab_widget.tabText(index) == "Integrations"
+            tab_name == "Integrations"
             and not self.morrenus_tab_initialized
         ):
             self.morrenus_tab_initialized = True
             if self.morrenus_stats_widget:
                 QTimer.singleShot(100, self.morrenus_stats_widget.refresh_stats)
+
+        elif tab_name == "Tools":
+            from ui.dialogs.settings_tabs.components_card import on_tools_tab_opened
+            on_tools_tab_opened(self)
 
     def _create_dialog_buttons(self) -> None:
         """Create standard Ok/Cancel buttons."""

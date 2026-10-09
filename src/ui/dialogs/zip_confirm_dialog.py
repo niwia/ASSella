@@ -1374,7 +1374,7 @@ class ZipImportConfirmationDialog(QDialog):
                 self.mode_installed_tag.setVisible(True)
             else:
                 self.mode_installed_tag.setVisible(False)
-                def_action = settings.value("at0m_action", "ask", type=str)
+                def_action = get_settings().value("at0m_action", "ask", type=str)
                 if def_action == "native":
                     self.radio_mode_atom.setChecked(True)
                 else:

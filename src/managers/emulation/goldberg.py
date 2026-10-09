@@ -167,7 +167,6 @@ class GoldbergMixin:
     @staticmethod
     def _safe_remove(file_path: str) -> bool:
         """Remove a file safely, making it writable first if read-only."""
-        import stat
         if not os.path.exists(file_path):
             return True
         try:
@@ -183,7 +182,6 @@ class GoldbergMixin:
     @staticmethod
     def _safe_rmtree(dir_path: str) -> bool:
         """Safely remove a directory tree, fixing read-only permissions if necessary."""
-        import stat
 
         def _remove_readonly(func, p, excinfo):
             try:
@@ -264,7 +262,6 @@ class GoldbergMixin:
         self, target_dir: str, goldberg_src: Path, renamed_files: List[str]
     ):
         """For each renamed file, copy the Goldberg replacement from the goldberg deps folder."""
-        import stat
         for name in renamed_files:
             dst_file = os.path.join(target_dir, name)
             if os.path.exists(dst_file):
@@ -319,7 +316,6 @@ class GoldbergMixin:
         Checks for custom user template in ~/.local/share/ACCELA/steam_settings,
         otherwise falls back to bundled Goldberg steam_settings.
         """
-        from utils.helpers import get_base_path
         user_custom_settings = Path(get_base_path()) / "steam_settings"
         if user_custom_settings.exists() and user_custom_settings.is_dir():
             src_settings = user_custom_settings
@@ -337,7 +333,6 @@ class GoldbergMixin:
                 logger.error(f"Failed to copy steam_settings to {dst_settings}: {e}")
     def _write_appid_file(self, target_dir: str, appid: str):
         """Write steam_appid.txt"""
-        import stat
         appid_path = os.path.join(target_dir, "steam_appid.txt")
         if os.path.exists(appid_path):
             try:

@@ -131,12 +131,13 @@ def create_components_card(dialog) -> QWidget:
             "progress": bar,
         }
 
-    _refresh_components(dialog)
+    # Paint initial local state immediately (no remote manifest fetch on dialog startup)
+    _refresh_components(dialog, force=False, fetch_remote=False)
 
     refresh_btn = QPushButton("Refresh")
     refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     refresh_btn.setStyleSheet(_btn_style(ac, subtle=True))
-    refresh_btn.clicked.connect(lambda: _refresh_components(dialog, force=True))
+    refresh_btn.clicked.connect(lambda: _refresh_components(dialog, force=True, fetch_remote=True))
     card_layout.addWidget(refresh_btn, 0, Qt.AlignmentFlag.AlignLeft)
 
     return card
@@ -198,7 +199,13 @@ def _describe(dialog, key: str) -> tuple:
     return f"Not installed ({size_txt}).", "Download", True
 
 
-def _refresh_components(dialog, force: bool = False) -> None:
+def on_tools_tab_opened(dialog) -> None:
+    """Fetch/update components remote manifest when the user enters the Tools tab."""
+    if hasattr(dialog, "_component_rows"):
+        _refresh_components(dialog, force=False, fetch_remote=True)
+
+
+def _refresh_components(dialog, force: bool = False, fetch_remote: bool = True) -> None:
     """Re-read status for every row and update labels/buttons."""
     # Instantly paint current known state without blocking
     for key, widgets in dialog._component_rows.items():
@@ -207,7 +214,7 @@ def _refresh_components(dialog, force: bool = False) -> None:
         widgets["button"].setText(label)
         widgets["button"].setEnabled(enabled and not _busy(dialog, key))
 
-    if force or getattr(dialog, "_component_manifest", None) is None:
+    if fetch_remote and (force or getattr(dialog, "_component_manifest", None) is None):
         worker = getattr(dialog, "_manifest_worker", None)
         if worker and worker.isRunning():
             return

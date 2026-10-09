@@ -75,8 +75,6 @@ class ChmodMixin:
         return None
     @staticmethod
     def _run_chmod_recursive(game_directory) -> int:
-        import stat
-
         linux_binary_extensions = {
             ".sh",
             ".bash",

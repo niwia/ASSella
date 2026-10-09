@@ -1291,7 +1291,7 @@ class DepotSelectionDialog(QDialog):
 
             # Hidden depot rows (Tier 3)
             for depot_id, depot_data in hidden_depots:
-                hconfig_text = _build_config_text(depot_id, depot_data, is_first=False)
+                hconfig_text = self._build_config_text(depot_id, depot_data, is_first=False)
                 hsize_str = ""
                 if depot_data.get("size"):
                     try:
