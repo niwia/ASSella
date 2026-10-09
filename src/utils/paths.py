@@ -14,7 +14,21 @@ class Paths:
         If no relative path is specified, it returns the /deps/ folder.
         """
         if relative_path is not None:
-            return cls.DEPS / relative_path
+            primary = cls.DEPS / relative_path
+            if primary.exists():
+                return primary
+
+            # Fallback to bundled DEPS in BASE_DIR if Paths.DEPS was redirected to writable storage
+            bundled = cls.BASE_DIR / "deps" / relative_path
+            if bundled.exists():
+                return bundled
+
+            # Fallback to ~/.local/share/ACCELA/src/deps
+            user_deps = Path.home() / ".local" / "share" / "ACCELA" / "src" / "deps" / relative_path
+            if user_deps.exists():
+                return user_deps
+
+            return primary
         return cls.DEPS
 
     @classmethod

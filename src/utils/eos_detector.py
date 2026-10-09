@@ -16,6 +16,61 @@ from typing import Dict, List, Optional, Union
 logger = logging.getLogger(__name__)
 
 
+EOS_PROXY_URL = "https://github.com/yesyes0649/eos-proxy/releases/download/v1.0.0/EOSSDK-Win64-Shipping.dll"
+
+
+def ensure_eos_proxy_dll(target_path: Optional[Union[str, Path]] = None) -> Optional[Path]:
+    """Ensure the EOS proxy DLL exists, falling back to bundled/local deps or downloading from GitHub.
+
+    Returns the Path to the valid proxy DLL, or None if unavailable.
+    """
+    if target_path:
+        p = Path(target_path)
+        if p.is_file():
+            return p
+
+    # 1. Check Paths.deps
+    try:
+        from utils.paths import Paths
+        proxy_path = Paths.deps("EOSSDK-Win64-Shipping.dll")
+        if proxy_path.is_file():
+            return proxy_path
+    except Exception:
+        proxy_path = None
+
+    # 2. Check candidate locations on disk
+    candidates = [
+        Path.home() / ".local" / "share" / "ACCELA" / "deps" / "EOSSDK-Win64-Shipping.dll",
+        Path.home() / ".local" / "share" / "ACCELA" / "src" / "deps" / "EOSSDK-Win64-Shipping.dll",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+
+    # 3. Auto-download from GitHub if missing
+    try:
+        from utils.paths import Paths
+        dest = Paths.deps("EOSSDK-Win64-Shipping.dll")
+    except Exception:
+        dest = candidates[0]
+
+    try:
+        import urllib.request
+        logger.info(f"EOS proxy DLL not found locally. Auto-downloading from {EOS_PROXY_URL}...")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(EOS_PROXY_URL, headers={"User-Agent": "ASSella/3.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+        if data:
+            dest.write_bytes(data)
+            logger.info(f"Successfully downloaded EOS proxy DLL ({len(data)} bytes) to {dest}")
+            return dest
+    except Exception as exc:
+        logger.error(f"Failed to auto-download EOS proxy DLL from GitHub: {exc}")
+
+    return None
+
+
 class EOSDetector:
     """Class to detect and manage Epic Online Services (EOS) proxy usage for a Steam game."""
 
@@ -40,21 +95,15 @@ class EOSDetector:
     @classmethod
     def get_proxy_dll_hash(cls, proxy_src_path: Optional[Union[str, Path]] = None) -> Optional[str]:
         """Get the SHA-256 hash of the bundled proxy DLL."""
-        if proxy_src_path is None:
-            if cls._bundled_proxy_hash_cache is not None:
-                return cls._bundled_proxy_hash_cache
-            try:
-                from utils.paths import Paths
-                proxy_src_path = Paths.deps("EOSSDK-Win64-Shipping.dll")
-            except Exception:
-                return None
-
-        src_path = Path(proxy_src_path)
-        if not src_path.exists():
+        src_path = ensure_eos_proxy_dll(proxy_src_path)
+        if not src_path or not src_path.exists():
             return None
 
+        if cls._bundled_proxy_hash_cache is not None and proxy_src_path is None:
+            return cls._bundled_proxy_hash_cache
+
         h = cls.get_file_sha256(src_path)
-        if proxy_src_path is None or str(proxy_src_path).endswith("deps/EOSSDK-Win64-Shipping.dll"):
+        if proxy_src_path is None or str(src_path).endswith("deps/EOSSDK-Win64-Shipping.dll"):
             cls._bundled_proxy_hash_cache = h
         return h
 
@@ -145,16 +194,9 @@ class EOSDetector:
         Renames original/updated EOSSDK-Win64-Shipping.dll to EOSSDK-Win64-Shipping.yes
         and copies the bundled proxy in place.
         """
-        if proxy_src_path is None:
-            try:
-                from utils.paths import Paths
-                proxy_src_path = Paths.deps("EOSSDK-Win64-Shipping.dll")
-            except Exception:
-                return False
-
-        proxy_src = Path(proxy_src_path)
-        if not proxy_src.exists():
-            logger.error(f"Bundled proxy DLL not found at: {proxy_src}")
+        proxy_src = ensure_eos_proxy_dll(proxy_src_path)
+        if not proxy_src or not proxy_src.exists():
+            logger.error("EOS proxy DLL not found and could not be downloaded")
             return False
 
         dir_path = Path(game_directory)
