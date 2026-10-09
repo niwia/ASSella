@@ -388,15 +388,25 @@ class CLITaskManager:
             "auto_apply_goldberg", False, type=bool
         )
         if auto_apply_goldberg and self.game_data and self.current_dest_path:
-            game_directory = get_game_directory(self.current_dest_path, self.game_data)
-            self.logger.info("Auto-applying Goldberg after download completion")
-            self._apply_goldberg(
-                game_directory,
-                str(self.game_data.get("appid", "")),
-                self.game_data.get("game_name", ""),
-            )
-            if sys.platform == "linux":
-                self._set_linux_permissions(game_directory)
+            # Goldberg is an optional component, so it may not be installed.
+            # This is the CLI path: log it, there is no settings dialog to open.
+            from utils.component_manager import is_component_available
+
+            if not is_component_available("goldberg"):
+                self.logger.warning(
+                    "Goldberg is not downloaded - skipping auto-apply. "
+                    "Enable it from Settings -> Tools -> Optional Components."
+                )
+            else:
+                game_directory = get_game_directory(self.current_dest_path, self.game_data)
+                self.logger.info("Auto-applying Goldberg after download completion")
+                self._apply_goldberg(
+                    game_directory,
+                    str(self.game_data.get("appid", "")),
+                    self.game_data.get("game_name", ""),
+                )
+                if sys.platform == "linux":
+                    self._set_linux_permissions(game_directory)
 
         # Steamless processing
         steamless_enabled = self.settings.value(
@@ -652,10 +662,13 @@ class CLITaskManager:
                 self.logger.info("No libsteam_api.so or steam_api DLL found in game directory tree")
             return False
 
-        # Source Goldberg directory in bundled deps
+        # Source Goldberg directory (optional component, downloaded on demand)
         goldberg_src = Paths.deps("Goldberg")
         if not goldberg_src.exists():
-            self.logger.error(f"Goldberg source not found: {goldberg_src}")
+            self.logger.error(
+                f"Goldberg is not installed: {goldberg_src}. "
+                "Download it from Settings -> Tools -> Optional Components."
+            )
             return False
 
         def detect_elf_architecture(file_path: str):

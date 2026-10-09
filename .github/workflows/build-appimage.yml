@@ -196,6 +196,8 @@ jobs:
           # 4. Copy Application Source Code
           cp -r src AppDir/bin/
           find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          # Optional components (Goldberg, Steamless, SLScheevo) are downloaded on demand from R2
+          rm -rf AppDir/bin/src/deps/Goldberg AppDir/bin/src/deps/Steamless AppDir/bin/src/deps/SLScheevo
 
           # 5. Bundle appimageupdatetool (AppImageUpdate) for in-app delta updates.
           # Ships as a self-contained AppImage in bin/; the app extracts and runs
@@ -262,7 +264,7 @@ jobs:
 
           # 9. Sanity check: Verify all required imports inside bundled AppDir runtime
           echo "Verifying AppDir runtime imports..."
-          AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, PIL, cryptography, configobj, urwid, vdf, steam, wsproto, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
+          AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, urwid, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
           test -x AppDir/bin/appimageupdatetool || { echo "::error::appimageupdatetool missing from AppDir"; exit 1; }
           echo "appimageupdatetool present and executable."
 
@@ -405,10 +407,9 @@ jobs:
           echo "::group::Import check inside the bundled interpreter"
           QT_QPA_PLATFORM=offscreen AppDir_extract/bin/.venv/bin/python3 - <<'PY'
           import importlib, sys
-          mods = ["PyQt6.QtCore","PyQt6.QtWidgets","PyQt6.QtGui","requests","yaml","PIL",
-                  "cryptography","configobj","urwid","vdf","steam","wsproto","steam.client",
-                  "zstandard","curl_cffi","psutil","bs4","tinytag","just_playback","gevent",
-                  "capstone","numpy"]
+          mods = ["PyQt6.QtCore","PyQt6.QtWidgets","PyQt6.QtGui","requests","yaml",
+                  "cryptography","configobj","urwid","vdf","steam","steam.client",
+                  "zstandard","curl_cffi","psutil","bs4","gevent","capstone"]
           bad = []
           for m in mods:
               try: importlib.import_module(m)

@@ -40,6 +40,12 @@ scratch/
 plugins_manifest.json
 plugins/
 r2-publish/
+.wrangler/
+
+# ── Optional components (downloaded on demand from R2) ───────────────────────
+src/deps/Goldberg/
+src/deps/Steamless/
+src/deps/SLScheevo/
 
 # ── OS junk ─────────────────────────────────────────────────────────────────
 .DS_Store

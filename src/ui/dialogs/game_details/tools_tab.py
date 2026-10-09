@@ -21,6 +21,11 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.dialogs.game_details.hero_header import section_title, thin_line
+from ui.dialogs.settings_tabs.components_card import (
+    prompt_component_missing,
+    require_component,
+)
+from utils.component_manager import is_component_available
 from utils.dlc_helpers import is_dlc_only_mode, get_all_dlcs_for_app
 from utils.yaml_config_manager import (
     get_user_config_path,
@@ -114,9 +119,13 @@ def init_tools_tab(dialog) -> None:
             color: rgba(255,255,255,0.25);
         }}
     """)
-    dialog.b_steamless_cli.clicked.connect(
-        lambda: dialog.parent_window.main_window.task_manager.run_steamless_for_game(path, name)
-    )
+    def _run_steamless_cli():
+        if not require_component(dialog, "steamless"):
+            return
+        if dialog.parent_window.main_window and dialog.parent_window.main_window.task_manager:
+            dialog.parent_window.main_window.task_manager.run_steamless_for_game(path, name)
+
+    dialog.b_steamless_cli.clicked.connect(_run_steamless_cli)
     dialog.b_steamless = dialog.b_steamless_aio
 
     dialog.sl_row_widget = QWidget()
@@ -211,6 +220,10 @@ def init_tools_tab(dialog) -> None:
         dialog.parent_window.executor.submit(dialog.parent_window._check_goldberg_async, path)
 
     def _apply_gb():
+        # Goldberg is no longer bundled - send the user to the download button
+        # instead of failing on a missing folder.
+        if not require_component(dialog, "goldberg"):
+            return
         if dialog.parent_window.main_window and dialog.parent_window.main_window.task_manager:
             dialog.parent_window.main_window.task_manager.apply_goldberg_to_game(
                 path, dialog.appid, name, show_dialog=True
@@ -218,6 +231,11 @@ def init_tools_tab(dialog) -> None:
             dialog.parent_window.executor.submit(dialog.parent_window._check_goldberg_async, path)
 
     def _remove_gb():
+        # Removing Goldberg from a game that never had it is a no-op, but the
+        # user still needs the files present for the operation to make sense.
+        if not is_component_available("goldberg"):
+            prompt_component_missing(dialog, "goldberg")
+            return
         if dialog.parent_window.main_window and dialog.parent_window.main_window.task_manager:
             dialog.parent_window.main_window.task_manager.remove_goldberg_from_game(
                 path, dialog.appid, name, show_dialog=True
@@ -226,6 +244,27 @@ def init_tools_tab(dialog) -> None:
 
     dialog.gb_apply_btn.clicked.connect(_apply_gb)
     dialog.gb_remove_btn.clicked.connect(_remove_gb)
+
+    # The button only makes sense once the component is downloaded; reflect that
+    # so the row does not advertise an action that will bounce the user away.
+    if is_component_available("goldberg"):
+        dialog.gb_apply_btn.setText("Apply Goldberg")
+        dialog.gb_apply_btn.setToolTip("Apply Goldberg Steam emulator to this game")
+        dialog.gb_remove_btn.setToolTip("Remove Goldberg Steam emulator from this game")
+    else:
+        dialog.gb_apply_btn.setText("Download Goldberg")
+        dialog.gb_apply_btn.setToolTip(
+            "Download Goldberg from Settings -> Tools, then apply it here."
+        )
+        dialog.gb_remove_btn.setToolTip("Goldberg is not downloaded on this machine.")
+        dialog.gb_remove_btn.setEnabled(False)
+
+    if is_component_available("steamless"):
+        dialog.b_steamless_cli.setText("Steamless (.NET CLI)")
+        dialog.b_steamless_cli.setToolTip("Remove Steam DRM using .NET 9 Steamless CLI")
+    else:
+        dialog.b_steamless_cli.setText("Download Steamless (.NET CLI)")
+        dialog.b_steamless_cli.setToolTip("Download Steamless from Settings -> Tools, then run it here.")
 
     gb_row_widget = QWidget()
     gb_row = QHBoxLayout(gb_row_widget)
