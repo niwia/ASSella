@@ -796,6 +796,12 @@ class DownloadDepotsTask(QObject):
         cached_dkm_keys = None
 
         with open(keys_path, "w") as f:
+            # Depot decryption keys in a world-readable /tmp file. Create it
+            # owner-only from the start rather than widening then narrowing.
+            try:
+                os.chmod(keys_path, 0o600)
+            except OSError:
+                pass
             for depot_id in selected_depots:
                 depots_map = game_data.get("depots", {})
                 depot_info = depots_map.get(str(depot_id))

@@ -42,9 +42,16 @@ def configure_credentials(settings):
     if success:
         print("\nAuthentication successful!")
         settings.setValue("steam_username", username)
-        encrypted = encrypt_string(password)
-        settings.setValue("steam_password", encrypted)
-        print("Steam login credentials have been saved encrypted locally.")
+        # The password is deliberately NOT persisted. It used to be stored
+        # "encrypted" with a machine-derived key, which is reversible by anyone
+        # who can read the file - and argv exposure means it was briefly visible
+        # to other local users anyway. schema-grabber is deprecated; enter the
+        # password again when you need it.
+        try:
+            settings.remove("steam_password")
+        except Exception:
+            pass
+        print("Steam username saved. Password is NOT saved to disk (enter it when needed).")
     else:
         print("\nAuthentication failed! Credentials were not saved.")
         print("Please check your credentials or 2FA guard code and try again.")

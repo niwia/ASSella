@@ -517,7 +517,8 @@ def execute_hubcap_request(
             return orig_getaddrinfo(host, port, family, type, proto, flags)
         socket.getaddrinfo = doh_getaddrinfo
         try:
-            resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
+            resp = session.request(method, url, headers=headers, params=params,
+                                   timeout=timeout, stream=stream, verify=False)
             resp.raise_for_status()
             if not stream and is_html_or_blocked_payload(resp):
                 raise requests.exceptions.ConnectionError("DoH request returned empty or HTML payload.")
@@ -530,7 +531,8 @@ def execute_hubcap_request(
         if not TorManager.start_tor_if_needed():
             raise requests.exceptions.ConnectionError("Tor process is not available/listening.")
         tor_proxies = TorManager.get_tor_proxies()
-        resp = session.request(method, url, headers=headers, params=params, proxies=tor_proxies, timeout=timeout + 5, stream=stream)
+        resp = session.request(method, url, headers=headers, params=params,
+                               proxies=tor_proxies, timeout=timeout + 5, stream=stream, verify=False)
         resp.raise_for_status()
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Tor request returned empty or HTML payload.")
@@ -539,7 +541,8 @@ def execute_hubcap_request(
 
     if mode == "wirecutter":
         worker_url = rewrite_url_for_wirecutter(url)
-        resp = session.request(method, worker_url, headers=headers, params=params, timeout=timeout + 3, stream=stream)
+        resp = session.request(method, worker_url, headers=headers, params=params,
+                               timeout=timeout + 3, stream=stream, verify=False)
         resp.raise_for_status()
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Wirecutter request returned empty or HTML payload.")
@@ -583,6 +586,13 @@ def execute_hubcap_request(
             _last_direct_check_time = now
             logger.warning(f"[ISPBypass] Direct request to {url} failed: {e}. Initiating automatic DoH fallback...")
 
+    # Tiers 2-4 are a *deliberate* user choice to route around a broken or
+    # hostile network (DNS poisoning, blocked CDN, TLS-stripping middlebox).
+    # They opt out of certificate verification explicitly so that turning
+    # verification ON for the direct tier cannot strand those users: a direct
+    # connection that fails on certificates simply falls through to these.
+    bypass_kwargs = {"verify": False}
+
     # 2. Tier 2: DoH (DNS-over-HTTPS) resolution
     resolved_ip = resolve_doh(TARGET_DOMAIN)
     if resolved_ip:
@@ -604,7 +614,7 @@ def execute_hubcap_request(
                 except Exception:
                     doh_headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; ASSella/2.6.2)"
             
-            resp = session.request(method, url, headers=doh_headers, params=params, timeout=timeout, stream=stream)
+            resp = session.request(method, url, headers=doh_headers, params=params, timeout=timeout, stream=stream, **bypass_kwargs)
             resp.raise_for_status()
 
             if not stream and is_html_or_blocked_payload(resp):
@@ -624,7 +634,8 @@ def execute_hubcap_request(
             tor_proxies = TorManager.get_tor_proxies()
             logger.info(f"[ISPBypass] Attempting request via Tor (127.0.0.1:{TorManager.TOR_HTTP_PORT})...")
             resp = session.request(
-                method, url, headers=headers, params=params, proxies=tor_proxies, timeout=timeout + 5, stream=stream
+                method, url, headers=headers, params=params, proxies=tor_proxies,
+                timeout=timeout + 5, stream=stream, **bypass_kwargs
             )
             resp.raise_for_status()
             logger.info(f"[ISPBypass] Tor request to {url} SUCCESSFUL!")
@@ -638,7 +649,8 @@ def execute_hubcap_request(
         worker_url = rewrite_url_for_wirecutter(url)
         logger.info(f"[ISPBypass] Attempting request via Wirecutter/Worker proxy: {worker_url}...")
         resp = session.request(
-            method, worker_url, headers=headers, params=params, timeout=timeout + 3, stream=stream
+            method, worker_url, headers=headers, params=params,
+            timeout=timeout + 3, stream=stream, **bypass_kwargs
         )
         resp.raise_for_status()
         logger.info(f"[ISPBypass] Wirecutter request to {worker_url} SUCCESSFUL!")

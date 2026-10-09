@@ -19,7 +19,7 @@ Every Lua scan in the codebase should therefore go through
 
 import bisect
 import re
-from typing import Any, Iterator, List, Pattern, Tuple, Union
+from typing import Any, Iterator, List, Optional, Pattern, Tuple, Union
 
 __all__ = [
     "comment_spans",
@@ -29,6 +29,9 @@ __all__ = [
     "is_placeholder_key",
     "is_real_key",
     "smart_merge_lua",
+    "coerce_depot_id",
+    "coerce_manifest_gid",
+    "extract_token",
 ]
 
 # Hubcap's literal marker for "this depot has no obtainable key". It is not a
@@ -187,9 +190,9 @@ def smart_merge_lua(
         ):
             cached_manifests[m.group(1)] = m.group(2)
 
-        m_tok = re.search(
-            r'addtoken\(\s*(\d+)\s*,\s*["\']([^"\']+)["\']',
+        m_tok = find_live(
             cached_lua,
+            r'addtoken\(\s*(\d+)\s*,\s*["\']([^"\']+)["\']',
             re.IGNORECASE,
         )
         if m_tok:
@@ -237,8 +240,10 @@ def smart_merge_lua(
 
         merged_lines.append(line)
 
-    # Preserve cached addtoken if newly imported Lua didn't have one
-    has_token = bool(re.search(r"addtoken\(\s*\d+", new_lua, re.IGNORECASE))
+    # Preserve cached addtoken if newly imported Lua didn't have one.
+    # Must be comment-aware: a commented-out addtoken must not suppress the
+    # cached live one.
+    has_token = has_live_token(new_lua)
     if not has_token and cached_token:
         merged_lines.append(f'addtoken({cached_token[0]}, "{cached_token[1]}")')
 
@@ -257,3 +262,94 @@ def smart_merge_lua(
                 merged_lines.append(f'setManifestid({did}, "{cached_manifests[did]}")')
 
     return "\n".join(merged_lines)
+
+# ---------------------------------------------------------------------------
+# Boundary validation
+#
+# Every identifier below originates from a remote Hubcap Lua (or a zip member
+# name) and is later interpolated into filesystem paths, config.yaml entries and
+# Steam depotcache filenames. A crafted value such as
+# ``addappid(../../../../home/user/.bashrc, 1)`` is matched happily by the
+# generic addappid regex, so each identifier must be validated before it is
+# allowed to leave the parser.
+# ---------------------------------------------------------------------------
+
+# Real Steam AppIDs/DepotIDs are 4-11 digits in practice; allow 1-12 to stay
+# tolerant of oddities while still rejecting path and injection payloads.
+_DEPOT_ID_RE = re.compile(r"^[0-9]{1,12}$")
+
+# Manifest GIDs are large unsigned integers (observed up to ~7.3e18), always
+# numeric. Reject anything else before it can become a path segment.
+_MANIFEST_GID_RE = re.compile(r"^[0-9]{1,24}$")
+
+
+def coerce_depot_id(value: object) -> Optional[str]:
+    """Return a clean numeric AppID/DepotID string, or ``None`` if not valid.
+
+    Rejects path separators, ``..``, whitespace and any non-digit character, so
+    the result is always safe to interpolate into a path or config value.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):  # bool is an int subclass; never a valid id
+        return None
+    if isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
+        return None
+    return text if _DEPOT_ID_RE.match(text) else None
+
+
+def coerce_manifest_gid(value: object) -> Optional[str]:
+    """Return a clean numeric manifest GID string, or ``None`` if not valid."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    text = str(value).strip() if isinstance(value, (str, int)) else ""
+    return text if _MANIFEST_GID_RE.match(text) else None
+
+
+def extract_token(content: str, appid: Optional[object] = None) -> Optional[str]:
+    """Extract an ``addtoken`` value from a Lua, ignoring commented-out lines.
+
+    The token is bound to ``appid`` when one is supplied. A bare ``\\d+`` would
+    accept the first token in the file regardless of which app it belongs to and
+    then file it under whatever AppID the caller inferred.
+    """
+    if not content:
+        return None
+
+    if appid is not None:
+        aid = coerce_depot_id(appid)
+        if aid:
+            pattern = r'addtoken\s*\(\s*' + re.escape(aid) + r'\s*,\s*["\']([^"\']+)["\']\s*\)'
+            match = find_live(content, pattern, re.IGNORECASE)
+            if match:
+                return match.group(1)
+            return None
+
+    match = find_live(
+        content, r'addtoken\s*\(\s*[0-9]+\s*,\s*["\']([^"\']+)["\']\s*\)', re.IGNORECASE
+    )
+    return match.group(1) if match else None
+
+
+def has_live_token(content: str, appid: Optional[object] = None) -> bool:
+    """True when a non-commented ``addtoken`` statement exists."""
+    if not content:
+        return False
+    if appid is not None:
+        aid = coerce_depot_id(appid)
+        if aid:
+            return (
+                find_live(
+                    content,
+                    r'addtoken\s*\(\s*' + re.escape(aid) + r'\s*,',
+                    re.IGNORECASE,
+                )
+                is not None
+            )
+    return find_live(content, r"addtoken\s*\(\s*[0-9]+", re.IGNORECASE) is not None

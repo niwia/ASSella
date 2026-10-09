@@ -254,6 +254,14 @@ def main():
 
         if config_path.exists():
             ensure_slssteam_prerequisites(config_path)
+
+            # config.yaml holds every depot decryption key the user owns.
+            # Older versions left it world-readable; tighten existing installs.
+            try:
+                from utils.yaml_config_manager import harden_existing_config_permissions
+                harden_existing_config_permissions(config_path)
+            except Exception as ex:
+                logger.debug(f"Could not harden config permissions: {ex}")
             
             try:
                 from utils.yaml_config_manager import check_and_merge_fakeappid_db

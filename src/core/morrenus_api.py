@@ -37,8 +37,13 @@ API_ERROR_MESSAGES = {
 
 class SSLAdapter(HTTPAdapter):
     """
-    Custom HTTPAdapter that uses a more permissive SSL configuration.
-    Helps with environments that have outdated CA bundles or SSL issues.
+    Custom HTTPAdapter used ONLY when the user has explicitly opted out of TLS
+    verification.
+
+    Verification is on by default. This adapter exists as an escape hatch for
+    genuinely broken TLS stacks (outdated CA bundles, middlebox equipment); it
+    must never be the default, because every Hubcap API key and depot decryption
+    key travels over this connection.
     """
 
     def init_poolmanager(self, *args, **kwargs):
@@ -56,15 +61,40 @@ class SSLAdapter(HTTPAdapter):
 
 _thread_local = threading.local()
 
+# Kept so genuinely broken environments still work, but surfaced loudly instead
+# of failing silently. Users who hit TLS errors should fix their CA bundle or
+# opt out explicitly rather than running permanently unverified.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+def tls_verification_enabled() -> bool:
+    """True when Hubcap TLS certificates are verified (the default)."""
+    try:
+        return not get_settings().value("hubcap_disable_tls_verify", False, type=bool)
+    except Exception:
+        return True
+
+
 def get_session() -> requests.Session:
-    """Gets or creates a thread-local requests.Session object."""
+    """Gets or creates a thread-local requests.Session object.
+
+    TLS verification is enabled unless the user has explicitly opted out. The
+    ISP-bypass tiers (DoH / Tor / Wirecutter) are a *routing* fallback and are
+    entirely unaffected: they still run when a direct request fails, including
+    when that failure is a certificate error.
+    """
     if not hasattr(_thread_local, "session"):
         session = requests.Session()
-        session.verify = False
-        session.mount("https://", SSLAdapter())
+        if tls_verification_enabled():
+            session.verify = True
+        else:
+            logger.warning(
+                "[HubcapAPI] TLS certificate verification is DISABLED by user setting "
+                "(hubcap_disable_tls_verify). API keys and depot keys are exposed to "
+                "interception on this connection."
+            )
+            session.verify = False
+            session.mount("https://", SSLAdapter())
         _thread_local.session = session
     return _thread_local.session
 

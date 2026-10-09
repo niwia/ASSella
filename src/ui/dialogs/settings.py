@@ -130,7 +130,11 @@ class SettingsDialog(QDialog):
         self.settings.sync()
         self._original_steam_username = self.settings.value("steam_username", "", type=str)
         from utils.helpers import decrypt_string
-        self._original_steam_password = decrypt_string(self.settings.value("steam_password", "", type=str))
+        # Recover the in-session password if one was entered earlier in this
+        # run. Nothing is read from (or written to) disk for the password.
+        self._original_steam_password = decrypt_string(
+            self.settings.value("steam_password_session_only", "", type=str)
+        )
 
         self._user_accent_color = self.settings.value(
             "user_accent_color",
@@ -721,11 +725,31 @@ class SettingsDialog(QDialog):
         if hasattr(self, "steam_username_input") and self.steam_username_input is not None:
             self.settings.setValue("steam_username", self.steam_username_input.text().strip())
         if hasattr(self, "steam_password_input") and self.steam_password_input is not None:
+            # The Steam password is no longer persisted. schema-grabber is a
+            # deprecated achievement feature that is rarely used, and storing a
+            # long-lived Steam credential buys very little in exchange for the
+            # risk of it sitting on disk (encrypted only with a machine-derived
+            # key, which is reversible by anyone who can read the file).
+            # Background achievement fetches that need it will ask instead.
             new_pass = self.steam_password_input.text()
-            if new_pass != getattr(self, "_original_steam_password", None):
-                from utils.helpers import encrypt_string
-                encrypted_pass = encrypt_string(new_pass)
-                self.settings.setValue("steam_password", encrypted_pass)
+            if new_pass:
+                try:
+                    from utils.helpers import encrypt_string
+                    self._session_steam_password = new_pass
+                    # Keep the field populated for this session only.
+                    self.settings.setValue("steam_password_session_only", encrypt_string(new_pass))
+                    self.settings.remove("steam_password")
+                    logger.info(
+                        "[Settings] Steam password kept for this session only "
+                        "(not persisted to disk)."
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not prepare session Steam password: {e}")
+        # Always ensure any previously-persisted password is gone.
+        try:
+            self.settings.remove("steam_password")
+        except Exception:
+            pass
         if hasattr(self, "log_level_combo") and self.log_level_combo is not None:
             self.settings.setValue("log_filter_level", self.log_level_combo.currentText())
         if hasattr(self, "log_category_combo") and self.log_category_combo is not None:
