@@ -46,7 +46,7 @@ from PyQt6.QtWidgets import (
 
 from utils.color_utils import get_best_foreground_color
 from utils.settings import get_settings
-from utils.lua_parsing import iter_live_matches, is_placeholder_key
+from utils.lua_parsing import extract_token, iter_live_matches, is_placeholder_key
 
 logger = logging.getLogger("ACCELA.zip_confirm")
 
@@ -94,6 +94,7 @@ class ZipImportConfirmationDialog(QDialog):
     """
 
     inspection_completed = pyqtSignal(dict)
+    pics_truth_verified = pyqtSignal(dict)
 
     def __init__(
         self,
@@ -120,6 +121,7 @@ class ZipImportConfirmationDialog(QDialog):
         self.setStyleSheet("QDialog { background: transparent; }")
 
         self.inspection_completed.connect(self._on_inspection_completed)
+        self.pics_truth_verified.connect(self._on_pics_truth_verified)
 
         self._build_ui()
         self._start_inspection()
@@ -362,6 +364,20 @@ class ZipImportConfirmationDialog(QDialog):
             font-weight: 600;
         """)
         badges_row.addWidget(self.intent_badge)
+
+        self.atom_badge = QLabel("AT0-M")
+        self.atom_badge.setStyleSheet("""
+            color: #00D2FF;
+            background-color: rgba(0, 210, 255, 0.15);
+            border: 1px solid rgba(0, 210, 255, 0.5);
+            border-radius: 4px;
+            padding: 2px 7px;
+            font-size: 8pt;
+            font-weight: 600;
+        """)
+        self.atom_badge.setVisible(False)
+        badges_row.addWidget(self.atom_badge)
+
         badges_row.addStretch(1)
 
         header_text_box.addLayout(badges_row)
@@ -507,7 +523,108 @@ class ZipImportConfirmationDialog(QDialog):
         self.radio_manifest_build.toggled.connect(self._on_build_selection_changed)
         self.confirm_layout.addWidget(self.build_selection_frame)
 
-        # 5. Pin Build Tile
+        # 5. AT0-M / Backend Mode Frame
+        self.mode_frame = QFrame()
+        self.mode_frame.setObjectName("mode_frame")
+        self.mode_frame.setStyleSheet("""
+            QFrame#mode_frame {
+                background-color: rgba(255, 255, 255, 0.025);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+            }
+        """)
+        mode_layout = QVBoxLayout(self.mode_frame)
+        mode_layout.setContentsMargins(12, 7, 12, 7)
+        mode_layout.setSpacing(3)
+
+        mode_header_layout = QHBoxLayout()
+        mode_title = QLabel("Installation Mode:")
+        mode_title.setStyleSheet("color: #FFFFFF; font-size: 8.6pt; font-weight: bold; border: none; background: transparent;")
+        mode_header_layout.addWidget(mode_title)
+
+        self.mode_installed_tag = QLabel("")
+        self.mode_installed_tag.setStyleSheet("""
+            color: #00D2FF;
+            background-color: rgba(0, 210, 255, 0.15);
+            border: 1px solid rgba(0, 210, 255, 0.45);
+            border-radius: 4px;
+            padding: 1px 6px;
+            font-size: 7.6pt;
+            font-weight: 600;
+        """)
+        self.mode_installed_tag.setVisible(False)
+        mode_header_layout.addWidget(self.mode_installed_tag)
+        mode_header_layout.addStretch(1)
+        mode_layout.addLayout(mode_header_layout)
+
+        self.mode_group = QButtonGroup(self)
+
+        self.radio_mode_assella = QRadioButton("ASSella Downloader")
+        self.radio_mode_assella.setChecked(True)
+        self.radio_mode_assella.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.radio_mode_assella.setStyleSheet(f"""
+            QRadioButton {{
+                color: #FFFFFF;
+                font-size: 8.6pt;
+                font-weight: 600;
+                spacing: 8px;
+                background: transparent;
+                border: none;
+            }}
+            QRadioButton::indicator {{
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                background: rgba(255, 255, 255, 0.05);
+            }}
+            QRadioButton::indicator:checked {{
+                background: {self.accent_color};
+                border: 1px solid {self.accent_color};
+            }}
+        """)
+        self.mode_group.addButton(self.radio_mode_assella)
+        mode_layout.addWidget(self.radio_mode_assella)
+
+        self.mode_assella_sub = QLabel("Direct isolated download via DepotDownloader")
+        self.mode_assella_sub.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 7.8pt; border: none; background: transparent; margin-left: 23px;")
+        mode_layout.addWidget(self.mode_assella_sub)
+
+        self.radio_mode_atom = QRadioButton("AT0-M (Native Steam)")
+        self.radio_mode_atom.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.radio_mode_atom.setStyleSheet(f"""
+            QRadioButton {{
+                color: #FFFFFF;
+                font-size: 8.6pt;
+                font-weight: 600;
+                spacing: 8px;
+                background: transparent;
+                border: none;
+            }}
+            QRadioButton::indicator {{
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                background: rgba(255, 255, 255, 0.05);
+            }}
+            QRadioButton::indicator:checked {{
+                background: {self.accent_color};
+                border: 1px solid {self.accent_color};
+            }}
+        """)
+        self.mode_group.addButton(self.radio_mode_atom)
+        mode_layout.addWidget(self.radio_mode_atom)
+
+        self.mode_atom_sub = QLabel("SLSsteam plugin integration & native Steam library")
+        self.mode_atom_sub.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 7.8pt; border: none; background: transparent; margin-left: 23px;")
+        self.mode_atom_sub.setWordWrap(True)
+        mode_layout.addWidget(self.mode_atom_sub)
+
+        self.radio_mode_assella.toggled.connect(self._on_mode_changed)
+        self.confirm_layout.addWidget(self.mode_frame)
+
+        # 6. Pin Build Tile
         self.pin_frame = QFrame()
         self.pin_frame.setObjectName("pin_frame")
         self.pin_frame.setStyleSheet("""
@@ -761,10 +878,10 @@ class ZipImportConfirmationDialog(QDialog):
                             for match in iter_live_matches(content, r'setManifestid\(\s*(\d+)\s*,\s*"([^"]+)"', 0):
                                 lua_manifests[match.group(1)] = match.group(2)
 
-                            # Live addtoken matches
-                            m_tok = re.search(r'addtoken\(\s*\d+\s*,\s*"([^"]+)"\s*\)', content)
-                            if m_tok:
-                                app_token = m_tok.group(1)
+                            # Live addtoken matches (comment-aware)
+                            tok_value = extract_token(content)
+                            if tok_value:
+                                app_token = tok_value
 
                         except Exception as _lua_err:
                             logger.debug(f"[ZipConfirmDialog] Error inspecting lua {name}: {_lua_err}")
@@ -871,6 +988,34 @@ class ZipImportConfirmationDialog(QDialog):
         info["is_installed"] = bool(installed_bid)
         info["library_path"] = installed_lib_path
 
+        # Check AT0-M installation status and availability
+        is_atom_installed = False
+        try:
+            from utils.plugin_games import is_plugin_game
+            if is_plugin_game(info["appid"]):
+                is_atom_installed = True
+        except Exception:
+            pass
+        if not is_atom_installed and hasattr(self, "parent") and self.parent():
+            gm = getattr(self.parent(), "game_manager", None)
+            if gm and hasattr(gm, "get_game"):
+                inst_g = gm.get_game(info["appid"])
+                if inst_g and (
+                    inst_g.get("is_atom")
+                    or inst_g.get("is_vapor")
+                    or inst_g.get("is_plugin_game")
+                    or inst_g.get("source") in ("at0-m", "Plugin/Native")
+                ):
+                    is_atom_installed = True
+
+        info["is_atom_installed"] = is_atom_installed
+
+        try:
+            from utils.yaml_config_manager import is_at0m_enabled
+            info["is_atom_available"] = is_at0m_enabled() or is_atom_installed
+        except Exception:
+            info["is_atom_available"] = is_atom_installed
+
         # ── Step 4: Fast Live Build & Depot Keys Discovery (<1.0s) ──
         # Check cached keys & tokens without spending API tokens
         if info["appid"] != "0":
@@ -891,7 +1036,12 @@ class ZipImportConfirmationDialog(QDialog):
         if info["appid"] != "0":
             try:
                 from utils.manifest_resolver import race_live_metadata
-                race_res = race_live_metadata(info["appid"], access_token=info.get("app_token"), timeout=3.0)
+                race_res = race_live_metadata(
+                    info["appid"],
+                    access_token=info.get("app_token"),
+                    timeout=3.0,
+                    on_pics_verified=lambda p: self.pics_truth_verified.emit(p),
+                )
                 if race_res.get("live_buildid"):
                     info["live_buildid"] = race_res["live_buildid"]
                 if race_res.get("game_name") and (not game_name or game_name.startswith("App ")):
@@ -1156,7 +1306,11 @@ class ZipImportConfirmationDialog(QDialog):
         imported_bid = data.get("imported_buildid") or "Unknown"
         imported_date = format_dd_mm_yy(data.get("patch_date"))
         date_str = f" ({imported_date})" if imported_date else ""
-        is_inst_str = "yes" if data.get("is_installed") else "no"
+        if data.get("is_installed"):
+            mode_tag = " (AT0-M)" if data.get("is_atom_installed") else " (ASSella)"
+            is_inst_str = f"yes{mode_tag}"
+        else:
+            is_inst_str = "no"
 
         self.build_line1_lbl.setText(f"Build: {imported_bid}{date_str} installed :{is_inst_str}")
 
@@ -1198,6 +1352,36 @@ class ZipImportConfirmationDialog(QDialog):
                 self._on_build_selection_changed(False)
         else:
             self.build_selection_frame.setVisible(False)
+
+        # 5. AT0-M / Backend Mode Frame Configuration
+        is_atom_avail = bool(data.get("is_atom_available", False))
+        is_atom_inst = bool(data.get("is_atom_installed", False))
+
+        if is_atom_inst:
+            self.atom_badge.setVisible(True)
+        else:
+            self.atom_badge.setVisible(False)
+
+        if is_atom_avail:
+            self.mode_frame.setVisible(True)
+            if is_atom_inst:
+                self.radio_mode_atom.setChecked(True)
+                self.mode_installed_tag.setText("Installed in AT0-M")
+                self.mode_installed_tag.setVisible(True)
+            elif data.get("is_installed"):
+                self.radio_mode_assella.setChecked(True)
+                self.mode_installed_tag.setText("Installed in ASSella")
+                self.mode_installed_tag.setVisible(True)
+            else:
+                self.mode_installed_tag.setVisible(False)
+                def_action = settings.value("at0m_action", "ask", type=str)
+                if def_action == "native":
+                    self.radio_mode_atom.setChecked(True)
+                else:
+                    self.radio_mode_assella.setChecked(True)
+            self._update_mode_subtitles()
+        else:
+            self.mode_frame.setVisible(False)
 
         # 5. Populate Destination Libraries
         from core.steam_helpers import get_steam_libraries, find_steam_install
@@ -1277,7 +1461,11 @@ class ZipImportConfirmationDialog(QDialog):
             except Exception:
                 pass
 
-        target_h = 525 if has_different_builds else 455
+        target_h = 470
+        if has_different_builds:
+            target_h += 80
+        if hasattr(self, "mode_frame") and not self.mode_frame.isHidden():
+            target_h += 75
         self.setFixedSize(540, target_h)
         if self.parent():
             pgeo = self.parent().geometry()
@@ -1315,6 +1503,54 @@ class ZipImportConfirmationDialog(QDialog):
         self.img_fetcher.finished.connect(_on_fetched)
         self.img_fetcher.start()
 
+    @pyqtSlot(dict)
+    def _on_pics_truth_verified(self, pics_res: Dict[str, Any]):
+        """
+        Slot invoked when Steam PICS ground truth arrives in the background.
+        Reconciles live buildid and manifest information dynamically.
+        """
+        if not pics_res or not self.result_data:
+            return
+        pics_bid = str(pics_res.get("live_buildid", "")).strip()
+        if not pics_bid:
+            return
+
+        old_bid = str(self.result_data.get("live_buildid", "")).strip()
+        imported_bid = str(self.result_data.get("imported_buildid", "")).strip()
+
+        self.result_data["live_buildid"] = pics_bid
+        if pics_res.get("live_date"):
+            self.result_data["live_date"] = pics_res["live_date"]
+        if pics_res.get("live_manifests"):
+            self.result_data.setdefault("latest_bundle_manifests", {}).update(pics_res["live_manifests"])
+
+        # Update Line 2 if imported build is not latest
+        if pics_bid != imported_bid:
+            live_date = format_dd_mm_yy(self.result_data.get("live_date"))
+            live_date_str = f" ({live_date})" if live_date else ""
+            self.build_line2_lbl.setText(f"latest buildid : {pics_bid}{live_date_str}")
+            self.build_line2_lbl.setVisible(True)
+            if hasattr(self, "radio_latest_build"):
+                self.radio_latest_build.setText(f"Switch to Latest Live Build (Build {pics_bid})")
+        else:
+            self.build_line2_lbl.setVisible(False)
+
+        self._update_mode_subtitles()
+
+    def _update_mode_subtitles(self):
+        use_latest = False
+        if hasattr(self, "radio_latest_build") and self.radio_latest_build.isChecked() and hasattr(self, "build_selection_frame") and not self.build_selection_frame.isHidden():
+            use_latest = True
+
+        is_downgrade = (not use_latest) and (self.result_data.get("intent") in ("Rollback", "Downgrade"))
+        if is_downgrade:
+            self.mode_atom_sub.setText("Native Steam cannot fetch historical manifests. ASSella Downloader will install pinned files and link with SLSsteam.")
+        else:
+            self.mode_atom_sub.setText("Direct download through Steam client with SLSsteam plugin integration.")
+
+    def _on_mode_changed(self):
+        self._update_mode_subtitles()
+
     def _on_build_selection_changed(self, manifest_checked: Optional[bool] = None):
         if manifest_checked is None:
             manifest_checked = self.radio_manifest_build.isChecked()
@@ -1333,6 +1569,8 @@ class ZipImportConfirmationDialog(QDialog):
         else:
             self.pin_checkbox.setChecked(False)
             self.proceed_btn.setText("Proceed with Latest Build")
+
+        self._update_mode_subtitles()
 
     def _on_proceed_clicked(self):
         """
@@ -1431,16 +1669,42 @@ class ZipImportConfirmationDialog(QDialog):
         if not chosen_bid:
             chosen_bid = self.result_data.get("imported_buildid", "") or self.result_data.get("live_buildid", "")
 
+        is_rollback = (not use_latest) and (self.result_data.get("intent") in ("Rollback", "Downgrade"))
+        is_atom_selected = (
+            hasattr(self, "radio_mode_atom")
+            and self.radio_mode_atom.isChecked()
+            and hasattr(self, "mode_frame")
+            and not self.mode_frame.isHidden()
+        )
+
+        # Download backend and AT0-M link:
+        # Native Steam can only fetch the live public branch. For downgrades/rollbacks,
+        # ASSella Downloader must always be used to fetch the historical payload, while
+        # AT0-M integration syncs keys with SLSsteam and pins the ACF manifest.
+        if is_atom_selected:
+            if is_rollback:
+                download_backend = "assella"
+                register_at0m = True
+            else:
+                download_backend = "native"
+                register_at0m = True
+        else:
+            download_backend = "assella"
+            register_at0m = False
+
         meta = {
             "pin_build": self.pin_checkbox.isChecked(),
             "use_latest_build": use_latest,
             "buildid": chosen_bid,
             "branch": self.result_data.get("branch", "public"),
-            "is_rollback": (not use_latest) and (self.result_data.get("intent") in ("Rollback", "Downgrade")),
+            "is_rollback": is_rollback,
             "patch_title": self.result_data.get("patch_title", ""),
             "game_name": self.result_data.get("game_name", ""),
             "appid": self.result_data.get("appid", "0"),
             "latest_bundle_manifests": self.result_data.get("latest_bundle_manifests", {}),
+            "download_backend": download_backend,
+            "register_at0m": register_at0m,
+            "is_atom": is_atom_selected,
         }
         if self.result_data.get("library_path"):
             meta["library_path"] = self.result_data["library_path"]
