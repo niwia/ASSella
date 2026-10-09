@@ -11,6 +11,7 @@ from core import morrenus_api
 from core.steam_api import get_depot_info_from_api
 from managers.db_manager import DatabaseManager
 from utils.helpers import get_base_path
+from utils.lua_parsing import extract_token
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +95,9 @@ def verify_or_download_manifest(
                     if lua_files:
                         try:
                             lua_content = zip_ref.read(lua_files[0]).decode("utf-8", errors="ignore")
-                            token_match = re.search(r'addtoken\s*\(\s*\d+\s*,\s*"([^"]+)"\s*\)', lua_content, re.IGNORECASE)
-                            if token_match:
-                                app_token = token_match.group(1)
+                            token_value = extract_token(lua_content)
+                            if token_value:
+                                app_token = token_value
                         except Exception as e:
                             logger.debug(f"[ManifestFetcher] Failed to read LUA from cached zip: {e}")
 

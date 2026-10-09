@@ -699,7 +699,11 @@ def _get_slscheevo_path() -> Path:
         logger.info(f"Using SLScheevo script at: {script_path}")
         return script_path
 
-    logger.error(f"Could not find SLScheevo (tried: {binary_path}, {script_path})")
+    logger.error(
+        "SLScheevo is not installed (tried: %s, %s). "
+        "Download it from Settings -> Tools -> Optional Components.",
+        binary_path, script_path,
+    )
     # Return binary_path anyway so error handling can deal with it
     return binary_path
 

@@ -19,6 +19,11 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
+from ui.dialogs.settings_tabs.components_card import (
+    create_components_card,
+    require_component,
+)
+
 from utils.helpers import get_venv_python
 from utils.paths import Paths
 from utils.settings import get_settings
@@ -75,10 +80,15 @@ def create_tools_tab(dialog) -> QWidget:
     dialog.steamless_py_btn.clicked.connect(lambda: run_steamless_aio_manually(dialog))
     tools_btn_row.addWidget(dialog.steamless_py_btn)
 
-    dialog.steamless_legacy_btn = QPushButton("Steamless (.NET CLI)")
+    from utils.component_manager import is_component_available
+    if is_component_available("steamless"):
+        dialog.steamless_legacy_btn = QPushButton("Steamless (.NET CLI)")
+        dialog.steamless_legacy_btn.setToolTip("Run Steamless (.NET 9 CLI) manually on a game .exe.")
+    else:
+        dialog.steamless_legacy_btn = QPushButton("Download Steamless (.NET CLI)")
+        dialog.steamless_legacy_btn.setToolTip("Download Steamless (.NET CLI) from Optional Components below.")
     dialog.steamless_legacy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.steamless_legacy_btn.setStyleSheet(tool_btn_style)
-    dialog.steamless_legacy_btn.setToolTip("Run Steamless (.NET 9 CLI) manually on a game .exe.")
     dialog.steamless_legacy_btn.clicked.connect(lambda: run_steamless_manually(dialog))
     tools_btn_row.addWidget(dialog.steamless_legacy_btn)
 
@@ -157,6 +167,10 @@ def create_tools_tab(dialog) -> QWidget:
     _log_note.setWordWrap(True)
     log_layout.addWidget(_log_note)
     layout.addWidget(log_card)
+
+    # Optional components (Goldberg / Steamless / SLScheevo) are no longer
+    # bundled - this is the one place they can be downloaded or updated.
+    layout.addWidget(create_components_card(dialog))
 
     layout.addStretch()
     dialog.tab_widget.addTab(tab, "Tools")
@@ -268,6 +282,8 @@ def launch_terminal_command(cmd: list, cwd: str, needs_env: bool = False) -> Non
 
 
 def run_steamless_manually(dialog) -> None:
+    if not require_component(dialog, "steamless"):
+        return
     path, _ = QFileDialog.getOpenFileName(
         dialog, "Select Executable", os.path.expanduser("~"), "*.exe"
     )
@@ -276,6 +292,8 @@ def run_steamless_manually(dialog) -> None:
 
 
 def run_steamless_aio_manually(dialog) -> None:
+    if not require_component(dialog, "steamless"):
+        return
     path, _ = QFileDialog.getOpenFileName(
         dialog, "Select Executable", os.path.expanduser("~"), "*.exe"
     )

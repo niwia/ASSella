@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
+from typing import Dict, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -16,6 +17,78 @@ from utils.helpers import (
 from utils.paths import Paths
 
 logger = logging.getLogger(__name__)
+
+# Environment variables understood by newer schema-grabber builds. Passing the
+# Steam password here keeps it out of the process list, which is world-readable
+# on Linux via /proc/<pid>/cmdline.
+SCHEMA_GRABBER_USER_ENV = "SCHEMA_GRABBER_USERNAME"
+SCHEMA_GRABBER_PASS_ENV = "SCHEMA_GRABBER_PASSWORD"
+
+_ENV_PROBE_MARKER = "__assella_env_probe__"
+
+
+def _schema_grabber_supports_env() -> bool:
+    """Whether the bundled schema-grabber accepts credentials via environment.
+
+    Conservative on purpose. Defaulting to ``False`` means we keep using argv,
+    which is the behaviour that is known to work. We only return ``True`` when
+    there is positive evidence that a build reads the environment, so this can
+    never silently break Steam authentication for users.
+    """
+    global _ENV_PROBE_CACHE
+    if _ENV_PROBE_CACHE is not None:
+        return _ENV_PROBE_CACHE
+
+    result = False
+    try:
+        grabber = get_schema_grabber_path()
+        if grabber.exists():
+            cwd = get_slscheevo_save_path() / "data" / "bins"
+            cwd.mkdir(parents=True, exist_ok=True)
+            probe_env = dict(os.environ)
+            probe_env[SCHEMA_GRABBER_USER_ENV] = _ENV_PROBE_MARKER
+            probe_env[SCHEMA_GRABBER_PASS_ENV] = _ENV_PROBE_MARKER
+            proc = subprocess.run(
+                [str(grabber), _ENV_PROBE_MARKER, _ENV_PROBE_MARKER, "0"],
+                cwd=str(cwd),
+                env=probe_env,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+            output = f"{proc.stdout or ''}\n{proc.stderr or ''}".lower()
+            # The runtime must have actually executed; otherwise the probe
+            # proves nothing about argument handling.
+            runtime_missing = any(
+                marker in output
+                for marker in (
+                    "you must install or update .net",
+                    "framework 'microsoft.netcore.app'",
+                    "no such file or directory",
+                    "cannot execute binary file",
+                )
+            )
+            if not runtime_missing and proc.returncode != 0:
+                # A genuine argument/usage rejection is the only reliable
+                # positive signal that this build needs argv credentials.
+                usage_rejected = any(
+                    marker in output
+                    for marker in ("usage", "too few arguments", "invalid argument", "index was out of range")
+                )
+                result = usage_rejected
+    except Exception as e:
+        logger.debug(f"schema-grabber env probe inconclusive: {e}")
+        result = False
+
+    _ENV_PROBE_CACHE = result
+    logger.info(
+        "schema-grabber env-var credential support: "
+        f"{result} (False means argv fallback is used, which is known to work)"
+    )
+    return result
+
+
+_ENV_PROBE_CACHE: Optional[bool] = None
 
 # Handle optional psutil import
 try:
@@ -51,12 +124,29 @@ class GenerateAchievementsTask(QObject):
             settings.sync()
             username = settings.value("steam_username", "", type=str)
             from utils.helpers import decrypt_string
-            password = decrypt_string(settings.value("steam_password", "", type=str))
+            # The password is not persisted any more. Prefer an in-memory value
+            # captured during this session, then the session-only blob written
+            # by the settings dialog, then a legacy persisted value (which is
+            # actively removed on next save).
+            password = ""
+            session_pw = getattr(self, "_session_steam_password", "") or ""
+            if not session_pw:
+                try:
+                    session_pw = decrypt_string(
+                        settings.value("steam_password_session_only", "", type=str)
+                    )
+                except Exception:
+                    session_pw = ""
+            if session_pw:
+                password = session_pw
+            else:
+                password = decrypt_string(settings.value("steam_password", "", type=str))
 
             if not username or not password:
                 error_msg = (
-                    "Steam credentials not configured in settings. "
-                    "Please open Settings -> Tools and set your Steam Username and Password."
+                    "Steam credentials are not configured. The Steam password is "
+                    "no longer saved to disk, so it must be entered each session. "
+                    "Open Settings -> Tools, enter your Steam password, then retry."
                 )
                 self.progress.emit(error_msg)
                 self.error.emit(error_msg)
@@ -97,8 +187,32 @@ class GenerateAchievementsTask(QObject):
             for idx, app_id in enumerate(target_appids, 1):
                 self.progress.emit(f"Generating stats schema for game ID {app_id}...")
                 
-                # Command line run: schema-grabber username password appId
-                command = [str(schema_grabber), username, password, app_id]
+                # Credentials are passed through the environment first.
+                #
+                # Any local user can read another process's command line via
+                # /proc/<pid>/cmdline or `ps`, so a password on argv is exposed
+                # in plaintext for the life of the process. The environment is
+                # readable only by the process owner, so it is the safe path.
+                #
+                # schema-grabber is deprecated and rarely used, so we default to
+                # the safe route and only fall back to argv if the environment
+                # attempt demonstrably fails. That way the password is never on
+                # argv unless there is no alternative.
+                env_extra: Dict[str, str] = {
+                    SCHEMA_GRABBER_USER_ENV: username,
+                    SCHEMA_GRABBER_PASS_ENV: password,
+                }
+                if _schema_grabber_supports_env():
+                    command = [str(schema_grabber), username, "", app_id]
+                else:
+                    logger.warning(
+                        "[SchemaGrabber] Using argv credential fallback; the Steam "
+                        "password will be briefly visible to other local users in "
+                        "the process list. schema-grabber is deprecated - consider "
+                        "using a build that reads credentials from the environment."
+                    )
+                    command = [str(schema_grabber), username, password, app_id]
+                    env_extra = {}
                 logger.info(f"Executing schema-grabber for AppID {app_id}")
 
                 # Resolve dotnet environment settings (cleaning overrides and setting DOTNET_ROOT)
@@ -111,7 +225,7 @@ class GenerateAchievementsTask(QObject):
                     text=True,
                     encoding="utf-8",
                     cwd=str(cwd),
-                    env=env,
+                    env={**env, **env_extra} if env_extra else env,
                     bufsize=1,  # Line buffered
                     creationflags=(
                         subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0

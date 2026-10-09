@@ -1,6 +1,11 @@
+import logging
+import os
 import threading
+from pathlib import Path
 from typing import Any
 from PyQt6.QtCore import QSettings
+
+logger = logging.getLogger(__name__)
 
 APP_NAME = "ACCELA"
 ORG_NAME = "Tachibana Labs"
@@ -72,6 +77,19 @@ def get_settings() -> QSettings:
             if cur_dl and not is_valid_download_directory(cur_dl):
                 _settings_local.instance.setValue("default_download_directory", "")
                 _settings_local.instance.sync()
+        except Exception:
+            pass
+
+        # Tighten permissions on the settings file. It can hold the Hubcap API
+        # key and (historically) an encrypted Steam password, and QSettings
+        # creates it 0644.
+        try:
+            path = getattr(_settings_local.instance, "fileName", lambda: "")()
+            if path:
+                p = Path(path)
+                if p.exists() and (p.stat().st_mode & 0o077):
+                    os.chmod(p, 0o600)
+                    logger.info(f"Restricted settings file permissions to 0600: {p}")
         except Exception:
             pass
 

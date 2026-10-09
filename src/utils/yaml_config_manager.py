@@ -161,8 +161,59 @@ def backup_config_on_startup(config_path: Path) -> bool:
     return _create_backup(config_path)
 
 
+def _restrict_config_permissions(config_path: Path) -> bool:
+    """Best-effort chmod 0600 on config.yaml (it contains decryption keys)."""
+    try:
+        mode = config_path.stat().st_mode
+        if mode & 0o077:
+            os.chmod(config_path, 0o600)
+            logger.info(f"Restricted {config_path} permissions to 0600 (contains decryption keys)")
+        return True
+    except (OSError, AttributeError) as e:
+        # Non-POSIX filesystem, or permission denied on a shared config.
+        logger.debug(f"Could not restrict permissions on {config_path}: {e}")
+        return False
+
+
+def harden_existing_config_permissions(config_path: Optional[Path] = None) -> bool:
+    """Apply 0600 to an already-written config.yaml at startup.
+
+    Older versions left it world-readable (0644). Existing installs are never
+    rewritten unless their contents change, so tighten them explicitly once.
+    Backup copies hold the same keys, so they are tightened too.
+    """
+    try:
+        path = config_path or get_user_config_path()
+        if not path:
+            return False
+        path = Path(path)
+        if not path.exists():
+            return False
+        ok = _restrict_config_permissions(path)
+        try:
+            for sibling in path.parent.iterdir():
+                if sibling.is_file() and (
+                    sibling.name.startswith(path.name + ".")
+                    or sibling.name.startswith("config.bak")
+                    or sibling.name.startswith("config.yaml.bak")
+                ):
+                    _restrict_config_permissions(sibling)
+        except OSError:
+            pass
+        return ok
+    except Exception as e:
+        logger.debug(f"Could not harden config permissions: {e}")
+        return False
+
+
 def _atomic_write(config_path: Path, content: str) -> bool:
-    """Write content to config file in-place to preserve inode and trigger inotify FileWatcher without empty-file window."""
+    """Write content to config file in-place to preserve inode and trigger inotify FileWatcher without empty-file window.
+
+    config.yaml holds every depot decryption key the user owns, so it is forced
+    to owner-only (0600) on every write. SLSsteam reads it as the same user, so
+    this does not affect the running plugin. Best-effort: filesystems without
+    POSIX modes are left alone rather than failing the write.
+    """
     if not _validate_yaml_content(content):
         logger.error(f"Refusing to write invalid YAML content to {config_path}")
         return False
@@ -180,6 +231,7 @@ def _atomic_write(config_path: Path, content: str) -> bool:
                 f.write(content)
                 f.flush()
                 os.fsync(f.fileno())
+        _restrict_config_permissions(config_path)
         return True
     except OSError as e:
         logger.error(f"Failed to write {config_path}: {e}", exc_info=True)

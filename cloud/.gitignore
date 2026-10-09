@@ -1,0 +1,12 @@
+# Build artefacts: multi-megabyte tarballs plus the generated manifest.
+# These are rebuilt from src/deps/ by generate_components_manifest.py and go
+# straight to R2. They must never be committed.
+*.tar.gz
+components_manifest.json
+
+# The scripts and README in here ARE tracked on purpose - they are the
+# documented procedure for updating and publishing the components.
+!.gitignore
+!README.md
+!*.sh
+!*.py

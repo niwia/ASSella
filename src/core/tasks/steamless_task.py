@@ -305,7 +305,10 @@ class SteamlessIntegration(QObject):
                     return False
 
                 if not os.path.exists(self.steamless_path):
-                    self.error.emit(f"Steamless directory not found: {self.steamless_path}")
+                    self.error.emit(
+                        f"Steamless is not installed (looked in {self.steamless_path}). "
+                        "Download it from Settings -> Tools -> Optional Components."
+                    )
                     return False
 
                 steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI.dll")

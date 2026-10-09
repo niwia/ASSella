@@ -1,10 +1,11 @@
+import concurrent.futures
 import os
 import re
 import tempfile
 import zipfile
 import logging
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, List, Union
+from typing import Optional, Tuple, Dict, Any, List, Union, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -116,19 +117,61 @@ def restore_depot_symlinks(manifest_source: Union[str, Path, bytes], install_dir
         install_path = Path(install_dir)
         if not install_path.exists():
             return []
-            
+
+        # Containment root. Every destination is resolved and checked against
+        # this before any filesystem mutation: `m.filename` is remote-supplied
+        # and a value like "../../../home/user" (or an absolute path) would
+        # otherwise escape the install directory and let us unlink/rmtree
+        # arbitrary paths.
+        try:
+            install_root = install_path.resolve()
+        except OSError as e:
+            logger.warning(f"[ManifestResolver] Cannot resolve install dir {install_dir}: {e}")
+            return []
+
         for m in dm.payload.mappings:
             is_symlink = bool(getattr(m, "flags", 0) & 512) or bool(getattr(m, "linktarget", None))
             if not is_symlink or not getattr(m, "linktarget", None):
                 continue
-                
-            rel_path_str = m.filename.replace("\\", os.sep)
-            target_str = m.linktarget.replace("\\", "/")  # Unix relative target
+
+            rel_path_str = str(m.filename or "").replace("\\", os.sep)
+            if not rel_path_str.strip():
+                continue
+            # Reject absolute paths outright; ``Path("/a") / "/b"`` is "/b".
+            if os.path.isabs(rel_path_str) or rel_path_str.startswith(("/", "\\")):
+                logger.warning(
+                    f"[ManifestResolver] Refusing absolute symlink path from manifest: {rel_path_str!r}"
+                )
+                continue
+
             dest_file = install_path / rel_path_str
-            
+            try:
+                resolved_dest = dest_file.resolve()
+            except OSError:
+                resolved_dest = dest_file
+            if resolved_dest != install_root and install_root not in resolved_dest.parents:
+                logger.warning(
+                    f"[ManifestResolver] Refusing symlink outside install dir: "
+                    f"{rel_path_str!r} -> {resolved_dest}"
+                )
+                continue
+
+            target_str = str(m.linktarget).replace("\\", "/")  # Unix relative target
+            # The link target itself must also stay inside the install dir.
+            try:
+                resolved_target = (dest_file.parent / target_str).resolve()
+            except OSError:
+                resolved_target = None
+            if resolved_target is not None and install_root not in resolved_target.parents:
+                logger.warning(
+                    f"[ManifestResolver] Refusing symlink target outside install dir: "
+                    f"{rel_path_str!r} -> {target_str!r}"
+                )
+                continue
+
             try:
                 dest_file.parent.mkdir(parents=True, exist_ok=True)
-                
+
                 # Check if it already exists as a symlink
                 if dest_file.is_symlink():
                     try:
@@ -147,7 +190,7 @@ def restore_depot_symlinks(manifest_source: Union[str, Path, bytes], install_dir
                         shutil.rmtree(dest_file, ignore_errors=True)
                     else:
                         dest_file.unlink(missing_ok=True)
-                        
+
                 os.symlink(target_str, dest_file)
                 restored.append((str(dest_file), target_str))
                 logger.info(f"[ManifestResolver] Restored symlink: {dest_file} -> {target_str}")
@@ -194,34 +237,16 @@ def resolve_appid_from_depot(depot_id: str | int) -> Tuple[Optional[str], Option
 
     depot_int = int(depot_str)
 
-    # 1. Local Database Query
+    # 1. Local DepotKeyManager Query (Ground truth mapping of depot_id -> parent appid)
     try:
-        from managers.db_manager import DatabaseManager
-        db = DatabaseManager()
-        with db._conn_lock:
-            cur = db.conn.cursor()
-            # Direct match
-            cur.execute("SELECT appid, name FROM apps WHERE appid = ?", (depot_str,))
-            row = cur.fetchone()
-            if row and row["appid"]:
-                return str(row["appid"]), str(row["name"] or f"App {row['appid']}")
-
-            # Match inside depots_json
-            cur.execute("SELECT appid, name, depots_json FROM apps WHERE depots_json LIKE ?", (f'%"{depot_str}"%',))
-            row = cur.fetchone()
-            if row and row["appid"]:
-                return str(row["appid"]), str(row["name"] or f"App {row['appid']}")
-    except Exception as e:
-        logger.debug(f"[ManifestResolver] DB query for depot {depot_str} failed: {e}")
-
-    # 2. Local DepotKeyManager Query
-    try:
-        from managers.depot_key_manager import DepotKeyManager
+        from managers.depot_key_manager import DepotKeyManager, _lock
         dkm = DepotKeyManager()
-        with dkm._lock:
-            cur = dkm.conn.cursor()
+        with _lock:
+            conn = dkm._connect()
+            cur = conn.cursor()
             cur.execute("SELECT appid FROM depot_keys WHERE depot_id = ?", (depot_str,))
             row = cur.fetchone()
+            conn.close()
             if row and row[0]:
                 aid = str(row[0])
                 # Resolve title from local DB
@@ -235,6 +260,20 @@ def resolve_appid_from_depot(depot_id: str | int) -> Tuple[Optional[str], Option
                 return aid, f"App {aid}"
     except Exception as e:
         logger.debug(f"[ManifestResolver] DepotKeyManager query for depot {depot_str} failed: {e}")
+
+    # 2. Local Database Query
+    try:
+        from managers.db_manager import DatabaseManager
+        db = DatabaseManager()
+        with db._conn_lock:
+            cur = db.conn.cursor()
+            # Direct match
+            cur.execute("SELECT appid, name FROM apps WHERE appid = ?", (depot_str,))
+            row = cur.fetchone()
+            if row and row["appid"]:
+                return str(row["appid"]), str(row["name"] or f"App {row['appid']}")
+    except Exception as e:
+        logger.debug(f"[ManifestResolver] DB query for depot {depot_str} failed: {e}")
 
     # 3. Steam Store API Heuristic
     # Most Steam games allocate main depots as <appid> + 1, <appid> + 2, etc.
@@ -455,3 +494,185 @@ def ensure_depot_keys_for_app(appid: str, depot_id: Optional[str] = None) -> Tup
             logger.error(f"[ManifestResolver] Failed to fetch companion bundle from Hubcap: {e}")
 
     return keys, token, latest_manifests
+
+
+_RACE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="LiveMetaRace")
+
+
+def race_live_metadata(
+    appid: str,
+    access_token: Optional[str] = None,
+    timeout: float = 3.0,
+    on_pics_verified: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    """
+    Races Steam PICS, SteamCMD REST API, Hubcap, and local SteamDB cache in parallel.
+    First responder to provide live buildid / title / manifests wins for fast subsecond UI,
+    while Steam PICS is never killed and continues in the background to verify and reconcile
+    ground truth against potentially stale SteamCMD data.
+    """
+    results: Dict[str, Any] = {
+        "live_buildid": "",
+        "game_name": "",
+        "live_manifests": {},
+        "winner": None,
+        "verified_by_pics": False,
+    }
+    if not appid or str(appid) in ("0", "unknown"):
+        return results
+
+    aid_str = str(appid).strip()
+
+    def _worker_steamdb_cache():
+        try:
+            from core.steamdb_scraper import SteamDBBuildsCache
+            cache = SteamDBBuildsCache()
+            aid_int = int(aid_str) if aid_str.isdigit() else 0
+            if aid_int > 0:
+                cached_builds = cache.get_builds(aid_int) or []
+                if cached_builds:
+                    latest = cached_builds[0]
+                    mfs = {}
+                    for did, dinfo in (latest.get("depots") or {}).items():
+                        if isinstance(dinfo, dict) and dinfo.get("manifest_id"):
+                            mfs[str(did)] = str(dinfo["manifest_id"])
+                    return {
+                        "live_buildid": str(latest.get("buildid") or "").strip(),
+                        "game_name": "",
+                        "live_manifests": mfs,
+                    }
+        except Exception as e:
+            logger.debug(f"[ParallelRace] SteamDB cache error for App {aid_str}: {e}")
+        return {}
+
+    def _worker_steam_pics():
+        try:
+            from core.steam_api import get_depot_info_from_api
+            pics = get_depot_info_from_api(aid_str, access_token=access_token)
+            if pics:
+                mfs = {}
+                for did, dinfo in pics.get("depots", {}).items():
+                    if isinstance(dinfo, dict):
+                        manifests = dinfo.get("manifests", {})
+                        if isinstance(manifests, dict) and "public" in manifests:
+                            pub = manifests["public"]
+                            gid = pub.get("gid") if isinstance(pub, dict) else str(pub)
+                            if gid:
+                                mfs[str(did)] = str(gid)
+                return {
+                    "live_buildid": str(pics.get("buildid") or "").strip(),
+                    "game_name": pics.get("name") or "",
+                    "live_manifests": mfs,
+                }
+        except Exception as e:
+            logger.debug(f"[ParallelRace] Steam PICS error for App {aid_str}: {e}")
+        return {}
+
+    def _worker_steamcmd():
+        try:
+            import requests
+            r = requests.get(f"https://api.steamcmd.net/v1/info/{aid_str}", timeout=2.5)
+            if r.status_code == 200:
+                data = r.json().get("data", {}).get(aid_str, {})
+                c_name = data.get("common", {}).get("name", "")
+                depots = data.get("depots", {})
+                b_public = depots.get("branches", {}).get("public", {})
+                b_id = str(b_public.get("buildid", "")).strip()
+                mfs = {}
+                for did, dinfo in depots.items():
+                    if isinstance(dinfo, dict) and "manifests" in dinfo:
+                        pub = dinfo["manifests"].get("public")
+                        gid = pub.get("gid") if isinstance(pub, dict) else str(pub)
+                        if gid:
+                            mfs[str(did)] = str(gid)
+                return {
+                    "live_buildid": b_id,
+                    "game_name": c_name,
+                    "live_manifests": mfs,
+                }
+        except Exception as e:
+            logger.debug(f"[ParallelRace] SteamCMD error for App {aid_str}: {e}")
+        return {}
+
+    def _worker_hubcap():
+        try:
+            from core import morrenus_api
+            contents = morrenus_api.get_manifest_contents(aid_str)
+            if isinstance(contents, dict):
+                m_map = contents.get("manifest_map", {})
+                return {
+                    "live_buildid": "",
+                    "game_name": "",
+                    "live_manifests": {str(k): str(v) for k, v in m_map.items()},
+                }
+        except Exception as e:
+            logger.debug(f"[ParallelRace] Hubcap error for App {aid_str}: {e}")
+        return {}
+
+    f_sdb = _RACE_EXECUTOR.submit(_worker_steamdb_cache)
+    f_pics = _RACE_EXECUTOR.submit(_worker_steam_pics)
+    f_cmd = _RACE_EXECUTOR.submit(_worker_steamcmd)
+    f_hub = _RACE_EXECUTOR.submit(_worker_hubcap)
+    future_map = {f_sdb: "SteamDB Cache", f_pics: "Steam PICS", f_cmd: "SteamCMD", f_hub: "Hubcap"}
+
+    try:
+        for fut in concurrent.futures.as_completed(future_map.keys(), timeout=timeout):
+            src = future_map[fut]
+            try:
+                res = fut.result()
+                if res:
+                    if res.get("live_buildid") and not results["live_buildid"]:
+                        results["live_buildid"] = res["live_buildid"]
+                        results["winner"] = src
+                        logger.info(f"[ParallelRace] {src} won the race for App {aid_str} (Live Build: {results['live_buildid']})")
+                    if res.get("game_name") and (not results["game_name"] or results["game_name"].startswith("App ")):
+                        results["game_name"] = res["game_name"]
+                    if res.get("live_manifests"):
+                        results["live_manifests"].update(res["live_manifests"])
+                    if results["live_buildid"] and results["game_name"] and not results["game_name"].startswith("App "):
+                        break
+            except Exception as ex:
+                logger.debug(f"[ParallelRace] {src} exception: {ex}")
+    except concurrent.futures.TimeoutError:
+        logger.debug(f"[ParallelRace] Race completed via timeout barrier for App {aid_str}")
+
+    # If Steam PICS did not win the initial race, keep checking it in the background
+    # to reconcile whether SteamCMD provided stale info
+    if results.get("winner") != "Steam PICS":
+        def _on_pics_completed(fut):
+            try:
+                pics_res = fut.result()
+                if pics_res and pics_res.get("live_buildid"):
+                    pics_bid = str(pics_res["live_buildid"]).strip()
+                    old_bid = str(results.get("live_buildid") or "").strip()
+                    if pics_bid and pics_bid != old_bid:
+                        logger.warning(
+                            f"[ParallelRace] Steam PICS ground truth corrected stale {results.get('winner', 'data')} "
+                            f"for App {aid_str}: {old_bid} -> {pics_bid}"
+                        )
+                        results["live_buildid"] = pics_bid
+                        if pics_res.get("game_name"):
+                            results["game_name"] = pics_res["game_name"]
+                        if pics_res.get("live_manifests"):
+                            results["live_manifests"].update(pics_res["live_manifests"])
+                        results["winner"] = "Steam PICS (ground truth)"
+                    else:
+                        logger.info(
+                            f"[ParallelRace] Steam PICS confirmed {results.get('winner')} data "
+                            f"(Build {pics_bid}) as ground truth for App {aid_str}"
+                        )
+                    results["verified_by_pics"] = True
+                    if on_pics_verified:
+                        try:
+                            on_pics_verified(pics_res)
+                        except Exception as _cb_err:
+                            logger.debug(f"[ParallelRace] on_pics_verified callback error: {_cb_err}")
+            except Exception as _p_err:
+                logger.debug(f"[ParallelRace] Background Steam PICS truth check error for App {aid_str}: {_p_err}")
+
+        f_pics.add_done_callback(_on_pics_completed)
+    else:
+        results["verified_by_pics"] = True
+
+    return results
+

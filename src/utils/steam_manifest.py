@@ -249,3 +249,34 @@ def write_acf_file(
         f.write(acf_content)
 
     return acf_path
+
+
+def safe_extract_zip(zip_path: str, dest_dir: str) -> int:
+    """Extract an archive without letting entries escape ``dest_dir`` (ZipSlip guard).
+
+    Manifest bundles are downloaded from a remote service, so member names are
+    untrusted input. A crafted entry such as ``../../.config/SLSsteam/config.yaml``
+    would otherwise be written outside the extraction folder.
+
+    Every member is resolved against ``dest_dir`` and rejected if it lands
+    outside. Absolute paths, drive letters and ``..`` traversal are all refused.
+    Returns the number of extracted members; raises on a malicious entry.
+    """
+    import zipfile
+    from pathlib import Path
+
+    dest = Path(dest_dir).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(zip_path, "r") as archive:
+        for member in archive.infolist():
+            name = member.filename
+            # Reject absolute paths and Windows drive/UNC forms outright.
+            if name.startswith(("/", "\\")) or ":" in name.split("/")[0]:
+                raise ValueError(f"Refusing absolute path in archive: {name!r}")
+            target = (dest / name).resolve()
+            if target != dest and dest not in target.parents:
+                raise ValueError(f"Refusing path traversal in archive: {name!r}")
+            archive.extract(member, dest)
+
+    return len(zipfile.ZipFile(zip_path, "r").namelist())

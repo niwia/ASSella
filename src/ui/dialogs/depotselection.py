@@ -2715,8 +2715,8 @@ class DepotSelectionDialog(QDialog):
         os.makedirs(temp_dir, exist_ok=True)
 
         try:
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(temp_dir)
+            from utils.steam_manifest import safe_extract_zip
+            safe_extract_zip(zip_path, temp_dir)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to extract manifest zip: {e}")
             return

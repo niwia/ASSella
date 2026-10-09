@@ -9,7 +9,13 @@ from ui.assets import DEPOT_BLACKLIST
 from core.steam_api import get_depot_info_from_api
 from core.ini_parser import parse_depots_ini
 from utils.helpers import get_base_path
-from utils.lua_parsing import is_placeholder_key, iter_live_matches
+from utils.lua_parsing import (
+    coerce_depot_id,
+    coerce_manifest_gid,
+    extract_token,
+    is_placeholder_key,
+    iter_live_matches,
+)
 from utils.yaml_config_manager import (
     get_user_config_path,
     add_app_token,
@@ -48,7 +54,12 @@ class ProcessZipTask:
 
             # Explicitly break down operation to help static analysis
             args_list = [arg.strip() for arg in first_app_args.split(",")]
-            app_id_val = args_list[0]
+            # Remote-supplied identifier: validate before it can reach a path.
+            app_id_val = coerce_depot_id(args_list[0])
+            if app_id_val is None:
+                raise ValueError(
+                    f"LUA contains an invalid AppID: {args_list[0]!r}"
+                )
             game_data["appid"] = app_id_val
 
             comment_part = first_app_match.group(2)
@@ -72,7 +83,12 @@ class ProcessZipTask:
             for match in all_app_matches:
                 args_str = match.group(1).strip()
                 args = [arg.strip() for arg in args_str.split(",")]
-                app_id = args[0]
+                app_id = coerce_depot_id(args[0])
+                if app_id is None:
+                    logger.warning(
+                        f"[ProcessZipTask] Skipping addappid with invalid identifier: {args[0]!r}"
+                    )
+                    continue
 
                 comment_part = match.group(2)
                 desc_match = re.search(r"--\s*(.*)", comment_part)
@@ -81,13 +97,12 @@ class ProcessZipTask:
                 if len(args) > 2 and args[2].strip('"'):
                     depot_key = args[2].strip('"')
                     if is_placeholder_key(depot_key):
-                        # Sentinel (e.g. "MISSING_KEY"), not a usable key. Treat the
-                        # entry as a keyless entry so it is not registered as a depot
-                        # we can actually serve.
+                        # Sentinel (e.g. "MISSING_KEY"), not a usable key. Record it
+                        # separately: it is a *depot* we cannot serve, not a DLC.
                         logger.warning(
                             f"Ignoring placeholder decryption key for depot {app_id}: {depot_key!r}"
                         )
-                        game_data["dlcs"][app_id] = desc
+                        game_data.setdefault("disabled_depots", {})[app_id] = desc
                     else:
                         game_data["depots"][app_id] = {"key": depot_key, "desc": desc}
                 else:
@@ -101,8 +116,10 @@ class ProcessZipTask:
                 )
             )
             for match in manifest_size_matches:
-                depot_id = match.group(1).strip()
+                depot_id = coerce_depot_id(match.group(1))
                 size_bytes = match.group(2).strip()
+                if depot_id is None:
+                    continue
                 game_data["manifest_sizes"][depot_id] = size_bytes
                 logger.debug(
                     f"Found LUA manifest size for Depot {depot_id}: {size_bytes} bytes"
@@ -118,8 +135,14 @@ class ProcessZipTask:
                 )
             )
             for match in manifest_gid_matches:
-                depot_id = match.group(1).strip()
-                gid = match.group(2).strip()
+                depot_id = coerce_depot_id(match.group(1))
+                gid = coerce_manifest_gid(match.group(2))
+                if depot_id is None or gid is None:
+                    logger.warning(
+                        f"[ProcessZipTask] Skipping invalid setManifestid: "
+                        f"depot={match.group(1)!r} gid={match.group(2)!r}"
+                    )
+                    continue
                 game_data["manifests"][depot_id] = gid
                 logger.debug(
                     f"Found LUA manifest GID for Depot {depot_id}: {gid}"
@@ -136,16 +159,15 @@ class ProcessZipTask:
             return None
 
         try:
-            # Extract token from LUA content
-            # Pattern: addtoken(<app_id>, "<token>") with optional whitespace
-            token_pattern = r'addtoken\s*\(\s*\d+\s*,\s*"([^"]+)"\s*\)'
-            match = re.search(token_pattern, lua_content, re.IGNORECASE)
+            # Extract token from LUA content, bound to this AppID and ignoring
+            # commented-out statements.
+            token_value = extract_token(lua_content, app_id)
 
-            if not match:
+            if not token_value:
                 logger.debug(f"No addtoken pattern found for AppID {app_id}")
                 return None
 
-            app_token = match.group(1)
+            app_token = token_value
             logger.info(f"Found token for AppID {app_id}: {app_token[:10]}...")
 
             if is_slssteam_mode_enabled():
@@ -213,6 +235,10 @@ class ProcessZipTask:
                 lua_files = [f for f in zip_ref.namelist() if f.endswith(".lua")]
                 lua_content = None
                 lua_timestamp = None
+                # Defaults live outside the `if lua_files:` branch: the demo-mode
+                # check below is reached by manifest-only bundles too, where there
+                # is no Lua at all.
+                demo_mode = get_settings().value("demo_mode", False, type=bool)
                 if lua_files:
                     try:
                         lua_info = zip_ref.getinfo(lua_files[0])
@@ -228,6 +254,8 @@ class ProcessZipTask:
                         if token:
                             game_data["app_token"] = token
 
+                        from utils.lua_parsing import smart_merge_lua, is_placeholder_key
+
                         try:
                             _extracted_appid = game_data.get("appid")
                             if not _extracted_appid and lua_files and lua_files[0].endswith(".lua"):
@@ -236,8 +264,35 @@ class ProcessZipTask:
                                 lua_dir = get_base_path() / "cached_luas"
                                 lua_dir.mkdir(parents=True, exist_ok=True)
                                 lua_save_file = lua_dir / f"{_extracted_appid}.lua"
-                                lua_save_file.write_text(lua_content, encoding="utf-8")
-                                logger.info(f"[ProcessZipTask] Archived LUA file to {lua_save_file.name}")
+
+                                # Smart LUA & Key Merging:
+                                # If a cached LUA exists, supplement any missing keys or preserve extra depots/manifests!
+                                if lua_save_file.exists():
+                                    try:
+                                        cached_lua_text = lua_save_file.read_text(encoding="utf-8", errors="ignore")
+                                        extra_db_keys = {}
+                                        if DepotKeyManager:
+                                            try:
+                                                extra_db_keys = DepotKeyManager.get_instance().get_depot_keys(_extracted_appid)
+                                            except Exception:
+                                                pass
+                                        merged_lua = smart_merge_lua(lua_content, cached_lua_text, extra_depot_keys=extra_db_keys)
+                                        if merged_lua and merged_lua != lua_content:
+                                            lua_content = merged_lua
+                                            # Re-parse game_data with merged Lua content so newly restored keys take effect
+                                            ProcessZipTask._parse_lua(lua_content, game_data)
+                                            token = ProcessZipTask._extract_app_token(lua_content, game_data.get("appid"))
+                                            if token:
+                                                game_data["app_token"] = token
+                                            logger.info(f"[ProcessZipTask] Smart merged imported LUA with cached LUA for AppID {_extracted_appid}")
+                                    except Exception as _merge_err:
+                                        logger.warning(f"[ProcessZipTask] Smart LUA merge encountered error: {_merge_err}")
+
+                                if not demo_mode:
+                                    lua_save_file.write_text(lua_content, encoding="utf-8")
+                                    logger.info(f"[ProcessZipTask] Archived LUA file to {lua_save_file.name}")
+                                else:
+                                    logger.info("[ProcessZipTask] Demo mode active: skipping writing LUA file to disk.")
                         except Exception as _lua_arch_err:
                             logger.debug(f"Failed to archive LUA backup: {_lua_arch_err}")
 
@@ -253,21 +308,32 @@ class ProcessZipTask:
                         manifest_files[os.path.basename(f)] = mf_data
 
                 for depot_id_manifest in manifest_files:
+                    # Validate both halves: these become depotcache filenames
+                    # later, so a crafted member name must never get through.
                     parts = depot_id_manifest.replace(".manifest", "").split("_")
-                    if len(parts) == 2:
-                        game_data.setdefault("manifests", {})[parts[0]] = parts[1]
+                    if len(parts) != 2:
+                        continue
+                    did_ok = coerce_depot_id(parts[0])
+                    gid_ok = coerce_manifest_gid(parts[1])
+                    if did_ok is None or gid_ok is None:
+                        logger.warning(
+                            f"[ProcessZipTask] Ignoring manifest with invalid filename: "
+                            f"{depot_id_manifest!r}"
+                        )
+                        continue
+                    game_data.setdefault("manifests", {})[did_ok] = gid_ok
 
                 # ── Persist depot keys + AppToken to depot_keys.db ──
                 # This enables Smart Update Mode for this game from here on.
                 _appid_for_cache = game_data.get("appid")
-                if DepotKeyManager and _appid_for_cache and lua_content:
+                if DepotKeyManager and _appid_for_cache and lua_content and not demo_mode:
                     try:
                         _dkm = DepotKeyManager()
                         raw_depots = game_data.get("depots", {})
                         _keys_to_save = {
                             did: info.get("key")
                             for did, info in raw_depots.items()
-                            if info.get("key")
+                            if info.get("key") and not is_placeholder_key(info.get("key"))
                         }
                         if game_data.get("app_key") and _appid_for_cache:
                             _keys_to_save[str(_appid_for_cache)] = game_data["app_key"]
@@ -288,6 +354,8 @@ class ProcessZipTask:
                             f"[DepotKeyCache] Failed to persist keys for AppID "
                             f"{_appid_for_cache}: {_dkm_err}"
                         )
+                elif demo_mode:
+                    logger.info("[ProcessZipTask] Demo mode active: skipped persisting depot keys to depot_keys.db")
 
                 # Also discover standalone manifests on disk belonging to this app's depots
                 from pathlib import Path
@@ -413,9 +481,20 @@ class ProcessZipTask:
                         game_data["buildid"] = metadata["buildid"]
                     if metadata.get("is_rollback"):
                         game_data["_is_rollback"] = metadata["is_rollback"]
+                    if metadata.get("use_latest_build") and metadata.get("latest_bundle_manifests"):
+                        logger.info(f"[ProcessZipTask] User chose Latest Live Build; switching manifests to {len(metadata['latest_bundle_manifests'])} latest manifests.")
+                        game_data["manifests"] = dict(metadata["latest_bundle_manifests"])
+                    if "pin_build" in metadata:
+                        game_data["pin_build"] = bool(metadata["pin_build"])
+                        game_data["_pin_build"] = bool(metadata["pin_build"])
                     if metadata.get("manifest_overrides"):
                         game_data.setdefault("manifests", {}).update(metadata["manifest_overrides"])
                         logger.info(f"[ProcessZipTask] Applied metadata manifest overrides: {metadata['manifest_overrides']}")
+                    if metadata.get("download_backend"):
+                        game_data["download_backend"] = metadata["download_backend"]
+                    if metadata.get("register_at0m") or metadata.get("is_atom"):
+                        game_data["register_at0m"] = bool(metadata.get("register_at0m"))
+                        game_data["is_atom"] = bool(metadata.get("is_atom"))
 
                 unfiltered_depots = game_data.get("depots", {})
 
@@ -426,10 +505,14 @@ class ProcessZipTask:
                         _dkm = DepotKeyManager()
                         _cached_keys = _dkm.get_depot_keys(_cur_appid)
                         for did, k in _cached_keys.items():
-                            if str(did) != str(_cur_appid) and str(did) not in unfiltered_depots:
-                                desc = known_depot_descriptions.get(did, f"Depot {did}")
-                                unfiltered_depots[str(did)] = {"key": k, "desc": desc, "system": None}
-                                logger.info(f"[ProcessZipTask] Supplemented depot {did} from depot_keys.db")
+                            if str(did) != str(_cur_appid):
+                                if str(did) not in unfiltered_depots:
+                                    desc = known_depot_descriptions.get(did, f"Depot {did}")
+                                    unfiltered_depots[str(did)] = {"key": k, "desc": desc, "system": None}
+                                    logger.info(f"[ProcessZipTask] Supplemented depot {did} from depot_keys.db")
+                                elif not unfiltered_depots[str(did)].get("key") or is_placeholder_key(unfiltered_depots[str(did)].get("key")):
+                                    unfiltered_depots[str(did)]["key"] = k
+                                    logger.info(f"[ProcessZipTask] Replaced placeholder key for depot {did} with cached key from depot_keys.db")
                     except Exception as _supp_err:
                         logger.debug(f"[ProcessZipTask] Failed to supplement depots from depot_keys.db: {_supp_err}")
 

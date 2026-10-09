@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, Optional, Set
 
 from utils.helpers import get_base_path
-from utils.lua_parsing import is_placeholder_key, iter_live_matches
+from utils.lua_parsing import extract_token, is_placeholder_key, iter_live_matches
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +173,9 @@ class DepotKeyManager:
                 mtime = int(target_file.stat().st_mtime)
                 self.save_depot_keys(appid, keys, timestamp=mtime)
                 logger.info(f"[DepotKeyManager] Successfully recovered {len(keys)} depot keys from cached LUA file {target_file.name}")
-            tok_match = re.search(r'addtoken\(\s*\d+\s*,\s*["\']([^"\']+)["\']', text, re.IGNORECASE)
-            if tok_match:
-                self.save_app_token(appid, tok_match.group(1), timestamp=int(target_file.stat().st_mtime))
+            tok = extract_token(text, appid)
+            if tok:
+                self.save_app_token(appid, tok, timestamp=int(target_file.stat().st_mtime))
             return keys
         except Exception as e:
             logger.debug(f"Failed to recover keys from LUA file for AppID {appid}: {e}")
