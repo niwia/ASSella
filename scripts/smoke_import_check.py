@@ -126,6 +126,30 @@ def main() -> int:
                 # Unresolvable forward refs etc. are not import blockers.
                 pass
 
+    # ── Facade contract ──────────────────────────────────────────────────────
+    # utils/yaml_config_manager is now a thin facade over the utils/yaml/
+    # package. It re-exports names that 29 modules import, and a refactor that
+    # moves an implementation without re-exporting it produces an ImportError
+    # at a call site that no per-module check here would attribute correctly.
+    # The contract is the set of names that must stay importable.
+    api_file = SRC_DIR / "utils" / "_yaml_public_api.json"
+    if api_file.is_file():
+        import json
+
+        contract = json.loads(api_file.read_text())
+        facade = sys.modules.get("utils.yaml_config_manager")
+        if facade is None:
+            failed.append(("utils.yaml_config_manager", "facade did not import"))
+        else:
+            gone = sorted(n for n in contract if not hasattr(facade, n))
+            if gone:
+                failed.append((
+                    "utils.yaml_config_manager (facade)",
+                    "no longer re-exports: " + ", ".join(gone)
+                    + " | 29 modules import from this facade; restore the name or"
+                      " update src/utils/_yaml_public_api.json deliberately.",
+                ))
+
     total = len(mods)
     print(f"imported {total - len(failed)}/{total} modules")
     if skipped:

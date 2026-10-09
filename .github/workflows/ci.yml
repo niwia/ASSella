@@ -118,7 +118,8 @@ jobs:
         run: |
           set -e
           for suite in test_depot_mapping test_atom_config_sync test_components_ui \
-                       test_logging test_pager_display test_boxart_revalidate; do
+                       test_logging test_pager_display test_boxart_revalidate \
+                       test_config_manager; do
             echo "::group::$suite"
             QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp \
               python -u "scripts/$suite.py"
