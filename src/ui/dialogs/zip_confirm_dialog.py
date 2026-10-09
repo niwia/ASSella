@@ -115,7 +115,7 @@ class ZipImportConfirmationDialog(QDialog):
         self.setWindowTitle("Import Package Inspection")
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedSize(354, 354)
+        self.setFixedSize(318, 318)
         self.setSizeGripEnabled(False)
         self.setStyleSheet("QDialog { background: transparent; }")
 
@@ -151,7 +151,7 @@ class ZipImportConfirmationDialog(QDialog):
         self.stack.setStyleSheet("background: transparent;")
         main_layout.addWidget(self.stack, 1)
 
-        # ── Page 0: Pure GIF Display (No background box, overlay Cancel button) ──
+        # ── Page 0: Pure GIF Display (10% smaller 318x318, Processing text, borderless Cancel) ──
         self.page_loading = QWidget()
         self.page_loading.setStyleSheet("background: transparent;")
         loading_layout = QVBoxLayout(self.page_loading)
@@ -160,7 +160,7 @@ class ZipImportConfirmationDialog(QDialog):
 
         self.gif_label = QLabel(self.page_loading)
         self.gif_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.gif_label.setFixedSize(354, 354)
+        self.gif_label.setFixedSize(318, 318)
         self.gif_label.setStyleSheet("""
             QLabel {
                 border: 1px solid rgba(255, 255, 255, 0.20);
@@ -171,31 +171,48 @@ class ZipImportConfirmationDialog(QDialog):
         gif_file = "/home/aiwin/.local/share/ACCELA/jumpscare/lain-serial-experiments-lain.gif"
         if os.path.exists(gif_file):
             self.movie = QMovie(gif_file)
-            self.movie.setScaledSize(QSize(354, 354))
+            self.movie.setScaledSize(QSize(318, 318))
             self.gif_label.setMovie(self.movie)
             self.movie.start()
         else:
             self.movie = None
             self.gif_label.setText("Loading...")
 
-        # Cancel button as floating overlay directly on bottom of the GIF
+        # Processing text label positioned directly above the Cancel button
+        self.loading_text_lbl = QLabel("Processing...", self.gif_label)
+        self.loading_text_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_text_lbl.setFixedSize(110, 20)
+        self.loading_text_lbl.move((318 - 110) // 2, 318 - 60)
+        self.loading_text_lbl.setStyleSheet("""
+            QLabel {
+                color: rgba(255, 255, 255, 0.90);
+                font-size: 8pt;
+                font-weight: 600;
+                background-color: rgba(15, 17, 23, 0.72);
+                border: none;
+                border-radius: 9px;
+                padding: 1px 6px;
+            }
+        """)
+
+        # Cancel button as floating overlay (no border, clean semi-transparent background)
         self.loading_cancel_btn = QPushButton("Cancel", self.gif_label)
-        self.loading_cancel_btn.setFixedSize(92, 28)
-        self.loading_cancel_btn.move((354 - 92) // 2, 354 - 40)
+        self.loading_cancel_btn.setFixedSize(80, 26)
+        self.loading_cancel_btn.move((318 - 80) // 2, 318 - 36)
         self.loading_cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.loading_cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: rgba(15, 17, 23, 0.82);
-                border: 1px solid rgba(255, 255, 255, 0.28);
-                border-radius: 14px;
+                background-color: rgba(15, 17, 23, 0.75);
+                border: none;
+                border-radius: 13px;
                 color: #FFFFFF;
                 font-size: 8.5pt;
                 font-weight: 600;
-                padding: 4px 14px;
+                padding: 3px 12px;
             }
             QPushButton:hover {
-                background-color: rgba(30, 35, 48, 0.95);
-                border: 1px solid rgba(255, 255, 255, 0.50);
+                background-color: rgba(35, 40, 55, 0.92);
+                color: #FFFFFF;
             }
         """)
         self.loading_cancel_btn.clicked.connect(self.reject)
@@ -1329,12 +1346,14 @@ class ZipImportConfirmationDialog(QDialog):
 
         missing_mfs = self.result_data.get("missing_manifests", {})
         self.loading_cancel_btn.setVisible(False)
-        self.setFixedSize(354, 354)
+        if hasattr(self, "loading_text_lbl"):
+            self.loading_text_lbl.setText("Preparing...")
+        self.setFixedSize(318, 318)
         if self.parent():
             pgeo = self.parent().geometry()
             self.move(
-                pgeo.x() + (pgeo.width() - 354) // 2,
-                pgeo.y() + (pgeo.height() - 354) // 2,
+                pgeo.x() + (pgeo.width() - 318) // 2,
+                pgeo.y() + (pgeo.height() - 318) // 2,
             )
         if getattr(self, "movie", None):
             try:
