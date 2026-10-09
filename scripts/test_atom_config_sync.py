@@ -140,9 +140,20 @@ def obtain_4959210_lua() -> Tuple[str, str]:
 
 def run_tests() -> bool:
     cfg_path = get_user_config_path()
+    cfg_was_created = False
     if not cfg_path.exists():
-        print(f"{Color.RED}Error: SLSsteam config.yaml not found at {cfg_path}{Color.RESET}")
-        return False
+        log_info(f"SLSsteam config not found at {cfg_path} - seeding hermetic minimal config for test")
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        minimal_config = (
+            "DisableFamilyShareLock: yes\n"
+            "UseWhitelist: no\n"
+            "AppIds:\n"
+            "AdditionalApps:\n"
+            "AdditionalDepots:\n"
+            "DecryptionKeys:\n"
+        )
+        cfg_path.write_text(minimal_config, encoding="utf-8")
+        cfg_was_created = True
 
     orig_cfg_bytes = cfg_path.read_bytes()
     orig_inode = cfg_path.stat().st_ino
@@ -435,6 +446,15 @@ def run_tests() -> bool:
         else:
             log_fail("Test game 4959210 left residual entries in config!")
             test_passed = False
+
+        if cfg_was_created:
+            try:
+                cfg_path.unlink(missing_ok=True)
+                if cfg_path.parent.exists() and not any(cfg_path.parent.iterdir()):
+                    cfg_path.parent.rmdir()
+                log_pass("Temporary test config cleanly removed")
+            except Exception:
+                pass
 
     print("\n" + "=" * 60)
     if test_passed:
