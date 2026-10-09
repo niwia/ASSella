@@ -10,7 +10,7 @@
 set -euo pipefail
 
 CLOUD_DIR="$(cd "$(dirname "$0")" && pwd)"
-PUBLISH_DIR="${PUBLISH_DIR:-/home/aiwin/r2-publish/github-files}"
+PUBLISH_DIR="${PUBLISH_DIR:-$HOME/r2-publish/github-files}"
 BUCKET="${BUCKET:-github-files}"
 BASE="https://pub-19657b4f385d424b91a909253efdb29c.r2.dev"
 

@@ -13,7 +13,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLOUD_DIR="$REPO_ROOT/cloud"
 GOLDBERG_SRC="$REPO_ROOT/src/deps/Goldberg"
-PUBLISH_DIR="${PUBLISH_DIR:-/home/aiwin/r2-publish/github-files}"
+PUBLISH_DIR="${PUBLISH_DIR:-$HOME/r2-publish/github-files}"
 API="https://api.github.com/repos/Detanup01/gbe_fork/releases"
 
 TAG=""

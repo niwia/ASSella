@@ -170,8 +170,9 @@ class ZipImportConfirmationDialog(QDialog):
                 background-color: transparent;
             }
         """)
-        gif_file = "/home/aiwin/.local/share/ACCELA/jumpscare/lain-serial-experiments-lain.gif"
-        if os.path.exists(gif_file):
+        from utils.paths import get_jumpscare_gif
+        gif_file = get_jumpscare_gif("lain-serial-experiments-lain.gif")
+        if gif_file and os.path.exists(gif_file):
             self.movie = QMovie(gif_file)
             self.movie.setScaledSize(QSize(318, 318))
             self.gif_label.setMovie(self.movie)
