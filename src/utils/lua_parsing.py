@@ -27,6 +27,8 @@ __all__ = [
     "find_live",
     "MISSING_KEY_SENTINEL",
     "is_placeholder_key",
+    "is_real_key",
+    "smart_merge_lua",
 ]
 
 # Hubcap's literal marker for "this depot has no obtainable key". It is not a
@@ -138,3 +140,120 @@ def is_placeholder_key(value: str) -> bool:
 def is_real_key(value: str) -> bool:
     """True only for a well-formed 64-character hex AES key."""
     return bool(_HEX64.match(str(value).strip()))
+
+
+def smart_merge_lua(
+    new_lua: str,
+    cached_lua: str,
+    extra_depot_keys: Union[dict, None] = None,
+) -> str:
+    """
+    Intelligently merges a newly imported Lua manifest with a previously cached Lua.
+
+    Guarantees:
+    - If the newly imported Lua lacks keys for certain depots (or has MISSING_KEY sentinels)
+      but the cached Lua (or extra_depot_keys) contains valid AES keys, those valid keys are preserved/restored.
+    - If the newly imported Lua supplies new valid keys, updated manifests, or new branches,
+      they take precedence.
+    - Depots present only in the cached Lua are preserved so partial drops do not drop existing DLCs.
+    - Tokens (addtoken) are preserved if present in either manifest.
+    """
+    cached_keys: dict[str, str] = {}
+    cached_manifests: dict[str, str] = {}
+    cached_token: Union[Tuple[str, str], None] = None
+    cached_appids: set[str] = set()
+
+    if extra_depot_keys:
+        for did, k in extra_depot_keys.items():
+            if k and not is_placeholder_key(k):
+                cached_keys[str(did)] = str(k).strip("\"'")
+
+    if cached_lua:
+        for m in iter_live_matches(
+            cached_lua,
+            r'addappid\(\s*(\d+)\s*(?:,\s*(\d+))?(?:,\s*["\']([^"\']+)["\'])?',
+            re.IGNORECASE,
+        ):
+            did = m.group(1)
+            cached_appids.add(did)
+            k = m.group(3)
+            if k and not is_placeholder_key(k):
+                cached_keys[did] = k
+
+        for m in iter_live_matches(
+            cached_lua,
+            r'setManifestid\(\s*(\d+)\s*,\s*["\']([^"\']+)["\']',
+            re.IGNORECASE,
+        ):
+            cached_manifests[m.group(1)] = m.group(2)
+
+        m_tok = re.search(
+            r'addtoken\(\s*(\d+)\s*,\s*["\']([^"\']+)["\']',
+            cached_lua,
+            re.IGNORECASE,
+        )
+        if m_tok:
+            cached_token = (m_tok.group(1), m_tok.group(2))
+
+    new_appids: set[str] = set()
+    new_manifest_dids: set[str] = set()
+    merged_lines: List[str] = []
+
+    for line in new_lua.splitlines():
+        # Match addappid live or commented
+        m_app = re.search(
+            r'(--\s*)?addappid\(\s*(\d+)\s*(?:,\s*(\d+))?(?:,\s*["\']([^"\']*)["\'])?\s*\)(.*)',
+            line,
+            re.IGNORECASE,
+        )
+        if m_app:
+            is_comm = bool(m_app.group(1))
+            did = m_app.group(2)
+            flag = m_app.group(3) or "1"
+            key = m_app.group(4) or ""
+            tail = m_app.group(5) or ""
+            new_appids.add(did)
+
+            # If key is missing or a generator sentinel, check if we have a valid key in cache
+            if is_placeholder_key(key) or not key:
+                if did in cached_keys:
+                    key = cached_keys[did]
+                    is_comm = False  # Uncomment line now that key is restored!
+                    if "(no key available)" in tail:
+                        tail = tail.replace("(no key available)", "(restored from cache)")
+
+            prefix = "-- " if is_comm else ""
+            key_part = f', "{key}"' if key else ""
+            merged_lines.append(f"{prefix}addappid({did}, {flag}{key_part}){tail}")
+            continue
+
+        m_mf = re.search(
+            r'setManifestid\(\s*(\d+)\s*,\s*["\']([^"\']+)["\']',
+            line,
+            re.IGNORECASE,
+        )
+        if m_mf:
+            new_manifest_dids.add(m_mf.group(1))
+
+        merged_lines.append(line)
+
+    # Preserve cached addtoken if newly imported Lua didn't have one
+    has_token = bool(re.search(r"addtoken\(\s*\d+", new_lua, re.IGNORECASE))
+    if not has_token and cached_token:
+        merged_lines.append(f'addtoken({cached_token[0]}, "{cached_token[1]}")')
+
+    # Preserve any additional depots from cache not present in the new Lua
+    missing_depots = [did for did in cached_appids if did not in new_appids]
+    if missing_depots:
+        merged_lines.append("")
+        merged_lines.append("-- Depots preserved from previous cache")
+        for did in missing_depots:
+            k = cached_keys.get(did)
+            if k:
+                merged_lines.append(f'addappid({did}, 1, "{k}")')
+            else:
+                merged_lines.append(f"addappid({did})")
+            if did in cached_manifests and did not in new_manifest_dids:
+                merged_lines.append(f'setManifestid({did}, "{cached_manifests[did]}")')
+
+    return "\n".join(merged_lines)

@@ -470,6 +470,18 @@ class TaskManager(QObject):
                 self.job_finished()
                 return
 
+            if self.settings.value("demo_mode", False, type=bool):
+                logger.info("[DemoMode] Demo Mode active: reached depot selection successfully. Skipping download and caching.")
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self.main_window,
+                    "Demo Mode Active",
+                    "Demo Mode: Reached the depot selection screen successfully!\n\n"
+                    "Local caching and downloads are disabled in Demo Mode.",
+                )
+                self.job_finished()
+                return
+
             # Persist the confirmed selection to QSettings so future updates recall it
             if appid and selected_depots:
                 try:

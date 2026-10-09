@@ -228,6 +228,10 @@ class ProcessZipTask:
                         if token:
                             game_data["app_token"] = token
 
+                        from utils.settings import get_settings
+                        from utils.lua_parsing import smart_merge_lua, is_placeholder_key
+                        demo_mode = get_settings().value("demo_mode", False, type=bool)
+
                         try:
                             _extracted_appid = game_data.get("appid")
                             if not _extracted_appid and lua_files and lua_files[0].endswith(".lua"):
@@ -236,8 +240,35 @@ class ProcessZipTask:
                                 lua_dir = get_base_path() / "cached_luas"
                                 lua_dir.mkdir(parents=True, exist_ok=True)
                                 lua_save_file = lua_dir / f"{_extracted_appid}.lua"
-                                lua_save_file.write_text(lua_content, encoding="utf-8")
-                                logger.info(f"[ProcessZipTask] Archived LUA file to {lua_save_file.name}")
+
+                                # Smart LUA & Key Merging:
+                                # If a cached LUA exists, supplement any missing keys or preserve extra depots/manifests!
+                                if lua_save_file.exists():
+                                    try:
+                                        cached_lua_text = lua_save_file.read_text(encoding="utf-8", errors="ignore")
+                                        extra_db_keys = {}
+                                        if DepotKeyManager:
+                                            try:
+                                                extra_db_keys = DepotKeyManager.get_instance().get_depot_keys(_extracted_appid)
+                                            except Exception:
+                                                pass
+                                        merged_lua = smart_merge_lua(lua_content, cached_lua_text, extra_depot_keys=extra_db_keys)
+                                        if merged_lua and merged_lua != lua_content:
+                                            lua_content = merged_lua
+                                            # Re-parse game_data with merged Lua content so newly restored keys take effect
+                                            ProcessZipTask._parse_lua(lua_content, game_data)
+                                            token = ProcessZipTask._extract_app_token(lua_content, game_data.get("appid"))
+                                            if token:
+                                                game_data["app_token"] = token
+                                            logger.info(f"[ProcessZipTask] Smart merged imported LUA with cached LUA for AppID {_extracted_appid}")
+                                    except Exception as _merge_err:
+                                        logger.warning(f"[ProcessZipTask] Smart LUA merge encountered error: {_merge_err}")
+
+                                if not demo_mode:
+                                    lua_save_file.write_text(lua_content, encoding="utf-8")
+                                    logger.info(f"[ProcessZipTask] Archived LUA file to {lua_save_file.name}")
+                                else:
+                                    logger.info("[ProcessZipTask] Demo mode active: skipping writing LUA file to disk.")
                         except Exception as _lua_arch_err:
                             logger.debug(f"Failed to archive LUA backup: {_lua_arch_err}")
 
@@ -260,14 +291,14 @@ class ProcessZipTask:
                 # ── Persist depot keys + AppToken to depot_keys.db ──
                 # This enables Smart Update Mode for this game from here on.
                 _appid_for_cache = game_data.get("appid")
-                if DepotKeyManager and _appid_for_cache and lua_content:
+                if DepotKeyManager and _appid_for_cache and lua_content and not demo_mode:
                     try:
                         _dkm = DepotKeyManager()
                         raw_depots = game_data.get("depots", {})
                         _keys_to_save = {
                             did: info.get("key")
                             for did, info in raw_depots.items()
-                            if info.get("key")
+                            if info.get("key") and not is_placeholder_key(info.get("key"))
                         }
                         if game_data.get("app_key") and _appid_for_cache:
                             _keys_to_save[str(_appid_for_cache)] = game_data["app_key"]
@@ -288,6 +319,8 @@ class ProcessZipTask:
                             f"[DepotKeyCache] Failed to persist keys for AppID "
                             f"{_appid_for_cache}: {_dkm_err}"
                         )
+                elif demo_mode:
+                    logger.info("[ProcessZipTask] Demo mode active: skipped persisting depot keys to depot_keys.db")
 
                 # Also discover standalone manifests on disk belonging to this app's depots
                 from pathlib import Path
@@ -432,10 +465,14 @@ class ProcessZipTask:
                         _dkm = DepotKeyManager()
                         _cached_keys = _dkm.get_depot_keys(_cur_appid)
                         for did, k in _cached_keys.items():
-                            if str(did) != str(_cur_appid) and str(did) not in unfiltered_depots:
-                                desc = known_depot_descriptions.get(did, f"Depot {did}")
-                                unfiltered_depots[str(did)] = {"key": k, "desc": desc, "system": None}
-                                logger.info(f"[ProcessZipTask] Supplemented depot {did} from depot_keys.db")
+                            if str(did) != str(_cur_appid):
+                                if str(did) not in unfiltered_depots:
+                                    desc = known_depot_descriptions.get(did, f"Depot {did}")
+                                    unfiltered_depots[str(did)] = {"key": k, "desc": desc, "system": None}
+                                    logger.info(f"[ProcessZipTask] Supplemented depot {did} from depot_keys.db")
+                                elif not unfiltered_depots[str(did)].get("key") or is_placeholder_key(unfiltered_depots[str(did)].get("key")):
+                                    unfiltered_depots[str(did)]["key"] = k
+                                    logger.info(f"[ProcessZipTask] Replaced placeholder key for depot {did} with cached key from depot_keys.db")
                     except Exception as _supp_err:
                         logger.debug(f"[ProcessZipTask] Failed to supplement depots from depot_keys.db: {_supp_err}")
 

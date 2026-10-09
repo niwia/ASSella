@@ -27,8 +27,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QMetaObject
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QMetaObject, QSize
+from PyQt6.QtGui import QPixmap, QMovie
 from PyQt6.QtWidgets import (
     QDialog,
     QWidget,
@@ -44,12 +44,47 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
 )
 
-from ui.material_progress import MaterialSpinner
 from utils.color_utils import get_best_foreground_color
 from utils.settings import get_settings
 from utils.lua_parsing import iter_live_matches, is_placeholder_key
 
 logger = logging.getLogger("ACCELA.zip_confirm")
+
+
+def format_dd_mm_yy(val: Any) -> str:
+    """Format diverse date inputs (timestamps, full dates, ISO) into dd/mm/yy format."""
+    if not val:
+        return ""
+    val_str = str(val).strip()
+    m_ts = re.search(r"\((\d{9,10})\)", val_str)
+    if m_ts:
+        try:
+            ts = int(m_ts.group(1))
+            return datetime.datetime.fromtimestamp(ts).strftime("%d/%m/%y")
+        except Exception:
+            pass
+    if val_str.isdigit() and len(val_str) in (9, 10):
+        try:
+            return datetime.datetime.fromtimestamp(int(val_str)).strftime("%d/%m/%y")
+        except Exception:
+            pass
+    for fmt in (
+        "%Y-%m-%d",
+        "%B %d, %Y",
+        "%d %B %Y",
+        "%b %d, %Y",
+        "%d %b %Y",
+        "%d/%m/%Y",
+        "%d/%m/%y",
+        "%m/%d/%Y",
+    ):
+        try:
+            clean_date = val_str.split(" at ")[0].strip()
+            dt = datetime.datetime.strptime(clean_date, fmt)
+            return dt.strftime("%d/%m/%y")
+        except Exception:
+            continue
+    return val_str.split(" at ")[0].strip()
 
 
 class ZipImportConfirmationDialog(QDialog):
@@ -75,93 +110,159 @@ class ZipImportConfirmationDialog(QDialog):
         self.result_data: Dict[str, Any] = {}
         self.processed_game_data: Optional[Dict[str, Any]] = None
         self.img_fetcher = None
+        self._drag_pos = None
 
         self.setWindowTitle("Import Package Inspection")
-        self.setMinimumWidth(540)
-        self.resize(540, 500)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedSize(354, 354)
         self.setSizeGripEnabled(False)
-        self.setStyleSheet(f"""
-            QDialog {{
-                background-color: {self.bg_color};
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 10px;
-            }}
-        """)
+        self.setStyleSheet("QDialog { background: transparent; }")
 
         self.inspection_completed.connect(self._on_inspection_completed)
 
         self._build_ui()
         self._start_inspection()
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.MouseButton.LeftButton and getattr(self, "_drag_pos", None) is not None:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
+
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
         self.stack = QStackedWidget(self)
         self.stack.setStyleSheet("background: transparent;")
         main_layout.addWidget(self.stack, 1)
 
-        # ── Page 0: Loading Spinner ──
+        # ── Page 0: Pure GIF Display (No background box, overlay Cancel button) ──
         self.page_loading = QWidget()
+        self.page_loading.setStyleSheet("background: transparent;")
         loading_layout = QVBoxLayout(self.page_loading)
         loading_layout.setContentsMargins(0, 0, 0, 0)
         loading_layout.setSpacing(0)
 
-        center_container = QWidget()
-        center_box = QVBoxLayout(center_container)
-        center_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        center_box.setSpacing(12)
+        self.gif_label = QLabel(self.page_loading)
+        self.gif_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gif_label.setFixedSize(354, 354)
+        self.gif_label.setStyleSheet("""
+            QLabel {
+                border: 1px solid rgba(255, 255, 255, 0.20);
+                border-radius: 12px;
+                background-color: transparent;
+            }
+        """)
+        gif_file = "/home/aiwin/.local/share/ACCELA/jumpscare/lain-serial-experiments-lain.gif"
+        if os.path.exists(gif_file):
+            self.movie = QMovie(gif_file)
+            self.movie.setScaledSize(QSize(354, 354))
+            self.gif_label.setMovie(self.movie)
+            self.movie.start()
+        else:
+            self.movie = None
+            self.gif_label.setText("Loading...")
 
-        self.spinner = MaterialSpinner(center_container, size=38, color=self.accent_color, thickness=3)
-        center_box.addWidget(self.spinner, 0, Qt.AlignmentFlag.AlignCenter)
-
-        self.loading_title = QLabel("Inspecting Package Contents...")
-        self.loading_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loading_title.setStyleSheet("color: #FFFFFF; font-size: 11pt; font-weight: bold; border: none; background: transparent;")
-        center_box.addWidget(self.loading_title)
-
-        self.loading_sub = QLabel("Reading manifest payloads and verifying version history")
-        self.loading_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loading_sub.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; border: none; background: transparent;")
-        center_box.addWidget(self.loading_sub)
-
-        loading_layout.addStretch(1)
-        loading_layout.addWidget(center_container, 0, Qt.AlignmentFlag.AlignCenter)
-        loading_layout.addStretch(1)
-
-        bottom_loading_row = QHBoxLayout()
-        bottom_loading_row.setContentsMargins(0, 0, 0, 4)
-        bottom_loading_row.addStretch(1)
-
-        self.loading_cancel_btn = QPushButton("Cancel")
+        # Cancel button as floating overlay directly on bottom of the GIF
+        self.loading_cancel_btn = QPushButton("Cancel", self.gif_label)
+        self.loading_cancel_btn.setFixedSize(92, 28)
+        self.loading_cancel_btn.move((354 - 92) // 2, 354 - 40)
+        self.loading_cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.loading_cancel_btn.setStyleSheet("""
             QPushButton {
-                background-color: rgba(255, 255, 255, 0.06);
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 16px;
+                background-color: rgba(15, 17, 23, 0.82);
+                border: 1px solid rgba(255, 255, 255, 0.28);
+                border-radius: 14px;
                 color: #FFFFFF;
-                font-size: 9pt;
+                font-size: 8.5pt;
                 font-weight: 600;
-                padding: 6px 20px;
+                padding: 4px 14px;
             }
             QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.12);
-                border: 1px solid rgba(255, 255, 255, 0.22);
+                background-color: rgba(30, 35, 48, 0.95);
+                border: 1px solid rgba(255, 255, 255, 0.50);
             }
         """)
         self.loading_cancel_btn.clicked.connect(self.reject)
-        bottom_loading_row.addWidget(self.loading_cancel_btn)
-        loading_layout.addLayout(bottom_loading_row)
 
+        loading_layout.addWidget(self.gif_label)
         self.stack.addWidget(self.page_loading)
 
-        # ── Page 1: Confirmation Details (Snug & Information-Rich) ──
+        # ── Page 1: Confirmation Details (Snug & Information-Rich Container) ──
         self.page_confirm = QWidget()
-        self.confirm_layout = QVBoxLayout(self.page_confirm)
+        self.page_confirm.setStyleSheet("background: transparent;")
+        p1_outer = QVBoxLayout(self.page_confirm)
+        p1_outer.setContentsMargins(0, 0, 0, 0)
+        p1_outer.setSpacing(0)
+
+        self.confirm_container = QFrame(self.page_confirm)
+        self.confirm_container.setObjectName("confirm_container")
+        self.confirm_container.setStyleSheet(f"""
+            QFrame#confirm_container {{
+                background-color: {self.bg_color};
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 10px;
+            }}
+        """)
+        container_vbox = QVBoxLayout(self.confirm_container)
+        container_vbox.setContentsMargins(16, 10, 16, 14)
+        container_vbox.setSpacing(7)
+
+        # Custom Title Bar for frameless window
+        title_bar = QWidget()
+        title_bar.setFixedHeight(28)
+        title_bar.setStyleSheet("background: transparent;")
+        tb_layout = QHBoxLayout(title_bar)
+        tb_layout.setContentsMargins(0, 0, 0, 0)
+        tb_layout.setSpacing(6)
+
+        tb_title = QLabel("Import Package Inspection")
+        tb_title.setStyleSheet("color: rgba(255, 255, 255, 0.85); font-size: 8.8pt; font-weight: bold; border: none; background: transparent;")
+        tb_layout.addWidget(tb_title)
+        tb_layout.addStretch(1)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(22, 22)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: rgba(255, 255, 255, 0.55);
+                border: none;
+                font-size: 9.5pt;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 255, 255, 0.12);
+                color: #FFFFFF;
+            }
+        """)
+        close_btn.clicked.connect(self.reject)
+        tb_layout.addWidget(close_btn)
+        container_vbox.addWidget(title_bar)
+
+        self.confirm_layout = QVBoxLayout()
         self.confirm_layout.setContentsMargins(0, 0, 0, 0)
-        self.confirm_layout.setSpacing(9)
+        self.confirm_layout.setSpacing(8)
+        container_vbox.addLayout(self.confirm_layout)
+        p1_outer.addWidget(self.confirm_container)
 
         # 1. Header Row (Capsule Banner + Game Name & Badges)
         header_widget = QWidget()
@@ -233,7 +334,7 @@ class ZipImportConfirmationDialog(QDialog):
         """)
         badges_row.addWidget(self.manifests_badge)
 
-        self.intent_badge = QLabel("New Installation")
+        self.intent_badge = QLabel("New")
         self.intent_badge.setStyleSheet("""
             color: #FFFFFF;
             background-color: rgba(76, 141, 245, 0.25);
@@ -266,29 +367,23 @@ class ZipImportConfirmationDialog(QDialog):
         """)
         vcard_layout = QVBoxLayout(self.version_card)
         vcard_layout.setContentsMargins(12, 8, 12, 8)
-        vcard_layout.setSpacing(5)
+        vcard_layout.setSpacing(4)
 
-        self.patch_title_lbl = QLabel("Patch Version")
-        self.patch_title_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.2pt; font-weight: bold;")
-        self.patch_title_lbl.setWordWrap(True)
-        vcard_layout.addWidget(self.patch_title_lbl)
+        # Line 1: Build: xxxx (dd/mm/yy) installed :yes/no
+        self.build_line1_lbl = QLabel("Build: - installed :no")
+        self.build_line1_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.8pt; font-weight: 600;")
+        self.build_line1_lbl.setWordWrap(True)
+        vcard_layout.addWidget(self.build_line1_lbl)
 
-        # 3 Comparison Rows
-        self.row_imported_lbl = QLabel("📦 Package Build: -")
-        self.row_imported_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.9); font-size: 8.5pt;")
-        vcard_layout.addWidget(self.row_imported_lbl)
-
-        self.row_installed_lbl = QLabel("💻 Currently Installed: Not Installed")
-        self.row_installed_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.2pt;")
-        vcard_layout.addWidget(self.row_installed_lbl)
-
-        self.row_live_lbl = QLabel("☁️ Steam Live Release: -")
-        self.row_live_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.2pt;")
-        vcard_layout.addWidget(self.row_live_lbl)
+        # Line 2: latest buildid : xxxx ( release date) (only shown if not latest)
+        self.build_line2_lbl = QLabel("")
+        self.build_line2_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.3pt;")
+        self.build_line2_lbl.setWordWrap(True)
+        vcard_layout.addWidget(self.build_line2_lbl)
 
         self.confirm_layout.addWidget(self.version_card)
 
-        # 3. Action Notice Banner (Explains what is happening in plain English)
+        # 3. Action Notice Banner (No emojis)
         self.action_notice_banner = QFrame()
         self.action_notice_banner.setObjectName("action_notice_banner")
         self.action_notice_banner.setStyleSheet("""
@@ -298,18 +393,14 @@ class ZipImportConfirmationDialog(QDialog):
                 border-radius: 6px;
             }
         """)
-        banner_layout = QHBoxLayout(self.action_notice_banner)
+        banner_layout = QVBoxLayout(self.action_notice_banner)
         banner_layout.setContentsMargins(10, 6, 10, 6)
-        banner_layout.setSpacing(8)
-
-        self.notice_icon_lbl = QLabel("ℹ️")
-        self.notice_icon_lbl.setStyleSheet("font-size: 11pt; border: none; background: transparent;")
-        banner_layout.addWidget(self.notice_icon_lbl)
+        banner_layout.setSpacing(0)
 
         self.notice_text_lbl = QLabel("Ready to install package.")
         self.notice_text_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.4pt; border: none; background: transparent;")
         self.notice_text_lbl.setWordWrap(True)
-        banner_layout.addWidget(self.notice_text_lbl, 1)
+        banner_layout.addWidget(self.notice_text_lbl)
 
         self.confirm_layout.addWidget(self.action_notice_banner)
 
@@ -551,7 +642,7 @@ class ZipImportConfirmationDialog(QDialog):
             "live_date": "",
             "installed_buildid": "",
             "is_installed": False,
-            "intent": "New Installation",
+            "intent": "New",
             "versions_behind": 0,
             "manifest_count": 0,
             "branch": "public",
@@ -778,31 +869,23 @@ class ZipImportConfirmationDialog(QDialog):
             except Exception as _k_err:
                 logger.debug(f"[ZipConfirmDialog] Keys resolution error: {_k_err}")
 
-        # Check Hubcap /contents for live release manifest map (fast 0.4s zero-quota check)
-        hubcap_live_map = {}
+        # Parallel Race across Steam PICS, SteamCMD REST API, Hubcap, and SteamDB Cache (<1.0s)
+        hubcap_live_map = dict(info.get("latest_bundle_manifests") or {})
         if info["appid"] != "0":
             try:
-                from core import morrenus_api
-                h_contents = morrenus_api.get_manifest_contents(info["appid"])
-                if isinstance(h_contents, dict):
-                    hubcap_live_map = h_contents.get("manifest_map", {})
-                    if hubcap_live_map and not info["latest_bundle_manifests"]:
+                from utils.manifest_resolver import race_live_metadata
+                race_res = race_live_metadata(info["appid"], access_token=info.get("app_token"), timeout=3.0)
+                if race_res.get("live_buildid"):
+                    info["live_buildid"] = race_res["live_buildid"]
+                if race_res.get("game_name") and (not game_name or game_name.startswith("App ")):
+                    game_name = race_res["game_name"]
+                    info["game_name"] = game_name
+                if race_res.get("live_manifests"):
+                    hubcap_live_map.update(race_res["live_manifests"])
+                    if not info["latest_bundle_manifests"]:
                         info["latest_bundle_manifests"] = hubcap_live_map
-            except Exception as _h_err:
-                logger.debug(f"[ZipConfirmDialog] Hubcap contents error: {_h_err}")
-
-        # Steam PICS query for official name & live buildid (fast cached or Steam direct)
-        if info["appid"] != "0":
-            try:
-                from core.steam_api import get_depot_info_from_api
-                pics = get_depot_info_from_api(info["appid"], access_token=info.get("app_token"))
-                if pics:
-                    if pics.get("buildid"):
-                        info["live_buildid"] = str(pics["buildid"]).strip()
-                    if pics.get("name") and (not game_name or game_name.startswith("App ")):
-                        info["game_name"] = pics["name"]
-            except Exception as _p_err:
-                logger.debug(f"[ZipConfirmDialog] PICS query error: {_p_err}")
+            except Exception as _race_err:
+                logger.debug(f"[ZipConfirmDialog] Live metadata race error: {_race_err}")
 
         # Determine if package matches current Live Steam Release:
         is_live_package = False
@@ -853,7 +936,7 @@ class ZipImportConfirmationDialog(QDialog):
                             break
 
                     # If not matched in cache and not already discovered from LUA, do a brief non-blocking query
-                    if not matched_hist_bid:
+                    if not matched_hist_bid and not settings.value("disable_steamdb_scraping", False, type=bool):
                         scraper = SteamDBScraper()
                         patches = scraper.get_patchnotes(aid_int, limit=5)
                         if patches:
@@ -891,8 +974,7 @@ class ZipImportConfirmationDialog(QDialog):
         if not info["live_buildid"] and is_live_package:
             info["live_buildid"] = info["imported_buildid"]
 
-        # ── Step 6: Intent Classification & Pinning Decision ──
-        # Understanding whether this is a Rollback, Reinstall, Upgrade, or Historical Install
+        # ── Step 6: Intent Classification (Strictly: New, Cached, Update, Downgrade) ──
         imp_bid = info["imported_buildid"]
         inst_bid = info["installed_buildid"]
         live_bid = info["live_buildid"]
@@ -900,27 +982,47 @@ class ZipImportConfirmationDialog(QDialog):
         if info["is_installed"]:
             if imp_bid.isdigit() and inst_bid.isdigit():
                 if int(imp_bid) < int(inst_bid):
-                    info["intent"] = "Rollback"
+                    info["intent"] = "Downgrade"
                     info["recommend_pin"] = True
                 elif int(imp_bid) == int(inst_bid):
-                    info["intent"] = "Reinstall"
+                    info["intent"] = "Cached"
                     info["recommend_pin"] = settings.value(f"pin_build/{info['appid']}", False, type=bool)
                 else:
-                    info["intent"] = "Upgrade"
+                    info["intent"] = "Update"
                     info["recommend_pin"] = False
             else:
                 if not is_live_package:
-                    info["intent"] = "Rollback"
+                    info["intent"] = "Downgrade"
                     info["recommend_pin"] = True
                 else:
-                    info["intent"] = "Reinstall"
+                    info["intent"] = "Cached"
                     info["recommend_pin"] = False
         else:
-            if not is_live_package or (imp_bid and live_bid and imp_bid != live_bid):
-                info["intent"] = "Historical Build"
+            # Game is not installed
+            # Check if all depots are already present in local depot cache
+            all_cached = False
+            try:
+                from utils.paths import get_depot_cache_dir
+                cache_dir = Path(get_depot_cache_dir())
+                if all_target_manifests and all(
+                    (cache_dir / f"{d}_{m}.manifest").exists()
+                    for d, m in all_target_manifests.items()
+                ):
+                    all_cached = True
+            except Exception:
+                pass
+
+            if all_cached:
+                info["intent"] = "Cached"
+                info["recommend_pin"] = False
+            elif not is_live_package and (
+                (imp_bid and live_bid and imp_bid.isdigit() and live_bid.isdigit() and int(imp_bid) < int(live_bid))
+                or (not is_live_package and lua_buildid)
+            ):
+                info["intent"] = "Downgrade"
                 info["recommend_pin"] = True
             else:
-                info["intent"] = "New Installation"
+                info["intent"] = "New"
                 info["recommend_pin"] = False
 
         return info
@@ -941,22 +1043,22 @@ class ZipImportConfirmationDialog(QDialog):
         # Load game capsule banner asynchronously
         self._load_capsule_image(appid)
 
-        # 2. Intent Badge & Pin Recommendations
-        intent = data.get("intent", "New Installation")
+        # 2. Intent Badge & Pin Recommendations (Strictly: New, Cached, Update, Downgrade)
+        intent = data.get("intent", "New")
         self.intent_badge.setText(intent)
 
-        if intent == "Rollback":
+        if intent == "Downgrade":
             badge_bg = "rgba(255, 167, 38, 0.20)"
             badge_border = "rgba(255, 167, 38, 0.60)"
             badge_fg = "#FFA726"
-            proceed_text = "Proceed with Rollback"
+            proceed_text = "Proceed with Downgrade"
             self.pin_checkbox.setChecked(True)
-            self.notice_icon_lbl.setText("⚠️")
-            inst_b = data.get("installed_buildid", "current")
-            imp_b = data.get("imported_buildid", "historical")
+            inst_b = data.get("installed_buildid") or "current"
+            imp_b = data.get("imported_buildid") or "historical"
             self.notice_text_lbl.setText(
-                f"<b>Rollback Detected:</b> You are downgrading from installed Build <b>{inst_b}</b> to Build <b>{imp_b}</b>. "
-                "Pinning this build is strongly recommended to prevent Steam from overwriting it."
+                f"<b>Downgrade Detected:</b> Target version (Build <b>{imp_b}</b>) is older than "
+                f"{'installed' if data.get('is_installed') else 'live'} Build <b>{inst_b}</b>. "
+                "Pinning this build is recommended so Steam will not overwrite it."
             )
             self.action_notice_banner.setStyleSheet("""
                 QFrame#action_notice_banner {
@@ -966,38 +1068,16 @@ class ZipImportConfirmationDialog(QDialog):
                 }
             """)
 
-        elif intent == "Historical Build":
-            badge_bg = "rgba(171, 71, 188, 0.22)"
-            badge_border = "rgba(171, 71, 188, 0.60)"
-            badge_fg = "#CE93D8"
-            proceed_text = "Proceed with Pinned Build"
-            self.pin_checkbox.setChecked(True)
-            self.notice_icon_lbl.setText("📌")
-            imp_b = data.get("imported_buildid", "historical")
-            live_b = data.get("live_buildid", "latest")
-            self.notice_text_lbl.setText(
-                f"<b>Historical Build:</b> Package targets Build <b>{imp_b}</b> (Steam current live is Build <b>{live_b}</b>). "
-                "Pinning is recommended so Steam will not auto-update your installed files upon launch."
-            )
-            self.action_notice_banner.setStyleSheet("""
-                QFrame#action_notice_banner {
-                    background-color: rgba(171, 71, 188, 0.12);
-                    border: 1px solid rgba(171, 71, 188, 0.45);
-                    border-radius: 6px;
-                }
-            """)
-
-        elif intent == "Upgrade":
+        elif intent == "Update":
             badge_bg = "rgba(102, 187, 106, 0.20)"
             badge_border = "rgba(102, 187, 106, 0.60)"
             badge_fg = "#81C784"
-            proceed_text = "Proceed with Upgrade"
+            proceed_text = "Proceed with Update"
             self.pin_checkbox.setChecked(False)
-            self.notice_icon_lbl.setText("⬆️")
             inst_b = data.get("installed_buildid", "old")
             imp_b = data.get("imported_buildid", "new")
             self.notice_text_lbl.setText(
-                f"<b>Upgrade Available:</b> Upgrading installed game from Build <b>{inst_b}</b> to Build <b>{imp_b}</b>."
+                f"<b>Update Available:</b> Upgrading installed game from Build <b>{inst_b}</b> to Build <b>{imp_b}</b>."
             )
             self.action_notice_banner.setStyleSheet("""
                 QFrame#action_notice_banner {
@@ -1007,16 +1087,15 @@ class ZipImportConfirmationDialog(QDialog):
                 }
             """)
 
-        elif intent == "Reinstall":
+        elif intent == "Cached":
             badge_bg = "rgba(255, 255, 255, 0.10)"
             badge_border = "rgba(255, 255, 255, 0.25)"
             badge_fg = "#FFFFFF"
             proceed_text = "Proceed with Reinstall"
             self.pin_checkbox.setChecked(bool(data.get("recommend_pin", False)))
-            self.notice_icon_lbl.setText("ℹ️")
-            inst_b = data.get("installed_buildid", "")
+            inst_b = data.get("installed_buildid") or data.get("imported_buildid", "")
             self.notice_text_lbl.setText(
-                f"<b>Reinstall / Verify:</b> Package matches your currently installed version (Build <b>{inst_b}</b>)."
+                f"<b>Cached Build:</b> Package matches existing cached or installed files (Build <b>{inst_b}</b>)."
             )
             self.action_notice_banner.setStyleSheet("""
                 QFrame#action_notice_banner {
@@ -1026,13 +1105,12 @@ class ZipImportConfirmationDialog(QDialog):
                 }
             """)
 
-        else:  # New Installation
+        else:  # New
             badge_bg = "rgba(76, 141, 245, 0.20)"
             badge_border = "rgba(76, 141, 245, 0.60)"
             badge_fg = "#4C8DF5"
             proceed_text = "Proceed with Install"
             self.pin_checkbox.setChecked(False)
-            self.notice_icon_lbl.setText("✅")
             live_b = data.get("live_buildid", "")
             b_str = f" (Build <b>{live_b}</b>)" if live_b else ""
             self.notice_text_lbl.setText(
@@ -1057,44 +1135,27 @@ class ZipImportConfirmationDialog(QDialog):
         """)
         self.proceed_btn.setText(proceed_text)
 
-        # 3. Version Comparison Card Text
-        patch_title = data.get("patch_title") or "Standard Release"
-        self.patch_title_lbl.setText(f"Release: {patch_title}")
+        # 3. Version Comparison Card Text (No emojis, exact 2-line format)
+        imported_bid = data.get("imported_buildid") or "Unknown"
+        imported_date = format_dd_mm_yy(data.get("patch_date"))
+        date_str = f" ({imported_date})" if imported_date else ""
+        is_inst_str = "yes" if data.get("is_installed") else "no"
 
-        imported_bid = data.get("imported_buildid")
-        imported_date = data.get("patch_date")
-        if imported_bid:
-            pkg_str = f"📦 Package Build: <b>Build {imported_bid}</b>"
-            if imported_date:
-                pkg_str += f" &nbsp;•&nbsp; Released: {imported_date}"
+        self.build_line1_lbl.setText(f"Build: {imported_bid}{date_str} installed :{is_inst_str}")
+
+        live_bid = data.get("live_buildid", "")
+        # Only show Line 2 if imported build is not latest!
+        if live_bid and str(live_bid) != str(imported_bid):
+            live_date = format_dd_mm_yy(data.get("live_date"))
+            live_date_str = f" ({live_date})" if live_date else ""
+            self.build_line2_lbl.setText(f"latest buildid : {live_bid}{live_date_str}")
+            self.build_line2_lbl.setVisible(True)
         else:
-            pkg_str = f"📦 Package Manifests: <b>{data.get('manifest_count', 0)} files</b>"
-        self.row_imported_lbl.setText(pkg_str)
-
-        # Currently installed
-        if data.get("is_installed"):
-            inst_bid = data.get("installed_buildid")
-            self.row_installed_lbl.setText(f"💻 Currently Installed: <b>Build {inst_bid}</b>")
-        else:
-            self.row_installed_lbl.setText("💻 Currently Installed: <i>Not Installed</i>")
-
-        # Live Steam release
-        live_bid = data.get("live_buildid")
-        live_date = data.get("live_date")
-        versions_behind = data.get("versions_behind", 0)
-
-        if live_bid:
-            live_str = f"☁️ Steam Live Release: <b>Build {live_bid}</b>"
-            if live_date:
-                live_str += f" ({live_date})"
-            if versions_behind > 0:
-                live_str += f" &nbsp;—&nbsp; <span style='color: #FFA726;'>({versions_behind} patch{'es' if versions_behind > 1 else ''} behind)</span>"
-            self.row_live_lbl.setText(live_str)
-        else:
-            self.row_live_lbl.setText("☁️ Steam Live Release: Up to Date")
+            self.build_line2_lbl.setVisible(False)
 
         # 4. Build Selection Frame Configuration
-        has_different_builds = bool(imported_bid and live_bid and imported_bid != live_bid)
+        has_different_builds = bool(imported_bid and live_bid and str(imported_bid) != str(live_bid))
+        versions_behind = int(data.get("versions_behind") or 0)
 
         if has_different_builds:
             self.build_selection_frame.setVisible(True)
@@ -1107,14 +1168,17 @@ class ZipImportConfirmationDialog(QDialog):
             self.manifest_build_sub.setText(m_sub)
 
             self.radio_latest_build.setText(f"Switch to Latest Live Build (Build {live_bid})")
-            self.latest_build_sub.setText(f"Current live release on Steam • {live_date or 'Latest'}")
+            live_d_sub = format_dd_mm_yy(data.get("live_date")) or "Latest"
+            self.latest_build_sub.setText(f"Current live release on Steam • {live_d_sub}")
 
-            # Pre-select based on intent: for rollbacks and historical packages, default to the imported build!
-            if intent in ("Rollback", "Historical Build") or versions_behind > 0:
+            # Pre-select based on intent: for rollbacks/downgrades and historical packages, default to the imported build!
+            if intent in ("Downgrade", "Rollback", "Historical Build") or versions_behind > 0:
                 self.radio_manifest_build.setChecked(True)
                 self.pin_checkbox.setChecked(True)
+                self._on_build_selection_changed(True)
             else:
                 self.radio_latest_build.setChecked(True)
+                self._on_build_selection_changed(False)
         else:
             self.build_selection_frame.setVisible(False)
 
@@ -1189,9 +1253,22 @@ class ZipImportConfirmationDialog(QDialog):
         else:
             self.dest_frame.setVisible(False)
 
-        # Switch to confirmation page and snug auto-fit
+        # Stop loading movie and switch to confirmation page with snug auto-fit
+        if getattr(self, "movie", None):
+            try:
+                self.movie.stop()
+            except Exception:
+                pass
+
+        target_h = 525 if has_different_builds else 455
+        self.setFixedSize(540, target_h)
+        if self.parent():
+            pgeo = self.parent().geometry()
+            self.move(
+                pgeo.x() + (pgeo.width() - 540) // 2,
+                pgeo.y() + (pgeo.height() - target_h) // 2,
+            )
         self.stack.setCurrentIndex(1)
-        self.adjustSize()
 
     def _load_capsule_image(self, appid: str):
         if not appid or appid in ("0", "unknown"):
@@ -1224,14 +1301,18 @@ class ZipImportConfirmationDialog(QDialog):
     def _on_build_selection_changed(self, manifest_checked: Optional[bool] = None):
         if manifest_checked is None:
             manifest_checked = self.radio_manifest_build.isChecked()
-        intent = self.result_data.get("intent", "Rollback")
+        intent = self.result_data.get("intent", "Downgrade")
 
         if manifest_checked:
-            if intent in ("Rollback", "Historical Build"):
+            if intent == "Downgrade":
                 self.pin_checkbox.setChecked(True)
-            self.proceed_btn.setText(
-                "Proceed with Rollback" if intent == "Rollback" else "Proceed with Pinned Build"
-            )
+                self.proceed_btn.setText("Proceed with Downgrade")
+            elif intent == "Update":
+                self.proceed_btn.setText("Proceed with Update")
+            elif intent == "Cached":
+                self.proceed_btn.setText("Proceed with Reinstall")
+            else:
+                self.proceed_btn.setText("Proceed with Install")
         else:
             self.pin_checkbox.setChecked(False)
             self.proceed_btn.setText("Proceed with Latest Build")
@@ -1247,14 +1328,19 @@ class ZipImportConfirmationDialog(QDialog):
             logger.info(f"[ZipConfirmDialog] User selected destination library: {chosen_lib}")
 
         missing_mfs = self.result_data.get("missing_manifests", {})
-        if missing_mfs:
-            self.loading_title.setText("Downloading Missing Manifests...")
-            self.loading_sub.setText(f"Fetching {len(missing_mfs)} manifest(s) directly from Steam CDN via MRC")
-        else:
-            self.loading_title.setText("Preparing Package...")
-            self.loading_sub.setText("Resolving depots and branches for installation")
-
         self.loading_cancel_btn.setVisible(False)
+        self.setFixedSize(354, 354)
+        if self.parent():
+            pgeo = self.parent().geometry()
+            self.move(
+                pgeo.x() + (pgeo.width() - 354) // 2,
+                pgeo.y() + (pgeo.height() - 354) // 2,
+            )
+        if getattr(self, "movie", None):
+            try:
+                self.movie.start()
+            except Exception:
+                pass
         self.stack.setCurrentIndex(0)
 
         def _prepare_worker():
@@ -1331,7 +1417,7 @@ class ZipImportConfirmationDialog(QDialog):
             "use_latest_build": use_latest,
             "buildid": chosen_bid,
             "branch": self.result_data.get("branch", "public"),
-            "is_rollback": (not use_latest) and (self.result_data.get("intent") == "Rollback"),
+            "is_rollback": (not use_latest) and (self.result_data.get("intent") in ("Rollback", "Downgrade")),
             "patch_title": self.result_data.get("patch_title", ""),
             "game_name": self.result_data.get("game_name", ""),
             "appid": self.result_data.get("appid", "0"),
@@ -1342,3 +1428,27 @@ class ZipImportConfirmationDialog(QDialog):
         if self.processed_game_data:
             meta["preprocessed_game_data"] = self.processed_game_data
         return meta
+
+    def accept(self):
+        if getattr(self, "movie", None):
+            try:
+                self.movie.stop()
+            except Exception:
+                pass
+        super().accept()
+
+    def closeEvent(self, event):
+        if getattr(self, "movie", None):
+            try:
+                self.movie.stop()
+            except Exception:
+                pass
+        super().closeEvent(event)
+
+    def reject(self):
+        if getattr(self, "movie", None):
+            try:
+                self.movie.stop()
+            except Exception:
+                pass
+        super().reject()

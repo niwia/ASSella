@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QFrame,
+    QCheckBox,
 )
 
 from managers.mrc_config_manager import MRCConfigManager
@@ -709,6 +710,51 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     t_grid.addWidget(install_byparr_btn, 4, 1, 1, 2)
 
     test_layout.addLayout(t_grid)
+
+    # 6. Testing Toggles: SteamDB Scraping & Demo Mode
+    sep_line = QFrame()
+    sep_line.setFrameShape(QFrame.Shape.HLine)
+    sep_line.setStyleSheet("background-color: rgba(255, 255, 255, 0.08); margin: 6px 0;")
+    test_layout.addWidget(sep_line)
+
+    toggles_box = QVBoxLayout()
+    toggles_box.setSpacing(6)
+
+    disable_sdb_cb = QCheckBox("Disable SteamDB / Byparr Scraping")
+    disable_sdb_cb.setChecked(settings.value("disable_steamdb_scraping", False, type=bool))
+    disable_sdb_cb.setToolTip("Bypasses SteamDB scraping and Byparr solver during package inspection and patch queries.")
+    disable_sdb_cb.setStyleSheet("""
+        QCheckBox {
+            color: #FFFFFF;
+            font-size: 8.5pt;
+            font-weight: 500;
+            spacing: 8px;
+        }
+    """)
+    def _on_toggle_sdb(checked):
+        settings.setValue("disable_steamdb_scraping", checked)
+        settings.sync()
+    disable_sdb_cb.toggled.connect(_on_toggle_sdb)
+    toggles_box.addWidget(disable_sdb_cb)
+
+    demo_mode_cb = QCheckBox("Demo Mode (Disable local caching & downloads)")
+    demo_mode_cb.setChecked(settings.value("demo_mode", False, type=bool))
+    demo_mode_cb.setToolTip("Reaches the depot selection screen without caching LUA/keys locally or downloading files. Perfect for testing import workflows repeatedly.")
+    demo_mode_cb.setStyleSheet("""
+        QCheckBox {
+            color: #FFFFFF;
+            font-size: 8.5pt;
+            font-weight: 500;
+            spacing: 8px;
+        }
+    """)
+    def _on_toggle_demo(checked):
+        settings.setValue("demo_mode", checked)
+        settings.sync()
+    demo_mode_cb.toggled.connect(_on_toggle_demo)
+    toggles_box.addWidget(demo_mode_cb)
+
+    test_layout.addLayout(toggles_box)
     layout.addWidget(test_card)
 
     layout.addStretch()

@@ -123,6 +123,10 @@ class ByparrManager:
     @classmethod
     def ensure_running(cls) -> bool:
         """Ensures Byparr is listening; launches background process if local repo exists."""
+        if get_settings().value("disable_steamdb_scraping", False, type=bool):
+            logger.info("[SteamDB] Scraping disabled in Testing settings; will not start Byparr.")
+            return False
+
         if cls.is_running():
             return True
 
@@ -293,6 +297,10 @@ class SteamDBScraper:
         """
         Fetches the fully-rendered DOM from SteamDB via Byparr (which executes JS & bypasses Turnstile).
         """
+        if get_settings().value("disable_steamdb_scraping", False, type=bool):
+            logger.info("[SteamDB] Scraping disabled in Testing settings; skipping fetch.")
+            return ""
+
         if not ByparrManager.is_running():
             ByparrManager.ensure_running()
 

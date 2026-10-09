@@ -194,34 +194,16 @@ def resolve_appid_from_depot(depot_id: str | int) -> Tuple[Optional[str], Option
 
     depot_int = int(depot_str)
 
-    # 1. Local Database Query
+    # 1. Local DepotKeyManager Query (Ground truth mapping of depot_id -> parent appid)
     try:
-        from managers.db_manager import DatabaseManager
-        db = DatabaseManager()
-        with db._conn_lock:
-            cur = db.conn.cursor()
-            # Direct match
-            cur.execute("SELECT appid, name FROM apps WHERE appid = ?", (depot_str,))
-            row = cur.fetchone()
-            if row and row["appid"]:
-                return str(row["appid"]), str(row["name"] or f"App {row['appid']}")
-
-            # Match inside depots_json
-            cur.execute("SELECT appid, name, depots_json FROM apps WHERE depots_json LIKE ?", (f'%"{depot_str}"%',))
-            row = cur.fetchone()
-            if row and row["appid"]:
-                return str(row["appid"]), str(row["name"] or f"App {row['appid']}")
-    except Exception as e:
-        logger.debug(f"[ManifestResolver] DB query for depot {depot_str} failed: {e}")
-
-    # 2. Local DepotKeyManager Query
-    try:
-        from managers.depot_key_manager import DepotKeyManager
+        from managers.depot_key_manager import DepotKeyManager, _lock
         dkm = DepotKeyManager()
-        with dkm._lock:
-            cur = dkm.conn.cursor()
+        with _lock:
+            conn = dkm._connect()
+            cur = conn.cursor()
             cur.execute("SELECT appid FROM depot_keys WHERE depot_id = ?", (depot_str,))
             row = cur.fetchone()
+            conn.close()
             if row and row[0]:
                 aid = str(row[0])
                 # Resolve title from local DB
@@ -235,6 +217,20 @@ def resolve_appid_from_depot(depot_id: str | int) -> Tuple[Optional[str], Option
                 return aid, f"App {aid}"
     except Exception as e:
         logger.debug(f"[ManifestResolver] DepotKeyManager query for depot {depot_str} failed: {e}")
+
+    # 2. Local Database Query
+    try:
+        from managers.db_manager import DatabaseManager
+        db = DatabaseManager()
+        with db._conn_lock:
+            cur = db.conn.cursor()
+            # Direct match
+            cur.execute("SELECT appid, name FROM apps WHERE appid = ?", (depot_str,))
+            row = cur.fetchone()
+            if row and row["appid"]:
+                return str(row["appid"]), str(row["name"] or f"App {row['appid']}")
+    except Exception as e:
+        logger.debug(f"[ManifestResolver] DB query for depot {depot_str} failed: {e}")
 
     # 3. Steam Store API Heuristic
     # Most Steam games allocate main depots as <appid> + 1, <appid> + 2, etc.
@@ -455,3 +451,139 @@ def ensure_depot_keys_for_app(appid: str, depot_id: Optional[str] = None) -> Tup
             logger.error(f"[ManifestResolver] Failed to fetch companion bundle from Hubcap: {e}")
 
     return keys, token, latest_manifests
+
+
+def race_live_metadata(appid: str, access_token: Optional[str] = None, timeout: float = 3.0) -> Dict[str, Any]:
+    """
+    Races Steam PICS, SteamCMD REST API, Hubcap, and local SteamDB cache in parallel.
+    First responder to provide live buildid / title / manifests wins,
+    ensuring sub-second inspection even if one provider times out or is blocked.
+    """
+    results: Dict[str, Any] = {
+        "live_buildid": "",
+        "game_name": "",
+        "live_manifests": {},
+        "winner": None,
+    }
+    if not appid or str(appid) in ("0", "unknown"):
+        return results
+
+    aid_str = str(appid).strip()
+
+    def _worker_steamdb_cache():
+        try:
+            from core.steamdb_scraper import SteamDBBuildsCache
+            cache = SteamDBBuildsCache()
+            aid_int = int(aid_str) if aid_str.isdigit() else 0
+            if aid_int > 0:
+                cached_builds = cache.get_builds(aid_int) or []
+                if cached_builds:
+                    latest = cached_builds[0]
+                    mfs = {}
+                    for did, dinfo in (latest.get("depots") or {}).items():
+                        if isinstance(dinfo, dict) and dinfo.get("manifest_id"):
+                            mfs[str(did)] = str(dinfo["manifest_id"])
+                    return {
+                        "live_buildid": str(latest.get("buildid") or "").strip(),
+                        "game_name": "",
+                        "live_manifests": mfs,
+                    }
+        except Exception as e:
+            logger.debug(f"[ParallelRace] SteamDB cache error for App {aid_str}: {e}")
+        return {}
+
+    def _worker_steam_pics():
+        try:
+            from core.steam_api import get_depot_info_from_api
+            pics = get_depot_info_from_api(aid_str, access_token=access_token)
+            if pics:
+                mfs = {}
+                for did, dinfo in pics.get("depots", {}).items():
+                    if isinstance(dinfo, dict):
+                        manifests = dinfo.get("manifests", {})
+                        if isinstance(manifests, dict) and "public" in manifests:
+                            pub = manifests["public"]
+                            gid = pub.get("gid") if isinstance(pub, dict) else str(pub)
+                            if gid:
+                                mfs[str(did)] = str(gid)
+                return {
+                    "live_buildid": str(pics.get("buildid") or "").strip(),
+                    "game_name": pics.get("name") or "",
+                    "live_manifests": mfs,
+                }
+        except Exception as e:
+            logger.debug(f"[ParallelRace] Steam PICS error for App {aid_str}: {e}")
+        return {}
+
+    def _worker_steamcmd():
+        try:
+            import requests
+            r = requests.get(f"https://api.steamcmd.net/v1/info/{aid_str}", timeout=2.5)
+            if r.status_code == 200:
+                data = r.json().get("data", {}).get(aid_str, {})
+                c_name = data.get("common", {}).get("name", "")
+                depots = data.get("depots", {})
+                b_public = depots.get("branches", {}).get("public", {})
+                b_id = str(b_public.get("buildid", "")).strip()
+                mfs = {}
+                for did, dinfo in depots.items():
+                    if isinstance(dinfo, dict) and "manifests" in dinfo:
+                        pub = dinfo["manifests"].get("public")
+                        gid = pub.get("gid") if isinstance(pub, dict) else str(pub)
+                        if gid:
+                            mfs[str(did)] = str(gid)
+                return {
+                    "live_buildid": b_id,
+                    "game_name": c_name,
+                    "live_manifests": mfs,
+                }
+        except Exception as e:
+            logger.debug(f"[ParallelRace] SteamCMD error for App {aid_str}: {e}")
+        return {}
+
+    def _worker_hubcap():
+        try:
+            from core import morrenus_api
+            contents = morrenus_api.get_manifest_contents(aid_str)
+            if isinstance(contents, dict):
+                m_map = contents.get("manifest_map", {})
+                return {
+                    "live_buildid": "",
+                    "game_name": "",
+                    "live_manifests": {str(k): str(v) for k, v in m_map.items()},
+                }
+        except Exception as e:
+            logger.debug(f"[ParallelRace] Hubcap error for App {aid_str}: {e}")
+        return {}
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        f_sdb = executor.submit(_worker_steamdb_cache)
+        f_pics = executor.submit(_worker_steam_pics)
+        f_cmd = executor.submit(_worker_steamcmd)
+        f_hub = executor.submit(_worker_hubcap)
+        future_map = {f_sdb: "SteamDB Cache", f_pics: "Steam PICS", f_cmd: "SteamCMD", f_hub: "Hubcap"}
+
+        try:
+            for fut in concurrent.futures.as_completed(future_map.keys(), timeout=timeout):
+                src = future_map[fut]
+                try:
+                    res = fut.result()
+                    if res:
+                        if res.get("live_buildid") and not results["live_buildid"]:
+                            results["live_buildid"] = res["live_buildid"]
+                            results["winner"] = src
+                            logger.info(f"[ParallelRace] {src} won the race for App {aid_str} (Live Build: {results['live_buildid']})")
+                        if res.get("game_name") and (not results["game_name"] or results["game_name"].startswith("App ")):
+                            results["game_name"] = res["game_name"]
+                        if res.get("live_manifests"):
+                            results["live_manifests"].update(res["live_manifests"])
+                        if results["live_buildid"] and results["game_name"] and not results["game_name"].startswith("App "):
+                            break
+                except Exception as ex:
+                    logger.debug(f"[ParallelRace] {src} exception: {ex}")
+        except concurrent.futures.TimeoutError:
+            logger.debug(f"[ParallelRace] Race completed via timeout barrier for App {aid_str}")
+
+    return results
+
