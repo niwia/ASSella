@@ -417,17 +417,23 @@ def resolve_depot_details(
         os_icon = "🤖"
 
     # Clean display name
+    import re
     clean_name = raw_name
     for tag in ("[WINDOWS]", "[LINUX]", "[MACOS]", "[MACOSX]", "[ANDROID]", f"Depot {did_str}:", f"Depot {did_str}"):
         if tag.lower() in clean_name.lower():
-            import re
             clean_name = re.sub(re.escape(tag), "", clean_name, flags=re.IGNORECASE).strip()
+    clean_name = re.sub(r"\[DLC(?:\s*\d+)?\]", "", clean_name, flags=re.IGNORECASE).strip()
     clean_name = clean_name.strip(" -:–—")
     if not clean_name:
         clean_name = f"Depot {did_str}"
 
     is_soundtrack = "soundtrack" in name_lower or " ost" in name_lower
-    is_dlc = bool(dinfo.get("is_dlc") or dinfo.get("dlcappid")) if isinstance(dinfo, dict) else False
+    is_dlc = bool(
+        (isinstance(dinfo, dict) and (dinfo.get("is_dlc") or dinfo.get("dlcappid")))
+        or "[dlc" in raw_name.lower()
+    )
+    if is_dlc and os_type == "all":
+        os_badge = "DLC"
 
     return {
         "depot_id": did_str,
