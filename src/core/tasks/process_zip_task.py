@@ -413,6 +413,12 @@ class ProcessZipTask:
                         game_data["buildid"] = metadata["buildid"]
                     if metadata.get("is_rollback"):
                         game_data["_is_rollback"] = metadata["is_rollback"]
+                    if metadata.get("use_latest_build") and metadata.get("latest_bundle_manifests"):
+                        logger.info(f"[ProcessZipTask] User chose Latest Live Build; switching manifests to {len(metadata['latest_bundle_manifests'])} latest manifests.")
+                        game_data["manifests"] = dict(metadata["latest_bundle_manifests"])
+                    if "pin_build" in metadata:
+                        game_data["pin_build"] = bool(metadata["pin_build"])
+                        game_data["_pin_build"] = bool(metadata["pin_build"])
                     if metadata.get("manifest_overrides"):
                         game_data.setdefault("manifests", {}).update(metadata["manifest_overrides"])
                         logger.info(f"[ProcessZipTask] Applied metadata manifest overrides: {metadata['manifest_overrides']}")
