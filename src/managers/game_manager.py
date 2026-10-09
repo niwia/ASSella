@@ -510,10 +510,27 @@ class GameManager(QObject):
                 return
 
             game["update_status"] = update_status
-            if update_status == UPDATE_STATUS["CANNOT_DETERMINE"]:
-                logger.info(f"Updated status for game {appid} ({game_title}): {update_status}")
-            else:
-                logger.debug(f"Updated status for game {appid} ({game_title}): {update_status}")
+            # Only speak up when the status actually moves. "checking" is a
+            # transient sentinel set at the start of every scan (see
+            # _reset_status_for_check), so logging a transition into or out of
+            # it reports "checking -> up_to_date" for every game on every pass
+            # - 165 lines per session saying nothing happened.
+            _checking = UPDATE_STATUS["CHECKING"]
+            real_change = (
+                old_status != update_status
+                and old_status != _checking
+                and update_status != _checking
+            )
+            if real_change:
+                if update_status == UPDATE_STATUS["CANNOT_DETERMINE"]:
+                    logger.info(
+                        f"Updated status for game {appid} ({game_title}): {update_status}"
+                    )
+                else:
+                    logger.debug(
+                        f"Updated status for game {appid} ({game_title}): "
+                        f"{old_status} -> {update_status}"
+                    )
             self.game_update_status_changed.emit(appid, update_status)
 
             # Persist to disk cache with diagnostic metadata
@@ -558,7 +575,14 @@ class GameManager(QObject):
 
     def _on_update_check_progress(self, current, total):
         """Handle update check progress"""
-        logger.debug(f"Update check progress: {current}/{total}")
+        # Throttled to deciles. This fired once per game and produced ~390
+        # lines in a single session on a large library - the single largest
+        # contributor to log volume. The signal below still carries every tick
+        # to the UI, so nothing is lost by logging less often.
+        if total > 0:
+            step = max(1, total // 10)
+            if current == total or current % step == 0:
+                logger.debug(f"Update check progress: {current}/{total}")
         self.update_check_progress.emit(current, total)
 
     def _on_update_check_completed(self):
@@ -1715,6 +1739,15 @@ class GameManager(QObject):
         import platform
         from core.steam_helpers import find_steam_install, get_steam_libraries
 
+        if not install_path or not os.path.exists(install_path):
+            try:
+                from utils.plugin_games import get_atom_game_install_info
+                atom_info = get_atom_game_install_info(appid)
+                if atom_info:
+                    install_path = atom_info.get("common_path") or atom_info.get("install_path")
+            except Exception:
+                pass
+
         is_accela_install = game_data.get("is_accela_install", False)
 
         is_dlc_only = False
@@ -1945,22 +1978,39 @@ class GameManager(QObject):
 
         import os
         import platform
+        import shutil
+        from pathlib import Path
 
         try:
-            # Send uninstall API trigger & config cleanup if experimental mode is active on Linux
-            try:
-                from utils.settings import get_settings
-                settings = get_settings()
-                experimental_mode = settings.value("experimental_acf_independent", False, type=bool)
-            except Exception:
-                experimental_mode = False
-
-            if experimental_mode and platform.system() == "Linux" and appid and appid not in ("0", "N/A", "unknown"):
+            # Discover install_path & library_path for AT0-M games if not set or non-existent
+            if not install_path or not os.path.exists(install_path):
                 try:
-                    from utils.slssteam_integration import uninstall_via_sls
-                    uninstall_via_sls(str(appid))
+                    from utils.plugin_games import get_atom_game_install_info
+                    atom_info = get_atom_game_install_info(appid)
+                    if atom_info:
+                        install_path = atom_info.get("common_path") or atom_info.get("install_path")
+                        if not library_path:
+                            library_path = atom_info.get("library_path")
                 except Exception as e:
-                    logger.error(f"Error sending SLSsteam uninstall API trigger: {e}")
+                    logger.debug(f"Could not resolve atom install info for {appid}: {e}")
+
+            # Cancel any active install retry workers for this appid
+            try:
+                from utils.slssteam_integration import _retry_lock, _retry_cancel_flags
+                with _retry_lock:
+                    cancel_event = _retry_cancel_flags.get(str(appid))
+                if cancel_event:
+                    cancel_event.set()
+            except Exception:
+                pass
+
+            # Send SLSsteam API uninstall trigger to Steam client if active
+            if platform.system() == "Linux" and appid and appid not in ("0", "N/A", "unknown"):
+                try:
+                    from core.native_steam.native_steam_handoff import send_sls_api
+                    send_sls_api(f"uninstall|{appid}")
+                except Exception as e:
+                    logger.debug(f"Error sending SLSsteam uninstall API trigger: {e}")
 
             is_dlc_only = False
             if appid and appid not in ("0", "N/A", "unknown"):
@@ -1974,26 +2024,47 @@ class GameManager(QObject):
                     # Clean up empty install folder if all DLC files were removed
                     try:
                         if os.path.isdir(install_path) and not os.listdir(install_path):
-                            import shutil
-                            shutil.rmtree(install_path)
+                            shutil.rmtree(install_path, ignore_errors=True)
                             logger.info(f"Removed empty game folder after DLC uninstall: {install_path}")
                     except Exception as _e:
                         logger.warning(f"Could not remove empty folder {install_path}: {_e}")
             else:
                 # Remove full game folder
                 if install_path and os.path.exists(install_path):
-                    import shutil
-                    shutil.rmtree(install_path)
+                    shutil.rmtree(install_path, ignore_errors=True)
                     logger.info(f"Removed game folder: {install_path}")
 
-                # Remove ACF file (only in standard manual mode; native mode lets Steam delete it)
-                if not experimental_mode and library_path and appid != "N/A":
-                    acf_path = os.path.join(
-                        library_path, "steamapps", f"appmanifest_{appid}.acf"
-                    )
-                    if os.path.exists(acf_path):
-                        os.remove(acf_path)
-                        logger.info(f"Removed ACF file: {acf_path}")
+                # Clean downloading and temp folders across discovered Steam libraries
+                try:
+                    from core.steam_helpers import get_steam_libraries
+                    libs = get_steam_libraries() or []
+                    if library_path and library_path not in libs:
+                        libs.append(library_path)
+                    for lib in libs:
+                        dl_dir = Path(lib) / "steamapps" / "downloading" / str(appid)
+                        if dl_dir.exists():
+                            shutil.rmtree(dl_dir, ignore_errors=True)
+                            logger.info(f"Removed downloading folder: {dl_dir}")
+                        temp_dir = Path(lib) / "steamapps" / "temp" / str(appid)
+                        if temp_dir.exists():
+                            shutil.rmtree(temp_dir, ignore_errors=True)
+                            logger.info(f"Removed temp folder: {temp_dir}")
+                except Exception as e:
+                    logger.debug(f"Error cleaning downloading/temp folders for {appid}: {e}")
+
+                # Remove ACF manifest across discovered Steam libraries
+                try:
+                    from core.steam_helpers import get_steam_libraries
+                    libs = get_steam_libraries() or []
+                    if library_path and library_path not in libs:
+                        libs.append(library_path)
+                    for lib in libs:
+                        acf_file = Path(lib) / "steamapps" / f"appmanifest_{appid}.acf"
+                        if acf_file.exists():
+                            acf_file.unlink(missing_ok=True)
+                            logger.info(f"Removed ACF file: {acf_file}")
+                except Exception as e:
+                    logger.debug(f"Error cleaning ACF file for {appid}: {e}")
 
             # Clean up .assella and legacy marker folders/files if remove_sls is True
             if remove_sls and install_path and os.path.exists(install_path):
@@ -2045,24 +2116,43 @@ class GameManager(QObject):
 
                 config_path = get_user_config_path()
                 if config_path.exists():
-                    if is_dlc_only:
-                        # Remove all DLC entries matching the depots config
-                        depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
-                        if depot_file.exists():
-                            try:
-                                for line in depot_file.read_text().splitlines():
-                                    parts = line.split(":")
-                                    if parts and parts[0].strip():
-                                        remove_additional_app(config_path, str(parts[0].strip()))
-                            except Exception:
-                                pass
-                    else:
-                        remove_additional_app(config_path, str(appid))
-                    from utils.yaml_config_manager import remove_dlc_data, remove_launch_option, remove_fake_app_id
-                    remove_dlc_data(config_path, str(appid))
-                    remove_launch_option(config_path, str(appid))
-                    remove_fake_app_id(config_path, str(appid))
-                    logger.info(f"Removed appid entries, DlcData, LaunchOptions, and FakeAppIds from SLS config")
+                    try:
+                        from utils.yaml_config_manager import batch_config_edit
+                        with batch_config_edit(config_path) as editor:
+                            if is_dlc_only:
+                                # Remove all DLC entries matching the depots config
+                                depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+                                if depot_file.exists():
+                                    try:
+                                        for line in depot_file.read_text().splitlines():
+                                            parts = line.split(":")
+                                            if parts and parts[0].strip():
+                                                did = str(parts[0].strip())
+                                                editor.remove_app(did)
+                                                editor.remove_fake_app_id(did)
+                                                editor.remove_app_token(did)
+                                    except Exception:
+                                        pass
+                            else:
+                                editor.remove_app(str(appid))
+
+                            editor.remove_dlc(str(appid))
+                            editor.remove_launch_option(str(appid))
+                            editor.remove_fake_app_id(str(appid))
+                            editor.remove_app_token(str(appid))
+                            for sec in (
+                                "GameTitles",
+                                "ManifestIds",
+                                "DepotBlacklist",
+                                "CDKeys",
+                                "FakeOffline",
+                                "SubscriptionTimestamps",
+                                "DenuvoGames",
+                            ):
+                                editor.remove_secondary_entry(sec, str(appid))
+                        logger.info(f"Removed appid entries, DlcData, LaunchOptions, FakeAppIds, AppTokens, and secondary sections from SLS config")
+                    except Exception as e:
+                        logger.warning(f"Error purging SLS config entries for {appid}: {e}")
             elif platform.system() == "Windows" and not is_dlc_only:
                 self._remove_windows_game_data(appid, game_data)
 

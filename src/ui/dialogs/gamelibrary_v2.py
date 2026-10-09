@@ -365,8 +365,11 @@ class GameDetailsDialogV2(QDialog):
         )
         self._is_atom = is_atom
 
-        from utils.yaml_config_manager import has_game_config_entries
-        has_depots = is_atom or has_game_config_entries(self.appid, self.game_data)
+        if is_atom:
+            has_depots = True
+        else:
+            from utils.yaml_config_manager import has_game_decryption_keys
+            has_depots = has_game_decryption_keys(self.appid, self.game_data)
         self._has_depots = has_depots
 
         self._tab_buttons = []
