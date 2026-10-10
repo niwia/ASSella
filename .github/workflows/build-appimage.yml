@@ -321,10 +321,31 @@ jobs:
           actual_size=$(stat -c%s ASSella.AppImage)
           actual_sha1=$(sha1sum ASSella.AppImage | awk '{print $1}')
 
-          zsync_size=$(grep -i '^Length:' ASSella.AppImage.zsync | awk '{print $2}' | tr -d '\r')
-          zsync_sha1=$(grep -i '^SHA-1:' ASSella.AppImage.zsync | awk '{print $2}' | tr -d '\r')
+          # -a is REQUIRED, not cosmetic. A .zsync is a text header followed by a
+          # binary block-checksum table, so GNU grep classifies the whole file as
+          # binary, prints "binary file matches" to stderr and writes nothing to
+          # stdout. Without -a the two greps below yielded empty strings, and the
+          # comparison below then compared "" against a real hash and failed
+          # every build - which is how this gate first failed on a perfectly
+          # good AppImage. (The -q grep further down never showed it, because -q
+          # only uses the exit status.)
+          # The trailing `|| true` is required, not defensive noise. This step runs
+          # under `set -euo pipefail`, so if the header genuinely cannot be parsed
+          # grep exits 1, pipefail propagates that, and `set -e` aborts the script
+          # right here - silently, before the diagnostic below can explain it.
+          zsync_size=$(grep -a -i '^Length:' ASSella.AppImage.zsync | awk '{print $2}' | tr -d '\r' || true)
+          zsync_sha1=$(grep -a -i '^SHA-1:' ASSella.AppImage.zsync | awk '{print $2}' | tr -d '\r' || true)
 
           fail=0
+
+          # An unparseable header is a distinct failure from a mismatch. Without
+          # this, "header missing" and "header present but wrong" look identical.
+          if [ -z "$zsync_size" ] || [ -z "$zsync_sha1" ]; then
+            echo "::error::Could not parse Length/SHA-1 from ASSella.AppImage.zsync - treating this build as corrupt."
+            echo "::error::Parsed Length='${zsync_size}' SHA-1='${zsync_sha1}' (both must be non-empty)."
+            fail=1
+          fi
+
           if [ "$zsync_size" != "$actual_size" ]; then
             echo "::error::zsync Length mismatch — zsync=$zsync_size actual=$actual_size"
             fail=1
@@ -347,7 +368,7 @@ jobs:
           fi
 
           # zsync must reference the delta target by the asset name actually published.
-          if ! grep -qi '^Filename:[[:space:]]*ASSella\.AppImage[[:space:]]*$' ASSella.AppImage.zsync; then
+          if ! grep -a -qi '^Filename:[[:space:]]*ASSella\.AppImage[[:space:]]*$' ASSella.AppImage.zsync; then
             echo "::error::zsync Filename header does not match published asset name"
             fail=1
           else
