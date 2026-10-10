@@ -227,12 +227,7 @@ jobs:
             rm -rf squashfs-root
             # Thin launcher at the path the app probes for. It execs the real
             # binary in-place so $ORIGIN resolves to its usr/bin directory.
-            cat << 'LAUNCHER' > AppDir/bin/appimageupdatetool
-            #!/bin/sh
-            # Resolves its own location so the AppDir can be moved anywhere.
-            HERE="$(dirname "$(readlink -f "$0")")"
-            exec "$HERE/appimageupdatetool-root/usr/bin/appimageupdatetool" "$@"
-            LAUNCHER
+            printf '#!/bin/sh\n# Resolves its own location so the AppDir can be moved anywhere.\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/appimageupdatetool-root/usr/bin/appimageupdatetool" "$@"\n' > AppDir/bin/appimageupdatetool
             chmod +x AppDir/bin/appimageupdatetool
             # Prove the bundled updater actually executes. A present-but-broken
             # binary silently disables delta updates for every user.
