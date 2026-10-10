@@ -112,6 +112,7 @@ def is_slssteam_plugins_enabled() -> bool:
 
     return False
 
+
 def sync_plugins_on_startup() -> bool:
     """Startup auto-sync disabled to prevent destructive overwriting of custom plugins."""
     return True

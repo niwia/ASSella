@@ -105,6 +105,31 @@ jobs:
           ASSELLA_NO_REEXEC=1 QT_QPA_PLATFORM=offscreen \
             python -u scripts/smoke_import_check.py
 
+      # Fast type-checker gate specifically for unresolved imports inside src/.
+      # Catches bad member imports that ruff F821 and compileall cannot see -
+      # `from somewhere import missing_name` is invisible to both, and has
+      # shipped four times so far (all swallowed by a bare `except`).
+      #
+      # ty is PINNED. The grep below matches ty's literal diagnostic wording,
+      # so if a future release rephrases it the match goes empty, grep exits 1
+      # and this gate silently passes forever. Pinning turns that silent
+      # no-op into a loud install failure, which is the failure mode we want.
+      # Bump deliberately and re-check the wording after upgrading.
+      - name: Unresolved Import Gate (ty)
+        run: |
+          pip install "ty==0.0.86"
+          ty --version
+          echo "Checking for unresolved internal module member imports..."
+          # "Module X has no member Y" only: this is the cross-module bug
+          # class. Bare "Cannot resolve imported module" hits are runtime
+          # sys.path cases (morrenus_api, db_manager) that are not defects,
+          # and PyQt6 lacks the stubs ty expects, so both are filtered out.
+          if ty check src/ --python "$(which python3)" 2>&1 | grep "error\[unresolved-import\]: Module " | grep -v "PyQt6"; then
+            echo "::error::Unresolved import detected above!"
+            exit 1
+          fi
+          echo "No unresolved internal member imports found."
+
       # Behavioural suites. All are hermetic: no Steam install, no network, no
       # display and no pre-existing SLSsteam config, so they are safe on a clean
       # runner. They cover the logic that regresses silently - depot->app
@@ -119,7 +144,9 @@ jobs:
           set -e
           for suite in test_depot_mapping test_atom_config_sync test_components_ui \
                        test_logging test_pager_display test_boxart_revalidate \
-                       test_config_manager; do
+                       test_config_manager test_depot_selection \
+                       test_depot_selection_resolve test_depot_dialog_build \
+                       test_language_depots; do
             echo "::group::$suite"
             QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp \
               python -u "scripts/$suite.py"

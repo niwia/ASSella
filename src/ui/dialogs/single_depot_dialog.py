@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent
 from PyQt6.QtGui import QPixmap, QIcon
 from PyQt6.QtWidgets import (
     QDialog,
@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QApplication,
     QSizePolicy,
+    QWidget,
 )
 
 from ui.dialogs.depotselection import format_size
@@ -57,6 +58,7 @@ class SingleDepotSelectionDialog(QDialog):
         **kwargs,
     ):
         super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self._depots_enriched_signal.connect(self._on_depots_enriched)
         self.setWindowTitle("Select Depots to Download")
 
@@ -143,16 +145,35 @@ class SingleDepotSelectionDialog(QDialog):
     def _build_ui(self):
         self.setMinimumWidth(520)
         self.setMaximumWidth(580)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Dialog)
+        self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setStyleSheet("""
             QDialog {
                 background-color: #12131a;
                 color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
             }
         """)
-        
-        main_layout = QVBoxLayout(self)
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        from ui.dialog_titlebar import DialogTitleBar
+        self.title_bar = DialogTitleBar(
+            self,
+            title="Select Depots to Download",
+            can_minimize=True,
+            can_maximize=False,
+            use_power_close=True,
+        )
+        root_layout.addWidget(self.title_bar)
+
+        content_widget = QWidget()
+        main_layout = QVBoxLayout(content_widget)
         main_layout.setContentsMargins(14, 12, 14, 14)
         main_layout.setSpacing(10)
+        root_layout.addWidget(content_widget, 1)
 
         # --- 1. Header Row ---
         header_layout = QHBoxLayout()
@@ -329,9 +350,24 @@ class SingleDepotSelectionDialog(QDialog):
         self.depot_id_lbl.setStyleSheet("font-weight: bold; font-size: 9pt; color: #FFFFFF;")
         card_layout.addWidget(self.depot_id_lbl)
 
+        # OS Logo Icon
+        from utils.depot_tag_helpers import get_os_icon, format_depot_row_label
+        os_icon = get_os_icon(self.single_depot_data.get("oslist"))
+        if os_icon:
+            os_lbl = QLabel()
+            os_lbl.setPixmap(os_icon.pixmap(16, 16))
+            os_lbl.setToolTip(str(self.single_depot_data.get("oslist") or "").capitalize())
+            card_layout.addWidget(os_lbl)
+
         # Depot Description / Name
-        desc_text = self._get_depot_display_desc()
-        self.depot_name_lbl = QLabel(desc_text)
+        raw_desc = self._get_depot_display_desc()
+        compact_desc = format_depot_row_label(
+            self.single_depot_id,
+            self.single_depot_data,
+            raw_desc,
+            has_os_icon=bool(os_icon),
+        )
+        self.depot_name_lbl = QLabel(compact_desc)
         self.depot_name_lbl.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.85);")
         card_layout.addWidget(self.depot_name_lbl, 1)
 
@@ -928,7 +964,16 @@ class SingleDepotSelectionDialog(QDialog):
             self.single_depot_data.update(d_info)
             self.depots[self.single_depot_id] = self.single_depot_data
             if hasattr(self, "depot_name_lbl"):
-                self.depot_name_lbl.setText(self._get_depot_display_desc())
+                from utils.depot_tag_helpers import get_os_icon, format_depot_row_label
+                os_icon = get_os_icon(self.single_depot_data.get("oslist"))
+                raw_desc = self._get_depot_display_desc()
+                compact_desc = format_depot_row_label(
+                    self.single_depot_id,
+                    self.single_depot_data,
+                    raw_desc,
+                    has_os_icon=bool(os_icon),
+                )
+                self.depot_name_lbl.setText(compact_desc)
             if hasattr(self, "depot_size_lbl"):
                 self.depot_size_lbl.setText(self._get_depot_display_size())
 
@@ -1138,4 +1183,16 @@ class SingleDepotSelectionDialog(QDialog):
             if dlg.exec():
                 selected_bid, patch_depots = dlg.get_selected_build()
                 self._apply_build_selection(selected_bid, patch_depots)
+
+    def changeEvent(self, a0):
+        super().changeEvent(a0)
+        if a0 and a0.type() == QEvent.Type.WindowStateChange:
+            if not self.isMinimized():
+                self.raise_()
+                self.activateWindow()
+
+    def showEvent(self, a0):
+        super().showEvent(a0)
+        self.raise_()
+        self.activateWindow()
 

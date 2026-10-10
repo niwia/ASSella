@@ -218,6 +218,11 @@ class DatabaseManager:
                 hasdepotsindlc = depots_data.pop("hasdepotsindlc", None)
                 listofdlc = depots_data.pop("listofdlc", None)
                 dlcs_expanded = depots_data.pop("dlcs_expanded", None)
+                # Language carriers, from PICS `baselanguages`. Needed on the
+                # cached path too: depot_utils uses this to avoid reporting
+                # language depots as missing, and a DB hit returns early
+                # without ever touching the network.
+                baselanguages = depots_data.pop("baselanguages", None)
 
                 full_header_url = _construct_full_url(row["header_path"])
 
@@ -229,6 +234,7 @@ class DatabaseManager:
                     "depots": depots_data,
                     "buildid": buildid,
                     "branches": branches,
+                    "baselanguages": baselanguages,
                     "hasdepotsindlc": hasdepotsindlc,
                     "listofdlc": listofdlc,
                     "dlcs_expanded": dlcs_expanded,
@@ -357,12 +363,35 @@ class DatabaseManager:
             old_buildid = str(existing_branches.get("public", {}).get("buildid") or "").strip()
 
         if old_buildid and incoming_buildid and old_buildid != incoming_buildid:
-            logger.info(
-                f"[db_manager] BuildID changed for AppID {appid}: {old_buildid} -> {incoming_buildid}. "
-                f"Clearing dlcs_expanded to trigger fresh DLC expansion."
-            )
-            if "dlcs_expanded" not in data:
-                depots_to_save["dlcs_expanded"] = False
+            # Two transports report different buildids for the same app (the
+            # Web API and steam.client PICS were observed alternating on Two
+            # Point Museum: 25799969 -> 25616825 -> 25799969 within a minute).
+            # Clearing dlcs_expanded on every flip meant the flag never
+            # converged: each write re-armed the expansion, so DLC depots
+            # never finished expanding and the game's depots stayed missing.
+            #
+            # Only re-arm when the build genuinely moved forward. A flip back to
+            # a previously seen value is the two transports disagreeing, not a
+            # new release, and re-arming on it is pure churn.
+            try:
+                moved_forward = int(incoming_buildid) > int(old_buildid)
+            except (TypeError, ValueError):
+                moved_forward = incoming_buildid != old_buildid
+
+            if moved_forward:
+                logger.info(
+                    f"[db_manager] BuildID advanced for AppID {appid}: "
+                    f"{old_buildid} -> {incoming_buildid}. "
+                    f"Clearing dlcs_expanded to trigger fresh DLC expansion."
+                )
+                if "dlcs_expanded" not in data:
+                    depots_to_save["dlcs_expanded"] = False
+            else:
+                logger.debug(
+                    f"[db_manager] BuildID for AppID {appid} moved backwards or "
+                    f"differed by transport ({old_buildid} vs {incoming_buildid}); "
+                    f"keeping existing DLC expansion."
+                )
 
         # Merge branches
         if data.get("branches"):

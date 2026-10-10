@@ -120,7 +120,7 @@ try:
     is_canary = ("--canary" in sys.argv)
     for r in releases:
         tag = r.get("tag_name", "").strip()
-        is_rel_canary = any(x in tag.lower() for x in ("canary", "testing")) or tag.lstrip("v").startswith("3.")
+        is_rel_canary = any(x in tag.lower() for x in ("canary", "testing", "release_candidate", "releasecandidate")) or tag.lstrip("v").startswith("3.")
         if is_canary != is_rel_canary:
             continue
         for a in r.get("assets", []):
@@ -147,7 +147,7 @@ except Exception:
         fi
 
         if [ "$LATEST_VER" = "Unknown" ]; then
-            TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | grep -v -i -E 'canary|testing|"v?3\.' | head -n 1 | cut -d '"' -f 4 || true)
+            TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | grep -v -i -E 'canary|testing|release_candidate|releasecandidate|"v?3\.' | head -n 1 | cut -d '"' -f 4 || true)
             if [ -n "$TAG_NAME" ]; then
                 LATEST_VER="$TAG_NAME"
             fi

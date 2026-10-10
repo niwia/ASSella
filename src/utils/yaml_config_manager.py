@@ -124,6 +124,7 @@ from utils.yaml.maintenance import (  # noqa: F401
 
 from utils.yaml.modes import (  # noqa: F401
     get_fake_appid_for_online,
+    is_at0m_enabled,
     is_greenluma_wrapper_mode_enabled,
     is_slssteam_config_management_enabled,
     is_slssteam_mode_enabled,

@@ -623,3 +623,47 @@ def get_manifest_contents(app_id: Union[str, int], branch: str = "public") -> Di
         _contents_cache[cache_key] = (now, data)
 
     return data
+
+
+_depot_keys_cache: Optional[Tuple[float, Dict]] = None
+
+
+def get_hubcap_depot_keys(force: bool = False) -> Dict:
+    """
+    Calls /api/v1/depot-keys to fetch the global list of existing and pending depot IDs with keys.
+
+    This endpoint is FREE (zero quota consumed) and fast. It returns:
+        - status: 'success'
+        - total_depot_ids: int
+        - pending_count: int
+        - existing_count: int
+        - pending_depot_ids: set[str] (depots Hubcap is still awaiting keys for)
+        - existing_depot_ids: set[str] (depots Hubcap currently has decryption keys for)
+    """
+    global _depot_keys_cache
+    now = time.time()
+    if not force and _depot_keys_cache:
+        cached_time, cached_val = _depot_keys_cache
+        if (now - cached_time) < 120:
+            return dict(cached_val)
+
+    logger.info("Fetching Hubcap depot-keys index (/depot-keys)")
+    data = _make_json_request("GET", "/depot-keys")
+    if isinstance(data, dict) and "error" not in data:
+        # Coerce to sets once, here, so every caller gets the same shape.
+        data["existing_depot_ids"] = {str(d) for d in data.get("existing_depot_ids", [])}
+        data["pending_depot_ids"] = {str(d) for d in data.get("pending_depot_ids", [])}
+        _depot_keys_cache = (now, data)
+        return dict(data)
+
+    # Callers read an empty existing_depot_ids as "Hubcap has no key for this
+    # yet", which is what decides whether to refetch a manifest bundle. A
+    # failed or mis-shaped response yields the same empty set, so without this
+    # the entire recovery path would look like "nothing new upstream" and fail
+    # silently. Say so instead.
+    err = (data or {}).get("error") if isinstance(data, dict) else repr(data)
+    logger.warning(
+        f"[Hubcap] /depot-keys index unavailable ({err}); treating every depot as "
+        f"still missing a key, so the bundle refetch will be skipped."
+    )
+    return data if isinstance(data, dict) else {}

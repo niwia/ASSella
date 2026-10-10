@@ -259,7 +259,7 @@ def build_app_to_depots_map(
 
     # 4. Check Plugin Library for all target apps
     try:
-        from utils.plugin_manager import load_plugin_library
+        from utils.plugin_games import load_plugin_library
         plugin_lib = load_plugin_library()
         for aid in list(target_apps):
             rec = plugin_lib.get(aid, {})

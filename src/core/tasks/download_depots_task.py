@@ -932,9 +932,16 @@ class DownloadDepotsTask(QObject):
                 try:
                     from core import steam_api
                     app_depots = steam_api.get_app_depots(appid_str) or {}
-                    d_info = app_depots.get(depot_id_str) or app_depots.get(int(depot_id_str)) or {}
+                    pics_depot_info = app_depots.get(depot_id_str)
+                    if not pics_depot_info and depot_id_str.isdigit():
+                        pics_depot_info = app_depots.get(int(depot_id_str))
+                    pics_depot_info = pics_depot_info or {}
                     from utils.depot_utils import get_depot_manifest_gid
-                    manifest_id = get_depot_manifest_gid(d_info, branch=game_data.get("branch", "public"))
+                    manifest_id = get_depot_manifest_gid(pics_depot_info, branch=game_data.get("branch", "public"))
+                    if not manifest_id and depot_id_str:
+                        m_res = steam_api.get_manifest_id(appid_str, depot_id_str)
+                        if isinstance(m_res, dict) and m_res.get("success"):
+                            manifest_id = m_res.get("manifest_id")
                     if manifest_id:
                         logger.info(
                             f"[DownloadDepotsTask] Recovered manifest ID {manifest_id} for depot {depot_id_str} from Steam PICS"
@@ -952,7 +959,8 @@ class DownloadDepotsTask(QObject):
                 continue
 
             try:
-                size_str = game_data["depots"][depot_id].get("size")
+                d_info = (game_data.get("depots") or {}).get(depot_id) or (game_data.get("depots") or {}).get(depot_id_str) or {}
+                size_str = d_info.get("size")
                 if size_str:
                     depot_sizes.append(int(size_str))
                 else:

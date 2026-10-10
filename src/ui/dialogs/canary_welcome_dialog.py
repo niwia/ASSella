@@ -1321,8 +1321,8 @@ class CanaryWelcomeDialog(QDialog):
         self.btn_run_fix.setText("Fixing...")
         def _worker():
             try:
-                from utils.assfixer import fix_config, check_config_status
-                fix_config()
+                from utils.assfixer import repair_and_sync_config, check_config_status
+                repair_and_sync_config()
                 res = check_config_status()
             except Exception as e:
                 res = (False, str(e), [])

@@ -221,6 +221,12 @@ def verify_or_download_manifest(
                 api_depots,
                 app_id=app_id_str,
                 branch=branch_str,
+                # Language depots are listed by PICS but never in the manifest
+                # bundle, so without this they are reported missing forever.
+                base_languages=(
+                    steam_client_data.get("baselanguages")
+                    if isinstance(steam_client_data, dict) else None
+                ),
             )
 
             if not depot_check.get("is_up_to_date", True):
