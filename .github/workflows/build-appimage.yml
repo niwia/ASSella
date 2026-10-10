@@ -59,7 +59,7 @@ jobs:
       - name: Install System Packaging Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file python3-venv python3-pip git tor libevent-2.1-7 libgl1 libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file python3-venv python3-pip git tor libevent-2.1-7 libgl1 libegl1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libfontconfig1 libdbus-1-3
 
       - name: Determine Release Channel & Metadata
         id: meta
@@ -259,7 +259,7 @@ jobs:
 
           # 9. Sanity check: Verify all required imports inside bundled AppDir runtime
           echo "Verifying AppDir runtime imports..."
-          AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, urwid, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
+          QT_QPA_PLATFORM=offscreen AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, urwid, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
           test -x AppDir/bin/appimageupdatetool || { echo "::error::appimageupdatetool missing from AppDir"; exit 1; }
           echo "appimageupdatetool present and executable."
 
