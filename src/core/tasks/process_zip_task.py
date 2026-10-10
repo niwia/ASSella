@@ -254,7 +254,7 @@ class ProcessZipTask:
                         if token:
                             game_data["app_token"] = token
 
-                        from utils.lua_parsing import smart_merge_lua, is_placeholder_key
+                        from utils.lua_parsing import smart_merge_lua
 
                         try:
                             _extracted_appid = game_data.get("appid")
@@ -760,6 +760,11 @@ class ProcessZipTask:
                             )
 
                         api_details = api_data.get("depots", {})
+                        # PICS names the depot carrying each language in
+                        # `baselanguages`. Those are localisation files, absent
+                        # from the manifest bundle by design, so they must never
+                        # be reported as missing content.
+                        _base_languages = api_data.get("baselanguages") or {}
                         logger.debug(
                             f"Received API details for processing: {api_details}"
                         )
@@ -780,9 +785,14 @@ class ProcessZipTask:
                                 api_details,
                                 app_id=game_data.get("appid"),
                                 branch=game_data.get("branch", "public"),
+                                base_languages=_base_languages,
                             )
                             missing_from_hubcap = list(depot_comp.get("missing_from_hubcap") or [])
                             missing_depots_info = dict(depot_comp.get("missing_depots_info") or {})
+
+                            # Lazily loaded once and reused for every missing
+                            # depot below, instead of one DB read per depot.
+                            cached_depot_keys = None
 
                             # Discover any missing depots that already have a manifest on disk, or fetch via at0-m
                             refetched_depots = list(game_data.get("refetched_depots") or [])
@@ -862,13 +872,21 @@ class ProcessZipTask:
                                     manifest_files[f"{m_did}_{actual_mid}.manifest"] = found_manifest
                                     game_data.setdefault("manifests", {})[str(m_did)] = str(actual_mid)
 
-                                    # Check if a valid AES decryption key exists for this depot
+                                    # Check if a valid AES decryption key exists for this depot.
+                                    # The key map is loaded once for the whole loop
+                                    # rather than per depot - it was a SQLite read
+                                    # per missing depot, which fired 8 extra queries
+                                    # on Dragon's Dogma 2 alone.
                                     depot_key = (game_data.get("depots", {}).get(str(m_did)) or {}).get("key")
-                                    if not depot_key and DepotKeyManager:
+                                    if not depot_key and cached_depot_keys is None and DepotKeyManager:
                                         try:
-                                            depot_key = DepotKeyManager.get_instance().get_depot_keys(str(game_data.get("appid", ""))).get(str(m_did))
+                                            cached_depot_keys = DepotKeyManager.get_instance().get_depot_keys(
+                                                str(game_data.get("appid", ""))
+                                            ) or {}
                                         except Exception:
-                                            depot_key = None
+                                            cached_depot_keys = {}
+                                    if not depot_key and cached_depot_keys:
+                                        depot_key = cached_depot_keys.get(str(m_did))
 
                                     if depot_key:
                                         if str(m_did) not in filtered_depots:
@@ -880,6 +898,11 @@ class ProcessZipTask:
                                             missing_from_hubcap.remove(str(m_did))
                                         if str(m_did) in missing_depots_info:
                                             del missing_depots_info[str(m_did)]
+                                        try:
+                                            from managers.db_manager import DatabaseManager
+                                            DatabaseManager().clear_missing_hubcap_depot(str(game_data.get("appid")), str(m_did))
+                                        except Exception:
+                                            pass
                                         logger.info(
                                             f"[ProcessZipTask] Seamlessly integrated recovered depot {m_did} ({m_name}) with manifest {actual_mid} and valid decryption key"
                                         )

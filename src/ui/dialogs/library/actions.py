@@ -8,8 +8,10 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import List, NamedTuple, Optional
 
 from PyQt6.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSlot, QPropertyAnimation, QEasingCurve
+from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
@@ -41,6 +43,34 @@ except ImportError:
         return Path(".")
 
 logger = logging.getLogger(__name__)
+
+
+class DepotSelection(NamedTuple):
+    """Outcome of resolving which depots a game should download.
+
+    Returned by :meth:`LibraryActionsMixin._resolve_depot_selection`, which is
+    shared by every path that turns a parsed zip into a depot list (batch queue
+    and single install/verify) so those paths cannot drift apart again.
+
+    selected_depots:
+        Depots already resolved without asking the user, or None if the caller
+        still has to obtain a choice from the depot selection dialog.
+    cached_selected:
+        Depots from a previous selection for this app, or from the installed
+        ACF. This is preselection state handed to the dialog, so it must be
+        returned separately from ``selected_depots``.
+    should_prompt:
+        Whether the caller should run its "pick depots" block at all. False
+        means the smart-selection cache already answered the question.
+    auto_skip:
+        A single available depot with auto-skip enabled resolves to that depot
+        without showing the dialog.
+    """
+
+    selected_depots: Optional[List[str]]
+    cached_selected: Optional[List[str]]
+    should_prompt: bool
+    auto_skip: bool
 
 
 class LibraryActionsMixin:
@@ -329,6 +359,72 @@ class LibraryActionsMixin:
         else:
             self.info_label.setText("Nothing queued. Check App IDs are valid.")
 
+    def _resolve_depot_selection(
+        self,
+        appid: str,
+        depots: dict,
+        parsed_data: dict,
+        installed_depots: object = None,
+        is_verify: bool = False,
+    ) -> DepotSelection:
+        """Decide which depots to use for a game, reusing the cached choice when valid.
+
+        Every download path funnels through here so that "should we ask the
+        user?" is decided in exactly one place. The rules:
+
+        * If smart selection is on, the app's last choice is reused as long as
+          no depot has appeared that was not in that choice's snapshot.
+        * Cached choices are filtered against every depot that is actually
+          fetchable: the parsed depots plus depots Hubcap was missing that we
+          recovered, so a newly available DLC depot is not silently dropped.
+        * A verify always puts the dialog in front of the user. Silently
+          reusing the cached selection is what made "Verify" look like it had
+          done nothing.
+        """
+        from utils.settings import get_settings
+
+        settings = get_settings()
+        smart_active = settings.value("smart_depot_selection", True, type=bool)
+        auto_skip_setting = settings.value("auto_skip_single_choice", False, type=bool)
+        val = settings.value(f"depot_selection/{appid}", "", type=str)
+
+        selected_depots: Optional[List[str]] = None
+        cached_selected: Optional[List[str]] = None
+        should_prompt = True
+
+        if val:
+            try:
+                data = json.loads(val)
+                cached_selected = data.get("selected", [])
+                cached_all = data.get("all_available", [])
+                has_new_depot = any(d not in cached_all for d in depots)
+                if smart_active and not has_new_depot and not is_verify:
+                    available = set(depots) | set((parsed_data.get("missing_depots_info") or {}).keys())
+                    selected_depots = [d for d in cached_selected if d in available]
+                    should_prompt = False
+                    logger.info(f"Smart selection active. Reusing cached depots for {appid}: {selected_depots}")
+            except Exception as e:
+                logger.warning(f"Error parsing cached depot selection: {e}")
+
+        if not cached_selected and isinstance(installed_depots, list):
+            cached_selected = [str(d) for d in installed_depots]
+
+        # A verify must always show the dialog, overriding the cache reuse above.
+        if is_verify:
+            should_prompt = True
+
+        # A single depot with auto-skip needs no dialog, but never for a verify.
+        auto_skip = bool(auto_skip_setting and len(depots) == 1 and not is_verify)
+        if auto_skip:
+            selected_depots = list(depots.keys())
+
+        return DepotSelection(
+            selected_depots=selected_depots,
+            cached_selected=cached_selected,
+            should_prompt=should_prompt,
+            auto_skip=auto_skip,
+        )
+
     def _enqueue_single_game(self, game_data: dict) -> bool:
         """Enqueue a single game through the manifest fetch + depot selection flow."""
         try:
@@ -378,73 +474,55 @@ class LibraryActionsMixin:
 
             if parsed_data and parsed_data.get("depots"):
                 from ui.dialogs.depotselection import DepotSelectionDialog
-                auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
                 depots = parsed_data.get("depots")
 
-                selected_depots = None
+                selection = self._resolve_depot_selection(
+                    appid=appid,
+                    depots=depots,
+                    parsed_data=parsed_data,
+                    installed_depots=game_data.get("installed_depots"),
+                    is_verify=bool(game_data.get("_is_verify")),
+                )
+                selected_depots = selection.selected_depots
+                cached_selected = selection.cached_selected
 
-                smart_active = settings.value("smart_depot_selection", True, type=bool)
-                val = settings.value(f"depot_selection/{appid}", "", type=str)
-                should_prompt = True
+                if selection.should_prompt and not selection.auto_skip:
+                    result_holder = [None]
+                    storage_holder = [None]
+                    done_event = threading.Event()
 
-                cached_selected = None
-                if val:
-                    try:
-                        data = json.loads(val)
-                        cached_selected = data.get("selected", [])
-                        cached_all = data.get("all_available", [])
-                        current_depots = list(depots.keys())
-                        has_new_depot = any(d not in cached_all for d in current_depots)
-                        if smart_active and not has_new_depot:
-                            selected_depots = [d for d in cached_selected if d in depots]
-                            should_prompt = False
-                            logger.info(f"Smart selection active (batch). Reusing cached depots for {appid}: {selected_depots}")
-                    except Exception as e:
-                        logger.warning(f"Error parsing cached depot selection: {e}")
+                    def _show_depot_dialog():
+                        try:
+                            parent_widget = self if isinstance(self, QWidget) else getattr(self, "main_window", None)
+                            depot_dialog = DepotSelectionDialog(
+                                parsed_data["appid"],
+                                parsed_data.get("game_name", name),
+                                depots,
+                                parsed_data.get("header_url"),
+                                parent_widget,
+                                selected_depots=cached_selected,
+                                is_single_depot=(len(depots) == 1),
+                                missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
+                                missing_depots_info=parsed_data.get("missing_depots_info"),
+                                refetched_depots=game_data.get("_recovered_depot_ids") or parsed_data.get("refetched_depots"),
+                                current_build_id=str(game_data.get("buildid") or "").strip() if isinstance(game_data, dict) else "",
+                            )
+                            if depot_dialog.exec():
+                                result_holder[0] = depot_dialog.get_selected_depots()
+                                storage_holder[0] = depot_dialog.get_selected_storage()
+                        finally:
+                            done_event.set()
 
-                if not cached_selected:
-                    acf_installed = game_data.get("installed_depots") if isinstance(game_data, dict) else None
-                    if acf_installed and isinstance(acf_installed, list):
-                        cached_selected = [str(d) for d in acf_installed]
-
-                if should_prompt:
-                    if auto_skip and len(depots) == 1:
-                        selected_depots = list(depots.keys())
-                    else:
-                        result_holder = [None]
-                        storage_holder = [None]
-                        done_event = threading.Event()
-
-                        def _show_depot_dialog():
-                            try:
-                                depot_dialog = DepotSelectionDialog(
-                                    parsed_data["appid"],
-                                    parsed_data.get("game_name", name),
-                                    depots,
-                                    parsed_data.get("header_url"),
-                                    self.main_window,
-                                    selected_depots=cached_selected,
-                                    is_single_depot=(len(depots) == 1),
-                                    missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
-                                    missing_depots_info=parsed_data.get("missing_depots_info"),
-                                    current_build_id=str(game_data.get("buildid") or "").strip() if isinstance(game_data, dict) else "",
-                                )
-                                if depot_dialog.exec():
-                                    result_holder[0] = depot_dialog.get_selected_depots()
-                                    storage_holder[0] = depot_dialog.get_selected_storage()
-                            finally:
-                                done_event.set()
-
-                        QMetaObject.invokeMethod(
-                            self,
-                            "_run_on_main_thread",
-                            Qt.ConnectionType.QueuedConnection,
-                            Q_ARG(object, _show_depot_dialog),
-                        )
-                        done_event.wait(timeout=120)
-                        selected_depots = result_holder[0]
-                        if storage_holder[0]:
-                            metadata["library_path"] = storage_holder[0]
+                    QMetaObject.invokeMethod(
+                        self,
+                        "_run_on_main_thread",
+                        Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(object, _show_depot_dialog),
+                    )
+                    done_event.wait(timeout=120)
+                    selected_depots = result_holder[0]
+                    if storage_holder[0]:
+                        metadata["library_path"] = storage_holder[0]
 
                 if not selected_depots:
                     logger.info(f"Batch queue: user cancelled depot selection for {name}")
@@ -513,7 +591,7 @@ class LibraryActionsMixin:
         )
 
         verify_action = QAction("Verify Game Files", self)
-        verify_action.triggered.connect(lambda: self._fetch_game_manifest(game_data))
+        verify_action.triggered.connect(lambda: self._fetch_game_manifest(dict(game_data, _is_verify=True), is_verify=True))
         if is_vapor_mode:
             verify_action.setEnabled(False)
         menu.addAction(verify_action)
@@ -1079,6 +1157,7 @@ class LibraryActionsMixin:
                     is_single_depot=(len(depots) == 1),
                     missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
                     missing_depots_info=parsed_data.get("missing_depots_info"),
+                    refetched_depots=game_data.get("_recovered_depot_ids") or parsed_data.get("refetched_depots"),
                     current_build_id=str(game_data.get("buildid") or "").strip() if isinstance(game_data, dict) else "",
                     library_path=game_data.get("library_path"),
                     show_storage=False,
@@ -1086,12 +1165,21 @@ class LibraryActionsMixin:
                 if depot_dialog.exec():
                     chosen = depot_dialog.get_selected_depots()
                     if chosen:
+                        try:
+                            from managers.db_manager import DatabaseManager
+                            db = DatabaseManager()
+                            for c_did in chosen:
+                                db.clear_missing_hubcap_depot(appid, str(c_did))
+                        except Exception:
+                            pass
+                        all_available_keys = list(depot_dialog.depots.keys()) if hasattr(depot_dialog, "depots") else list(depots.keys())
+                        all_depots_dict = depot_dialog.depots if hasattr(depot_dialog, "depots") else depots
                         self.settings.setValue(
                             f"depot_selection/{appid}",
                             json.dumps({
                                 "selected": chosen,
-                                "all_available": list(depots.keys()),
-                                "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in chosen}
+                                "all_available": all_available_keys,
+                                "descriptions": {d_id: all_depots_dict.get(d_id, {}).get("desc", "") for d_id in chosen}
                             })
                         )
                         # If game is in AT0-M mode, keep SLSsteam AdditionalDepots in sync
@@ -1147,7 +1235,7 @@ class LibraryActionsMixin:
 
     def _fetch_game_manifest(
         self, game_data: dict, dialog: QDialog = None, download_only: bool = False,
-        local_path_override: str = None, branch: str = None
+        local_path_override: str = None, branch: str = None, is_verify: bool = False
     ) -> None:
         """Trigger background manifest download and show progress."""
         api_key = self.settings.value("morrenus_api_key", "", type=str).strip()
@@ -1179,6 +1267,8 @@ class LibraryActionsMixin:
 
         game_data = dict(game_data)
         game_data["branch"] = branch
+        if is_verify:
+            game_data["_is_verify"] = True
         self.settings.setValue(f"selected_branch/{app_id}", branch)
 
         is_rollback = local_path_override is not None
@@ -1251,10 +1341,38 @@ class LibraryActionsMixin:
         fpath = morrenus_api.get_manifest_zip_path(app_id, branch)
         is_fresh = self.settings.value(f"manifest_is_fresh/{app_id}", False, type=bool)
 
+        # Check if Hubcap has recovered any previously missing depots/keys for this app
+        has_recovered_missing = False
+        if not is_rollback and not download_only:
+            try:
+                from managers.db_manager import DatabaseManager
+                db_missing = DatabaseManager().get_missing_hubcap_depots(app_id)
+                if db_missing:
+                    hubcap_keys = morrenus_api.get_hubcap_depot_keys()
+                    existing_keys = hubcap_keys.get("existing_depot_ids", set()) if isinstance(hubcap_keys, dict) else set()
+                    contents_data = morrenus_api.get_manifest_contents(app_id, branch=branch)
+                    hubcap_manifests = contents_data.get("depot_ids", set()) if isinstance(contents_data, dict) else set()
+
+                    recovered_dids = []
+                    for entry in db_missing:
+                        m_did = str(entry["depot_id"])
+                        if m_did in existing_keys or m_did in hubcap_manifests:
+                            recovered_dids.append(m_did)
+
+                    if recovered_dids:
+                        logger.info(
+                            f"[DepotDiscovery] Hubcap has recovered {len(recovered_dids)} previously missing depot(s) "
+                            f"for App {app_id}: {recovered_dids}. Forcing fresh manifest download."
+                        )
+                        has_recovered_missing = True
+                        game_data["_recovered_depot_ids"] = recovered_dids
+            except Exception as _disc_err:
+                logger.debug(f"[DepotDiscovery] Error checking recovered depots for {app_id}: {_disc_err}")
+
         local_path = None
         if is_rollback and local_path_override and Path(local_path_override).exists():
             local_path = local_path_override
-        elif fpath.exists() and (status != "update_available" or is_fresh):
+        elif fpath.exists() and not has_recovered_missing and (status != "update_available" or is_fresh):
             local_path = str(fpath)
 
         if local_path and not download_only:
@@ -1575,7 +1693,7 @@ class LibraryActionsMixin:
             except Exception:
                 pass
 
-        is_verify = (game_data.get("update_status") != "update_available")
+        is_verify = bool(game_data.get("_is_verify") or game_data.get("update_status") != "update_available")
         target_branch = game_data.get("branch") or (parsed_data.get("branch") if isinstance(parsed_data, dict) else "public") or "public"
         metadata = dict(game_data)
         metadata.update({
@@ -1633,91 +1751,78 @@ class LibraryActionsMixin:
             from ui.dialogs.depotselection import DepotSelectionDialog
             from utils.settings import get_settings
             settings = get_settings()
-            auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
             depots = parsed_data.get("depots")
             appid = str(parsed_data["appid"])
-
-            selected_depots = None
-
-            smart_active = settings.value("smart_depot_selection", True, type=bool)
-            val = settings.value(f"depot_selection/{appid}", "", type=str)
-            should_prompt = True
-
-            cached_selected = None
-            if val:
-                try:
-                    data = json.loads(val)
-                    cached_selected = data.get("selected", [])
-                    cached_all = data.get("all_available", [])
-                    current_depots = list(depots.keys())
-                    has_new_depot = any(d not in cached_all for d in current_depots)
-                    if smart_active and not has_new_depot:
-                        selected_depots = [d for d in cached_selected if d in depots]
-                        should_prompt = False
-                        logger.info(f"Smart selection active. Reusing cached depots for {appid}: {selected_depots}")
-                except Exception as e:
-                    logger.warning(f"Error parsing cached depot selection: {e}")
-
             game_info = (metadata or {}).get("game_data") or {}
-            if not cached_selected:
-                acf_installed = game_info.get("installed_depots") if isinstance(game_info, dict) else None
-                if acf_installed and isinstance(acf_installed, list):
-                    cached_selected = [str(d) for d in acf_installed]
 
-            if should_prompt:
-                if auto_skip and len(depots) == 1:
-                    selected_depots = list(depots.keys())
-                else:
-                    depot_dialog = DepotSelectionDialog(
-                        parsed_data["appid"],
-                        parsed_data.get("game_name", ""),
-                        depots,
-                        parsed_data.get("header_url"),
-                        self.main_window,
-                        selected_depots=cached_selected,
-                        is_single_depot=(len(depots) == 1),
-                        missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
-                        missing_depots_info=parsed_data.get("missing_depots_info"),
-                        current_build_id=str(game_info.get("buildid") or "").strip() if isinstance(game_info, dict) else "",
-                    )
+            selection = self._resolve_depot_selection(
+                appid=appid,
+                depots=depots,
+                parsed_data=parsed_data,
+                installed_depots=game_info.get("installed_depots"),
+                is_verify=is_verify,
+            )
+            selected_depots = selection.selected_depots
+            cached_selected = selection.cached_selected
 
-                    # Apply recommended build selection if set
-                    if game_data.get("_recommended_build_id"):
-                        rec_bid = game_data["_recommended_build_id"]
-                        patch_depots = game_data.get("_rec_overrides") or {}
-                        if not patch_depots:
-                            try:
-                                from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
-                                cache = SteamDBBuildsCache()
-                                c_depots = cache.get_build_depots(rec_bid)
-                                if c_depots:
-                                    patch_depots = c_depots
-                                else:
-                                    patch_depots = SteamDBScraper().get_patch_depots(rec_bid) or {}
-                            except Exception as _e:
-                                logger.warning(f"Failed to resolve SteamDB depots for {rec_bid}: {_e}")
-                        depot_dialog._apply_build_selection(rec_bid, patch_depots)
+            if selection.should_prompt and not selection.auto_skip:
+                parent_widget = self if isinstance(self, QWidget) else getattr(self, "main_window", None)
+                depot_dialog = DepotSelectionDialog(
+                    parsed_data["appid"],
+                    parsed_data.get("game_name", ""),
+                    depots,
+                    parsed_data.get("header_url"),
+                    parent_widget,
+                    selected_depots=cached_selected,
+                    is_single_depot=(len(depots) == 1),
+                    missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
+                    missing_depots_info=parsed_data.get("missing_depots_info"),
+                    refetched_depots=game_data.get("_recovered_depot_ids") or parsed_data.get("refetched_depots"),
+                    current_build_id=str(game_info.get("buildid") or "").strip() if isinstance(game_info, dict) else "",
+                )
 
-                    if depot_dialog.exec():
-                        selected_depots = depot_dialog.get_selected_depots()
-                        selected_storage = depot_dialog.get_selected_storage()
-                        if selected_storage:
-                            metadata["library_path"] = selected_storage
+                # Apply recommended build selection if set
+                if game_data.get("_recommended_build_id"):
+                    rec_bid = game_data["_recommended_build_id"]
+                    patch_depots = game_data.get("_rec_overrides") or {}
+                    if not patch_depots:
+                        try:
+                            from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
+                            cache = SteamDBBuildsCache()
+                            c_depots = cache.get_build_depots(rec_bid)
+                            if c_depots:
+                                patch_depots = c_depots
+                            else:
+                                patch_depots = SteamDBScraper().get_patch_depots(rec_bid) or {}
+                        except Exception as _e:
+                            logger.warning(f"Failed to resolve SteamDB depots for {rec_bid}: {_e}")
+                    depot_dialog._apply_build_selection(rec_bid, patch_depots)
 
-                        if hasattr(depot_dialog, "is_build_pinned") and depot_dialog.is_build_pinned():
-                            pinned_bid = depot_dialog.get_selected_build()
-                            metadata["pin_build"] = True
-                            metadata["pinned_build_id"] = pinned_bid
-                            metadata["buildid"] = pinned_bid
-                            metadata["is_rollback"] = True
-                            if appid:
-                                settings.setValue(f"pin_build/{appid}", True)
-                                logger.info(f"Pinned build {pinned_bid} for AppID {appid} in library actions")
+                if depot_dialog.exec():
+                    selected_depots = depot_dialog.get_selected_depots()
+                    selected_storage = depot_dialog.get_selected_storage()
+                    if selected_storage:
+                        metadata["library_path"] = selected_storage
 
-                        if hasattr(depot_dialog, "get_manifest_overrides"):
-                            overrides = depot_dialog.get_manifest_overrides()
-                            if overrides:
-                                metadata["manifest_overrides"] = overrides
+                    if hasattr(depot_dialog, "is_build_pinned") and depot_dialog.is_build_pinned():
+                        pinned_bid = depot_dialog.get_selected_build()
+                        metadata["pin_build"] = True
+                        metadata["pinned_build_id"] = pinned_bid
+                        metadata["buildid"] = pinned_bid
+                        metadata["is_rollback"] = True
+                        if appid:
+                            settings.setValue(f"pin_build/{appid}", True)
+                            logger.info(f"Pinned build {pinned_bid} for AppID {appid} in library actions")
+
+                    if hasattr(depot_dialog, "get_manifest_overrides"):
+                        overrides = depot_dialog.get_manifest_overrides()
+                        if overrides:
+                            metadata["manifest_overrides"] = overrides
+
+                    if hasattr(depot_dialog, "depots") and isinstance(depot_dialog.depots, dict):
+                        if "depots" not in metadata or not isinstance(metadata["depots"], dict):
+                            metadata["depots"] = {}
+                        metadata["depots"].update(depot_dialog.depots)
 
             if game_data.get("_pin_build"):
                 rec_bid = game_data.get("_recommended_build_id")
@@ -1734,12 +1839,21 @@ class LibraryActionsMixin:
             if selected_depots:
                 metadata["selected_depots_list"] = selected_depots
                 try:
+                    from managers.db_manager import DatabaseManager
+                    db = DatabaseManager()
+                    for s_did in selected_depots:
+                        db.clear_missing_hubcap_depot(appid, str(s_did))
+                except Exception:
+                    pass
+                all_available_keys = list(depot_dialog.depots.keys()) if ('depot_dialog' in locals() and hasattr(depot_dialog, "depots")) else list(depots.keys())
+                all_depots_dict = depot_dialog.depots if ('depot_dialog' in locals() and hasattr(depot_dialog, "depots")) else depots
+                try:
                     settings.setValue(
                         f"depot_selection/{appid}",
                         json.dumps({
                             "selected": selected_depots,
-                            "all_available": list(depots.keys()),
-                            "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
+                            "all_available": all_available_keys,
+                            "descriptions": {d_id: all_depots_dict.get(d_id, {}).get("desc", "") for d_id in selected_depots}
                         })
                     )
                 except Exception as e:

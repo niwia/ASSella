@@ -315,23 +315,46 @@ class WudrmMRCFetcher:
             return "manifestdex", self.fetch_manifestdex(manifest_id_str)
 
         logger.info(f"[MRC/Race] Racing Wudrm vs ManifestDeX for manifest {manifest_id_str} (timeout={timeout}s)...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            future_to_name = {
-                executor.submit(_do_wudrm): "wudrm",
-                executor.submit(_do_dex): "manifestdex",
-            }
 
+        # Deliberately NOT a `with` block. The old code returned from inside
+        # one, and __exit__ runs shutdown(wait=True), which blocks until the
+        # loser finishes - so the race waited for the slower provider every
+        # time. A thread that already started cannot be cancelled anyway, so
+        # cancel_futures only helps if one has not been picked up yet.
+        #
+        # Measured on Resident Evil 4 (2050650): ManifestDeX answered in 1.6s
+        # and won, but the caller did not return until 15.0s. 13.4s spent
+        # waiting on a result already discarded, paid once per depot.
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="mrc-race"
+        )
+        future_to_name = {
+            executor.submit(_do_wudrm): "wudrm",
+            executor.submit(_do_dex): "manifestdex",
+        }
+
+        def _release() -> None:
+            # wait=False returns immediately; an in-flight loser keeps running
+            # in the background and its result is simply dropped.
             try:
-                for f in concurrent.futures.as_completed(future_to_name, timeout=timeout + 2.0):
-                    try:
-                        name, mrc = f.result()
-                        if mrc:
-                            logger.info(f"[MRC/Race] 🏁 Winner: {name} with MRC {mrc} for {manifest_id_str}")
-                            return name, mrc
-                    except Exception as ex:
-                        logger.debug(f"[MRC/Race] Task failed: {ex}")
-            except concurrent.futures.TimeoutError:
-                logger.warning(f"[MRC/Race] Race timed out after {timeout + 2.0}s for {manifest_id_str}")
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception as e:
+                logger.debug(f"[MRC/Race] shutdown error for {manifest_id_str}: {e}")
+
+        try:
+            for f in concurrent.futures.as_completed(future_to_name, timeout=timeout + 2.0):
+                try:
+                    name, mrc = f.result()
+                    if mrc:
+                        logger.info(f"[MRC/Race] 🏁 Winner: {name} with MRC {mrc} for {manifest_id_str}")
+                        _release()
+                        return name, mrc
+                except Exception as ex:
+                    logger.debug(f"[MRC/Race] Task failed: {ex}")
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"[MRC/Race] Race timed out after {timeout + 2.0}s for {manifest_id_str}")
+        finally:
+            _release()
 
         logger.warning(f"[MRC/Race] Both providers failed in race for {manifest_id_str}")
         return None, None

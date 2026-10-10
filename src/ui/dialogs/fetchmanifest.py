@@ -1531,7 +1531,7 @@ class FetchManifestDialog(QDialog):
         for fetcher in list(self._active_image_fetchers.values()):
             try:
                 fetcher.stop()
-            except RuntimeError:
+            except Exception:
                 pass
         self._active_image_fetchers.clear()
 

@@ -40,6 +40,12 @@ def is_slssteam_config_management_enabled() -> bool:
     settings = get_settings()
     return settings.value("sls_config_management", True, type=bool)
 
+def is_at0m_enabled() -> bool:
+    """Check if AT0-M / Vapor mode is enabled via SLSsteam plugins."""
+    from utils.yaml.plugins import is_slssteam_plugins_enabled
+    return is_slssteam_plugins_enabled()
+
+
 def get_fake_appid_for_online() -> str:
     """Get the FakeAppId to use for playing games online.
 

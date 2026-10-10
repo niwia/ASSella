@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QRectF
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QRectF, QSize, QPoint, QEvent
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -116,6 +116,7 @@ class ModernDepotSelectionDialog(QDialog):
         **kwargs,
     ):
         super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setWindowTitle("Select Depots to Download")
         self.app_id = str(app_id)
         self.game_name = str(game_name or f"App {app_id}")
@@ -166,6 +167,8 @@ class ModernDepotSelectionDialog(QDialog):
 
         self.resize(1050, 680)
         self.setMinimumSize(960, 580)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Dialog)
+        self.setWindowModality(Qt.WindowModality.WindowModal)
         self._setup_theme()
         self._init_ui()
         self._load_header_image()
@@ -180,6 +183,7 @@ class ModernDepotSelectionDialog(QDialog):
             QDialog {{
                 background-color: #12141a;
                 color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
             }}
             QLabel {{
@@ -259,9 +263,25 @@ class ModernDepotSelectionDialog(QDialog):
 
     def _init_ui(self):
         """Construct the main two-column layout and bottom drawer."""
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        from ui.dialog_titlebar import DialogTitleBar
+        self.title_bar = DialogTitleBar(
+            self,
+            title="Select Depots to Download",
+            can_minimize=True,
+            can_maximize=True,
+            use_power_close=True,
+        )
+        root_layout.addWidget(self.title_bar)
+
+        content_container = QWidget()
+        main_layout = QVBoxLayout(content_container)
+        main_layout.setContentsMargins(16, 14, 16, 16)
         main_layout.setSpacing(12)
+        root_layout.addWidget(content_container, 1)
 
         # Center area: Sidebar + Main Content
         center_split = QHBoxLayout()
@@ -581,23 +601,14 @@ class ModernDepotSelectionDialog(QDialog):
         filter_row = QHBoxLayout()
         filter_row.setSpacing(6)
 
-        self.pill_all = self._create_filter_pill("All")
-        self.pill_win = self._create_filter_pill("Windows")
-        self.pill_linux = self._create_filter_pill("Linux")
-        self.pill_baseline = self._create_filter_pill("Baseline")
-        self.pill_none = self._create_filter_pill("None")
+        self.pill_edition = self._create_filter_pill("Complete ▾")
+        self.pill_edition.setMinimumWidth(180)
+        self.pill_edition.setMaximumWidth(340)
+        self.pill_edition.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.pill_edition.setToolTip("Select game edition and platform (Complete, Deluxe, Standard)")
+        self.pill_edition.clicked.connect(self._show_edition_menu)
 
-        self.pill_all.clicked.connect(lambda: self._batch_select_platform("all"))
-        self.pill_win.clicked.connect(lambda: self._batch_select_platform("windows"))
-        self.pill_linux.clicked.connect(lambda: self._batch_select_platform("linux"))
-        self.pill_baseline.clicked.connect(self._batch_select_baseline)
-        self.pill_none.clicked.connect(lambda: self._batch_select_platform("none"))
-
-        filter_row.addWidget(self.pill_all)
-        filter_row.addWidget(self.pill_win)
-        filter_row.addWidget(self.pill_linux)
-        filter_row.addWidget(self.pill_baseline)
-        filter_row.addWidget(self.pill_none)
+        filter_row.addWidget(self.pill_edition)
 
         filter_row.addStretch()
 
@@ -636,7 +647,8 @@ class ModernDepotSelectionDialog(QDialog):
         # Main Depot Table
         self.table_widget = QTableWidget()
         self.table_widget.setColumnCount(5)
-        self.table_widget.setHorizontalHeaderLabels(["ID", "Configuration", "Platform", "Size", "Files"])
+        self.table_widget.setHorizontalHeaderLabels(["Select", "Configuration", "Platform", "Size", "Browse Files"])
+        self.table_widget.setIconSize(QSize(16, 16))
         self.table_widget.verticalHeader().setVisible(False)
         self.table_widget.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -645,11 +657,13 @@ class ModernDepotSelectionDialog(QDialog):
 
         header = self.table_widget.horizontalHeader()
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header.setSectionsClickable(True)
+        header.sectionClicked.connect(self._on_header_section_clicked)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.table_widget.setColumnWidth(0, 110)
+        self.table_widget.setColumnWidth(0, 130)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.table_widget.setColumnWidth(2, 90)
+        self.table_widget.setColumnWidth(2, 95)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.table_widget.setColumnWidth(3, 95)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
@@ -751,23 +765,7 @@ class ModernDepotSelectionDialog(QDialog):
         drive_col.addLayout(drives_row)
         layout.addLayout(drive_col, 1)
 
-        # 2. Options (DLC Only Card)
-        opt_col = QVBoxLayout()
-        opt_col.setSpacing(4)
-        lbl_opt = QLabel("Options")
-        lbl_opt.setStyleSheet("font-size: 8pt; font-weight: bold; color: rgba(255, 255, 255, 0.5); text-transform: uppercase; border: none; background: transparent;")
-        opt_col.addWidget(lbl_opt)
 
-        self.dlc_only_btn = QPushButton("🏷️  DLC Only")
-        self.dlc_only_btn.setCheckable(True)
-        self.dlc_only_btn.setChecked(self._dlc_only_mode)
-        self.dlc_only_btn.setFixedHeight(34)
-        self.dlc_only_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.dlc_only_btn.setToolTip("Download only DLC depots without overwriting base game files")
-        self.dlc_only_btn.clicked.connect(self._on_dlc_only_toggled)
-        self._refresh_dlc_only_style()
-        opt_col.addWidget(self.dlc_only_btn)
-        layout.addLayout(opt_col, 0)
 
         # 3. Action Buttons
         act_col = QVBoxLayout()
@@ -1048,22 +1046,41 @@ class ModernDepotSelectionDialog(QDialog):
         self.table_widget.setRowCount(0)
         self.table_widget.blockSignals(True)
 
-        # Compute smart defaults if no explicit selection
+        # Compute smart defaults if no explicit selection - default to highest Complete Edition for target OS
         pre_selected_set = set()
         if self.selected_depots is not None:
             pre_selected_set = set(str(d) for d in self.selected_depots)
         else:
             try:
-                from core.steam_package_info import get_steam_recommended_depots
+                from utils.edition_helpers import (
+                    get_available_platforms,
+                    get_default_platform,
+                    resolve_multi_platform_editions,
+                )
                 from ui.dialogs.depotselection import get_smart_default_depots
                 smart_on = self._settings.value("smart_depot_selection", True, type=bool)
                 if smart_on:
-                    rec = get_steam_recommended_depots(self.app_id, self.depots, target_platform="linux")
-                    pre_selected_set = set(rec) if rec else set(get_smart_default_depots(self.depots, target_platform="linux"))
+                    self._available_platforms = get_available_platforms(self.depots)
+                    self._default_platform = get_default_platform(self.depots)
+                    self._multi_platform_editions = resolve_multi_platform_editions(self.app_id, self.depots)
+
+                    default_eds = self._multi_platform_editions.get(self._default_platform, [])
+                    highest_ed = default_eds[0] if default_eds else None
+                    if highest_ed and highest_ed.get("depot_ids"):
+                        pre_selected_set = set(highest_ed["depot_ids"])
+                        if hasattr(self, "pill_edition"):
+                            short = highest_ed.get("short_name", "Complete")
+                            if len(self._available_platforms) > 1:
+                                plat_prefix = "Linux: " if self._default_platform == "linux" else "Win: "
+                                self.pill_edition.setText(f"{plat_prefix}{short} ▾")
+                            else:
+                                self.pill_edition.setText(f"{short} ▾")
+                    else:
+                        pre_selected_set = set(get_smart_default_depots(self.depots, target_platform=self._default_platform))
                 else:
                     pre_selected_set = set(get_smart_default_depots(self.depots, target_platform="linux"))
             except Exception:
-                pass
+                pre_selected_set = set(get_smart_default_depots(self.depots, target_platform="linux"))
 
         total_dlc_bytes = 0
         total_depots_count = 0
@@ -1110,21 +1127,33 @@ class ModernDepotSelectionDialog(QDialog):
             self.table_widget.setItem(row_idx, 0, id_item)
 
             # Col 1: Configuration Text
-            cfg_item = QTableWidgetItem(desc)
+            from utils.depot_tag_helpers import format_depot_row_label, get_os_icon
+            clean_desc = format_depot_row_label(
+                str(depot_id),
+                d_data,
+                desc,
+                has_os_icon=True,
+            )
+            cfg_item = QTableWidgetItem(clean_desc)
             cfg_item.setFlags(cfg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_widget.setItem(row_idx, 1, cfg_item)
 
             # Col 2: Platform Badge
             oslist = (d_data.get("oslist") or "").lower()
+            plat_icon = get_os_icon(d_data.get("oslist"))
             if "windows" in oslist:
                 plat_badge = "Windows"
             elif "linux" in oslist:
                 plat_badge = "Linux"
-            elif "macos" in oslist:
+            elif "macos" in oslist or "macosx" in oslist:
                 plat_badge = "macOS"
+            elif "android" in oslist:
+                plat_badge = "Android"
             else:
                 plat_badge = "Shared"
             plat_item = QTableWidgetItem(plat_badge)
+            if plat_icon:
+                plat_item.setIcon(plat_icon)
             plat_item.setFlags(plat_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_widget.setItem(row_idx, 2, plat_item)
 
@@ -1170,9 +1199,12 @@ class ModernDepotSelectionDialog(QDialog):
         self.btn_nav_depots.setText(f"📦  Depots ({total_depots_count})")
         self.btn_nav_dlcs.setText(f"🏷️  DLCs ({dlc_depots_count})")
 
-        self.pill_all.setText(f"All ({total_depots_count})")
-        self.pill_win.setText(f"Windows ({win_count})")
-        self.pill_linux.setText(f"Linux ({linux_count})")
+        if hasattr(self, "pill_all"):
+            self.pill_all.setText(f"All ({total_depots_count})")
+        if hasattr(self, "pill_win"):
+            self.pill_win.setText(f"Windows ({win_count})")
+        if hasattr(self, "pill_linux"):
+            self.pill_linux.setText(f"Linux ({linux_count})")
 
     def _apply_row_filters(self):
         """Filter table rows by search query and category (Depots vs DLCs)."""
@@ -1235,8 +1267,46 @@ class ModernDepotSelectionDialog(QDialog):
 
         self.selection_summary_lbl.setText(f"{sel_count} depots selected • {format_size(sel_bytes)}")
 
+        total_count = self.table_widget.rowCount()
+        h0 = self.table_widget.horizontalHeaderItem(0)
+        if h0:
+            h0.setText(f"Select ({sel_count}/{total_count})")
+            h0.setToolTip("Click to toggle Select All / Select None")
+
+        if hasattr(self, "pill_edition") and hasattr(self, "_multi_platform_editions"):
+            from utils.edition_helpers import match_selection_to_edition
+            current_sel = set(self.get_selected_depots())
+            matched = match_selection_to_edition(current_sel, self._multi_platform_editions)
+            if matched:
+                plat = matched.get("platform", "")
+                short = matched.get("short_name", "Edition")
+                if len(getattr(self, "_available_platforms", [])) > 1:
+                    plat_prefix = "Linux: " if plat == "linux" else "Win: "
+                    btn_text = f"{plat_prefix}{short} ▾"
+                else:
+                    btn_text = f"{short} ▾"
+                self.pill_edition.setText(btn_text)
+                self.pill_edition.setToolTip(matched.get("name", btn_text))
+            else:
+                self.pill_edition.setText("Custom ▾")
+                self.pill_edition.setToolTip("Custom depot selection")
+
+    def _on_header_section_clicked(self, logical_index: int):
+        if logical_index == 0:
+            total = self.table_widget.rowCount()
+            checked = 0
+            for r in range(total):
+                item = self.table_widget.item(r, 0)
+                if item and item.checkState() == Qt.CheckState.Checked:
+                    checked += 1
+            if checked == total and total > 0:
+                self._batch_select_platform("none")
+            else:
+                self._batch_select_platform("all")
+
     def _batch_select_platform(self, platform: str):
         """Batch check depots matching a platform or deselect all."""
+        from ui.dialogs.depotselection import _depot_matches_platform
         self.table_widget.blockSignals(True)
         for r in range(self.table_widget.rowCount()):
             id_item = self.table_widget.item(r, 0)
@@ -1256,19 +1326,105 @@ class ModernDepotSelectionDialog(QDialog):
         self.table_widget.blockSignals(False)
         self._update_selection_summary()
 
-    def _batch_select_baseline(self):
-        """Select baseline Store Package depots (excluding extra DLCs)."""
+    def _show_edition_menu(self):
+        """Displays drop-up/down menu of available editions grouped by OS if multiple exist."""
+        from PyQt6.QtWidgets import QMenu
+        from utils.edition_helpers import (
+            get_available_platforms,
+            resolve_multi_platform_editions,
+        )
+
+        if not hasattr(self, "_available_platforms") or not self._available_platforms:
+            self._available_platforms = get_available_platforms(self.depots)
+            self._multi_platform_editions = resolve_multi_platform_editions(self.app_id, self.depots)
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1e1e24;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                padding: 4px;
+                color: #ffffff;
+            }
+            QMenu::item {
+                padding: 6px 20px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: rgba(255, 255, 255, 0.12);
+            }
+        """)
+
+        current_sel = set(self.get_selected_depots())
+
+        if len(self._available_platforms) > 1:
+            for plat in self._available_platforms:
+                plat_label = "Linux (Native)" if plat == "linux" else "Windows (Proton)"
+                sub_menu = menu.addMenu(plat_label)
+                sub_menu.setStyleSheet(menu.styleSheet())
+                eds = self._multi_platform_editions.get(plat, [])
+                for ed in eds:
+                    action = sub_menu.addAction(ed["name"])
+                    action.setCheckable(True)
+                    ed_depots = {str(d) for d in ed.get("depot_ids", set())}
+                    if current_sel == ed_depots:
+                        action.setChecked(True)
+                    action.triggered.connect(lambda checked, target_ed=ed: self._apply_edition_selection(target_ed))
+        else:
+            plat = self._available_platforms[0] if self._available_platforms else "windows"
+            eds = self._multi_platform_editions.get(plat, [])
+            for ed in eds:
+                action = menu.addAction(ed["name"])
+                action.setCheckable(True)
+                ed_depots = {str(d) for d in ed.get("depot_ids", set())}
+                if current_sel == ed_depots:
+                    action.setChecked(True)
+                action.triggered.connect(lambda checked, target_ed=ed: self._apply_edition_selection(target_ed))
+
+        menu.adjustSize()
+        menu_height = menu.sizeHint().height()
+        pos = self.pill_edition.mapToGlobal(QPoint(0, -menu_height - 2))
+        if pos.y() < 0:
+            pos = self.pill_edition.mapToGlobal(QPoint(0, self.pill_edition.height() + 2))
+        menu.exec(pos)
+
+    def _apply_edition_selection(self, edition: dict):
+        """Apply the chosen edition to the depot checkboxes."""
+        short_name = edition.get("short_name", "Edition")
+        plat = edition.get("platform", "")
+        if getattr(self, "_available_platforms", None) and len(self._available_platforms) > 1:
+            plat_prefix = "Linux: " if plat == "linux" else "Win: "
+            btn_text = f"{plat_prefix}{short_name} ▾"
+        else:
+            btn_text = f"{short_name} ▾"
+
+        if hasattr(self, "pill_edition"):
+            self.pill_edition.setText(btn_text)
+            self.pill_edition.setToolTip(edition.get("name", btn_text))
+        target_depots = {str(d) for d in edition.get("depot_ids", set())}
+
         self.table_widget.blockSignals(True)
         for r in range(self.table_widget.rowCount()):
             id_item = self.table_widget.item(r, 0)
             if not id_item:
                 continue
-            depot_type = id_item.data(Qt.ItemDataRole.UserRole + 1)
-            # Baseline = non-dlc depots
-            id_item.setCheckState(Qt.CheckState.Checked if depot_type != "dlc" else Qt.CheckState.Unchecked)
-
+            depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
+            if depot_id in target_depots:
+                id_item.setCheckState(Qt.CheckState.Checked)
+            else:
+                id_item.setCheckState(Qt.CheckState.Unchecked)
         self.table_widget.blockSignals(False)
         self._update_selection_summary()
+
+    def _batch_select_baseline(self):
+        """Select baseline Store Package depots (excluding extra DLCs)."""
+        if hasattr(self, "_available_editions"):
+            for ed in self._available_editions:
+                if ed.get("id") == "standard":
+                    self._apply_edition_selection(ed)
+                    return
+        self._batch_select_platform("linux")
 
     def _apply_dlc_auto_selection(self):
         """Automatically select all DLC depots."""
@@ -1515,3 +1671,15 @@ class ModernDepotSelectionDialog(QDialog):
     def get_manifest_overrides(self) -> Dict[str, str]:
         """Returns dictionary of depot to manifest overrides."""
         return self._manifest_overrides
+
+    def changeEvent(self, a0):
+        super().changeEvent(a0)
+        if a0 and a0.type() == QEvent.Type.WindowStateChange:
+            if not self.isMinimized():
+                self.raise_()
+                self.activateWindow()
+
+    def showEvent(self, a0):
+        super().showEvent(a0)
+        self.raise_()
+        self.activateWindow()

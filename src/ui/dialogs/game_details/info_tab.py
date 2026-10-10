@@ -941,6 +941,7 @@ def on_validate_btn_clicked(dialog) -> None:
     else:
         dialog.validate_btn.setText("Verifying...")
 
+    is_verify_action = "Verify" in btn_text
     if btn_text == "Refetch":
         dialog.parent_window._fetch_game_manifest(
             dialog.game_data, dialog, branch=sel_branch, download_only=True
@@ -955,8 +956,13 @@ def on_validate_btn_clicked(dialog) -> None:
         if pinned and specific_zip and specific_zip.exists():
             local_path_override = str(specific_zip)
 
+        g_data = dict(dialog.game_data)
+        if is_verify_action:
+            g_data["_is_verify"] = True
+
         dialog.parent_window._fetch_game_manifest(
-            dialog.game_data, dialog, branch=sel_branch, download_only=False, local_path_override=local_path_override
+            g_data, dialog, branch=sel_branch, download_only=False, local_path_override=local_path_override,
+            is_verify=is_verify_action
         )
 
 
@@ -1428,13 +1434,7 @@ def do_dlc_uninstall(dialog) -> None:
 def on_dlc_only_toggled(dialog, state: bool) -> None:
     if state:
         try:
-            try:
-                from ui.dialogs.dlc_warning_dialog import show_dlc_mode_warning
-            except ImportError:
-                try:
-                    from ..dlc_warning_dialog import show_dlc_mode_warning
-                except ImportError:
-                    from dlc_warning_dialog import show_dlc_mode_warning
+            from ui.dialogs.dlc_warning_dialog import show_dlc_mode_warning
             show_dlc_mode_warning(dialog)
         except Exception as e:
             logger.warning(f"DLC warning dialog error: {e}")
@@ -2693,8 +2693,8 @@ def on_move_to_vapor_clicked(dialog) -> None:
             if cand.exists():
                 acf_path = str(cand)
         if not acf_path:
-            from ui.dialogs.library.acf_scanner import get_steam_library_folders
-            for lib in get_steam_library_folders():
+            from core.steam_helpers import get_steam_libraries
+            for lib in (get_steam_libraries() or []):
                 cand = Path(lib) / "steamapps" / f"appmanifest_{appid}.acf"
                 if cand.exists():
                     acf_path = str(cand)
@@ -2814,7 +2814,7 @@ def on_remove_from_vapor_clicked(dialog) -> None:
     parent = getattr(dialog, "parent_window", None)
     if parent and hasattr(parent, "_fetch_game_manifest"):
         try:
-            parent._fetch_game_manifest(game_data)
+            parent._fetch_game_manifest(dict(game_data, _is_verify=True), is_verify=True)
         except Exception as e:
             logger.warning(f"[AtomTransition] Could not trigger manifest verification: {e}")
 

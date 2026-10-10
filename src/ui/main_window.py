@@ -2351,6 +2351,8 @@ class MainWindow(QMainWindow):
                 is_local_canary = (
                     "canary" in local_clean.lower()
                     or "testing" in local_clean.lower()
+                    or "release_candidate" in local_clean.lower()
+                    or "releasecandidate" in local_clean.lower()
                     or local_clean.startswith("3.")
                 )
 
@@ -2368,6 +2370,8 @@ class MainWindow(QMainWindow):
                             is_remote_canary = (
                                 "canary" in tag.lower()
                                 or "testing" in tag.lower()
+                                or "release_candidate" in tag.lower()
+                                or "releasecandidate" in tag.lower()
                                 or tag.lstrip("v").startswith("3.")
                             )
                             # Strict channel isolation:

@@ -1170,10 +1170,10 @@ class ZipImportConfirmationDialog(QDialog):
             # Check if all depots are already present in local depot cache
             all_cached = False
             try:
-                from utils.paths import get_depot_cache_dir
-                cache_dir = Path(get_depot_cache_dir())
-                if all_target_manifests and all(
-                    (cache_dir / f"{d}_{m}.manifest").exists()
+                from core.native_steam.native_steam_handoff import get_depotcache_dirs
+                cache_dirs = get_depotcache_dirs()
+                if all_target_manifests and cache_dirs and all(
+                    any((cdir / f"{d}_{m}.manifest").exists() for cdir in cache_dirs)
                     for d, m in all_target_manifests.items()
                 ):
                     all_cached = True

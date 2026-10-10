@@ -621,6 +621,14 @@ def get_depot_info_from_api(app_id, access_token=None, force_refresh=False):
     return final_data
 
 
+def get_app_depots(app_id: str, access_token: str = None, force_refresh: bool = False) -> dict:
+    """Fetch all depots for an app from Steam PICS / API."""
+    data = get_depot_info_from_api(app_id, access_token=access_token, force_refresh=force_refresh)
+    if isinstance(data, dict):
+        return data.get("depots", {})
+    return {}
+
+
 def _fetch_with_steam_client(app_id, access_token=None):
     if not SteamClient:
         return {}
@@ -760,12 +768,55 @@ def _fetch_with_steam_client(app_id, access_token=None):
                         "is_dlc": bool(dlc_appid),
                     }
 
-        has_depots_in_dlc = app_data.get("depots", {}).get("hasdepotsindlc") in (1, "1", True)
         listofdlc = (
             app_data.get("extended", {}).get("listofdlc")
             or app_data.get("common", {}).get("listofdlc")
             or app_data.get("listofdlc")
         )
+
+        # Whether this app has DLC depots.
+        #
+        # The Web API exposes an explicit `hasdepotsindlc` flag, but the
+        # steam.client/PICS payload does NOT - its depots map only contains
+        # baselanguages / workshopdepot / branches / privatebranches plus the
+        # numeric depot ids. Reading the flag from there always yielded False,
+        # so every game fetched over PICS was recorded as having no DLC, and
+        # expand_dlc_depots() - which gates on this flag - silently did nothing.
+        #
+        # Verified on Two Point Museum (2185060): PICS returned 18 depots
+        # carrying `dlcappid` and 47 entries in extended.listofdlc, yet the row
+        # was stored with hasdepotsindlc=0, so its depots never expanded and
+        # appeared missing in depot selection.
+        #
+        # Derive it from the depot data itself, which is the authoritative
+        # signal on both transports, and fall back to the explicit flag.
+        depots_with_dlc = any(
+            isinstance(v, dict) and v.get("dlcappid")
+            for k, v in app_data.get("depots", {}).items()
+            if k.isdigit()
+        )
+        has_depots_in_dlc = (
+            depots_with_dlc
+            or bool(listofdlc)
+            or app_data.get("depots", {}).get("hasdepotsindlc") in (1, "1", True)
+            or app_data.get("hasdepotsindlc") in (1, "1", True)
+        )
+
+        # PICS returns `baselanguages`: a {"english": 2054971, ...} map naming
+        # the depot that carries each language. It is the only authoritative
+        # way to tell a language depot from real content, but it was read from
+        # app_data and then dropped here, so downstream code had to guess from
+        # size and name - which made ~730-byte language depots look like
+        # content that Hubcap had "lost" (Dragon's Dogma 2, 2054970, reported 8
+        # phantom missing depots that were all language files).
+        baselanguages = {}
+        _raw_langs = app_data.get("depots", {}).get("baselanguages")
+        if isinstance(_raw_langs, dict):
+            for lang_name, lang_depot in _raw_langs.items():
+                try:
+                    baselanguages[str(lang_name).lower()] = str(int(lang_depot))
+                except (TypeError, ValueError):
+                    continue
 
         api_data = {
             "appid": str(int_app_id),
@@ -777,6 +828,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
             "branches": open_branches,
             "type": common_data.get("type"),
             "parent": common_data.get("parent"),
+            "baselanguages": baselanguages,
             "hasdepotsindlc": has_depots_in_dlc,
             "listofdlc": listofdlc,
         }

@@ -173,9 +173,15 @@ def check_hubcap_vs_steam_depots(
     api_depots: Dict[str, Any],
     app_id: Optional[Union[str, int]] = None,
     branch: str = "public",
+    base_languages: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Compares Hubcap/local depots against official Steam API depots for an app and branch.
+
+    Args (continued):
+        base_languages: Steam PICS ``baselanguages`` map of
+            ``{"english": "2054971", ...}``. Depot IDs listed there are
+            language carriers and are never reported as missing.
 
     Applies strict filtering:
       - Excludes dependencies & redistributables (DirectX, VC++, .NET, etc.).
@@ -266,6 +272,17 @@ def check_hubcap_vs_steam_depots(
                 extra_in_hubcap.append(did)
 
     # 2. Gather all relevant content depots on Steam for this branch
+    #
+    # Language depots are excluded here. PICS lists them as ordinary depots,
+    # but they are not part of the manifest bundle: they are localisation
+    # files, Hubcap never carries keys for them, and SteamCMD never lists
+    # them. Counting them as "missing" produced a permanent block of greyed-out
+    # "[Missing]" rows plus one WARNING each - 8 of them for Dragon's Dogma 2
+    # (2054970), every one a ~730 byte language file.
+    language_depot_ids = {
+        str(d) for d in (base_languages or {}).values() if str(d).strip()
+    } if isinstance(base_languages, dict) else set()
+
     relevant_content_depots: List[Tuple[str, Dict[str, Any], str]] = []
     if isinstance(api_depots, dict):
         for did_key, dinfo in api_depots.items():
@@ -273,6 +290,8 @@ def check_hubcap_vs_steam_depots(
             if not did_str.isdigit() or did_str in NON_DEPOT_KEYS:
                 continue
             if app_id_str and did_str == app_id_str:
+                continue
+            if did_str in language_depot_ids:
                 continue
             if is_redist_or_dependency(dinfo, did_str):
                 continue

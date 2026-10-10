@@ -7,12 +7,9 @@ from PyQt6.QtWidgets import QListWidgetItem
 from ui.dialogs.library.widgets import GameItemWidget
 
 try:
-    from managers.image_fetcher import ImageFetcher
+    from utils.image_fetcher import ImageFetcher
 except ImportError:
-    try:
-        from utils.image_fetcher import ImageFetcher
-    except ImportError:
-        ImageFetcher = None
+    ImageFetcher = None
 
 try:
     from managers.db_manager import DatabaseManager

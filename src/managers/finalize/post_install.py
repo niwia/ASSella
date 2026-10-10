@@ -560,6 +560,17 @@ class PostInstallMixin:
         except Exception as e:
             logger.error(f"Failed to write metadata JSON file: {e}")
 
+        # Clear any newly installed/selected depots from missing_hubcap_depots tracking
+        try:
+            from managers.db_manager import DatabaseManager
+            selected_dids = self.game_data.get("selected_depots_list") or []
+            if selected_dids and appid:
+                db = DatabaseManager()
+                for s_did in selected_dids:
+                    db.clear_missing_hubcap_depot(str(appid), str(s_did))
+        except Exception as e:
+            logger.debug(f"Failed to clear missing depots tracking for {appid}: {e}")
+
         # 2. If ACF-Independent mode is active, delegate manifest creation entirely to Steam natively.
         #    Exception: pinned/older builds must use the fallback ACF writer so the pinned buildid
         #    is preserved — the SLS pipe triggers Steam to fetch the latest PICS data, which would

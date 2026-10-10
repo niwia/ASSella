@@ -1,21 +1,13 @@
-"""Facade for the depot selection dialog.
-
-The implementation lives in :mod:`ui.dialogs.depot_selection`:
+"""Depot selection dialog, split into testable pieces.
 
     rules.py   pure classification rules (platform, media, defaults) - no Qt
-    items.py   table cell items carrying byte counts
-    views.py   the checkbox delegate and the header with select-all
-    dialog.py  DepotSelectionDialog
+    items.py   table cell items that carry byte counts
+    views.py   the checkbox delegate and the header with the select-all box
+    dialog.py  DepotSelectionDialog itself
 
-**This module stays the import target.** Nine modules import from here -
-including ``utils.edition_helpers``, ``core.steam_package_info``,
-``managers.task_manager`` and three dialogs - and all of them are unchanged.
-Names are re-exported below.
-
-Import from ``ui.dialogs.depot_selection`` directly only for the leaves.
+Both ``ui.dialogs.depot_selection`` and the legacy facade
+``ui.dialogs.depotselection`` export the full public API.
 """
-
-# ruff: noqa: F401 - re-export surface by design.
 
 from ui.dialogs.depot_selection.dialog import DepotSelectionDialog
 from ui.dialogs.depot_selection.items import (

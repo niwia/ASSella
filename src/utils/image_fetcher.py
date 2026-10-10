@@ -120,7 +120,7 @@ class ImageFetcher(QObject):
                     self.urls_to_try.append(fb)
 
     @staticmethod
-    def _schedule_revalidation(app_id: str, url: str) -> None:
+    def _schedule_revalidation(app_id: str, url: str) -> Optional[QNetworkReply]:
         """Quietly ask whether the cached box art is still current.
 
         Runs at most once per ``image_revalidate.REVALIDATE_DAYS`` per game, and
@@ -182,13 +182,23 @@ class ImageFetcher(QObject):
 
         reply.finished.connect(_done)
         holder["reply"] = reply
+        return reply
 
     def stop(self) -> None:
         """Abort the request and prevent signal emission."""
         self._stopped = True
         if self._reply is not None:
-            self._reply.abort()
-        self._rev.reply and self._rev.abort()
+            try:
+                self._reply.abort()
+            except Exception:
+                pass
+            self._reply = None
+        if self._rev is not None:
+            try:
+                self._rev.abort()
+            except Exception:
+                pass
+            self._rev = None
 
     def start(self) -> None:
         """Start the async fetch using RAM cache, disk cache, or QNetworkAccessManager."""
@@ -212,7 +222,8 @@ class ImageFetcher(QObject):
                         # Show the cached artwork immediately, then quietly
                         # revalidate in the background so a redesigned capsule
                         # is picked up without ever blocking the UI.
-                        ImageFetcher._schedule_revalidation(self.app_id, self.urls_to_try[0])
+                        if not self.ephemeral:
+                            self._rev = ImageFetcher._schedule_revalidation(self.app_id, self.urls_to_try[0])
                         QTimer.singleShot(0, lambda: self.finished.emit(data))
                         return
                 except Exception as e:

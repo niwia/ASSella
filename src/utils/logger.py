@@ -173,9 +173,14 @@ _log_dir = get_base_path() / "logs"
 
 
 class LineRotatingFileHandler(logging.FileHandler):
-    """
-    Handler that rotates logs based on maximum line count.
-    Keeps at most max_lines in the file, dropping older lines.
+    """Trims the log to the newest ``max_lines`` lines.
+
+    Rotation is atomic (write a temp file, then ``os.replace``) and reopens the
+    handler's stream afterwards. Rewriting the file in place was corrupting it:
+    ``open(path, "w")`` truncates, but ``self.stream`` stayed open at its old
+    byte offset, so every later write landed past the new end of file and left
+    a NUL-filled hole. A 6.7 MB session log grew two such holes of 2.6 MB and
+    2.3 MB, which also made the file read as binary to text tools.
     """
 
     def __init__(self, filename, mode="a", encoding=None, delay=False, max_lines=10000):
@@ -187,30 +192,43 @@ class LineRotatingFileHandler(logging.FileHandler):
         super().emit(record)
         self.flush()
         self._emit_count += 1
-        # Truncate every 20 log records to keep disk I/O low
-        if self._emit_count >= 20:
+        if self._emit_count >= 50:
             self._emit_count = 0
             try:
                 self.rotate_by_lines()
             except Exception:
                 pass
 
-    def rotate_by_lines(self):
+    def rotate_by_lines(self) -> None:
+        """Trim to the newest ``max_lines``, atomically, and re-point the stream."""
         if not os.path.exists(self.baseFilename):
             return
+        encoding = self.encoding or "utf-8"
         try:
-            with open(
-                self.baseFilename, "r", encoding=self.encoding or "utf-8", errors="ignore"
-            ) as f:
+            with open(self.baseFilename, "r", encoding=encoding, errors="ignore") as f:
                 lines = f.readlines()
-            if len(lines) > self.max_lines:
-                keep_lines = lines[-self.max_lines :]
-                with open(
-                    self.baseFilename, "w", encoding=self.encoding or "utf-8"
-                ) as f:
-                    f.writelines(keep_lines)
-        except Exception:
-            pass
+            if len(lines) <= self.max_lines:
+                return
+            keep_lines = lines[-self.max_lines :]
+
+            tmp = f"{self.baseFilename}.rotate.tmp"
+            with open(tmp, "w", encoding=encoding) as f:
+                f.writelines(keep_lines)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.baseFilename)
+        except Exception as e:
+            logger.debug(f"Log rotation failed: {e}")
+            return
+
+        # Re-open against the new inode. Without this the handler keeps writing
+        # at the old offset of the file that was just replaced.
+        try:
+            if self.stream:
+                self.stream.close()
+            self.stream = open(self.baseFilename, "a", encoding=encoding)
+        except Exception as e:
+            logger.debug(f"Could not reopen log stream after rotation: {e}")
 
     def close(self):
         try:
@@ -332,13 +350,79 @@ def _create_file_handler(log_path: Path) -> Optional[LineRotatingFileHandler]:
 
 
 class _StderrTee:
-    """Tee sys.stderr to a file stream so that 'Fatal Python error:' messages
-    from hard crashes (PyQt6 SIGSEGV, GIL errors, etc.) end up in the log file
-    as well as the original stderr."""
+    """Tee ``sys.stderr`` into the log file.
 
-    def __init__(self, original_stderr, file_stream):
+    Two jobs. First, it captures ``Fatal Python error:`` output from hard
+    crashes (PyQt6 SIGSEGV, GIL errors) which would otherwise vanish inside the
+    AppImage. Second, it captures the SLSsteam subprocess's progress bar, which
+    is genuinely useful but floods the log: one download emitted 8,636 raw
+    progress lines - 77% of a 10,000-line file.
+
+    So progress lines are folded to a periodic single-line summary instead of
+    being dumped verbatim, and anything that looks like a crash is passed
+    through immediately and in full.
+
+    The file stream is looked up through ``_handler`` on every write rather than
+    captured once, because the handler re-opens its stream after rotation; a
+    captured reference would keep writing into the replaced, unlinked file and
+    silently lose the crash output that is this class's whole point.
+    """
+
+    # Raw progress lines such as "82.38% /home/.../Two Point Museum"
+    _PROGRESS_RE = re.compile(r"^\s*\d{1,3}(?:\.\d+)?\s*%\s+\S")
+    _INTERESTING = (
+        "error", "fatal", "traceback", "exception", "panic", "segmentation",
+        "assert", "warning", "failed",
+    )
+    _SUMMARY_EVERY = 25
+
+    def __init__(self, original_stderr, handler=None, file_stream=None):
         self._original = original_stderr
+        self._handler = handler
         self._file = file_stream
+        self._seen = 0
+        self._last_progress = ""
+
+    def _stream(self):
+        """Current log stream, following handler rotation."""
+        if self._handler is not None:
+            return getattr(self._handler, "stream", None)
+        return self._file
+
+    def _write_raw(self, data):
+        f = self._stream()
+        if f is None or f.closed:
+            return
+        if not data.endswith("\n"):
+            data += "\n"
+        f.write(data)
+        f.flush()
+
+    def _handle_subprocess_line(self, data: str) -> None:
+        """Log one stderr line, folding progress bars down to a summary.
+
+        Anything crash-shaped bypasses this and is written verbatim: the value of
+        the tee is that a fatal error survives, so it must never be summarised
+        away.
+        """
+        line = data.strip()
+        if not line:
+            return
+        low = line.lower()
+        if any(tok in low for tok in self._INTERESTING):
+            self._write_raw(data)
+            return
+        if self._PROGRESS_RE.match(line):
+            self._seen += 1
+            self._last_progress = line[:120]
+            if self._seen % self._SUMMARY_EVERY == 1:
+                self._write_raw(
+                    f"[SLSsteam progress] {self._last_progress} "
+                    f"(updates folded; showing every {self._SUMMARY_EVERY})\n"
+                )
+            return
+        # Ordinary subprocess chatter: keep it, it is usually short.
+        self._write_raw(data)
 
     def write(self, data):
         try:
@@ -347,9 +431,7 @@ class _StderrTee:
         except Exception:
             pass
         try:
-            if self._file and not self._file.closed:
-                self._file.write(data)
-                self._file.flush()
+            self._handle_subprocess_line(data)
         except Exception:
             pass
 
@@ -359,8 +441,9 @@ class _StderrTee:
         except Exception:
             pass
         try:
-            if self._file and not self._file.closed:
-                self._file.flush()
+            f = self._stream()
+            if f is not None and not f.closed:
+                f.flush()
         except Exception:
             pass
 
@@ -374,11 +457,15 @@ class _StderrTee:
             return False
 
 
-def _install_stderr_tee(file_stream) -> None:
-    """Replace sys.stderr with a tee writer so crash output goes to the log."""
+def _install_stderr_tee(handler=None, file_stream=None) -> None:
+    """Replace sys.stderr with a tee writer so crash output goes to the log.
+
+    Pass the *handler*, not its stream, so the tee keeps writing to the current
+    file after a rotation replaces the inode.
+    """
     try:
         if not isinstance(sys.stderr, _StderrTee):
-            sys.stderr = _StderrTee(sys.stderr, file_stream)
+            sys.stderr = _StderrTee(sys.stderr, handler=handler, file_stream=file_stream)
     except Exception as e:
         print(f"Failed to install stderr tee: {e}", file=sys.__stderr__)
 
@@ -525,7 +612,7 @@ def setup_logging() -> logging.Logger:
     # which normally vanishes inside the AppImage. Tee stderr into the log file
     # so these hard crashes are visible in the log viewer.
     if file_handler and file_handler.stream:
-        _install_stderr_tee(file_handler.stream)
+        _install_stderr_tee(handler=file_handler)
 
     # ── Global exception hooks ────────────────────────────────────────────────
     # Catch unhandled exceptions on the main thread and in background threads
