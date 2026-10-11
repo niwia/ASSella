@@ -443,7 +443,16 @@ class LibraryActionsMixin:
             fpath = _api.get_manifest_zip_path(appid, branch)
             is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
 
-            if fpath.exists() and (update_status != "update_available" or is_fresh):
+            branch_bid = str(settings.value(f"last_checked_branch_buildid/{appid}", "")).strip()
+            local_bid = str(game_data.get("buildid") or "").strip()
+            bid_outdated = False
+            if branch_bid and local_bid and branch_bid not in ("", "0") and local_bid not in ("", "0", "Unknown"):
+                try:
+                    bid_outdated = int(branch_bid) > int(local_bid)
+                except (ValueError, TypeError):
+                    bid_outdated = False
+
+            if fpath.exists() and not bid_outdated and (update_status != "update_available" or is_fresh):
                 local_path = str(fpath)
 
             if not local_path:
@@ -1369,10 +1378,26 @@ class LibraryActionsMixin:
             except Exception as _disc_err:
                 logger.debug(f"[DepotDiscovery] Error checking recovered depots for {app_id}: {_disc_err}")
 
+        # Check if local build is older than remote branch build
+        branch_bid = str(self.settings.value(f"last_checked_branch_buildid/{app_id}", "")).strip()
+        local_bid = str(game_data.get("buildid") or "").strip()
+        bid_outdated = False
+        if branch_bid and local_bid and branch_bid not in ("", "0") and local_bid not in ("", "0", "Unknown"):
+            try:
+                bid_outdated = int(branch_bid) > int(local_bid)
+            except (ValueError, TypeError):
+                bid_outdated = False
+
         local_path = None
         if is_rollback and local_path_override and Path(local_path_override).exists():
             local_path = local_path_override
-        elif fpath.exists() and not has_recovered_missing and (status != "update_available" or is_fresh):
+        elif (
+            fpath.exists()
+            and not has_recovered_missing
+            and not is_verify
+            and not bid_outdated
+            and (status != "update_available" or is_fresh)
+        ):
             local_path = str(fpath)
 
         if local_path and not download_only:

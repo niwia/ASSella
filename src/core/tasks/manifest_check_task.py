@@ -61,6 +61,9 @@ def _store_check_diag(appid, diag_meta):
     """Store depot diff data into QSettings for cache metadata assembly."""
     from utils.settings import get_settings
     s = get_settings()
+    reason = diag_meta.get("reason", "")
+    if reason:
+        s.setValue(f"last_check_reason/{appid}", reason)
     diffs = diag_meta.get("depot_diffs", {})
     i = 0
     for depot_id, diff_data in diffs.items():
@@ -778,6 +781,27 @@ class ManifestCheckTask(QObject):
                     did: {"saved": sv, "current": cv}
                     for did, sv, cv in _depot_diffs
                 }
+                _store_check_diag(appid, diag_meta)
+                return "update_available"
+            if not is_dlc_mode and branch_bid_changed:
+                diag_meta["reason"] = "branch_buildid_newer"
+                # Record any base game depots omitted from saved_depots for diagnostics
+                base_depots = steam_client_data.get("depots", {})
+                if isinstance(base_depots, dict):
+                    for b_did, b_dinfo in base_depots.items():
+                        if b_did not in saved_depots and isinstance(b_dinfo, dict):
+                            m_gid = resolve_branch_manifest_gid(b_dinfo, selected_branch)
+                            if m_gid:
+                                _depot_diffs.append((b_did, "missing_from_tracking", m_gid))
+                if _depot_diffs:
+                    diag_meta["depot_diffs"] = {
+                        did: {"saved": sv, "current": cv}
+                        for did, sv, cv in _depot_diffs
+                    }
+                logger.info(
+                    f"[UpdateCheck {appid}] Branch '{selected_branch}' build ID ({branch_buildid}) is newer "
+                    f"than local build ID ({effective_local_bid}). Status: update_available."
+                )
                 _store_check_diag(appid, diag_meta)
                 return "update_available"
             if all_cannot_determine:

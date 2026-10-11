@@ -553,8 +553,9 @@ class GameManager(QObject):
         meta["branch_buildid"] = str(self.settings.value(f"last_checked_branch_buildid/{appid}", ""))
         meta["local_buildid"] = str(self.settings.value(f"last_checked_local_buildid/{appid}", ""))
 
+        recorded_reason = str(self.settings.value(f"last_check_reason/{appid}", "")).strip()
         if status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
-            meta["reason"] = "depot_manifest_mismatch"
+            meta["reason"] = recorded_reason or "depot_manifest_mismatch"
             dep_diff = {}
             i = 0
             while True:
@@ -569,7 +570,7 @@ class GameManager(QObject):
             if dep_diff:
                 meta["depot_diffs"] = dep_diff
         elif status == UPDATE_STATUS["UP_TO_DATE"]:
-            meta["reason"] = "manifests_match"
+            meta["reason"] = recorded_reason or "manifests_match"
 
         return meta
 
