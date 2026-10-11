@@ -834,6 +834,9 @@ class SettingsDialog(QDialog):
                 "probe_cdn",
                 self.probe_cdn_checkbox.isChecked(),
             )
+        else:
+            self.settings.setValue("probe_cdn", True)
+
         if hasattr(self, "manifest_provider_combo") and self.manifest_provider_combo is not None:
             self.settings.setValue(
                 "manifest_provider",
@@ -849,10 +852,20 @@ class SettingsDialog(QDialog):
                 "smart_depot_selection",
                 self.smart_depot_selection_checkbox.isChecked(),
             )
+        else:
+            self.settings.setValue("smart_depot_selection", True)
+
         if hasattr(self, "experimental_ddm_checkbox") and self.experimental_ddm_checkbox is not None:
             self.settings.setValue(
                 "use_experimental_ddm",
                 self.experimental_ddm_checkbox.isChecked(),
+            )
+        else:
+            self.settings.setValue("use_experimental_ddm", True)
+        if hasattr(self, "all_games_online_checkbox") and self.all_games_online_checkbox is not None:
+            self.settings.setValue(
+                "all_games_online",
+                self.all_games_online_checkbox.isChecked(),
             )
         if hasattr(self, "modern_depot_selection_checkbox") and self.modern_depot_selection_checkbox is not None:
             self.settings.setValue(

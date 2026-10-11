@@ -1726,10 +1726,6 @@ def init_slsonline_logic(dialog) -> None:
     if is_slssteam_config_management_enabled() and dialog.appid not in ("0", "N/A", "unknown", "480"):
         config = get_user_config_path()
         if config.exists():
-            existing = get_fake_appid(config, dialog.appid)
-
-            dialog.sls_tile.blockSignals(True)
-
             def _apply_split_style(checked):
                 dialog.sls_tile.update_state(checked, dialog.accent_color)
                 if checked:
@@ -1748,19 +1744,46 @@ def init_slsonline_logic(dialog) -> None:
                     dialog.sls_tile.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {text_color}; background: transparent;")
                     dialog.sls_tile.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {text_color}; opacity: 0.85; background: transparent;")
 
-            if existing:
-                dialog.sls_tile.setChecked(True)
-                _apply_split_style(True)
-                dialog.sls_input.setText(existing)
-                dialog.sls_input_container.setVisible(True)
-            else:
-                dialog.sls_tile.setChecked(False)
-                _apply_split_style(False)
-                dialog.sls_input.setText("480")
-                dialog.sls_input_container.setVisible(False)
-            dialog.sls_tile.blockSignals(False)
+            def _refresh_sls_state():
+                global_all_online = bool(config.exists() and get_fake_appid(config, "0") == "480")
+                existing = get_fake_appid(config, dialog.appid) if config.exists() else None
+
+                dialog.sls_tile.blockSignals(True)
+                if global_all_online:
+                    dialog.sls_tile.setChecked(True)
+                    _apply_split_style(True)
+                    dialog.sls_input.setText(existing or "480")
+                    dialog.sls_input_container.setVisible(True)
+                    dialog.sls_tile.setToolTip("SLSonline is enabled globally for all games (0: 480). Click to manage in Settings → SLS.")
+                elif existing:
+                    dialog.sls_tile.setChecked(True)
+                    _apply_split_style(True)
+                    dialog.sls_input.setText(existing)
+                    dialog.sls_input_container.setVisible(True)
+                    dialog.sls_tile.setToolTip("")
+                else:
+                    dialog.sls_tile.setChecked(False)
+                    _apply_split_style(False)
+                    dialog.sls_input.setText("480")
+                    dialog.sls_input_container.setVisible(False)
+                    dialog.sls_tile.setToolTip("")
+                dialog.sls_tile.blockSignals(False)
+                update_eos_btn_state(dialog)
+
+            _refresh_sls_state()
 
             def _tog(checked):
+                cur_global = bool(config.exists() and get_fake_appid(config, "0") == "480")
+                if cur_global:
+                    dialog.sls_tile.blockSignals(True)
+                    dialog.sls_tile.setChecked(True)
+                    _apply_split_style(True)
+                    dialog.sls_tile.blockSignals(False)
+                    from ui.dialogs.settings import SettingsDialog
+                    SettingsDialog(dialog, initial_tab="SLS").exec()
+                    _refresh_sls_state()
+                    return
+
                 _apply_split_style(checked)
                 dialog.sls_input_container.setVisible(checked)
                 fid = dialog.sls_input.text().strip() or "480"

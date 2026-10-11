@@ -1095,8 +1095,8 @@ class DownloadDepotsTask(QObject):
             if use_lancache:
                 cmd_args.append("-use-lancache")
 
-            # 2. Adaptive CDN latency probe support (configurable via settings)
-            if settings.value("probe_cdn", False, type=bool):
+            # 2. Adaptive CDN latency probe support (default enabled)
+            if settings.value("probe_cdn", True, type=bool):
                 cmd_args.append("-probe-cdn")
 
             # 3. LoginID session isolation (randomized 32-bit integer)

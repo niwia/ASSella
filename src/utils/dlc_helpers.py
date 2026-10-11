@@ -913,7 +913,7 @@ def purge_and_sanitize_for_dlc_only(
         try:
             from utils.eos_detector import EOSDetector
             status = EOSDetector.get_proxy_status(target_install)
-            if status not in (None, False, "not_found"):
+            if status in ("active", "stale"):
                 if EOSDetector.remove_proxy(target_install):
                     summary["eos_proxy_removed"] = True
         except Exception as ee:

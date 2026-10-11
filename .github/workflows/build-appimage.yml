@@ -525,6 +525,21 @@ jobs:
           # Desktop entry is a tracked file so it can be reviewed and diffed.
           cp packaging/arch/assella.desktop "$BUILD_DIR/assella.desktop"
 
+          # Preflight: fail here, loudly, rather than letting package() fail
+          # later with a bare "install: cannot stat <one file>". That message
+          # cannot distinguish "the file was never staged" from "package() ran
+          # in a different directory than the staging step used".
+          echo "--- staged contents of $BUILD_DIR:"
+          ls -la "$BUILD_DIR" | sed 's/^/    /'
+          for required in ASSella.AppImage assella.png assella.desktop PKGBUILD; do
+            if [ ! -s "$BUILD_DIR/$required" ]; then
+              echo "::error::$BUILD_DIR/$required is missing or empty - refusing to run makepkg."
+              echo "::error::Icon source resolved from: $(ls -la src/res/logo/icon.png 2>&1)"
+              exit 1
+            fi
+          done
+          echo "--- all required files staged."
+
           # Format clean semver for PKGBUILD (remove v prefix and dashes)
           RAW_TAG="${{ needs.build-appimage.outputs.tag }}"
           CLEAN_VER=$(echo "$RAW_TAG" | sed -e 's/^v//' -e 's/-/./g')

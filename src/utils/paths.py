@@ -98,21 +98,7 @@ class Paths:
 
     @classmethod
     def depot_downloader_dll(cls) -> Path:
-        """Returns the Path to the active DepotDownloader DLL based on settings.
-
-        If 'use_experimental_ddm' is enabled in settings and DepotDownloaderMod.dll exists,
-        returns DepotDownloaderMod.dll (patched testing build).
-        Otherwise returns standard DepotDownloader.dll.
-        """
-        try:
-            from utils.settings import get_settings
-            s = get_settings()
-            if s and s.value("use_experimental_ddm", False, type=bool):
-                experimental = cls.deps("DepotDownloaderMod.dll")
-                if experimental.exists():
-                    return experimental
-        except Exception:
-            pass
+        """Returns the Path to the active DepotDownloader DLL."""
         return cls.deps("DepotDownloader.dll")
 
 

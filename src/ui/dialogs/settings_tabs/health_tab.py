@@ -311,15 +311,7 @@ def create_health_tab(dialog) -> QWidget:
     rec_layout.addWidget(rec_desc)
 
     # Checkboxes
-    dialog.twp_chk_smart = QCheckBox()
-    dialog.twp_chk_smart.setChecked(dialog.settings.value("smart_depot_selection", True, type=bool))
-    dialog.twp_chk_smart.toggled.connect(lambda: on_rec_setting_toggled(dialog))
-    rec_layout.addWidget(create_rec_setting_row(
-        "Smart Depot Selection",
-        "Automatically reuse previously chosen depots on update",
-        dialog.twp_chk_smart
-    ))
-
+    dialog.twp_chk_smart = None
     dialog.twp_chk_gateway = QCheckBox()
     dialog.twp_chk_gateway.setChecked(dialog.settings.value("isp_bypass_mode", "auto", type=str) == "auto")
     dialog.twp_chk_gateway.toggled.connect(lambda: on_rec_setting_toggled(dialog))
@@ -551,7 +543,6 @@ def update_rec_score_badge(dialog) -> None:
     if not hasattr(dialog, "rec_score_badge") or not dialog.rec_score_badge:
         return
     chk_list = [
-        getattr(dialog, "twp_chk_smart", None),
         getattr(dialog, "twp_chk_gateway", None),
         getattr(dialog, "twp_chk_sls_api", None),
         getattr(dialog, "twp_chk_achievements", None),
@@ -584,8 +575,6 @@ def update_rec_score_badge(dialog) -> None:
 
 
 def apply_health_recommended_settings(dialog) -> None:
-    if hasattr(dialog, "twp_chk_smart") and dialog.twp_chk_smart:
-        dialog.twp_chk_smart.setChecked(True)
     if hasattr(dialog, "twp_chk_gateway") and dialog.twp_chk_gateway:
         dialog.twp_chk_gateway.setChecked(True)
     if hasattr(dialog, "twp_chk_sls_api") and dialog.twp_chk_sls_api:
@@ -614,8 +603,6 @@ def apply_health_recommended_settings(dialog) -> None:
     dialog.settings.setValue("hide_android_depots", True)
     dialog.settings.sync()
 
-    if hasattr(dialog, "smart_depot_selection_checkbox") and dialog.smart_depot_selection_checkbox:
-        dialog.smart_depot_selection_checkbox.setChecked(True)
     if hasattr(dialog, "isp_gateway_combo") and dialog.isp_gateway_combo:
         idx = dialog.isp_gateway_combo.findData("auto")
         if idx >= 0:

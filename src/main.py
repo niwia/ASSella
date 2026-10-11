@@ -103,7 +103,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("ASSella")
-    app.setDesktopFileName("assella.desktop")
+    app.setDesktopFileName("assella")
 
     # Set default window icon for all dialogs and sub-windows
     icon_path = Paths.resource("logo/icon.ico")
@@ -268,6 +268,17 @@ def main():
                 check_and_merge_fakeappid_db(config_path)
             except Exception as ex:
                 logger.error(f"Failed to check and merge Fake AppID database: {ex}")
+
+            try:
+                from utils.yaml_config_manager import get_fake_appid, add_fake_app_id
+                all_on = settings.value("all_games_online", None)
+                if all_on is None:
+                    all_on = settings.value("all_games_online_beta", None)
+                if all_on is None or bool(all_on):
+                    if get_fake_appid(config_path, "0") is None:
+                        add_fake_app_id(config_path, "0", game_name="All Unowned Apps", fake_appid="480")
+            except Exception as ex:
+                logger.debug(f"Failed to ensure all_games_online FakeAppId: {ex}")
     except OSError as e:
         logger.error(f"Startup I/O error (Config/Backup): {e}")
 

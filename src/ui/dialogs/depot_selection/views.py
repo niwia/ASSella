@@ -62,9 +62,10 @@ class DepotCheckboxDelegate(QStyledItemDelegate):
                 for p, is_lit in [(path_unlit, False), (path_lit, True)]:
                     if p.lower().endswith(".svg"):
                         rend = QSvgRenderer(p)
-                        pm = QPixmap(36, 36)
+                        pm = QPixmap(48, 48)
                         pm.fill(Qt.GlobalColor.transparent)
                         p_painter = QPainter(pm)
+                        p_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
                         rend.render(p_painter)
                         p_painter.end()
                     else:
@@ -143,6 +144,8 @@ class DepotCheckboxDelegate(QStyledItemDelegate):
                 painter.restore()
             else:
                 super().paint(painter, option, index)
+
+
 class DepotHeaderView(QHeaderView):
     def __init__(self, parent: "DepotSelectionDialog"):
         super().__init__(Qt.Orientation.Horizontal, parent)
@@ -170,31 +173,48 @@ class DepotHeaderView(QHeaderView):
             accent = getattr(self.dialog, "accent_color", "#C06C84")
             accent_color = QColor(accent)
 
-            box_size = 15
-            bx = rect.x() + 10
+            delegate = self.dialog.table_widget.itemDelegateForColumn(0) if hasattr(self.dialog, "table_widget") else None
+            unlit_icon, lit_icon = (None, None)
+            if delegate and hasattr(delegate, "_get_themed_icons"):
+                unlit_icon, lit_icon = delegate._get_themed_icons()
+
+            box_size = 18 if (unlit_icon and lit_icon) else 15
+            bx = rect.x() + (13 if (unlit_icon and lit_icon) else 10)
             by = rect.y() + (rect.height() - box_size) // 2
             box_rect = QRectF(bx, by, box_size, box_size)
 
-            if self._check_state == Qt.CheckState.Checked:
-                painter.setBrush(accent_color)
-                painter.setPen(QPen(accent_color, 1.2))
-                painter.drawRoundedRect(box_rect, 3.5, 3.5)
-
-                p = QPainterPath()
-                p.moveTo(bx + 3.2, by + 7.5)
-                p.lineTo(bx + 6.2, by + 10.8)
-                p.lineTo(bx + 11.8, by + 4.2)
-                painter.strokePath(p, QPen(QColor("#FFFFFF"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-            elif self._check_state == Qt.CheckState.PartiallyChecked:
-                painter.setBrush(accent_color)
-                painter.setPen(QPen(accent_color, 1.2))
-                painter.drawRoundedRect(box_rect, 3.5, 3.5)
-
-                painter.fillRect(QRectF(bx + 3.5, by + 6.5, 8.0, 2.0), QColor("#FFFFFF"))
+            if unlit_icon and lit_icon:
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                if self._check_state == Qt.CheckState.Checked:
+                    painter.drawPixmap(box_rect.toRect(), lit_icon)
+                elif self._check_state == Qt.CheckState.PartiallyChecked:
+                    painter.drawPixmap(box_rect.toRect(), unlit_icon)
+                    dash_h = 2.5
+                    dash_y = by + (box_size - dash_h) / 2.0
+                    painter.fillRect(QRectF(bx + 3.0, dash_y, box_size - 6.0, dash_h), accent_color)
+                else:
+                    painter.drawPixmap(box_rect.toRect(), unlit_icon)
             else:
-                painter.setBrush(QColor(255, 255, 255, 12))
-                painter.setPen(QPen(QColor(255, 255, 255, 75), 1.2))
-                painter.drawRoundedRect(box_rect, 3.5, 3.5)
+                if self._check_state == Qt.CheckState.Checked:
+                    painter.setBrush(accent_color)
+                    painter.setPen(QPen(accent_color, 1.2))
+                    painter.drawRoundedRect(box_rect, 3.5, 3.5)
+
+                    p = QPainterPath()
+                    p.moveTo(bx + 3.2, by + 7.5)
+                    p.lineTo(bx + 6.2, by + 10.8)
+                    p.lineTo(bx + 11.8, by + 4.2)
+                    painter.strokePath(p, QPen(QColor("#FFFFFF"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+                elif self._check_state == Qt.CheckState.PartiallyChecked:
+                    painter.setBrush(accent_color)
+                    painter.setPen(QPen(accent_color, 1.2))
+                    painter.drawRoundedRect(box_rect, 3.5, 3.5)
+
+                    painter.fillRect(QRectF(bx + 3.5, by + 6.5, 8.0, 2.0), QColor("#FFFFFF"))
+                else:
+                    painter.setBrush(QColor(255, 255, 255, 12))
+                    painter.setPen(QPen(QColor(255, 255, 255, 75), 1.2))
+                    painter.drawRoundedRect(box_rect, 3.5, 3.5)
 
             if self._count_str:
                 painter.setFont(self.font())

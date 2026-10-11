@@ -216,6 +216,95 @@ def create_downloads_tab(dialog) -> QWidget:
 
     dl_layout.addLayout(slider_layout)
     gen_layout.addWidget(dl_card)
+
+    # Manifest & MRC Provider Card
+    mrc_card, mrc_layout = dialog._create_card_frame("Manifest & MRC Provider")
+    mrc_layout.setSpacing(6)
+
+    mrc_desc = QLabel(
+        "Select the provider for resolving Steam manifest decryption codes (MRC). "
+        "Use 'Test Server' to benchmark provider responsiveness and health."
+    )
+    mrc_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    mrc_desc.setWordWrap(True)
+    mrc_layout.addWidget(mrc_desc)
+
+    mrc_row = QHBoxLayout()
+    mrc_row.setSpacing(8)
+
+    mrc_lbl = QLabel("Provider:")
+    mrc_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500;")
+    mrc_row.addWidget(mrc_lbl)
+
+    dialog.manifest_provider_combo = QComboBox()
+    dialog.manifest_provider_combo.setFixedWidth(160)
+    dialog.manifest_provider_combo.addItem("Auto (Race Wudrm & ManifestDeX)", "auto")
+    dialog.manifest_provider_combo.addItem("Wudrm (Primary)", "wudrm")
+    dialog.manifest_provider_combo.addItem("ManifestDeX", "manifestdex")
+    dialog.manifest_provider_combo.addItem("Hubcap Manifest (Direct API)", "hubcap")
+
+    current_provider = dialog.settings.value("manifest_provider", "auto", type=str).lower()
+    idx = dialog.manifest_provider_combo.findData(current_provider)
+    if idx >= 0:
+        dialog.manifest_provider_combo.setCurrentIndex(idx)
+    else:
+        dialog.manifest_provider_combo.setCurrentIndex(0)
+
+    def _on_provider_changed(index):
+        val = dialog.manifest_provider_combo.currentData()
+        dialog.settings.setValue("manifest_provider", val)
+
+    dialog.manifest_provider_combo.currentIndexChanged.connect(_on_provider_changed)
+    mrc_row.addWidget(dialog.manifest_provider_combo)
+
+    test_btn = QPushButton("Test Server")
+    test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    mrc_row.addWidget(test_btn)
+
+    test_status_lbl = QLabel("")
+    test_status_lbl.setStyleSheet("font-size: 9pt; font-weight: 500;")
+    mrc_row.addWidget(test_status_lbl)
+    mrc_row.addStretch()
+
+    def _on_test_clicked():
+        provider = dialog.manifest_provider_combo.currentData() or "auto"
+        test_btn.setEnabled(False)
+        test_status_lbl.setText("Testing latency...")
+        test_status_lbl.setStyleSheet("color: #90CAF9; font-size: 9pt;")
+
+        from utils.task_runner import TaskRunner
+        if not hasattr(dialog, "_mrc_test_runner") or dialog._mrc_test_runner is None:
+            dialog._mrc_test_runner = TaskRunner(dialog)
+
+        def _on_test_done(result):
+            test_btn.setEnabled(True)
+            if isinstance(result, tuple) and len(result) == 3:
+                ok, elapsed_ms, err_msg = result
+                if ok:
+                    test_status_lbl.setText(f"✓ Operational ({elapsed_ms} ms)")
+                    test_status_lbl.setStyleSheet("color: #81C784; font-size: 9pt; font-weight: bold;")
+                else:
+                    test_status_lbl.setText(f"⚠ Failed ({err_msg or 'Error'})")
+                    test_status_lbl.setStyleSheet("color: #E57373; font-size: 9pt; font-weight: bold;")
+            else:
+                test_status_lbl.setText("⚠ Failed (Error)")
+                test_status_lbl.setStyleSheet("color: #E57373; font-size: 9pt; font-weight: bold;")
+
+        def _on_test_error(err_tuple):
+            test_btn.setEnabled(True)
+            test_status_lbl.setText("⚠ Failed (Error)")
+            test_status_lbl.setStyleSheet("color: #E57373; font-size: 9pt; font-weight: bold;")
+
+        from ui.dialogs.settings_tabs.morrenus_tab import benchmark_mrc_provider
+        worker = dialog._mrc_test_runner.run(benchmark_mrc_provider, provider)
+        worker.finished.connect(_on_test_done)
+        worker.error.connect(_on_test_error)
+
+    test_btn.clicked.connect(_on_test_clicked)
+
+    mrc_layout.addLayout(mrc_row)
+    gen_layout.addWidget(mrc_card)
+
     gen_layout.addStretch()
     dl_subtabs.addTab(general_widget, "General")
 

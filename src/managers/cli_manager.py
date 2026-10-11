@@ -430,6 +430,19 @@ class CLITaskManager:
             self.logger.info("Achievement generation is enabled...")
             self._run_achievement_generation()
 
+        # EOSProxy auto-apply
+        if self.settings.value("enable_eosproxy_default", False, type=bool) and self.current_dest_path:
+            try:
+                game_directory = get_game_directory(self.current_dest_path, self.game_data)
+                if game_directory and os.path.isdir(game_directory):
+                    from utils.eos_detector import EOSDetector
+                    status = EOSDetector.get_proxy_status(game_directory)
+                    if status in ("inactive", "stale"):
+                        if EOSDetector.apply_proxy(game_directory):
+                            self.logger.info(f"Automatically applied EOSProxy to {game_directory}")
+            except Exception as e:
+                self.logger.debug(f"Error applying EOSProxy in CLI: {e}")
+
         # GreenLuma AppList files (Windows + GreenLuma wrapper)
         if self.slssteam_mode_was_active:
             if sys.platform == "win32":

@@ -219,7 +219,13 @@ class PostInstallMixin:
             if game_dir and os.path.isdir(game_dir):
                 from utils.eos_detector import EOSDetector
                 status = EOSDetector.get_proxy_status(game_dir)
-                if status.get("has_eos") and not status.get("has_proxy"):
+                should_apply = False
+                if isinstance(status, str):
+                    should_apply = status in ("inactive", "stale")
+                elif isinstance(status, dict):
+                    should_apply = status.get("has_eos") and not status.get("has_proxy")
+
+                if should_apply:
                     if EOSDetector.apply_proxy(game_dir):
                         logger.info(f"[TaskManager] Automatically applied EOSProxy to {game_dir}")
         except Exception as e:

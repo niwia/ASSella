@@ -40,19 +40,9 @@ def create_advanced_tab(dialog) -> QWidget:
         show_description=False,
     )
     adv_layout.addWidget(dialog.auto_skip_single_choice_checkbox)
-
-    dialog.probe_cdn_checkbox = create_checkbox_setting(
-        "Probe CDN edge servers for fastest route",
-        "probe_cdn",
-        False,
-        dialog,
-        "Pings Steam CDN edge servers before downloading to select the lowest-latency route.",
-        show_description=False,
-    )
-    dialog.probe_cdn_checkbox.checkbox.toggled.connect(
-        lambda val: (dialog.settings.setValue("probe_cdn", val), dialog.settings.sync())
-    )
-    adv_layout.addWidget(dialog.probe_cdn_checkbox)
+    dialog.probe_cdn_checkbox = None
+    if dialog.settings.value("probe_cdn") is None:
+        dialog.settings.setValue("probe_cdn", True)
 
     layout.addWidget(adv_card)
 

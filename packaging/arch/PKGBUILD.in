@@ -37,18 +37,39 @@ sha256sums=('@SHA256@')
 options=(!strip)
 
 package() {
+  # Resolve staged files through $srcdir rather than bare relative names.
+  #
+  # makepkg runs build functions with the working directory set to $BUILDDIR
+  # ($srcdir/src), not $srcdir, so a bare "assella.png" is looked up in a
+  # subdirectory it was never staged into. The AppImage install happened to
+  # survive that, which made the failure look like "the icon is missing"
+  # rather than "package() ran in the wrong directory" - and the resulting
+  # error named only the file, never the directory it searched.
+  local missing=()
+  local f
+  for f in ASSella.AppImage assella.png assella.desktop; do
+    if [ ! -f "$srcdir/$f" ]; then
+      missing+=("$f")
+    fi
+  done
+  if [ ${#missing[@]} -gt 0 ]; then
+    printf 'ERROR: required file(s) missing from %s: %s\n' "$srcdir" "${missing[*]}" >&2
+    printf 'srcdir contents: %s\n' "$(ls -A "$srcdir" 2>&1)" >&2
+    return 1
+  fi
+
   install -dm755 "$pkgdir/usr/lib/assella"
   install -dm755 "$pkgdir/usr/bin"
   install -dm755 "$pkgdir/usr/share/applications"
   install -dm755 "$pkgdir/usr/share/icons/hicolor/500x500/apps"
   install -dm755 "$pkgdir/usr/share/pixmaps"
 
-  install -m755 "ASSella.AppImage" "$pkgdir/usr/lib/assella/ASSella.AppImage"
+  install -m755 "$srcdir/ASSella.AppImage" "$pkgdir/usr/lib/assella/ASSella.AppImage"
 
   # icon.png is 500x500; install it at its natural size so desktop environments
   # do not upscale a mismatched density.
-  install -Dm644 "assella.png" "$pkgdir/usr/share/icons/hicolor/500x500/apps/assella.png"
-  install -Dm644 "assella.png" "$pkgdir/usr/share/pixmaps/assella.png"
+  install -Dm644 "$srcdir/assella.png" "$pkgdir/usr/share/icons/hicolor/500x500/apps/assella.png"
+  install -Dm644 "$srcdir/assella.png" "$pkgdir/usr/share/pixmaps/assella.png"
   # Legacy alias kept so existing ACCELA launchers keep resolving.
   ln -sf assella.png "$pkgdir/usr/share/icons/hicolor/500x500/apps/accela.png"
   ln -sf assella.png "$pkgdir/usr/share/pixmaps/accela.png"
@@ -56,7 +77,7 @@ package() {
   # Must be named assella.desktop: src/main.py calls
   # setDesktopFileName("assella.desktop"), so a mismatched name breaks
   # window/icon association under Wayland.
-  install -Dm644 "assella.desktop" "$pkgdir/usr/share/applications/assella.desktop"
+  install -Dm644 "$srcdir/assella.desktop" "$pkgdir/usr/share/applications/assella.desktop"
   ln -sf assella.desktop "$pkgdir/usr/share/applications/accela.desktop"
 
   printf '%s\n' '#!/bin/sh' 'exec /usr/lib/assella/ASSella.AppImage "$@"' > "$pkgdir/usr/bin/assella"
