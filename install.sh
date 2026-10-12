@@ -88,9 +88,11 @@ check_fuse_status() {
     fi
 }
 
+TARGET_CHANNEL="${TARGET_CHANNEL:-}"
+
 check_headcrab_status() {
     HEADCRAB_INSTALLED=false
-    if [ -d "$HOME/.config/SLSsteam" ] || [ -d "/tmp/SLSsteam" ]; then
+    if [ -d "$HOME/.var/app/com.valvesoftware.Steam/.config/SLSsteam" ] || [ -d "$HOME/.config/SLSsteam" ] || [ -d "/tmp/SLSsteam" ]; then
         HEADCRAB_INSTALLED=true
     elif command -v systemctl &>/dev/null && systemctl --user is-active slssteam &>/dev/null; then
         HEADCRAB_INSTALLED=true
@@ -106,38 +108,179 @@ get_local_version() {
     fi
 }
 
+detect_channel() {
+    if [ -n "${TARGET_CHANNEL:-}" ]; then
+        return 0
+    fi
+    local ver_lower
+    ver_lower=$(echo "${LOCAL_VER:-}" | tr '[:upper:]' '[:lower:]')
+    if [[ "$ver_lower" =~ canary|testing|release_candidate|releasecandidate ]] || [[ "${LOCAL_VER#v}" =~ ^3\. ]]; then
+        TARGET_CHANNEL="canary"
+    elif [[ "$ver_lower" =~ beta|dev|rc ]]; then
+        TARGET_CHANNEL="beta"
+    elif [ "$LOCAL_VER" = "Not Installed" ] || [ -z "$LOCAL_VER" ]; then
+        TARGET_CHANNEL="beta"
+    else
+        TARGET_CHANNEL="stable"
+    fi
+}
+
+prompt_user() {
+    local prompt_msg="$1"
+    local default_val="${2:-}"
+    local response=""
+    if [ -t 0 ]; then
+        read -r -p "$prompt_msg" response
+    elif [ -r /dev/tty ]; then
+        read -r -p "$prompt_msg" response </dev/tty
+    else
+        response="$default_val"
+    fi
+    echo "${response:-$default_val}"
+}
+
+run_headcrab_installer() {
+    echo -e "\n${CYAN}${BOLD}=== Running Headcrab (SLSsteam) Installer ===${NC}"
+
+    local config_file=""
+    if [ -f "$HOME/.var/app/com.valvesoftware.Steam/.config/SLSsteam/config.yaml" ]; then
+        config_file="$HOME/.var/app/com.valvesoftware.Steam/.config/SLSsteam/config.yaml"
+    elif [ -f "$HOME/.config/SLSsteam/config.yaml" ]; then
+        config_file="$HOME/.config/SLSsteam/config.yaml"
+    fi
+
+    local backup_config=""
+    if [ -n "$config_file" ] && [ -f "$config_file" ]; then
+        backup_config=$(mktemp "${config_file}.pre_headcrab.XXXXXX")
+        cp -a "$config_file" "$backup_config"
+        echo -e "${YELLOW}[INFO] Backed up SLSsteam config before running Headcrab.${NC}"
+    fi
+
+    local tmp_headcrab
+    tmp_headcrab="$(mktemp -t headcrab.XXXXXX.sh)"
+    echo -e "${YELLOW}[INFO] Downloading latest Headcrab installer...${NC}"
+    if curl -fsSL --retry 3 --retry-delay 2 "https://raw.githubusercontent.com/Deadboy666/h3adcr-b/main/headcrab.sh" -o "$tmp_headcrab"; then
+        chmod +x "$tmp_headcrab"
+        if [ -t 0 ]; then
+            bash "$tmp_headcrab" || true
+        elif [ -r /dev/tty ]; then
+            bash "$tmp_headcrab" </dev/tty || true
+        else
+            bash "$tmp_headcrab" || true
+        fi
+    else
+        echo -e "${RED}[ERROR] Failed to download Headcrab installer.${NC}"
+    fi
+    rm -f "$tmp_headcrab"
+
+    # Restore and merge any custom sections (AdditionalDepots, DecryptionKeys) that Headcrab stripped
+    if [ -n "$backup_config" ] && [ -f "$backup_config" ]; then
+        if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
+            if [ -f "$HOME/.var/app/com.valvesoftware.Steam/.config/SLSsteam/config.yaml" ]; then
+                config_file="$HOME/.var/app/com.valvesoftware.Steam/.config/SLSsteam/config.yaml"
+            elif [ -f "$HOME/.config/SLSsteam/config.yaml" ]; then
+                config_file="$HOME/.config/SLSsteam/config.yaml"
+            fi
+        fi
+
+        if [ -n "$config_file" ] && [ -f "$config_file" ]; then
+            python3 -c '
+import sys
+
+backup_path = sys.argv[1]
+current_path = sys.argv[2]
+
+try:
+    with open(backup_path, "r", encoding="utf-8") as f:
+        bak_lines = f.readlines()
+    with open(current_path, "r", encoding="utf-8") as f:
+        curr_lines = f.readlines()
+
+    bak_sections = {}
+    curr_key = None
+    curr_content = []
+
+    for line in bak_lines:
+        if line.strip() and not line.startswith(" ") and not line.startswith("\t") and not line.startswith("#") and ":" in line:
+            if curr_key:
+                bak_sections[curr_key] = "".join(curr_content)
+            curr_key = line.split(":", 1)[0].strip()
+            curr_content = [line]
+        elif curr_key:
+            curr_content.append(line)
+    if curr_key:
+        bak_sections[curr_key] = "".join(curr_content)
+
+    curr_text = "".join(curr_lines)
+    missing_sections = []
+    protected_keys = ["AdditionalDepots", "DecryptionKeys", "ExtraDepots", "DlcData", "FakeAppIds", "AppList"]
+    for k in protected_keys:
+        if k in bak_sections and f"{k}:" not in curr_text:
+            missing_sections.append(bak_sections[k])
+
+    if missing_sections:
+        # Append in-place to preserve system inode
+        with open(current_path, "a", encoding="utf-8") as f:
+            f.write("\n# Restored by ASSella (protected from Headcrab wipe):\n")
+            for sec in missing_sections:
+                f.write(sec)
+                if not sec.endswith("\n"):
+                    f.write("\n")
+        print("[INFO] Re-injected protected sections (AdditionalDepots/DecryptionKeys) into SLSsteam config.")
+except Exception as e:
+    print(f"[WARN] Error restoring protected config sections: {e}")
+' "$backup_config" "$config_file" 2>/dev/null || true
+        fi
+        rm -f "$backup_config"
+    fi
+
+    check_headcrab_status
+    if [ "$HEADCRAB_INSTALLED" = true ]; then
+        echo -e "${GREEN}[OK] Headcrab (SLSsteam) installation completed.${NC}"
+    else
+        echo -e "${YELLOW}[WARN] Headcrab finished, but ~/.config/SLSsteam was not detected.${NC}"
+    fi
+}
+
 get_latest_github_version() {
     LATEST_VER="Unknown"
     LATEST_URL=""
+    detect_channel
 
     REL_JSON=$(curl -s "https://api.github.com/repos/niwia/ASSella/releases" || true)
     if [ -n "$REL_JSON" ]; then
         if command -v python3 &>/dev/null; then
             PARSED=$(echo "$REL_JSON" | python3 -c '
 import sys, json
+
+target_channel = sys.argv[1] if len(sys.argv) > 1 else "beta"
 try:
-    releases = json.load(sys.stdin)
-    is_canary = ("--canary" in sys.argv)
-    for r in releases:
-        tag = r.get("tag_name", "").strip()
-        is_rel_canary = any(x in tag.lower() for x in ("canary", "testing", "release_candidate", "releasecandidate")) or tag.lstrip("v").startswith("3.")
-        if is_canary != is_rel_canary:
+    data = json.load(sys.stdin)
+    if not isinstance(data, list):
+        sys.exit(1)
+    for r in data:
+        tag = str(r.get("tag_name", "")).strip()
+        tag_lower = tag.lower()
+        is_canary = any(x in tag_lower for x in ("canary", "testing", "release_candidate", "releasecandidate")) or tag.lstrip("v").startswith("3.")
+        is_beta = any(x in tag_lower for x in ("beta", "dev", "rc")) and not is_canary
+        is_stable = not is_canary and not is_beta
+
+        if target_channel == "canary" and not is_canary:
             continue
+        elif target_channel == "beta" and not is_beta:
+            continue
+        elif target_channel == "stable" and not is_stable:
+            continue
+
         for a in r.get("assets", []):
             name = a.get("name", "")
-            if is_canary:
-                if name.lower().endswith(".appimage"):
-                    print(tag)
-                    print(a.get("browser_download_url", ""))
-                    sys.exit(0)
-            else:
-                if name == "ASSella.AppImage" or (name.endswith(".AppImage") and "canary" not in name.lower()):
-                    print(tag)
-                    print(a.get("browser_download_url", ""))
-                    sys.exit(0)
+            if name.lower().endswith(".appimage") and not name.lower().endswith(".zsync") and not name.lower().endswith(".sha256"):
+                print(tag)
+                print(a.get("browser_download_url", ""))
+                sys.exit(0)
 except Exception:
-    pass
-' "$@" || true)
+    sys.exit(1)
+' "$TARGET_CHANNEL" || true)
             if [ -n "$PARSED" ]; then
                 TAG_NAME=$(echo "$PARSED" | sed -n '1p')
                 DL_URL=$(echo "$PARSED" | sed -n '2p')
@@ -146,8 +289,8 @@ except Exception:
             fi
         fi
 
-        if [ "$LATEST_VER" = "Unknown" ]; then
-            TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | grep -v -i -E 'canary|testing|release_candidate|releasecandidate|"v?3\.' | head -n 1 | cut -d '"' -f 4 || true)
+        if ! command -v python3 &>/dev/null && [ "$LATEST_VER" = "Unknown" ]; then
+            TAG_NAME=$(echo "$REL_JSON" | grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d '"' -f 4 || true)
             if [ -n "$TAG_NAME" ]; then
                 LATEST_VER="$TAG_NAME"
             fi
@@ -159,8 +302,18 @@ except Exception:
         fi
     fi
 
+    # Channel-aware fallback if GitHub API rate-limits or network fails
     if [ -z "$LATEST_URL" ]; then
-        LATEST_URL="https://github.com/niwia/ASSella/releases/download/v2.6.5/ASSella.AppImage"
+        if [ "$TARGET_CHANNEL" = "canary" ]; then
+            LATEST_VER="v3.0Release_candidate111026001"
+            LATEST_URL="https://github.com/niwia/ASSella/releases/download/v3.0Release_candidate111026001/assella3.0canary.appimage"
+        elif [ "$TARGET_CHANNEL" = "stable" ]; then
+            LATEST_VER="v2.6.5"
+            LATEST_URL="https://github.com/niwia/ASSella/releases/download/v2.6.5/ASSella.AppImage"
+        else
+            LATEST_VER="v2.7.0beta"
+            LATEST_URL="https://github.com/niwia/ASSella/releases/download/v2.7.0beta/ASSella.AppImage"
+        fi
     fi
 }
 
@@ -635,6 +788,59 @@ run_diagnostics() {
 # ------------------------------------------------------------------------------
 #  9. Interactive Main Menu Loop (Optional)
 # ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+#  9. Interactive Setup Wizard & Menu Loop
+# ------------------------------------------------------------------------------
+interactive_flow() {
+    INTERACTIVE=true
+    show_header
+    echo -e "${BOLD}${CYAN}Welcome to the ASSella Setup Wizard${NC}\n"
+
+    # Step 1: Headcrab (SLSsteam)
+    echo -e "${BOLD}--- [Step 1/2] Headcrab (SLSsteam) Setup ---${NC}"
+    check_headcrab_status
+    local default_hc="n"
+    local hc_prompt=""
+    if [ "$HEADCRAB_INSTALLED" = true ]; then
+        echo -e "  Status: ${GREEN}Installed (~/.config/SLSsteam)${NC}"
+        hc_prompt="Do you want to re-run / update Headcrab (SLSsteam)? [y/N]: "
+        default_hc="n"
+    else
+        echo -e "  Status: ${YELLOW}Not Detected${NC}"
+        echo -e "  ${CYAN}Headcrab is required for SLSsteam integration and game launching.${NC}"
+        hc_prompt="Do you want to install Headcrab (SLSsteam) now? [Y/n]: "
+        default_hc="y"
+    fi
+
+    local run_hc=""
+    run_hc=$(prompt_user "$hc_prompt" "$default_hc")
+    if [[ "$run_hc" =~ ^[yY] ]]; then
+        run_headcrab_installer
+    else
+        echo -e "${YELLOW}[INFO] Skipping Headcrab installation.${NC}"
+    fi
+
+    echo ""
+    # Step 2: ASSella
+    echo -e "${BOLD}--- [Step 2/2] ASSella Application Setup ---${NC}"
+    get_local_version
+    get_latest_github_version
+    echo -e "  Currently Installed: ${YELLOW}$LOCAL_VER${NC}"
+    echo -e "  Latest Available:    ${GREEN}$LATEST_VER${NC} (${CYAN}Channel: $TARGET_CHANNEL${NC})"
+
+    local install_prompt="Do you want to install / update ASSella? [Y/n]: "
+    local run_install=""
+    run_install=$(prompt_user "$install_prompt" "y")
+    if [[ "$run_install" =~ ^[yY] ]]; then
+        install_dependencies
+        do_install
+    else
+        echo -e "${YELLOW}[INFO] Skipping ASSella installation.${NC}"
+    fi
+
+    echo -e "\n${GREEN}${BOLD}Setup completed!${NC}\n"
+}
+
 interactive_menu() {
     INTERACTIVE=true
     detect_distro
@@ -646,14 +852,15 @@ interactive_menu() {
     while true; do
         show_header
         echo -e "  ${BOLD}[1]${NC} Install / Update ASSella"
-        echo -e "  ${BOLD}[2]${NC} Check for Updates & View Release Info"
-        echo -e "  ${BOLD}[3]${NC} View Distro Requirements Guide"
-        echo -e "  ${BOLD}[4]${NC} Restore Original ACCELA (Revert Backup)"
-        echo -e "  ${BOLD}[5]${NC} Uninstall ASSella (Clean Files & Shortcuts)"
-        echo -e "  ${BOLD}[6]${NC} Run Pre-Flight Diagnostics"
-        echo -e "  ${BOLD}[7]${NC} Exit"
+        echo -e "  ${BOLD}[2]${NC} Run Headcrab (SLSsteam) Installer"
+        echo -e "  ${BOLD}[3]${NC} Check for Updates & View Release Info"
+        echo -e "  ${BOLD}[4]${NC} View Distro Requirements Guide"
+        echo -e "  ${BOLD}[5]${NC} Restore Original ACCELA (Revert Backup)"
+        echo -e "  ${BOLD}[6]${NC} Uninstall ASSella (Clean Files & Shortcuts)"
+        echo -e "  ${BOLD}[7]${NC} Run Pre-Flight Diagnostics"
+        echo -e "  ${BOLD}[8]${NC} Exit"
         echo -e "${CYAN}${BOLD}===================================================================${NC}"
-        read -p "Select option [1-7]: " choice
+        read -p "Select option [1-8]: " choice
 
         case "$choice" in
             1)
@@ -662,8 +869,12 @@ interactive_menu() {
                 read -p "Press Enter to continue..." dummy
                 ;;
             2)
+                run_headcrab_installer
+                read -p "Press Enter to continue..." dummy
+                ;;
+            3)
                 show_header
-                echo -e "\n${YELLOW}Installed:${NC} $LOCAL_VER  -->  ${GREEN}Latest Online:${NC} $LATEST_VER"
+                echo -e "\n${YELLOW}Installed:${NC} $LOCAL_VER  -->  ${GREEN}Latest Online ($TARGET_CHANNEL):${NC} $LATEST_VER"
                 if [ "$LOCAL_VER" != "$LATEST_VER" ]; then
                     echo -e "${GREEN}${BOLD}An update is available! Select Option 1 to update.${NC}\n"
                 else
@@ -671,19 +882,19 @@ interactive_menu() {
                 fi
                 read -p "Press Enter to continue..." dummy
                 ;;
-            3)
+            4)
                 show_distro_guide
                 ;;
-            4)
+            5)
                 do_restore_accela
                 ;;
-            5)
+            6)
                 do_uninstall
                 ;;
-            6)
+            7)
                 run_diagnostics
                 ;;
-            7|q|Q)
+            8|q|Q)
                 echo "Exiting..."
                 exit 0
                 ;;
@@ -704,56 +915,127 @@ main() {
     check_headcrab_status
     get_local_version
 
-    if [ $# -eq 0 ]; then
-        install_dependencies
-        do_install
-        exit 0
-    fi
+    local non_interactive=false
+    local action="interactive"
+    local run_hc=false
 
-    case "$1" in
-        --install|-i)
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --canary)
+                TARGET_CHANNEL="canary"
+                ;;
+            --beta)
+                TARGET_CHANNEL="beta"
+                ;;
+            --stable)
+                TARGET_CHANNEL="stable"
+                ;;
+            --headcrab|--sls)
+                action="headcrab"
+                ;;
+            --with-headcrab)
+                run_hc=true
+                action="install"
+                ;;
+            --install|-i)
+                action="install"
+                ;;
+            --yes|-y)
+                non_interactive=true
+                ;;
+            --deps)
+                action="deps"
+                ;;
+            --menu|-m)
+                action="menu"
+                ;;
+            --update|-u)
+                action="update"
+                ;;
+            --restore)
+                action="restore"
+                ;;
+            --uninstall)
+                action="uninstall"
+                ;;
+            --help|-h)
+                action="help"
+                ;;
+            *)
+                echo "Unknown option: $1"
+                echo "Use ./install.sh --help for usage instructions."
+                exit 1
+                ;;
+        esac
+        shift
+    done
+
+    detect_channel
+
+    case "$action" in
+        interactive)
+            if [ "$non_interactive" = true ]; then
+                install_dependencies
+                do_install
+            elif [ -t 0 ] || [ -r /dev/tty ]; then
+                interactive_flow
+            else
+                install_dependencies
+                do_install
+            fi
+            ;;
+        headcrab)
+            run_headcrab_installer
+            ;;
+        install)
+            if [ "$run_hc" = true ]; then
+                run_headcrab_installer
+            fi
             install_dependencies
             do_install
             ;;
-        --deps)
+        deps)
             install_dependencies
             ;;
-        --menu|-m)
+        menu)
             interactive_menu
             ;;
-        --update|-u)
+        update)
             get_latest_github_version
             if [ "$LOCAL_VER" != "$LATEST_VER" ]; then
                 install_dependencies
                 do_install
             else
-                echo -e "${GREEN}ASSella is already up to date ($LOCAL_VER).${NC}"
+                echo -e "${GREEN}ASSella is already up to date ($LOCAL_VER) on channel ($TARGET_CHANNEL).${NC}"
             fi
             ;;
-        --restore)
+        restore)
             do_restore_accela
             ;;
-        --uninstall)
+        uninstall)
             do_uninstall
             ;;
-        --help|-h)
+        help)
             echo "ASSella Installer & Management Suite"
-            echo "Usage: ./install.sh [OPTION]"
+            echo "Usage: ./install.sh [OPTIONS]"
             echo ""
-            echo "Options:"
-            echo "  (no args)        Install dependencies and install/update ASSella automatically"
-            echo "  --install, -i    Install or force update ASSella with dependencies"
+            echo "Channel Options:"
+            echo "  --beta           Target Beta channel (v2.7.0beta)"
+            echo "  --canary         Target Canary channel (v3.0.x)"
+            echo "  --stable         Target Stable channel"
+            echo ""
+            echo "Execution Options:"
+            echo "  (no args)        Interactive wizard (prompts for Headcrab & ASSella)"
+            echo "  --install, -i    Install or update ASSella directly"
+            echo "  --with-headcrab  Install Headcrab (SLSsteam) followed by ASSella"
+            echo "  --headcrab       Run Headcrab (SLSsteam) installer only"
             echo "  --deps           Install system dependencies only"
-            echo "  --menu, -m       Launch interactive maintenance menu"
+            echo "  --yes, -y        Non-interactive / assume yes"
+            echo "  --menu, -m       Launch full maintenance menu"
             echo "  --update, -u     Check and update if a new release exists"
             echo "  --restore        Restore original ACCELA backup"
             echo "  --uninstall      Uninstall ASSella"
             echo "  --help, -h       Display this help message"
-            ;;
-        *)
-            echo "Unknown option: $1"
-            echo "Use ./install.sh --help for usage instructions."
-            exit 1
             ;;
     esac
 }
