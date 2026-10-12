@@ -20,6 +20,17 @@ ICON_PATH="$HOME/.local/share/icons/hicolor/256x256/apps/accela.png"
 VERSION_FILE="$INSTALL_DESTINATION/version"
 NIXOS_LAUNCHER="$INSTALL_DESTINATION/launch_nixos.sh"
 
+TARGET_CHANNEL=""
+LOCAL_VER="Unknown"
+LATEST_VER=""
+LATEST_URL=""
+FUSE_INSTALLED=false
+HEADCRAB_INSTALLED=false
+IS_STEAM_DECK=false
+IS_NIXOS=false
+IS_CACHYOS=false
+INTERACTIVE=false
+
 # ------------------------------------------------------------------------------
 #  1. System & Distro Detection
 # ------------------------------------------------------------------------------
@@ -130,11 +141,11 @@ prompt_user() {
     local default_val="${2:-}"
     local response=""
     if [ -t 0 ]; then
-        read -r -p "$prompt_msg" response
+        read -r -p "$prompt_msg" response || true
     elif [ -r /dev/tty ]; then
-        read -r -p "$prompt_msg" response </dev/tty
+        read -r -p "$prompt_msg" response </dev/tty || true
     else
-        response="$default_val"
+        read -r response || true
     fi
     echo "${response:-$default_val}"
 }
@@ -386,34 +397,36 @@ install_dependencies() {
 #  3. Header & Status Display
 # ------------------------------------------------------------------------------
 show_header() {
-    clear
+    clear 2>/dev/null || true
     echo -e "${CYAN}${BOLD}===================================================================${NC}"
-    echo -e "${GREEN}${BOLD}                 ASSella Installer & Management Suite             ${NC}"
+    echo -e "${GREEN}${BOLD}                         ASSella Installer                         ${NC}"
     echo -e "${CYAN}${BOLD}===================================================================${NC}"
-    echo -e "  ${BOLD}OS Detected:${NC}      $DISTRO_NAME ($(uname -m))"
-    if [ "$IS_STEAM_DECK" = true ]; then
+    echo -e "  ${BOLD}OS Detected:${NC}      ${DISTRO_NAME:-Generic Linux} ($(uname -m))"
+    if [ "${IS_STEAM_DECK:-false}" = true ]; then
         echo -e "  ${BOLD}Device:${NC}           Steam Deck (SteamOS)"
     fi
 
     # Headcrab Status
-    if [ "$HEADCRAB_INSTALLED" = true ]; then
+    if [ "${HEADCRAB_INSTALLED:-false}" = true ]; then
         echo -e "  ${BOLD}Headcrab (SLS):${NC}   ${GREEN}Installed (~/.config/SLSsteam)${NC}"
     else
         echo -e "  ${BOLD}Headcrab (SLS):${NC}   ${YELLOW}Not Detected${NC}"
     fi
 
     # FUSE Status
-    if [ "$IS_NIXOS" = true ]; then
+    if [ "${IS_NIXOS:-false}" = true ]; then
         echo -e "  ${BOLD}AppImage FUSE:${NC}    ${CYAN}NixOS Mode (Uses steam-run / appimage-run wrapper)${NC}"
-    elif [ "$FUSE_INSTALLED" = true ]; then
+    elif [ "${FUSE_INSTALLED:-false}" = true ]; then
         echo -e "  ${BOLD}AppImage FUSE:${NC}    ${GREEN}OK (libfuse.so.2 found)${NC}"
     else
         echo -e "  ${BOLD}AppImage FUSE:${NC}    ${RED}WARNING: fuse2 missing (Required for AppImages)${NC}"
     fi
 
     # Version Status
-    echo -e "  ${BOLD}Local Version:${NC}    $LOCAL_VER"
-    echo -e "  ${BOLD}Latest Online:${NC}    $LATEST_VER"
+    echo -e "  ${BOLD}Local Version:${NC}    ${LOCAL_VER:-Not Installed}"
+    if [ -n "${LATEST_VER:-}" ] && [ "${LATEST_VER}" != "Unknown" ]; then
+        echo -e "  ${BOLD}Latest Online:${NC}    ${LATEST_VER}"
+    fi
     echo -e "${CYAN}${BOLD}===================================================================${NC}"
 }
 
