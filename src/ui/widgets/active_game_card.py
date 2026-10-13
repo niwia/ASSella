@@ -180,14 +180,16 @@ class ActiveGameCard(QFrame):
 
     def set_sub_status(self, text: str, is_warning: bool = False):
         self.sub_lbl.setText(text)
-        if is_warning:
-            self.sub_lbl.setStyleSheet(
-                "color: #FFB84D; font-size: 8.5pt; font-weight: bold; background: transparent; border: none;"
-            )
-        else:
-            self.sub_lbl.setStyleSheet(
-                "color: rgba(255, 255, 255, 0.65); font-size: 8.5pt; font-weight: 500; background: transparent; border: none;"
-            )
+        if getattr(self, "_current_warning_state", None) != is_warning:
+            self._current_warning_state = is_warning
+            if is_warning:
+                self.sub_lbl.setStyleSheet(
+                    "color: #FFB84D; font-size: 8.5pt; font-weight: bold; background: transparent; border: none;"
+                )
+            else:
+                self.sub_lbl.setStyleSheet(
+                    "color: rgba(255, 255, 255, 0.65); font-size: 8.5pt; font-weight: 500; background: transparent; border: none;"
+                )
 
     def paintEvent(self, event):
         from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen

@@ -114,19 +114,16 @@ def resolve_library_index(dest_path: str) -> int:
 
 def send_sls_api(command: str) -> bool:
     """Send command to /tmp/SLSsteam.API."""
-    pipe = Path(SLSSTEAM_API_PIPE)
-    if not pipe.exists():
-        logger.warning(f"[SteamHandoff] SLS pipe not found: {SLSSTEAM_API_PIPE}")
-        return False
     try:
-        with open(pipe, "w") as f:
-            f.write(command.strip() + "\n")
-            f.flush()
-        logger.info(f"[SteamHandoff] SLS sent: {command!r}")
-        return True
-    except OSError as e:
+        from utils.slssteam_integration import _slssteam_api_send
+        ok = _slssteam_api_send(command)
+        if ok:
+            logger.info(f"[SteamHandoff] SLS sent: {command!r}")
+            return True
+        logger.warning(f"[SteamHandoff] SLS pipe write failed or pipe unavailable for: {command!r}")
+    except Exception as e:
         logger.warning(f"[SteamHandoff] SLS send failed: {e}")
-        return False
+    return False
 
 
 def deploy_bundled_plugins(plugins_dir: Path) -> bool:

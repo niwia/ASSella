@@ -50,6 +50,7 @@ class TaskManager(
     QObject,
 ):
     achievements_checked = pyqtSignal(bool, int)
+    handoff_status_updated = pyqtSignal(str)
 
     def __init__(self, main_window):
         super().__init__(parent=main_window)
@@ -58,6 +59,9 @@ class TaskManager(
 
         self.achievements_checked.connect(
             self._on_achievements_checked, Qt.ConnectionType.QueuedConnection
+        )
+        self.handoff_status_updated.connect(
+            self._on_handoff_status_updated, Qt.ConnectionType.QueuedConnection
         )
 
         # Task state
@@ -864,16 +868,7 @@ class TaskManager(
 
                 def _update_handoff_progress(msg: str):
                     logger.info(f"[Handoff] {msg}")
-                    if self.main_window and hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
-                        self.main_window.speed_label.setText(msg)
-                    if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
-                        st = self.main_window.simplified_terminal
-                        if hasattr(st, "active_game_card") and st.active_game_card:
-                            st.active_game_card.set_sub_status(msg)
-                    from PyQt6.QtWidgets import QApplication
-                    app = QApplication.instance()
-                    if app:
-                        app.processEvents()
+                    self.handoff_status_updated.emit(msg)
 
                 _update_handoff_progress(f"Handing off {game_name} to Steam...")
                 auto_inst = self.settings.value(
@@ -1091,6 +1086,15 @@ class TaskManager(
         t = threading.Thread(target=_watch, daemon=True)
         t.start()
 
+    @pyqtSlot(str)
+    def _on_handoff_status_updated(self, msg: str):
+        if self.main_window and hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
+            self.main_window.speed_label.setText(msg)
+        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            st = self.main_window.simplified_terminal
+            if hasattr(st, "active_game_card") and st.active_game_card:
+                st.active_game_card.set_sub_status(msg)
+
     def start_native_steam_handoff(
         self,
         app_id: str,
@@ -1134,12 +1138,7 @@ class TaskManager(
             from core.native_steam.native_steam_handoff import perform_steam_handoff
             def _update_msg(msg: str):
                 logger.info(f"[Handoff] {msg}")
-                if self.main_window and hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
-                    self.main_window.speed_label.setText(msg)
-                if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
-                    st = self.main_window.simplified_terminal
-                    if hasattr(st, "active_game_card") and st.active_game_card:
-                        st.active_game_card.set_sub_status(msg)
+                self.handoff_status_updated.emit(msg)
             return perform_steam_handoff(
                 self.game_data,
                 selected_depots=None,
