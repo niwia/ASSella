@@ -27,7 +27,7 @@ from utils.paths import Paths
 
 logger = logging.getLogger("ACCELA.voices_manager")
 
-DEFAULT_GITHUB_VOICES_URL = "https://raw.githubusercontent.com/niwia/ASSella/beta/voices.json"
+DEFAULT_GITHUB_VOICES_URL = "https://raw.githubusercontent.com/niwia/ASSella/beta/src/res/voices.json"
 
 
 def normalize_title(title: str) -> str:

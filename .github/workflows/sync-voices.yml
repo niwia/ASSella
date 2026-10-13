@@ -1,0 +1,59 @@
+name: Auto-Sync Voices Database Across Branches
+
+on:
+  push:
+    paths:
+      - 'src/res/voices.json'
+    branches:
+      - canary
+      - beta
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-voices:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Propagate voices.json to other branches
+        run: |
+          SOURCE_BRANCH="${{ github.ref_name }}"
+          TARGET_BRANCHES=("canary" "beta" "main" "arm64")
+
+          echo "Syncing voices.json from source branch: $SOURCE_BRANCH"
+
+          for TARGET in "${TARGET_BRANCHES[@]}"; do
+            if [ "$TARGET" = "$SOURCE_BRANCH" ]; then
+              continue
+            fi
+
+            echo "Evaluating sync for branch: $TARGET"
+            if git show-ref --verify --quiet "refs/remotes/origin/$TARGET"; then
+              git checkout -B "$TARGET" "origin/$TARGET"
+              git checkout "$SOURCE_BRANCH" -- src/res/voices.json
+
+              if git diff --cached --quiet && git diff --quiet; then
+                echo "Branch $TARGET already in sync with voices.json."
+              else
+                git add src/res/voices.json
+                git commit -m "chore(voices): sync voices.json from $SOURCE_BRANCH [skip ci]"
+                git push origin "$TARGET"
+                echo "Successfully synced voices.json to $TARGET."
+              fi
+            else
+              echo "Branch origin/$TARGET not found, skipping."
+            fi
+          done

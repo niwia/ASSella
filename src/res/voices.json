@@ -26,7 +26,7 @@
   },
   "version": 1,
   "description": "ASSella Recommended & Tested Game Builds (Voices)",
-  "updated_at": "2026-10-02",
+  "updated_at": "2026-10-13",
   "games": {
     "2161700": {
       "game_name": "Persona 3 Reload",
@@ -307,6 +307,21 @@
       "depots": [],
       "manifest_overrides": {
         "2215201": "8744395932724193069"
+      }
+    },
+    "3483510": {
+      "game_name": "The Adventures of Elliot: The Millennium Tales",
+      "aliases": [
+        "the adventures of elliot",
+        "elliot",
+        "millennium tales",
+        "the millennium tales"
+      ],
+      "recommended_build_id": "24232671",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {
+        "3483511": "2042765930477868769"
       }
     }
   },
