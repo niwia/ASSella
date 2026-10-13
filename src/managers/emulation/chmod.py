@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QMessageBox
 
 logger = logging.getLogger(__name__)
@@ -38,7 +37,10 @@ class ChmodMixin:
                 def show():
                     self._show_chmod_resume_dialog(game_name, count, ChmodResumeDialog)
 
-                QTimer.singleShot(0, show)
+                # NOTE: this worker thread has no event loop — QTimer.singleShot
+                # would silently never fire. Route via the main-thread bridge.
+                from utils.main_thread import post_to_main_thread
+                post_to_main_thread(show)
 
         threading.Thread(target=chmod_worker, daemon=True).start()
     def _ensure_game_directory(self, game_directory: str, show_dialog: bool) -> bool:

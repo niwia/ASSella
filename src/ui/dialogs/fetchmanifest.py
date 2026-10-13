@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 
 from core import morrenus_api
 from utils.image_fetcher import ImageFetcher
+from utils.main_thread import post_to_main_thread
 from utils.task_runner import TaskRunner
 from utils.helpers import get_base_path
 from utils.paths import get_jumpscare_gif
@@ -1018,12 +1019,13 @@ class FetchManifestDialog(QDialog):
             except Exception as e:
                 logger.debug(f"ProtonDB on-demand fetch failed for {app_id}: {e}")
 
-            from PyQt6.QtCore import QTimer
             def _finish(w=widget):
                 if w:
                     w._is_fetching_proton = False
                     w.update_ratings()
-            QTimer.singleShot(0, _finish)
+            # NOTE: this worker thread has no event loop — QTimer.singleShot
+            # would silently never fire. Route via the main-thread bridge.
+            post_to_main_thread(_finish)
 
         import threading
         threading.Thread(target=_worker, daemon=True).start()

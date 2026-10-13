@@ -19,6 +19,8 @@ import threading
 from pathlib import Path
 from typing import Optional, Dict
 
+from utils.main_thread import post_to_main_thread
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -391,26 +393,32 @@ def prefetch_protondb_for_appids(appids: list) -> None:
 # ===========================================================================
 
 def _schedule_debounced_refresh() -> None:
-    """Post a debounced ratings-refresh onto the Qt main thread."""
+    """Post a debounced ratings-refresh onto the Qt main thread.
+
+    Safe to call from any thread: the worker loop calls this after every
+    fetch. NOTE: QTimer.singleShot must NOT be used here — the caller is a
+    worker thread with no event loop, so it would silently never fire.
+    """
     from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import QTimer
 
     app = QApplication.instance()
     if not app:
         return
 
-    # We need to interact with QTimer from the GUI thread only.
-    # Use QTimer.singleShot(0, ...) as a thread-safe event post.
-    def _on_main_thread():
-        global _refresh_timer
-        with _refresh_timer_lock:
-            if _refresh_timer is None:
-                _refresh_timer = QTimer()
-                _refresh_timer.setSingleShot(True)
-                _refresh_timer.timeout.connect(_do_ratings_refresh)
-            _refresh_timer.start(_REFRESH_DEBOUNCE_MS)  # restart window each time
+    post_to_main_thread(_start_debounce_timer)
 
-    QTimer.singleShot(0, _on_main_thread)
+
+def _start_debounce_timer() -> None:
+    """(Main thread) create/restart the persistent debounce timer."""
+    global _refresh_timer
+    from PyQt6.QtCore import QTimer
+
+    with _refresh_timer_lock:
+        if _refresh_timer is None:
+            _refresh_timer = QTimer()
+            _refresh_timer.setSingleShot(True)
+            _refresh_timer.timeout.connect(_do_ratings_refresh)
+        _refresh_timer.start(_REFRESH_DEBOUNCE_MS)  # restart window each time
 
 
 def _do_ratings_refresh() -> None:

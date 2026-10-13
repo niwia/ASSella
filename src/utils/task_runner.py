@@ -2,6 +2,8 @@ import logging
 
 from PyQt6.QtCore import QObject, QThread, QCoreApplication, pyqtSignal
 
+from utils.main_thread import post_to_main_thread
+
 logger = logging.getLogger(__name__)
 
 
@@ -12,19 +14,33 @@ class LatchSignal:
         self._worker = worker
         self._name = signal_name
 
+    @staticmethod
+    def _marshal_to_main(slot):
+        """Wrap a callable so it always runs on the Qt main thread.
+
+        Worker-finished/error/completed signals are emitted on the QThread;
+        bare lambdas and plain functions connected to them would otherwise
+        execute (and touch Qt) on the worker thread. Bound methods of
+        main-thread QObjects are already queued by Qt — the extra hop is
+        harmless. See utils.main_thread for why QTimer.singleShot cannot be
+        used here instead.
+        """
+        def _marshalled(*args, **kwargs):
+            post_to_main_thread(slot, *args, **kwargs)
+
+        return _marshalled
+
     def connect(self, slot):
+        slot = self._marshal_to_main(slot)
         res = self._bound.connect(slot)
         if self._name == "finished" and getattr(self._worker, "_is_finished", False):
             val = self._worker._result
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: slot(val))
+            post_to_main_thread(slot, val)
         elif self._name == "error" and getattr(self._worker, "_is_error", False):
             val = self._worker._error_val
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: slot(val))
+            post_to_main_thread(slot, val)
         elif self._name == "completed" and getattr(self._worker, "_is_completed", False):
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, slot)
+            post_to_main_thread(slot)
         return res
 
     def disconnect(self, *args, **kwargs):

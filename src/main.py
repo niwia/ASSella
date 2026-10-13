@@ -105,6 +105,10 @@ def main():
     app.setApplicationName("ASSella")
     app.setDesktopFileName("assella")
 
+    # Eagerly initialize the main-thread dispatch bridge so background tasks
+    # can safely post to the GUI event loop.
+    import utils.main_thread  # noqa: F401
+
     # Set default window icon for all dialogs and sub-windows
     icon_path = Paths.resource("logo/icon.ico")
     if icon_path.exists():

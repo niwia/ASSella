@@ -606,12 +606,12 @@ def init_depots_tab(dialog) -> None:
     def _check_hubcap_quota_async():
         try:
             from core import morrenus_api
-            from PyQt6.QtCore import QTimer
+            from utils.main_thread import post_to_main_thread
             st = morrenus_api.get_user_stats()
             if isinstance(st, dict) and st:
                 rem = max(0, (st.get("daily_limit") or 135) - st.get("daily_usage", 0))
                 if rem <= 0 or not st.get("can_make_requests", True):
-                    QTimer.singleShot(0, lambda: (
+                    post_to_main_thread(lambda: (
                         refetch_btn.setEnabled(False),
                         refetch_btn.setToolTip("Daily Hubcap API token limit reached.")
                     ))

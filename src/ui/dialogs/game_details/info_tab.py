@@ -1134,7 +1134,11 @@ def trigger_rollback_job(dialog, depot_id, build_id: str, manifest_id: str = Non
                 return
             do_package_and_submit_manual_job(dialog, None, None, depots_map, build_id, pin_build=pin_build)
 
-        QTimer.singleShot(0, _finish_on_main)
+        # NOTE: never QTimer.singleShot here — this runs on a worker thread
+        # with no event loop, so a singleShot would silently never fire
+        # (and strand the modal progress dialog). Route via the bridge.
+        from utils.main_thread import post_to_main_thread
+        post_to_main_thread(_finish_on_main)
 
     threading.Thread(target=_fetch_thread, daemon=True).start()
 
