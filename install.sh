@@ -229,33 +229,8 @@ detect_channel() {
     if [ -n "${TARGET_CHANNEL:-}" ]; then
         return 0
     fi
-
-    # 1. Auto-detect channel from $LOCAL_VER if installed (AGENTS.md requirement)
-    local ver_lower
-    ver_lower=$(printf '%s' "${LOCAL_VER:-}" | tr '[:upper:]' '[:lower:]')
-    if [[ "$ver_lower" =~ (canary|testing) ]]; then
-        TARGET_CHANNEL="canary"
-        return 0
-    elif [[ "$ver_lower" =~ (beta|dev|rc) ]]; then
-        TARGET_CHANNEL="beta"
-        return 0
-    fi
-
-    # 2. Auto-detect from git branch if running inside a repository checkout
-    if command -v git &>/dev/null; then
-        local current_branch
-        current_branch=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-        if [[ "$current_branch" == *"canary"* ]]; then
-            TARGET_CHANNEL="canary"
-            return 0
-        elif [[ "$current_branch" == *"beta"* ]]; then
-            TARGET_CHANNEL="beta"
-            return 0
-        fi
-    fi
-
-    # 3. Default channel fallback
-    TARGET_CHANNEL="beta"
+    # Default to canary channel for canary branch installer
+    TARGET_CHANNEL="canary"
 }
 
 prompt_user() {
