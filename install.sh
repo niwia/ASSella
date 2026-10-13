@@ -57,6 +57,7 @@ IS_NIXOS=false
 IS_CACHYOS=false
 INTERACTIVE=false
 TMP_DIR=""
+SKIP_CHECKSUM=false
 
 cleanup() {
     if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
@@ -706,7 +707,8 @@ do_install() {
     local sha_state="missing"
     local expected_sha="" actual_sha=""
 
-    if curl -fsL --max-time 20 -o "$DL_TMP.sha256" "${LATEST_URL}.sha256" 2>/dev/null; then
+    if curl -fsL --max-time 20 -o "$DL_TMP.sha256" "${LATEST_URL}.sha256" 2>/dev/null || \
+       curl -fsL --max-time 20 -o "$DL_TMP.sha256" "${LATEST_URL}.zsync.sha256" 2>/dev/null; then
         expected_sha=$(grep -oiE '[a-f0-9]{64}' "$DL_TMP.sha256" | head -n1)
         if [ -z "$expected_sha" ]; then
             sha_state="malformed"
@@ -735,10 +737,22 @@ do_install() {
             echo -e "${RED}${BOLD}[ERROR] CHECKSUM MISMATCH — download corrupted or tampered.${NC}"
             echo -e "${RED}  expected: $expected_sha${NC}"
             echo -e "${RED}  actual:   $actual_sha${NC}"
-            rm -f "$DL_TMP"
-            echo -e "${RED}Refusing to install. Existing installation left untouched.${NC}"
-            pause_if_interactive
-            return 1
+            local proceed="n"
+            if [ "${SKIP_CHECKSUM:-false}" = true ] || [ "${ASSELLA_SKIP_CHECKSUM:-0}" = "1" ]; then
+                echo -e "${YELLOW}[WARN] Checksum mismatch bypassed via flag/environment.${NC}"
+                proceed="y"
+            elif [ -t 0 ] || [ -r /dev/tty ]; then
+                proceed=$(prompt_user "Do you want to ignore the checksum mismatch and proceed anyway? [y/N]: " "n")
+            fi
+
+            if [[ "$proceed" =~ ^[yY] ]]; then
+                echo -e "${YELLOW}[WARN] Proceeding with installation despite checksum mismatch...${NC}"
+            else
+                rm -f "$DL_TMP"
+                echo -e "${RED}Refusing to install. Existing installation left untouched.${NC}"
+                pause_if_interactive
+                return 1
+            fi
             ;;
         malformed|notool)
             echo -e "${RED}[WARN] Checksum file unusable ($sha_state); cannot verify integrity.${NC}"
@@ -1147,6 +1161,9 @@ main() {
             --uninstall)
                 action="uninstall"
                 ;;
+            --skip-checksum|--ignore-checksum|--no-verify)
+                SKIP_CHECKSUM=true
+                ;;
             --help|-h)
                 action="help"
                 ;;
@@ -1224,6 +1241,7 @@ main() {
             echo "  --update, -u     Check and update if a new release exists"
             echo "  --restore        Restore original ACCELA backup"
             echo "  --uninstall      Uninstall ASSella"
+            echo "  --skip-checksum  Ignore checksum mismatch and proceed with installation"
             echo "  --help, -h       Display this help message"
             ;;
     esac
