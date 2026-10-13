@@ -436,6 +436,18 @@ class TaskManager(
 
         pref_lib = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path")
         show_storage = not is_vapor_native
+        # Lock storage to the existing install location when this job targets
+        # an already-installed game (update / verify / DLC). Fresh installs
+        # stay unlocked so the user can pick a drive.
+        lock_storage_tm = False
+        try:
+            gm_tm = getattr(self.main_window, "game_manager", None)
+            get_game_tm = getattr(gm_tm, "get_game", None) if gm_tm is not None else None
+            if callable(get_game_tm) and appid and appid not in ("0", "N/A", "unknown"):
+                known_tm = get_game_tm(str(appid))
+                lock_storage_tm = bool(isinstance(known_tm, dict) and known_tm.get("library_path"))
+        except Exception as e:
+            logger.debug(f"[TaskManager] storage lock check failed: {e}")
         self.main_window.ui_state.depot_dialog = DepotSelectionDialog(
             game_data["appid"],
             game_data["game_name"],
@@ -449,6 +461,7 @@ class TaskManager(
             library_path=pref_lib,
             refetched_depots=(self.game_data or {}).get("refetched_depots"),
             show_storage=show_storage,
+            lock_storage=lock_storage_tm,
         )
 
         if self.main_window.ui_state.depot_dialog.exec():

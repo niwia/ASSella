@@ -300,7 +300,11 @@ class GameManager(QObject):
                 except Exception:
                     pass
                 at0m_checker.game_checked.connect(self._on_at0m_game_checked)
-                at0m_checker.check_all_games_async(force_refresh=force_refresh)
+                try:
+                    at0m_checker.check_all_games_async(force_refresh=force_refresh,
+                                                      live_games=list(self.games))
+                except TypeError:
+                    at0m_checker.check_all_games_async(force_refresh=force_refresh)
             except Exception as e:
                 logger.debug(f"Error launching At0mUpdateChecker: {e}")
             return
@@ -321,7 +325,11 @@ class GameManager(QObject):
             except Exception:
                 pass
             at0m_checker.game_checked.connect(self._on_at0m_game_checked)
-            at0m_checker.check_all_games_async(force_refresh=force_refresh)
+            try:
+                at0m_checker.check_all_games_async(force_refresh=force_refresh,
+                                                  live_games=list(self.games))
+            except TypeError:
+                at0m_checker.check_all_games_async(force_refresh=force_refresh)
         except Exception as e:
             logger.debug(f"Error launching At0mUpdateChecker: {e}")
 
@@ -352,7 +360,8 @@ class GameManager(QObject):
         game = self._games_by_appid.get(appid_str) or self.get_game(appid_str)
         if game:
             # STRICT GUARD: Never apply AT0-M status to an ACCELA physical installation!
-            if game.get("accela_marker_path") or game.get("source") == "ACCELA":
+            from utils.game_modes import is_accela_managed
+            if is_accela_managed(game):
                 logger.warning(f"Refusing to apply AT0-M update status to ACCELA game {game.get('game_name')} ({appid_str})")
                 return
             game["update_status"] = status

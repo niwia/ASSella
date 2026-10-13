@@ -101,6 +101,8 @@ class SettingsDialog(QDialog):
         self.sonic_mode_checkbox = None
         self.workshop_steam_checkbox = None
         self.workshop_max_dl_spinbox = None
+        self.auto_tune_checkbox = None
+        self.workshop_auto_tune_checkbox = None
         self.workshop_cell_id_input = None
         self.enable_vapor_checkbox = None
         self.vapor_disable_updates_checkbox = None
@@ -906,6 +908,11 @@ class SettingsDialog(QDialog):
                 "workshop_max_downloads",
                 self.workshop_max_dl_slider.value(),
             )
+        if hasattr(self, "workshop_auto_tune_checkbox") and self.workshop_auto_tune_checkbox is not None:
+            self.settings.setValue(
+                "workshop_auto_max_downloads",
+                self.workshop_auto_tune_checkbox.isChecked(),
+            )
         if self.workshop_cell_id_input is not None:
             self.settings.setValue(
                 "workshop_cell_id",
@@ -1011,6 +1018,11 @@ class SettingsDialog(QDialog):
             except (ValueError, TypeError):
                 pass
         self.settings.setValue("max_downloads", val)
+        if hasattr(self, "auto_tune_checkbox") and self.auto_tune_checkbox is not None:
+            self.settings.setValue(
+                "auto_max_downloads",
+                self.auto_tune_checkbox.isChecked(),
+            )
 
         if hasattr(self, "save_old_manifests_checkbox"):
             try:

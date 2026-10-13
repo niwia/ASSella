@@ -464,7 +464,7 @@ class ManifestCheckTask(QObject):
                         update_available_count += 1
                         g_name = game.get("name") or game.get("clean_name") or str(appid)
                         update_games_list.append(g_name)
-                    elif update_status == "up_to_date":
+                    elif update_status in ("up_to_date", "at0m"):
                         up_to_date_count += 1
                     else:
                         cannot_determine_count += 1
@@ -511,6 +511,18 @@ class ManifestCheckTask(QObject):
         if settings.value(f"pin_build/{appid}", False, type=bool):
             logger.info(f"[UpdateCheck {appid}] Game build is pinned. Ignoring updates. Status: up_to_date.")
             return "up_to_date"
+
+        # AT0-M / Vapor / Plugin games bypass: Steam manages file and manifest updates natively.
+        # ASSella only checks for the addition of new depots, which is handled exclusively by At0mUpdateChecker.
+        from utils.game_modes import is_accela_managed, is_atom_managed
+        is_accela = is_accela_managed(game_data)
+        is_atom = (not is_accela) and (
+            is_atom_managed(game_data)
+            or game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+        )
+        if is_atom:
+            logger.info(f"[UpdateCheck {appid}] AT0-M/Plugin game bypass. Steam manages updates natively. Status: at0m.")
+            return "at0m"
 
         # DLC-Only mode: the normal .depot file comparison below handles this correctly.
         # It reads all DLC depot IDs from {appid}.depot and looks each one up across ALL
@@ -783,27 +795,6 @@ class ManifestCheckTask(QObject):
                 }
                 _store_check_diag(appid, diag_meta)
                 return "update_available"
-            if not is_dlc_mode and branch_bid_changed:
-                diag_meta["reason"] = "branch_buildid_newer"
-                # Record any base game depots omitted from saved_depots for diagnostics
-                base_depots = steam_client_data.get("depots", {})
-                if isinstance(base_depots, dict):
-                    for b_did, b_dinfo in base_depots.items():
-                        if b_did not in saved_depots and isinstance(b_dinfo, dict):
-                            m_gid = resolve_branch_manifest_gid(b_dinfo, selected_branch)
-                            if m_gid:
-                                _depot_diffs.append((b_did, "missing_from_tracking", m_gid))
-                if _depot_diffs:
-                    diag_meta["depot_diffs"] = {
-                        did: {"saved": sv, "current": cv}
-                        for did, sv, cv in _depot_diffs
-                    }
-                logger.info(
-                    f"[UpdateCheck {appid}] Branch '{selected_branch}' build ID ({branch_buildid}) is newer "
-                    f"than local build ID ({effective_local_bid}). Status: update_available."
-                )
-                _store_check_diag(appid, diag_meta)
-                return "update_available"
             if all_cannot_determine:
                 diag_meta["reason"] = "no_manifest_resolved"
                 logger.info(
@@ -811,6 +802,10 @@ class ManifestCheckTask(QObject):
                 )
                 return "cannot_determine"
             diag_meta["reason"] = "manifests_match"
+            if branch_buildid:
+                settings = get_settings()
+                settings.setValue(f"installed_buildid/{appid}/{selected_branch}", branch_buildid)
+                settings.setValue(f"installed_buildid/{appid}", branch_buildid)
             _store_check_diag(appid, diag_meta)
             return "up_to_date"
 

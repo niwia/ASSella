@@ -71,6 +71,10 @@ class DownloadDepotsTask(QObject):
         self._current_depot_key_denied = False
         self._current_depot_error_reason = ""
         self._current_depot_zero_downloaded = False
+        self._current_depot_errors = 0
+        self._auto_enabled = False
+        self._auto_cap = 8
+        self._auto_best_key = "auto_tune_best"
 
     @property
     def is_running_flag(self) -> bool:
@@ -152,6 +156,8 @@ class DownloadDepotsTask(QObject):
                 self._current_depot_zero_downloaded = False
                 self._current_depot_downloaded_bytes = 0
                 self._current_depot_uncompressed_bytes = 0
+                self._current_depot_errors = 0
+                depot_start_time = time.time()
 
                 # Determine creation flags for Windows to hide the console window
                 creation_flags = 0
@@ -388,6 +394,49 @@ class DownloadDepotsTask(QObject):
                     self.completed_so_far_for_this_job += self.current_depot_size
                     self.actual_download_bytes_for_this_job += self._current_depot_downloaded_bytes
                     self.actual_uncompressed_bytes_for_this_job += self._current_depot_uncompressed_bytes
+                    # Auto-tune: learn from this depot, adjust the rest (if enabled).
+                    # Validation-only depots (no wire bytes) hold N without
+                    # training: local checksum throughput must never become
+                    # the network baseline.
+                    if self._auto_enabled:
+                        try:
+                            from utils import auto_tune as _auto_tune
+                            used_n = _auto_tune.get_cmd_concurrency(current_cmd, self._auto_cap)
+                            wire_bytes = self._current_depot_downloaded_bytes
+                            if not _auto_tune.should_learn(wire_bytes):
+                                logger.debug(
+                                    f"[DownloadDepotsTask] Auto-tune: depot {depot_id} "
+                                    f"moved {wire_bytes} wire bytes — validation-only, holding N={used_n}"
+                                )
+                                self.progress.emit(
+                                    f"Auto-tune: depot {depot_id} validation-only, holding at "
+                                    f"{used_n} (cap {self._auto_cap})."
+                                )
+                            else:
+                                elapsed = max(0.0, time.time() - depot_start_time)
+                                speed_bps = self._smooth_speed_bps
+                                if speed_bps <= _auto_tune.SPEED_EPS_BPS and elapsed > 0 and wire_bytes > 0:
+                                    speed_bps = wire_bytes / elapsed
+                                next_n = _auto_tune.record_result(
+                                    get_settings(),
+                                    self._auto_best_key,
+                                    used_n,
+                                    float(speed_bps),
+                                    self._auto_cap,
+                                    self._current_depot_errors,
+                                )
+                                for _later_cmd in commands[i + 1:]:
+                                    _auto_tune.set_cmd_concurrency(_later_cmd, next_n)
+                                self.progress.emit(
+                                    f"Auto-tune: depot {depot_id} @ {_auto_tune.format_speed(speed_bps)} "
+                                    f"with {used_n} chunks → next: {next_n} (cap {self._auto_cap})."
+                                )
+                                logger.info(
+                                    f"[DownloadDepotsTask] Auto-tune: depot {depot_id} "
+                                    f"{speed_bps:.0f} B/s N={used_n} errors={self._current_depot_errors} → N={next_n}"
+                                )
+                        except Exception as _at_err:
+                            logger.debug(f"[DownloadDepotsTask] Auto-tune step failed: {_at_err}")
                     self._current_depot_downloaded_bytes = 0
                     self._current_depot_uncompressed_bytes = 0
                     self._last_speed_calc_time = 0.0
@@ -642,6 +691,16 @@ class DownloadDepotsTask(QObject):
         if "no valid depot key" in lower_line or ("depot key" in lower_line and "accessdenied" in lower_line) or "result: accessdenied" in lower_line:
             self._current_depot_key_denied = True
             self._current_depot_error_reason = line
+        # Count chunk-level trouble for the auto-tune controller (back off fast).
+        if (
+            "failed to download chunk" in lower_line
+            or "encountered error downloading chunk" in lower_line
+            or "encountered unexpected error downloading chunk" in lower_line
+            or "connection timeout downloading chunk" in lower_line
+            or "failed to retrieve any download servers" in lower_line
+            or "failed to find any server with chunk" in lower_line
+        ):
+            self._current_depot_errors += 1
         if "total downloaded:" in lower_line:
             if "from 0 depots" in lower_line and "0 bytes" in lower_line:
                 self._current_depot_zero_downloaded = True
@@ -886,9 +945,32 @@ class DownloadDepotsTask(QObject):
         dotnet_cmd = dotnet_path
         dll_path = resource_path(os.path.join("deps", "DepotDownloader.dll"))
 
-        # Get max downloads from settings
+        # Get max downloads from settings (slider = exact value when
+        # auto-tune is off, cap when auto-tune is on).
         settings = get_settings()
-        max_downloads = settings.value("max_downloads", 4, type=int)
+        from utils import auto_tune as _auto_tune
+
+        self._auto_cap = _auto_tune.get_cap(settings, "max_downloads", 8)
+        self._auto_enabled = _auto_tune.is_auto_enabled(settings, "auto_max_downloads")
+        self._auto_best_key = "auto_tune_best"
+        if self._auto_enabled:
+            max_downloads = _auto_tune.get_start_concurrency(
+                settings,
+                cap_key="max_downloads",
+                auto_key="auto_max_downloads",
+                best_key=self._auto_best_key,
+                default_start=8,
+                default_cap=8,
+            )
+            self.progress.emit(
+                f"Auto-tune ON: starting at {max_downloads} concurrent chunks "
+                f"(cap {self._auto_cap})."
+            )
+            logger.info(
+                f"[DownloadDepotsTask] Auto-tune enabled: start N={max_downloads} cap={self._auto_cap}"
+            )
+        else:
+            max_downloads = self._auto_cap
 
         commands = []
         skipped_depots = []

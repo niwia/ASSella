@@ -52,16 +52,12 @@ def write_accela_metadata(
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=4)
 
-        # Write .assella marker in the game root folder
-        try:
-            game_folder_path = os.path.join(dest_path, "steamapps", "common", install_folder_name)
-            if os.path.isdir(game_folder_path):
-                marker_path = os.path.join(game_folder_path, ".assella")
-                with open(marker_path, "w", encoding="utf-8") as mf:
-                    mf.write(f"appid={game_data.get('appid')}\n")
-        except Exception:
-            pass
-            
+        # NOTE: No .assella/.accela side-markers are written anymore. The
+        # .DepotDownloader folder (with this metadata.json) is the sole
+        # marker identifying an ASSella-managed install. Legacy markers
+        # found on disk are still recognised on read for backward
+        # compatibility, and unrelated cleanup code removes them.
+             
         logger.info(f"Successfully saved ACCELA metadata to {metadata_path}")
         return metadata_path
     except Exception as e:

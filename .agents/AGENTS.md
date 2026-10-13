@@ -21,28 +21,24 @@ This file defines essential guidelines, build rules, versioning conventions, and
 ## 2. Release & Versioning Guidelines
 
 ### A. Release Channels & Tag Naming Conventions
-ASSella enforces strict update channel isolation:
-- **Canary Channel**: Tags must contain `canary` or `testing` (e.g. `v3.0.0testing200926001` or `v2.8.0-canary.1`).
-  - *Note on `3.` Prefix*: Matching `3.` alone was a temporary development measure. While `3.` is temporarily tolerated during 3.0 development, official canary tags and releases should explicitly include `testing` or `canary` identifiers.
-- **Beta Channel**: Tags must contain `beta`, `dev`, or `rc` (e.g. `v2.7.0beta`, `v2.7.5-beta.1`, `2.7.0dev`, `v2.7.0rc1`).
+ASSella enforces a clean 4-branch workflow: `stable`, `beta`, `canary`, and `arm64`:
+- **Stable Channel**: Official releases tagged with clean semantic version tags without pre-release suffixes (e.g. `v3.0.0`, `v3.0.1`). Clean versions with no suffix are strictly treated as official Stable releases (`prerelease: false`).
+- **Beta Channel**: Active preview releases. Tags must contain `beta`, `dev`, or `rc` (e.g. `v3.1.0-beta.1`).
   - *Strict Rule*: Do not use `alpha`.
-- **Stable Channel**: Official releases tagged with `stable` or clean semantic version tags without pre-release suffixes (e.g. `v2.7.0`, `v2.7.0-stable`).
+- **Canary Channel**: Bleeding-edge / experimental releases. Tags must contain `canary` or `testing` (e.g. `v3.1.0-canary.1`).
+- **ARM64 Branch**: Auto-synced ARM64 port.
 
 ### B. Automated GitHub Actions CI/CD Pipeline
 Releases are automated via [.github/workflows/build-appimage.yml](file:///.github/workflows/build-appimage.yml):
-1. **Trigger**: Push a version tag (e.g. `git tag v2.7.0beta && git push origin v2.7.0beta`) or trigger manually with `workflow_dispatch` in the GitHub Actions UI.
+1. **Trigger**: Push a version tag (e.g. `git tag v3.0.0 && git push origin v3.0.0`) or trigger manually with `workflow_dispatch` in the GitHub Actions UI.
 2. **Automated AppImage & ZSync Build**:
    - Compiles AppImage in a clean `ubuntu-22.04` environment using `appimagetool`.
    - Embeds update string: `gh-releases-zsync|niwia|ASSella|latest|ASSella.AppImage.zsync`.
    - Automatically generates `ASSella.AppImage.zsync` enabling delta updates where users download only changed blocks (~5-15MB instead of 300MB).
    - Generates SHA-256 checksums (`ASSella.AppImage.sha256`).
 3. **Automated GitHub Release Publishing**:
-   - Automatically marks Beta and Canary releases as pre-releases on GitHub.
-   - Attaches `ASSella.AppImage` (capital `.AppImage` required for v2.6.5 compatibility), `.zsync`, and checksum files.
-4. **Automated Arch Linux Repository Publishing**:
-   - Automatically packages `assella-<version>-1-x86_64.pkg.tar.zst` via `makepkg`.
-   - Generates and updates `assella.db.tar.gz` via `repo-add`.
-   - Deploys the repository directly to the `gh-pages` branch (`https://niwia.github.io/ASSella/arch/$arch`) for direct `sudo pacman -S assella` installation.
+   - Automatically marks Beta and Canary releases as pre-releases on GitHub. Stable releases (`v3.0.0`) are published as official full releases.
+   - Attaches `ASSella.AppImage` (capital `.AppImage` required for compatibility), `.zsync`, and checksum files.
 
 ### C. Local AppImage Builds (When Testing Locally)
 - Production binary: **`ASSella.AppImage`** (`~/.local/share/ACCELA/ASSella.AppImage`).

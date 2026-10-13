@@ -128,6 +128,9 @@ class DepotSelectionDialog(QDialog):
         branch="public",
         branches=None,
         current_build_id="",
+        lock_storage=False,
+        dlc_only_mode=False,
+        lock_dlc_only=False,
         **kwargs,
     ):
         super().__init__(parent)
@@ -136,6 +139,9 @@ class DepotSelectionDialog(QDialog):
             show_storage, is_single_depot, library_path, refetched_depots,
             branch, branches, current_build_id, missing_hubcap_depots,
             missing_depots_info,
+            lock_storage=lock_storage or kwargs.get("lock_storage", False),
+            dlc_only_mode=dlc_only_mode or kwargs.get("dlc_only_mode", False),
+            lock_dlc_only=lock_dlc_only or kwargs.get("lock_dlc_only", False),
         )
         self.resize(680, 540)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.Dialog)
@@ -190,6 +196,9 @@ class DepotSelectionDialog(QDialog):
         self, app_id, depots, game_name, header_url, selected_depots,
         show_storage, is_single_depot, library_path, refetched_depots,
         branch, branches, current_build_id, missing_hubcap_depots, missing_depots_info,
+        lock_storage: bool = False,
+        dlc_only_mode: bool = False,
+        lock_dlc_only: bool = False,
     ) -> None:
         """Store every constructor argument and wire up signals and timers.
 
@@ -210,6 +219,14 @@ class DepotSelectionDialog(QDialog):
         self.show_storage = show_storage
         self.is_single_depot = is_single_depot
         self.preferred_library_path = library_path
+        self.lock_storage = lock_storage
+        self.lock_dlc_only = lock_dlc_only
+        from utils.settings import get_settings
+        self._settings = get_settings()
+        self._dlc_only_mode = bool(
+            dlc_only_mode
+            or (self._settings.value(f"dlc_only_mode/{self.app_id}", False, type=bool) if self._settings else False)
+        )
         self.refetched_depots = [str(d) for d in (refetched_depots or []) if str(d).strip()]
         self.branch = str(branch or "public")
         self.branches = dict(branches or {"public": {}})
@@ -618,6 +635,53 @@ class DepotSelectionDialog(QDialog):
             self.edition_button.setToolTip("Select game edition and platform (Complete, Deluxe, Standard)")
             self.edition_button.clicked.connect(self._show_edition_menu)
             button_layout.addWidget(self.edition_button, 1)
+
+            from utils.dlc_helpers import has_game_dlcs
+            has_dlc = has_game_dlcs(str(self.app_id), self.depots)
+
+            self._dlc_only_btn = QPushButton("DLC Only")
+            self._dlc_only_btn.setFixedHeight(28)
+            self._dlc_only_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self._dlc_only_btn.setCheckable(True)
+
+            if getattr(self, "lock_dlc_only", False):
+                self._dlc_only_btn.setChecked(True)
+                self._dlc_only_btn.setEnabled(False)
+                self._dlc_only_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
+                self._dlc_only_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: rgba(255, 255, 255, 0.04) !important;
+                        color: rgba(255, 255, 255, 0.45) !important;
+                        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+                        border-radius: 6px;
+                        padding: 4px 12px;
+                        font-size: 8.5pt;
+                        font-weight: 500;
+                    }
+                """)
+                self._dlc_only_btn.setToolTip("DLC-Only mode is locked for this installation.")
+                self._dlc_only_mode = True
+            elif not has_dlc:
+                self._dlc_only_btn.setEnabled(False)
+                self._dlc_only_btn.setChecked(False)
+                self._dlc_only_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: rgba(255, 255, 255, 0.03) !important;
+                        color: rgba(255, 255, 255, 0.25) !important;
+                        border: 1px solid rgba(255, 255, 255, 0.06) !important;
+                        border-radius: 6px;
+                        padding: 4px 12px;
+                        font-size: 8.5pt;
+                    }
+                """)
+                self._dlc_only_btn.setToolTip("DLC-Only mode is unavailable because this title has no DLC.")
+                self._dlc_only_mode = False
+            else:
+                self._dlc_only_btn.setChecked(self._dlc_only_mode)
+                self._refresh_dlc_only_style()
+                self._dlc_only_btn.toggled.connect(self._on_dlc_only_toggled)
+
+            button_layout.addWidget(self._dlc_only_btn, 1)
 
             browse_files_button = QPushButton("Browse Files...")
             browse_files_button.setFixedHeight(28)
@@ -1136,14 +1200,10 @@ class DepotSelectionDialog(QDialog):
                 if size_item and hasattr(size_item, "sort_value"):
                     total_bytes += int(size_item.sort_value or 0)
 
-        if total_count == 0:
-            hdr_state = Qt.CheckState.Unchecked
-        elif sel_count == total_count:
+        if total_count > 0 and sel_count == total_count:
             hdr_state = Qt.CheckState.Checked
-        elif sel_count == 0:
-            hdr_state = Qt.CheckState.Unchecked
         else:
-            hdr_state = Qt.CheckState.PartiallyChecked
+            hdr_state = Qt.CheckState.Unchecked
 
         if hasattr(self, "header_view") and self.header_view:
             self.header_view.set_check_state_and_count(hdr_state, f"({sel_count}/{total_count})")
@@ -1947,6 +2007,27 @@ class DepotSelectionDialog(QDialog):
 
             tooltip = f"Storage: {path_str}" + (f"\nAvailable: {free_str}" if free_str else "")
             return label, free_str, tooltip
+
+        # Locked storage display (verify / update / DLC flows over installed
+        # games): greyed-out label showing the install location, no choice.
+        # Fresh installs (lock_storage unset) always get the selectable UI.
+        from ui.dialogs.storage_lock import (
+            create_locked_storage_button,
+            resolve_locked_target,
+        )
+        _locked_target = resolve_locked_target(
+            self.parent(),
+            getattr(self, "app_id", ""),
+            self.preferred_library_path,
+            storage_paths,
+            bool(getattr(self, "lock_storage", False)),
+        )
+        if _locked_target:
+            lbl_text, free_str, _ = _format_storage_info(_locked_target)
+            btn = create_locked_storage_button(_locked_target, lbl_text, free_str, height=28, radius=4)
+            layout.addWidget(btn, 1)
+            self.selected_storage_path = _locked_target
+            return
 
         def _get_storage_btn_style():
             from utils.color_utils import get_best_foreground_color

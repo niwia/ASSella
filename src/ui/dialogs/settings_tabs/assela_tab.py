@@ -56,6 +56,39 @@ def create_assela_tab(dialog) -> QWidget:
     )
     assella_lay.addWidget(dialog.check_updates_on_boot_checkbox)
 
+    # 1b. Update Channel Selector
+    channel_row = QHBoxLayout()
+    channel_row.setContentsMargins(0, 2, 0, 2)
+    channel_lbl = QLabel("Update Channel:")
+    channel_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+    channel_lbl.setToolTip("Select the ASSella release channel: Stable (official releases), Beta (preview channel), or Canary (experimental).")
+    channel_row.addWidget(channel_lbl)
+    channel_row.addStretch()
+
+    dialog.update_channel_combo = QComboBox()
+    dialog.update_channel_combo.addItem("Stable", "stable")
+    dialog.update_channel_combo.addItem("Beta", "beta")
+    dialog.update_channel_combo.addItem("Canary", "canary")
+    dialog.update_channel_combo.setFixedWidth(120)
+
+    saved_channel = dialog.settings.value("update_channel", "stable", type=str).lower()
+    c_idx = dialog.update_channel_combo.findData(saved_channel)
+    if c_idx >= 0:
+        dialog.update_channel_combo.setCurrentIndex(c_idx)
+    else:
+        dialog.update_channel_combo.setCurrentIndex(0)
+
+    def _on_channel_changed(idx):
+        chosen = dialog.update_channel_combo.itemData(idx)
+        dialog.settings.setValue("update_channel", chosen)
+        dialog.settings.sync()
+        if hasattr(dialog, "main_window") and dialog.main_window and hasattr(dialog.main_window, "check_tool_updates"):
+            dialog.main_window.check_tool_updates()
+
+    dialog.update_channel_combo.currentIndexChanged.connect(_on_channel_changed)
+    channel_row.addWidget(dialog.update_channel_combo)
+    assella_lay.addLayout(channel_row)
+
     # 2. Enable EOSProxy by default
     dialog.enable_eosproxy_default_checkbox = create_checkbox_setting(
         "Enable EOSProxy by default",

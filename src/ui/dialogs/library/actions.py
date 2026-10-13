@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import List, NamedTuple, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 from PyQt6.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSlot, QPropertyAnimation, QEasingCurve
 from PyQt6.QtWidgets import QWidget
@@ -178,8 +178,9 @@ class LibraryActionsMixin:
         if self._dialog_open:
             return
 
-        # Don't allow accessing the game details page for Steam tab games
+        # Steam tab games: check if the selected game has DLCs, if so, launch DLC-only download flow!
         if getattr(self, "_active_tab", "") == "steam" or game_data.get("is_steam_tab"):
+            self._handle_steam_tab_game_clicked(game_data)
             return
 
         # Debounce
@@ -187,6 +188,35 @@ class LibraryActionsMixin:
         QTimer.singleShot(500, lambda: setattr(self, "_dialog_open", False))
 
         self._show_game_details_dialog(game_data)
+
+    def _handle_steam_tab_game_clicked(self, game_data: dict) -> None:
+        """Handle click on an owned/installed Steam game:
+
+        Checks if the game has DLCs (fastest path possible via local SQLite/manifests).
+        If DLCs exist, launches Depot Selection with DLC-only mode ON and locked,
+        and storage locked to its existing installation path.
+        """
+        appid = str(game_data.get("appid", "")).strip()
+        if not appid or appid in ("0", "N/A", "unknown"):
+            return
+
+        from utils.dlc_helpers import has_game_dlcs
+        has_dlc = has_game_dlcs(appid, game_data.get("depots"))
+        if not has_dlc:
+            from PyQt6.QtWidgets import QMessageBox
+            name = game_data.get("game_name", "this game")
+            QMessageBox.information(
+                self,
+                "No DLCs Detected",
+                f"No downloadable DLCs were detected for {name}."
+            )
+            return
+
+        game_data_dlc = dict(game_data)
+        game_data_dlc["_dlc_only"] = True
+        game_data_dlc["_lock_dlc_only"] = True
+        game_data_dlc["_lock_storage"] = True
+        self._fetch_game_manifest(game_data_dlc, is_verify=False)
 
     # ─────────────────────────────────────────────────────────────────────────
     # 2. Batch Operations (Update / Uninstall / Enqueue)
@@ -515,6 +545,8 @@ class LibraryActionsMixin:
                                 missing_depots_info=parsed_data.get("missing_depots_info"),
                                 refetched_depots=game_data.get("_recovered_depot_ids") or parsed_data.get("refetched_depots"),
                                 current_build_id=str(game_data.get("buildid") or "").strip() if isinstance(game_data, dict) else "",
+                                library_path=game_data.get("library_path") or game_data.get("install_path"),
+                                lock_storage=True,
                             )
                             if depot_dialog.exec():
                                 result_holder[0] = depot_dialog.get_selected_depots()
@@ -572,8 +604,33 @@ class LibraryActionsMixin:
         if not game_data:
             return
 
-        # Don't show context menu for Steam tab games
+        # For Steam tab games, offer DLC download and open folder options
         if getattr(self, "_active_tab", "") == "steam" or game_data.get("is_steam_tab"):
+            menu = QMenu(self)
+            menu.setStyleSheet(
+                f"""
+                QMenu {{
+                    background-color: #111111;
+                    color: #FFFFFF;
+                    border: 1px solid #333333;
+                }}
+                QMenu::item:selected {{
+                    background-color: {self.accent_color};
+                    color: #000000;
+                }}
+                """
+            )
+            dlc_action = QAction("Download DLCs", self)
+            dlc_action.triggered.connect(lambda: self._handle_steam_tab_game_clicked(game_data))
+            menu.addAction(dlc_action)
+
+            install_path = game_data.get("install_path")
+            if install_path and os.path.isdir(install_path):
+                open_folder_action = QAction("Open Install Folder", self)
+                open_folder_action.triggered.connect(lambda: self._open_install_folder(install_path))
+                menu.addAction(open_folder_action)
+
+            menu.exec(self.games_list.viewport().mapToGlobal(pos))
             return
 
         menu = QMenu(self)
@@ -1168,8 +1225,9 @@ class LibraryActionsMixin:
                     missing_depots_info=parsed_data.get("missing_depots_info"),
                     refetched_depots=game_data.get("_recovered_depot_ids") or parsed_data.get("refetched_depots"),
                     current_build_id=str(game_data.get("buildid") or "").strip() if isinstance(game_data, dict) else "",
-                    library_path=game_data.get("library_path"),
-                    show_storage=False,
+                    library_path=game_data.get("library_path") or game_data.get("install_path"),
+                    show_storage=True,
+                    lock_storage=True,
                 )
                 if depot_dialog.exec():
                     chosen = depot_dialog.get_selected_depots()
@@ -1388,15 +1446,21 @@ class LibraryActionsMixin:
             except (ValueError, TypeError):
                 bid_outdated = False
 
+        # Authoritative verify resolution (unpinned verify only): live PICS
+        # tiers decide between local reuse, free provider refresh, or a
+        # quota-costing Hubcap fetch. Pinned/rollback keeps the strict local
+        # path below; Refetch (download_only) keeps the classic download path.
+        if is_verify and not download_only and not is_rollback:
+            if self._run_verify_resolution(app_id, branch, name, game_data, dialog, fpath):
+                return
+
         local_path = None
         if is_rollback and local_path_override and Path(local_path_override).exists():
             local_path = local_path_override
         elif (
             fpath.exists()
             and not has_recovered_missing
-            and not is_verify
-            and not bid_outdated
-            and (status != "update_available" or is_fresh)
+            and (is_verify or (not bid_outdated and (status != "update_available" or is_fresh)))
         ):
             local_path = str(fpath)
 
@@ -1442,6 +1506,288 @@ class LibraryActionsMixin:
                     game_data = game_data.copy()
                     game_data["_is_rollback"] = True
                 self._submit_job(local_path, game_data, dialog)
+
+    def _cancel_verify_fetch(self, app_id: str, dialog) -> None:
+        """Discard an in-flight verify fetch and restore the Verify button."""
+        if hasattr(self, "_active_fetches"):
+            self._active_fetches.discard(str(app_id))
+        try:
+            if dialog and hasattr(dialog, "validate_btn") and dialog.validate_btn:
+                dialog.validate_btn.set_loading(False)
+                dialog.validate_btn.setEnabled(True)
+                if hasattr(dialog, "_update_validate_button_state"):
+                    dialog._update_validate_button_state()
+        except Exception:
+            pass
+
+    def _use_local_verify_bundle(self, app_id: str, game_data: dict, dialog, local_zip: str) -> None:
+        """Submit the local bundle for verification (fetch marked complete)."""
+        if hasattr(self, "_active_fetches"):
+            self._active_fetches.discard(str(app_id))
+        logger.info(f"[VerifyFlow] Verifying against local bundle: {local_zip}")
+        self._submit_job(local_zip, game_data, dialog)
+
+    def _run_verify_resolution(self, app_id: str, branch: str, name: str,
+                               game_data: dict, dialog, fpath) -> bool:
+        """Dispatch authoritative resolution off the GUI thread.
+
+        PICS lookups, the MRC race and CDN downloads take seconds; running
+        them here would freeze the Verify button animation. The background
+        worker only computes an outcome tuple — all dialogs and job
+        submission happen in `_on_verify_resolution_done` on the main thread.
+        """
+        def _work():
+            try:
+                outcome = self._resolve_verify_outcome(app_id, branch, game_data, fpath)
+            except Exception as e:
+                logger.error(f"[VerifyFlow] Resolution failed for AppID {app_id}: {e}", exc_info=True)
+                outcome = ("error", str(e))
+            try:
+                QMetaObject.invokeMethod(
+                    self,
+                    "_run_on_main_thread",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(object, lambda: self._on_verify_resolution_done(
+                        outcome, app_id, branch, name, game_data, dialog, fpath)),
+                )
+            except Exception as e:
+                logger.error(f"[VerifyFlow] Failed to marshal resolution result: {e}")
+                try:
+                    self._cancel_verify_fetch(app_id, dialog)
+                except Exception:
+                    pass
+
+        self.executor.submit(_work)
+        return True
+
+    def _resolve_verify_outcome(self, app_id: str, branch: str,
+                                game_data: dict, fpath) -> tuple:
+        """Background-safe verify resolution: network + decide + refresh.
+
+        Returns an outcome tuple; never touches Qt. Outcomes:
+        ("download_full",) | ("offline", zip) | ("local", zip, live_gids) |
+        ("refreshed", zip, failed, live_gids) |
+        ("hubcap", zip, refreshable, hubcap_needed, live_gids) | ("error", msg)
+        """
+        from core import verify_flow as _vf
+
+        app_id = str(app_id)
+        branch = branch or "public"
+        local_zip = str(fpath)
+        has_local = Path(local_zip).exists()
+        local_gids = _vf.read_bundle_gids(fpath) if has_local else {}
+
+        if not has_local:
+            return ("download_full",)
+
+        live_depots, live_data = _vf.get_live_depots(
+            app_id, _vf.extract_bundle_token(fpath) if local_gids else None
+        )
+        if not live_depots:
+            return ("offline", local_zip)
+
+        try:
+            from managers.depot_key_manager import DepotKeyManager
+            cached_keys = DepotKeyManager().get_depot_keys(app_id) or {}
+        except Exception:
+            cached_keys = {}
+
+        decision, refreshable, hubcap_needed = _vf.decide_verify_source(
+            app_id, branch, local_gids, live_depots, live_data, cached_keys
+        )
+        live_gids = _vf.resolve_live_gids(live_depots, branch)
+
+        if decision == _vf.LOCAL_CURRENT:
+            logger.info(f"[VerifyFlow] Local bundle 100% matches live PICS for AppID {app_id}; 0 fetch.")
+            return ("local", local_zip, live_gids)
+
+        if decision == _vf.PROVIDER_REFRESH:
+            names = ", ".join(
+                f"{e.get('name') or e['depot_id']} [{e['depot_id']}]" for e in refreshable
+            )
+            logger.info(f"[VerifyFlow] Refreshing {len(refreshable)} stale depot(s) via provider: {names}")
+            _, failed = _vf.refresh_via_provider(app_id, branch, local_zip, refreshable)
+            return ("refreshed", local_zip, failed, live_gids)
+
+        if decision == _vf.HUBCAP_FULL:
+            return ("hubcap", local_zip, refreshable, hubcap_needed, live_gids)
+
+        return ("offline", local_zip)
+
+    def _on_verify_resolution_done(self, outcome: tuple, app_id: str, branch: str,
+                                   name: str, game_data: dict, dialog, fpath) -> None:
+        """Main-thread continuation: dialogs, submission, classic delegation."""
+        try:
+            kind = outcome[0] if outcome else "error"
+            if kind == "download_full":
+                logger.info(f"[VerifyFlow] No local bundle for AppID {app_id}; fetching full manifest.")
+                self._handle_download_manifest(app_id, name, game_data, dialog, branch=branch)
+            elif kind == "offline":
+                _, local_zip = outcome
+                self._verify_offline_notice(app_id, game_data, dialog, local_zip,
+                                            branch, name, fpath)
+            elif kind == "local":
+                _, local_zip, live_gids = outcome
+                game_data["_verify_live_gids"] = live_gids
+                self._use_local_verify_bundle(app_id, game_data, dialog, local_zip)
+            elif kind == "refreshed":
+                _, local_zip, failed, live_gids = outcome
+                if not failed:
+                    game_data["_verify_live_gids"] = live_gids
+                    self._use_local_verify_bundle(app_id, game_data, dialog, local_zip)
+                else:
+                    self._verify_refresh_failed_notice(app_id, game_data, dialog,
+                                                       local_zip, failed, live_gids)
+            elif kind == "hubcap":
+                _, local_zip, refreshable, hubcap_needed, live_gids = outcome
+                self._verify_hubcap_choice(app_id, branch, name, game_data, dialog,
+                                           local_zip, refreshable, hubcap_needed, live_gids)
+            else:
+                logger.error(f"[VerifyFlow] Resolution error for AppID {app_id}: {outcome[1] if len(outcome) > 1 else '?'}")
+                try:
+                    QMessageBox.warning(self, "Verify Failed",
+                                        f"Could not resolve manifests for '{name}':\n{outcome[1] if len(outcome) > 1 else 'unknown error'}")
+                except Exception:
+                    pass
+                self._cancel_verify_fetch(app_id, dialog)
+        except Exception as e:
+            # Dialog may have been closed while resolving; never strand the fetch.
+            logger.debug(f"[VerifyFlow] Resolution continuation failed: {e}")
+            try:
+                self._cancel_verify_fetch(app_id, dialog)
+            except Exception:
+                pass
+
+    def _verify_refresh_failed_notice(self, app_id: str, game_data: dict,
+                                        dialog, local_zip: str,
+                                        failed: List[tuple],
+                                        live_gids: Dict[str, Any]) -> None:
+        """Main thread: latest manifests unreachable for some depots."""
+        failed_ids = [str(d) for d, _ in failed]
+        failed_desc = ", ".join(f"{did} ({err})" for did, err in failed)
+        logger.warning(f"[VerifyFlow] Provider refresh failed for: {failed_desc}")
+        box = QMessageBox(self)
+        box.setWindowTitle("Latest Manifests Unreachable")
+        box.setText(
+            "ASSella could not fetch the latest manifests for "
+            f"{len(failed)} depot(s) ({', '.join(failed_ids)}) "
+            "from Steam CDN or Hubcap.\n\n"
+            "You can verify against your local manifests instead, but files "
+            "in those depots will be checked against the older version."
+        )
+        b_local = box.addButton("Verify With Local", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() == b_local:
+            # Stash live GIDs minus the failed depots: the stage-2 live check
+            # then guards everything we claimed, without nagging about the
+            # depots the user explicitly accepted as stale.
+            game_data["_verify_live_gids"] = {
+                did: gid for did, gid in (live_gids or {}).items() if did not in failed_ids
+            }
+            self._use_local_verify_bundle(app_id, game_data, dialog, local_zip)
+        else:
+            logger.info(f"[VerifyFlow] User cancelled verify for AppID {app_id} after refresh failure")
+            self._cancel_verify_fetch(app_id, dialog)
+
+    def _verify_hubcap_choice(self, app_id: str, branch: str, name: str,
+                              game_data: dict, dialog, local_zip: str,
+                              refreshable: List[Dict[str, Any]],
+                              hubcap_needed: List[tuple],
+                              live_gids: Dict[str, Any]) -> None:
+        """The game added new depots whose keys only Hubcap can supply (quota).
+
+        The user decides: burn quota on a full Hubcap fetch, verify without
+        the new depots, or cancel. Main thread (dialog); the best-effort
+        refresh for "without" runs in the background.
+        """
+        new_desc = ", ".join(f"{n or d} [{d}]" for d, _, n in hubcap_needed)
+        box = QMessageBox(self)
+        box.setWindowTitle("New Depots Need Hubcap Fetch")
+        box.setText(
+            f"'{name}' has {len(hubcap_needed)} new depot(s) since your last fetch: "
+            f"{new_desc}.\n\n"
+            "Their encryption keys are only available via a full Hubcap bundle "
+            "download (uses daily Hubcap quota).\n\n"
+            "How do you want to verify?"
+        )
+        b_fetch = box.addButton("Download && Verify", QMessageBox.ButtonRole.AcceptRole)
+        b_without = box.addButton("Verify Without New Depots", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == b_fetch:
+            logger.info(f"[VerifyFlow] User approved Hubcap full fetch for AppID {app_id}")
+            # Stash live GIDs: the stage-2 live check then guards the Hubcap
+            # bundle against ingestion lag before it is used for verification.
+            game_data["_verify_live_gids"] = dict(live_gids or {})
+            self._handle_download_manifest(app_id, name, game_data, dialog, branch=branch)
+        elif clicked == b_without:
+            logger.info(f"[VerifyFlow] Verifying AppID {app_id} without {len(hubcap_needed)} new depot(s)")
+            game_data["_verify_live_gids"] = dict(live_gids or {})
+            if refreshable:
+                self._verify_without_new_async(app_id, branch, game_data, dialog,
+                                               local_zip, refreshable)
+            else:
+                self._use_local_verify_bundle(app_id, game_data, dialog, local_zip)
+        else:
+            logger.info(f"[VerifyFlow] User cancelled verify for AppID {app_id} at Hubcap choice")
+            self._cancel_verify_fetch(app_id, dialog)
+
+    def _verify_without_new_async(self, app_id: str, branch: str, game_data: dict,
+                                  dialog, local_zip: str,
+                                  refreshable: List[Dict[str, Any]]) -> None:
+        """Background best-effort refresh, then submit the local bundle."""
+        def _work():
+            try:
+                from core import verify_flow as _vf
+                _vf.refresh_via_provider(app_id, branch, local_zip, refreshable)
+            except Exception as e:
+                logger.debug(f"[VerifyFlow] Best-effort refresh failed: {e}")
+            try:
+                QMetaObject.invokeMethod(
+                    self,
+                    "_run_on_main_thread",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(object, lambda: self._use_local_verify_bundle(
+                        app_id, game_data, dialog, local_zip)),
+                )
+            except Exception as e:
+                logger.debug(f"[VerifyFlow] Marshal after best-effort refresh failed: {e}")
+                try:
+                    self._cancel_verify_fetch(app_id, dialog)
+                except Exception:
+                    pass
+
+        self.executor.submit(_work)
+
+    def _verify_offline_notice(self, app_id: str, game_data: dict, dialog,
+                               local_zip: str, branch: str, name: str, fpath) -> bool:
+        """Steam PICS and steamcmd both failed: Retry / local / Cancel."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Steam Servers Unreachable")
+        box.setText(
+            "Could not reach Steam PICS or SteamCMD to check for manifest updates, "
+            "so ASSella cannot confirm your local manifests are the latest.\n\n"
+            "You can retry, verify against your local manifests (files are "
+            "checked against the cached version), or cancel."
+        )
+        b_retry = box.addButton("Retry", QMessageBox.ButtonRole.ActionRole)
+        b_local = box.addButton("Use Local Manifests", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == b_retry:
+            logger.info(f"[VerifyFlow] Retrying live lookup for AppID {app_id}")
+            return self._run_verify_resolution(app_id, branch, name, game_data, dialog, fpath)
+        if clicked == b_local:
+            logger.warning(f"[VerifyFlow] Offline verify for AppID {app_id} using possibly-stale local bundle")
+            game_data["_verify_offline_accepted"] = True
+            self._use_local_verify_bundle(app_id, game_data, dialog, local_zip)
+        else:
+            logger.info(f"[VerifyFlow] User cancelled offline verify for AppID {app_id}")
+            self._cancel_verify_fetch(app_id, dialog)
+        return True
 
     def _handle_smart_update(self, app_id: str, name: str, game_data: dict, dialog, branch: str = "public") -> None:
         """Handles a Smart Update Mode fetch via SmartUpdateTask."""
@@ -1499,13 +1845,17 @@ class LibraryActionsMixin:
             branch = game_data.get("branch") or morrenus_api.get_selected_branch(app_id)
 
         download_only = game_data.get("_download_only", False)
+        is_verify = bool(game_data.get("_is_verify"))
+        has_dialog_spinner = bool(dialog and hasattr(dialog, "validate_btn") and dialog.validate_btn)
 
-        if not download_only:
+        if not download_only and not is_verify and not has_dialog_spinner:
             self._download_progress_dialog = QProgressDialog(
                 f"Downloading {name}...", "Cancel", 0, 0, self
             )
             self._download_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
             self._download_progress_dialog.show()
+        else:
+            self._download_progress_dialog = None
 
         self.executor.submit(self._download_manifest_async, app_id, game_data, branch)
 
@@ -1676,21 +2026,30 @@ class LibraryActionsMixin:
 
     def _submit_job(self, filepath: str, game_data: dict, dialog: QDialog) -> None:
         """Submit the job to the main window queue."""
+        has_dialog_spinner = bool(dialog and hasattr(dialog, "validate_btn") and dialog.validate_btn)
+        is_verify = bool(game_data.get("_is_verify"))
+
         if game_data.get("_smart_update"):
             logger.info(f"[Smart Update] _submit_job: using pre-assembled game_data, skipping zip parse for AppID {game_data.get('appid')}")
-            parse_progress = QProgressDialog("Applying manifest...", None, 0, 0, self)
-            parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
-            parse_progress.setMinimumDuration(0)
-            parse_progress.setCancelButton(None)
-            parse_progress.show()
+            if not has_dialog_spinner and not is_verify:
+                parse_progress = QProgressDialog("Applying manifest...", None, 0, 0, self)
+                parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
+                parse_progress.setMinimumDuration(0)
+                parse_progress.setCancelButton(None)
+                parse_progress.show()
+            else:
+                parse_progress = None
             self.zip_parse_complete.emit(game_data, filepath, game_data, dialog, parse_progress)
             return
 
-        parse_progress = QProgressDialog("Reading manifest...", None, 0, 0, self)
-        parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
-        parse_progress.setMinimumDuration(200)
-        parse_progress.setCancelButton(None)
-        parse_progress.show()
+        if not has_dialog_spinner and not is_verify:
+            parse_progress = QProgressDialog("Reading manifest...", None, 0, 0, self)
+            parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
+            parse_progress.setMinimumDuration(200)
+            parse_progress.setCancelButton(None)
+            parse_progress.show()
+        else:
+            parse_progress = None
 
         def _parse_in_background():
             try:
@@ -1747,6 +2106,33 @@ class LibraryActionsMixin:
                 if not game_data.get("_is_rollback") and not is_valid_stage2:
                     should_warn = True
 
+                # Verify jobs: the cache-based check above consults
+                # latest_steam_manifest_id/{appid}, itself a cached value that
+                # verify must not trust. When live PICS GIDs were stashed at
+                # resolution time, they replace it as the authority: Hubcap
+                # bundles lagging behind live Steam are caught here before
+                # use. Offline-accepted verifies skip both (user accepted).
+                if game_data.get("_is_verify") and not game_data.get("_is_rollback") \
+                        and not game_data.get("_verify_offline_accepted"):
+                    _live_gids = game_data.get("_verify_live_gids") or {}
+                    if _live_gids and parsed_data and isinstance(parsed_data.get("manifests"), dict):
+                        _parsed_m = {str(k): str(v) for k, v in parsed_data["manifests"].items()}
+                        _stale = sorted(
+                            did for did, gid in _live_gids.items()
+                            if did in _parsed_m and _parsed_m[did] != gid
+                        )
+                        if _stale:
+                            should_warn = True
+                            warning_reason = (
+                                "Used manifests are stale vs live Steam for "
+                                f"{len(_stale)} depot(s): {', '.join(_stale[:8])}"
+                                + ("…" if len(_stale) > 8 else "")
+                                + ". Hubcap may not have ingested the latest Steam update yet."
+                            )
+                            logger.warning(f"[VerifyFlow] AppID {appid}: live-GID mismatch — {warning_reason}")
+                        else:
+                            should_warn = False
+
                 if should_warn:
                     msg = (
                         f"ASSella detected that the manifest is older than the latest Steam version.\n\n"
@@ -1792,6 +2178,11 @@ class LibraryActionsMixin:
 
             if selection.should_prompt and not selection.auto_skip:
                 parent_widget = self if isinstance(self, QWidget) else getattr(self, "main_window", None)
+                is_installed = bool(game_info.get("library_path") or game_info.get("install_path") or is_verify or game_data.get("_lock_storage"))
+                lock_storage = bool(is_installed or game_data.get("_lock_storage"))
+                lock_dlc_only = bool(game_data.get("_lock_dlc_only"))
+                dlc_only_mode = bool(game_data.get("_dlc_only") or lock_dlc_only)
+
                 depot_dialog = DepotSelectionDialog(
                     parsed_data["appid"],
                     parsed_data.get("game_name", ""),
@@ -1802,8 +2193,12 @@ class LibraryActionsMixin:
                     is_single_depot=(len(depots) == 1),
                     missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
                     missing_depots_info=parsed_data.get("missing_depots_info"),
+                    library_path=game_info.get("library_path") or game_data.get("library_path"),
                     refetched_depots=game_data.get("_recovered_depot_ids") or parsed_data.get("refetched_depots"),
                     current_build_id=str(game_info.get("buildid") or "").strip() if isinstance(game_info, dict) else "",
+                    lock_storage=lock_storage,
+                    dlc_only_mode=dlc_only_mode,
+                    lock_dlc_only=lock_dlc_only,
                 )
 
                 # Apply recommended build selection if set
@@ -1887,15 +2282,13 @@ class LibraryActionsMixin:
                 logger.info("User cancelled depot selection.")
                 if hasattr(self, "_active_fetches"):
                     self._active_fetches.discard(appid)
-                if dialog:
-                    try:
-                        dialog.accept()
-                    except RuntimeError:
-                        pass
-                try:
-                    self.accept()
-                except RuntimeError:
-                    pass
+                if dialog and hasattr(dialog, "validate_btn") and dialog.validate_btn:
+                    dialog.validate_btn.set_loading(False)
+                    dialog.validate_btn.setEnabled(True)
+                    if hasattr(dialog, "_update_validate_button_state"):
+                        dialog._update_validate_button_state()
+                    elif hasattr(dialog, "_update_validate_button"):
+                        dialog._update_validate_button()
                 return
 
         self.main_window.job_queue.add_job(filepath, metadata)

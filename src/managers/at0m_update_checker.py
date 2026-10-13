@@ -91,31 +91,45 @@ class At0mUpdateChecker(QObject):
 
     # ── Discovery ────────────────────────────────────────────────────────────
 
-    def get_all_at0m_games(self) -> Dict[str, Dict[str, Any]]:
+    def get_all_at0m_games(self, live_games: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Dict[str, Any]]:
         """
         Discovers all REAL AT0-M and DLC-mode games.
         CRITICAL: Normal ACCELA-mode games must be strictly excluded.
+
+        live_games: optional snapshot of GameManager.games (in-memory scan
+        results). The on-disk games cache can lag behind a just-finished
+        scan, so live data joins the exclusion set; both are unioned.
         """
         discovered: Dict[str, Dict[str, Any]] = {}
         accela_installed: Set[str] = set()
 
         # 1. Collect all installed physical ACCELA games so we NEVER touch them
         from utils.games_cache import get_games_cache
+        from utils.game_modes import is_accela_managed, is_atom_managed
         try:
-            for g in get_games_cache().get_games():
-                if g.get("accela_marker_path") or g.get("source") == "ACCELA":
+            _live = list(live_games) if live_games else []
+        except Exception:
+            _live = []
+        try:
+            _cached = get_games_cache().get_games() or []
+        except Exception as e:
+            logger.debug(f"[At0mChecker] Error reading games cache for exclusions: {e}")
+            _cached = []
+        for g in _live + _cached:
+            try:
+                if is_accela_managed(g):
                     aid = str(g.get("appid", ""))
                     if aid and aid != "0":
                         accela_installed.add(aid)
-        except Exception as e:
-            logger.debug(f"[At0mChecker] Error reading games cache for exclusions: {e}")
+            except Exception:
+                pass
 
         # 2. Add installed AT0-M / Plugin games
         try:
             for g in get_games_cache().get_games():
                 aid = str(g.get("appid", ""))
                 if aid and aid != "0" and aid not in accela_installed:
-                    if g.get("source") == "at0-m" or g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"):
+                    if is_atom_managed(g):
                         discovered[aid] = {
                             "appid": aid,
                             "name": g.get("game_name", f"App {aid}"),
@@ -141,21 +155,23 @@ class At0mUpdateChecker(QObject):
         except Exception as e:
             logger.debug(f"[At0mChecker] Error reading plugin library: {e}")
 
-        # 4. Check DLC-only games in settings (only if not an ACCELA game)
+        # 4. Check DLC-only games in settings (never ACCELA installs)
         settings = get_settings()
         for k in settings.allKeys():
             if k.startswith("dlc_only_mode/"):
                 aid = k.split("/", 1)[1]
                 if aid.isdigit() and settings.value(k, False, type=bool):
-                        if aid in discovered:
-                            discovered[aid]["is_dlc_only"] = True
-                        else:
-                            discovered[aid] = {
-                                "appid": aid,
-                                "name": f"App {aid}",
-                                "source": "dlc_mode",
-                                "is_dlc_only": True,
-                            }
+                    if aid in accela_installed:
+                        continue
+                    if aid in discovered:
+                        discovered[aid]["is_dlc_only"] = True
+                    else:
+                        discovered[aid] = {
+                            "appid": aid,
+                            "name": f"App {aid}",
+                            "source": "dlc_mode",
+                            "is_dlc_only": True,
+                        }
 
         # 5. Smart Config Discovery: Games in AdditionalApps that have matching decryption keys
         # (discovers games added outside ASSella, e.g. manual edits or external tools)
@@ -455,7 +471,8 @@ class At0mUpdateChecker(QObject):
 
     # ── Background Scan Runner ───────────────────────────────────────────────
 
-    def check_all_games_async(self, force_refresh: bool = False) -> None:
+    def check_all_games_async(self, force_refresh: bool = False,
+                              live_games: Optional[List[Dict[str, Any]]] = None) -> None:
         """Runs the update check asynchronously on a background thread."""
         if self._is_checking:
             logger.info("[At0mChecker] Scan already running.")
@@ -466,7 +483,7 @@ class At0mUpdateChecker(QObject):
 
         def _worker():
             try:
-                all_games = self.get_all_at0m_games()
+                all_games = self.get_all_at0m_games(live_games=live_games)
                 total = len(all_games)
                 logger.info(f"[At0mChecker] Starting check for {total} AT0-M / DLC game(s)...")
 

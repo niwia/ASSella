@@ -249,6 +249,27 @@ class DownloadWorkshopTask(QObject):
         total_items = len(wids)
         percentage_regex = re.compile(r"(\d{1,3}(?:\.\d{1,2})?)%")
 
+        # Auto-tune: slider value is the cap when on, exact value when off.
+        from utils import auto_tune as _auto_tune
+        _settings = get_settings()
+        _cap = _auto_tune.clamp(int(max_downloads) if str(max_downloads).isdigit() else 8, 1, 30)
+        _auto_on = _auto_tune.is_auto_enabled(_settings, "workshop_auto_max_downloads")
+        _best_key = "workshop_auto_tune_best"
+        if _auto_on:
+            current_n = _auto_tune.get_start_concurrency(
+                _settings,
+                cap_key="workshop_max_downloads",
+                auto_key="workshop_auto_max_downloads",
+                best_key=_best_key,
+                default_start=_cap,
+                default_cap=_cap,
+            )
+            # Keep the queued cap if the stored best predates it.
+            current_n = min(_cap, max(current_n, 1))
+            self.log(f"  → Auto-tune ON: starting at {current_n} concurrent chunks (cap {_cap}).")
+        else:
+            current_n = _cap
+
         dotnet_exe = get_dotnet_path()
         if not dotnet_exe:
             self.log("  ✗ dotnet runtime not found. Please install .NET 9 runtime.")
@@ -294,6 +315,10 @@ class DownloadWorkshopTask(QObject):
             else:
                 out_dir = os.path.join(dest_path, "mods", appid, wid)
 
+            _size_before = self._get_dir_size(out_dir) if os.path.isdir(out_dir) else 0
+            _t0 = time.time()
+            _errors = 0
+
             cmd = [
                 dotnet_exe, self.ddm_exe,
                 "-app", appid,
@@ -301,7 +326,7 @@ class DownloadWorkshopTask(QObject):
                 "-manifestfile", manifest_path,
                 "-depotkeys", self.keys_file,
                 "-dir", out_dir,
-                "-max-downloads", str(max_downloads),
+                "-max-downloads", str(current_n),
             ]
             if cellid:
                 cmd += ["-cellid", str(cellid)]
@@ -343,10 +368,48 @@ class DownloadWorkshopTask(QObject):
                     self.log(f"  ✓ Download complete → {out_dir}")
                 else:
                     self.log(f"  ✗ DepotDownloader exited with code {proc.returncode}.")
+                    _errors = 1
+                    if _auto_on:
+                        try:
+                            current_n = _auto_tune.record_result(
+                                get_settings(), _best_key, current_n, 0.0, _cap, _errors
+                            )
+                            self.log(f"  → Auto-tune: trouble seen, next: {current_n} (cap {_cap}).")
+                        except Exception as _at_err:
+                            logger.debug(f"Auto-tune step failed: {_at_err}")
                     continue
             except Exception as e:
                 self.log(f"  ✗ Failed to launch DepotDownloader: {e}")
+                if _auto_on:
+                    try:
+                        current_n = _auto_tune.record_result(
+                            get_settings(), _best_key, current_n, 0.0, _cap, 1
+                        )
+                    except Exception as _at_err:
+                        logger.debug(f"Auto-tune step failed: {_at_err}")
                 continue
+
+            if _auto_on:
+                try:
+                    _elapsed = max(0.001, time.time() - _t0)
+                    _delta = max(0, self._get_dir_size(out_dir) - _size_before)
+                    if not _auto_tune.should_learn(_delta):
+                        logger.debug(
+                            f"Auto-tune: workshop {wid} moved {_delta} bytes — "
+                            f"validation-only, holding at {current_n}"
+                        )
+                        self.log(f"  → Auto-tune: validation-only, holding at {current_n} (cap {_cap}).")
+                    else:
+                        _mbps = _delta / _elapsed
+                        current_n = _auto_tune.record_result(
+                            get_settings(), _best_key, current_n, float(_mbps), _cap, _errors
+                        )
+                        self.log(
+                            f"  → Auto-tune: {_auto_tune.format_speed(_mbps)} "
+                            f"→ next: {current_n} (cap {_cap})."
+                        )
+                except Exception as _at_err:
+                    logger.debug(f"Auto-tune step failed: {_at_err}")
 
             if steam_integration and dest_path:
                 self.log("  → Applying Steam integration...")

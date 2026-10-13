@@ -166,6 +166,15 @@ def create_downloads_tab(dialog) -> QWidget:
     loc_row.addWidget(dialog.dl_location_combo)
     dl_layout.addLayout(loc_row)
 
+    dialog.auto_tune_checkbox = create_checkbox_setting(
+        "Auto adapting limiter (beta)",
+        "auto_max_downloads",
+        True,
+        dialog,
+        "Automatically adjusts concurrency within the slider limit. Off = use the slider value exactly.",
+    )
+    dl_layout.addWidget(dialog.auto_tune_checkbox)
+
     slider_layout = QHBoxLayout()
     slider_layout.setContentsMargins(2, 2, 2, 2)
     slider_layout.setSpacing(10)
@@ -213,6 +222,26 @@ def create_downloads_tab(dialog) -> QWidget:
 
     slider_layout.addWidget(dialog.max_downloads_slider, 1)
     slider_layout.addWidget(dialog.max_downloads_val_lbl)
+
+    def _refresh_dl_labels():
+        try:
+            auto_on = dialog.auto_tune_checkbox.isChecked()
+        except (AttributeError, RuntimeError):
+            auto_on = True
+        if auto_on:
+            max_dl_label.setText("Max Concurrent Downloads (Auto cap):")
+            max_dl_label.setToolTip(
+                "Auto-tune is ON: concurrency adapts between depots based on measured speed. The slider sets the maximum."
+            )
+        else:
+            max_dl_label.setText("Concurrent Downloads:")
+            max_dl_label.setToolTip("Set maximum concurrent downloads (1-30). Lower values (e.g. 1-2) reduce network usage.")
+
+    try:
+        dialog.auto_tune_checkbox.toggled.connect(lambda _c: _refresh_dl_labels())
+    except (AttributeError, RuntimeError):
+        pass
+    _refresh_dl_labels()
 
     dl_layout.addLayout(slider_layout)
     gen_layout.addWidget(dl_card)

@@ -156,8 +156,9 @@ class DepotHeaderView(QHeaderView):
         self.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     def set_check_state_and_count(self, state: Qt.CheckState, count_str: str):
-        if self._check_state != state or self._count_str != count_str:
-            self._check_state = state
+        clean_state = Qt.CheckState.Checked if state == Qt.CheckState.Checked else Qt.CheckState.Unchecked
+        if self._check_state != clean_state or self._count_str != count_str:
+            self._check_state = clean_state
             self._count_str = count_str
             self.viewport().update()
 
@@ -187,11 +188,6 @@ class DepotHeaderView(QHeaderView):
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
                 if self._check_state == Qt.CheckState.Checked:
                     painter.drawPixmap(box_rect.toRect(), lit_icon)
-                elif self._check_state == Qt.CheckState.PartiallyChecked:
-                    painter.drawPixmap(box_rect.toRect(), unlit_icon)
-                    dash_h = 2.5
-                    dash_y = by + (box_size - dash_h) / 2.0
-                    painter.fillRect(QRectF(bx + 3.0, dash_y, box_size - 6.0, dash_h), accent_color)
                 else:
                     painter.drawPixmap(box_rect.toRect(), unlit_icon)
             else:
@@ -205,12 +201,6 @@ class DepotHeaderView(QHeaderView):
                     p.lineTo(bx + 6.2, by + 10.8)
                     p.lineTo(bx + 11.8, by + 4.2)
                     painter.strokePath(p, QPen(QColor("#FFFFFF"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-                elif self._check_state == Qt.CheckState.PartiallyChecked:
-                    painter.setBrush(accent_color)
-                    painter.setPen(QPen(accent_color, 1.2))
-                    painter.drawRoundedRect(box_rect, 3.5, 3.5)
-
-                    painter.fillRect(QRectF(bx + 3.5, by + 6.5, 8.0, 2.0), QColor("#FFFFFF"))
                 else:
                     painter.setBrush(QColor(255, 255, 255, 12))
                     painter.setPen(QPen(QColor(255, 255, 255, 75), 1.2))

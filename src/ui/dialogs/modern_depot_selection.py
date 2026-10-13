@@ -145,11 +145,16 @@ class ModernDepotSelectionDialog(QDialog):
 
         self.text_color_on_accent = get_best_foreground_color(self.accent_color, "#111318", "#FFFFFF")
 
+        self.lock_storage = bool(kwargs.get("lock_storage", False))
+        self.lock_dlc_only = bool(kwargs.get("lock_dlc_only", False))
         self.selected_storage_path = None
         self._selected_build_id = self.current_build_id
         self._is_build_pinned = (self.branch != "public")
         self._manifest_overrides: Dict[str, str] = {}
-        self._dlc_only_mode = self._settings.value(f"dlc_only_mode/{self.app_id}", False, type=bool)
+        if kwargs.get("dlc_only_mode") is not None:
+            self._dlc_only_mode = bool(kwargs["dlc_only_mode"])
+        else:
+            self._dlc_only_mode = self._settings.value(f"dlc_only_mode/{self.app_id}", False, type=bool)
         self._current_category_filter = "all"  # "all" or "dlc"
         self._show_hidden_depots = self._settings.value("show_hidden_depots", False, type=bool)
 
@@ -795,7 +800,7 @@ class ModernDepotSelectionDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         act_row.addWidget(self.cancel_btn)
 
-        self.ok_btn = QPushButton("📥  OK")
+        self.ok_btn = QPushButton("OK")
         self.ok_btn.setFixedHeight(34)
         self.ok_btn.setFixedWidth(90)
         self.ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -865,6 +870,27 @@ class ModernDepotSelectionDialog(QDialog):
             tooltip = f"Path: {spath}" + (f"\nAvailable: {free_str}" if free_str else "")
             return label, free_str, tooltip
 
+        # Locked storage display (verify / update / DLC flows over installed
+        # games): greyed-out label showing the install location, no choice.
+        # Fresh installs (lock_storage unset) always get the selectable UI.
+        from ui.dialogs.storage_lock import (
+            create_locked_storage_button,
+            resolve_locked_target,
+        )
+        _locked_target = resolve_locked_target(
+            self.parent(),
+            getattr(self, "app_id", ""),
+            self.preferred_library_path,
+            storage_paths,
+            bool(getattr(self, "lock_storage", False)),
+        )
+        if _locked_target:
+            lbl_text, free_str, _ = _format_storage_info(_locked_target)
+            btn = create_locked_storage_button(_locked_target, lbl_text, free_str, height=34, radius=6)
+            layout.addWidget(btn)
+            self.selected_storage_path = _locked_target
+            return
+
         ar, ag, ab = self.accent_r, self.accent_g, self.accent_b
         acc = self.accent_color
 
@@ -875,7 +901,7 @@ class ModernDepotSelectionDialog(QDialog):
             spath = storage_paths[i]
             lbl_text, free_str, tip_text = _format_storage_info(spath)
 
-            btn_text = f"💾  {lbl_text}\n    {free_str}" if free_str else f"💾  {lbl_text}"
+            btn_text = f"{lbl_text}\n    {free_str}" if free_str else f"{lbl_text}"
             btn = QPushButton(btn_text)
             btn.setCheckable(True)
             btn.setFixedHeight(34)

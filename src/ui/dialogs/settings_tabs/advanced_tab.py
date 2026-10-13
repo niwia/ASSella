@@ -49,6 +49,16 @@ def create_advanced_tab(dialog) -> QWidget:
     # Workshop Downloader Settings Card
     ws_card, ws_layout = dialog._create_card_frame("Advanced Workshop Settings")
 
+    dialog.workshop_auto_tune_checkbox = create_checkbox_setting(
+        "Auto adapting limiter (beta)",
+        "workshop_auto_max_downloads",
+        True,
+        dialog,
+        "Automatically adjusts concurrency within the slider limit. Off = use the slider value exactly.",
+        show_description=False,
+    )
+    ws_layout.addWidget(dialog.workshop_auto_tune_checkbox)
+
     dialog.workshop_steam_checkbox = create_checkbox_setting(
         "Enable Steam Integration for Workshop Downloads",
         "workshop_steam_enabled",
@@ -112,6 +122,26 @@ def create_advanced_tab(dialog) -> QWidget:
 
     ws_grid.addWidget(ws_max_dl_label, 0, 0)
     ws_grid.addLayout(ws_slider_layout, 0, 1)
+
+    def _refresh_ws_labels():
+        try:
+            auto_on = dialog.workshop_auto_tune_checkbox.isChecked()
+        except (AttributeError, RuntimeError):
+            auto_on = True
+        if auto_on:
+            ws_max_dl_label.setText("Max Concurrent Workshop Downloads (Auto cap):")
+            ws_max_dl_label.setToolTip(
+                "Auto-tune is ON: concurrency adapts between items based on measured speed. The slider sets the maximum."
+            )
+        else:
+            ws_max_dl_label.setText("Max Concurrent Workshop Downloads:")
+            ws_max_dl_label.setToolTip("Set maximum concurrent workshop downloads (1-30).")
+
+    try:
+        dialog.workshop_auto_tune_checkbox.toggled.connect(lambda _c: _refresh_ws_labels())
+    except (AttributeError, RuntimeError):
+        pass
+    _refresh_ws_labels()
 
     ws_cell_id_label = QLabel("Cell ID:")
     ws_cell_id_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")

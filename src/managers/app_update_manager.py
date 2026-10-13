@@ -60,15 +60,7 @@ class AppUpdateManager(QObject):
             # Fall back to the newest release in our own channel instead.
             tag = ""
 
-        # Channel detection drives both the asset pick and the release lookup
-        # below. Derive it here so the worker thread does not depend on a local
-        # that only exists in check_tool_updates().
         local_clean = extract_semver(app_version)
-        is_local_canary = (
-            "canary" in local_clean.lower()
-            or "testing" in local_clean.lower()
-            or local_clean.startswith("3.")
-        )
 
         reply = QMessageBox.question(
             self._parent, "Install Update",
@@ -130,23 +122,19 @@ class AppUpdateManager(QObject):
                             raise
 
                 download_url = None
-                is_local_canary = (
-                    "canary" in local_clean.lower()
-                    or "testing" in local_clean.lower()
-                    or local_clean.startswith("3.")
-                )
+                appimage_candidates = []
                 for asset in release_data.get("assets", []):
                     name = asset.get("name", "")
-                    if "zsync" in name.lower():
+                    if name.lower().endswith(".zsync") or name.lower().endswith(".sha256"):
                         continue
-                    if is_local_canary:
-                        if name.lower().endswith(".appimage"):
-                            download_url = asset["browser_download_url"]
+                    if name.lower().endswith(".appimage"):
+                        if name == "ASSella.AppImage":
+                            download_url = asset.get("browser_download_url")
                             break
-                    else:
-                        if name == "ASSella.AppImage" or (name.endswith(".AppImage") and "canary" not in name.lower()):
-                            download_url = asset["browser_download_url"]
-                            break
+                        appimage_candidates.append(asset.get("browser_download_url"))
+
+                if not download_url and appimage_candidates:
+                    download_url = appimage_candidates[0]
 
                 if not download_url:
                     raise RuntimeError("No AppImage asset found in the release.")

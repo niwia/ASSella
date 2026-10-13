@@ -55,6 +55,7 @@ class SingleDepotSelectionDialog(QDialog):
         branch="public",
         branches=None,
         current_build_id="",
+        lock_storage=False,
         **kwargs,
     ):
         super().__init__(parent)
@@ -70,6 +71,7 @@ class SingleDepotSelectionDialog(QDialog):
         self.show_storage = show_storage
         self.is_single_depot = True
         self.preferred_library_path = library_path
+        self.lock_storage = lock_storage or kwargs.get("lock_storage", False)
         self.refetched_depots = [str(d) for d in (refetched_depots or []) if str(d).strip()]
         self.selected_storage_path: Optional[str] = None
         self._storage_overflow_combo = None
@@ -556,6 +558,27 @@ class SingleDepotSelectionDialog(QDialog):
 
             tooltip = f"Storage: {path_str}" + (f"\nAvailable: {free_str}" if free_str else "")
             return label, free_str, tooltip
+
+        # Locked storage display (verify / update / DLC flows over installed
+        # games): greyed-out label showing the install location, no choice.
+        # Fresh installs (lock_storage unset) always get the selectable UI.
+        from ui.dialogs.storage_lock import (
+            create_locked_storage_button,
+            resolve_locked_target,
+        )
+        _locked_target = resolve_locked_target(
+            self.parent(),
+            getattr(self, "app_id", ""),
+            self.preferred_library_path,
+            storage_paths,
+            bool(getattr(self, "lock_storage", False)),
+        )
+        if _locked_target:
+            lbl_text, free_str, _ = _format_storage_info(_locked_target)
+            btn = create_locked_storage_button(_locked_target, lbl_text, free_str, height=28, radius=4)
+            layout.addWidget(btn, 1)
+            self.selected_storage_path = _locked_target
+            return
 
         from utils.color_utils import get_best_foreground_color
         text_hex = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")

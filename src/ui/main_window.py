@@ -1932,6 +1932,7 @@ class MainWindow(QMainWindow):
                                     _missing_hubcap=parsed_data.get("missing_depots_from_hubcap"),
                                     _missing_info=parsed_data.get("missing_depots_info"),
                                     _refetched=parsed_data.get("refetched_depots"),
+                                    _lib_path=game_data.get("library_path") or game_data.get("install_path"),
                                     _result_holder=result_holder,
                                     _done_event=done_event,
                                 ):
@@ -1947,6 +1948,8 @@ class MainWindow(QMainWindow):
                                             missing_hubcap_depots=_missing_hubcap,
                                             missing_depots_info=_missing_info,
                                             refetched_depots=_refetched,
+                                            library_path=_lib_path,
+                                            lock_storage=True,
                                         )
                                         if depot_dialog.exec():
                                             _result_holder[0] = depot_dialog.get_selected_depots()
@@ -2348,13 +2351,15 @@ class MainWindow(QMainWindow):
                 import json
                 local_clean = _extract_semver(app_version)
 
-                is_local_canary = (
-                    "canary" in local_clean.lower()
-                    or "testing" in local_clean.lower()
-                    or "release_candidate" in local_clean.lower()
-                    or "releasecandidate" in local_clean.lower()
-                    or local_clean.startswith("3.")
-                )
+                configured_channel = self.settings.value("update_channel", "").strip().lower()
+                if configured_channel not in ("stable", "beta", "canary"):
+                    if any(x in local_clean.lower() for x in ("canary", "testing")):
+                        configured_channel = "canary"
+                    elif any(x in local_clean.lower() for x in ("beta", "dev", "rc")):
+                        configured_channel = "beta"
+                    else:
+                        configured_channel = "stable"
+                    self.settings.setValue("update_channel", configured_channel)
 
                 # 1. Primary check: GitHub Releases API (detects full releases + pre-releases with AppImage)
                 try:
@@ -2366,25 +2371,25 @@ class MainWindow(QMainWindow):
                     with urllib.request.urlopen(req, timeout=10) as response:
                         releases = json.loads(response.read().decode("utf-8"))
                         for r in releases:
-                            tag = r.get("tag_name", "").strip()
-                            is_remote_canary = (
-                                "canary" in tag.lower()
-                                or "testing" in tag.lower()
-                                or "release_candidate" in tag.lower()
-                                or "releasecandidate" in tag.lower()
-                                or tag.lstrip("v").startswith("3.")
-                            )
-                            # Strict channel isolation:
-                            # Stable/Beta (2.x) must NEVER pick up Canary/Testing (3.x)
-                            # Canary (3.x) must NEVER pick up Stable/Beta (2.x)
-                            if is_local_canary != is_remote_canary:
+                            tag = str(r.get("tag_name", "")).strip()
+                            tag_lower = tag.lower()
+                            is_pre = bool(r.get("prerelease", False))
+                            is_canary = any(x in tag_lower for x in ("canary", "testing"))
+                            is_beta = any(x in tag_lower for x in ("beta", "dev", "rc")) and not is_canary
+                            is_stable = not is_canary and not is_beta and not is_pre
+
+                            if configured_channel == "stable" and not is_stable:
+                                continue
+                            elif configured_channel == "beta" and not is_beta and not is_stable:
                                 continue
 
-                            assets = [a.get("name", "") for a in r.get("assets", [])]
-                            if is_local_canary:
-                                has_appimage = any(a.lower().endswith(".appimage") for a in assets)
-                            else:
-                                has_appimage = any(a == "ASSella.AppImage" or (a.endswith(".AppImage") and "canary" not in a.lower()) for a in assets)
+                            assets = [a.get("name", "") for a in r.get("assets", []) if isinstance(a, dict)]
+                            has_appimage = any(
+                                a.lower().endswith(".appimage")
+                                and not a.lower().endswith(".zsync")
+                                and not a.lower().endswith(".sha256")
+                                for a in assets
+                            )
 
                             if has_appimage:
                                 remote_clean = _extract_semver(tag)
@@ -2394,14 +2399,7 @@ class MainWindow(QMainWindow):
 
                 # 2. Fallback check: raw version file on GitHub branch
                 if not remote_clean:
-                    if is_local_canary:
-                        branch = "canary"
-                    elif "alpha" in local_clean.lower():
-                        branch = "alpha"
-                    elif any(x in local_clean.lower() for x in ("beta", "rc")):
-                        branch = "beta"
-                    else:
-                        branch = "main"
+                    branch = configured_channel if configured_channel in ("beta", "canary") else "main"
                     url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
                     logger.info(f"Checking for tool updates from raw branch: {branch}")
                     req = urllib.request.Request(
@@ -2413,11 +2411,23 @@ class MainWindow(QMainWindow):
                         remote_clean = _extract_semver(remote_raw)
 
                 logger.info(
-                    f"Tool update check: remote='{remote_clean}', local='{local_clean}'"
+                    f"Tool update check: channel='{configured_channel}', remote='{remote_clean}', local='{local_clean}'"
                 )
                 if remote_clean:
-                    # Only notify update if remote is strictly newer than local
-                    if _parse_version(remote_clean) > _parse_version(local_clean):
+                    is_local_canary = any(x in local_clean.lower() for x in ("canary", "testing", "devtest"))
+                    is_local_beta = any(x in local_clean.lower() for x in ("beta", "dev", "rc")) and not is_local_canary
+                    is_local_stable = not is_local_canary and not is_local_beta
+
+                    channel_mismatch = (
+                        (configured_channel == "stable" and not is_local_stable)
+                        or (configured_channel == "beta" and not is_local_beta)
+                        or (configured_channel == "canary" and not is_local_canary)
+                    )
+
+                    if channel_mismatch and remote_clean != local_clean:
+                        logger.info(f"Cross-channel update available: {remote_clean} (channel: {configured_channel}, current: {local_clean})")
+                        status = "update_available"
+                    elif _parse_version(remote_clean) > _parse_version(local_clean):
                         logger.info(f"Tool update available: {remote_clean} (current: {local_clean})")
                         status = "update_available"
                     else:

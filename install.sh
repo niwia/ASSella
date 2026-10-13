@@ -431,12 +431,10 @@ import sys, json
 target_channel = sys.argv[1] if len(sys.argv) > 1 else "beta"
 try:
     data = json.load(sys.stdin)
-    if not isinstance(data, list):
-        sys.exit(1)
     for r in data:
         tag = str(r.get("tag_name", "")).strip()
         tag_lower = tag.lower()
-        is_canary = any(x in tag_lower for x in ("canary", "testing", "release_candidate", "releasecandidate")) or tag.lstrip("v").startswith("3.")
+        is_canary = any(x in tag_lower for x in ("canary", "testing", "release_candidate", "releasecandidate"))
         is_beta = any(x in tag_lower for x in ("beta", "dev", "rc")) and not is_canary
         is_stable = not is_canary and not is_beta
 

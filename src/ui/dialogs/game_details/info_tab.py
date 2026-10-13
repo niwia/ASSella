@@ -2799,7 +2799,7 @@ def on_remove_from_vapor_clicked(dialog) -> None:
         "Move to ASSella",
         f"Move '{game_name}' from AT0-M to ASSella Managed?\n\n"
         "• Unlinks depots and decryption keys from SLSsteam config\n"
-        "• Restores .ACCELA installation marker\n"
+        "• Marks the install as ASSella-managed (.DepotDownloader)\n"
         "• Prompts for depot selection and verifies game files\n\n"
         "Do you want to proceed?",
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -2813,15 +2813,38 @@ def on_remove_from_vapor_clicked(dialog) -> None:
     # 1. Unregister from AT0-M plugin mode and clean config.yaml (keeps game in AdditionalApps!)
     convert_plugin_game_to_accela(appid)
 
-    # 2. Restore .ACCELA marker
+    # 2. Mark the install as ASSella-managed via .DepotDownloader (the sole
+    # marker; no .ACCELA/.assella folders are created anymore). Drop any
+    # legacy markers so detection is unambiguous going forward.
     install_path = game_data.get("install_path")
     if install_path and os.path.isdir(install_path):
-        accela_marker = os.path.join(install_path, ".ACCELA")
+        import json as _json
+        import shutil as _shutil
+        import time as _time
+        for _legacy in (".ACCELA", ".accela", ".ASSELLA", ".assella"):
+            try:
+                _lp = os.path.join(install_path, _legacy)
+                if os.path.isdir(_lp) and not os.path.islink(_lp):
+                    _shutil.rmtree(_lp, ignore_errors=True)
+                elif os.path.isfile(_lp) or os.path.islink(_lp):
+                    os.remove(_lp)
+            except Exception as _e:
+                logger.debug(f"[AtomTransition] Legacy marker cleanup failed: {_e}")
         try:
-            os.makedirs(accela_marker, exist_ok=True)
-            logger.info(f"[AtomTransition] Created marker {accela_marker}")
+            _ddm = os.path.join(install_path, ".DepotDownloader")
+            os.makedirs(_ddm, exist_ok=True)
+            _meta = os.path.join(_ddm, "metadata.json")
+            if not os.path.exists(_meta):
+                with open(_meta, "w", encoding="utf-8") as _mf:
+                    _json.dump({
+                        "appid": str(appid),
+                        "game_name": game_name,
+                        "buildid": str(game_data.get("buildid") or ""),
+                        "last_updated": int(_time.time()),
+                    }, _mf, indent=4)
+            logger.info(f"[AtomTransition] Marked {install_path} as ASSella-managed (.DepotDownloader)")
         except Exception as e:
-            logger.error(f"[AtomTransition] Failed to create marker {accela_marker}: {e}")
+            logger.error(f"[AtomTransition] Failed to mark install as managed: {e}")
 
     # 3. Update settings & game data
     if dialog.settings:
