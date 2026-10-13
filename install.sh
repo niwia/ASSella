@@ -247,7 +247,7 @@ prompt_user() {
     echo "${response:-$default_val}"
 }
 
-prompt_install_fuse() {
+check_and_warn_fuse() {
     check_fuse_status
     if [ "$FUSE_INSTALLED" = true ] || [ "$IS_NIXOS" = true ]; then
         return 0
@@ -257,46 +257,14 @@ prompt_install_fuse() {
     family=$(detect_distro_family)
     local cmd="${PKG_FUSE_CMD[$family]:-}"
 
-    echo -e "\n${YELLOW}${BOLD}[WARN] FUSE 2 (libfuse.so.2) is not installed!${NC}"
-    echo -e "ASSella AppImage requires fuse2 to launch on this system."
+    echo -e "\n${YELLOW}${BOLD}[WARN] FUSE 2 (libfuse.so.2) is not detected!${NC}"
+    echo -e "ASSella AppImage requires fuse2 to run on your system."
 
     if [ -n "$cmd" ]; then
-        echo -e "Recommended package installation command for ${BOLD}$DISTRO_NAME${NC}:"
+        echo -e "If the AppImage does not launch, install fuse2 on ${BOLD}$DISTRO_NAME${NC}:"
         echo -e "  ${GREEN}$cmd${NC}\n"
-        local ans=""
-        ans=$(prompt_user "Do you want to install fuse2 now with sudo? [Y/n]: " "y")
-        if [[ "$ans" =~ ^[yY] ]]; then
-            echo -e "${CYAN}[INFO] Running: $cmd${NC}"
-            if eval "$cmd"; then
-                check_fuse_status
-                if [ "$FUSE_INSTALLED" = true ]; then
-                    echo -e "${GREEN}[OK] FUSE 2 successfully installed!${NC}"
-                    return 0
-                fi
-            else
-                echo -e "${RED}[WARN] Package installation command failed.${NC}"
-            fi
-        else
-            echo -e "${YELLOW}[INFO] Skipping FUSE 2 installation. Please install it manually before running ASSella.${NC}"
-        fi
     else
-        echo -e "${YELLOW}Please install fuse2 / libfuse2 using your package manager.${NC}"
-    fi
-}
-
-prompt_optional_dependencies() {
-    if [ "${INTERACTIVE:-false}" != true ]; then
-        return 0
-    fi
-    echo -e "\n${BOLD}--- System Dependencies (Optional) ---${NC}"
-    echo -e "ASSella is self-contained and already installed."
-    echo -e "Some Steam games may optionally require system 32-bit libraries (lib32-glibc, curl, etc.)."
-    local ans=""
-    ans=$(prompt_user "Do you want to check and install optional system dependencies with sudo now? [y/N]: " "n")
-    if [[ "$ans" =~ ^[yY] ]]; then
-        install_dependencies
-    else
-        echo -e "${CYAN}[INFO] Skipped optional dependencies. (Run './install.sh --deps' anytime if needed).${NC}"
+        echo -e "If the AppImage does not launch, please install fuse2 / libfuse2 using your package manager.\n"
     fi
 }
 
@@ -508,72 +476,7 @@ except Exception:
 }
 
 # ------------------------------------------------------------------------------
-#  2. Automated Dependency Resolution (Adapted from fix-deps)
-# ------------------------------------------------------------------------------
-install_dependencies() {
-    local family
-    family=$(detect_distro_family)
-    echo -e "${YELLOW}[INFO] Checking system dependencies for ($family family)...${NC}"
-
-    if [ "$family" = "bazzite" ] || [ "$IS_NIXOS" = true ]; then
-        echo -e "${CYAN}[INFO] System is declarative/immutable ($DISTRO_NAME). Skipping automated package install.${NC}"
-        return 0
-    fi
-
-    local SUDO=""
-    if [ "$EUID" -ne 0 ]; then
-        if command -v sudo &>/dev/null; then
-            SUDO="sudo"
-        fi
-    fi
-
-    case "$family" in
-        arch)
-            local arch_pkgs="fuse2 python xcb-util-cursor libnotify git lib32-glibc lib32-openssl lib32-curl curl p7zip"
-            if [ -n "$SUDO" ]; then
-                echo -e "${CYAN}[INFO] Ensuring dependencies are installed via pacman...${NC}"
-                $SUDO pacman -Sy --needed --noconfirm $arch_pkgs 2>/dev/null || true
-            fi
-            ;;
-        debian)
-            if [ -n "$SUDO" ]; then
-                if command -v dpkg &>/dev/null && ! dpkg --print-foreign-architectures 2>/dev/null | grep -q i386; then
-                    $SUDO dpkg --add-architecture i386 2>/dev/null || true
-                    $SUDO apt-get update -qq 2>/dev/null || true
-                fi
-                local deb_pkgs="libfuse2 python3 python3-venv libxcb-cursor0 libnotify-bin git p7zip-full libc6:i386 libcurl4:i386 libssl3:i386"
-                echo -e "${CYAN}[INFO] Ensuring dependencies are installed via apt-get...${NC}"
-                $SUDO apt-get install -y -qq $deb_pkgs 2>/dev/null || true
-            fi
-            ;;
-        fedora)
-            if [ -n "$SUDO" ]; then
-                local fed_pkgs="fuse-libs python3 libxcb-cursor libnotify git p7zip p7zip-plugins libcurl.i686 openssl-libs.i686"
-                echo -e "${CYAN}[INFO] Ensuring dependencies are installed via dnf...${NC}"
-                $SUDO dnf install -y --setopt=install_weak_deps=False $fed_pkgs 2>/dev/null || true
-            fi
-            ;;
-        opensuse)
-            if [ -n "$SUDO" ]; then
-                local suse_pkgs="libfuse2 python3 libxcb-cursor0 libnotify-tools git p7zip-full glibc-32bit libcurl4-32bit libopenssl3-32bit"
-                echo -e "${CYAN}[INFO] Ensuring dependencies are installed via zypper...${NC}"
-                $SUDO zypper --non-interactive install -y $suse_pkgs 2>/dev/null || true
-            fi
-            ;;
-        void)
-            if [ -n "$SUDO" ]; then
-                echo -e "${CYAN}[INFO] Ensuring dependencies are installed via xbps-install...${NC}"
-                $SUDO xbps-install -y fuse python3 xcb-util-cursor libnotify git p7zip 2>/dev/null || true
-            fi
-            ;;
-        *)
-            echo -e "${YELLOW}[WARN] Unknown distro family. Please verify libfuse2 and 32-bit libraries are installed.${NC}"
-            ;;
-    esac
-}
-
-# ------------------------------------------------------------------------------
-#  3. Header & Status Display
+#  2. Header & Status Display
 # ------------------------------------------------------------------------------
 show_header() {
     clear 2>/dev/null || true
@@ -1036,8 +939,8 @@ interactive_flow() {
         echo -e "${YELLOW}[INFO] Skipping Headcrab installation.${NC}"
     fi
 
-    # FUSE 2 Check & Optional Installation
-    prompt_install_fuse
+    # FUSE 2 Check
+    check_and_warn_fuse
 
     echo ""
     # Step 2: ASSella
@@ -1052,7 +955,6 @@ interactive_flow() {
     run_install=$(prompt_user "$install_prompt" "y")
     if [[ "$run_install" =~ ^[yY] ]]; then
         do_install
-        prompt_optional_dependencies
     else
         echo -e "${YELLOW}[INFO] Skipping ASSella installation.${NC}"
     fi
@@ -1084,7 +986,6 @@ interactive_menu() {
         case "$choice" in
             1)
                 do_install
-                prompt_optional_dependencies
                 read -p "Press Enter to continue..." dummy
                 ;;
             2)
@@ -1162,9 +1063,6 @@ main() {
             --yes|-y)
                 non_interactive=true
                 ;;
-            --deps)
-                action="deps"
-                ;;
             --menu|-m)
                 action="menu"
                 ;;
@@ -1213,9 +1111,6 @@ main() {
             fi
             do_install
             ;;
-        deps)
-            install_dependencies
-            ;;
         menu)
             interactive_menu
             ;;
@@ -1247,7 +1142,6 @@ main() {
             echo "  --install, -i    Install or update ASSella directly"
             echo "  --with-headcrab  Install Headcrab (SLSsteam) followed by ASSella"
             echo "  --headcrab       Run Headcrab (SLSsteam) installer only"
-            echo "  --deps           Install system dependencies only"
             echo "  --yes, -y        Non-interactive / assume yes"
             echo "  --menu, -m       Launch full maintenance menu"
             echo "  --update, -u     Check and update if a new release exists"
