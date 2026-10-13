@@ -284,6 +284,22 @@ prompt_install_fuse() {
     fi
 }
 
+prompt_optional_dependencies() {
+    if [ "${INTERACTIVE:-false}" != true ]; then
+        return 0
+    fi
+    echo -e "\n${BOLD}--- System Dependencies (Optional) ---${NC}"
+    echo -e "ASSella is self-contained and already installed."
+    echo -e "Some Steam games may optionally require system 32-bit libraries (lib32-glibc, curl, etc.)."
+    local ans=""
+    ans=$(prompt_user "Do you want to check and install optional system dependencies with sudo now? [y/N]: " "n")
+    if [[ "$ans" =~ ^[yY] ]]; then
+        install_dependencies
+    else
+        echo -e "${CYAN}[INFO] Skipped optional dependencies. (Run './install.sh --deps' anytime if needed).${NC}"
+    fi
+}
+
 check_disk_space() {
     local target_dir="${1:-$INSTALL_DESTINATION}"
     local need_bytes=$(( 200 * 1024 * 1024 )) # 200 MB
@@ -1035,8 +1051,8 @@ interactive_flow() {
     local run_install=""
     run_install=$(prompt_user "$install_prompt" "y")
     if [[ "$run_install" =~ ^[yY] ]]; then
-        install_dependencies
         do_install
+        prompt_optional_dependencies
     else
         echo -e "${YELLOW}[INFO] Skipping ASSella installation.${NC}"
     fi
@@ -1067,8 +1083,8 @@ interactive_menu() {
 
         case "$choice" in
             1)
-                install_dependencies
                 do_install
+                prompt_optional_dependencies
                 read -p "Press Enter to continue..." dummy
                 ;;
             2)
@@ -1181,12 +1197,10 @@ main() {
     case "$action" in
         interactive)
             if [ "$non_interactive" = true ]; then
-                install_dependencies
                 do_install
             elif [ -t 0 ] || [ -r /dev/tty ]; then
                 interactive_flow
             else
-                install_dependencies
                 do_install
             fi
             ;;
@@ -1197,7 +1211,6 @@ main() {
             if [ "$run_hc" = true ]; then
                 run_headcrab_installer
             fi
-            install_dependencies
             do_install
             ;;
         deps)
@@ -1209,7 +1222,6 @@ main() {
         update)
             get_latest_github_version
             if [ "$LOCAL_VER" != "$LATEST_VER" ]; then
-                install_dependencies
                 do_install
             else
                 echo -e "${GREEN}ASSella is already up to date ($LOCAL_VER) on channel ($TARGET_CHANNEL).${NC}"
