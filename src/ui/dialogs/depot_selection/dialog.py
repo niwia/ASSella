@@ -221,7 +221,6 @@ class DepotSelectionDialog(QDialog):
         self.preferred_library_path = library_path
         self.lock_storage = lock_storage
         self.lock_dlc_only = lock_dlc_only
-        from utils.settings import get_settings
         self._settings = get_settings()
         self._dlc_only_mode = bool(
             dlc_only_mode
