@@ -397,7 +397,7 @@ def restore_sls_backup(dialog) -> None:
             utils.assfixer.run_boot_config_check()
             QMetaObject.invokeMethod(dialog, "_update_asshead_status_ui", Qt.ConnectionType.QueuedConnection)
             if dialog.main_window and hasattr(dialog.main_window, "refresh_system_status"):
-                dialog.main_window.refresh_system_status()
+                QMetaObject.invokeMethod(dialog.main_window, "refresh_system_status", Qt.ConnectionType.QueuedConnection)
 
         threading.Thread(target=run_check, daemon=True).start()
         QMessageBox.information(dialog, "Restore Backup", msg)

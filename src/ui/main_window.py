@@ -1310,6 +1310,12 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def refresh_system_status(self) -> None:
         """Refresh local Steam updates, SLS, and ASSella status labels."""
+        import threading
+        if threading.current_thread() is not threading.main_thread():
+            if hasattr(self, "refresh_system_status_signal"):
+                self.refresh_system_status_signal.emit()
+            return
+
         if not hasattr(self, "steam_updates_value") or not self.steam_updates_value:
             return
             

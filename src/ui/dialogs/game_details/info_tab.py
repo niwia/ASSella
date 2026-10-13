@@ -1134,7 +1134,7 @@ def trigger_rollback_job(dialog, depot_id, build_id: str, manifest_id: str = Non
                 return
             do_package_and_submit_manual_job(dialog, None, None, depots_map, build_id, pin_build=pin_build)
 
-        QMetaObject.invokeMethod(dialog, _finish_on_main, Qt.ConnectionType.QueuedConnection)
+        QTimer.singleShot(0, _finish_on_main)
 
     threading.Thread(target=_fetch_thread, daemon=True).start()
 
