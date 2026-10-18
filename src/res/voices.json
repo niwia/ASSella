@@ -26,7 +26,7 @@
   },
   "version": 1,
   "description": "ASSella Recommended & Tested Game Builds (Voices)",
-  "updated_at": "2026-10-13",
+  "updated_at": "2026-10-18",
   "games": {
     "2161700": {
       "game_name": "Persona 3 Reload",
@@ -322,6 +322,29 @@
       "depots": [],
       "manifest_overrides": {
         "3483511": "2042765930477868769"
+      }
+    },
+    "1490890": {
+      "game_name": "Demon Slayer -Kimetsu no Yaiba- The Hinokami Chronicles",
+      "aliases": [
+        "demon slayer",
+        "kimetsu no yaiba",
+        "hinokami chronicles",
+        "hinokami"
+      ],
+      "recommended_build_id": "10714413",
+      "reason": "Known stable and compatible build",
+      "depots": [],
+      "manifest_overrides": {
+        "1490891": "5461881877101609571",
+        "1490892": "4675572095902674306",
+        "1490893": "4406597967236367118",
+        "1490894": "665670508748928184",
+        "1760470": "6120140167597313636",
+        "1760480": "43390555700542166",
+        "1760490": "3433579119073246874",
+        "1760500": "694275557452403358",
+        "1777140": "7087906368917676089"
       }
     }
   },
