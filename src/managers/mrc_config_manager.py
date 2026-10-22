@@ -28,8 +28,13 @@ MRC_PROVIDER_HEADERS = {
 
 
 def get_sls_config_dir() -> Path:
-    """Return the SLSsteam configuration directory."""
-    return Path(os.path.expanduser("~/.config/SLSsteam"))
+    """Return the SLSsteam configuration directory, respecting Native/Flatpak Steam environments."""
+    try:
+        from core.steam_helpers import get_steam_env
+        return get_steam_env().sls_config_dir
+    except Exception as e:
+        logger.warning(f"Error resolving SteamEnv for SLS config dir: {e}")
+        return Path(os.path.expanduser("~/.config/SLSsteam"))
 
 
 def get_mrc_lua_config_path() -> Path:

@@ -234,6 +234,19 @@ class SteamlessMixin:
         log_text = "\n".join(self._steamless_progress_log).lower()
         if "no suitable game executables found" in log_text:
             return "None (Linux Native)"
+
+        has_unpacked = (
+            "unpacked successfully" in log_text
+            or "successfully unpacked" in log_text
+            or "successfully processed:" in log_text
+            or "[+] unpacked with" in log_text
+            or "unpacked with steamstub" in log_text
+        )
+        if has_unpacked or (self._last_steamless_success and not self._steamless_error and "code 0" in log_text):
+            return "Success (code 0)"
+
+        if "no steam drm detected in any of the" in log_text:
+            return "None (Clean, code 1)"
         if "no steam drm detected" in log_text or "(code 1)" in log_text:
             return "None (Clean, code 1)"
         if self._last_steamless_success is None:
@@ -247,14 +260,36 @@ class SteamlessMixin:
             if match_code:
                 return f"Error (code {match_code.group(1)})"
             return "Error"
+
     def parse_steamless_result(self) -> str:
         """Parse the steamless logs to determine what it did."""
         if not self._steamless_ran:
             return "Skipped"
 
         log_text = "\n".join(self._steamless_progress_log).lower()
+        log_text_raw = "\n".join(self._steamless_progress_log)
+
         if "no suitable game executables found" in log_text:
             return "Skipped (Linux Native)"
+
+        # Check for successful unpacking FIRST before checking for individual clean files
+        has_unpacked = (
+            "unpacked successfully" in log_text
+            or "successfully unpacked" in log_text
+            or "successfully processed:" in log_text
+            or "unpacked with steamstub" in log_text
+            or "[+] unpacked with" in log_text
+        )
+
+        if has_unpacked or (self._last_steamless_success and not self._steamless_error and "code 0" in log_text):
+            # Check for Steamless Variant / Version (strict case matching)
+            match = re.search(r'(?:SteamStub\s+)?Variant\s+([\d\.]+)', log_text_raw)
+            if not match:
+                match = re.search(r'Unpacked with\s+V?([\d\.]+x?)', log_text_raw)
+            if match:
+                version = match.group(1)
+                return f"Removed SteamStub v{version} (code 0)"
+            return "Removed DRM (code 0)"
 
         if "code 2" in log_text or "unpacking failed" in log_text:
             return "Failed (DRM Unpack Error, code 2)"
@@ -268,19 +303,4 @@ class SteamlessMixin:
         if "no steam drm detected" in log_text or "no drm found" in log_text or "not encrypted" in log_text or "(code 1)" in log_text:
             return "None (Clean, code 1)"
 
-        # If successful, find the variant/version
-        log_text_raw = "\n".join(self._steamless_progress_log)
-        
-        # Try AIO log format first: "[+] Unpacked with V3.0 ->"
-        match = re.search(r'Unpacked with\s+V?([\d\.]+x?)', log_text_raw)
-        if match:
-            version = match.group(1)
-            return f"Removed SteamStub v{version} (code 0)"
-
-        # Fallback to older C# CLI format
-        match = re.search(r'[Vv]ariant[\s:]+([\d\.]+)', log_text_raw)
-        if match:
-            version = match.group(1)
-            return f"Removed SteamStub v{version} (code 0)"
-
-        return "Removed DRM (code 0)"
+        return "Unknown"

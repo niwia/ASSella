@@ -220,6 +220,87 @@ def invalidate_steam_env_cache() -> None:
     logger.info("SteamEnv cache invalidated — will re-detect on next access")
 
 
+_cached_steam_client_version: Optional[str] = None
+_steam_client_version_looked_up = False
+
+
+def get_installed_steam_client_version(force_refresh: bool = False) -> Optional[str]:
+    """Read the locally installed Steam client version number from package manifests.
+
+    Follows the smallcrab client version detection algorithm:
+    Searches candidate manifest files inside the Steam package/ directory and extracts
+    the version timestamp (e.g. '1791918634').
+
+    The miss is cached too: an install without a readable manifest would otherwise
+    walk every candidate directory again on each status refresh.
+    """
+    global _cached_steam_client_version, _steam_client_version_looked_up
+    if _steam_client_version_looked_up and not force_refresh:
+        return _cached_steam_client_version
+
+    home = Path.home()
+    candidate_roots = []
+
+    # Check SteamEnv first if available
+    try:
+        env = get_steam_env()
+        if env.steam_path:
+            candidate_roots.append(Path(env.steam_path))
+    except Exception as e:
+        logger.debug(f"Could not read the Steam environment while detecting the client version: {e}")
+
+    # Standard candidate locations (Flatpak + Native)
+    candidate_roots.extend([
+        home / ".var" / "app" / "com.valvesoftware.Steam" / ".steam" / "steam",
+        home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam",
+        home / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam",
+        home / ".local" / "share" / "Steam",
+        home / ".steam" / "steam",
+        home / ".steam" / "root",
+    ])
+
+    manifest_candidates = [
+        "steam_client_steamdeck_stable_ubuntu12.manifest",
+        "steam_client_steamdeck_publicbeta_ubuntu12.manifest",
+        "steam_client_ubuntu12.manifest",
+        "steam_client_publicbeta_ubuntu12.manifest",
+        "steam_client_steamdeck_stable_ubuntu12",
+        "steam_client_ubuntu12",
+    ]
+
+    version_pattern = re.compile(r'"version"\s+"(\d+)"')
+
+    seen_dirs = set()
+    for root in candidate_roots:
+        try:
+            resolved_root = root.resolve()
+        except Exception:
+            resolved_root = root
+        if resolved_root in seen_dirs:
+            continue
+        seen_dirs.add(resolved_root)
+
+        pkg_dir = resolved_root / "package"
+        if not pkg_dir.is_dir():
+            continue
+
+        for manifest_name in manifest_candidates:
+            manifest_file = pkg_dir / manifest_name
+            if manifest_file.is_file():
+                try:
+                    content = manifest_file.read_text(encoding="utf-8", errors="replace")
+                    match = version_pattern.search(content)
+                    if match:
+                        _cached_steam_client_version = match.group(1).strip()
+                        _steam_client_version_looked_up = True
+                        return _cached_steam_client_version
+                except Exception as e:
+                    logger.debug(f"Could not read Steam manifest {manifest_file}: {e}")
+
+    _steam_client_version_looked_up = True
+    return None
+
+
 def find_steam_install():
     if sys.platform == "win32":
         return _find_steam_windows()

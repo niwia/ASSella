@@ -164,7 +164,9 @@ class ByparrManager:
             else:
                 cmd = ["python3", target_script]
 
-            # Set Linux kernel PR_SET_PDEATHSIG so the kernel terminates Byparr if ASSELLA dies
+            # Set Linux kernel PR_SET_PDEATHSIG so the kernel terminates Byparr if ASSELLA dies.
+            # The helper also starts at a lower priority: it spins up a headless
+            # Chromium, and that warm-up must not take CPU away from the window.
             def _preexec():
                 try:
                     import ctypes
@@ -172,6 +174,10 @@ class ByparrManager:
                     libc.prctl(1, signal.SIGTERM)  # 1 = PR_SET_PDEATHSIG
                 except Exception:
                     pass
+                try:
+                    os.setpriority(os.PRIO_PROCESS, 0, 10)
+                except OSError as e:
+                    logger.debug(f"[SteamDB] Could not lower the helper priority: {e}")
 
             logger.info(f"[SteamDB] Starting background Byparr process in {byparr_dir} (ASSELLA PID={os.getpid()})...")
             log_dir = get_base_path() / "logs"
@@ -480,23 +486,45 @@ class SteamDBScraper:
                     size_cell = cols[2]
                     dl_cell = cols[3] if len(cols) > 3 else None
 
+                    # Check for OS badges (may have multiple: Windows, Linux, macOS)
+                    os_spans = config_cell.find_all(class_=re.compile(r"depot-os"))
+                    detected_oses = []
+                    for os_s in os_spans:
+                        os_t = os_s.get_text(strip=True).lower()
+                        if ("windows" in os_t or "win" in os_t) and "windows" not in detected_oses:
+                            detected_oses.append("windows")
+                        if "linux" in os_t and "linux" not in detected_oses:
+                            detected_oses.append("linux")
+                        if ("mac" in os_t or "apple" in os_t) and "macos" not in detected_oses:
+                            detected_oses.append("macos")
+
+                    oslist = ",".join(detected_oses) if detected_oses else None
+
+                    # Check for architecture
+                    osarch = None
+                    text_lower = config_cell.get_text(" ", strip=True).lower()
+                    if "64-bit" in text_lower or "x64" in text_lower or "64 bit" in text_lower:
+                        osarch = "64"
+                    elif "32-bit" in text_lower or "x86" in text_lower or "32 bit" in text_lower:
+                        osarch = "32"
+
                     muted_span = config_cell.find("span", class_=re.compile(r"muted"))
                     if muted_span:
                         name = muted_span.get_text(strip=True)
                     else:
-                        name = config_cell.get_text(" ", strip=True)
-                        name = re.sub(r"^DLC\s+\d+\s*", "", name).strip()
-
-                    oslist = None
-                    os_span = config_cell.find(class_=re.compile(r"depot-os"))
-                    if os_span:
-                        os_text = os_span.get_text(strip=True).lower()
-                        if "windows" in os_text:
-                            oslist = "windows"
-                        elif "linux" in os_text:
-                            oslist = "linux"
-                        elif "mac" in os_text:
-                            oslist = "macos"
+                        raw_name = config_cell.get_text(" ", strip=True)
+                        raw_name = re.sub(r"^DLC\s+\d+\s*", "", raw_name).strip()
+                        # If raw_name only contains OS and arch tokens, it's not a real depot name!
+                        cleaned_words = re.sub(
+                            r"\b(windows|linux|macos|64-bit|32-bit|x64|x86|64|32)\b",
+                            "",
+                            raw_name,
+                            flags=re.IGNORECASE,
+                        ).strip()
+                        if cleaned_words and not re.match(r"^[,\s\-_/]+$", cleaned_words):
+                            name = raw_name
+                        else:
+                            name = None
 
                     is_dlc = bool(config_cell.find(string=re.compile(r"DLC\s+\d+")) or "dlc" in config_cell.get_text().lower())
                     size_str = size_cell.get_text(strip=True) if size_cell else ""
@@ -507,6 +535,7 @@ class SteamDBScraper:
                         "depot_id": depot_id,
                         "name": name,
                         "oslist": oslist,
+                        "osarch": osarch,
                         "size_str": size_str,
                         "size_bytes": size_bytes,
                         "dl_str": dl_str,

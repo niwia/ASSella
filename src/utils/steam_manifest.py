@@ -269,7 +269,8 @@ def safe_extract_zip(zip_path: str, dest_dir: str) -> int:
     dest.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(zip_path, "r") as archive:
-        for member in archive.infolist():
+        members = archive.infolist()
+        for member in members:
             name = member.filename
             # Reject absolute paths and Windows drive/UNC forms outright.
             if name.startswith(("/", "\\")) or ":" in name.split("/")[0]:
@@ -279,4 +280,4 @@ def safe_extract_zip(zip_path: str, dest_dir: str) -> int:
                 raise ValueError(f"Refusing path traversal in archive: {name!r}")
             archive.extract(member, dest)
 
-    return len(zipfile.ZipFile(zip_path, "r").namelist())
+    return len(members)

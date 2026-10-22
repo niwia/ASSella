@@ -411,29 +411,42 @@ def resolve_depot_details(
 
     name_lower = raw_name.lower()
     os_type = "all"
-    os_badge = "📦 Content"
-    os_icon = "📦"
+    os_badge = "Content"
+    os_icon = ""
 
+    supported_oses = set()
+    if "windows" in oslist or "[windows]" in name_lower or "win32" in name_lower or "win64" in name_lower:
+        supported_oses.add("windows")
+    if "linux" in oslist or "[linux]" in name_lower:
+        supported_oses.add("linux")
     if oslist in ("macos", "macosx") or "[macos]" in name_lower or "[macosx]" in name_lower or " mac " in name_lower:
-        os_type = "macos"
-        os_badge = "🍎 macOS"
-        os_icon = "🍎"
-    elif "windows" in oslist and "linux" in oslist:
-        os_type = "windows"
-        os_badge = "🪟 Windows / 🐧 Linux"
-        os_icon = "🪟🐧"
-    elif oslist == "linux" or "[linux]" in name_lower:
-        os_type = "linux"
-        os_badge = "🐧 Linux"
-        os_icon = "🐧"
-    elif oslist == "windows" or "[windows]" in name_lower or "win32" in name_lower or "win64" in name_lower:
-        os_type = "windows"
-        os_badge = "🪟 Windows"
-        os_icon = "🪟"
-    elif oslist == "android" or "[android]" in name_lower:
-        os_type = "android"
-        os_badge = "🤖 Android"
-        os_icon = "🤖"
+        supported_oses.add("macos")
+    if "android" in oslist or "[android]" in name_lower:
+        supported_oses.add("android")
+
+    if len(supported_oses) > 1:
+        os_type = "shared"
+        badges = []
+        if "windows" in supported_oses:
+            badges.append("Windows")
+        if "linux" in supported_oses:
+            badges.append("Linux")
+        if "macos" in supported_oses:
+            badges.append("macOS")
+        if "android" in supported_oses:
+            badges.append("Android")
+        os_badge = " / ".join(badges)
+        os_icon = ""
+    elif len(supported_oses) == 1:
+        single = next(iter(supported_oses))
+        os_type = single
+        badge_map = {"windows": "Windows", "linux": "Linux", "macos": "macOS", "android": "Android"}
+        os_badge = badge_map.get(single, single.capitalize())
+        os_icon = ""
+    else:
+        os_type = "all"
+        os_badge = "Content"
+        os_icon = ""
 
     # Clean display name
     import re
@@ -451,7 +464,7 @@ def resolve_depot_details(
         (isinstance(dinfo, dict) and (dinfo.get("is_dlc") or dinfo.get("dlcappid")))
         or "[dlc" in raw_name.lower()
     )
-    if is_dlc and os_type == "all":
+    if is_dlc and os_type in ("all", "shared"):
         os_badge = "DLC"
 
     return {
@@ -459,6 +472,7 @@ def resolve_depot_details(
         "name": clean_name,
         "raw_name": raw_name,
         "os": os_type,
+        "supported_os": supported_oses,
         "os_badge": os_badge,
         "os_icon": os_icon,
         "is_soundtrack": is_soundtrack,
@@ -497,15 +511,37 @@ def filter_build_depots(
         details = resolve_depot_details(appid, did_str, game_depots=game_depots)
         info_dict["details"] = details
 
-        # Apply visibility toggles
-        if hide_macos and details["os"] == "macos":
-            continue
-        if hide_android and details["os"] == "android":
-            continue
-        if hide_windows and details["os"] == "windows":
-            continue
-        if hide_linux and details["os"] == "linux":
-            continue
+        # Apply visibility toggles:
+        # A shared depot is only hidden if ALL of its supported platforms are hidden by the user.
+        # If at least one supported platform is active/enabled, it remains visible.
+        supported = details.get("supported_os")
+        if supported:
+            is_all_hidden = True
+            for plat in supported:
+                if plat == "windows" and not hide_windows:
+                    is_all_hidden = False
+                    break
+                elif plat == "linux" and not hide_linux:
+                    is_all_hidden = False
+                    break
+                elif plat == "macos" and not hide_macos:
+                    is_all_hidden = False
+                    break
+                elif plat == "android" and not hide_android:
+                    is_all_hidden = False
+                    break
+            if is_all_hidden:
+                continue
+        else:
+            if hide_macos and details["os"] == "macos":
+                continue
+            if hide_android and details["os"] == "android":
+                continue
+            if hide_windows and details["os"] == "windows":
+                continue
+            if hide_linux and details["os"] == "linux":
+                continue
+
         if filter_soundtracks and details["is_soundtrack"]:
             continue
 

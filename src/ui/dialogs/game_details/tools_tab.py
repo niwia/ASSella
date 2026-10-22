@@ -16,9 +16,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QVBoxLayout,
     QScrollArea,
-    QMessageBox,
     QApplication,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.game_details.hero_header import section_title, thin_line
 from ui.dialogs.settings_tabs.components_card import (
@@ -336,6 +336,25 @@ def init_tools_tab(dialog) -> None:
     cr_layout.addWidget(cr_divider)
     cr_layout.addWidget(reset_btn)
 
+    is_atom = (
+        getattr(dialog, "is_atom", False)
+        or bool(getattr(dialog, "game_data", {}).get("is_atom"))
+        or getattr(dialog, "game_data", {}).get("source") in ("Vapor", "at0-m", "AT0-M")
+    )
+    if is_atom:
+        dialog.choose_depots_btn.setEnabled(False)
+        reset_btn.setEnabled(False)
+        tooltip_msg = "Depot selection is managed automatically by Steam for AT0-M games."
+        dialog.choose_depots_btn.setToolTip(tooltip_msg)
+        reset_btn.setToolTip(tooltip_msg)
+        choose_reset_group.setStyleSheet("""
+            QFrame {
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+            }
+        """)
+
     depots_row.addWidget(choose_reset_group, 1)
 
     # This is temporarily disabled for the time being, do not delete.
@@ -370,7 +389,7 @@ def init_tools_tab(dialog) -> None:
     #     if dlg.target_libs:
     #         dlg.exec()
     #     else:
-    #         QMessageBox.information(
+    #         ThemedMessageBox.information(
     #             dialog,
     #             "No Other Libraries",
     #             "No other Steam library folder was detected.\n\n"
@@ -629,6 +648,17 @@ def refresh_drm_emulation_state(dialog, is_applied=None) -> None:
 
 def update_depot_label(dialog) -> None:
     """Updates choose depots button label based on stored selection."""
+    is_atom = (
+        getattr(dialog, "is_atom", False)
+        or bool(getattr(dialog, "game_data", {}).get("is_atom"))
+        or getattr(dialog, "game_data", {}).get("source") in ("Vapor", "at0-m", "AT0-M")
+    )
+    if is_atom:
+        if hasattr(dialog, "choose_depots_btn") and dialog.choose_depots_btn:
+            dialog.choose_depots_btn.setText("Depots: AT0-M")
+            dialog.choose_depots_btn.setEnabled(False)
+        return
+
     btn_text = "Depots: Select"
     if dialog.settings:
         val = dialog.settings.value(f"depot_selection/{dialog.appid}", "", type=str)
@@ -669,29 +699,29 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
     """Moves all DLC entries into DlcData or reverts them."""
     cp = get_user_config_path()
     if not cp.exists():
-        QMessageBox.warning(dialog, "Config Not Found", "SLSsteam config.yaml could not be found.")
+        ThemedMessageBox.warning(dialog, "Config Not Found", "SLSsteam config.yaml could not be found.")
         return
 
     current_dlcs = get_dlc_data(cp, dialog.appid)
     game_name = dialog.game_data.get("game_name", f"AppID {dialog.appid}")
 
     if current_dlcs:
-        ans = QMessageBox.question(
+        ans = ThemedMessageBox.question(
             dialog,
             "Revert DLC from DlcData",
             f"This game currently has {len(current_dlcs)} DLC(s) configured under DlcData in SLSsteam config.yaml.\n\n"
             f"Are you sure you want to revert and remove these DLC entries from DlcData for '{game_name}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
         )
-        if ans == QMessageBox.StandardButton.Yes:
+        if ans == ThemedMessageBox.StandardButton.Yes:
             if remove_dlc_data(cp, dialog.appid):
-                QMessageBox.information(
+                ThemedMessageBox.information(
                     dialog,
                     "DlcData Reverted",
                     f"✓ Successfully removed DlcData entries for '{game_name}'.",
                 )
             else:
-                QMessageBox.warning(dialog, "Action Failed", "Could not remove entries from DlcData.")
+                ThemedMessageBox.warning(dialog, "Action Failed", "Could not remove entries from DlcData.")
             refresh_dlcdata_btn_text(dialog)
         return
 
@@ -705,13 +735,13 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
         f"You can revert this action at any time using this same button.\n\n"
         f"Do you want to proceed?"
     )
-    ans = QMessageBox.question(
+    ans = ThemedMessageBox.question(
         dialog,
         "Move DLC to DlcData (Advanced)",
         warn_msg,
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
     )
-    if ans != QMessageBox.StandardButton.Yes:
+    if ans != ThemedMessageBox.StandardButton.Yes:
         return
 
     dialog.dlcdata_exp_btn.setEnabled(False)
@@ -721,7 +751,7 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
     try:
         dlc_list = get_all_dlcs_for_app(dialog.appid, dialog.game_data)
         if not dlc_list:
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 dialog,
                 "No DLCs Found",
                 f"No downloadable or store DLCs could be found for '{game_name}'.",
@@ -731,20 +761,20 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
         dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
         ok = add_dlc_data_batch(cp, dialog.appid, dlc_dict)
         if ok:
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 dialog,
                 "DLCs Moved to DlcData",
                 f"✓ Successfully wrote {len(dlc_dict)} DLC(s) for '{game_name}' to DlcData in config.yaml.\n\n"
                 f"SLSsteam will now explicitly report all these DLCs to the game.",
             )
         else:
-            QMessageBox.critical(
+            ThemedMessageBox.critical(
                 dialog,
                 "Write Failed",
                 "Failed to write entries to DlcData in config.yaml.",
             )
     except Exception as e:
-        QMessageBox.critical(dialog, "Error", f"Failed to move DLCs: {e}")
+        ThemedMessageBox.critical(dialog, "Error", f"Failed to move DLCs: {e}")
     finally:
         dialog.dlcdata_exp_btn.setEnabled(True)
         refresh_dlcdata_btn_text(dialog)

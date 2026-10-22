@@ -1,0 +1,414 @@
+{
+  "core/appinfo_editor.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "core/at0m.py": {
+    "broad": 4,
+    "narrow": 0
+  },
+  "core/lua_tools_api.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "core/manifest_fetcher.py": {
+    "broad": 8,
+    "narrow": 0
+  },
+  "core/morrenus_api.py": {
+    "broad": 1,
+    "narrow": 2
+  },
+  "core/native_steam/compat_tool.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "core/native_steam/native_steam_handoff.py": {
+    "broad": 5,
+    "narrow": 4
+  },
+  "core/native_steam/steam_manifest_pinning.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "core/ratings.py": {
+    "broad": 1,
+    "narrow": 1
+  },
+  "core/steam_api.py": {
+    "broad": 9,
+    "narrow": 2
+  },
+  "core/steam_helpers.py": {
+    "broad": 1,
+    "narrow": 3
+  },
+  "core/steam_package_info.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "core/steamdb_scraper.py": {
+    "broad": 5,
+    "narrow": 0
+  },
+  "core/tasks/download_depots_task.py": {
+    "broad": 3,
+    "narrow": 9
+  },
+  "core/tasks/download_workshop_task.py": {
+    "broad": 1,
+    "narrow": 2
+  },
+  "core/tasks/generate_achievements_task.py": {
+    "broad": 0,
+    "narrow": 3
+  },
+  "core/tasks/manifest_check_task.py": {
+    "broad": 2,
+    "narrow": 3
+  },
+  "core/tasks/smart_update_task.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "core/tasks/steamless_task.py": {
+    "broad": 0,
+    "narrow": 4
+  },
+  "core/verify_flow.py": {
+    "broad": 3,
+    "narrow": 0
+  },
+  "deps/schema-grabber/login_helper.py": {
+    "broad": 4,
+    "narrow": 0
+  },
+  "deps/steamless.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "main.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "managers/app_update_manager.py": {
+    "broad": 1,
+    "narrow": 1
+  },
+  "managers/at0m_update_checker.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "managers/cli_manager.py": {
+    "broad": 1,
+    "narrow": 2
+  },
+  "managers/db_manager.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "managers/emulation/chmod.py": {
+    "broad": 0,
+    "narrow": 3
+  },
+  "managers/emulation/goldberg.py": {
+    "broad": 8,
+    "narrow": 0
+  },
+  "managers/emulation/steamless.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "managers/finalize/post_install.py": {
+    "broad": 4,
+    "narrow": 4
+  },
+  "managers/fix_manager.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "managers/shsah_reborn.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "managers/task_manager.py": {
+    "broad": 4,
+    "narrow": 3
+  },
+  "ui/dialogs/build_selection_dialog.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "ui/dialogs/canary_welcome_dialog.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "ui/dialogs/credits.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "ui/dialogs/depot_selection/_mixins/branch_build.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "ui/dialogs/depot_selection/_mixins/build_ui.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/dialogs/depot_selection/_mixins/metadata.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/dialogs/depot_selection/_mixins/table.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "ui/dialogs/depot_selection/dialog.py": {
+    "broad": 4,
+    "narrow": 2
+  },
+  "ui/dialogs/depot_selection/executable_probe.py": {
+    "broad": 2,
+    "narrow": 1
+  },
+  "ui/dialogs/depot_selection/manifest_dump.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "ui/dialogs/depot_selection/views.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/dialogs/dialog_raiser.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "ui/dialogs/fetchmanifest.py": {
+    "broad": 7,
+    "narrow": 0
+  },
+  "ui/dialogs/fileselection.py": {
+    "broad": 1,
+    "narrow": 2
+  },
+  "ui/dialogs/game_details/depots_tab.py": {
+    "broad": 5,
+    "narrow": 0
+  },
+  "ui/dialogs/game_details/hero_header.py": {
+    "broad": 3,
+    "narrow": 0
+  },
+  "ui/dialogs/game_details/tools_tab.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "ui/dialogs/game_details/workshop_tab.py": {
+    "broad": 0,
+    "narrow": 3
+  },
+  "ui/dialogs/gamelibrary.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/dialogs/gamelibrary_v2.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/dialogs/library/acf_scanner.py": {
+    "broad": 5,
+    "narrow": 1
+  },
+  "ui/dialogs/library/filter_sort.py": {
+    "broad": 3,
+    "narrow": 2
+  },
+  "ui/dialogs/library/image_loader.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "ui/dialogs/library/widgets.py": {
+    "broad": 1,
+    "narrow": 1
+  },
+  "ui/dialogs/manual_manifest_dialog.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "ui/dialogs/modern_depot_selection.py": {
+    "broad": 3,
+    "narrow": 0
+  },
+  "ui/dialogs/move_storage_dialog.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/dialogs/rollback_dialogs.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/dialogs/settings.py": {
+    "broad": 5,
+    "narrow": 6
+  },
+  "ui/dialogs/settings_sls.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "ui/dialogs/settings_tabs/advanced_tab.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "ui/dialogs/settings_tabs/assela_tab.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/dialogs/settings_tabs/downloads_tab.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "ui/dialogs/settings_tabs/morrenus_tab.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/dialogs/settings_tabs/tools_tab.py": {
+    "broad": 0,
+    "narrow": 2
+  },
+  "ui/dialogs/single_depot_dialog.py": {
+    "broad": 6,
+    "narrow": 2
+  },
+  "ui/dialogs/storage_lock.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/main_window.py": {
+    "broad": 10,
+    "narrow": 1
+  },
+  "ui/text_menus.py": {
+    "broad": 0,
+    "narrow": 1
+  },
+  "ui/theme.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/widgets/active_game_card.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "ui/widgets/simplified_terminal.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "ui/widgets/updates_panel.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "utils/assfixer.py": {
+    "broad": 9,
+    "narrow": 0
+  },
+  "utils/auto_tune.py": {
+    "broad": 4,
+    "narrow": 0
+  },
+  "utils/depot_utils.py": {
+    "broad": 3,
+    "narrow": 4
+  },
+  "utils/eos_detector.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "utils/helpers.py": {
+    "broad": 5,
+    "narrow": 3
+  },
+  "utils/image_fetcher.py": {
+    "broad": 5,
+    "narrow": 0
+  },
+  "utils/isp_bypass.py": {
+    "broad": 4,
+    "narrow": 0
+  },
+  "utils/logger.py": {
+    "broad": 9,
+    "narrow": 1
+  },
+  "utils/manifest_resolver.py": {
+    "broad": 3,
+    "narrow": 1
+  },
+  "utils/paths.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "utils/plugin_games.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "utils/plugin_manager.py": {
+    "broad": 2,
+    "narrow": 0
+  },
+  "utils/settings.py": {
+    "broad": 5,
+    "narrow": 0
+  },
+  "utils/sls_bridge.py": {
+    "broad": 2,
+    "narrow": 1
+  },
+  "utils/slssteam_integration.py": {
+    "broad": 7,
+    "narrow": 4
+  },
+  "utils/steam_manifest.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "utils/task_runner.py": {
+    "broad": 0,
+    "narrow": 4
+  },
+  "utils/ticket_manager.py": {
+    "broad": 3,
+    "narrow": 0
+  },
+  "utils/web_server.py": {
+    "broad": 5,
+    "narrow": 0
+  },
+  "utils/workshop_helpers.py": {
+    "broad": 5,
+    "narrow": 0
+  },
+  "utils/yaml/apps.py": {
+    "broad": 7,
+    "narrow": 0
+  },
+  "utils/yaml/core.py": {
+    "broad": 4,
+    "narrow": 0
+  },
+  "utils/yaml/keys.py": {
+    "broad": 3,
+    "narrow": 0
+  },
+  "utils/yaml/maintenance.py": {
+    "broad": 2,
+    "narrow": 1
+  },
+  "utils/yaml/slssteam.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "utils/yaml/yaml_values.py": {
+    "broad": 0,
+    "narrow": 1
+  }
+}

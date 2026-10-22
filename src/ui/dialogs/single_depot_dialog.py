@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent
-from PyQt6.QtGui import QPixmap, QIcon
+from PyQt6.QtGui import QPixmap, QIcon, QColor
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -17,16 +17,22 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFrame,
     QButtonGroup,
-    QMessageBox,
     QApplication,
     QSizePolicy,
     QWidget,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.depotselection import format_size
+from ui.dialogs.depot_selection import storage_targets
+from ui.dialogs.depot_selection.dump_runner import ManifestDumpRunner
+from ui.dialogs.depot_selection.manifest_dump import (
+    ManifestDumpError,
+    discard_keys_file,
+    prepare_manifest_dump,
+)
 from utils.image_fetcher import ImageFetcher
 from utils.logger import logger
-from utils.lua_parsing import find_live
 
 
 class SingleDepotSelectionDialog(QDialog):
@@ -354,7 +360,8 @@ class SingleDepotSelectionDialog(QDialog):
 
         # OS Logo Icon
         from utils.depot_tag_helpers import get_os_icon, format_depot_row_label
-        os_icon = get_os_icon(self.single_depot_data.get("oslist"))
+        tint = QColor(self.accent_color) if hasattr(self, "accent_color") and self.accent_color else None
+        os_icon = get_os_icon(self.single_depot_data.get("oslist"), tint_color=tint)
         if os_icon:
             os_lbl = QLabel()
             os_lbl.setPixmap(os_icon.pixmap(16, 16))
@@ -368,6 +375,7 @@ class SingleDepotSelectionDialog(QDialog):
             self.single_depot_data,
             raw_desc,
             has_os_icon=bool(os_icon),
+            base_appid=str(self.app_id),
         )
         self.depot_name_lbl = QLabel(compact_desc)
         self.depot_name_lbl.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.85);")
@@ -490,32 +498,22 @@ class SingleDepotSelectionDialog(QDialog):
         return str(d_data.get("size_str") or "0.00 B")
 
     def _setup_storage_buttons(self, layout: QHBoxLayout) -> None:
-        import shutil
-        from core.steam_helpers import get_steam_libraries, find_steam_install
-        from utils.paths import is_valid_download_directory
+        """Build the single-depot drive picker.
 
-        storage_paths = []
+        Which drives are worth offering and how each one reads come from
+        :mod:`storage_targets`; this assembles the widgets around that.
+        """
         def_dir = self._settings.value("default_download_directory", "", type=str) if self._settings else ""
-        if def_dir and is_valid_download_directory(def_dir):
-            # Option A: User configured a custom/default download directory in Settings.
-            # Show ONLY this single configured storage path taking the full width.
-            storage_paths.append(os.path.realpath(def_dir))
-        else:
-            # "Ask Every Time" / no default set: discover all valid Steam library paths
-            try:
-                raw_libs = get_steam_libraries() or []
-                for p in raw_libs:
-                    if p and is_valid_download_directory(p):
-                        real_p = os.path.realpath(p)
-                        if real_p not in storage_paths:
-                            storage_paths.append(real_p)
-            except Exception as e:
-                logger.warning(f"[SingleDepot] Error discovering Steam storage libraries: {e}")
 
-            if self.preferred_library_path and is_valid_download_directory(self.preferred_library_path):
-                real_pref = os.path.realpath(self.preferred_library_path)
-                if real_pref not in storage_paths:
-                    storage_paths.insert(0, real_pref)
+        # A configured default download directory means "put it there": this
+        # dialog then offers that one drive instead of every Steam library, and
+        # a preferred path is shown first so it is the one the user lands on.
+        storage_paths = storage_targets.candidate_drives(
+            def_dir,
+            self.preferred_library_path,
+            only_default_when_configured=True,
+            preferred_first=True,
+        )
 
         self._storage_paths = storage_paths
         self._storage_btn_group = QButtonGroup(self)
@@ -524,40 +522,6 @@ class SingleDepotSelectionDialog(QDialog):
         if not storage_paths:
             layout.addStretch(1)
             return
-
-        def _format_storage_info(path_str: str):
-            p = Path(path_str)
-            try:
-                free_bytes = shutil.disk_usage(path_str).free
-                if free_bytes >= 1024**4:
-                    free_str = f"{free_bytes / (1024**4):.1f} TB free"
-                elif free_bytes >= 1024**3:
-                    free_str = f"{free_bytes / (1024**3):.1f} GB free"
-                elif free_bytes >= 1024**2:
-                    free_str = f"{free_bytes / (1024**2):.0f} MB free"
-                else:
-                    free_str = f"{free_bytes} B free"
-            except Exception:
-                free_str = ""
-
-            steam_root = find_steam_install()
-            p_str_lower = path_str.lower()
-
-            if steam_root and os.path.realpath(path_str) == os.path.realpath(steam_root):
-                label = "Primary"
-            elif "/.local/share/steam" in p_str_lower or "/.steam/steam" in p_str_lower:
-                label = "Primary"
-            elif "sdcard" in p_str_lower or "sd_card" in p_str_lower or "mmcblk" in p_str_lower or "/sd" in p_str_lower:
-                label = "SD Card"
-            else:
-                label = p.name
-                if label.lower() in ("steamlibrary", "steamapps", "common") and len(p.parts) > 1:
-                    label = p.parts[-2]
-                if len(label) > 16:
-                    label = label[:14] + "…"
-
-            tooltip = f"Storage: {path_str}" + (f"\nAvailable: {free_str}" if free_str else "")
-            return label, free_str, tooltip
 
         # Locked storage display (verify / update / DLC flows over installed
         # games): greyed-out label showing the install location, no choice.
@@ -574,8 +538,10 @@ class SingleDepotSelectionDialog(QDialog):
             bool(getattr(self, "lock_storage", False)),
         )
         if _locked_target:
-            lbl_text, free_str, _ = _format_storage_info(_locked_target)
-            btn = create_locked_storage_button(_locked_target, lbl_text, free_str, height=28, radius=4)
+            target = storage_targets.describe(_locked_target)
+            btn = create_locked_storage_button(
+                _locked_target, target.label, target.free, height=28, radius=4
+            )
             layout.addWidget(btn, 1)
             self.selected_storage_path = _locked_target
             return
@@ -614,14 +580,14 @@ class SingleDepotSelectionDialog(QDialog):
 
         # Direct expanding storage buttons
         for i, spath in enumerate(direct_paths):
-            label, free_str, tooltip = _format_storage_info(spath)
+            target = storage_targets.describe(spath)
             # When 1 or 2 storages, display free space on button; when 3+, display clean label with info in tooltip
-            btn_text = f"{label} ({free_str})" if (total_storages <= 2 and free_str) else label
+            btn_text = f"{target.label} ({target.free})" if (total_storages <= 2 and target.free) else target.label
             btn = QPushButton(btn_text)
             btn.setFixedHeight(28)
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.setCheckable(True)
-            btn.setToolTip(tooltip)
+            btn.setToolTip(target.tooltip)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(btn_style)
 
@@ -683,8 +649,8 @@ class SingleDepotSelectionDialog(QDialog):
             combo.addItem("More...", None)
 
             for spath in overflow_paths:
-                label, free_str, tooltip = _format_storage_info(spath)
-                item_text = f"{label} ({free_str})" if free_str else label
+                target = storage_targets.describe(spath)
+                item_text = f"{target.label} ({target.free})" if target.free else target.label
                 combo.addItem(item_text, spath)
 
             def _on_overflow_selected(index):
@@ -705,14 +671,9 @@ class SingleDepotSelectionDialog(QDialog):
             layout.addWidget(combo, 1)
 
         # Pre-select priority: preferred -> default -> first
-        real_pref = os.path.realpath(self.preferred_library_path) if self.preferred_library_path else ""
-        real_def = os.path.realpath(def_dir) if def_dir else ""
-        if real_pref and real_pref in storage_paths:
-            default_target = real_pref
-        elif real_def and real_def in storage_paths:
-            default_target = real_def
-        else:
-            default_target = storage_paths[0]
+        default_target = storage_targets.preselect(
+            storage_paths, self.preferred_library_path, def_dir
+        )
 
         self.selected_storage_path = default_target
         if default_target in direct_paths:
@@ -765,166 +726,44 @@ class SingleDepotSelectionDialog(QDialog):
 
     def _on_select_files_clicked(self):
         if not self.depot_checkbox.isChecked():
-            QMessageBox.warning(self, "Warning", "Please check the depot first before selecting files.")
+            ThemedMessageBox.warning(self, "Warning", "Please check the depot first before selecting files.")
             return
-
-        from utils.helpers import get_base_path
-        app_id = self.app_id
-
-        manifests_dir = get_base_path() / "hubcap_manifests"
-        zips = list(manifests_dir.glob(f"accela_fetch_{app_id}.zip")) + \
-               list(manifests_dir.glob(f"accela_fetch_{app_id}_*.zip"))
-        if not zips:
-            QMessageBox.critical(self, "Error", f"No manifest zip file found for AppID {app_id} in {manifests_dir}.")
-            return
-        zips.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-        zip_path = str(zips[0])
-
-        temp_dir = os.path.join(tempfile.gettempdir(), f"selective_manifests_{app_id}")
-        os.makedirs(temp_dir, exist_ok=True)
 
         try:
-            from utils.steam_manifest import safe_extract_zip
-            safe_extract_zip(zip_path, temp_dir)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to extract manifest zip: {e}")
+            dump = prepare_manifest_dump(self.app_id, str(self.single_depot_id))
+        except ManifestDumpError as e:
+            ThemedMessageBox.critical(self, "Error", str(e))
             return
 
-        # Extract key from LUA config or fallback to depot_keys.db
-        depot_key = None
-        lua_files = list(Path(temp_dir).glob("*.lua"))
-        if lua_files:
-            try:
-                content = lua_files[0].read_text(encoding="utf-8", errors="ignore")
-                m = find_live(content, r"addappid\(\s*" + re.escape(str(self.single_depot_id)) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)")
-                if not m:
-                    m = re.search(rf'\["?{self.single_depot_id}"?\]\s*=\s*"(.*?)"', content)
-                if m:
-                    depot_key = m.group(1).strip()
-            except Exception:
-                pass
+        runner = ManifestDumpRunner(self, dump)
+        runner.finished.connect(lambda ok, message: self._on_dump_finished(dump, ok, message))
+        runner.start()
 
-        if not depot_key:
-            try:
-                from managers.depot_key_manager import DepotKeyManager
-                cached = DepotKeyManager().get_depot_keys(app_id)
-                if str(self.single_depot_id) in cached:
-                    depot_key = cached[str(self.single_depot_id)]
+    def _on_dump_finished(self, dump, ok, message):
+        """Open the file-selection tree over a listing that was written."""
+        if not ok:
+            ThemedMessageBox.critical(self, "Error", message)
+            return
+
+        from ui.dialogs.fileselection import FileSelectionDialog
+        sel_dialog = FileSelectionDialog(
+            app_id=dump.app_id,
+            depot_id=dump.depot_id,
+            manifest_txt_path=dump.txt_path,
+            parent=self,
+            manifest_file=dump.manifest_file,
+            keys_path=dump.keys_path,
+            manifest_id=dump.manifest_id,
+        )
+        try:
+            if sel_dialog.exec():
+                self.selected_files = sel_dialog.selected_files
+                if self.selected_files:
+                    self.select_files_button.setText(f"Select Files... ({len(self.selected_files)} files selected)")
                 else:
-                    depot_key = DepotKeyManager().get_key(self.single_depot_id)
-            except Exception:
-                pass
-
-        if not depot_key:
-            QMessageBox.critical(self, "Error", f"Could not find depot key for depot {self.single_depot_id} in LUA config or local key database.")
-            return
-
-        # Create depot keys file
-        keys_path = os.path.join(temp_dir, "depot.keys")
-        try:
-            with open(keys_path, "w") as kf:
-                kf.write(f"{self.single_depot_id};{depot_key}\n")
-        except OSError as e:
-            QMessageBox.critical(self, "Error", f"Failed to write keys file: {e}")
-            return
-
-        manifest_candidates = list(Path(temp_dir).glob(f"{self.single_depot_id}_*.manifest"))
-        if not manifest_candidates:
-            manifest_candidates = list(Path(temp_dir).glob("*.manifest"))
-
-        if not manifest_candidates:
-            QMessageBox.critical(self, "Error", f"No manifest file (*.manifest) found for depot {self.single_depot_id} in the extracted manifest bundle.")
-            return
-
-        manifest_path = manifest_candidates[0]
-        manifest_file = str(manifest_path)
-        stem = manifest_path.name.replace(".manifest", "")
-        manifest_id = stem.split("_", 1)[1] if "_" in stem else stem
-
-        # Dump manifest files using DDM in background progress
-        from PyQt6.QtWidgets import QProgressDialog
-        from PyQt6.QtCore import QThread
-        import subprocess
-        progress_dialog = QProgressDialog("Loading file list from manifest...", "Cancel", 0, 0, self)
-        progress_dialog.setWindowTitle("Loading Manifest")
-        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        progress_dialog.show()
-
-        from utils.helpers import get_dotnet_path, resource_path
-        dotnet_path = get_dotnet_path()
-        dll_path = resource_path(os.path.join("deps", "DepotDownloader.dll"))
-
-        cmd = [
-            dotnet_path,
-            dll_path,
-            "-app", str(app_id),
-            "-depot", str(self.single_depot_id),
-            "-manifest", str(manifest_id),
-            "-manifestfile", manifest_file,
-            "-depotkeys", keys_path,
-            "-manifest-only",
-            "-dir", temp_dir
-        ]
-
-        class DumpThread(QThread):
-            finished_signal = pyqtSignal(bool, str)
-            def run(self):
-                try:
-                    subprocess.run(cmd, capture_output=True, text=True, check=True)
-                    self.finished_signal.emit(True, "")
-                except Exception as ex:
-                    self.finished_signal.emit(False, str(ex))
-
-        self.dump_thread = DumpThread()
-
-        def on_dump_finished(success, err):
-            progress_dialog.close()
-
-            if not success:
-                if os.path.exists(keys_path):
-                    try:
-                        os.remove(keys_path)
-                    except OSError:
-                        pass
-                QMessageBox.critical(self, "Error", f"Failed to load file list: {err}")
-                return
-
-            txt_path = os.path.join(temp_dir, f"manifest_{self.single_depot_id}_{manifest_id}.txt")
-            if not os.path.exists(txt_path):
-                if os.path.exists(keys_path):
-                    try:
-                        os.remove(keys_path)
-                    except OSError:
-                        pass
-                QMessageBox.critical(self, "Error", "Failed to locate generated file list text file.")
-                return
-
-            from ui.dialogs.fileselection import FileSelectionDialog
-            sel_dialog = FileSelectionDialog(
-                app_id=app_id,
-                depot_id=self.single_depot_id,
-                manifest_txt_path=txt_path,
-                parent=self,
-                manifest_file=manifest_file,
-                keys_path=keys_path,
-                manifest_id=manifest_id,
-            )
-            try:
-                if sel_dialog.exec():
-                    self.selected_files = sel_dialog.selected_files
-                    if self.selected_files:
-                        self.select_files_button.setText(f"Select Files... ({len(self.selected_files)} files selected)")
-                    else:
-                        self.select_files_button.setText("Select Files...")
-            finally:
-                if os.path.exists(keys_path):
-                    try:
-                        os.remove(keys_path)
-                    except OSError:
-                        pass
-
-        self.dump_thread.finished_signal.connect(on_dump_finished)
-        self.dump_thread.start()
+                    self.select_files_button.setText("Select Files...")
+        finally:
+            discard_keys_file(dump.keys_path)
 
     def _start_enrichment_async(self):
         from utils.task_runner import TaskRunner
@@ -988,13 +827,15 @@ class SingleDepotSelectionDialog(QDialog):
             self.depots[self.single_depot_id] = self.single_depot_data
             if hasattr(self, "depot_name_lbl"):
                 from utils.depot_tag_helpers import get_os_icon, format_depot_row_label
-                os_icon = get_os_icon(self.single_depot_data.get("oslist"))
+                tint = QColor(self.accent_color) if hasattr(self, "accent_color") and self.accent_color else None
+                os_icon = get_os_icon(self.single_depot_data.get("oslist"), tint_color=tint)
                 raw_desc = self._get_depot_display_desc()
                 compact_desc = format_depot_row_label(
                     self.single_depot_id,
                     self.single_depot_data,
                     raw_desc,
                     has_os_icon=bool(os_icon),
+                    base_appid=str(self.app_id),
                 )
                 self.depot_name_lbl.setText(compact_desc)
             if hasattr(self, "depot_size_lbl"):
@@ -1002,7 +843,7 @@ class SingleDepotSelectionDialog(QDialog):
 
     def _on_ok_clicked(self):
         if not self.depot_checkbox.isChecked():
-            QMessageBox.warning(self, "No Depots Selected", "Please select the depot to proceed with download.")
+            ThemedMessageBox.warning(self, "No Depots Selected", "Please select the depot to proceed with download.")
             return
         self.accept()
 

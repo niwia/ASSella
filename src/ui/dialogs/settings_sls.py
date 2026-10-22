@@ -18,9 +18,9 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QComboBox,
     QPushButton,
-    QFileDialog,
-    QMessageBox,
 )
+from ui.dialogs.themed_file_dialog import ThemedFileDialog
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.helpers import create_checkbox_setting
 from utils.settings import get_settings
@@ -240,17 +240,17 @@ def run_headcrab(dialog, callback=None) -> None:
     """Prompt and run Headcrab installation script inside a terminal, quitting ASSella upon launch."""
     already = is_headcrab_installed()
     verb = "re-run" if already else "install"
-    reply = QMessageBox.question(
+    reply = ThemedMessageBox.question(
         dialog,
         "Run Headcrab",
         f"This will {verb} Headcrab via:\n"
         "  curl -fsSL headcrab.pages.dev | bash\n\n"
         "A terminal window will open and ASSella will close so Headcrab can safely update SLSsteam without file conflicts.\n\n"
         "Proceed?",
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.Yes,
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes,
     )
-    if reply != QMessageBox.StandardButton.Yes:
+    if reply != ThemedMessageBox.StandardButton.Yes:
         return
     if not run_headcrab_and_quit(dialog) and callback:
         callback()
@@ -323,6 +323,8 @@ def create_sls_tab(dialog) -> QWidget:
     if saved_all_online is None:
         saved_all_online = dialog.settings.value("all_games_online_beta", None)
     if saved_all_online is None:
+        # Only the effective default; leave the stored value unset until the
+        # user actually flips the switch, so opening Settings writes nothing.
         saved_all_online = True
 
     current_all_online = (
@@ -337,7 +339,7 @@ def create_sls_tab(dialog) -> QWidget:
     dialog.all_games_online_checkbox = create_checkbox_setting(
         "All games online",
         "all_games_online",
-        current_all_online,
+        True,
         dialog,
         "Uses 0: 480 in SLSsteam FakeAppIds to map all unowned games to Spacewar (480) for online networking features.",
     )
@@ -366,14 +368,7 @@ def create_sls_tab(dialog) -> QWidget:
         dialog.settings.setValue("sls_config_management", True)
 
 
-    dialog.ignore_slssteam_updater_checkbox = create_checkbox_setting(
-        "Ignore SLSsteam Updater (managed by Headcrab)",
-        "ignore_slssteam_updater",
-        False,
-        dialog,
-        "Disable boot check and update functionality for SLSsteam.",
-    )
-    dialog.ignore_slssteam_updater_checkbox.hide()
+    dialog.ignore_slssteam_updater_checkbox = None
 
     layout.addWidget(int_card)
 
@@ -430,7 +425,7 @@ def create_sls_tab(dialog) -> QWidget:
             if dialog.main_window and hasattr(dialog.main_window, "refresh_system_status"):
                 dialog.main_window.refresh_system_status()
 
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 dialog,
                 "SLSsteam Updated",
                 f"Successfully installed and configured SLSsteam version {latest_tag}!"
@@ -441,7 +436,7 @@ def create_sls_tab(dialog) -> QWidget:
             check_btn.setText("Check for Updates")
             update_btn.setEnabled(True)
             update_btn.setText("Update / Reinstall SLSsteam")
-            QMessageBox.critical(
+            ThemedMessageBox.critical(
                 dialog,
                 "SLSsteam Update Error",
                 f"Action failed:\n{error_msg}"
@@ -467,17 +462,17 @@ def create_sls_tab(dialog) -> QWidget:
 
         def on_check_btn_clicked():
             if "Update Available" in check_btn.text():
-                reply = QMessageBox.question(
+                reply = ThemedMessageBox.question(
                     dialog,
                     "SLSsteam Update Available",
                     "A newer SLSsteam build is available.\n\n"
                     "Would you like to run the Headcrab setup script to update SLSsteam now?\n"
                     "  curl -fsSL headcrab.pages.dev | bash\n\n"
                     "ASSella will close while Headcrab runs in the terminal.",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.Yes
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.Yes
                 )
-                if reply == QMessageBox.StandardButton.Yes:
+                if reply == ThemedMessageBox.StandardButton.Yes:
                     run_headcrab_and_quit(dialog)
                     return
             trigger_check()
@@ -620,18 +615,18 @@ def create_sls_tab(dialog) -> QWidget:
         try:
             appid = appid_input.text().strip()
             if not appid or not appid.isdigit():
-                QMessageBox.warning(dialog, "Invalid AppID", "Please select a game from dropdown or enter a valid numeric Steam AppID.")
+                ThemedMessageBox.warning(dialog, "Invalid AppID", "Please select a game from dropdown or enter a valid numeric Steam AppID.")
                 return
-            save_path, _ = QFileDialog.getSaveFileName(dialog, "Save Ownership Ticket YAML", f"ticket_{appid}.yaml", "YAML Files (*.yaml)")
+            save_path, _ = ThemedFileDialog.getSaveFileName(dialog, "Save Ownership Ticket YAML", f"ticket_{appid}.yaml", "YAML Files (*.yaml)")
             if save_path:
                 ok, msg = export_ticket(appid, save_path)
                 if ok:
-                    QMessageBox.information(dialog, "Ticket Exported", msg)
+                    ThemedMessageBox.information(dialog, "Ticket Exported", msg)
                 else:
-                    QMessageBox.critical(dialog, "Export Failed", msg)
+                    ThemedMessageBox.critical(dialog, "Export Failed", msg)
         except Exception as err:
             logger.error(f"Error exporting single ticket: {err}")
-            QMessageBox.critical(dialog, "Export Error", f"Failed to export ticket: {err}")
+            ThemedMessageBox.critical(dialog, "Export Error", f"Failed to export ticket: {err}")
 
     export_single_btn.clicked.connect(lambda _c=False: _do_export_single())
     app_export_lay.addWidget(export_single_btn)
@@ -643,17 +638,17 @@ def create_sls_tab(dialog) -> QWidget:
 
     def _do_export_all(_checked=False):
         try:
-            dest_dir = QFileDialog.getExistingDirectory(dialog, "Select Output Directory for Ticket Batch Export")
+            dest_dir = ThemedFileDialog.getExistingDirectory(dialog, "Select Output Directory for Ticket Batch Export")
             if dest_dir:
                 from utils.ticket_manager import export_all_tickets
                 ok, msg, count = export_all_tickets(dest_dir)
                 if ok:
-                    QMessageBox.information(dialog, "Batch Export Complete", msg)
+                    ThemedMessageBox.information(dialog, "Batch Export Complete", msg)
                 else:
-                    QMessageBox.warning(dialog, "Batch Export", msg)
+                    ThemedMessageBox.warning(dialog, "Batch Export", msg)
         except Exception as err:
             logger.error(f"Error exporting all tickets: {err}")
-            QMessageBox.critical(dialog, "Export Error", f"Failed batch export: {err}")
+            ThemedMessageBox.critical(dialog, "Export Error", f"Failed batch export: {err}")
 
     batch_btn.clicked.connect(lambda _c=False: _do_export_all())
     ticket_layout.addWidget(batch_btn)

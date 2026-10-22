@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.dialogs.dialog_helpers import create_standard_buttons
+from ui.dialogs.themed_dialog import install_themed_frame
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class DlcSelectionDialog(QDialog):
         self.dlcs = dlcs
         self.setMinimumWidth(600)
         self.setMinimumHeight(400)
-        layout = QVBoxLayout(self)
+        layout = install_themed_frame(self, margins=(14, 12, 14, 14), spacing=10)
 
         self.anchor_row = -1
 

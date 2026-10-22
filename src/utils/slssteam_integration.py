@@ -260,9 +260,13 @@ def notify_sls_watcher_dead(main_window=None) -> None:
 _binary_version_cache: dict = {}
 _binary_version_cache_lock = threading.Lock()
 _BINARY_VERSION_CACHE_TTL = 120.0  # seconds
+# A failed lookup is cached as well. Without that negative cache every caller
+# paid the full network timeout again, and the GUI thread paid it once per
+# dashboard rebuild - a 10 second freeze per rebuild while the network was down.
+_BINARY_VERSION_ERROR_TTL = 60.0  # seconds
 
 
-def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
+def check_slssteam_binary_is_latest(force_refresh: bool = False, cached_only: bool = False) -> dict:
     """Compare local SLSsteam.so timestamp/version against upstream GitHub release.
 
     Checks the upstream GitHub release timestamp ('published_at') against the
@@ -285,17 +289,25 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
         }
 
     This function is blocking and should be called from a background thread.
+    GUI callers must pass ``cached_only=True``: that returns the cached answer
+    (or a "checking" placeholder) without touching the network, so a slow or
+    unreachable GitHub can never stall the event loop.
     """
     global _binary_version_cache
     now = time.time()
     if not force_refresh:
         with _binary_version_cache_lock:
-            if _binary_version_cache and (now - _binary_version_cache.get("timestamp", 0) < _BINARY_VERSION_CACHE_TTL):
-                return dict(_binary_version_cache["data"])
-
-    import json
-    import urllib.request
-    from datetime import datetime, timezone
+            cached = _binary_version_cache
+            if cached:
+                age = now - cached.get("timestamp", 0)
+                cached_data = cached.get("data", {})
+                ttl = (
+                    _BINARY_VERSION_ERROR_TTL
+                    if cached_data.get("status") == "error"
+                    else _BINARY_VERSION_CACHE_TTL
+                )
+                if age < ttl:
+                    return dict(cached_data)
 
     result: dict = {
         "status": "error",
@@ -306,6 +318,17 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
         "remote_hash": None,
         "error": None,
     }
+
+    if cached_only:
+        # Nothing cached yet and the caller must not block. Report the
+        # neutral "checking" state; the background boot check fills the cache
+        # and the next refresh shows the real answer.
+        result["status"] = "checking"
+        return result
+
+    import json
+    import urllib.request
+    from datetime import datetime, timezone
 
     # ── 1. Find local .so ──────────────────────────────────────────────────
     try:
@@ -399,6 +422,10 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False) -> dict:
                     result["release_tag"] = "Headcrab"
             except Exception:
                 pass
+        # Negative cache: a dead network must not cost every caller a full
+        # timeout, and the GUI thread must not retry it on every rebuild.
+        with _binary_version_cache_lock:
+            _binary_version_cache = {"timestamp": time.time(), "data": dict(result)}
 
     return result
 

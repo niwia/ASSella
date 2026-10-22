@@ -129,6 +129,8 @@ def main() -> int:
     check(m.add_dlc_data(cfg, "123460", "999", "DLC One"), "add_dlc_data")
     dl = m.get_dlc_data(cfg, "123460")
     check(dl and str(dl).find("999") >= 0, f"get_dlc_data returns it: {dl}")
+    check(m.add_dlc_data(cfg, "123460", "123460", "Parent Name") is False, "refuses parent AppID in add_dlc_data")
+    check("123460" not in m.get_dlc_data(cfg, "123460"), "parent AppID never added to DlcData")
     check(m.remove_dlc_data(cfg, "123460", "999"), "remove_dlc_data")
 
     # ------------------------------------------------------------ AppTokens

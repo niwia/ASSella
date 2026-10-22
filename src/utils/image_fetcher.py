@@ -92,6 +92,11 @@ class ImageFetcher(QObject):
         self._reply: Optional[QNetworkReply] = None
         self._rev: Optional[QNetworkReply] = None
         self._start_time: Optional[float] = None
+        # Every URL that returned a definitive 404/403, versus all attempts.
+        # When both counts match, Steam has no artwork for this AppID and we
+        # remember that instead of retrying the whole fallback list each scan.
+        self._attempts = 0
+        self._definitive_misses = 0
 
         # Parse AppID from URL
         self.app_id = None
@@ -229,18 +234,52 @@ class ImageFetcher(QObject):
                 except Exception as e:
                     logger.debug(f"Failed to read cached image for AppID {self.app_id}: {e}")
 
-        # 3. Tier 3: Fetch over network
+            # 3. No artwork on disk and the CDN already said "not found" for
+            # every URL recently: do not repeat the same 404s on each scan.
+            from utils import image_revalidate
+
+            cache_dir = ImageFetcher.get_cache_dir()
+            if image_revalidate.is_missing(self.app_id, cache_dir):
+                logger.debug(
+                    f"Skipping image fetch for AppID {self.app_id}: "
+                    f"no artwork on the CDN (checked recently)"
+                )
+                QTimer.singleShot(0, lambda: self.finished.emit(b""))
+                return
+
+        # 4. Tier 3: Fetch over network
         self._start_time = time.time()
         self._fetch_next_url()
 
     def _fetch_next_url(self) -> None:
         if self._stopped or not self.urls_to_try:
             if not self._stopped:
+                # Every URL was tried. If every one of them answered 403/404,
+                # Steam simply has no artwork for this AppID: remember that so
+                # the next scan does not repeat the same requests.
+                if (
+                    self.app_id
+                    and not self.ephemeral
+                    and self._attempts > 0
+                    and self._definitive_misses == self._attempts
+                ):
+                    from utils import image_revalidate
+
+                    image_revalidate.record_missing(
+                        self.app_id,
+                        ImageFetcher.get_cache_dir(),
+                        self.url,
+                    )
+                    logger.debug(
+                        f"Recorded missing artwork for AppID {self.app_id} "
+                        f"({self._attempts} URL(s) returned 404/403)"
+                    )
                 self.finished.emit(b"")
             return
 
         current_url = self.urls_to_try.pop(0)
         manager = get_network_manager()
+        self._attempts += 1
 
         request = QNetworkRequest(QUrl(current_url))
         request.setRawHeader(b"User-Agent", b"Mozilla/5.0")
@@ -264,6 +303,11 @@ class ImageFetcher(QObject):
         try:
             # Guard Clause: Network Error -> Try fallback next
             if reply.error() != QNetworkReply.NetworkError.NoError:
+                status = reply.attribute(
+                    QNetworkRequest.Attribute.HttpStatusCodeAttribute
+                )
+                if status in (403, 404):
+                    self._definitive_misses += 1
                 logger.debug(
                     f"Failed to fetch image from {reply.url().toString()}: {reply.errorString()}"
                 )

@@ -304,6 +304,9 @@ def perform_steam_handoff(
         logger.warning(f"[SteamHandoff] Excluded {len(unkeyed_depots)} unkeyed depot(s) for {appid}: {unkeyed_depots}")
         selected_depots = [d for d in selected_depots if str(d) in valid_keyed_depots]
 
+    if not selected_depots and not is_dlc:
+        return False, f"No valid keyed content depots could be resolved for {game_name} ({appid}). Steam cannot download without valid depots."
+
     # AdditionalDepots gets only actual depots. DecryptionKeys keeps depot keys AND the root AppID key.
     active_keys = {str(d): k for d, k in depot_keys.items()}
     if is_dlc and selected_depots:
@@ -318,7 +321,7 @@ def perform_steam_handoff(
     # 5. Verify plugins are present BEFORE mutating configuration
     from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
     if not are_plugins_present():
-        return False, "AT0-M plugins (download.lua / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
+        return False, "AT0-M plugins (download interceptor / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
     if is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True):
         _emit("WARNING: Custom plugins active — third-party plugin support cannot be guaranteed.")
 
@@ -332,8 +335,16 @@ def perform_steam_handoff(
         sls_log = Path.home() / ".SLSsteam.log"
     log_offset = sls_log.stat().st_size if sls_log.exists() else 0
 
+    from utils.dlc_helpers import get_all_dlcs_for_app
+    discovered_dlcs = get_all_dlcs_for_app(appid, game_data, allow_network=not is_dlc)
+    dlc_appids = [str(item["dlc_appid"]) for item in discovered_dlcs if item.get("dlc_appid")]
+    if is_dlc:
+        from utils.dlc_helpers import resolve_dlc_mapping_for_selection
+        selected_dlc_apps, _ = resolve_dlc_mapping_for_selection(appid, selected_depots, game_data)
+        dlc_appids = list(selected_dlc_apps)
     patch_ok = task_helper._patch_config(
-        config_path, appid, game_name, active_keys, selected_depots=selected_depots, game_data=game_data
+        config_path, appid, game_name, active_keys, selected_depots=selected_depots,
+        game_data=game_data, dlc_appids=dlc_appids,
     )
     if not patch_ok:
         return False, "Failed to patch SLSsteam config.yaml."
@@ -389,8 +400,7 @@ def perform_steam_handoff(
             if isinstance(meta, dict) and meta.get("desc"):
                 depot_names[str(did)] = meta["desc"]
 
-        dlc_appids: List[str] = []
-        if is_dlc:
+        if not dlc_appids and is_dlc:
             try:
                 from utils.dlc_helpers import get_dlc_only_info
                 d_info = get_dlc_only_info(appid)
@@ -415,6 +425,7 @@ def perform_steam_handoff(
             installdir=installdir,
             depot_names=depot_names,
             dlc_appids=dlc_appids,
+            is_dlc_only=is_dlc,
         )
 
         # Clean legacy ACCELA markers from install folder if any exist

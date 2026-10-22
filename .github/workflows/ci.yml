@@ -130,6 +130,29 @@ jobs:
           fi
           echo "No unresolved internal member imports found."
 
+      # Silent handlers are how the last few bugs hid: the call failed, a bare
+      # `except` swallowed it, and the feature never worked. The handlers
+      # already in the tree are frozen; this fails on a new one.
+      - name: No New Silent Exceptions
+        run: |
+          python scripts/check_silent_exceptions.py
+
+      # Native Qt dialogs paint themselves in the desktop's theme and carry the
+      # desktop's decorations, so a window that uses one does not look like
+      # ASSella. The ones left are frozen; this fails on a new one, and the
+      # baseline tightens as each file migrates to the themed replacements.
+      - name: No New Native Dialogs
+        run: |
+          python scripts/check_native_dialogs.py
+
+      # A dialog that does not build ASSella's own frame wears the desktop's
+      # title bar instead, so two windows in one session do not look like the
+      # same application. Every dialog in the tree now takes the themed frame;
+      # this fails if a new one arrives without it.
+      - name: No Unframed Dialogs
+        run: |
+          python scripts/check_themed_dialogs.py
+
       # Behavioural suites. All are hermetic: no Steam install, no network, no
       # display and no pre-existing SLSsteam config, so they are safe on a clean
       # runner. They cover the logic that regresses silently - depot->app
@@ -146,7 +169,26 @@ jobs:
                        test_logging test_pager_display test_boxart_revalidate \
                        test_config_manager test_depot_selection \
                        test_depot_selection_resolve test_depot_dialog_build \
-                       test_language_depots; do
+                       test_manifest_dump test_dump_runner \
+                       test_storage_targets test_depot_metadata \
+                       test_executable_probe test_selection_policy \
+                       test_library_actions test_dlc_discovery \
+                       test_batch_atom_migration \
+                       test_library_tabs test_dlc_mode_ui test_steam_package_info \
+                       test_edition_catalog test_dlc_only_ux \
+                       test_silent_exception_gate \
+                       test_native_dialog_gate \
+                       test_themed_dialog_gate \
+                       test_themed_message_box \
+                       test_themed_pickers \
+                       test_color_utils \
+                       test_window_style \
+                       test_top_bar_search \
+                       test_luatools_gate \
+                       test_language_depots \
+                       test_depots_tab_state \
+                       test_update_checker \
+                       test_steam_updates; do
             echo "::group::$suite"
             QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp \
               python -u "scripts/$suite.py"

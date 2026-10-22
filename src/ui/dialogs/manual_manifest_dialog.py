@@ -22,8 +22,9 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QComboBox,
     QFrame,
-    QMessageBox,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
+from ui.dialogs.themed_dialog import install_themed_frame
 
 from utils.color_utils import get_best_foreground_color
 from utils.paths import Paths
@@ -74,21 +75,11 @@ class ManualManifestDialog(QDialog):
 
         self.setWindowTitle("Manual Manifest Override")
         self.setFixedWidth(460)
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #12131a;
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 10px;
-            }
-        """)
 
         self._build_ui()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(12)
+        layout = install_themed_frame(self, margins=(18, 16, 18, 16), spacing=12)
 
         # Title & Subtitle with SteamDB Patchnotes Button
         header_layout = QVBoxLayout()
@@ -357,26 +348,26 @@ class ManualManifestDialog(QDialog):
         # Resolve depot ID (strictly pure digits)
         depot_id = self._get_current_depot_id()
         if not depot_id or not depot_id.isdigit():
-            QMessageBox.warning(self, "Invalid Depot ID", "Please specify a valid numeric Depot ID.")
+            ThemedMessageBox.warning(self, "Invalid Depot ID", "Please specify a valid numeric Depot ID.")
             return
 
         # Resolve manifest ID
         manifest_id = self.manifest_input.text().strip()
         if not manifest_id or not manifest_id.isdigit():
-            QMessageBox.warning(self, "Invalid Manifest ID", "Please enter a valid numeric Steam Manifest ID.")
+            ThemedMessageBox.warning(self, "Invalid Manifest ID", "Please enter a valid numeric Steam Manifest ID.")
             return
 
         # Verification safeguard: Steam Manifest IDs are 64-bit uints (~17-19 digits)
         if len(manifest_id) < 15 or len(manifest_id) > 20:
-            res = QMessageBox.question(
+            res = ThemedMessageBox.question(
                 self,
                 "Unusual Manifest ID Length",
                 f"The entered Manifest ID '{manifest_id}' is {len(manifest_id)} digits long.\n"
                 "Steam Manifest IDs are typically 17 to 19 digits.\n\nDo you want to proceed anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                ThemedMessageBox.StandardButton.No,
             )
-            if res != QMessageBox.StandardButton.Yes:
+            if res != ThemedMessageBox.StandardButton.Yes:
                 return
 
         # Resolve build ID / tag

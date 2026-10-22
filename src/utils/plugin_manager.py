@@ -213,29 +213,47 @@ def is_plugin_check_bypassed() -> bool:
         return False
 
 
+def get_active_interceptor_filename() -> Optional[str]:
+    """Find the active download interceptor plugin filename in SLSsteam plugins directory."""
+    try:
+        target_dirs = get_sls_plugins_dirs()
+        for tdir in target_dirs:
+            if tdir.is_dir():
+                for p in tdir.glob("*.lua"):
+                    if (
+                        p.is_file()
+                        and not p.name.endswith(".bak")
+                        and not p.name.startswith(".")
+                        and p.name != "spliced-tickets.lua"
+                    ):
+                        return p.name
+    except Exception as e:
+        logger.debug(f"[PluginManager] Error detecting active interceptor: {e}")
+    return None
+
+
+# Alias for backward compatibility with existing callers
+get_active_download_plugin = get_active_interceptor_filename
+
+
 def are_all_plugins_installed(ignore_bypass: bool = False) -> bool:
-    """Check if all required plugins are installed and up to date in SLSsteam."""
+    """Check if the active interceptor and spliced-tickets plugins are installed and up to date."""
     if not ignore_bypass and is_plugin_check_bypassed():
         return True
 
-    manifest = fetch_plugins_manifest()
-    if manifest and "plugins" in manifest:
-        required = [
-            fname
-            for fname, meta in manifest["plugins"].items()
-            if meta.get("required", True)
-        ]
-    else:
-        required = FALLBACK_REQUIRED_PLUGINS
+    active_interceptor = get_active_interceptor_filename() or get_settings().value("selected_download_plugin", "download.lua")
+    if not is_plugin_installed_and_valid(active_interceptor):
+        return False
 
-    for p in required:
-        if not is_plugin_installed_and_valid(p):
-            return False
+    if not is_plugin_installed_and_valid("spliced-tickets.lua"):
+        return False
+
     return True
 
 
 def are_plugins_present(ignore_bypass: bool = False) -> bool:
-    """Check if all required SLSsteam plugins exist locally in the primary plugins directory.
+    """Check if required SLSsteam plugins exist locally in the primary plugins directory.
+    Requires at least one download interceptor (.lua) and spliced-tickets.lua.
     If 'custom_plugins_advanced' setting is enabled and ignore_bypass is False, returns True.
     """
     if not ignore_bypass and is_plugin_check_bypassed():
@@ -244,15 +262,20 @@ def are_plugins_present(ignore_bypass: bool = False) -> bool:
     target_dirs = get_sls_plugins_dirs()
     if not target_dirs:
         return False
-    for fname in FALLBACK_REQUIRED_PLUGINS:
-        found = False
-        for tdir in target_dirs:
-            if (tdir / fname).is_file():
-                found = True
-                break
-        if not found:
-            return False
-    return True
+
+    has_interceptor = False
+    has_spliced = False
+    for tdir in target_dirs:
+        if not tdir.is_dir():
+            continue
+        for p in tdir.glob("*.lua"):
+            if not p.name.endswith(".bak") and not p.name.startswith("."):
+                if p.name == "spliced-tickets.lua":
+                    has_spliced = True
+                else:
+                    has_interceptor = True
+
+    return has_interceptor and has_spliced
 
 
 def get_plugin_status(filename: str) -> str:
@@ -293,6 +316,9 @@ def get_plugin_status(filename: str) -> str:
 def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: bool = False) -> Tuple[bool, bool, str]:
     """Ensure a plugin is downloaded from R2 and deployed into SLSsteam plugin directories.
 
+    For interceptor plugins (anything other than spliced-tickets.lua), enforces single active plugin:
+    any other interceptors are safely archived as .bak, and any stale .bak of the incoming plugin is cleaned up.
+
     Returns:
         (success: bool, skipped: bool, message: str)
         - skipped=True if all targets already had the exact matching SHA-256 or were already present when only_if_missing is True.
@@ -326,6 +352,13 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
             Path.home() / ".local" / "share" / "ACCELA" / "plugins" / filename,
             Path.home() / ".config" / "SLSsteam" / "plugins" / filename,
         ]
+        # Also check for spacebunnny spelling variations if looking for spacebunny
+        if filename == "spacebunny1.5.lua":
+            alt_locations.extend([
+                Path.home() / ".local" / "share" / "ACCELA" / "plugins" / "spacebunnny1.5.lua",
+                Path.home() / ".config" / "SLSsteam" / "plugins" / "spacebunnny1.5beta.lua",
+            ])
+
         found_local = None
         for alt in alt_locations:
             if alt.is_file():
@@ -354,6 +387,7 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
     if not target_dirs:
         return False, False, "No valid SLSsteam plugin directories found."
 
+    is_interceptor = (filename != "spliced-tickets.lua")
     all_matched = True
     any_deployed = False
     errors = []
@@ -362,17 +396,33 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
         try:
             tdir.mkdir(parents=True, exist_ok=True)
 
-            # If deploying a download interceptor plugin, ensure exclusivity:
-            # deactivate/remove any alternative download interceptor plugins in tdir
-            if filename.startswith("download"):
-                for existing in tdir.glob("download*.lua"):
-                    if existing.name != filename:
+            if is_interceptor:
+                # 1. Clean up old .bak of the incoming plugin if it exists
+                incoming_bak = tdir / f"{filename}.bak"
+                if incoming_bak.is_file():
+                    try:
+                        incoming_bak.unlink()
+                        logger.debug(f"[PluginManager] Removed old backup {incoming_bak}")
+                    except Exception as e:
+                        logger.warning(f"[PluginManager] Could not remove old backup {incoming_bak}: {e}")
+
+                # 2. Deactivate other active interceptor plugins:
+                #    If other .bak exists, delete old .bak and replace with new .bak
+                for existing in tdir.glob("*.lua"):
+                    if (
+                        existing.is_file()
+                        and not existing.name.endswith(".bak")
+                        and not existing.name.startswith(".")
+                        and existing.name != "spliced-tickets.lua"
+                        and existing.name != filename
+                    ):
                         try:
-                            bak_file = tdir / f"{existing.name}.bak"
-                            shutil.copy2(existing, bak_file)
-                            existing.unlink()
+                            other_bak = tdir / f"{existing.name}.bak"
+                            if other_bak.is_file():
+                                other_bak.unlink()
+                            existing.replace(other_bak)
                             logger.info(
-                                f"[PluginManager] Deactivated alternative download plugin {existing.name} (backed up to {bak_file})"
+                                f"[PluginManager] Deactivated alternative interceptor plugin {existing.name} -> {other_bak.name}"
                             )
                         except Exception as rem_err:
                             logger.warning(f"[PluginManager] Could not deactivate {existing.name}: {rem_err}")
@@ -387,6 +437,8 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
                 # Hash mismatch: back up old plugin as .bak
                 bak_file = tdir / f"{filename}.bak"
                 try:
+                    if bak_file.is_file():
+                        bak_file.unlink()
                     shutil.copy2(dst_file, bak_file)
                     logger.info(
                         f"[PluginManager] Backed up old {filename} ({dst_hash[:8]} -> {bak_file})"
@@ -405,6 +457,13 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
     if errors:
         return False, False, f"Error deploying {filename}: {'; '.join(errors)}"
 
+    # Record the active interceptor in user settings
+    if is_interceptor:
+        try:
+            get_settings().setValue("selected_download_plugin", filename)
+        except Exception:
+            pass
+
     if all_matched and not any_deployed:
         return True, True, f"{filename} is already up to date (SHA-256 matched)."
 
@@ -412,18 +471,16 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
 
 
 def deploy_all_plugins(force_download: bool = False, only_if_missing: bool = False) -> Tuple[bool, List[str]]:
-    """Deploy required SLSsteam plugins from Cloudflare R2 on demand."""
+    """Deploy the selected download interceptor and spliced-tickets plugins."""
     ensure_plugins_enabled()
 
-    manifest = fetch_plugins_manifest(force_refresh=force_download)
-    if manifest and "plugins" in manifest:
-        plugin_list = [
-            fname
-            for fname, meta in manifest["plugins"].items()
-            if meta.get("required", True)
-        ]
-    else:
-        plugin_list = FALLBACK_REQUIRED_PLUGINS
+    active_interceptor = (
+        get_active_interceptor_filename()
+        or get_settings().value("selected_download_plugin", "download.lua")
+        or "download.lua"
+    )
+
+    plugin_list = [active_interceptor, "spliced-tickets.lua"]
 
     results = []
     overall_ok = True

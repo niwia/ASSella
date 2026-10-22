@@ -6,7 +6,6 @@ import logging
 import tempfile
 
 from ui.assets import DEPOT_BLACKLIST
-from core.steam_api import get_depot_info_from_api
 from core.ini_parser import parse_depots_ini
 from utils.helpers import get_base_path
 from utils.lua_parsing import (
@@ -215,6 +214,10 @@ class ProcessZipTask:
         logger.info(f"Starting zip processing task for: {zip_path}")
         metadata = metadata or {}
 
+        # Imported lazily (not at module import) to keep startup light.
+        from core.steam_api import get_depot_info_from_api
+
+
         try:
             known_depot_descriptions = parse_depots_ini()
             logger.info(
@@ -245,8 +248,8 @@ class ProcessZipTask:
                         dt = lua_info.date_time
                         import datetime, time
                         lua_timestamp = int(time.mktime(datetime.datetime(*dt).timetuple()))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[ProcessZipTask] could not read the LUA timestamp from the zip: {e}")
                     lua_content = zip_ref.read(lua_files[0]).decode("utf-8")
                     if lua_content:
                         ProcessZipTask._parse_lua(lua_content, game_data)
@@ -274,8 +277,8 @@ class ProcessZipTask:
                                         if DepotKeyManager:
                                             try:
                                                 extra_db_keys = DepotKeyManager.get_instance().get_depot_keys(_extracted_appid)
-                                            except Exception:
-                                                pass
+                                            except Exception as e:
+                                                logger.debug(f"[ProcessZipTask] could not read extra keys for {_extracted_appid}: {e}")
                                         merged_lua = smart_merge_lua(lua_content, cached_lua_text, extra_depot_keys=extra_db_keys)
                                         if merged_lua and merged_lua != lua_content:
                                             lua_content = merged_lua
@@ -303,8 +306,8 @@ class ProcessZipTask:
                         try:
                             from utils.manifest_resolver import sanitize_manifest_bytes
                             mf_data = sanitize_manifest_bytes(mf_data)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"[ProcessZipTask] manifest {os.path.basename(f)} could not be sanitised: {e}")
                         manifest_files[os.path.basename(f)] = mf_data
 
                 for depot_id_manifest in manifest_files:
@@ -363,8 +366,8 @@ class ProcessZipTask:
                 if DepotKeyManager and _appid_for_cache:
                     try:
                         known_app_depots.update(DepotKeyManager().get_depot_keys(_appid_for_cache).keys())
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[ProcessZipTask] could not read cached depot keys for {_appid_for_cache}: {e}")
 
                 standalone_dirs = [
                     Path(tempfile.gettempdir()) / "mistwalker_manifests",
@@ -385,11 +388,11 @@ class ProcessZipTask:
                                             try:
                                                 from utils.manifest_resolver import sanitize_manifest_bytes
                                                 raw_bytes = sanitize_manifest_bytes(raw_bytes)
-                                            except Exception:
-                                                pass
+                                            except Exception as e:
+                                                logger.warning(f"[ProcessZipTask] manifest {mf_file.name} could not be sanitised: {e}")
                                             manifest_files[mf_file.name] = raw_bytes
-                                        except Exception:
-                                            pass
+                                        except Exception as e:
+                                            logger.debug(f"[ProcessZipTask] could not read {mf_file}: {e}")
 
                 if game_data.get("dlcs"):
                     enriched_dlcs = {}
@@ -523,8 +526,8 @@ class ProcessZipTask:
                         if DepotKeyManager and _cur_appid:
                             try:
                                 d_key = DepotKeyManager.get_instance().get_depot_keys(_cur_appid).get(str(s_did), "")
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"[ProcessZipTask] no key available for depot {s_did}: {e}")
                         if d_key:
                             desc = known_depot_descriptions.get(s_did, f"Depot {s_did}")
                             unfiltered_depots[str(s_did)] = {"key": d_key, "desc": desc, "system": None}
@@ -813,8 +816,8 @@ class ProcessZipTask:
                                             try:
                                                 found_manifest = cand.read_bytes()
                                                 break
-                                            except Exception:
-                                                pass
+                                            except Exception as e:
+                                                logger.debug(f"[ProcessZipTask] could not read {cand}: {e}")
                                     # Fallback: scan for any manifest matching this depot ID
                                     for mf in s_dir.glob(f"{m_did}_*.manifest"):
                                         parts = mf.stem.split("_")
@@ -823,8 +826,8 @@ class ProcessZipTask:
                                                 found_manifest = mf.read_bytes()
                                                 actual_mid = parts[1]
                                                 break
-                                            except Exception:
-                                                pass
+                                            except Exception as e:
+                                                logger.debug(f"[ProcessZipTask] could not read {mf}: {e}")
                                     if found_manifest:
                                         break
 
@@ -849,8 +852,8 @@ class ProcessZipTask:
                                                 try:
                                                     s_dir.mkdir(parents=True, exist_ok=True)
                                                     (s_dir / f"{m_did}_{actual_mid}.manifest").write_bytes(raw_bytes)
-                                                except Exception:
-                                                    pass
+                                                except Exception as e:
+                                                    logger.debug(f"[ProcessZipTask] could not cache the manifest in {s_dir}: {e}")
                                             logger.info(
                                                 f"[ProcessZipTask] at0-m successfully fetched missing manifest {m_did}_{actual_mid}"
                                             )
@@ -867,8 +870,8 @@ class ProcessZipTask:
                                     try:
                                         from utils.manifest_resolver import sanitize_manifest_bytes
                                         found_manifest = sanitize_manifest_bytes(found_manifest)
-                                    except Exception:
-                                        pass
+                                    except Exception as e:
+                                        logger.warning(f"[ProcessZipTask] manifest {m_did}_{actual_mid} could not be sanitised: {e}")
                                     manifest_files[f"{m_did}_{actual_mid}.manifest"] = found_manifest
                                     game_data.setdefault("manifests", {})[str(m_did)] = str(actual_mid)
 
@@ -901,8 +904,8 @@ class ProcessZipTask:
                                         try:
                                             from managers.db_manager import DatabaseManager
                                             DatabaseManager().clear_missing_hubcap_depot(str(game_data.get("appid")), str(m_did))
-                                        except Exception:
-                                            pass
+                                        except Exception as e:
+                                            logger.debug(f"[ProcessZipTask] could not clear recovered depot {m_did} from the DB: {e}")
                                         logger.info(
                                             f"[ProcessZipTask] Seamlessly integrated recovered depot {m_did} ({m_name}) with manifest {actual_mid} and valid decryption key"
                                         )
@@ -959,52 +962,69 @@ class ProcessZipTask:
                         try:
                             from managers.db_manager import DatabaseManager
                             db_enrichments = DatabaseManager().get_depot_enrichments(str(game_data.get("appid", "")))
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"[ProcessZipTask] depot enrichments unavailable: {e}")
 
                         for depot_id, lua_data in filtered_depots.items():
                             final_depot_data = {"key": lua_data["key"]}
                             details = api_details.get(str(depot_id))
+                            base_appid = str(game_data.get("appid", "")).strip()
 
-                            base_description = known_depot_descriptions.get(
-                                depot_id, lua_data["desc"]
-                            )
+                            # 1. Start with Lua/Hubcap description as initial candidate
+                            raw_lua_desc = lua_data.get("desc") or ""
 
+                            # 2. Check local SQLite DB enrichment (first priority on disk)
                             e_info = db_enrichments.get(str(depot_id))
                             if not e_info and details and details.get("dlcappid"):
-                                e_info = db_enrichments.get(str(details["dlcappid"]))
+                                dlcapp_cand = str(details["dlcappid"]).strip()
+                                if dlcapp_cand != base_appid:
+                                    e_info = db_enrichments.get(dlcapp_cand)
 
-                            if e_info:
-                                is_generic = (
-                                    not base_description
-                                    or bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", base_description, re.IGNORECASE))
-                                    or bool(re.match(r"^(?:\[.*?\]\s*)?DLC \d+$", base_description, re.IGNORECASE))
-                                )
-                                if is_generic and e_info.get("name"):
-                                    if e_info.get("is_dlc"):
-                                        dlc_prefix = f"[DLC {e_info['dlcappid']}]" if e_info.get("dlcappid") else "[DLC]"
-                                        if dlc_prefix.lower() not in e_info["name"].lower():
-                                            base_description = f"{dlc_prefix} {e_info['name']}"
-                                        else:
-                                            base_description = e_info["name"]
+                            base_description = ""
+                            if e_info and e_info.get("name"):
+                                e_dlc = str(e_info.get("dlcappid") or "").strip()
+                                is_actually_dlc = bool(e_info.get("is_dlc")) and str(depot_id) != base_appid and e_dlc != base_appid
+                                if is_actually_dlc:
+                                    dlc_prefix = f"[DLC {e_dlc}]" if e_dlc else "[DLC]"
+                                    if dlc_prefix.lower() not in e_info["name"].lower():
+                                        base_description = f"{dlc_prefix} {e_info['name']}"
                                     else:
                                         base_description = e_info["name"]
+                                else:
+                                    base_description = e_info["name"]
+
+                            if e_info:
+                                is_actually_dlc = bool(e_info.get("is_dlc")) and str(depot_id) != base_appid and str(e_info.get("dlcappid") or "").strip() != base_appid
                                 if not details and e_info.get("oslist"):
                                     final_depot_data["oslist"] = e_info["oslist"]
+                                if not details and e_info.get("osarch"):
+                                    final_depot_data["osarch"] = e_info["osarch"]
                                 if e_info.get("size_bytes"):
                                     final_depot_data["size"] = e_info["size_bytes"]
                                 if e_info.get("size_str"):
                                     final_depot_data["size_str"] = e_info["size_str"]
-                                if e_info.get("is_dlc"):
+                                if is_actually_dlc:
                                     final_depot_data["is_dlc"] = True
 
-                            is_base_generic = (
-                                not base_description
-                                or bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", base_description, re.IGNORECASE))
-                                or bool(re.match(r"^(?:\[.*?\]\s*)?DLC \d+$", base_description, re.IGNORECASE))
-                            )
-                            if is_base_generic and details and details.get("name"):
-                                base_description = details["name"]
+                            # 3. Check live Steam PICS name: if present and valid, it takes priority or fills missing
+                            if details and details.get("name"):
+                                pics_name = str(details["name"]).strip()
+                                is_pics_generic = bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", pics_name, re.IGNORECASE))
+                                if pics_name and not is_pics_generic:
+                                    base_description = pics_name
+
+                            # 4. Fallback to Lua/Hubcap description if still empty or generic
+                            if not base_description or bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", base_description, re.IGNORECASE)):
+                                if raw_lua_desc and not bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", raw_lua_desc, re.IGNORECASE)):
+                                    base_description = raw_lua_desc
+
+                            # 5. Fallback to depots.ini as strictly the LAST offline fallback
+                            if not base_description or bool(re.match(r"^(?:\[.*?\]\s*)?Depot \d+$", base_description, re.IGNORECASE)):
+                                ini_desc = known_depot_descriptions.get(depot_id)
+                                if ini_desc:
+                                    base_description = ini_desc
+                                elif not base_description:
+                                    base_description = f"Depot {depot_id}"
 
                             if details:
                                 tags = []
@@ -1025,19 +1045,27 @@ class ProcessZipTask:
                                 )
 
                                 final_depot_data["oslist"] = details.get("oslist")
+                                if details.get("osarch"):
+                                    final_depot_data["osarch"] = details.get("osarch")
                                 final_depot_data["language"] = details.get("language")
                                 if details.get("manifests"):
                                     final_depot_data["manifests"] = details["manifests"]
                                 if details.get("manifest_id"):
                                     final_depot_data["manifest_id"] = str(details["manifest_id"])
-                                if details.get("dlcappid"):
-                                    final_depot_data["dlcappid"] = str(details["dlcappid"])
-                                if details.get("is_dlc") or details.get("dlcappid"):
+                                dlcappid_val = str(details.get("dlcappid") or "").strip()
+                                if dlcappid_val:
+                                    final_depot_data["dlcappid"] = dlcappid_val
+                                is_dlc_flag = bool(details.get("is_dlc"))
+                                if (dlcappid_val and dlcappid_val != base_appid) or (is_dlc_flag and str(depot_id) != base_appid and dlcappid_val != base_appid):
                                     final_depot_data["is_dlc"] = True
                                 if details.get("name"):
                                     final_depot_data["name"] = details["name"]
+                                elif base_description:
+                                    final_depot_data["name"] = base_description
                             else:
                                 final_description = base_description
+                                if base_description:
+                                    final_depot_data["name"] = base_description
 
                             if filter_soundtracks:
                                 lower_desc = final_description.lower()
@@ -1083,6 +1111,9 @@ class ProcessZipTask:
 
                         game_data["depots"] = enriched_depots
 
+                # Editions are resolved by the depot selector when it opens (offline
+                # first, store tiers on demand), so the zip task does not block here.
+
                 if not game_data.get("game_name"):
                     _fallback_name = f"App_{game_data.get('appid', 'Unknown')}"
                     game_data["game_name"] = _fallback_name
@@ -1098,8 +1129,8 @@ class ProcessZipTask:
                     try:
                         from utils.manifest_resolver import sanitize_manifest_bytes
                         content = sanitize_manifest_bytes(content)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"[ProcessZipTask] manifest {name} could not be sanitised: {e}")
                     with open(os.path.join(manifest_dir, name), "wb") as f:
                         f.write(content)
 

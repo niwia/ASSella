@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.color_utils import get_dark_container_color, get_best_foreground_color
+from ui.dialogs.themed_dialog import install_themed_frame
 
 
 ACTION_RECOMMENDED = "recommended"
@@ -52,21 +53,12 @@ class RecommendedBuildPromptDialog(QDialog):
 
         self.setWindowTitle(f"Voices38 Version — {self.game_name}")
         self.setMinimumWidth(480)
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #12131a;
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 12px;
-            }
-        """)
 
         self._build_ui()
 
     def _build_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(24, 22, 24, 22)
-        main_layout.setSpacing(18)
+        # The title bar takes its text from setWindowTitle() above.
+        main_layout = install_themed_frame(self, margins=(24, 22, 24, 22), spacing=18)
 
         # ── Header ──
         header_layout = QVBoxLayout()

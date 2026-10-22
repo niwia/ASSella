@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSlot, QPropertyAnimation, QEasingCurve
 from PyQt6.QtWidgets import QWidget
@@ -18,10 +18,10 @@ from PyQt6.QtWidgets import (
     QDialog,
     QGraphicsOpacityEffect,
     QMenu,
-    QMessageBox,
-    QProgressDialog,
     QListWidgetItem,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
+from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
 
 from ui.dialogs.library.widgets import GameItemWidget
 
@@ -76,6 +76,17 @@ class DepotSelection(NamedTuple):
 class LibraryActionsMixin:
     """Mixin combining Multi-Selection FAB, Batch Actions, and Game Operations."""
 
+    def _dialog_parent(self):
+        """The window a dialog raised by a library action should sit on.
+
+        When the game-details window is open the action was started from it, so
+        a dialog centred on the library window behind it can end up out of
+        sight. The details window is a *preference*, never a requirement -
+        library actions have to keep working with it closed - so this falls
+        back to the library window itself.
+        """
+        return self._details_dialog or self
+
     # ─────────────────────────────────────────────────────────────────────────
     # 1. Floating Action Button (FAB) & Selection Management
     # ─────────────────────────────────────────────────────────────────────────
@@ -83,8 +94,8 @@ class LibraryActionsMixin:
     def _position_selection_fab(self) -> None:
         if hasattr(self, "selection_fab") and self.selection_fab and self.selection_fab.isVisible():
             self.selection_fab.adjustSize()
-            x = self.games_list.x() + self.games_list.width() - self.selection_fab.width() - 25
-            y = self.games_list.y() + self.games_list.height() - self.selection_fab.height() - 25
+            x = self.games_list.x() + self.games_list.width() - self.selection_fab.width() - 16
+            y = self.games_list.y() + self.games_list.height() - self.selection_fab.height() - 12
             self.selection_fab.move(x, y)
             self.selection_fab.raise_()
 
@@ -97,34 +108,161 @@ class LibraryActionsMixin:
                 self.fab_menu_container.raise_()
 
     def _show_fab_menu(self) -> None:
-        is_visible = self.fab_menu_container.isVisible()
-        if not is_visible:
-            self.fab_menu_container.setVisible(True)
-            self._position_selection_fab()
+        """Show drop-up action menu for multi-selected games."""
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"""
+            QMenu {{
+                background-color: #1a1a20;
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 8px;
+                padding: 6px;
+            }}
+            QMenu::item {{
+                padding: 8px 24px;
+                border-radius: 4px;
+                font-size: 12px;
+                color: #FFFFFF;
+            }}
+            QMenu::item:selected {{
+                background-color: rgba(255, 255, 255, 0.12);
+                color: {self.accent_color};
+            }}
+            QMenu::item:disabled {{
+                color: rgba(255, 255, 255, 0.35);
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: rgba(255, 255, 255, 0.1);
+                margin: 4px 8px;
+            }}
+            """
+        )
 
-            # Material Design 3 menu entry fade-in animation
-            op = QGraphicsOpacityEffect(self.fab_menu_container)
-            self.fab_menu_container.setGraphicsEffect(op)
-            self.anim = QPropertyAnimation(op, b"opacity")
-            self.anim.setDuration(150)
-            self.anim.setStartValue(0.0)
-            self.anim.setEndValue(1.0)
-            self.anim.setEasingCurve(QEasingCurve.Type.OutQuad)
-            self.anim.start()
+        count = len(self._selected_appids)
 
-            self.selection_fab.setText("✕  Close")
-        else:
-            self._close_fab_menu()
+        act_select_all = QAction("✓  Select All", menu)
+        act_select_all.triggered.connect(self._on_select_all_action_clicked)
+        menu.addAction(act_select_all)
+
+        menu.addSeparator()
+
+        act_move_atom = QAction("→  Move to AT0-M", menu)
+        act_move_atom.setEnabled(count > 0)
+        act_move_atom.triggered.connect(self._on_move_to_atom_action_clicked)
+        menu.addAction(act_move_atom)
+
+        act_update = QAction("↻  Update Selected", menu)
+        act_update.setEnabled(count > 0)
+        act_update.triggered.connect(self._on_update_action_clicked)
+        menu.addAction(act_update)
+
+        act_uninstall = QAction("✕  Uninstall Selected", menu)
+        act_uninstall.setEnabled(count > 0)
+        act_uninstall.triggered.connect(self._on_uninstall_action_clicked)
+        menu.addAction(act_uninstall)
+
+        menu.addSeparator()
+
+        act_clear = QAction("↩  Clear Selection", menu)
+        act_clear.setEnabled(count > 0)
+        act_clear.triggered.connect(self._on_clear_selection_clicked)
+        menu.addAction(act_clear)
+
+        act_exit = QAction("✕  Exit Multi-Select", menu)
+        act_exit.triggered.connect(lambda: self._toggle_select_mode(False))
+        menu.addAction(act_exit)
+
+        if hasattr(self, "selection_fab") and self.selection_fab:
+            menu.adjustSize()
+            pos = self.selection_fab.mapToGlobal(self.selection_fab.rect().topLeft())
+            menu_w = menu.sizeHint().width()
+            menu_h = menu.sizeHint().height()
+            pos.setY(pos.y() - menu_h - 6)
+            pos.setX(max(10, pos.x() + self.selection_fab.width() - menu_w))
+            menu.exec(pos)
 
     def _close_fab_menu(self) -> None:
-        if hasattr(self, "fab_menu_container") and self.fab_menu_container.isVisible():
-            self.fab_menu_container.setVisible(False)
-            count = len(self._selected_appids)
-            self.selection_fab.setText(f"Actions ({count})  ▼" if count else "Actions  ▼")
+        pass
 
-    def _toggle_select_mode(self) -> None:
+    def _on_fab_clicked(self) -> None:
+        """Handle click on persistent bottom-right FAB button."""
+        if self._select_mode:
+            self._show_fab_menu()
+        else:
+            self._show_options_menu()
+
+    def _show_options_menu(self) -> None:
+        """Show options popup menu containing Multi-Select, Scan for LUA, and Scan Libraries."""
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"""
+            QMenu {{
+                background-color: #1a1a20;
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 8px;
+                padding: 6px;
+            }}
+            QMenu::item {{
+                padding: 8px 20px;
+                border-radius: 4px;
+                font-size: 12px;
+                color: #FFFFFF;
+            }}
+            QMenu::item:selected {{
+                background-color: rgba(255, 255, 255, 0.12);
+                color: {self.accent_color};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: rgba(255, 255, 255, 0.1);
+                margin: 4px 8px;
+            }}
+            """
+        )
+
+        select_text = "Exit Multi-Select" if self._select_mode else "Multi-Select"
+        act_select = QAction(select_text, menu)
+        act_select.triggered.connect(lambda: self._toggle_select_mode())
+        menu.addAction(act_select)
+
+        if self._select_mode:
+            act_select_all = QAction("Select All (✓)", menu)
+            act_select_all.triggered.connect(self._on_select_all_action_clicked)
+            menu.addAction(act_select_all)
+
+        act_lua = QAction("Scan for LUA", menu)
+        act_lua.setToolTip("Scan for user-provided .lua files in the cached_luas folder")
+        act_lua.triggered.connect(self._on_scan_imports_clicked)
+        menu.addAction(act_lua)
+
+        act_scan = QAction("Scan Steam Libraries", menu)
+        act_scan.setToolTip("Scan local Steam library folders for installed games")
+        act_scan.triggered.connect(self._scan_for_games)
+        menu.addAction(act_scan)
+
+        if hasattr(self, "selection_fab") and self.selection_fab:
+            menu.adjustSize()
+            pos = self.selection_fab.mapToGlobal(self.selection_fab.rect().topLeft())
+            menu_w = menu.sizeHint().width()
+            menu_h = menu.sizeHint().height()
+            pos.setY(pos.y() - menu_h - 6)
+            pos.setX(max(10, pos.x() + self.selection_fab.width() - menu_w))
+            menu.exec(pos)
+
+    def _toggle_select_mode(self, enabled: Optional[bool] = None) -> None:
         """Enable or disable multi-select mode."""
-        self._select_mode = self.select_mode_button.isChecked()
+        if enabled is not None:
+            self._select_mode = enabled
+        elif hasattr(self, "select_mode_button") and self.sender() == self.select_mode_button:
+            self._select_mode = self.select_mode_button.isChecked()
+        else:
+            self._select_mode = not self._select_mode
+
+        if hasattr(self, "select_mode_button"):
+            self.select_mode_button.setChecked(self._select_mode)
         if not self._select_mode:
             self._selected_appids.clear()
 
@@ -132,14 +270,31 @@ class LibraryActionsMixin:
         self._refresh_game_list()
 
     def _update_selection_footer(self) -> None:
-        """Update the selection FAB state and count."""
+        """Update the selection/options FAB state and count."""
         count = len(self._selected_appids)
-        if self._select_mode and count > 0:
-            self.selection_fab.setText(f"Actions ({count})  ▼")
+        if hasattr(self, "selection_fab") and self.selection_fab:
+            if self._select_mode and count > 0:
+                self.selection_fab.setText(f"Actions ({count})  ▲")
+            elif self._select_mode:
+                self.selection_fab.setText("Select  ▲")
+            else:
+                self.selection_fab.setText("options")
             self.selection_fab.setVisible(True)
             self._position_selection_fab()
-        else:
-            self.selection_fab.setVisible(False)
+
+        if hasattr(self, "btn_move_atom") and self.btn_move_atom:
+            self.btn_move_atom.setEnabled(count > 0)
+        if hasattr(self, "btn_update") and self.btn_update:
+            self.btn_update.setEnabled(count > 0)
+        if hasattr(self, "btn_uninstall") and self.btn_uninstall:
+            self.btn_uninstall.setEnabled(count > 0)
+        if hasattr(self, "btn_clear") and self.btn_clear:
+            self.btn_clear.setEnabled(count > 0)
+
+    def _on_clear_selection_clicked(self) -> None:
+        """Clear selection and close action menu."""
+        self._clear_selection()
+        self._close_fab_menu()
 
     def _clear_selection(self) -> None:
         """Clear all selections and refresh visual state."""
@@ -178,9 +333,8 @@ class LibraryActionsMixin:
         if self._dialog_open:
             return
 
-        # Steam tab games: check if the selected game has DLCs, if so, launch DLC-only download flow!
+        # Steam tab games: single click only highlights/selects row. Double-click triggers fetch.
         if getattr(self, "_active_tab", "") == "steam" or game_data.get("is_steam_tab"):
-            self._handle_steam_tab_game_clicked(game_data)
             return
 
         # Debounce
@@ -189,10 +343,54 @@ class LibraryActionsMixin:
 
         self._show_game_details_dialog(game_data)
 
+    def _on_item_double_clicked(self, item: QListWidgetItem) -> None:
+        """Handle double-click on game item:
+        For Steam tab games, initiates DLC-only manifest fetch and depot selection dialog.
+        """
+        if not item or getattr(self, "_batch_mode", False):
+            return
+        game_data = item.data(Qt.ItemDataRole.UserRole)
+        if not game_data:
+            return
+
+        if getattr(self, "_active_tab", "") == "steam" or game_data.get("is_steam_tab"):
+            self._handle_steam_tab_game_clicked(game_data)
+        else:
+            self._on_item_selected(item)
+
+    def _show_steam_loading_overlay(self, label: str) -> None:
+        """Shows floating 3x3 pixel wavefront loading overlay on the library parent."""
+        self._dismiss_steam_loading_overlay()
+        try:
+            from ui.widgets.pixel_loader_overlay import PixelLoadingOverlay
+            parent = self._dialog_parent()
+            accent = getattr(self, "accent_color", "#a1c9fd")
+            self._steam_tab_loading_overlay = PixelLoadingOverlay(
+                parent=parent,
+                label=label,
+                accent_color=accent,
+            )
+            self._steam_tab_loading_overlay.show_centered()
+            QApplication.processEvents()
+        except Exception as e:
+            logger.debug(f"[SteamTab] Could not show loading overlay: {e}")
+
+    def _dismiss_steam_loading_overlay(self) -> None:
+        """Dismisses and cleans up the floating loading overlay if active."""
+        overlay = getattr(self, "_steam_tab_loading_overlay", None)
+        if overlay:
+            try:
+                overlay.close()
+                overlay.deleteLater()
+            except (RuntimeError, AttributeError) as exc:
+                logger.debug(f"[SteamTab] Could not dismiss loading overlay: {exc}")
+            self._steam_tab_loading_overlay = None
+
     def _handle_steam_tab_game_clicked(self, game_data: dict) -> None:
         """Handle click on an owned/installed Steam game:
 
         Checks if the game has DLCs (fastest path possible via local SQLite/manifests).
+        Runs discovery in a background thread to prevent UI freezing.
         If DLCs exist, launches Depot Selection with DLC-only mode ON and locked,
         and storage locked to its existing installation path.
         """
@@ -200,27 +398,501 @@ class LibraryActionsMixin:
         if not appid or appid in ("0", "N/A", "unknown"):
             return
 
-        from utils.dlc_helpers import has_game_dlcs
-        has_dlc = has_game_dlcs(appid, game_data.get("depots"))
-        if not has_dlc:
-            from PyQt6.QtWidgets import QMessageBox
-            name = game_data.get("game_name", "this game")
-            QMessageBox.information(
+        name = game_data.get("game_name", "this game")
+        self._show_steam_loading_overlay(f"Discovering DLCs for {name}...")
+
+        def _bg_discover(allow_store: bool = False):
+            try:
+                from utils.dlc_helpers import discover_dlc_depots, enrich_dlc_names_with_byparr_or_store
+                disc = discover_dlc_depots(appid, game_data.get("depots"), allow_store=allow_store)
+                if disc and disc.catalog:
+                    try:
+                        enriched_catalog = enrich_dlc_names_with_byparr_or_store(appid, disc.catalog)
+                        disc = disc.__class__(
+                            appid=disc.appid,
+                            catalog=enriched_catalog,
+                            depots=disc.depots,
+                            sources=disc.sources,
+                        )
+                    except Exception as e_enr:
+                        logger.debug(f"[DLCDiscovery] Catalog name enrichment error: {e_enr}")
+            except Exception as exc:
+                logger.warning(f"[DLCDiscovery] Background DLC discovery error: {exc}", exc_info=True)
+                disc = None
+
+            def _on_done():
+                self._on_dlc_discovery_finished(appid, name, game_data, disc, allow_store)
+
+            if hasattr(self, "_run_on_main_thread"):
+                from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
+                QMetaObject.invokeMethod(
+                    self,
+                    "_run_on_main_thread",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(object, _on_done),
+                )
+            else:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, _on_done)
+
+        self.executor.submit(_bg_discover, False)
+
+    def _on_dlc_discovery_finished(
+        self, appid: str, name: str, game_data: dict, discovery: Any, allow_store: bool
+    ) -> None:
+        from ui.dialogs.themed_message_box import ThemedMessageBox
+
+        if not discovery or (not discovery.catalog and not discovery.depots):
+            if not allow_store:
+                self._dismiss_steam_loading_overlay()
+                widen = ThemedMessageBox.question(
+                    self,
+                    "No DLC List Found",
+                    f"Steam's package data lists no DLCs for {name}.\n\n"
+                    "Look the DLC list up on the Steam Store instead? "
+                    "That is a slower, wider list.",
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.No,
+                )
+                if widen != ThemedMessageBox.StandardButton.Yes:
+                    return
+                self._show_steam_loading_overlay(f"Discovering DLCs for {name} (Store lookup)...")
+
+                def _bg_store_discover():
+                    try:
+                        from utils.dlc_helpers import discover_dlc_depots, enrich_dlc_names_with_byparr_or_store
+                        disc = discover_dlc_depots(appid, game_data.get("depots"), allow_store=True)
+                        if disc and disc.catalog:
+                            try:
+                                enriched_catalog = enrich_dlc_names_with_byparr_or_store(appid, disc.catalog)
+                                disc = disc.__class__(
+                                    appid=disc.appid,
+                                    catalog=enriched_catalog,
+                                    depots=disc.depots,
+                                    sources=disc.sources,
+                                )
+                            except Exception as e_enr:
+                                logger.debug(f"[DLCDiscovery] Catalog name enrichment error: {e_enr}")
+                    except Exception as exc:
+                        logger.warning(f"[DLCDiscovery] Store DLC discovery error: {exc}", exc_info=True)
+                        disc = None
+
+                    def _on_store_done():
+                        self._on_dlc_discovery_finished(appid, name, game_data, disc, True)
+
+                    if hasattr(self, "_run_on_main_thread"):
+                        from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
+                        QMetaObject.invokeMethod(
+                            self,
+                            "_run_on_main_thread",
+                            Qt.ConnectionType.QueuedConnection,
+                            Q_ARG(object, _on_store_done),
+                        )
+                    else:
+                        from PyQt6.QtCore import QTimer
+                        QTimer.singleShot(0, _on_store_done)
+
+                self.executor.submit(_bg_store_discover)
+                return
+
+            self._dismiss_steam_loading_overlay()
+            ThemedMessageBox.information(
                 self,
                 "No DLCs Detected",
                 f"No downloadable DLCs were detected for {name}."
             )
             return
 
+        if not discovery.has_sized_depots:
+            self._dismiss_steam_loading_overlay()
+            answer = ThemedMessageBox.warning(
+                self,
+                "No Downloadable DLC Depots",
+                f"{name} lists {len(discovery.catalog)} DLC(s), but none of them "
+                "has a depot with real content to download.\n\n"
+                "You can still turn on DLC mode so they count as owned, without "
+                "downloading anything. Continue?",
+                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                ThemedMessageBox.StandardButton.No,
+            )
+            if answer != ThemedMessageBox.StandardButton.Yes:
+                return
+            self._show_steam_loading_overlay(f"Fetching manifest for {name}...")
+
+        overlay = getattr(self, "_steam_tab_loading_overlay", None)
+        if overlay:
+            overlay.set_label(f"Fetching manifest for {name}...")
+        else:
+            self._show_steam_loading_overlay(f"Fetching manifest for {name}...")
+
         game_data_dlc = dict(game_data)
         game_data_dlc["_dlc_only"] = True
         game_data_dlc["_lock_dlc_only"] = True
         game_data_dlc["_lock_storage"] = True
+        game_data_dlc["_dlc_catalog"] = dict(discovery.catalog)
         self._fetch_game_manifest(game_data_dlc, is_verify=False)
 
+    def _save_config_only_dlc_mode(self, appid: str, game_data: dict, depot_dialog) -> bool:
+        """Record DLC mode for a game whose DLCs have no downloadable depot.
+
+        The DLC names are written to the SLSsteam config so the game's DLCs
+        count as owned, and the mode flag is set. Nothing is queued.
+        """
+        from ui.dialogs.themed_message_box import ThemedMessageBox
+
+        appid_str = str(appid).strip()
+        known: Dict[str, str] = {}
+        getter = getattr(depot_dialog, "get_dlc_catalog", None)
+        if callable(getter):
+            try:
+                known.update(getter() or {})
+            except Exception:
+                logger.debug("[Library] Could not read the dialog's DLC catalog", exc_info=True)
+        for dlc_appid, dlc_name in (game_data.get("_dlc_catalog") or {}).items():
+            dlc_appid = str(dlc_appid or "").strip()
+            if dlc_appid.isdigit() and dlc_appid != appid_str:
+                known.setdefault(dlc_appid, str(dlc_name or ""))
+
+        # Only the depotless DLCs are recorded when nothing was ticked. A DLC
+        # whose depots the user unticked was a deliberate exclusion.
+        get_depotless = getattr(depot_dialog, "get_depotless_dlc_catalog", None)
+        depotless = get_depotless() if callable(get_depotless) else None
+        if isinstance(depotless, dict) and depotless:
+            catalog = {
+                str(k): str(v or known.get(str(k), ""))
+                for k, v in depotless.items()
+                if str(k).strip() != appid_str
+            }
+        else:
+            catalog = {
+                str(k): str(v)
+                for k, v in known.items()
+                if str(k).strip() != appid_str
+            }
+
+        name = game_data.get("game_name") or f"App {appid}"
+        if not catalog:
+            ThemedMessageBox.information(
+                self,
+                "Nothing Selected",
+                f"No DLCs were selected for {name}, so nothing was changed.",
+            )
+            return False
+
+        try:
+            from utils.yaml.dlc import add_dlc_data_batch
+            from utils.yaml_config_manager import get_user_config_path, remove_additional_app
+
+            config_path = get_user_config_path()
+            if not config_path:
+                raise RuntimeError("SLSsteam config path could not be found")
+            add_dlc_data_batch(config_path, appid, catalog)
+            # Remove base game AppID from AdditionalApps (DLC-only mode invariant)
+            remove_additional_app(config_path, appid)
+        except Exception as exc:
+            logger.warning("[Library] Could not save DLC mode for %s: %s", appid, exc)
+            ThemedMessageBox.warning(
+                self,
+                "Could Not Save DLC Mode",
+                f"The DLC list for {name} could not be written to the SLSsteam config.\n\n{exc}",
+            )
+            return False
+
+        from utils.settings import get_settings
+
+        get_settings().setValue(f"dlc_only_mode/{appid}", True)
+        ThemedMessageBox.information(
+            self,
+            "DLC Mode Saved",
+            f"DLC mode is on for {name}. {len(catalog)} DLC(s) will be treated as owned.\n\n"
+            "No download was queued because none of these DLCs has a downloadable depot.",
+        )
+        return True
+
     # ─────────────────────────────────────────────────────────────────────────
-    # 2. Batch Operations (Update / Uninstall / Enqueue)
+    # 2. Batch Operations (Update / Uninstall / Move to AT0-M / Enqueue)
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _on_select_all_action_clicked(self) -> None:
+        """Toggle select all visible games in the current library tab."""
+        from ui.dialogs.library.widgets import GameItemWidget
+
+        visible_appids = set()
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            if not item or item.isHidden():
+                continue
+            game_data = item.data(Qt.ItemDataRole.UserRole)
+            if not game_data:
+                continue
+            aid = str(game_data.get("appid", "")).strip()
+            if aid and aid not in ("0", "N/A", "unknown"):
+                visible_appids.add(aid)
+
+        if not visible_appids:
+            return
+
+        # Smart toggle: if all visible are selected, clear selection; else select all
+        if visible_appids.issubset(self._selected_appids):
+            self._selected_appids.difference_update(visible_appids)
+        else:
+            self._selected_appids.update(visible_appids)
+
+        self._update_selection_footer()
+
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            widget = self.games_list.itemWidget(item)
+            if isinstance(widget, GameItemWidget):
+                appid = getattr(widget, "appid", None) or str((getattr(widget, "game_data", None) or {}).get("appid", ""))
+                widget.set_selected(appid in self._selected_appids)
+
+    def _on_move_to_atom_action_clicked(self) -> None:
+        """Handle Move Selected to AT0-M action."""
+        self._close_fab_menu()
+        self._batch_move_selected_to_atom()
+
+    def _batch_move_selected_to_atom(self) -> None:
+        """Verify eligibility, confirm, and execute batch move to AT0-M mode."""
+        from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
+        from utils.dlc_helpers import is_dlc_only_mode
+        from utils.settings import get_settings
+        from ui.dialogs.library.filter_sort import game_is_dlc_only
+        from ui.dialogs.library.batch_migration_dialog import (
+            BatchAtomMigrationConfirmDialog,
+            BatchAtomMigrationWorker,
+        )
+        from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+
+        if not are_plugins_present() and not is_plugin_check_bypassed():
+            ThemedMessageBox.warning(
+                self._dialog_parent(),
+                "AT0-M Plugins Required",
+                "AT0-M mode requires SLSsteam plugins (download interceptor and spliced-tickets.lua).\n\n"
+                "Please go to Settings -> AT0-M and enable/deploy plugin support before moving games to AT0-M.",
+            )
+            return
+
+        if not self._selected_appids:
+            ThemedMessageBox.information(
+                self._dialog_parent(),
+                "No Games Selected",
+                "Please select one or more games to move to AT0-M mode.",
+            )
+            return
+
+        selected_games = []
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            if not item:
+                continue
+            game_data = item.data(Qt.ItemDataRole.UserRole)
+            if not game_data:
+                continue
+            aid = str(game_data.get("appid", "")).strip()
+            if aid in self._selected_appids:
+                selected_games.append(game_data)
+
+        if not selected_games:
+            return
+
+        settings = get_settings()
+        eligible_games = []
+        skipped_games = []
+
+        for g in selected_games:
+            aid = str(g.get("appid", "")).strip()
+            name = g.get("game_name") or f"App {aid}"
+
+            # 0. A game whose Steam manifest adoption was deferred (Steam was
+            #    running during the migration) is AT0-M already, but the
+            #    appmanifest still has to be adopted. It stays eligible so
+            #    the migration can be re-run once Steam is closed.
+            acf_pending = bool(g.get("acf_pending"))
+
+            # 1. Already in AT0-M
+            if (
+                g.get("is_atom")
+                or g.get("is_vapor")
+                or g.get("is_plugin_game")
+                or g.get("source") in ("at0-m", "AT0-M")
+                or g.get("update_status") in ("at0m", "vapor")
+            ) and not acf_pending:
+                skipped_games.append((g, "Already in AT0-M"))
+                continue
+
+            # 2. Pure unmanaged Steam game (not ASSella installed)
+            if not g.get("is_accela_install"):
+                skipped_games.append((g, "Not ASSella Install"))
+                continue
+
+            # 3. Strict Rule: DLC-Only Mode games must NEVER be moved
+            if is_dlc_only_mode(aid) or game_is_dlc_only(g) or g.get("is_dlc_only"):
+                skipped_games.append((g, "DLC-Only Mode"))
+                continue
+
+            # 4. Strict Rule: Pinned Manifest / Pinned Build games must NEVER be moved
+            is_pinned = (
+                settings.value(f"pin_build/{aid}", False, type=bool)
+                or bool(g.get("_pin_build"))
+                or bool((g.get("metadata") or {}).get("pin_build"))
+            )
+            if is_pinned:
+                skipped_games.append((g, "Pinned Build / Manifest"))
+                continue
+
+            # 5. Local install check
+            install_path = g.get("install_path")
+            if not install_path or not os.path.isdir(install_path):
+                folder = g.get("installdir") or g.get("game_name")
+                if folder and g.get("library_path"):
+                    cand = Path(g["library_path"]) / "steamapps" / "common" / folder
+                    if cand.is_dir():
+                        g["install_path"] = str(cand)
+                        install_path = str(cand)
+                if not install_path or not os.path.isdir(install_path):
+                    skipped_games.append((g, "Not Installed Locally"))
+                    continue
+
+            eligible_games.append(g)
+
+        # Show confirmation dialog
+        dlg = BatchAtomMigrationConfirmDialog(
+            eligible_games=eligible_games,
+            skipped_games=skipped_games,
+            accent_color=self.accent_color,
+            parent=self._dialog_parent(),
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted or not eligible_games:
+            return
+
+        # Execute migration with ThemedProgressDialog and BatchAtomMigrationWorker
+        progress_dlg = ThemedProgressDialog(
+            f"Preparing to move {len(eligible_games)} game(s) to AT0-M...",
+            "Cancel",
+            0,
+            len(eligible_games),
+            self._dialog_parent(),
+        )
+        progress_dlg.setWindowModality(Qt.WindowModality.WindowModal)
+
+        # Retain reference to worker on self to avoid garbage collection
+        self._batch_atom_worker = BatchAtomMigrationWorker(eligible_games, parent=self)
+        progress_dlg.canceled.connect(self._batch_atom_worker.cancel)
+
+        def _on_worker_progress(cur, tot, name, msg):
+            progress_dlg.setValue(cur)
+            progress_dlg.setLabelText(f"[{cur}/{tot}] {name}\n{msg}")
+
+        def _on_worker_finished(result):
+            progress_dlg.close()
+            migrated = result.get("migrated", [])
+            failed = result.get("failed", [])
+            acf_pending = result.get("acf_pending", [])
+
+            # Update GameManager in-memory cache
+            if self.game_manager and hasattr(self.game_manager, "games"):
+                migrated_aids = {str(m["appid"]) for m in migrated}
+                for g in self.game_manager.games:
+                    aid = str(g.get("appid", "")).strip()
+                    if aid in migrated_aids:
+                        g["is_vapor"] = True
+                        g["is_atom"] = True
+                        g["is_plugin_game"] = True
+                        g["source"] = "at0-m"
+                        g["update_status"] = "at0m"
+                if hasattr(self.game_manager, "games_cache") and self.game_manager.games_cache:
+                    self.game_manager.games_cache.save(self.game_manager.games)
+
+            self._clear_selection()
+            self._refresh_game_list()
+
+            if failed:
+                warning_parts = [f"Successfully registered {len(migrated)} game(s) in AT0-M."]
+                if failed:
+                    failed_str = "\n".join(f"• {f['name']}: {f.get('reason', 'Failed')}" for f in failed[:8])
+                    if len(failed) > 8:
+                        failed_str += f"\n• ...and {len(failed) - 8} more."
+                    warning_parts.append(f"Skipped/failed games:\n{failed_str}")
+                ThemedMessageBox.warning(
+                    self._dialog_parent(),
+                    "AT0-M Migration Completed with Warnings",
+                    "\n\n".join(warning_parts),
+                )
+            else:
+                ThemedMessageBox.information(
+                    self._dialog_parent(),
+                    "AT0-M Migration Complete",
+                    f"Successfully moved all {len(migrated)} game(s) to AT0-M mode!\n\n"
+                    "SLSsteam configuration has been written and reloaded.",
+                )
+
+            markers_retained = result.get("markers_retained", [])
+            if markers_retained:
+                retained_str = "\n".join(
+                    f"• {m['name']}: {m.get('reason', 'marker kept for retry')}"
+                    for m in markers_retained[:8]
+                )
+                if len(markers_retained) > 8:
+                    retained_str += f"\n• ...and {len(markers_retained) - 8} more."
+                ThemedMessageBox.warning(
+                    self._dialog_parent(),
+                    "ASSella Markers Left In Place",
+                    "Markers were retained where the migration did not finish safely, "
+                    "so those games can be retried:\n\n"
+                    f"{retained_str}",
+                )
+
+            if acf_pending:
+                pending_str = "\n".join(f"• {p['name']}" for p in acf_pending[:8])
+                if len(acf_pending) > 8:
+                    pending_str += f"\n• ...and {len(acf_pending) - 8} more."
+                ThemedMessageBox.warning(
+                    self._dialog_parent(),
+                    "Steam Manifest Adoption Deferred",
+                    "Steam is running, so the appmanifest files were left untouched "
+                    "(Steam rewrites them on exit and would discard the change).\n\n"
+                    f"Close Steam and run the migration again for these games:\n{pending_str}",
+                )
+
+            # Depots that were not mounted must be reported: the user asked
+            # for the whole game, and a depot missing from AdditionalDepots
+            # means missing content for that game.
+            #   - no decryption key  -> Steam would report DepotWithoutKey
+            #   - refused by the config editor -> the depot is a registered
+            #     app or otherwise cannot be mounted under this game
+            #   - outside the user's saved depot scope -> the user never
+            #     selected it, so it is not part of this install
+            skipped: List[Tuple[str, str, List[str]]] = []
+            for m in migrated:
+                name = m.get("name") or m.get("appid", "")
+                if m.get("excluded_depots"):
+                    skipped.append((name, "no decryption key", list(m["excluded_depots"])))
+                if m.get("unmounted_depots"):
+                    skipped.append((name, "not mounted by SLSsteam", list(m["unmounted_depots"])))
+                if m.get("excluded_out_of_scope"):
+                    skipped.append(
+                        (name, "outside the selected depot scope", list(m["excluded_out_of_scope"]))
+                    )
+            if skipped:
+                lines = []
+                for name, reason, deps in skipped[:8]:
+                    lines.append(f"• {name} ({reason}): {', '.join(str(d) for d in deps)}")
+                if len(skipped) > 8:
+                    lines.append(f"• ...and {len(skipped) - 8} more.")
+                skipped_str = "\n".join(lines)
+                ThemedMessageBox.warning(
+                    self._dialog_parent(),
+                    "Depots Not Mounted",
+                    "Some depots of these games were not mounted in SLSsteam, so "
+                    "that content is not served for them:\n\n"
+                    f"{skipped_str}",
+                )
+
+        self._batch_atom_worker.progress.connect(_on_worker_progress)
+        self._batch_atom_worker.finished.connect(_on_worker_finished)
+        progress_dlg.show()
+        self._batch_atom_worker.start()
 
     def _on_update_action_clicked(self) -> None:
         self._close_fab_menu()
@@ -261,17 +933,17 @@ class LibraryActionsMixin:
             "This will delete all files in the game directories and their Steam .acf files!"
         )
 
-        reply = QMessageBox.question(
+        reply = ThemedMessageBox.question(
             self,
             "Confirm Batch Uninstall",
             confirm_msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.No
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if reply != ThemedMessageBox.StandardButton.Yes:
             return
 
-        progress = QProgressDialog("Uninstalling games...", None, 0, len(selected_games), self)
+        progress = ThemedProgressDialog("Uninstalling games...", None, 0, len(selected_games), self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.show()
 
@@ -306,14 +978,14 @@ class LibraryActionsMixin:
             failed_str = "\n".join(failed_names[:10])
             if len(failed_names) > 10:
                 failed_str += f"\n\u2022 ...and {len(failed_names) - 10} more."
-            QMessageBox.warning(
+            ThemedMessageBox.warning(
                 self,
                 "Uninstall Summary",
                 f"Successfully uninstalled {success_count} games.\n\n"
                 f"Failed to uninstall:\n{failed_str}"
             )
         else:
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 self,
                 "Uninstall Complete",
                 f"Successfully uninstalled all {success_count} selected games."
@@ -396,6 +1068,7 @@ class LibraryActionsMixin:
         parsed_data: dict,
         installed_depots: object = None,
         is_verify: bool = False,
+        is_dlc_only: bool = False,
     ) -> DepotSelection:
         """Decide which depots to use for a game, reusing the cached choice when valid.
 
@@ -407,9 +1080,7 @@ class LibraryActionsMixin:
         * Cached choices are filtered against every depot that is actually
           fetchable: the parsed depots plus depots Hubcap was missing that we
           recovered, so a newly available DLC depot is not silently dropped.
-        * A verify always puts the dialog in front of the user. Silently
-          reusing the cached selection is what made "Verify" look like it had
-          done nothing.
+        * A verify or DLC-only action always puts the dialog in front of the user.
         """
         from utils.settings import get_settings
 
@@ -422,7 +1093,7 @@ class LibraryActionsMixin:
         cached_selected: Optional[List[str]] = None
         should_prompt = True
 
-        if val:
+        if val and not is_dlc_only:
             try:
                 data = json.loads(val)
                 cached_selected = data.get("selected", [])
@@ -439,12 +1110,12 @@ class LibraryActionsMixin:
         if not cached_selected and isinstance(installed_depots, list):
             cached_selected = [str(d) for d in installed_depots]
 
-        # A verify must always show the dialog, overriding the cache reuse above.
-        if is_verify:
+        # A verify or DLC-only action must always show the dialog, overriding the cache reuse above.
+        if is_verify or is_dlc_only:
             should_prompt = True
 
-        # A single depot with auto-skip needs no dialog, but never for a verify.
-        auto_skip = bool(auto_skip_setting and len(depots) == 1 and not is_verify)
+        # A single depot with auto-skip needs no dialog, but never for a verify or dlc-only.
+        auto_skip = bool(auto_skip_setting and len(depots) == 1 and not is_verify and not is_dlc_only)
         if auto_skip:
             selected_depots = list(depots.keys())
 
@@ -547,6 +1218,7 @@ class LibraryActionsMixin:
                                 current_build_id=str(game_data.get("buildid") or "").strip() if isinstance(game_data, dict) else "",
                                 library_path=game_data.get("library_path") or game_data.get("install_path"),
                                 lock_storage=True,
+                                editions=parsed_data.get("editions") or game_data.get("editions"),
                             )
                             if depot_dialog.exec():
                                 result_holder[0] = depot_dialog.get_selected_depots()
@@ -699,17 +1371,17 @@ class LibraryActionsMixin:
                 subprocess.call(["open", path])
             else:
                 subprocess.call(["xdg-open", path])
-        except OSError:
-            pass
+        except OSError as e:
+            logger.warning(f"[Library] Could not open the game folder: {e}")
 
     def _confirm_action(self, title: str, message: str) -> bool:
-        reply = QMessageBox.question(
+        reply = ThemedMessageBox.question(
             self,
             title,
             message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
         )
-        return reply == QMessageBox.StandardButton.Yes
+        return reply == ThemedMessageBox.StandardButton.Yes
 
     def _uninstall_game(self, game_data: dict, dialog: QDialog = None, opts: dict = None) -> None:
         if not self.game_manager:
@@ -724,7 +1396,23 @@ class LibraryActionsMixin:
         appid = str(game_data.get("appid", "0"))
         if appid and appid not in ("0", "N/A", "unknown"):
             from utils.dlc_helpers import is_dlc_only_mode
-            is_dlc_only = is_dlc_only_mode(appid)
+            is_dlc_only = (
+                is_dlc_only_mode(appid)
+                or bool(game_data.get("dlc_only"))
+                or bool(game_data.get("is_dlc_only"))
+            )
+            if not is_dlc_only:
+                try:
+                    from utils.plugin_games import get_plugin_game
+                    prec = get_plugin_game(appid, active_only=False)
+                    if prec and prec.get("dlc_only"):
+                        is_dlc_only = True
+                except Exception as e:
+                    logger.debug(f"[LibraryActions] Could not check plugin game for DLC-only mode: {e}")
+
+        c_data = opts.get("compat", False)
+        c_saves = opts.get("saves", False)
+        c_wipe_sls = opts.get("wipe_sls", False)
 
         if c_wipe_sls_only:
             confirm_title = "Take away my sins"
@@ -732,28 +1420,27 @@ class LibraryActionsMixin:
                 f"Are you sure you want to remove SLS integrations for '{game_name}'?\n\n"
                 "• Removes game from SLS config (SLS Online and EOS Proxy integrations will be reset as well)\n"
                 "• Removes AppTokens, .DepotDownloader folder, and .depot tracking\n\n"
-                "🛡️ Game files, saves, achievements, and Proton prefix will NOT be deleted."
+                "Note: Game files, saves, achievements, and Proton prefix will NOT be deleted."
             )
             progress_title = "Removing integrations..."
         else:
             confirm_title = "Confirm Uninstall"
-            confirm_msg = self.game_manager.get_uninstall_confirmation_message(game_data)
+            confirm_msg = self.game_manager.get_uninstall_confirmation_message(
+                game_data, remove_compatdata=c_data, remove_saves=c_saves
+            )
             progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
 
-        reply = QMessageBox.question(
+        reply = ThemedMessageBox.question(
             parent,
             confirm_title,
             confirm_msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if reply != ThemedMessageBox.StandardButton.Yes:
             return
-
-        c_data = opts.get("compat", False)
-        c_saves = opts.get("saves", False)
         c_wipe_sls = opts.get("wipe_sls", False)
 
-        self._uninstall_progress_dialog = QProgressDialog(
+        self._uninstall_progress_dialog = ThemedProgressDialog(
             progress_title, None, 0, 0, parent
         )
         self._uninstall_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
@@ -787,17 +1474,17 @@ class LibraryActionsMixin:
             self._uninstall_progress_dialog.close()
             self._uninstall_progress_dialog = None
 
-        parent = self._details_dialog if self._details_dialog else self
+        parent = self._dialog_parent()
         if success:
-            QMessageBox.information(parent, "Success", "Operation completed.")
+            ThemedMessageBox.information(parent, "Success", "Operation completed.")
             if self._details_dialog:
                 try:
                     self._details_dialog.accept()
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    logger.debug(f"[Library] Could not close the details dialog: {e}")
             self._refresh_game_list()
         else:
-            QMessageBox.critical(parent, "Error", f"Failed: {error}")
+            ThemedMessageBox.critical(parent, "Error", f"Failed: {error}")
 
     @staticmethod
     def _wipe_sls_only(game_data: dict) -> tuple:
@@ -947,8 +1634,8 @@ class LibraryActionsMixin:
                             if os.path.exists(aid_txt):
                                 try:
                                     os.remove(aid_txt)
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(f"[Library] Could not remove {aid_txt}: {e}")
                             for fname in files:
                                 if fname.lower().endswith((".dll.valve", ".so.valve")):
                                     orig_name = fname[:-6]
@@ -957,8 +1644,8 @@ class LibraryActionsMixin:
                                     if os.path.exists(orig_path):
                                         try:
                                             os.remove(orig_path)
-                                        except Exception:
-                                            pass
+                                        except Exception as e:
+                                            logger.debug(f"[Library] Could not remove {orig_path}: {e}")
                                     try:
                                         os.rename(bak_path, orig_path)
                                         logger.info(f"I bought the game: Restored Goldberg backup {orig_name} in {root}")
@@ -1071,8 +1758,8 @@ class LibraryActionsMixin:
                 try:
                     from core.steam_api import get_depot_info_from_api
                     info = get_depot_info_from_api(appid)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[Library] Could not look up depot info for {appid}: {e}")
                 target_info = info or game_data
                 write_acf_file(
                     path,
@@ -1085,7 +1772,7 @@ class LibraryActionsMixin:
             except Exception as acf_err:
                 logger.warning(f"Fallback ACF generation failed during fix for {appid}: {acf_err}")
 
-        QMessageBox.information(
+        ThemedMessageBox.information(
             self,
             "Done",
             "Installation repaired. Steam will verify game files."
@@ -1096,8 +1783,8 @@ class LibraryActionsMixin:
         if hasattr(self, "game_manager") and self.game_manager:
             try:
                 self.game_manager.scan_steam_libraries_async()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[Library] Steam library rescan request failed: {e}")
 
     @staticmethod
     def _is_goldberg_applied(game_dir: str) -> bool:
@@ -1141,8 +1828,8 @@ class LibraryActionsMixin:
                                 zip_task = ProcessZipTask()
                                 parsed_data = zip_task.run(str(fpath))
                                 desc = parsed_data.get("depots", {}).get(d_id, {}).get("desc", "")
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"[Library] Could not read the manifest description for depot {d_id}: {e}")
                     
                     if desc:
                         desc_clean = re.sub(r"\s*-\s*Depot\s*" + re.escape(d_id), "", desc, flags=re.IGNORECASE).strip()
@@ -1164,16 +1851,16 @@ class LibraryActionsMixin:
         
         self.settings.remove(f"depot_selection/{appid}")
         self._update_depot_status_label(appid)
-        QMessageBox.information(self, "Reset Successful", "Depot selection has been reset to default.")
+        ThemedMessageBox.information(self, "Reset Successful", "Depot selection has been reset to default.")
 
     def _configure_depots(self, game_data: dict) -> None:
         appid = str(game_data.get("appid", "0"))
         if appid in ("0", "N/A", "unknown"):
-            QMessageBox.warning(self, "Error", "Invalid App ID.")
+            ThemedMessageBox.warning(self, "Error", "Invalid App ID.")
             return
 
         if not morrenus_api:
-            QMessageBox.critical(self, "Error", "API module missing.")
+            ThemedMessageBox.critical(self, "Error", "API module missing.")
             return
 
         name = game_data.get("game_name", "Unknown")
@@ -1183,11 +1870,10 @@ class LibraryActionsMixin:
         if fpath.exists():
             self._show_depot_selection_dialog(str(fpath), game_data)
         else:
-            self._download_progress_dialog = QProgressDialog(
+            from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+            self._download_progress_dialog = ThemedProgressDialog(
                 f"Downloading manifest for {name}...", "Cancel", 0, 0, self
             )
-            self._download_progress_dialog.setWindowTitle("Downloading Manifest")
-            self._download_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
             self._download_progress_dialog.show()
 
             self._configure_depots_after_download = game_data
@@ -1210,15 +1896,15 @@ class LibraryActionsMixin:
                     try:
                         data = json.loads(saved_val)
                         selected_depots = data.get("selected", [])
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[Library] Could not read the saved depot selection: {e}")
 
                 depot_dialog = DepotSelectionDialog(
                     parsed_data["appid"],
                     parsed_data.get("game_name", ""),
                     depots,
                     parsed_data.get("header_url"),
-                    self,
+                    self._dialog_parent(),
                     selected_depots=selected_depots,
                     is_single_depot=(len(depots) == 1),
                     missing_hubcap_depots=parsed_data.get("missing_depots_from_hubcap"),
@@ -1228,6 +1914,7 @@ class LibraryActionsMixin:
                     library_path=game_data.get("library_path") or game_data.get("install_path"),
                     show_storage=True,
                     lock_storage=True,
+                    editions=parsed_data.get("editions") or game_data.get("editions"),
                 )
                 if depot_dialog.exec():
                     chosen = depot_dialog.get_selected_depots()
@@ -1237,8 +1924,8 @@ class LibraryActionsMixin:
                             db = DatabaseManager()
                             for c_did in chosen:
                                 db.clear_missing_hubcap_depot(appid, str(c_did))
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"[Library] Could not clear recovered-depot records for {appid}: {e}")
                         all_available_keys = list(depot_dialog.depots.keys()) if hasattr(depot_dialog, "depots") else list(depots.keys())
                         all_depots_dict = depot_dialog.depots if hasattr(depot_dialog, "depots") else depots
                         self.settings.setValue(
@@ -1264,17 +1951,18 @@ class LibraryActionsMixin:
                                     installdir=game_data.get("install_dir", ""),
                                     depot_names=d_names,
                                     dlc_appids=rec.get("dlc_appids", []),
+                                    is_dlc_only=bool(rec.get("dlc_only", False)),
                                 )
                             except Exception as _e:
                                 logger.warning(f"Could not sync AT0-M depots after selection: {_e}")
 
                         self._update_depot_status_label(appid)
-                        QMessageBox.information(self, "Success", "Depot selection saved successfully.")
+                        ThemedMessageBox.information(self, "Success", "Depot selection saved successfully.")
                     else:
-                        QMessageBox.warning(self, "Warning", "No depots selected. Depot selection not saved.")
+                        ThemedMessageBox.warning(self, "Warning", "No depots selected. Depot selection not saved.")
         except Exception as e:
             logger.error(f"Failed to show depot selection dialog: {e}", exc_info=True)
-            QMessageBox.critical(self, "Error", f"Failed to load depots: {e}")
+            ThemedMessageBox.critical(self, "Error", f"Failed to load depots: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # 5. Manifest Fetch, Smart Update & Job Submissions
@@ -1307,15 +1995,15 @@ class LibraryActionsMixin:
         """Trigger background manifest download and show progress."""
         api_key = self.settings.value("morrenus_api_key", "", type=str).strip()
         if not api_key:
-            QMessageBox.critical(self, "API Key Missing", "Please configure your Hubcap API key in Settings before downloading updates/manifests.")
+            ThemedMessageBox.critical(self, "API Key Missing", "Please configure your Hubcap API key in Settings before downloading updates/manifests.")
             return
         if not morrenus_api:
-            QMessageBox.critical(self, "Error", "API module missing.")
+            ThemedMessageBox.critical(self, "Error", "API module missing.")
             return
 
         app_id = str(game_data.get("appid"))
         if app_id in ("0", "N/A", "unknown"):
-            QMessageBox.critical(self, "Error", f"Invalid AppID: {app_id}")
+            ThemedMessageBox.critical(self, "Error", f"Invalid AppID: {app_id}")
             return
 
         if not hasattr(self, "_active_fetches"):
@@ -1359,7 +2047,7 @@ class LibraryActionsMixin:
                         )
                         accent = getattr(self, "accent_color", "#4c8df5")
                         prompt = RecommendedBuildPromptDialog(
-                            parent=self,
+                            parent=self._dialog_parent(),
                             app_id=str(app_id),
                             game_name=name,
                             recommended_build_id=rec_bid,
@@ -1378,7 +2066,7 @@ class LibraryActionsMixin:
                         elif action == ACTION_BROWSE:
                             from ui.dialogs.build_selection_dialog import BuildSelectionDialog
                             dlg = BuildSelectionDialog(
-                                parent=self,
+                                parent=self._dialog_parent(),
                                 app_id=str(app_id),
                                 game_name=name,
                                 current_build_id=current_bid,
@@ -1415,7 +2103,7 @@ class LibraryActionsMixin:
                 from managers.db_manager import DatabaseManager
                 db_missing = DatabaseManager().get_missing_hubcap_depots(app_id)
                 if db_missing:
-                    hubcap_keys = morrenus_api.get_hubcap_depot_keys()
+                    hubcap_keys = morrenus_api.get_hubcap_depot_keys(allow_network=True)
                     existing_keys = hubcap_keys.get("existing_depot_ids", set()) if isinstance(hubcap_keys, dict) else set()
                     contents_data = morrenus_api.get_manifest_contents(app_id, branch=branch)
                     hubcap_manifests = contents_data.get("depot_ids", set()) if isinstance(contents_data, dict) else set()
@@ -1486,7 +2174,7 @@ class LibraryActionsMixin:
                         f"[Smart Update] {name} ({app_id}): no cached keys — "
                         "falling back to classic path. Run a full manifest fetch to enable Smart Mode."
                     )
-                    QTimer.singleShot(0, lambda: QMessageBox.information(
+                    QTimer.singleShot(0, lambda: ThemedMessageBox.information(
                         self,
                         "Smart Update Mode",
                         f"Smart Update Mode is enabled but {name} has no cached depot keys yet.\n\n"
@@ -1517,8 +2205,8 @@ class LibraryActionsMixin:
                 dialog.validate_btn.setEnabled(True)
                 if hasattr(dialog, "_update_validate_button_state"):
                     dialog._update_validate_button_state()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Library] Could not reset the validate button: {e}")
 
     def _use_local_verify_bundle(self, app_id: str, game_data: dict, dialog, local_zip: str) -> None:
         """Submit the local bundle for verification (fetch marked complete)."""
@@ -1554,8 +2242,8 @@ class LibraryActionsMixin:
                 logger.error(f"[VerifyFlow] Failed to marshal resolution result: {e}")
                 try:
                     self._cancel_verify_fetch(app_id, dialog)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[VerifyFlow] Could not cancel the fetch while handling an error: {e}")
 
         self.executor.submit(_work)
         return True
@@ -1645,18 +2333,18 @@ class LibraryActionsMixin:
             else:
                 logger.error(f"[VerifyFlow] Resolution error for AppID {app_id}: {outcome[1] if len(outcome) > 1 else '?'}")
                 try:
-                    QMessageBox.warning(self, "Verify Failed",
+                    ThemedMessageBox.warning(self, "Verify Failed",
                                         f"Could not resolve manifests for '{name}':\n{outcome[1] if len(outcome) > 1 else 'unknown error'}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[VerifyFlow] Could not show the resolution error: {e}")
                 self._cancel_verify_fetch(app_id, dialog)
         except Exception as e:
             # Dialog may have been closed while resolving; never strand the fetch.
             logger.debug(f"[VerifyFlow] Resolution continuation failed: {e}")
             try:
                 self._cancel_verify_fetch(app_id, dialog)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[VerifyFlow] Could not cancel the fetch after a resolution failure: {e}")
 
     def _verify_refresh_failed_notice(self, app_id: str, game_data: dict,
                                         dialog, local_zip: str,
@@ -1666,19 +2354,19 @@ class LibraryActionsMixin:
         failed_ids = [str(d) for d, _ in failed]
         failed_desc = ", ".join(f"{did} ({err})" for did, err in failed)
         logger.warning(f"[VerifyFlow] Provider refresh failed for: {failed_desc}")
-        box = QMessageBox(self)
-        box.setWindowTitle("Latest Manifests Unreachable")
-        box.setText(
+        action = ThemedMessageBox.choices(
+            self,
+            "Latest Manifests Unreachable",
             "ASSella could not fetch the latest manifests for "
             f"{len(failed)} depot(s) ({', '.join(failed_ids)}) "
             "from Steam CDN or Hubcap.\n\n"
             "You can verify against your local manifests instead, but files "
-            "in those depots will be checked against the older version."
+            "in those depots will be checked against the older version.",
+            [("Verify With Local", "local"), ("Cancel", "cancel")],
+            default="local",
+            severity="warning",
         )
-        b_local = box.addButton("Verify With Local", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
-        if box.clickedButton() == b_local:
+        if action == "local":
             # Stash live GIDs minus the failed depots: the stage-2 live check
             # then guards everything we claimed, without nagging about the
             # depots the user explicitly accepted as stale.
@@ -1702,27 +2390,29 @@ class LibraryActionsMixin:
         refresh for "without" runs in the background.
         """
         new_desc = ", ".join(f"{n or d} [{d}]" for d, _, n in hubcap_needed)
-        box = QMessageBox(self)
-        box.setWindowTitle("New Depots Need Hubcap Fetch")
-        box.setText(
+        clicked = ThemedMessageBox.choices(
+            self,
+            "New Depots Need Hubcap Fetch",
             f"'{name}' has {len(hubcap_needed)} new depot(s) since your last fetch: "
             f"{new_desc}.\n\n"
             "Their encryption keys are only available via a full Hubcap bundle "
             "download (uses daily Hubcap quota).\n\n"
-            "How do you want to verify?"
+            "How do you want to verify?",
+            [
+                ("Download && Verify", "fetch"),
+                ("Verify Without New Depots", "without"),
+                ("Cancel", "cancel"),
+            ],
+            default="fetch",
+            severity="question",
         )
-        b_fetch = box.addButton("Download && Verify", QMessageBox.ButtonRole.AcceptRole)
-        b_without = box.addButton("Verify Without New Depots", QMessageBox.ButtonRole.ActionRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked == b_fetch:
+        if clicked == "fetch":
             logger.info(f"[VerifyFlow] User approved Hubcap full fetch for AppID {app_id}")
             # Stash live GIDs: the stage-2 live check then guards the Hubcap
             # bundle against ingestion lag before it is used for verification.
             game_data["_verify_live_gids"] = dict(live_gids or {})
             self._handle_download_manifest(app_id, name, game_data, dialog, branch=branch)
-        elif clicked == b_without:
+        elif clicked == "without":
             logger.info(f"[VerifyFlow] Verifying AppID {app_id} without {len(hubcap_needed)} new depot(s)")
             game_data["_verify_live_gids"] = dict(live_gids or {})
             if refreshable:
@@ -1756,31 +2446,33 @@ class LibraryActionsMixin:
                 logger.debug(f"[VerifyFlow] Marshal after best-effort refresh failed: {e}")
                 try:
                     self._cancel_verify_fetch(app_id, dialog)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[VerifyFlow] Could not cancel the fetch after a refresh failure: {e}")
 
         self.executor.submit(_work)
 
     def _verify_offline_notice(self, app_id: str, game_data: dict, dialog,
                                local_zip: str, branch: str, name: str, fpath) -> bool:
         """Steam PICS and steamcmd both failed: Retry / local / Cancel."""
-        box = QMessageBox(self)
-        box.setWindowTitle("Steam Servers Unreachable")
-        box.setText(
+        clicked = ThemedMessageBox.choices(
+            self,
+            "Steam Servers Unreachable",
             "Could not reach Steam PICS or SteamCMD to check for manifest updates, "
             "so ASSella cannot confirm your local manifests are the latest.\n\n"
             "You can retry, verify against your local manifests (files are "
-            "checked against the cached version), or cancel."
+            "checked against the cached version), or cancel.",
+            [
+                ("Retry", "retry"),
+                ("Use Local Manifests", "local"),
+                ("Cancel", "cancel"),
+            ],
+            default="local",
+            severity="warning",
         )
-        b_retry = box.addButton("Retry", QMessageBox.ButtonRole.ActionRole)
-        b_local = box.addButton("Use Local Manifests", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked == b_retry:
+        if clicked == "retry":
             logger.info(f"[VerifyFlow] Retrying live lookup for AppID {app_id}")
             return self._run_verify_resolution(app_id, branch, name, game_data, dialog, fpath)
-        if clicked == b_local:
+        if clicked == "local":
             logger.warning(f"[VerifyFlow] Offline verify for AppID {app_id} using possibly-stale local bundle")
             game_data["_verify_offline_accepted"] = True
             self._use_local_verify_bundle(app_id, game_data, dialog, local_zip)
@@ -1823,7 +2515,7 @@ class LibraryActionsMixin:
 
         def on_error(err_msg: str):
             logger.error(f"[Smart Update] Error for {name} ({app_id}): {err_msg}")
-            QMessageBox.warning(self, "Smart Update Failed", f"Smart update failed for {name}:\n{err_msg}\n\nFalling back to classic fetch.")
+            ThemedMessageBox.warning(self, "Smart Update Failed", f"Smart update failed for {name}:\n{err_msg}\n\nFalling back to classic fetch.")
             self._handle_download_manifest(app_id, name, game_data, dialog, branch=branch)
             if runner in self._smart_runners:
                 self._smart_runners.remove(runner)
@@ -1838,7 +2530,7 @@ class LibraryActionsMixin:
     def _handle_download_manifest(self, app_id, name, game_data, dialog, branch: str = None) -> None:
         """Logic separated to flatten nesting in fetch_game_manifest."""
         if not morrenus_api:
-            QMessageBox.critical(self, "Error", "API module missing.")
+            ThemedMessageBox.critical(self, "Error", "API module missing.")
             return
 
         if not branch:
@@ -1847,12 +2539,17 @@ class LibraryActionsMixin:
         download_only = game_data.get("_download_only", False)
         is_verify = bool(game_data.get("_is_verify"))
         has_dialog_spinner = bool(dialog and hasattr(dialog, "validate_btn") and dialog.validate_btn)
+        has_steam_overlay = bool(getattr(self, "_steam_tab_loading_overlay", None)) or bool(game_data.get("_dlc_only"))
 
-        if not download_only and not is_verify and not has_dialog_spinner:
-            self._download_progress_dialog = QProgressDialog(
+        if has_steam_overlay:
+            if getattr(self, "_steam_tab_loading_overlay", None):
+                self._steam_tab_loading_overlay.set_label(f"Downloading manifest for {name}...")
+            self._download_progress_dialog = None
+        elif not download_only and not is_verify and not has_dialog_spinner:
+            from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+            self._download_progress_dialog = ThemedProgressDialog(
                 f"Downloading {name}...", "Cancel", 0, 0, self
             )
-            self._download_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
             self._download_progress_dialog.show()
         else:
             self._download_progress_dialog = None
@@ -1894,8 +2591,9 @@ class LibraryActionsMixin:
                     self.settings.setValue(f"fetched_manifest_id/{appid}", latest_id)
                 self._show_depot_selection_dialog(fpath, target_game)
             else:
+                self._dismiss_steam_loading_overlay()
                 if not download_only:
-                    QMessageBox.critical(self, "Error", f"Failed to download manifest: {error}")
+                    ThemedMessageBox.critical(self, "Error", f"Failed to download manifest: {error}")
                 else:
                     logger.error(f"Background manifest download failed: {error}")
             return
@@ -1917,27 +2615,28 @@ class LibraryActionsMixin:
                     logger.error(f"Failed to parse zip and import keys/token for appid {appid}: {e}")
                 
                 name = game_data.get("game_name", f"App {appid}")
-                QMessageBox.information(self, "Refetch Manifest", f"Refetched manifest zip successfully for {name}!")
+                ThemedMessageBox.information(self, "Refetch Manifest", f"Refetched manifest zip successfully for {name}!")
             
-            if not download_only and self._details_dialog:
+            if not download_only:
                 try:
                     self._submit_job(fpath, game_data, self._details_dialog)
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    logger.debug(f"[Library] Could not submit the manifest job: {e}")
             elif download_only and self._details_dialog:
                 try:
                     if hasattr(self._details_dialog, "validate_btn") and self._details_dialog.validate_btn:
                         self._details_dialog.validate_btn.set_loading(False)
                         self._details_dialog.validate_btn.setEnabled(True)
                     self._details_dialog._update_validate_button()
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    logger.debug(f"[Library] Could not reset the validate button: {e}")
         else:
+            self._dismiss_steam_loading_overlay()
             if not download_only:
-                QMessageBox.critical(self, "Error", f"Failed: {error}")
+                ThemedMessageBox.critical(self, "Error", f"Failed: {error}")
             else:
                 name = game_data.get("game_name", f"App {game_data.get('appid')}")
-                QMessageBox.critical(self, "Refetch Manifest Error", f"Failed to refetch manifest for {name}:\n{error}")
+                ThemedMessageBox.critical(self, "Refetch Manifest Error", f"Failed to refetch manifest for {name}:\n{error}")
                 logger.error(f"Background manifest download failed for appid {game_data.get('appid')}: {error}")
             if self._details_dialog:
                 try:
@@ -1945,14 +2644,13 @@ class LibraryActionsMixin:
                         self._details_dialog.validate_btn.set_loading(False)
                         self._details_dialog.validate_btn.setEnabled(True)
                     self._details_dialog._update_validate_button()
-                except RuntimeError:
-                    pass
+                except RuntimeError as e:
+                    logger.debug(f"[Library] Could not reset the validate button: {e}")
 
     def _check_hubcap_status_first(self, app_id: str, game_data: dict, dialog: QDialog) -> None:
         """Runs the Stage 1 pre-download Hubcap status check asynchronously."""
-        check_progress = QProgressDialog("Checking Hubcap status...", None, 0, 0, self)
-        check_progress.setWindowModality(Qt.WindowModality.WindowModal)
-        check_progress.setCancelButton(None)
+        from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+        check_progress = ThemedProgressDialog("Checking Hubcap status...", None, 0, 0, self)
         check_progress.show()
 
         def _check_in_background():
@@ -1970,8 +2668,8 @@ class LibraryActionsMixin:
         if check_progress:
             try:
                 check_progress.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[Library] Could not close the hubcap progress dialog: {e}")
 
         app_id = str(game_data.get("appid"))
         name = game_data.get("game_name", "Unknown")
@@ -2009,14 +2707,14 @@ class LibraryActionsMixin:
 
             msg += "Do you want to continue anyway?"
             
-            btn = QMessageBox.warning(
+            btn = ThemedMessageBox.warning(
                 self, 
                 "Hubcap Manifest Not Ready", 
                 msg, 
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
+                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                ThemedMessageBox.StandardButton.No
             )
-            if btn != QMessageBox.StandardButton.Yes:
+            if btn != ThemedMessageBox.StandardButton.Yes:
                 logger.info("User cancelled download due to stale Hubcap manifest")
                 if hasattr(self, "_active_fetches"):
                     self._active_fetches.discard(app_id)
@@ -2028,25 +2726,30 @@ class LibraryActionsMixin:
         """Submit the job to the main window queue."""
         has_dialog_spinner = bool(dialog and hasattr(dialog, "validate_btn") and dialog.validate_btn)
         is_verify = bool(game_data.get("_is_verify"))
+        has_steam_overlay = bool(getattr(self, "_steam_tab_loading_overlay", None)) or bool(game_data.get("_dlc_only"))
 
         if game_data.get("_smart_update"):
             logger.info(f"[Smart Update] _submit_job: using pre-assembled game_data, skipping zip parse for AppID {game_data.get('appid')}")
-            if not has_dialog_spinner and not is_verify:
-                parse_progress = QProgressDialog("Applying manifest...", None, 0, 0, self)
-                parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
-                parse_progress.setMinimumDuration(0)
-                parse_progress.setCancelButton(None)
+            if has_steam_overlay:
+                if getattr(self, "_steam_tab_loading_overlay", None):
+                    self._steam_tab_loading_overlay.set_label("Applying manifest...")
+                parse_progress = None
+            elif not has_dialog_spinner and not is_verify:
+                from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+                parse_progress = ThemedProgressDialog("Applying manifest...", None, 0, 0, self)
                 parse_progress.show()
             else:
                 parse_progress = None
             self.zip_parse_complete.emit(game_data, filepath, game_data, dialog, parse_progress)
             return
 
-        if not has_dialog_spinner and not is_verify:
-            parse_progress = QProgressDialog("Reading manifest...", None, 0, 0, self)
-            parse_progress.setWindowModality(Qt.WindowModality.WindowModal)
-            parse_progress.setMinimumDuration(200)
-            parse_progress.setCancelButton(None)
+        if has_steam_overlay:
+            if getattr(self, "_steam_tab_loading_overlay", None):
+                self._steam_tab_loading_overlay.set_label("Reading manifest...")
+            parse_progress = None
+        elif not has_dialog_spinner and not is_verify:
+            from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+            parse_progress = ThemedProgressDialog("Reading manifest...", None, 0, 0, self)
             parse_progress.show()
         else:
             parse_progress = None
@@ -2074,8 +2777,16 @@ class LibraryActionsMixin:
         if parse_progress is not None:
             try:
                 parse_progress.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[Library] Could not close the parse progress dialog: {e}")
+
+        if not parsed_data:
+            self._dismiss_steam_loading_overlay()
+            logger.warning(f"Failed to parse manifest for {appid}")
+            if dialog and hasattr(dialog, "validate_btn") and dialog.validate_btn:
+                dialog.validate_btn.set_loading(False)
+                dialog.validate_btn.setEnabled(True)
+            return
 
         is_verify = bool(game_data.get("_is_verify") or game_data.get("update_status") != "update_available")
         target_branch = game_data.get("branch") or (parsed_data.get("branch") if isinstance(parsed_data, dict) else "public") or "public"
@@ -2088,6 +2799,9 @@ class LibraryActionsMixin:
             "job_type": "verify" if is_verify else "download",
             "branch": target_branch,
         })
+        if isinstance(parsed_data, dict) and parsed_data.get("buildid") and not game_data.get("_is_rollback"):
+            metadata["buildid"] = str(parsed_data["buildid"])
+
         if game_data.get("_is_rollback"):
             metadata["_is_rollback"] = True
             metadata["job_type"] = "verify"
@@ -2140,14 +2854,14 @@ class LibraryActionsMixin:
                         "This usually means Hubcap has not yet ingested the latest Steam update.\n\n"
                         "Do you want to continue with this version anyway?"
                     )
-                    btn = QMessageBox.warning(
+                    btn = ThemedMessageBox.warning(
                         self,
                         "Manifest Outdated",
                         msg,
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.No
+                        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                        ThemedMessageBox.StandardButton.No
                     )
-                    if btn != QMessageBox.StandardButton.Yes:
+                    if btn != ThemedMessageBox.StandardButton.Yes:
                         logger.info("User aborted task due to post-download manifest mismatch")
                         if hasattr(self, "_active_fetches"):
                             self._active_fetches.discard(appid)
@@ -2166,17 +2880,21 @@ class LibraryActionsMixin:
             appid = str(parsed_data["appid"])
             game_info = (metadata or {}).get("game_data") or {}
 
+            is_dlc_only = bool(game_data.get("_dlc_only") or game_data.get("_lock_dlc_only"))
             selection = self._resolve_depot_selection(
                 appid=appid,
                 depots=depots,
                 parsed_data=parsed_data,
                 installed_depots=game_info.get("installed_depots"),
                 is_verify=is_verify,
+                is_dlc_only=is_dlc_only,
             )
             selected_depots = selection.selected_depots
             cached_selected = selection.cached_selected
+            config_only_saved = False
 
             if selection.should_prompt and not selection.auto_skip:
+                self._dismiss_steam_loading_overlay()
                 parent_widget = self if isinstance(self, QWidget) else getattr(self, "main_window", None)
                 is_installed = bool(game_info.get("library_path") or game_info.get("install_path") or is_verify or game_data.get("_lock_storage"))
                 lock_storage = bool(is_installed or game_data.get("_lock_storage"))
@@ -2199,6 +2917,8 @@ class LibraryActionsMixin:
                     lock_storage=lock_storage,
                     dlc_only_mode=dlc_only_mode,
                     lock_dlc_only=lock_dlc_only,
+                    dlc_catalog=game_data.get("_dlc_catalog") or {},
+                    editions=parsed_data.get("editions") or game_data.get("editions"),
                 )
 
                 # Apply recommended build selection if set
@@ -2234,6 +2954,15 @@ class LibraryActionsMixin:
                             settings.setValue(f"pin_build/{appid}", True)
                             logger.info(f"Pinned build {pinned_bid} for AppID {appid} in library actions")
 
+                    wrote_config = getattr(depot_dialog, "get_config_written", None)
+                    already_saved = bool(wrote_config()) if callable(wrote_config) else False
+                    if not selected_depots and is_dlc_only and not already_saved:
+                        # The user confirmed DLC mode with nothing ticked: the
+                        # DLCs exist but have no depot to download.
+                        config_only_saved = self._save_config_only_dlc_mode(
+                            appid, game_data, depot_dialog
+                        )
+
                     if hasattr(depot_dialog, "get_manifest_overrides"):
                         overrides = depot_dialog.get_manifest_overrides()
                         if overrides:
@@ -2263,8 +2992,8 @@ class LibraryActionsMixin:
                     db = DatabaseManager()
                     for s_did in selected_depots:
                         db.clear_missing_hubcap_depot(appid, str(s_did))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[Library] Could not clear recovered-depot records for {appid}: {e}")
                 all_available_keys = list(depot_dialog.depots.keys()) if ('depot_dialog' in locals() and hasattr(depot_dialog, "depots")) else list(depots.keys())
                 all_depots_dict = depot_dialog.depots if ('depot_dialog' in locals() and hasattr(depot_dialog, "depots")) else depots
                 try:
@@ -2279,7 +3008,11 @@ class LibraryActionsMixin:
                 except Exception as e:
                     logger.warning(f"Failed to cache depot selection: {e}")
             else:
-                logger.info("User cancelled depot selection.")
+                self._dismiss_steam_loading_overlay()
+                if config_only_saved:
+                    logger.info("DLC mode saved for %s without a download.", appid)
+                else:
+                    logger.info("User cancelled depot selection.")
                 if hasattr(self, "_active_fetches"):
                     self._active_fetches.discard(appid)
                 if dialog and hasattr(dialog, "validate_btn") and dialog.validate_btn:
@@ -2291,13 +3024,14 @@ class LibraryActionsMixin:
                         dialog._update_validate_button()
                 return
 
+        self._dismiss_steam_loading_overlay()
         self.main_window.job_queue.add_job(filepath, metadata)
         if dialog:
             try:
                 dialog.accept()
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                logger.debug(f"[Library] Could not close the details dialog: {e}")
         try:
             self.accept()
-        except RuntimeError:
-            pass
+        except RuntimeError as e:
+            logger.debug(f"[Library] Could not close the dialog: {e}")

@@ -197,6 +197,18 @@ def get_start_concurrency(
     return start
 
 
+def get_learned_display(settings, best_key: str = "auto_tune_best") -> str:
+    """Return learned concurrency (e.g. '8') or 'learning...' if not trained yet."""
+    if settings is None:
+        return "learning..."
+    best_n_key, best_m_key = _best_keys(best_key, settings)
+    best_mbps = read_float(settings, best_m_key, 0.0)
+    if best_mbps > 0.0:
+        val = clamp(read_int(settings, best_n_key, DEFAULT_START), 1, MAX_CONCURRENCY)
+        return str(val)
+    return "learning..."
+
+
 def decide_next(prev_n: int, prev_mbps: float, best_n: int, best_mbps: float,
                 cap: int, errors: int = 0):
     """AIMD step. Returns (next_n, new_best_n, new_best_mbps)."""

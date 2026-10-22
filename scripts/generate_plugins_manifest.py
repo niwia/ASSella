@@ -8,6 +8,9 @@ and formats a clean plugins_manifest.json.
 import argparse
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,13 +27,36 @@ DEFAULT_DESCRIPTIONS = {
     "download.lua": {
         "name": "Download Interceptor",
         "description": "Native Steam download interception and depot streaming plugin for SLSsteam.",
-        "version": "1.0.0",
+        "version": "1.0.1",
+        "category": "interceptor",
         "required": True,
+    },
+    "spacebunny1.5.lua": {
+        "name": "SpaceBunny 1.5",
+        "description": "SLSsteam download interceptor with MRC authority hierarchy, curl timeout fixes, and monotonic clocks.",
+        "version": "1.5.0",
+        "category": "interceptor",
+        "required": False,
+    },
+    "spacebunnny1.5.lua": {
+        "name": "SpaceBunny 1.5",
+        "description": "SLSsteam download interceptor with MRC authority hierarchy, curl timeout fixes, and monotonic clocks.",
+        "version": "1.5.0",
+        "category": "interceptor",
+        "required": False,
+    },
+    "download-1.4.0-spacetest.lua": {
+        "name": "SpaceTest 1.4.0",
+        "description": "Experimental download interceptor with wudrm MRC authority model.",
+        "version": "1.4.0",
+        "category": "interceptor",
+        "required": False,
     },
     "spliced-tickets.lua": {
         "name": "Spliced Tickets",
         "description": "App and depot ownership ticket splicing handler for SLSsteam.",
         "version": "1.0.0",
+        "category": "companion",
         "required": True,
     },
 }
@@ -56,7 +82,7 @@ def increment_version(version_str: str) -> str:
     return f"{x}.{y}.{z}"
 
 
-def generate_manifest(plugins_dir: Path, output_file: Path, force_bump: bool = False) -> None:
+def generate_manifest(plugins_dir: Path, output_file: Path, force_bump: bool = False) -> dict:
     # Attempt to load existing manifest to check versions and hashes
     existing_plugins = {}
     manifest_source = output_file if output_file.is_file() else (plugins_dir / "plugins_manifest.json")
@@ -80,6 +106,7 @@ def generate_manifest(plugins_dir: Path, output_file: Path, force_bump: bool = F
                 "name": fname.replace(".lua", "").replace("-", " ").title(),
                 "description": f"SLSsteam plugin {fname}",
                 "version": "1.0.0",
+                "category": "interceptor" if fname != "spliced-tickets.lua" else "companion",
                 "required": False,
             },
         )
@@ -97,6 +124,7 @@ def generate_manifest(plugins_dir: Path, output_file: Path, force_bump: bool = F
             "name": meta["name"],
             "filename": fname,
             "version": new_version,
+            "category": meta.get("category", "interceptor"),
             "description": meta["description"],
             "sha256": curr_sha256,
             "size_bytes": curr_size,
@@ -114,32 +142,94 @@ def generate_manifest(plugins_dir: Path, output_file: Path, force_bump: bool = F
         f.write("\n")
 
     print(f"Generated manifest with {len(plugins)} plugins -> {output_file}")
+    return manifest
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate plugins_manifest.json for R2")
-    default_dir = Path.home() / ".local/share/ACCELA/plugins"
-    if not default_dir.is_dir():
-        default_dir = Path(".")
+    parser = argparse.ArgumentParser(description="Generate plugins_manifest.json for R2 and sync plugins")
+    default_accela_dir = Path.home() / ".local/share/ACCELA/plugins"
+    default_r2_staging = Path.home() / "r2-publish/github-files"
+    publish_script = Path.home() / "r2-publish/publish.sh"
+
     parser.add_argument(
         "--plugins-dir",
         type=Path,
-        default=default_dir,
-        help="Directory containing .lua plugins (default: ~/.local/share/ACCELA/plugins)",
+        default=default_r2_staging if default_r2_staging.is_dir() else default_accela_dir,
+        help="Directory containing .lua plugins (default: r2-publish/github-files or ~/.local/share/ACCELA/plugins)",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("plugins_manifest.json"),
-        help="Output JSON file path",
+        default=None,
+        help="Output JSON file path (default: <plugins-dir>/plugins_manifest.json)",
+    )
+    parser.add_argument(
+        "--stage-dir",
+        type=Path,
+        default=default_r2_staging if default_r2_staging.is_dir() else None,
+        help="R2 staging directory to synchronize plugins into (default: ~/r2-publish/github-files)",
     )
     parser.add_argument(
         "--force-bump",
         action="store_true",
         help="Force increment version even if SHA-256 did not change",
     )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="Run publish.sh in r2-publish after generating manifest",
+    )
     args = parser.parse_args()
-    generate_manifest(args.plugins_dir, args.output, force_bump=args.force_bump)
+
+    # Step 1: Synchronize plugins from ~/.local/share/ACCELA/plugins to stage-dir if staging
+    stage_dir = args.stage_dir
+    if stage_dir and stage_dir.is_dir() and default_accela_dir.is_dir():
+        print(f"Syncing plugins from {default_accela_dir} to {stage_dir}...")
+        for src_file in default_accela_dir.glob("*.lua"):
+            dest_name = src_file.name
+            # Normalize spacebunnny1.5.lua -> spacebunny1.5.lua (single 'n')
+            if dest_name in ("spacebunnny1.5.lua", "spacebunnny1.5beta.lua"):
+                dest_name = "spacebunny1.5.lua"
+
+            dest_path = stage_dir / dest_name
+            try:
+                if dest_path.is_symlink() or dest_path.exists():
+                    if dest_path.resolve() == src_file.resolve():
+                        print(f"  Already linked: {dest_path.name} -> {src_file}")
+                        continue
+                    # Remove stale link/file
+                    dest_path.unlink()
+                dest_path.symlink_to(src_file)
+                print(f"  Linked: {dest_path.name} -> {src_file}")
+            except Exception as e:
+                # Fallback to copy2
+                try:
+                    if dest_path.exists() and dest_path.resolve() == src_file.resolve():
+                        continue
+                    shutil.copy2(src_file, dest_path)
+                    print(f"  Copied: {src_file.name} -> {dest_path.name}")
+                except Exception as copy_err:
+                    print(f"  Error syncing {src_file.name}: {copy_err}")
+
+    target_dir = stage_dir if (stage_dir and stage_dir.is_dir()) else args.plugins_dir
+    out_file = args.output or (target_dir / "plugins_manifest.json")
+
+    manifest = generate_manifest(target_dir, out_file, force_bump=args.force_bump)
+
+    # If staging dir was used, also mirror plugins_manifest.json back to ACCELA plugins
+    target_accela_manifest = default_accela_dir / "plugins_manifest.json"
+    if stage_dir and default_accela_dir.is_dir() and out_file.resolve() != target_accela_manifest.resolve():
+        shutil.copy2(out_file, target_accela_manifest)
+        print(f"Mirrored manifest to {target_accela_manifest}")
+
+    # Step 2: Publish if requested
+    if args.publish:
+        if publish_script.is_file():
+            print(f"Executing publish script: {publish_script} ...")
+            subprocess.run(["bash", str(publish_script)], cwd=str(publish_script.parent), check=True)
+            print("Publish to Cloudflare R2 complete!")
+        else:
+            print(f"Warning: Publish script not found at {publish_script}")
 
 
 if __name__ == "__main__":

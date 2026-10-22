@@ -13,10 +13,10 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSlider,
     QTabWidget,
-    QFileDialog,
-    QMessageBox,
     QDialog,
 )
+from ui.dialogs.themed_file_dialog import ThemedFileDialog
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.settings_tabs.windows_depot_warning import WindowsDepotWarningDialog
 from utils.helpers import create_checkbox_setting
@@ -79,11 +79,11 @@ def create_downloads_tab(dialog) -> QWidget:
 
     # LanCache Detection Toggle
     dialog.use_lancache_checkbox = create_checkbox_setting(
-        "Enable Lan Cache",
+        "Game File Transfer over Local Network:",
         "use_lancache",
         True,
         dialog,
-        "Use network connected steam game files first",
+        "If this is enabled, Steam allows to transfer game files from other PCs on your local network, reducing your Internet traffic while downloading or updating a game",
     )
     dl_layout.addWidget(dialog.use_lancache_checkbox)
 
@@ -143,7 +143,7 @@ def create_downloads_tab(dialog) -> QWidget:
     def on_dl_location_changed(index):
         data = dialog.dl_location_combo.itemData(index)
         if data == "custom":
-            path = QFileDialog.getExistingDirectory(dialog, "Select Custom Download Location")
+            path = ThemedFileDialog.getExistingDirectory(dialog, "Select Custom Download Location")
             if path and is_valid_download_directory(path):
                 existing_idx = dialog.dl_location_combo.findData(path)
                 if existing_idx >= 0:
@@ -153,7 +153,7 @@ def create_downloads_tab(dialog) -> QWidget:
                     dialog.dl_location_combo.insertItem(insert_pos, _fmt_path(path), path)
                     dialog.dl_location_combo.setCurrentIndex(insert_pos)
             elif path:
-                QMessageBox.warning(
+                ThemedMessageBox.warning(
                     dialog,
                     "Invalid Location",
                     "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
@@ -166,8 +166,10 @@ def create_downloads_tab(dialog) -> QWidget:
     loc_row.addWidget(dialog.dl_location_combo)
     dl_layout.addLayout(loc_row)
 
+    from utils.auto_tune import get_learned_display
+    learned_text = get_learned_display(dialog.settings, "auto_tune_best")
     dialog.auto_tune_checkbox = create_checkbox_setting(
-        "Auto adapting limiter (beta)",
+        f"Auto adapting limiter ({learned_text})",
         "auto_max_downloads",
         True,
         dialog,
@@ -247,12 +249,11 @@ def create_downloads_tab(dialog) -> QWidget:
     gen_layout.addWidget(dl_card)
 
     # Manifest & MRC Provider Card
-    mrc_card, mrc_layout = dialog._create_card_frame("Manifest & MRC Provider")
+    mrc_card, mrc_layout = dialog._create_card_frame("Manifest & MRC Provider (local)")
     mrc_layout.setSpacing(6)
 
     mrc_desc = QLabel(
-        "Select the provider for resolving Steam manifest decryption codes (MRC). "
-        "Use 'Test Server' to benchmark provider responsiveness and health."
+        "Select the default way for ASSella to fetch manifests when updating games! (Default: Auto)"
     )
     mrc_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
     mrc_desc.setWordWrap(True)
@@ -418,7 +419,7 @@ def create_downloads_tab(dialog) -> QWidget:
                     if pt != t and pt in dialog.depot_toggles
                 )
                 if not other_active:
-                    QMessageBox.warning(
+                    ThemedMessageBox.warning(
                         dialog,
                         "Platform Required",
                         "At least one platform depot type (Windows, Linux, macOS, or Android) must remain enabled so game files can be detected."

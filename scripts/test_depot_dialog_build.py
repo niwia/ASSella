@@ -147,21 +147,26 @@ def main() -> int:
     check(dlg.table_widget.columnCount() == 3, "three columns")
     labels = [dlg.table_widget.horizontalHeaderItem(i).text()
               for i in range(dlg.table_widget.columnCount())]
-    # Column 0 is deliberately blank: DepotHeaderView draws the select-all
-    # checkbox there. Column 2 carries a live byte total.
-    check(labels[0] == "", f"column 0 left blank for the header checkbox ({labels[0]!r})")
+    # Classic chrome labels the column; DepotHeaderView draws the select-all box.
+    check(labels[0] == "Select", f"column 0 is the Select column ({labels[0]!r})")
     check(labels[1] == "Configuration", f"column 1 is Configuration ({labels[1]!r})")
     check(labels[2].startswith("Size"), f"column 2 is the size column ({labels[2]!r})")
+    check(not getattr(dlg, "filter_chips", {}), "a normal install has no DLC filter chips")
     check(isinstance(dlg.header_view, DepotHeaderView), "custom header view installed")
     check(dlg.table_widget.rowCount() == 5, f"all 5 depots listed (got {dlg.table_widget.rowCount()})")
+
+    # Browse Files has to name one depot, and it takes the first checked one.
+    first_depot = dlg._first_checked_depot_id()
+    check(first_depot in {"1000", "1001"},
+          f"the first checked depot is the one Browse Files offers ({first_depot!r})")
 
     check(dlg.title_label is not None, "title label created")
     check("Two Point Museum" in dlg.title_label.text(), "game name on the title label")
     check(dlg.builds_btn is not None, "Build button created")
     check("25799969" in dlg.builds_btn.text(), "current build id on the Build button")
 
-    check(bool(find_buttons(dlg, "OK")), "OK button present")
-    check(bool(find_buttons(dlg, "Cancel")), "Cancel button present")
+    check(bool(find_buttons(dlg, "Download") or find_buttons(dlg, "OK")), "Download button present")
+    check(bool(find_buttons(dlg, "Close") or find_buttons(dlg, "Cancel")), "Close button present")
 
     check(dlg.title_bar is not None, "titlebar created")
     check(dlg.anchor_row == -1, "anchor_row initialised")
@@ -234,7 +239,7 @@ def main() -> int:
     # of the class guards on show_storage/hasattr accordingly.
     check(not hasattr(dlg3, "_storage_buttons"), "no storage buttons built when storage is hidden")
     check(dlg3.get_selected_storage() is None, "no storage path selected when storage is hidden")
-    check(bool(find_buttons(dlg3, "OK")), "OK button still present")
+    check(bool(find_buttons(dlg3, "Download") or find_buttons(dlg3, "OK")), "Download button still present")
     dlg3.close()
 
     # ------------------------------------------------ storage shown
@@ -271,6 +276,48 @@ def main() -> int:
           "supplied missing depot metadata preserved")
     check(dlg5.table_widget.rowCount() == 6,
           f"the missing depot is listed too (got {dlg5.table_widget.rowCount()} rows)")
+
+    # A missing depot has no manifest to dump, so it must never be the depot
+    # Browse Files offers, even if something ticks its box.
+    from PyQt6.QtCore import Qt
+    table = dlg5.table_widget
+    missing_rows = [i for i in range(table.rowCount())
+                    if table.item(i, 0).data(Qt.ItemDataRole.UserRole + 2) == "missing"]
+    check(len(missing_rows) == 1, "the missing depot carries the 'missing' role")
+    table.item(missing_rows[0], 0).setCheckState(Qt.CheckState.Checked)
+    offered = dlg5._first_checked_depot_id()
+    check(offered != "1004",
+          f"a ticked missing depot is not offered to Browse Files ({offered!r})")
+
+    # ------------------------------------------- the select-all click toggles
+    print("\n=== the select-all header click toggles both ways ===")
+    # Regression: the handler counted every non-expander row as selectable while
+    # the ticking skipped 'missing' and hidden rows, so "everything is chosen"
+    # was unreachable as soon as a missing depot was listed - the click re-ticked
+    # forever and could never clear the table.
+
+    def selectable_states():
+        return [
+            table.item(i, 0).checkState() == Qt.CheckState.Checked
+            for i in range(table.rowCount())
+            if table.item(i, 0).data(Qt.ItemDataRole.UserRole + 2) not in ("missing", "expander")
+            and not table.isRowHidden(i)
+        ]
+
+    # The missing depot's box is unticked here, which is what the table shows in
+    # practice - and it is that unticked row the old handler counted, so a
+    # checked one would have hidden the bug.
+    table.item(missing_rows[0], 0).setCheckState(Qt.CheckState.Unchecked)
+    dlg5._toggle_all_checkboxes(check=False)
+    check(not any(selectable_states()), "starts from nothing ticked")
+    dlg5._on_header_section_clicked(0)
+    first = selectable_states()
+    check(bool(first) and all(first), "the first click ticks every selectable depot")
+    dlg5._on_header_section_clicked(0)
+    check(not any(selectable_states()),
+          "a second click clears them - the unticked missing depot no longer blocks it")
+    check(table.item(missing_rows[0], 0).checkState() == Qt.CheckState.Unchecked,
+          "the missing depot's own box is never touched")
     dlg5.close()
 
     # ------------------------------------------- missing depots, no metadata

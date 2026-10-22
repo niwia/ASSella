@@ -2,6 +2,8 @@
 Custom UI widgets for GameDetailsDialogV2.
 """
 
+import logging
+
 from PyQt6.QtCore import Qt, QSize, QPropertyAnimation, pyqtProperty, pyqtSignal, QEvent
 from PyQt6.QtGui import QColor, QPainter, QLinearGradient, QPalette
 from PyQt6.QtWidgets import (
@@ -16,6 +18,8 @@ from PyQt6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SwitchToggle(QWidget):
@@ -185,6 +189,9 @@ class MaterialTile(QPushButton):
         self.title = title
         self.subtext = subtext
         self.icon_char = icon_char
+        # The dialog this tile is drawn on, so its ink can follow that surface's
+        # light/dark polarity instead of assuming a dark background.
+        self._surface_source = parent
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
@@ -216,10 +223,32 @@ class MaterialTile(QPushButton):
         text_layout.addWidget(self.sub_lbl)
         layout.addLayout(text_layout, 1)
 
+    def _surface_tokens(self):
+        """Ink/overlay tokens for the surface this tile is drawn on.
+
+        Re-derived on every call, so picking a new background is reflected the next
+        time the tile is refreshed without needing a rebuild."""
+        from utils.color_utils import get_raised_surface_tokens
+        surface = getattr(self._surface_source, "background_color", None)
+        if not surface:
+            try:
+                from utils.settings import get_settings
+                surface = get_settings().value("background_color", "#111318")
+            except Exception as e:
+                logger.debug(f"Could not read the background colour setting: {e}")
+                surface = "#111318"
+        return get_raised_surface_tokens(surface)
+
+    def _apply_disabled_ink(self, tokens):
+        self.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {tokens['ink_disabled']}; background: transparent;")
+        self.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {tokens['ink_subtle']}; background: transparent;")
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
     def update_state(self, checked, accent_color, active_sub="Active", inactive_sub="Inactive", custom_color=None):
         from utils.color_utils import get_best_foreground_color
         bg_color = custom_color if custom_color else accent_color
         text_color = get_best_foreground_color(bg_color, dark_color="#121214", light_color="#FFFFFF")
+        tokens = self._surface_tokens()
         self._is_active = checked
         self._current_text_color = text_color
 
@@ -232,8 +261,8 @@ class MaterialTile(QPushButton):
                     border-radius: 8px;
                 }}
                 QPushButton:disabled {{
-                    background-color: rgba(255, 255, 255, 0.02);
-                    border: 1px solid rgba(255, 255, 255, 0.04);
+                    background-color: {tokens['tint_disabled']};
+                    border: 1px solid {tokens['border_disabled']};
                 }}
             """)
             self.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {text_color}; background: transparent;")
@@ -243,39 +272,36 @@ class MaterialTile(QPushButton):
                 self.icon_lbl.setStyleSheet(f"font-size: 12pt; font-weight: bold; color: {text_color}; background: transparent;")
         else:
             self.setChecked(False)
-            self.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(255, 255, 255, 0.05);
-                    border: 1px solid rgba(255, 255, 255, 0.08);
+            self.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {tokens['tint']};
+                    border: 1px solid {tokens['border']};
                     border-radius: 8px;
-                }
-                QPushButton:hover {
-                    background-color: rgba(255, 255, 255, 0.10);
-                    border-color: rgba(255, 255, 255, 0.15);
-                }
-                QPushButton:disabled {
-                    background-color: rgba(255, 255, 255, 0.02);
-                    border: 1px solid rgba(255, 255, 255, 0.04);
-                }
+                }}
+                QPushButton:hover {{
+                    background-color: {tokens['tint_hover']};
+                    border-color: {tokens['border_hover']};
+                }}
+                QPushButton:disabled {{
+                    background-color: {tokens['tint_disabled']};
+                    border: 1px solid {tokens['border_disabled']};
+                }}
             """)
-            self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #FFFFFF; background: transparent;")
-            self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.6); background: transparent;")
+            self.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {tokens['ink']}; background: transparent;")
+            self.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {tokens['ink_muted']}; background: transparent;")
             self.sub_lbl.setText(inactive_sub)
             if hasattr(self, "icon_lbl"):
-                self.icon_lbl.setStyleSheet("font-size: 12pt; font-weight: bold; color: rgba(255, 255, 255, 0.7); background: transparent;")
+                self.icon_lbl.setStyleSheet(f"font-size: 12pt; font-weight: bold; color: {tokens['ink_faint']}; background: transparent;")
 
         if not self.isEnabled():
-            self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: rgba(255, 255, 255, 0.3); background: transparent;")
-            self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.2); background: transparent;")
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._apply_disabled_ink(tokens)
 
     def changeEvent(self, event):
         super().changeEvent(event)
         if event.type() == QEvent.Type.EnabledChange:
+            tokens = self._surface_tokens()
             if not self.isEnabled():
-                self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: rgba(255, 255, 255, 0.3); background: transparent;")
-                self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.2); background: transparent;")
-                self.setCursor(Qt.CursorShape.ArrowCursor)
+                self._apply_disabled_ink(tokens)
             else:
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
                 if getattr(self, "_is_active", False) and hasattr(self, "_current_text_color"):
@@ -283,5 +309,5 @@ class MaterialTile(QPushButton):
                     self.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {tc}; background: transparent;")
                     self.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {tc}; opacity: 0.85; background: transparent;")
                 else:
-                    self.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #FFFFFF; background: transparent;")
-                    self.sub_lbl.setStyleSheet("font-size: 7.5pt; font-style: italic; color: rgba(255, 255, 255, 0.6); background: transparent;")
+                    self.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {tokens['ink']}; background: transparent;")
+                    self.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {tokens['ink_muted']}; background: transparent;")

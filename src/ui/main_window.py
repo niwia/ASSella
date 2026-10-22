@@ -14,17 +14,18 @@ from PyQt6.QtGui import (
     QKeySequence,
     QShortcut,
     QColor,
+    QFontMetrics,
 )
 from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
-    QMessageBox,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
     QHBoxLayout,
     QPushButton,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from managers.app_update_manager import AppUpdateManager
 from managers.game_manager import GameManager
@@ -32,25 +33,19 @@ from managers.job_queue_manager import JobQueueManager
 from managers.task_manager import TaskManager
 from managers.ui_state_manager import UIStateManager
 from ui.bottom_titlebar import BottomTitleBar
-from ui.dialogs.credits import CreditsDialog
-from ui.dialogs.fetchmanifest import FetchManifestDialog
-from ui.dialogs.gamelibrary import GameLibraryDialog
-from ui.dialogs.lain import LainMinigameDialog
-from ui.dialogs.settings import SettingsDialog
-from ui.dialogs.status import StatusDialog
 from ui.widgets import (
     ResizeHandle,
     SimplifiedTerminalWidget,
 )
+from ui.widgets.elided_label import ElidedLabel
 from utils.logger import qt_log_handler
 from utils.paths import Paths
 from queue import Queue
 from utils.web_server import WebServerManager, get_local_ip
 from utils.settings import get_settings
 from utils.task_runner import TaskRunner
-from core.morrenus_api import get_all_hubcap_stats
 from datetime import datetime, timezone
-from utils.version import app_version
+from utils.version import app_version, check_for_updates
 
 logger = logging.getLogger(__name__)
 
@@ -59,14 +54,6 @@ logger = logging.getLogger(__name__)
 # a short wait returns while the dialog is still open, which silently skips the
 # game while leaving a stale dialog on screen.
 DIALOG_WAIT_SECONDS = 300
-
-
-def _extract_semver(raw: str) -> str:
-    """Strip build-date prefix (e.g. '20260608+ASSella-') returning just the version tag."""
-    # Format: YYYYMMDD+ASSella-<version>  OR  <version>
-    if "+ASSella-" in raw:
-        return raw.split("+ASSella-", 1)[1].strip()
-    return raw.strip()
 
 
 class MainWindow(QMainWindow):
@@ -104,61 +91,106 @@ class MainWindow(QMainWindow):
         self.bottom_titlebar = None
 
         self.quotes = [
-            ("The cake is a lie.", "Portal"),
-            ("Would you kindly?", "BioShock"),
-            ("War. War never changes.", "Fallout"),
-            ("Praise the Sun! \\o/", "Dark Souls"),
-            ("It's dangerous to go alone! Take this.", "The Legend of Zelda"),
-            ("A man chooses, a slave obeys.", "BioShock"),
-            ("Snake? Snake?! SNAAAAAAKE!!!", "Metal Gear Solid"),
-            ("Thank you Mario! But our princess is in another castle!", "Super Mario Bros."),
-            ("All your base are belong to us.", "Zero Wing"),
-            ("Nothing is true, everything is permitted.", "Assassin's Creed"),
-            ("It's time to kick ass and chew bubblegum... and I'm all outta gum.", "Duke Nukem 3D"),
-            ("Wake up, Mister Freeman. Wake up and smell the ashes.", "Half-Life 2"),
-            ("You Died.", "Dark Souls"),
-            ("Do you know the definition of insanity?", "Far Cry 3"),
-            ("Protocol 3: Protect the Pilot.", "Titanfall 2"),
-            ("A hunter must hunt.", "Bloodborne"),
-            ("Hey, you. You're finally awake.", "The Elder Scrolls V: Skyrim"),
-            ("Determination.", "Undertale"),
-            ("The world fears the inevitable plummet into the abyss.", "NieR: Automata"),
-            ("Stay a while and listen.", "Diablo II"),
-            ("It's not about the money, it's about sending a message.", "Batman: Arkham City"),
-            ("What is a man? A miserable little pile of secrets!", "Castlevania: Symphony of the Night"),
-            ("I used to be an adventurer like you. Then I took an arrow in the knee.", "The Elder Scrolls V: Skyrim"),
-            ("The right man in the wrong place can make all the difference in the world.", "Half-Life 2"),
-            ("Wake the fuck up, Samurai. We have a city to burn.", "Cyberpunk 2077"),
-            ("Don't be sorry. Be better.", "God of War"),
-            ("Hesitation is defeat.", "Sekiro: Shadows Die Twice"),
-            ("I am Malenia, Blade of Miquella.", "Elden Ring"),
-            ("Rip and tear, until it is done.", "DOOM"),
-            ("Had to be me. Someone else might have gotten it wrong.", "Mass Effect 3"),
-            ("I'm Commander Shepard, and this is my favorite store on the Citadel.", "Mass Effect 2"),
-            ("Truth is... the game was rigged from the start.", "Fallout: New Vegas"),
-            ("Patrolling the Mojave almost makes you wish for a nuclear winter.", "Fallout: New Vegas"),
-            ("There is no escape.", "Hades"),
-            ("When life gives you lemons, don't make lemonade. Make life take the lemons back!", "Portal 2"),
-            ("Nanomachines, son.", "Metal Gear Rising: Revengeance"),
-            ("Memes, the DNA of the soul.", "Metal Gear Rising: Revengeance"),
-            ("No cost too great. No mind to think. No will to break.", "Hollow Knight"),
-            ("Mankind is dead. Blood is fuel. Hell is full.", "ULTRAKILL"),
-            ("Sunrise, Parabellum.", "Disco Elysium"),
-            ("There's always a lighthouse, there's always a man, there's always a city.", "BioShock Infinite"),
-            ("Ah shit, here we go again.", "Grand Theft Auto: San Andreas"),
-            ("I never asked for this.", "Deus Ex: Human Revolution"),
-            ("What is better – to be born good, or to overcome your evil nature through great effort?", "The Elder Scrolls V: Skyrim"),
-            ("You are a worm through time.", "Control"),
-            ("Good hunting, Stalker.", "S.T.A.L.K.E.R."),
-            ("If not us, then who?", "Metro 2033"),
-            ("Keep on keeping on!", "Death Stranding"),
-            ("I need a weapon.", "Halo 2"),
-            ("In my restless dreams, I see that town. Silent Hill.", "Silent Hill 2"),
-            ("Make us whole again.", "Dead Space"),
-            ("We can't change what's done, we can only move on.", "Red Dead Redemption 2"),
-            ("Foul Tarnished, in search of the Elden Ring.", "Elden Ring"),
-            ("Fear the old blood.", "Bloodborne"),
-            ("Tonight, Gehrman joins the hunt.", "Bloodborne"),
+            ('FINISH HIM!', 'Mortal Kombat'),
+            ("It's dangerous to go alone, take this!", 'The Legend of Zelda'),
+            ('Thank you, Mario! But our Princess is in another castle!', 'Super Mario'),
+            ('Do a barrel roll!', 'Star Fox 64'),
+            ('Hey! Look! Listen!', 'The Legend of Zelda: Ocarina of Time'),
+            ('I used to be an adventurer like you until I took an arrow to the knee.', 'The Elder Scrolls V: Skyrim'),
+            ('You Have Died', 'Dark Souls'),
+            ('Waka Waka Waka', 'Pacman'),
+            ('Stay awhile and listen!', 'Diablo 2'),
+            ('The cake is a lie', 'Portal'),
+            ('You require more vespene gas.', 'StarCraft'),
+            ('Snake? Snake? SNAKE!', 'Metal Gear Solid'),
+            ('Praise the sun!', 'Dark Souls'),
+            ("It's a-me, Mario!", "Assassin's Creed II"),
+            ('Get over here!', 'Mortal Kombat'),
+            ('No Russian.', 'Call of Duty: Modern Warfare 2'),
+            ('War...war never changes', 'Fallout'),
+            ('A man chooses; a slave obeys.', 'Bioshock'),
+            ('Would you kindly...', 'Bioshock'),
+            ('The right man in the wrong place can make all the difference in the world.', 'Half-Life 2'),
+            ("You've met with a terrible fate, haven't you?", "The Legend of Zelda: Majora's Mask"),
+            ("It's time to kick ass and chew bubble gum...and I'm all outta gum.", 'Duke Nukem'),
+            ('All your base are belong to us.', 'Zero Wing'),
+            ('Stop right there, criminal scum!', 'The Elder Scrolls IV: Oblivion'),
+            ('Endure and survive.', 'The Last of Us'),
+            ('Hope is what makes us strong. It is why we are here. It is what we fight with when all else is lost.', 'God of War 3'),
+            ('A hero need not speak. When he is gone, the world will speak for him', 'Halo'),
+            ('Good! Now we can fight as warriors. Hand-to-hand, it is the basis of all combat. Only a fool trusts his life to a weapon.', 'Metal Gear Solid'),
+            ('The world fears the inevitable plummet into the abyss. Watch for that moment and when it comes, do not hesitate to leap. It is only when you fall that you learn whether you can fly.', 'Dragon Age: Origins'),
+            ('What is bravery, without a dash of recklessness?', 'Dark Souls'),
+            ("I don't need a weapon; my friends are my power!", 'Kingdom Hearts'),
+            ('Kept you waiting, huh?', 'Metal Gear Solid 5: Ground Zeroes'),
+            ("Don't make a girl a promise if you know you can't keep it.", 'Halo 3'),
+            ('Now is the time to choose! Die and be free of pain, or live and fight your sorrow. Now is the time to shape your stories! Your fate is in your hands.', 'Final Fantasy X'),
+            ("The thing about happiness is that you only know you had it when it's gone...", 'Fallout 4'),
+            ("Life isn't just about passing on your genes... Building the future and keeping the past alive are one and the same thing.", 'Metal Gear Solid 2: Sons of Liberty'),
+            ('Men are but flesh and blood. They know their doom, but not the hour.', 'The Elder Scrolls: Oblivion'),
+            ("Dreams have a nasty habit of going bad when you're not looking.", 'Max Payne'),
+            ("Right and wrong are not what separate us and our enemies... There's no good or bad side. Just two sides holding different views.", 'Final Fantasy VIII'),
+            ('At the end of the day, as long as there are two people left on the planet, someone is gonna want someone dead.', 'Team Fortress 2'),
+            ("My past is not a memory. It's a force at my back... What's past is prologue.", 'Metroid: The Other M'),
+            ('Our world... has trained us to be miserly with forgiveness...', 'Braid'),
+            ("Some trees flourish, others die... Ain't nothing fair.", 'Red Dead Redemption'),
+            ("You can't break a man the way you break a dog or a horse... The harder you beat a man, the taller he stands.", 'Far Cry 2'),
+            ('War is where the young and stupid are tricked by the old and bitter into killing each other.', 'Grand Theft Auto IV'),
+            ('Why walk when you can ride?', 'The Elder Scrolls III: Morrowind'),
+            ("You mustn't allow yourself to be chained to fate... Human beings can choose the kind of life that they want to live.", 'Metal Gear Solid'),
+            ('All men dream – but not equally...', 'Uncharted 3'),
+            ('There are two ways of arguing with a woman, and neither one works.', 'Red Dead Redemption'),
+            ('Nothing is true, everything is permitted.', "Assassin's Creed franchise"),
+            ('What is a man but the sum of his memories? We are the stories we live, the tales we tell ourselves.', "Assassin's Creed: Revelations"),
+            ('Only a mind free of impediments is capable of grasping the chaotic beauty of the world.', "Assassin's Creed"),
+            ('You gave them the one thing that was stolen from them... a family.', 'Bioshock'),
+            ('Grass grows, birds fly, the sun shines, and brother, I hurt people.', 'Team Fortress 2'),
+            ("The healthy human mind doesn't wake up in the morning thinking this is its last day on Earth... To know you're close to the end is a kind of freedom.", 'Call of Duty: Modern Warfare'),
+            ('What is a drop of rain, compared to the storm? What is a thought, compared to the mind?', 'System Shock 2'),
+            ("So, I guess I'd become what they wanted me to be, a killer... I wouldn't know right from wrong if one of them was helping the poor and the other was banging my sister...", 'Max Payne 3'),
+            ("I am Andrew Ryan, and I'm here to ask you a question... I chose the impossible. I chose... Rapture.", 'Bioshock'),
+            ('They were all dead... The final gunshot... And then it was over.', 'Max Payne'),
+            ("I've struggled a long time with survivin', but no matter what you have to find something to fight for.", 'The Last of Us'),
+            ("I raised you, and loved you... All that's left for you to take is my life.", 'Metal Gear Solid 3: Snake Eater'),
+            ("Boss... you were right... It's about doing our best to leave the world... the way it is.", 'Metal Gear Solid IV'),
+            ('Stand in the ashes of a trillion dead souls and ask the ghosts if honor matters. Their silence is your answer.', 'Mass Effect 3'),
+            ("The truth, Walker, is that you're here because you wanted to feel like something you're not: A hero.", 'Spec Ops: The Line'),
+            ('Did I ever tell you the definition of insanity?', 'Far Cry 3'),
+            ('Force answers force, war breeds war, and death only brings death...', 'Metro 2033'),
+            ("You want to know something funny? Even after everything you've done, I would have saved you.", 'Batman: Arkham City'),
+            ("We're not tools of the government or anyone else... I always fought for what I believed in.", 'Metal Gear Solid'),
+            ('Most test subjects do experience some cognitive deterioration... try to hold onto that feeling...', 'Portal 2'),
+            ('It is a good life we lead, brother... And may it never change us.', "Assassin's Creed II"),
+            ('Do you like hurting other people?', 'Hotline Miami'),
+            ('Tell me Bats... Me, in a thong?', 'Batman: Arkham Asylum'),
+            ('The sun went down with practiced bravado... Front row center.', 'Max Payne'),
+            ('A famous explorer once said that the extraordinary is in what we do, not who we are.', 'Tomb Raider'),
+            ("I'm Commander Shepard, and this is my favorite store on the Citadel!", 'Mass Effect 2'),
+            ('What is a man? A Miserable little pile of secrets!', 'Castlevania: Symphony of the Night'),
+            ('The right man in the wrong place...', 'Half-Life 2'),
+            ("Good men mean well. We just don't always end up doing well.", 'Dead Space 3'),
+            ('Why walk when you can ride?', 'The Elder Scrolls III: Morrowind'),
+            ('You have died of dysentery.', 'Oregon Trail'),
+            ('Men are but flesh and blood...', 'Oblivion'),
+            ('Time passes, people move...', 'Ocarina of Time'),
+            ('At the end of the day, as long as there are two people left...', 'Team Fortress 2'),
+            ('The only thing that can defeat power, is more power.', 'Resident Evil: Umbrella Chronicles'),
+            ("Someday you're bound to lose everything. Everybody around you will be gone.", 'Final Fantasy VIII'),
+            ('Are you a bad enough dude to rescue the president?', 'Bad Dudes'),
+            ('Shadow and light are two sides of the same coin. One cannot exist without the other.', 'Twilight Princess'),
+            ('DEATH IS A PREFERABLE ALTERNATIVE TO COMMUNISM', 'Fallout 3'),
+            ('...it is merely an observation on the nature of reality... nothing is true... everything is permitted.', 'AC: Revelations'),
+            ("It ain't no secret I didn't get these scars falling over in church.", 'Red Dead Redemption'),
+            ('What is better – to be born good, or to overcome your evil nature through great effort?', 'Skyrim'),
+            ('I am Andrew Ryan... I chose the impossible. I chose... Rapture.', 'Bioshock'),
+            ('Love is just a chemical. We give it meaning by choice.', 'Bioshock 2'),
+            ('War has changed', 'Metal Gear Solid IV'),
+            ('If our lives are already written, it would take a courageous man to change the script.', 'Alan Wake'),
+            ('Had to be me... Someone else might have got it wrong.', 'Mass Effect 3'),
+            ('[silence]', 'The Legend of Zelda'),
+            ('NOTHING IS MORE BADASS THAN TREATING A WOMAN WITH RESPECT!', 'Borderlands 2'),
+            ('Frostmourne hungers', 'WarCraft III'),
+            ('Kept you waiting, huh?', 'Metal Gear Solid 5: Ground Zeroes'),
         ]
         self.quote_timer = None
         self.quote_label = None
@@ -189,6 +221,15 @@ class MainWindow(QMainWindow):
         self.progress_layout = None
         self.progress_bar = None
         self.speed_label = None
+        # Plain-Python mirror of the progress widgets, published for the web UI.
+        # The web server answers requests on its own threads and must never read
+        # QWidget state, so the GUI thread refreshes this snapshot instead.
+        self._web_status_snapshot = {
+            "progress": 0,
+            "progress_visible": False,
+            "speed": "",
+            "speed_visible": False,
+        }
         self.progress_controls_widget = None
         self.media_pause_button = None
         self.media_cancel_button = None
@@ -231,6 +272,8 @@ class MainWindow(QMainWindow):
         self._setup_key_sequence_detector()
         self._setup_exit_shortcut()
         self._setup_update_timer()
+        self._setup_system_status_timer()
+        self._setup_gui_stall_watchdog()
         self.check_tool_updates()
 
         # Start Web Server on startup if enabled
@@ -246,11 +289,12 @@ class MainWindow(QMainWindow):
         from utils.assfixer import run_boot_config_check
         from ui.dialogs.settings_sls import run_boot_update_check
 
-        # Warm up Byparr and verify SteamDB Cloudflare bypass in the background
-        try:
-            self.check_steamdb_status()
-        except Exception:
-            pass
+        # Warm up Byparr and verify SteamDB Cloudflare bypass in the background.
+        # Deferred on purpose: Byparr spawns a headless Chromium, which costs
+        # seconds of CPU and RAM. Doing that while the library scan and the
+        # update check are still running is what made the window feel stuck
+        # right after boot.
+        self._schedule_steamdb_warmup()
         
         def run_boot_checks():
             try:
@@ -261,20 +305,10 @@ class MainWindow(QMainWindow):
             run_boot_update_check()
             run_boot_config_check()
 
-            # Queue ProtonDB prefetch for all installed games, just before Denuvo sync.
-            # This runs in background (worker threads) so it never blocks startup.
-            try:
-                from core.ratings import prefetch_protondb_for_appids
-                if self.game_manager:
-                    all_appids = [
-                        str(g.get("appid", "0"))
-                        for g in self.game_manager.get_all_games()
-                        if g.get("appid") and str(g.get("appid")) not in ("0", "N/A", "unknown")
-                    ]
-                    if all_appids:
-                        prefetch_protondb_for_appids(all_appids)
-            except Exception as e:
-                logger.debug(f"ProtonDB boot prefetch failed: {e}")
+            # The ProtonDB prefetch is queued behind the update check instead
+            # of running here: it issues one HTTP request per installed game,
+            # and doing that while the manifest check is still hammering Steam
+            # is what made the first minute after boot feel crowded.
 
             # Run Denuvo cache prefetch and clean SLS config of any accidental blocklists (runs ONCE on v2.5.5 launch)
             try:
@@ -305,7 +339,7 @@ class MainWindow(QMainWindow):
         # Show the Canary welcome slideshow on first launch. This replaced the
         # older Training Wheels Protocol dialog, which was removed: every action
         # it offered (recommended settings, config check/repair, SLS install +
-        # version tiles, SLS inheritance) already exists in Settings -> Health.
+        # version tiles) already exists in Settings -> Health.
         from utils.settings import is_canary_welcome_needed
         if is_canary_welcome_needed():
             QTimer.singleShot(1000, self._show_canary_welcome)
@@ -356,7 +390,7 @@ class MainWindow(QMainWindow):
             layout.setContentsMargins(20, 20, 20, 20)
             layout.setSpacing(10)
 
-            title_lbl = QLabel("🚀 Try ASSella Experimental Features!", dlg)
+            title_lbl = QLabel("Try ASSella Experimental Features!", dlg)
             title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #7aa2f7;")
             layout.addWidget(title_lbl)
 
@@ -471,6 +505,8 @@ class MainWindow(QMainWindow):
 
     def open_lain_minigame(self) -> None:
         """Open the Serial Experiments Lain minigame."""
+        from ui.dialogs.lain import LainMinigameDialog
+
         dialog = LainMinigameDialog(self)
         dialog.game_completed.connect(self.on_minigame_completed)
         dialog.exec()
@@ -478,10 +514,11 @@ class MainWindow(QMainWindow):
     def on_minigame_completed(self, score: int) -> None:
         """Handle minigame completion."""
         logger.info(f"Lain minigame completed with score: {score}")
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("The Wired")
-        msg_box.setText(f"Connection Terminated\n\nFinal Score: {score}")
-        msg_box.exec()
+        ThemedMessageBox.information(
+            self,
+            "The Wired",
+            f"Connection Terminated\n\nFinal Score: {score}",
+        )
 
     @staticmethod
     def _setup_windows_taskbar() -> None:
@@ -525,6 +562,8 @@ class MainWindow(QMainWindow):
         self.web_server_manager = WebServerManager(self, self.web_command_queue)
         self.web_command_timer = QTimer(self)
         self.web_command_timer.timeout.connect(self._process_web_commands)
+        # The same GUI-thread timer publishes the progress state for the web UI.
+        self.web_command_timer.timeout.connect(self._refresh_web_status_snapshot)
         # Timer is started/stopped dynamically when web server starts/stops
 
         logger.info("Starting initial game library scan...")
@@ -563,6 +602,46 @@ class MainWindow(QMainWindow):
                         self.game_manager.check_game_updates_async()
             except Exception as e:
                 logger.error(f"Error processing web command: {e}")
+
+    def _refresh_web_status_snapshot(self) -> None:
+        """Publish the progress widgets' state for the web UI.
+
+        Runs on the GUI thread (driven by ``web_command_timer``) so the web
+        server never has to touch QWidget state from its request threads.
+        """
+        progress = 0
+        progress_visible = False
+        speed = ""
+        speed_visible = False
+
+        try:
+            if self.progress_bar is not None:
+                progress_visible = bool(self.progress_bar.isVisible())
+                progress = int(self.progress_bar.value())
+            if self.speed_label is not None:
+                speed_visible = bool(self.speed_label.isVisible())
+                # The label elides what it displays; the web UI wants the whole
+                # speed string.
+                speed = getattr(self.speed_label, "full_text", "") or self.speed_label.text()
+        except RuntimeError as exc:
+            # Widgets already destroyed (window tearing down).
+            logger.debug(f"Web status snapshot refresh skipped: {exc}")
+            return
+
+        self._web_status_snapshot = {
+            "progress": progress,
+            "progress_visible": progress_visible,
+            "speed": str(speed),
+            "speed_visible": speed_visible,
+        }
+
+    def get_web_status_snapshot(self) -> dict:
+        """Return a plain-Python copy of the published status snapshot.
+
+        Safe to call from any thread: it only reads a dict of primitives.
+        """
+        snapshot = getattr(self, "_web_status_snapshot", None) or {}
+        return dict(snapshot)
 
     def toggle_web_server(self, enabled: bool, port: int = 8765) -> None:
         if enabled:
@@ -614,6 +693,7 @@ class MainWindow(QMainWindow):
                     ["systemctl", "--user", "is-active", "assella-testing.service"],
                     capture_output=True,
                     text=True,
+                    timeout=2.0,
                 )
                 if res.stdout.strip() == "active":
                     is_bg_active = True
@@ -635,16 +715,87 @@ class MainWindow(QMainWindow):
         except TypeError:
             pass  # Already disconnected or not connected
 
+        # Routine network work that used to run next to the update check is
+        # queued behind it, so the window settles first and the network is used
+        # by one thing at a time.
+        self._queue_after_update_check(self._run_boot_protondb_prefetch)
+
         if self.settings.value("check_updates_on_boot", True, type=bool):
             logger.info(f"Initial game library scan completed ({games_found} games found). Triggering staggered game updates check.")
             if self.game_manager:
                 # Stagger by 2 seconds so the UI finishes rendering before Steam API storms begin
+                self._gui_phase = "boot update check"
                 QTimer.singleShot(2000, lambda: self.game_manager.check_game_updates_async())
         else:
             logger.info(f"Initial game library scan completed ({games_found} games found). Background boot updates check is disabled.")
+            # No update check will run, so nothing will drain the queue.
+            self._drain_after_update_check_queue()
 
         # Run depot key migration in the background (populates depot_keys.db from cached zips)
         self._run_depot_key_migration()
+
+    def _queue_after_update_check(self, callback) -> None:
+        """Run `callback` once, after the running (or next) update check ends.
+
+        Work that is routine but network bound - the ProtonDB prefetch, the
+        SteamDB warm-up - used to start in parallel with the boot update check.
+        One thing at a time keeps the machine quiet while the window is still
+        settling, which is the whole point of the calm boot.
+        """
+        queue = getattr(self, "_after_update_check_queue", None)
+        if queue is None:
+            queue = []
+            self._after_update_check_queue = queue
+        queue.append(callback)
+        logger.debug(f"Queued {len(queue)} task(s) to run after the update check.")
+
+        if getattr(self, "_after_update_check_connected", False):
+            return
+        self._after_update_check_connected = True
+        try:
+            # update_checks_finished covers the AT0-M stage too, so the queued
+            # work really starts after every check of this cycle is over.
+            self.game_manager.update_checks_finished.connect(
+                self._drain_after_update_check_queue,
+                Qt.ConnectionType.QueuedConnection,
+            )
+        except Exception as e:
+            logger.debug(f"Could not connect the post-update-check queue: {e}")
+            self._after_update_check_connected = False
+
+    def _drain_after_update_check_queue(self) -> None:
+        """Run everything that was waiting for the update check to finish."""
+        queue = getattr(self, "_after_update_check_queue", None) or []
+        self._after_update_check_queue = []
+        if queue:
+            logger.info(f"Running {len(queue)} routine task(s) queued behind the update check.")
+        for callback in queue:
+            try:
+                callback()
+            except Exception as e:
+                logger.debug(f"Queued post-update-check task failed: {e}")
+
+    def _run_boot_protondb_prefetch(self) -> None:
+        """Queue ProtonDB ratings fetches for every installed game.
+
+        Enqueue only: the fetches themselves run in a sequential worker thread,
+        so this returns immediately.
+        """
+        try:
+            from core.ratings import prefetch_protondb_for_appids
+
+            if not self.game_manager:
+                return
+            all_appids = [
+                str(g.get("appid", "0"))
+                for g in self.game_manager.get_all_games()
+                if g.get("appid") and str(g.get("appid")) not in ("0", "N/A", "unknown")
+            ]
+            if all_appids:
+                prefetch_protondb_for_appids(all_appids)
+                logger.debug(f"ProtonDB ratings prefetch queued for {len(all_appids)} game(s).")
+        except Exception as e:
+            logger.debug(f"ProtonDB boot prefetch failed: {e}")
 
     def _run_depot_key_migration(self) -> None:
         """
@@ -674,6 +825,106 @@ class MainWindow(QMainWindow):
             )
 
 
+
+    def _setup_system_status_timer(self) -> None:
+        """Coalesce status-panel refreshes into one GUI pass per second.
+
+        The dashboard rebuilds itself hundreds of times during a bulk update
+        check, and every rebuild used to re-probe the filesystem and re-style
+        every status label. One pass per second is indistinguishable to the eye
+        and leaves the event loop free for actual input.
+        """
+        self._system_status_timer = QTimer(self)
+        self._system_status_timer.setSingleShot(True)
+        self._system_status_timer.setInterval(1000)
+        self._system_status_timer.timeout.connect(self._apply_system_status_refresh)
+        self._gui_phase = "startup"
+
+    def _setup_gui_stall_watchdog(self) -> None:
+        """Report event-loop stalls in the log.
+
+        A 250 ms heartbeat on the Qt event loop. If the loop cannot run for
+        more than half a second the elapsed time is logged together with the
+        phase the UI was in, which turns "the UI felt stuck" into a number.
+        """
+        self._gui_watchdog_timer = QTimer(self)
+        self._gui_watchdog_timer.setInterval(250)
+        self._gui_watchdog_timer.timeout.connect(self._on_gui_heartbeat)
+        self._gui_watchdog_timer.start()
+        self._gui_last_heartbeat = time.monotonic()
+
+    def _on_gui_heartbeat(self) -> None:
+        """Watchdog tick: report a long event-loop stall."""
+        now = time.monotonic()
+        last = getattr(self, "_gui_last_heartbeat", None)
+        if last is not None:
+            gap = now - last
+            if gap > 0.5:
+                logger.warning(
+                    f"[GUI] Main thread stalled for {gap:.2f}s "
+                    f"(phase: {getattr(self, '_gui_phase', 'unknown')})"
+                )
+                if gap > 1.0:
+                    self._log_gui_stall_stack(gap)
+        self._gui_last_heartbeat = now
+
+    def _log_gui_stall_stack(self, gap: float) -> None:
+        """Print where the GUI thread was while the window was unresponsive."""
+        import threading
+        import traceback
+
+        try:
+            frame = sys._current_frames().get(threading.get_ident())
+            if frame is None:
+                return
+            stack = "".join(traceback.format_stack(frame))
+            logger.warning(
+                f"[GUI] Stall of {gap:.2f}s - main thread stack:\n{stack}"
+            )
+        except Exception as e:
+            logger.debug(f"[GUI] Could not capture the stall stack: {e}")
+
+    def _schedule_steamdb_warmup(self) -> None:
+        """Start the Byparr/Chromium solver once the boot update storm settles."""
+        if getattr(self, "_steamdb_warmup_scheduled", False):
+            return
+        self._steamdb_warmup_scheduled = True
+
+        def _start() -> None:
+            if getattr(self, "_steamdb_warmup_started", False):
+                return
+            self._steamdb_warmup_started = True
+            try:
+                self.check_steamdb_status()
+            except Exception as e:
+                logger.debug(f"[SteamDB] Warm-up failed: {e}")
+
+        def _begin() -> None:
+            """Let the window settle before the solver warms up.
+
+            Byparr starts a headless Chromium, and that warm-up wants every
+            core it can get. Starting it a few seconds after the update check
+            keeps it away from the first render and the first interactions.
+            """
+            self._steamdb_warmup_settle = QTimer(self)
+            self._steamdb_warmup_settle.setSingleShot(True)
+            self._steamdb_warmup_settle.setInterval(3000)
+            self._steamdb_warmup_settle.timeout.connect(_start)
+            self._steamdb_warmup_settle.start()
+
+        self._steamdb_warmup_fallback = QTimer(self)
+        self._steamdb_warmup_fallback.setSingleShot(True)
+        self._steamdb_warmup_fallback.setInterval(20000)
+        self._steamdb_warmup_fallback.timeout.connect(_start)
+
+        # Fire as soon as every check of the boot cycle is done.
+        try:
+            self.game_manager.update_checks_finished.connect(
+                _begin, Qt.ConnectionType.QueuedConnection
+            )
+        except Exception as e:
+            logger.debug(f"[SteamDB] Could not schedule the warm-up: {e}")
+        self._steamdb_warmup_fallback.start()
 
     def _setup_update_timer(self) -> None:
         """Setup a timer to check for game updates periodically."""
@@ -736,18 +987,24 @@ class MainWindow(QMainWindow):
         footer_layout.setContentsMargins(15, 0, 15, 0)
         footer_layout.setSpacing(8)
         
-        self.quote_label = QLabel(self.quotes[0][0])
-        self.quote_label.setStyleSheet("font-style: italic; font-size: 12px; color: rgba(255, 255, 255, 0.92); background: transparent; border: none;")
-        
-        self.quote_source_label = QLabel(f"— {self.quotes[0][1]}")
-        self.quote_source_label.setStyleSheet("font-size: 11px; font-weight: bold; color: rgba(255, 255, 255, 0.55); background: transparent; border: none;")
-        
-        footer_layout.addStretch()
-        footer_layout.addWidget(self.quote_label)
-        footer_layout.addWidget(self.quote_source_label)
-        footer_layout.addStretch()
-        
+        self._quote_text, self._quote_source = self.quotes[0]
+
+        self.quote_label = QLabel()
+        self.quote_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.quote_label.setStyleSheet(
+            "font-size: 11.5px; color: rgba(255, 255, 255, 0.92); background: transparent; border: none;"
+        )
+        self.quote_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        self.quote_label.setMinimumWidth(0)
+
+        self.quote_source_label = None
+
+        footer_layout.addWidget(self.quote_label, 1)
+
         self.layout.addWidget(self.footer_widget)
+        self._refresh_quote_display()
 
         # Start quote rotation timer
         self.quote_timer = QTimer(self)
@@ -824,6 +1081,10 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._update_resize_handles_geometry()
         self.position_update_all_btn()
+        self._refresh_quote_display()
+        titlebar = getattr(self, "bottom_titlebar", None)
+        if titlebar and titlebar.search_controller:
+            titlebar.search_controller.reposition()
 
     def position_update_all_btn(self):
         if hasattr(self, "simplified_terminal") and self.simplified_terminal:
@@ -963,7 +1224,7 @@ class MainWindow(QMainWindow):
         # 1. Hubcap API Stats
         hubcap_api_lbl = QLabel("Hubcap:")
         hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
-        self.hubcap_api_value = QLabel("API: --/-- | Single: --/--")
+        self.hubcap_api_value = QLabel("API: --/-- | --")
         self.hubcap_api_value.setStyleSheet(row_item_style)
         hubcap_api_item = QHBoxLayout()
         hubcap_api_item.setSpacing(4)
@@ -1129,10 +1390,10 @@ class MainWindow(QMainWindow):
         self.progress_controls_layout.setContentsMargins(2, 1, 2, 1)
         self.progress_controls_layout.setSpacing(6)
 
-        self.speed_label = QLabel("")
+        self.speed_label = ElidedLabel("")
         self.speed_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.speed_label.setVisible(False)
-        self.progress_controls_layout.addWidget(self.speed_label)
+        self.progress_controls_layout.addWidget(self.speed_label, 1)
 
         self.progress_controls_layout.addStretch()
 
@@ -1214,64 +1475,43 @@ class MainWindow(QMainWindow):
             self.progress_bar.update()
 
     def open_settings(self, initial_tab: Optional[str] = None) -> None:
+        from ui.dialogs.settings import SettingsDialog
+
         dialog = SettingsDialog(self, initial_tab=initial_tab)
         dialog.exec()
         self._check_network_connections_async()
         self.refresh_hubcap_stats()
 
-    def open_fetch_dialog(self) -> None:
-        self.ui_state.fetch_dialog = FetchManifestDialog(self)
+    def open_fetch_dialog(self, initial_query: str = "") -> None:
+        from ui.dialogs.fetchmanifest import FetchManifestDialog
+
+        self.ui_state.fetch_dialog = FetchManifestDialog(self, initial_query=initial_query)
         self.ui_state.fetch_dialog.exec()
         self.ui_state.fetch_dialog = None
 
 
     def open_game_library(self) -> None:
+        from ui.dialogs.gamelibrary import GameLibraryDialog
+
         dialog = GameLibraryDialog(self)
         dialog.exec()
 
     def open_status_dialog(self) -> None:
+        from ui.dialogs.status import StatusDialog
+
         dialog = StatusDialog(self)
         dialog.exec()
 
     def open_credits_dialog(self) -> None:
+        from ui.dialogs.credits import CreditsDialog
+
         dialog = CreditsDialog(self)
         dialog.exec()
 
     def check_steam_updates_blocked(self) -> bool:
         """Check if steam updates are blocked via steam.cfg."""
-        from pathlib import Path
-        possible_paths = [
-            Path.home() / ".steam/steam/steam.cfg",
-            Path.home() / ".steam/root/steam.cfg",
-            Path.home() / ".local/share/Steam/steam.cfg",
-            Path.home() / ".steam/steam.cfg",
-        ]
-        target_path = None
-        for p in possible_paths:
-            if p.exists():
-                target_path = p
-                break
-        if not target_path:
-            return False
-        try:
-            lines = target_path.read_text().splitlines()
-            inhibit = False
-            force_disable = False
-            for line in lines:
-                # strip comments
-                line = line.split('#')[0].split(';')[0].strip()
-                if '=' in line:
-                    k, v = line.split('=', 1)
-                    k = k.strip().lower()
-                    v = v.strip().lower()
-                    if k == "bootstrapperinhibitall" and v in ("enable", "enabled", "true", "1"):
-                        inhibit = True
-                    if k == "bootstrapperforceselfupdate" and v in ("disable", "disabled", "false", "0"):
-                        force_disable = True
-            return inhibit or force_disable
-        except Exception as e:
-            logger.error(f"Error reading steam.cfg: {e}")
-            return False
+        from utils.steam_updates import are_steam_updates_blocked
+        return are_steam_updates_blocked()
 
     def _get_status_style(self, state: str) -> str:
         """
@@ -1305,20 +1545,53 @@ class MainWindow(QMainWindow):
         if hasattr(self, "active_game_card") and self.active_game_card:
             self.active_game_card.set_sub_status(warning_msg, is_warning=True)
 
-        self.refresh_system_status()
+        self.refresh_system_status_now()
 
     @pyqtSlot()
     def refresh_system_status(self) -> None:
-        """Refresh local Steam updates, SLS, and ASSella status labels."""
+        """Schedule a refresh of the local Steam/SLS/ASSella status labels.
+
+        The actual work runs in _apply_system_status_refresh(), coalesced to at
+        most one pass per second. A bulk update check rebuilds the dashboard
+        hundreds of times and every rebuild re-probed the filesystem, which
+        starved the event loop exactly when the user is most likely to click
+        something.
+        """
         import threading
         if threading.current_thread() is not threading.main_thread():
             if hasattr(self, "refresh_system_status_signal"):
                 self.refresh_system_status_signal.emit()
             return
 
+        timer = getattr(self, "_system_status_timer", None)
+        if timer is None:
+            self._apply_system_status_refresh()
+            return
+        timer.start()
+
+    def refresh_system_status_now(self) -> None:
+        """Refresh the status labels right away, cancelling any pending pass."""
+        timer = getattr(self, "_system_status_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._apply_system_status_refresh()
+
+    def _apply_system_status_refresh(self) -> None:
+        """Refresh local Steam updates, SLS, and ASSella status labels."""
         if not hasattr(self, "steam_updates_value") or not self.steam_updates_value:
             return
-            
+
+        self._gui_phase = "status refresh"
+        try:
+            self._collect_system_status()
+        finally:
+            self._gui_phase = "idle"
+
+    def _collect_system_status(self) -> None:
+        """Collect and render the Steam/SLS/ASSella status labels."""
+        if not hasattr(self, "steam_updates_value") or not self.steam_updates_value:
+            return
+
         blocked = self.check_steam_updates_blocked()
         if blocked:
             self.steam_updates_value.setText("Blocked")
@@ -1384,9 +1657,12 @@ class MainWindow(QMainWindow):
                     "• Restart Steam to reload game configs and licenses."
                 )
             else:
-                self.steam_conn_value.setText("Online")
+                from core.steam_helpers import get_installed_steam_client_version
+                client_ver = get_installed_steam_client_version()
+                disp_text = client_ver if client_ver else "Online"
+                self.steam_conn_value.setText(disp_text)
                 self.steam_conn_value.setStyleSheet(self._get_status_style("success"))
-                self.steam_conn_value.setToolTip("Steam client is running normally.")
+                self.steam_conn_value.setToolTip(f"Steam client is running (Version: {disp_text}).")
 
         # Health Visor Status (SLS binary + version + config + SLS API)
         if hasattr(self, "health_status_value") and self.health_status_value:
@@ -1395,7 +1671,9 @@ class MainWindow(QMainWindow):
                 from utils.slssteam_integration import check_slssteam_binary_is_latest
 
                 sls_detected = sls_paths.get("detected", False)
-                ver_res = check_slssteam_binary_is_latest()
+                # cached_only: this runs on the GUI thread and must never wait
+                # on the network. The background boot check fills the cache.
+                ver_res = check_slssteam_binary_is_latest(cached_only=True)
                 ver_status = ver_res.get("status", "error")
                 version_ok = (ver_status == "up_to_date")
 
@@ -1516,13 +1794,49 @@ class MainWindow(QMainWindow):
     def rotate_quote(self):
         if not hasattr(self, "quote_label") or not self.quote_label:
             return
-        current_text = self.quote_label.text()
+        current_text = self._quote_text
         available_quotes = [q for q in self.quotes if q[0] != current_text]
         if available_quotes:
             import random
-            quote, source = random.choice(available_quotes)
-            self.quote_label.setText(quote)
-            self.quote_source_label.setText(f"— {source}")
+            self._quote_text, self._quote_source = random.choice(available_quotes)
+            if hasattr(self, "quote_source_label") and self.quote_source_label:
+                self.quote_source_label.setText(f"— {self._quote_source}")
+            self._refresh_quote_display()
+
+    def _refresh_quote_display(self) -> None:
+        """Draw the rotating quote elided to the footer width.
+
+        Formats the quote inside typographic quotation marks and the source game in italics.
+        Eliding ensures long quotes never force minimum width on the window.
+        """
+        if not getattr(self, "quote_label", None) or not getattr(
+            self, "footer_widget", None
+        ):
+            return
+
+        layout = self.footer_widget.layout()
+        margins = layout.contentsMargins() if layout else None
+        left_m = margins.left() if margins else 15
+        right_m = margins.right() if margins else 15
+
+        # Available horizontal space inside the footer widget
+        available = max(100, self.footer_widget.width() - left_m - right_m)
+        metrics = QFontMetrics(self.quote_label.font())
+
+        source_str = f" — {self._quote_source}"
+        source_width = metrics.horizontalAdvance(source_str) + 30
+        max_quote_width = max(50, available - source_width)
+
+        elided_quote = metrics.elidedText(
+            self._quote_text, Qt.TextElideMode.ElideRight, max_quote_width
+        )
+        html = (
+            f'“{elided_quote}” &nbsp;—&nbsp; '
+            f'<i style="color: rgba(255, 255, 255, 0.55); font-style: italic;">{self._quote_source}</i>'
+        )
+        self.quote_label.setText(html)
+        tooltip = f'“{self._quote_text}” — {self._quote_source}'
+        self.quote_label.setToolTip(tooltip)
 
     def check_steamdb_status(self) -> None:
         """Asynchronously verify that Byparr is running and SteamDB Cloudflare bypass works."""
@@ -1621,6 +1935,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
             self.active_hubcap_label.setText("Hubcap: Loading...")
 
+        from core.morrenus_api import get_all_hubcap_stats
+
         worker = self.stats_task_runner.run(get_all_hubcap_stats)
         worker.finished.connect(self._on_user_stats_loaded)
         worker.error.connect(self._on_user_stats_error)
@@ -1698,41 +2014,38 @@ class MainWindow(QMainWindow):
         usage = stats.get("daily_usage", 0)
         limit = stats.get("daily_limit", 55)
 
-        # 2. Single depot generation
-        single_info = gen_usage.get("single", {}) if isinstance(gen_usage, dict) else {}
-        s_usage = single_info.get("usage", 0)
-        s_limit = single_info.get("limit", 1500)
+        # 2. Key Expiry and color-coded status
+        from core.morrenus_api import compute_api_key_expiry_info
 
-        # Key Expiry
-        expires_str = stats.get("api_key_expires_at")
-        if expires_str:
-            if expires_str.endswith('Z'):
-                expires_str = expires_str[:-1] + '+00:00'
-            try:
-                expires_at = datetime.fromisoformat(expires_str)
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=timezone.utc)
-                now = datetime.now(timezone.utc)
-                delta = expires_at - now
-                days = delta.days
-                if days < 0:
-                    expiry_text = "Expired"
-                elif days == 0:
-                    expiry_text = "Expires today"
-                else:
-                    expiry_text = f"{days}d"
-            except Exception as e:
-                logger.error(f"Failed to parse expiry date '{expires_str}': {e}")
-                expiry_text = "Unknown"
+        api_key = self.settings.value("morrenus_api_key", "", type=str) if self.settings else ""
+        expiry_info = compute_api_key_expiry_info(
+            stats.get("api_key_expires_at"),
+            api_key=api_key,
+            settings=self.settings,
+        )
+
+        time_text = expiry_info["text"]
+        accent_color = self.settings.value("accent_color", "#C06C84", type=str) if self.settings else "#C06C84"
+        from utils.color_utils import get_semantic_colors
+        sem_colors = get_semantic_colors(accent_color)
+        status_key = expiry_info.get("status", "success")
+        color = sem_colors.get(status_key, expiry_info.get("color", "#a8dab5"))
+
+        quota_str = f'API: {usage}/{limit} | <span style="color: {color}; font-weight: bold;">{time_text}</span>'
+
+        if expiry_info["is_lifetime"]:
+            exp_desc = "Lifetime key (Never expires)"
+        elif expiry_info["is_expired"]:
+            exp_desc = f"{expiry_info['formatted_date']} (Expired)"
+        elif expiry_info["hours"] <= 24:
+            exp_desc = f"{expiry_info['formatted_date']} ({time_text} remaining, {expiry_info['percentage']:.0f}% left)"
         else:
-            expiry_text = "Never"
+            exp_desc = f"{expiry_info['formatted_date']} ({expiry_info['days']}d remaining, {expiry_info['percentage']:.0f}% left)"
 
-        quota_str = f"API: {usage}/{limit} | Single: {s_usage}/{s_limit}"
         tooltip_str = (
-            f"Hubcap API Quotas & Limits:\n"
-            f"• API / Daily Manifests: {usage} / {limit}\n"
-            f"• Single Depot Generations: {s_usage} / {s_limit}\n"
-            f"• API Key Expiry: {expiry_text}"
+            f"Hubcap API:\n"
+            f"• Daily Manifests: {usage} / {limit} (resets at 00:00 UTC)\n"
+            f"• API Key Expiry: {exp_desc}"
         )
 
         if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
@@ -1750,6 +2063,75 @@ class MainWindow(QMainWindow):
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
             self.active_hubcap_label.setText("Hubcap: Error")
 
+    def sync_at0m_keys(self, appid: str) -> None:
+        """Syncs the Hubcap decryption keys of a Steam-managed (AT0-M) game.
+
+        ASSella never downloads an AT0-M game - Steam does. What ASSella does
+        is make sure SLSsteam holds the decryption keys of the depots the game
+        needs, so Steam can actually decrypt them.
+        """
+        import threading
+
+        appid = str(appid)
+        running = getattr(self, "_at0m_key_syncs_running", None)
+        if running is None:
+            running = set()
+            self._at0m_key_syncs_running = running
+        if appid in running:
+            logger.info(f"[AT0-M] A key sync for {appid} is already running.")
+            return
+
+        gm = self.game_manager
+        game = gm.get_game(appid) if gm else None
+        name = (game or {}).get("game_name") or f"App {appid}"
+
+        running.add(appid)
+        self._refresh_at0m_sync_rows()
+
+        def _worker():
+            try:
+                from managers.at0m_update_checker import At0mUpdateChecker
+                ok, message = At0mUpdateChecker.get_instance().sync_keys(appid)
+            except Exception as e:
+                logger.error(f"[AT0-M] Key sync failed for {appid}: {e}", exc_info=True)
+                ok, message = False, str(e)
+            self._main_thread_callable.emit(
+                lambda: self._on_at0m_key_sync_finished(appid, ok, message, name)
+            )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _refresh_at0m_sync_rows(self) -> None:
+        """Repaints the pending-updates list so a running sync shows as busy."""
+        if hasattr(self, "simplified_terminal") and self.simplified_terminal:
+            self.simplified_terminal.update_stats(immediate=True)
+
+    def _on_at0m_key_sync_finished(self, appid: str, ok: bool, message: str, name: str) -> None:
+        """Reports the outcome of a key sync to the user."""
+        running = getattr(self, "_at0m_key_syncs_running", None)
+        if running is not None:
+            running.discard(str(appid))
+
+        if ok:
+            if hasattr(self, "status_pager") and self.status_pager:
+                self.status_pager.set_status(f"KEYS SYNCED · {name}")
+            ThemedMessageBox.information(self, "Keys Synced", message)
+        else:
+            logger.warning(f"[AT0-M] Key sync failed for {name}: {message}")
+            ThemedMessageBox.warning(self, "Key Sync Failed", message)
+
+        self._refresh_at0m_sync_rows()
+
+    @pyqtSlot(str)
+    def _show_key_sync_notice(self, names_text: str) -> None:
+        """Tells the user that the keys are in place but Steam does the download."""
+        ThemedMessageBox.information(
+            self,
+            "Keys Synced",
+            f"Keys synced for:\n{names_text}\n\n"
+            f"Launch or update the game(s) in Steam to finish.",
+        )
+
     def run_update_all_flow(self) -> None:
         """Flow for updating all games that have update_available status."""
         # Guard: prevent re-entrancy if a cycle is already running
@@ -1758,7 +2140,7 @@ class MainWindow(QMainWindow):
         # Guard: don't start Update All while an update check is still running
         gm = self.game_manager
         if gm and (getattr(gm, "manifest_check_task", None) is not None or getattr(gm, "manifest_check_runner", None) is not None):
-            QMessageBox.information(self, "Update Check Running", "Please wait for the update check to finish before queuing updates.")
+            ThemedMessageBox.information(self, "Update Check Running", "Please wait for the update check to finish before queuing updates.")
             return
         self._update_all_running = True
 
@@ -1768,28 +2150,32 @@ class MainWindow(QMainWindow):
 
         games = self.game_manager.get_all_games()
         updateable_games = []
+        at0m_key_games = []
+        from utils.game_modes import is_atom_managed
         for g in games:
             if g.get("update_status") == "update_available":
-                # AT0-M / Vapor games are managed by Steam and must not be queued for DDM
-                if g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"):
-                    continue
                 appid = str(g.get("appid", ""))
                 if self.settings.value(f"exclude_from_update_all/{appid}", False, type=bool):
                     continue
                 if self.settings.value(f"pin_build/{appid}", False, type=bool):
                     continue
-                updateable_games.append(g)
+                if is_atom_managed(g):
+                    # Steam-managed games are downloaded by Steam, never by
+                    # DepotDownloader. All ASSella does is sync the keys.
+                    at0m_key_games.append(g)
+                else:
+                    updateable_games.append(g)
 
-        if not updateable_games:
+        if not updateable_games and not at0m_key_games:
             self._update_all_running = False
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 self,
                 "No Updates Available",
                 "All games in your library are up to date!",
             )
             return
 
-        total = len(updateable_games)
+        total = len(updateable_games) + len(at0m_key_games)
 
         # --- Immediate feedback: update button before the thread even starts ---
         self._set_update_all_btn_preparing(0, total)
@@ -1808,12 +2194,40 @@ class MainWindow(QMainWindow):
             settings = get_settings()
             queued = 0
             skipped_names = []
+            synced_names = []
+            key_processed = 0
+
+            # --- Phase 1: sync the keys of the Steam-managed games ---
+            # Steam downloads those games itself, so all ASSella can do is
+            # make sure SLSsteam holds the decryption keys.
+            if at0m_key_games:
+                from managers.at0m_update_checker import At0mUpdateChecker
+                checker = At0mUpdateChecker.get_instance()
+                for key_game in at0m_key_games:
+                    key_appid = str(key_game.get("appid", "0"))
+                    key_name = format_game_display_name(key_game)
+                    self._set_update_all_btn_preparing(
+                        key_processed, total, current_name=key_name
+                    )
+                    logger.info(f"[Update All] Syncing keys for {key_name} ({key_appid})...")
+                    try:
+                        ok, message = checker.sync_keys(key_appid)
+                    except Exception as e:
+                        logger.error(f"[Update All] Key sync failed for {key_name}: {e}")
+                        ok, message = False, str(e)
+                    key_processed += 1
+                    if ok:
+                        synced_names.append(key_name)
+                        logger.info(f"[Update All] Keys synced for {key_name}")
+                    else:
+                        logger.warning(f"[Update All] Key sync failed for {key_name}: {message}")
+                        skipped_names.append(key_name)
 
             for idx, game_data in enumerate(updateable_games):
                 appid = str(game_data.get("appid", "0"))
                 name = format_game_display_name(game_data)
                 update_status = game_data.get("update_status")
-                self._set_update_all_btn_preparing(idx, total, current_name=name)
+                self._set_update_all_btn_preparing(key_processed + idx, total, current_name=name)
                 logger.info(f"[Update All] Preparing {name} ({idx + 1}/{total})...")
                 try:
                     local_path = None
@@ -2011,19 +2425,28 @@ class MainWindow(QMainWindow):
                     logger.info(f"Update All queued: {name}")
 
                     # Update button progress after each successful queue
-                    self._set_update_all_btn_preparing(queued, total)
+                    self._set_update_all_btn_preparing(key_processed + queued, total)
 
                 except Exception as e:
                     logger.error(f"Update All failed for {name}: {e}", exc_info=True)
                     skipped_names.append(name)
 
-            logger.info(f"Update All: queued {queued} of {total} games.")
+            logger.info(f"[Update All]: queued {queued} of {total} games.")
 
             # Release guard and refresh UI
             self._update_all_running = False
             from PyQt6.QtCore import QMetaObject, Qt
             from PyQt6.QtCore import Q_ARG
             QMetaObject.invokeMethod(self, "update_dashboard_elements", Qt.ConnectionType.QueuedConnection)
+
+            # Tell the user that the keys are in place but Steam does the download
+            if synced_names:
+                QMetaObject.invokeMethod(
+                    self,
+                    "_show_key_sync_notice",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, "\n".join(f"• {n}" for n in synced_names)),
+                )
 
             # Notify user about any skipped games
             if skipped_names and queued == 0:
@@ -2033,6 +2456,7 @@ class MainWindow(QMainWindow):
                     Qt.ConnectionType.QueuedConnection,
                     Q_ARG(str, "\n".join(f"• {n}" for n in skipped_names)),
                     Q_ARG(bool, True),
+                    Q_ARG(bool, bool(at0m_key_games) and not updateable_games),
                 )
             elif skipped_names:
                 QMetaObject.invokeMethod(
@@ -2040,6 +2464,7 @@ class MainWindow(QMainWindow):
                     "_show_update_all_skip_notice",
                     Qt.ConnectionType.QueuedConnection,
                     Q_ARG(str, "\n".join(f"• {n}" for n in skipped_names)),
+                    Q_ARG(bool, False),
                     Q_ARG(bool, False),
                 )
 
@@ -2073,8 +2498,9 @@ class MainWindow(QMainWindow):
     def _set_update_all_btn_preparing_slot(self, done: int, total: int, current_name: str = "") -> None:
         """Main-thread slot: update the Update All button text to show preparation progress."""
         try:
-            ui = getattr(self, "ui_state", None)
-            btn = getattr(ui, "update_all_btn", None) if ui else None
+            # The button lives on the dashboard widget, not on the ui_state.
+            term = getattr(self, "simplified_terminal", None)
+            btn = getattr(term, "update_all_btn", None) if term else None
             if btn:
                 if done < total:
                     if current_name:
@@ -2090,17 +2516,25 @@ class MainWindow(QMainWindow):
             pass
 
     @pyqtSlot(str, bool)
-    def _show_update_all_skip_notice(self, names_text: str, all_skipped: bool) -> None:
+    @pyqtSlot(str, bool, bool)
+    def _show_update_all_skip_notice(self, names_text: str, all_skipped: bool, key_sync_only: bool = False) -> None:
         """Show a non-blocking notice when some games were skipped in Update All."""
-        if all_skipped:
-            QMessageBox.warning(
+        if key_sync_only:
+            ThemedMessageBox.warning(
+                self,
+                "Update All — Keys Not Synced",
+                f"The decryption keys could not be synced for:\n{names_text}\n\n"
+                f"Open the game individually to retry.",
+            )
+        elif all_skipped:
+            ThemedMessageBox.warning(
                 self,
                 "Update All — Manual Action Required",
                 f"All pending updates were skipped because they require manual depot selection.\n\n"
                 f"Please update these games individually:\n{names_text}",
             )
         else:
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 self,
                 "Update All — Some Games Skipped",
                 f"Updates were queued, but the following game(s) need manual depot selection:\n\n"
@@ -2175,7 +2609,7 @@ class MainWindow(QMainWindow):
                 logger.info(f"Packaged {len(files_to_zip)} loose files into temporary zip: {temp_path}")
             except Exception as e:
                 logger.error(f"Failed to create temporary zip for dropped files: {e}")
-                QMessageBox.critical(self, "Error", f"Failed to package dropped files: {e}")
+                ThemedMessageBox.critical(self, "Error", f"Failed to package dropped files: {e}")
 
         if not zips_to_queue:
             return
@@ -2199,6 +2633,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Handle application shutdown."""
+        titlebar = getattr(self, "bottom_titlebar", None)
+        if titlebar and titlebar.search_controller:
+            titlebar.search_controller.close()
         try:
             if hasattr(self, "web_server_manager") and self.web_server_manager:
                 self.web_server_manager.stop()
@@ -2320,127 +2757,28 @@ class MainWindow(QMainWindow):
         self._tool_update_status = "checking"
         self.refresh_system_status()
 
-        def _parse_version(v_str: str) -> tuple:
-            import re as _re
-            v_str = v_str.lstrip('v').strip()
-            m = _re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[._-]?(dev|alpha|beta|rc|release[_-]?candidate|hotfix|testing|canary)(\d*)|\-([a-zA-Z0-9.]+))?$', v_str, _re.IGNORECASE)
-            if m:
-                major = int(m.group(1) or 0)
-                minor = int(m.group(2) or 0)
-                patch = int(m.group(3) or 0)
-                pre_type = m.group(4) or ""
-                pre_num_str = m.group(5) or ""
-                pre_extra = m.group(6) or ""
-                pre_weights = {"hotfix": 1, "rc": -1, "release_candidate": -1, "releasecandidate": -1, "beta": -2, "alpha": -3, "dev": -4, "testing": -4, "canary": -5}
-                if pre_type:
-                    norm_type = pre_type.lower().replace("-", "_")
-                    pre_val = pre_weights.get(norm_type, 1 if "hotfix" in norm_type else -4)
-                    pre_num = int(pre_num_str) if pre_num_str else 1
-                elif pre_extra:
-                    if "hotfix" in pre_extra.lower():
-                        hm = _re.search(r'\d+', pre_extra)
-                        pre_val = 1
-                        pre_num = int(hm.group(0)) if hm else 1
-                    else:
-                        pre_val = -4
-                        pre_num = 0
-                else:
-                    pre_val = 0
-                    pre_num = 0
-                return (major, minor, patch, pre_val, pre_num)
-            return (0, 0, 0, 0, 0)
-
         def _check_sync():
             status = "offline"
             remote_clean = None
             try:
-                import json
-                local_clean = _extract_semver(app_version)
-
                 configured_channel = self.settings.value("update_channel", "").strip().lower()
-                if configured_channel not in ("stable", "beta", "canary"):
-                    if any(x in local_clean.lower() for x in ("canary", "testing")):
-                        configured_channel = "canary"
-                    elif any(x in local_clean.lower() for x in ("beta", "dev", "rc")):
-                        configured_channel = "beta"
+                res = check_for_updates(configured_channel=configured_channel, current_version=app_version)
+                status = res["status"]
+                remote_clean = res["remote_version"]
+                if not configured_channel or configured_channel not in ("stable", "beta", "canary"):
+                    self.settings.setValue("update_channel", res["channel"])
+
+                if status == "update_available":
+                    if res.get("is_cross_channel"):
+                        logger.info(
+                            f"Cross-channel update available: {remote_clean} (channel: {res['channel']}, current: {res['local_version']})"
+                        )
                     else:
-                        configured_channel = "stable"
-                    self.settings.setValue("update_channel", configured_channel)
-
-                # 1. Primary check: GitHub Releases API (detects full releases + pre-releases with AppImage)
-                try:
-                    api_url = "https://api.github.com/repos/niwia/ASSella/releases"
-                    req = urllib.request.Request(
-                        api_url,
-                        headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                    )
-                    with urllib.request.urlopen(req, timeout=10) as response:
-                        releases = json.loads(response.read().decode("utf-8"))
-                        for r in releases:
-                            tag = str(r.get("tag_name", "")).strip()
-                            tag_lower = tag.lower()
-                            is_pre = bool(r.get("prerelease", False))
-                            is_canary = any(x in tag_lower for x in ("canary", "testing"))
-                            is_beta = any(x in tag_lower for x in ("beta", "dev", "rc")) and not is_canary
-                            is_stable = not is_canary and not is_beta and not is_pre
-
-                            if configured_channel == "stable" and not is_stable:
-                                continue
-                            elif configured_channel == "beta" and not is_beta and not is_stable:
-                                continue
-
-                            assets = [a.get("name", "") for a in r.get("assets", []) if isinstance(a, dict)]
-                            has_appimage = any(
-                                a.lower().endswith(".appimage")
-                                and not a.lower().endswith(".zsync")
-                                and not a.lower().endswith(".sha256")
-                                for a in assets
-                            )
-
-                            if has_appimage:
-                                remote_clean = _extract_semver(tag)
-                                break
-                except Exception as api_err:
-                    logger.debug(f"GitHub Releases API check error: {api_err}")
-
-                # 2. Fallback check: raw version file on GitHub branch
-                if not remote_clean:
-                    branch = configured_channel if configured_channel in ("beta", "canary") else "main"
-                    url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
-                    logger.info(f"Checking for tool updates from raw branch: {branch}")
-                    req = urllib.request.Request(
-                        url,
-                        headers={"User-Agent": "ASSella-Updater"}
-                    )
-                    with urllib.request.urlopen(req, timeout=10) as response:
-                        remote_raw = response.read().decode("utf-8").strip()
-                        remote_clean = _extract_semver(remote_raw)
-
-                logger.info(
-                    f"Tool update check: channel='{configured_channel}', remote='{remote_clean}', local='{local_clean}'"
-                )
-                if remote_clean:
-                    is_local_canary = any(x in local_clean.lower() for x in ("canary", "testing", "devtest"))
-                    is_local_beta = any(x in local_clean.lower() for x in ("beta", "dev", "rc")) and not is_local_canary
-                    is_local_stable = not is_local_canary and not is_local_beta
-
-                    channel_mismatch = (
-                        (configured_channel == "stable" and not is_local_stable)
-                        or (configured_channel == "beta" and not is_local_beta)
-                        or (configured_channel == "canary" and not is_local_canary)
-                    )
-
-                    if channel_mismatch and remote_clean != local_clean:
-                        logger.info(f"Cross-channel update available: {remote_clean} (channel: {configured_channel}, current: {local_clean})")
-                        status = "update_available"
-                    elif _parse_version(remote_clean) > _parse_version(local_clean):
-                        logger.info(f"Tool update available: {remote_clean} (current: {local_clean})")
-                        status = "update_available"
-                    else:
-                        logger.info(f"Tool is up to date ({local_clean})")
-                        status = "up_to_date"
+                        logger.info(f"Tool update available: {remote_clean} (current: {res['local_version']})")
+                elif status == "up_to_date":
+                    logger.info(f"Tool is up to date ({res['local_version']})")
                 else:
-                    status = "offline"
+                    logger.debug(f"Tool update check offline/unresolved: {res.get('error')}")
             except Exception as e:
                 logger.warning(f"Failed to check tool updates from GitHub: {e}")
                 status = "offline"
@@ -2487,7 +2825,7 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_update_success(self) -> None:
-        QMessageBox.information(
+        ThemedMessageBox.information(
             self,
             "Update Installed",
             "The update has been downloaded and installed successfully.\n\n"
@@ -2496,7 +2834,7 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_update_failed(self, error_msg: str) -> None:
-        QMessageBox.warning(
+        ThemedMessageBox.warning(
             self,
             "Update Failed",
             f"Failed to download or apply the update.\n\nError: {error_msg}"
@@ -2512,4 +2850,6 @@ class MainWindow(QMainWindow):
             logger.info("QtLogHandler removed and atexit hook unregistered.")
             logging.shutdown()
         except Exception as e:
-            print(f"Error during custom logger shutdown: {e}")
+            # Last resort: the logger is being torn down here, so emit to stderr
+            # directly rather than through it.
+            print(f"Error during custom logger shutdown: {e}", file=sys.stderr)  # noqa: T201

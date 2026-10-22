@@ -31,6 +31,10 @@ SRC_DIR = REPO_ROOT / "src"
 
 # Auto-switch to bundled AppImage venv if running under unbundled python and venv is present
 APPIMAGE_VENV = Path.home() / ".local/share/ACCELA/squashfs-root/bin/.venv/bin/python3"
+if not APPIMAGE_VENV.exists():
+    _cand = Path.home() / ".local/share/ACCELA/build_rc1/squashfs-root/bin/.venv/bin/python3"
+    if _cand.exists():
+        APPIMAGE_VENV = _cand
 if APPIMAGE_VENV.exists() and sys.executable != str(APPIMAGE_VENV) and not os.environ.get("ASSELLA_TESTER_NO_REEXEC"):
     try:
         from steam.client import SteamClient
@@ -53,11 +57,12 @@ RESET = "\033[0m"
 
 
 class PreReleaseTester:
-    def __init__(self, target_src_dir=None):
+    def __init__(self, target_src_dir=None, is_ci=False):
         self.src_dir = Path(target_src_dir) if target_src_dir else SRC_DIR
         if str(self.src_dir) not in sys.path:
             sys.path.insert(0, str(self.src_dir))
 
+        self.is_ci = is_ci or bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
         self.results = []
         self.start_time = time.time()
         self.app = None
@@ -67,6 +72,10 @@ class PreReleaseTester:
         try:
             from PyQt6.QtWidgets import QApplication
             self.app = QApplication.instance() or QApplication(sys.argv)
+            from utils.settings import get_settings
+            st = get_settings()
+            st.setValue("library_mode", True)
+            st.setValue("sls_config_management", True)
         except Exception as e:
             logger.error(f"Failed to initialize QApplication: {e}")
 
@@ -340,13 +349,31 @@ class PreReleaseTester:
 
         # Test 3.3: Goldberg Emulator & SLScheevo Achievements
         t0 = time.time()
-        try:
-            goldberg_dll = self.src_dir / "deps" / "Goldberg" / "windows" / "steam_api64.dll"
-            slscheevo_spec = self.src_dir / "deps" / "SLScheevo" / "SLScheevo.py"
-            exists = goldberg_dll.exists() and slscheevo_spec.exists()
-            self.log_result("Goldberg Emulator & SLScheevo Achievement Engine", exists, f"Goldberg DLL: {goldberg_dll.exists()}, SLScheevo: {slscheevo_spec.exists()}", duration=time.time() - t0)
-        except Exception as e:
-            self.log_result("Goldberg Emulator & SLScheevo Achievement Engine", False, str(e), duration=time.time() - t0)
+        if self.is_ci:
+            self.log_result(
+                "Goldberg Emulator & SLScheevo Achievement Engine",
+                True,
+                "Skipped in CI (optional components not bundled in git)",
+                duration=time.time() - t0,
+                skipped=True,
+            )
+        else:
+            try:
+                goldberg_dll = self.src_dir / "deps" / "Goldberg" / "windows" / "steam_api64.dll"
+                slscheevo_spec = self.src_dir / "deps" / "SLScheevo" / "SLScheevo.py"
+                exists = goldberg_dll.exists() and slscheevo_spec.exists()
+                if not exists:
+                    self.log_result(
+                        "Goldberg Emulator & SLScheevo Achievement Engine",
+                        True,
+                        f"Optional components not downloaded (Goldberg: {goldberg_dll.exists()}, SLScheevo: {slscheevo_spec.exists()})",
+                        duration=time.time() - t0,
+                        skipped=True,
+                    )
+                else:
+                    self.log_result("Goldberg Emulator & SLScheevo Achievement Engine", exists, f"Goldberg DLL: {goldberg_dll.exists()}, SLScheevo: {slscheevo_spec.exists()}", duration=time.time() - t0)
+            except Exception as e:
+                self.log_result("Goldberg Emulator & SLScheevo Achievement Engine", False, str(e), duration=time.time() - t0)
 
         # Test 3.4: Workshop Downloader & Cell ID Validation
         t0 = time.time()
@@ -406,14 +433,20 @@ class PreReleaseTester:
 
         # Test 4.4: Multi-Distro Steam Installation & Custom Library Detector
         t0 = time.time()
-        try:
-            from core.steam_helpers import find_steam_install, get_steam_libraries
-            steam_p = find_steam_install()
-            libs = get_steam_libraries()
-            is_ok = steam_p is not None and isinstance(libs, list)
-            self.log_result("Multi-Distro Steam Installation & Custom Library Detector", is_ok, f"Steam Path: {steam_p}, Libraries: {len(libs)}", duration=time.time() - t0)
-        except Exception as e:
-            self.log_result("Multi-Distro Steam Installation & Custom Library Detector", False, str(e), duration=time.time() - t0)
+        if self.is_ci:
+            self.log_result("Multi-Distro Steam Installation & Custom Library Detector", True, "Skipped in CI (Steam is not installed on headless runner)", duration=time.time() - t0, skipped=True)
+        else:
+            try:
+                from core.steam_helpers import find_steam_install, get_steam_libraries
+                steam_p = find_steam_install()
+                libs = get_steam_libraries()
+                if steam_p is None:
+                    self.log_result("Multi-Distro Steam Installation & Custom Library Detector", True, "Steam is not installed in this environment", duration=time.time() - t0, skipped=True)
+                else:
+                    is_ok = steam_p is not None and isinstance(libs, list)
+                    self.log_result("Multi-Distro Steam Installation & Custom Library Detector", is_ok, f"Steam Path: {steam_p}, Libraries: {len(libs)}", duration=time.time() - t0)
+            except Exception as e:
+                self.log_result("Multi-Distro Steam Installation & Custom Library Detector", False, str(e), duration=time.time() - t0)
 
     # =========================================================================
     # PHASE 5: E2E Manifest Download & SLS Registration (AppID 813230)
@@ -441,14 +474,22 @@ class PreReleaseTester:
         # Step 5.2: Download Manifest from Hubcap API
         t0 = time.time()
         manifest_path = None
-        try:
-            from core import morrenus_api
-            res = morrenus_api.download_manifest(test_appid)
-            manifest_path = res[0] if isinstance(res, (tuple, list)) else res
-            is_valid = manifest_path and Path(manifest_path).exists()
-            self.log_result("Download Manifest 813230 from Hubcap API", is_valid, f"File: {manifest_path}", duration=time.time() - t0)
-        except Exception as e:
-            self.log_result("Download Manifest 813230 from Hubcap API", False, str(e), duration=time.time() - t0)
+        if self.is_ci:
+            self.log_result("Download Manifest 813230 from Hubcap API", True, "Skipped in CI (Hubcap API requires private key)", duration=time.time() - t0, skipped=True)
+        else:
+            try:
+                from core import morrenus_api
+                from utils.settings import get_settings
+                api_key = get_settings().value("hubcap_api_key", "", type=str)
+                if not api_key:
+                    self.log_result("Download Manifest 813230 from Hubcap API", True, "Hubcap API key not set in environment", duration=time.time() - t0, skipped=True)
+                else:
+                    res = morrenus_api.download_manifest(test_appid)
+                    manifest_path = res[0] if isinstance(res, (tuple, list)) else res
+                    is_valid = manifest_path and Path(manifest_path).exists()
+                    self.log_result("Download Manifest 813230 from Hubcap API", is_valid, f"File: {manifest_path}", duration=time.time() - t0)
+            except Exception as e:
+                self.log_result("Download Manifest 813230 from Hubcap API", False, str(e), duration=time.time() - t0)
 
         # Step 5.3: Process LUA & Depot Keys
         t0 = time.time()
@@ -466,10 +507,14 @@ class PreReleaseTester:
         # Step 5.4: SLS config.yaml additionalapps Registration
         t0 = time.time()
         try:
-            from utils.yaml_config_manager import get_user_config_path, add_additional_app
-            cfg_p = get_user_config_path()
-            add_additional_app(cfg_p, str(test_appid))
-            self.log_result("SLS config.yaml additionalapps Registration", True, f"Registered AppID {test_appid}", duration=time.time() - t0)
+            from utils.yaml_config_manager import add_additional_app
+            with tempfile.TemporaryDirectory() as tmp_d:
+                cfg_p = Path(tmp_d) / "config.yaml"
+                cfg_p.write_text("AdditionalApps:\n")
+                ok = add_additional_app(cfg_p, str(test_appid))
+                content = cfg_p.read_text()
+                assert str(test_appid) in content
+                self.log_result("SLS config.yaml additionalapps Registration", ok, f"Registered AppID {test_appid}", duration=time.time() - t0)
         except Exception as e:
             self.log_result("SLS config.yaml additionalapps Registration", False, str(e), duration=time.time() - t0)
 
@@ -482,21 +527,29 @@ class PreReleaseTester:
 
         # Step 6.1: Delete LUA & Test Refetch
         t0 = time.time()
-        try:
-            lua_file = Path.home() / ".local" / "share" / "ACCELA" / "cached_luas" / f"{test_appid}.lua"
-            if lua_file.exists():
-                lua_file.unlink()
+        if self.is_ci:
+            self.log_result("Delete LUA & Refetch Manifest (AppID 813230)", True, "Skipped in CI (Hubcap API requires private key)", duration=time.time() - t0, skipped=True)
+        else:
+            try:
+                from utils.settings import get_settings
+                api_key = get_settings().value("hubcap_api_key", "", type=str)
+                if not api_key:
+                    self.log_result("Delete LUA & Refetch Manifest (AppID 813230)", True, "Hubcap API key not set in environment", duration=time.time() - t0, skipped=True)
+                else:
+                    lua_file = Path.home() / ".local" / "share" / "ACCELA" / "cached_luas" / f"{test_appid}.lua"
+                    if lua_file.exists():
+                        lua_file.unlink()
 
-            from core import morrenus_api
-            res = morrenus_api.download_manifest(test_appid)
-            m_path = res[0] if isinstance(res, (tuple, list)) else res
-            from core.tasks.process_zip_task import ProcessZipTask
-            p_res = ProcessZipTask().run(m_path)
-            
-            refetched_ok = lua_file.exists() or (p_res and bool(p_res.get("depots")))
-            self.log_result("Delete LUA & Refetch Manifest (AppID 813230)", refetched_ok, f"LUA recreated: {lua_file.exists()}", duration=time.time() - t0)
-        except Exception as e:
-            self.log_result("Delete LUA & Refetch Manifest (AppID 813230)", False, str(e), duration=time.time() - t0)
+                    from core import morrenus_api
+                    res = morrenus_api.download_manifest(test_appid)
+                    m_path = res[0] if isinstance(res, (tuple, list)) else res
+                    from core.tasks.process_zip_task import ProcessZipTask
+                    p_res = ProcessZipTask().run(m_path)
+                    
+                    refetched_ok = lua_file.exists() or (p_res and bool(p_res.get("depots")))
+                    self.log_result("Delete LUA & Refetch Manifest (AppID 813230)", refetched_ok, f"LUA recreated: {lua_file.exists()}", duration=time.time() - t0)
+            except Exception as e:
+                self.log_result("Delete LUA & Refetch Manifest (AppID 813230)", False, str(e), duration=time.time() - t0)
 
         # Step 6.2: File Verification & Repair Engine
         t0 = time.time()
@@ -523,10 +576,14 @@ class PreReleaseTester:
         # Step 7.1: Uninstall Test Game & Unregister from SLS
         t0 = time.time()
         try:
-            from utils.yaml_config_manager import get_user_config_path, remove_additional_app
-            cfg_p = get_user_config_path()
-            remove_additional_app(cfg_p, str(test_appid))
-            self.log_result("Uninstall Game & SLS config.yaml Unregistration", True, f"AppID {test_appid} removed from additionalapps", duration=time.time() - t0)
+            from utils.yaml_config_manager import remove_additional_app
+            with tempfile.TemporaryDirectory() as tmp_d:
+                cfg_p = Path(tmp_d) / "config.yaml"
+                cfg_p.write_text(f"AdditionalApps:\n  - {test_appid}\n")
+                ok = remove_additional_app(cfg_p, str(test_appid))
+                content = cfg_p.read_text()
+                assert str(test_appid) not in content
+                self.log_result("Uninstall Game & SLS config.yaml Unregistration", ok, f"AppID {test_appid} removed from additionalapps", duration=time.time() - t0)
         except Exception as e:
             self.log_result("Uninstall Game & SLS config.yaml Unregistration", False, str(e), duration=time.time() - t0)
 
@@ -542,10 +599,15 @@ class PreReleaseTester:
             from utils.dlc_helpers import is_dlc_only_mode, get_dlc_uninstall_message
             from utils.settings import get_settings
             st = get_settings()
-            st.setValue("dlc_only_mode/999999", True)
-            assert is_dlc_only_mode("999999") is True
-            st.setValue("dlc_only_mode/999999", False)
-            assert is_dlc_only_mode("999999") is False
+            try:
+                st.setValue("dlc_only_mode/999999", True)
+                assert is_dlc_only_mode("999999") is True
+                st.setValue("dlc_only_mode/999999", False)
+                assert is_dlc_only_mode("999999") is False
+            finally:
+                # Never leave the sentinel in the user's real settings: a
+                # leaked True makes the AT0-M checker treat 999999 as a game.
+                st.remove("dlc_only_mode/999999")
 
             msg = get_dlc_uninstall_message({"appid": "813230", "game_name": "Animal Well"})
             assert "DLC Only" in msg and "base game files will NOT be deleted" in msg
@@ -557,36 +619,44 @@ class PreReleaseTester:
         t0 = time.time()
         try:
             from utils.dlc_helpers import sync_dlc_only_sls_config
-            from utils.yaml_config_manager import _read_config_content
+            from utils.yaml_config_manager import _read_config_content, _get_section_bounds
             from utils.settings import get_settings
             st = get_settings()
-            with tempfile.TemporaryDirectory() as tmp_d:
-                cfg_p = Path(tmp_d) / "config.yaml"
-                cfg_p.write_text("AdditionalApps:\n  - 108600 # Base\nDlcData:\n")
+            try:
+                with tempfile.TemporaryDirectory() as tmp_d:
+                    cfg_p = Path(tmp_d) / "config.yaml"
+                    cfg_p.write_text("AdditionalApps:\n  - 108600 # Base\nDlcData:\n")
 
-                # Test A: Under 64 DLCs in DLC-only mode
-                fake_game_under64 = {
-                    "appid": "999999",
-                    "game_name": "Test DLC Game",
-                    "dlcs": {str(i): f"DLC {i}" for i in range(1001, 1010)}
-                }
-                st.setValue("dlc_only_mode/999999", True)
-                sync_dlc_only_sls_config(cfg_p, "999999", "Test DLC Game", game_data=fake_game_under64)
-                content = _read_config_content(cfg_p)
-                assert "999999" not in content  # Base game excluded
-                assert "1001" in content        # DLC added
+                    # Test A: Under 64 DLCs in DLC-only mode
+                    fake_game_under64 = {
+                        "appid": "999999",
+                        "game_name": "Test DLC Game",
+                        "dlcs": {str(i): f"DLC {i}" for i in range(1001, 1010)}
+                    }
+                    st.setValue("dlc_only_mode/999999", True)
+                    sync_dlc_only_sls_config(cfg_p, "999999", "Test DLC Game", game_data=fake_game_under64)
+                    content = _read_config_content(cfg_p)
+                    # Depot comments carry the owner tag "(999999)", so the whole
+                    # file legitimately mentions the base AppID. What must not
+                    # happen is the base AppID being listed in AdditionalApps.
+                    app_bounds = _get_section_bounds(content, "AdditionalApps")
+                    app_section = content[app_bounds[1]:app_bounds[2]] if app_bounds else ""
+                    assert "999999" not in app_section  # Base game excluded from AdditionalApps
+                    assert "1001" in content        # DLC added
 
-                # Test B: 64+ DLCs -> Migrates to DlcData section
-                fake_game_over64 = {
-                    "appid": "999999",
-                    "game_name": "Massive DLC Game",
-                    "dlcs": {str(i): f"DLC {i}" for i in range(2000, 2070)}
-                }
-                sync_dlc_only_sls_config(cfg_p, "999999", "Massive DLC Game", game_data=fake_game_over64)
-                content = _read_config_content(cfg_p)
-                assert "DlcData:" in content
-                assert "2000:" in content or "'2000':" in content
-
+                    # Test B: 64+ DLCs -> Migrates to DlcData section
+                    fake_game_over64 = {
+                        "appid": "999999",
+                        "game_name": "Massive DLC Game",
+                        "dlcs": {str(i): f"DLC {i}" for i in range(2000, 2070)}
+                    }
+                    sync_dlc_only_sls_config(cfg_p, "999999", "Massive DLC Game", game_data=fake_game_over64)
+                    content = _read_config_content(cfg_p)
+                    assert "DlcData:" in content
+                    assert "2000:" in content or "'2000':" in content
+            finally:
+                # A failure above must not leave the sentinel enabled: the app
+                # reads every dlc_only_mode/<id> and would chase 999999 as a game.
                 st.remove("dlc_only_mode/999999")
             self.log_result("SLSsteam Configuration & 64+ DLC Limit Bypass", True, "Under-64 & 64+ bypass verified", duration=time.time() - t0)
         except Exception as e:
@@ -622,58 +692,81 @@ class PreReleaseTester:
 
         # Test 9.1: Goldberg Binary & Tool Suite Integrity
         t0 = time.time()
-        try:
-            from utils.paths import Paths
-            goldberg_dir = Paths.deps("Goldberg")
-            assert goldberg_dir.exists(), f"Goldberg dir not found: {goldberg_dir}"
-            
-            required_files = [
-                goldberg_dir / "windows" / "steam_api.dll",
-                goldberg_dir / "windows" / "steam_api64.dll",
-                goldberg_dir / "linux" / "libsteam_api.so",
-                goldberg_dir / "linux" / "libsteam_api64.so",
-                goldberg_dir / "genints" / "generate_interfaces_x32.exe",
-                goldberg_dir / "genints" / "generate_interfaces_x64.exe",
-            ]
-            for rf in required_files:
-                assert rf.exists(), f"Missing Goldberg binary: {rf.name}"
-            
-            self.log_result("Goldberg Binary & Tool Suite Integrity", True, f"Verified {len(required_files)} binaries", duration=time.time() - t0)
-        except Exception as e:
-            self.log_result("Goldberg Binary & Tool Suite Integrity", False, str(e), duration=time.time() - t0)
+        if self.is_ci:
+            self.log_result("Goldberg Binary & Tool Suite Integrity", True, "Skipped in CI (optional component not bundled in git)", duration=time.time() - t0, skipped=True)
+        else:
+            try:
+                from utils.paths import Paths
+                goldberg_dir = Paths.deps("Goldberg")
+                if not goldberg_dir.exists():
+                    self.log_result(
+                        "Goldberg Binary & Tool Suite Integrity",
+                        True,
+                        f"Optional component not installed: {goldberg_dir}",
+                        duration=time.time() - t0,
+                        skipped=True,
+                    )
+                else:
+                    required_files = [
+                        goldberg_dir / "windows" / "steam_api.dll",
+                        goldberg_dir / "windows" / "steam_api64.dll",
+                        goldberg_dir / "linux" / "libsteam_api.so",
+                        goldberg_dir / "linux" / "libsteam_api64.so",
+                        goldberg_dir / "genints" / "generate_interfaces_x32.exe",
+                        goldberg_dir / "genints" / "generate_interfaces_x64.exe",
+                    ]
+                    for rf in required_files:
+                        assert rf.exists(), f"Missing Goldberg binary: {rf.name}"
+                    
+                    self.log_result("Goldberg Binary & Tool Suite Integrity", True, f"Verified {len(required_files)} binaries", duration=time.time() - t0)
+            except Exception as e:
+                self.log_result("Goldberg Binary & Tool Suite Integrity", False, str(e), duration=time.time() - t0)
 
         # Test 9.2: Goldberg Headless Auto-Application & File Backup
         # Requires urwid, which is only present in the bundled AppImage runtime.
         t0 = time.time()
-        if importlib.util.find_spec("urwid") is None:
+        if self.is_ci:
+            self.log_result("Goldberg Auto-Application, Backup & steam_appid.txt", True, "Skipped in CI (optional component not bundled in git)", duration=time.time() - t0, skipped=True)
+        elif importlib.util.find_spec("urwid") is None:
             self.log_result("Goldberg Auto-Application, Backup & steam_appid.txt", True,
                             "urwid not installed in this interpreter", duration=time.time() - t0, skipped=True)
         else:
           try:
-            from managers.cli_manager import CLITaskManager
-            from utils.settings import get_settings
-            with tempfile.TemporaryDirectory() as mock_game_dir:
-                mock_dll = Path(mock_game_dir) / "steam_api64.dll"
-                orig_bytes = b"ORIGINAL_VALVE_STEAM_API_DLL_BYTES_123456"
-                mock_dll.write_bytes(orig_bytes)
+            from utils.paths import Paths
+            goldberg_dir = Paths.deps("Goldberg")
+            if not (goldberg_dir / "windows" / "steam_api64.dll").exists():
+                self.log_result(
+                    "Goldberg Auto-Application, Backup & steam_appid.txt",
+                    True,
+                    "Goldberg optional component not installed",
+                    duration=time.time() - t0,
+                    skipped=True,
+                )
+            else:
+                from managers.cli_manager import CLITaskManager
+                from utils.settings import get_settings
+                with tempfile.TemporaryDirectory() as mock_game_dir:
+                    mock_dll = Path(mock_game_dir) / "steam_api64.dll"
+                    orig_bytes = b"ORIGINAL_VALVE_STEAM_API_DLL_BYTES_123456"
+                    mock_dll.write_bytes(orig_bytes)
 
-                cli = CLITaskManager(get_settings(), logger)
-                applied = cli._apply_goldberg(mock_game_dir, "813230", "Animal Well")
-                assert applied is True, "CLITaskManager._apply_goldberg returned False"
+                    cli = CLITaskManager(get_settings(), logger)
+                    applied = cli._apply_goldberg(mock_game_dir, "813230", "Animal Well")
+                    assert applied is True, "CLITaskManager._apply_goldberg returned False"
 
-                backup_dll = Path(mock_game_dir) / "steam_api64.dll.valve"
-                assert backup_dll.exists(), "Original DLL backup (.valve) not created"
-                assert backup_dll.read_bytes() == orig_bytes, "Backup contents corrupted"
+                    backup_dll = Path(mock_game_dir) / "steam_api64.dll.valve"
+                    assert backup_dll.exists(), "Original DLL backup (.valve) not created"
+                    assert backup_dll.read_bytes() == orig_bytes, "Backup contents corrupted"
 
-                replaced_dll = Path(mock_game_dir) / "steam_api64.dll"
-                assert replaced_dll.exists(), "Replaced steam_api64.dll missing"
-                assert replaced_dll.read_bytes() != orig_bytes, "DLL was not replaced by Goldberg"
+                    replaced_dll = Path(mock_game_dir) / "steam_api64.dll"
+                    assert replaced_dll.exists(), "Replaced steam_api64.dll missing"
+                    assert replaced_dll.read_bytes() != orig_bytes, "DLL was not replaced by Goldberg"
 
-                appid_txt = Path(mock_game_dir) / "steam_appid.txt"
-                assert appid_txt.exists(), "steam_appid.txt not generated"
-                assert appid_txt.read_text().strip() == "813230", f"steam_appid.txt mismatch: {appid_txt.read_text()}"
+                    appid_txt = Path(mock_game_dir) / "steam_appid.txt"
+                    assert appid_txt.exists(), "steam_appid.txt not generated"
+                    assert appid_txt.read_text().strip() == "813230", f"steam_appid.txt mismatch: {appid_txt.read_text()}"
 
-            self.log_result("Goldberg Auto-Application, Backup & steam_appid.txt", True, duration=time.time() - t0)
+                self.log_result("Goldberg Auto-Application, Backup & steam_appid.txt", True, duration=time.time() - t0)
           except Exception as e:
             self.log_result("Goldberg Auto-Application, Backup & steam_appid.txt", False, str(e), duration=time.time() - t0)
 
@@ -909,19 +1002,29 @@ class PreReleaseTester:
                 with BatchConfigEditor(cfg) as editor:
                     editor.add_app("813230", "Animal Well")
                     editor.add_depot("813231", "Animal Well Content", app_id="813230")
+                    # Base AppID must NEVER be added to AdditionalDepots per AGENTS.md
                     refused = not editor.add_depot("813230", "Base Game", app_id="813230")
                     assert refused is True, "Base AppID was not guarded against AdditionalDepots insertion"
 
-                    editor.add_key("813231", "a" * 64, "Key", app_id="813230")
-                    refused_key = not editor.add_key("813230", "a" * 64, "Key", app_id="813230")
-                    assert refused_key is True, "Base AppID was not guarded against DecryptionKeys insertion"
+                    # Root AppKey for base AppID MUST be allowed in DecryptionKeys per AGENTS.md
+                    allowed_key = editor.add_key("813230", "a" * 64, "Root AppKey", app_id="813230")
+                    assert allowed_key is True, "Root AppKey for base AppID must be allowed in DecryptionKeys"
+
+                    # Content Depot Key is also allowed in DecryptionKeys
+                    depot_key = editor.add_key("813231", "b" * 64, "Depot Key", app_id="813230")
+                    assert depot_key is True, "Depot key must be allowed in DecryptionKeys"
 
                 content = cfg.read_text()
-                assert "813231" in content
+                # AdditionalApps contains base game
                 assert "- 813230" in content
+                # AdditionalDepots contains content depot but NOT base appid
+                assert "813231" in content
                 assert "AdditionalDepots:\n  - 813230" not in content
+                # DecryptionKeys contains both root AppKey and depot key per AGENTS.md
+                assert "813230:" in content or "'813230':" in content or "813230: " in content
+                assert "813231:" in content or "'813231':" in content or "813231: " in content
 
-            self.log_result("BatchConfigEditor In-Memory Atomicity & AppID Guard", True, "Base AppID correctly guarded in depots and keys", duration=time.time() - t0)
+            self.log_result("BatchConfigEditor In-Memory Atomicity & AppID Guard", True, "Base AppID guarded in depots and allowed in keys per AGENTS.md", duration=time.time() - t0)
         except Exception as e:
             self.log_result("BatchConfigEditor In-Memory Atomicity & AppID Guard", False, str(e), duration=time.time() - t0)
 
@@ -1049,9 +1152,10 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="ASSella Pre-Release Test Suite")
     parser.add_argument("--src", type=str, help="Path to custom src directory (e.g. extracted AppImage)")
+    parser.add_argument("--ci", action="store_true", help="Run in CI / hermetic mode (skip local host checks like Steam install, SLS config, Hubcap API, Goldberg/SLScheevo)")
     args = parser.parse_args()
 
-    tester = PreReleaseTester(target_src_dir=args.src)
+    tester = PreReleaseTester(target_src_dir=args.src, is_ci=args.ci)
     success = tester.run_all_tests()
     # Flush before exiting: os._exit() skips interpreter cleanup, which discards
     # buffered stdout when it is a pipe. In CI stdout is always a pipe, so

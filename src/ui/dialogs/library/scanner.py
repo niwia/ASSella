@@ -8,11 +8,11 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
-    QProgressDialog,
     QPushButton,
     QVBoxLayout,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
+from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
 
 from ui.dialogs.library.widgets import GameItemWidget
 
@@ -60,14 +60,18 @@ class LibraryScannerMixin:
         if self._closing or not self.isVisible():
             return
 
-        # Find matching item
-        item = None
-        for i in range(self.games_list.count()):
-            it = self.games_list.item(i)
-            game_data = it.data(Qt.ItemDataRole.UserRole)
-            if game_data and game_data.get("appid") == appid:
-                item = it
-                break
+        # Find matching item. A bulk update check reports every game, so this
+        # lookup runs a few hundred times in a row: the appid index answers it
+        # without walking the whole list.
+        item = self._items_by_appid.get(str(appid))
+        if item is None:
+            # The index does not cover every row, so fall back to a scan.
+            for i in range(self.games_list.count()):
+                it = self.games_list.item(i)
+                game_data = it.data(Qt.ItemDataRole.UserRole)
+                if game_data and game_data.get("appid") == appid:
+                    item = it
+                    break
 
         if not item:
             return
@@ -94,7 +98,7 @@ class LibraryScannerMixin:
         try:
             from managers.import_manager import ImportManager
         except ImportError:
-            QMessageBox.critical(self, "Error", "Import manager module not found.")
+            ThemedMessageBox.critical(self, "Error", "Import manager module not found.")
             return
 
         self.scan_imports_button.setEnabled(False)
@@ -126,7 +130,7 @@ class LibraryScannerMixin:
         self.scan_imports_button.setText("Scan for LUA")
 
         if not results:
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 self, "Scan Complete",
                 "No new .lua files found in the cached_luas folder.\n\n"
                 "To import a game, place its .lua file in:\n"
@@ -244,7 +248,7 @@ class LibraryScannerMixin:
         def _import_selected():
             current = result_list.currentItem()
             if not current:
-                QMessageBox.warning(dialog, "No Selection", "Please select a game to import.")
+                ThemedMessageBox.warning(dialog, "No Selection", "Please select a game to import.")
                 return
             data = current.data(Qt.ItemDataRole.UserRole)
             dialog.close()
@@ -266,7 +270,7 @@ class LibraryScannerMixin:
         if not items:
             return
 
-        progress = QProgressDialog(
+        progress = ThemedProgressDialog(
             f"Importing {len(items)} game(s)...", "Cancel", 0, len(items), self
         )
         progress.setWindowModality(Qt.WindowModality.WindowModal)
@@ -366,7 +370,7 @@ class LibraryScannerMixin:
         if error_count > 0 and ready_count == 0:
             msg_title = "Import Failed"
 
-        QMessageBox.information(
+        ThemedMessageBox.information(
             self, msg_title,
             f"Import results ({ready_count} ready, {error_count} failed):\n\n{summary_text}\n\n"
             "Games marked as 'Ready' are now registered and can be downloaded\n"

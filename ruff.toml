@@ -16,10 +16,21 @@ exclude = ["src/deps", ".venv", "__pycache__"]
 # sound on its own, but it hides a real hazard: a name imported that way and then
 # *called* at runtime raises NameError, which no static rule can see. TC003 keeps
 # those imports visible so the runtime use is obvious in review.
-select = ["F821", "F823", "F811", "TC003"]
+#
+# T201 (flake8-print) bans `print()` in src/. In a GUI app a stray print is
+# invisible in the logs users send us, so we route diagnostics through
+# utils/logger.py instead. The few modules that print on purpose are exempted
+# individually below. (src/deps is already excluded file-wide above.)
+select = ["F821", "F823", "F811", "TC003", "T201"]
 
 [lint.per-file-ignores]
-# Intentionally empty.
+# Console-output modules. These print deliberately - they ARE the CLI/self-test
+# output, or the logger's own stderr fallback - so T201 would be a false
+# positive. Listed per file (never as a directory) so each exemption is
+# auditable, and only ever for T201.
+"src/utils/assfixer.py" = ["T201"]  # standalone CLI: ANSI-coloured console output
+"src/core/at0m.py" = ["T201"]       # self-test / CLI block (run_test + __main__)
+"src/utils/logger.py" = ["T201"]    # logger's own stderr fallback around handlers
 #
 # This used to blanket-exclude three files from the F821 gate, which hid a live
 # NameError in utils/assfixer.py (the Settings -> Health -> Repair path) behind

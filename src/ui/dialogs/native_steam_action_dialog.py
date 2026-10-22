@@ -38,12 +38,15 @@ ACTION_TRACK = 1
 ACTION_HANDOFF = 2
 
 
+from ui.dialog_titlebar import DialogTitleBar
+
+
 class NativeSteamActionDialog(QDialog):
     """
     Minimal dialog prompting how to proceed with Steam installation:
       - Start steam download
       - Download later
-    Clean borderless cards with soft hover/selection glow.
+    Clean borderless cards with custom ASSella title bar and full-width buttons.
     """
 
     def __init__(
@@ -67,17 +70,28 @@ class NativeSteamActionDialog(QDialog):
         self._r, self._g, self._b = c.red(), c.green(), c.blue()
 
         self.setWindowTitle("How to proceed?")
-        self.setFixedWidth(400)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setFixedWidth(420)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         self._init_ui()
 
     def _init_ui(self):
-        self.setStyleSheet("""
-            QDialog {
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(0)
+
+        # Outer Container Frame
+        self.container = QFrame(self)
+        self.container.setObjectName("dialogContainer")
+        self.container.setStyleSheet("""
+            QFrame#dialogContainer {
                 background-color: #1a1c23;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 10px;
+            }
+            * {
+                outline: none;
             }
             QLabel {
                 color: #FFFFFF;
@@ -85,15 +99,32 @@ class NativeSteamActionDialog(QDialog):
                 background: transparent;
             }
         """)
+        root.addWidget(self.container)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 20, 22, 18)
-        layout.setSpacing(14)
+        container_lay = QVBoxLayout(self.container)
+        container_lay.setContentsMargins(0, 0, 0, 16)
+        container_lay.setSpacing(12)
+
+        # Custom Themed Title Bar
+        self.title_bar = DialogTitleBar(
+            self,
+            title="How to proceed?",
+            can_minimize=False,
+            can_maximize=False,
+            use_power_close=True,
+        )
+        container_lay.addWidget(self.title_bar)
+
+        # Body area
+        body_lay = QVBoxLayout()
+        body_lay.setContentsMargins(20, 4, 20, 4)
+        body_lay.setSpacing(14)
+        container_lay.addLayout(body_lay)
 
         # Header title
         title_lbl = QLabel("How to proceed?")
         title_lbl.setStyleSheet("font-size: 11pt; font-weight: bold; color: rgba(255, 255, 255, 0.95); border: none; background: transparent;")
-        layout.addWidget(title_lbl)
+        body_lay.addWidget(title_lbl)
 
         self.button_group = QButtonGroup(self)
 
@@ -119,7 +150,7 @@ class NativeSteamActionDialog(QDialog):
         start_layout.addWidget(self.start_radio)
 
         self.start_frame.mousePressEvent = lambda e: self.start_radio.setChecked(True)
-        layout.addWidget(self.start_frame)
+        body_lay.addWidget(self.start_frame)
 
         # Option 2: Download later
         self.later_frame = QFrame()
@@ -143,7 +174,7 @@ class NativeSteamActionDialog(QDialog):
         later_layout.addWidget(self.later_radio)
 
         self.later_frame.mousePressEvent = lambda e: self.later_radio.setChecked(True)
-        layout.addWidget(self.later_frame)
+        body_lay.addWidget(self.later_frame)
 
         # Synchronize frame selection styles when radios change
         self.start_radio.toggled.connect(self._update_styles)
@@ -160,96 +191,121 @@ class NativeSteamActionDialog(QDialog):
                 color: rgba(255, 255, 255, 0.75);
                 spacing: 7px;
                 border: none;
+                outline: none;
                 background: transparent;
+            }
+            QCheckBox:focus {
+                border: none;
+                outline: none;
             }
             QCheckBox::indicator {
                 width: 15px;
                 height: 15px;
-                border: 1px solid rgba(255, 255, 255, 0.25);
+                border: none;
                 border-radius: 3px;
-                background: rgba(255, 255, 255, 0.05);
+                background: rgba(255, 255, 255, 0.12);
+                outline: none;
             }
             QCheckBox::indicator:hover {
-                border-color: rgba(255, 255, 255, 0.5);
+                background: rgba(255, 255, 255, 0.22);
             }
             QCheckBox::indicator:checked {
                 background: %s;
-                border-color: %s;
+                border: none;
             }
-        """ % (self.accent_color, self.accent_color))
-        layout.addWidget(self.remember_chk)
+            QCheckBox::indicator:focus {
+                border: none;
+                outline: none;
+            }
+        """ % self.accent_color)
+        body_lay.addWidget(self.remember_chk)
 
-        # Bottom row: Cancel / Proceed
+        # Bottom row: Cancel / Proceed (big buttons filling the bottom width)
         bot_layout = QHBoxLayout()
-        bot_layout.setContentsMargins(0, 4, 0, 0)
+        bot_layout.setContentsMargins(0, 8, 0, 0)
         bot_layout.setSpacing(10)
 
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setObjectName("cancel_btn")
-        self.cancel_btn.setFixedSize(85, 30)
+        self.cancel_btn.setFixedHeight(38)
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_btn.setStyleSheet("""
             QPushButton#cancel_btn {
                 background-color: rgba(255, 255, 255, 0.06);
                 color: rgba(255, 255, 255, 0.85);
                 border: none;
+                outline: none;
                 border-radius: 6px;
-                font-size: 8.5pt;
+                font-size: 9pt;
+                font-weight: 500;
             }
             QPushButton#cancel_btn:hover {
                 background-color: rgba(255, 255, 255, 0.12);
                 color: #FFFFFF;
             }
+            QPushButton#cancel_btn:focus {
+                outline: none;
+                border: none;
+            }
         """)
         self.cancel_btn.clicked.connect(self._on_cancel)
-        bot_layout.addWidget(self.cancel_btn)
-
-        bot_layout.addStretch()
+        bot_layout.addWidget(self.cancel_btn, 1)
 
         # Foreground color chosen for maximum contrast against accent
         btn_fg = get_best_foreground_color(self.accent_color, dark_color="#121214", light_color="#FFFFFF")
 
         self.proceed_btn = QPushButton("Proceed")
         self.proceed_btn.setObjectName("proceed_btn")
-        self.proceed_btn.setFixedSize(85, 30)
+        self.proceed_btn.setFixedHeight(38)
         self.proceed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.proceed_btn.setStyleSheet(f"""
             QPushButton#proceed_btn {{
                 background-color: {self.accent_color};
                 color: {btn_fg};
                 border: none;
+                outline: none;
                 border-radius: 6px;
-                font-size: 8.5pt;
+                font-size: 9pt;
                 font-weight: bold;
             }}
             QPushButton#proceed_btn:hover {{
                 opacity: 0.9;
             }}
+            QPushButton#proceed_btn:focus {{
+                outline: none;
+                border: none;
+            }}
         """)
         self.proceed_btn.clicked.connect(self._on_proceed)
-        bot_layout.addWidget(self.proceed_btn)
+        bot_layout.addWidget(self.proceed_btn, 1)
 
-        layout.addLayout(bot_layout)
+        body_lay.addLayout(bot_layout)
 
     def _style_radio(self, radio: QRadioButton):
         radio.setStyleSheet(f"""
             QRadioButton {{
                 background: transparent;
                 border: none;
+                outline: none;
+            }}
+            QRadioButton:focus {{
+                border: none;
+                outline: none;
             }}
             QRadioButton::indicator {{
                 width: 16px;
                 height: 16px;
                 border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.35);
-                background-color: rgba(255, 255, 255, 0.05);
+                border: none;
+                outline: none;
+                background-color: rgba(255, 255, 255, 0.12);
             }}
             QRadioButton::indicator:hover {{
-                border-color: {self.accent_color};
+                background-color: rgba(255, 255, 255, 0.22);
             }}
             QRadioButton::indicator:checked {{
                 background-color: {self.accent_color};
-                border: 3px solid #1a1c23;
+                border: none;
             }}
         """)
 

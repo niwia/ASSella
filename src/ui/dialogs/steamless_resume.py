@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
 )
 
 from components.custom_widgets import ScaledFontLabel, ScaledLabel
+from ui.dialogs.themed_dialog import install_themed_frame
 from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -34,8 +35,7 @@ class SteamlessResumeDialog(QDialog):
         self.setModal(True)
 
         # Main layout container
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(20, 20, 20, 20)
+        self.layout = install_themed_frame(self, "Steamless Complete")
         self.layout.setSpacing(15)
 
         self._setup_ui(game_name, exe_count, processed_count, success)

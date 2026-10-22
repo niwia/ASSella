@@ -25,6 +25,11 @@ def add_dlc_data(
     config_path: Path, parent_app_id: str, dlc_id: str, dlc_name: str
 ) -> bool:
     """Add a DLC entry to DlcData section in SLSsteam config.yaml."""
+    if str(dlc_id).strip() == str(parent_app_id).strip():
+        logger.warning(
+            "Refusing to add parent AppID %s as a DLC under DlcData", parent_app_id
+        )
+        return False
     return add_dlc_data_batch(config_path, parent_app_id, {str(dlc_id): dlc_name})
 
 def add_dlc_data_batch(
@@ -34,11 +39,20 @@ def add_dlc_data_batch(
     if not dlc_dict:
         return True
     try:
+        parent_app_id = str(parent_app_id).strip()
+        # Invariant: The parent AppID itself must NEVER be added as a DLC under DlcData
+        dlc_dict = {
+            str(did).strip(): str(dname)
+            for did, dname in dlc_dict.items()
+            if str(did).strip() and str(did).strip() != parent_app_id
+        }
+        if not dlc_dict:
+            return True
+
         content = _get_config_content_if_enabled(config_path, log_missing=True)
         if content is _CONFIG_DISABLED or content is None:
             return False
 
-        parent_app_id = str(parent_app_id).strip()
         bounds = _get_section_bounds(content, "DlcData")
 
         if not bounds:

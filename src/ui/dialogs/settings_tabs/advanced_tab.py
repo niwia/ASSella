@@ -11,10 +11,11 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSlider,
-    QMessageBox,
     QComboBox,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
+from utils.color_utils import get_raised_surface_tokens
 from utils.helpers import create_checkbox_setting
 from utils.yaml_config_manager import is_slssteam_mode_enabled
 
@@ -47,10 +48,22 @@ def create_advanced_tab(dialog) -> QWidget:
     layout.addWidget(adv_card)
 
     # Workshop Downloader Settings Card
-    ws_card, ws_layout = dialog._create_card_frame("Advanced Workshop Settings")
+    ws_card, ws_layout = dialog._create_card_frame("Workshop settings (deprecated)")
 
+    dialog.enable_workshop_downloader_checkbox = create_checkbox_setting(
+        "Enable workshop downloader",
+        "enable_workshop_downloader",
+        False,
+        dialog,
+        "Enable legacy Steam Workshop downloader. Deprecated feature.",
+        show_description=False,
+    )
+    ws_layout.addWidget(dialog.enable_workshop_downloader_checkbox)
+
+    from utils.auto_tune import get_learned_display
+    ws_learned_text = get_learned_display(dialog.settings, "workshop_auto_tune_best")
     dialog.workshop_auto_tune_checkbox = create_checkbox_setting(
-        "Auto adapting limiter (beta)",
+        f"Auto adapting limiter ({ws_learned_text})",
         "workshop_auto_max_downloads",
         True,
         dialog,
@@ -158,6 +171,47 @@ def create_advanced_tab(dialog) -> QWidget:
     ws_grid.addLayout(ws_cell_layout, 1, 1)
 
     ws_layout.addLayout(ws_grid)
+
+    def _apply_ws_disabled_state(enabled: bool):
+        dialog.workshop_auto_tune_checkbox.setEnabled(enabled)
+        dialog.workshop_steam_checkbox.setEnabled(enabled)
+        dialog.workshop_max_dl_slider.setEnabled(enabled)
+        dialog.workshop_max_dl_val_lbl.setEnabled(enabled)
+        dialog.workshop_cell_id_input.setEnabled(enabled)
+        tokens = get_raised_surface_tokens(
+            dialog.settings.value("background_color", "#111318", type=str) or "#111318"
+        )
+        color = tokens["ink"] if enabled else tokens["ink_disabled"]
+        ws_max_dl_label.setStyleSheet(f"color: {color}; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        ws_cell_id_label.setStyleSheet(f"color: {color}; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+        value_color = tokens["ink_faint"] if enabled else tokens["ink_subtle"]
+        dialog.workshop_max_dl_val_lbl.setStyleSheet(f"color: {value_color}; font-size: 9pt; font-weight: bold; border: none; background: transparent;")
+
+    def _on_workshop_enabled_toggled(checked: bool):
+        if checked:
+            reply = ThemedMessageBox.question(
+                dialog,
+                "Enable Workshop Downloader",
+                "Are you sure you want to enable the Workshop Downloader?\n\nThis feature is deprecated and may not work reliably.",
+                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                ThemedMessageBox.StandardButton.No,
+            )
+            if reply != ThemedMessageBox.StandardButton.Yes:
+                dialog.enable_workshop_downloader_checkbox.blockSignals(True)
+                dialog.enable_workshop_downloader_checkbox.setChecked(False)
+                dialog.enable_workshop_downloader_checkbox.blockSignals(False)
+                dialog.settings.setValue("enable_workshop_downloader", False)
+                _apply_ws_disabled_state(False)
+                return
+        dialog.settings.setValue("enable_workshop_downloader", checked)
+        _apply_ws_disabled_state(checked)
+
+    dialog.enable_workshop_downloader_checkbox.toggled.connect(_on_workshop_enabled_toggled)
+
+    # Apply initial disabled/enabled state based on settings
+    ws_init_on = dialog.settings.value("enable_workshop_downloader", False, type=bool)
+    _apply_ws_disabled_state(ws_init_on)
+
     layout.addWidget(ws_card)
 
     # Post-Processing Card
@@ -226,30 +280,28 @@ def goldberg_checked_warning_from_mode(dialog, type) -> None:
 
 
 def goldberg_warning_box(dialog, checkbox, warning) -> bool:
-    msg_box = QMessageBox(dialog)
-    msg_box.setWindowTitle("Warning")
-    msg_box.setText(warning)
-    msg_box.setStandardButtons(
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    reply = ThemedMessageBox.warning(
+        dialog,
+        "Warning",
+        warning,
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.No,
     )
-    msg_box.setDefaultButton(QMessageBox.StandardButton.No)
-    reply = msg_box.exec()
 
-    if reply == QMessageBox.StandardButton.No:
+    if reply == ThemedMessageBox.StandardButton.No:
         checkbox.setChecked(False)
         checkbox.checkbox.setCheckState(Qt.CheckState.Unchecked)
         return True
 
-    confirm_box = QMessageBox(dialog)
-    confirm_box.setWindowTitle("Warning")
-    confirm_box.setText(warning + " \n\nAre you sure?")
-    confirm_box.setStandardButtons(
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    second_reply = ThemedMessageBox.warning(
+        dialog,
+        "Warning",
+        warning + " \n\nAre you sure?",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.No,
     )
-    confirm_box.setDefaultButton(QMessageBox.StandardButton.No)
-    second_reply = confirm_box.exec()
 
-    if second_reply == QMessageBox.StandardButton.No:
+    if second_reply == ThemedMessageBox.StandardButton.No:
         checkbox.setChecked(False)
         checkbox.checkbox.setCheckState(Qt.CheckState.Unchecked)
         return True

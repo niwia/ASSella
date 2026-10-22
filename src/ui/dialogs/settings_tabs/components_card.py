@@ -12,11 +12,11 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QWidget,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.component_manager import (
     download_component,
@@ -275,7 +275,7 @@ def _on_component_button(dialog, key: str) -> None:
 
     manifest = getattr(dialog, "_component_manifest", None) or fetch_manifest()
     if not manifest:
-        QMessageBox.warning(
+        ThemedMessageBox.warning(
             dialog, "Offline",
             "Could not reach the component server. Check your connection and try again.",
         )
@@ -345,18 +345,16 @@ def _open_tools_tab(dialog) -> None:
 def prompt_component_missing(dialog, key: str) -> None:
     """Tell the user a component is not downloaded and send them to the button."""
     label = COMPONENT_LABELS.get(key, key)
-    box = QMessageBox(dialog)
-    box.setWindowTitle(f"{label} not installed")
-    box.setIcon(QMessageBox.Icon.Information)
-    box.setText(
+    choice = ThemedMessageBox.choices(
+        dialog,
+        f"{label} not installed",
         f"{label} is not downloaded yet.\n\n"
         "It is no longer bundled with ASSella - you only need it for the "
-        "handful of games that require it."
+        "handful of games that require it.",
+        [("Open Settings -> Tools", "open"), ("Not now", "later")],
+        default="later",
     )
-    go = box.addButton("Open Settings -> Tools", QMessageBox.ButtonRole.AcceptRole)
-    box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
-    box.exec()
-    if box.clickedButton() is go:
+    if choice == "open":
         _open_tools_tab(dialog)
 
 

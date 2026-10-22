@@ -1,0 +1,48 @@
+name: Docs
+
+# The published site is built by Cloudflare Pages straight from this repository,
+# so this job only guards against a docs change that no longer builds. It is a
+# separate workflow with a path filter so ordinary code changes never pay for it.
+
+on:
+  push:
+    branches: [ main, beta, canary ]
+    paths:
+      - "docs/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".node-version"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    branches: [ main, beta, canary ]
+    paths:
+      - "docs/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".node-version"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build documentation
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".node-version"
+          cache: "npm"
+
+      - name: Install docs dependencies
+        run: npm ci
+
+      - name: Build site
+        # The same command Cloudflare Pages runs.
+        run: npm run docs:build

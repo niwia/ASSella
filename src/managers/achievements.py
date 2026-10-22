@@ -15,7 +15,6 @@ import urllib.request
 from typing import Optional, Tuple
 
 from PyQt6.QtCore import QTimer, QMetaObject, Qt, pyqtSlot, pyqtSignal
-from PyQt6.QtWidgets import QMessageBox
 
 from core.tasks.generate_achievements_task import GenerateAchievementsTask
 from utils.helpers import get_slscheevo_save_path

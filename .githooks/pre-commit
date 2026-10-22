@@ -1,0 +1,24 @@
+#!/bin/sh
+# Refuse a commit that introduces an undefined name.
+#
+# F821 is the class of bug that passes `compileall` and then raises NameError
+# the moment the code path actually runs. CI already enforces it, but that
+# feedback arrives after the commit exists; this makes it arrive in the same
+# second as `git commit`.
+#
+# Enable it once per clone:
+#     git config core.hooksPath .githooks
+set -eu
+
+files=$(git diff --cached --name-only --diff-filter=ACMR -- 'src/*.py' 'scripts/*.py')
+if [ -z "$files" ]; then
+    exit 0
+fi
+
+if command -v uvx >/dev/null 2>&1; then
+    uvx ruff@latest check --no-cache --select F821,F823,F811 -- $files
+elif command -v ruff >/dev/null 2>&1; then
+    ruff check --no-cache --select F821,F823,F811 -- $files
+else
+    echo "pre-commit: neither uvx nor ruff is installed; skipping the F821 gate." >&2
+fi

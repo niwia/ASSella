@@ -13,10 +13,10 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QVBoxLayout,
     QScrollArea,
-    QMessageBox,
     QApplication,
-    QFileDialog,
 )
+from ui.dialogs.themed_file_dialog import ThemedFileDialog
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.ticket_manager import (
     get_ticket_status,
@@ -166,30 +166,30 @@ def handle_ticket_file_import(dialog, file_path: str) -> None:
     """Import and validate ticket YAML file."""
     val = validate_ticket_file(file_path, dialog.appid)
     if not val.get("valid"):
-        QMessageBox.warning(dialog, "Invalid Ticket File", f"Sanitation check failed:\n{val.get('error')}")
+        ThemedMessageBox.warning(dialog, "Invalid Ticket File", f"Sanitation check failed:\n{val.get('error')}")
         return
 
     ok, msg = import_ticket(file_path, dialog.appid)
     if ok:
-        QMessageBox.information(dialog, "Ticket Imported", f"✓ {msg}")
+        ThemedMessageBox.information(dialog, "Ticket Imported", f"✓ {msg}")
         dialog._switch_tab(getattr(dialog, "_tickets_tab_index", 4))
     else:
-        QMessageBox.critical(dialog, "Import Failed", msg)
+        ThemedMessageBox.critical(dialog, "Import Failed", msg)
 
 
 def handle_ticket_text_import(dialog, raw_text: str) -> None:
     """Import and validate raw base64 or yaml text."""
     val = validate_ticket_content(raw_text, dialog.appid)
     if not val.get("valid"):
-        QMessageBox.warning(dialog, "Invalid Ticket Payload", f"Sanitation check failed:\n{val.get('error')}")
+        ThemedMessageBox.warning(dialog, "Invalid Ticket Payload", f"Sanitation check failed:\n{val.get('error')}")
         return
 
     ok, msg = import_ticket(raw_text, dialog.appid)
     if ok:
-        QMessageBox.information(dialog, "Ticket Imported", f"✓ {msg}")
+        ThemedMessageBox.information(dialog, "Ticket Imported", f"✓ {msg}")
         dialog._switch_tab(getattr(dialog, "_tickets_tab_index", 4))
     else:
-        QMessageBox.critical(dialog, "Import Failed", msg)
+        ThemedMessageBox.critical(dialog, "Import Failed", msg)
 
 
 def verify_ticket_status_dialog(dialog) -> None:
@@ -202,47 +202,47 @@ def verify_ticket_status_dialog(dialog) -> None:
     msg += f"Status: {res['message']}"
 
     if res["working"]:
-        QMessageBox.information(dialog, "Ticket Verified Working", msg)
+        ThemedMessageBox.information(dialog, "Ticket Verified Working", msg)
     elif res["installed"] and res["base64_valid"]:
-        QMessageBox.warning(dialog, "Ticket Installed (Pending Launch)", msg)
+        ThemedMessageBox.warning(dialog, "Ticket Installed (Pending Launch)", msg)
     else:
-        QMessageBox.critical(dialog, "Ticket Issue Detected", msg)
+        ThemedMessageBox.critical(dialog, "Ticket Issue Detected", msg)
 
 
 def paste_and_import_ticket(dialog) -> None:
     """Paste ticket payload from clipboard and import."""
     clipboard_text = QApplication.clipboard().text()
     if not clipboard_text:
-        QMessageBox.warning(dialog, "Clipboard Empty", "No text found on clipboard to import.")
+        ThemedMessageBox.warning(dialog, "Clipboard Empty", "No text found on clipboard to import.")
         return
     handle_ticket_text_import(dialog, clipboard_text)
 
 
 def export_installed_ticket(dialog) -> None:
     """Export installed ticket YAML to disk."""
-    save_path, _ = QFileDialog.getSaveFileName(
+    save_path, _ = ThemedFileDialog.getSaveFileName(
         dialog, "Export Ticket File", f"ticket_{dialog.appid}.yaml", "YAML Files (*.yaml)"
     )
     if save_path:
         ok, msg = export_ticket(dialog.appid, save_path)
         if ok:
-            QMessageBox.information(dialog, "Export Success", f"✓ {msg}")
+            ThemedMessageBox.information(dialog, "Export Success", f"✓ {msg}")
         else:
-            QMessageBox.critical(dialog, "Export Failed", msg)
+            ThemedMessageBox.critical(dialog, "Export Failed", msg)
 
 
 def delete_installed_ticket(dialog) -> None:
     """Delete ticket file for this app."""
-    ans = QMessageBox.question(
+    ans = ThemedMessageBox.question(
         dialog,
         "Delete Ticket",
         f"Are you sure you want to remove ticket files for AppID {dialog.appid}?",
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
     )
-    if ans == QMessageBox.StandardButton.Yes:
+    if ans == ThemedMessageBox.StandardButton.Yes:
         ok, msg = remove_ticket(dialog.appid)
         if ok:
-            QMessageBox.information(dialog, "Ticket Removed", f"✓ {msg}")
+            ThemedMessageBox.information(dialog, "Ticket Removed", f"✓ {msg}")
             dialog._switch_tab(getattr(dialog, "_tickets_tab_index", 4))
         else:
-            QMessageBox.critical(dialog, "Removal Failed", msg)
+            ThemedMessageBox.critical(dialog, "Removal Failed", msg)

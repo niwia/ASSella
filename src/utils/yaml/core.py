@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 _CONFIG_DISABLED = object()
 
+# Config paths backed up by this process. One snapshot per session is enough;
+# see _create_backup for why later calls must not overwrite it.
+_BACKED_UP_THIS_SESSION: set = set()
+
 def _config_management_enabled() -> bool:
     return is_slssteam_mode_enabled() and is_slssteam_config_management_enabled()
 
@@ -49,10 +53,13 @@ def _get_config_content_if_enabled(config_path: Path, log_missing: bool = False)
     return _read_config_content(config_path, log_missing=log_missing)
 
 def _create_backup(config_path: Path) -> bool:
-    """Create a backup of the config file.
+    """Create a backup of the config file - at most once per session.
 
-    Creates config.yaml.bak with the current config content.
-    Only creates backup if source file exists and is non-empty.
+    Creates config.yaml.bak with the config content as it was the first time
+    this process asked for a backup. Later calls are no-ops: rewriting the
+    file could replace the session's opening snapshot with a half-edited one,
+    and only one generation is kept anyway. Returns True only when a copy was
+    actually written.
     """
     try:
         if not config_path.exists():
@@ -63,8 +70,17 @@ def _create_backup(config_path: Path) -> bool:
             logger.warning(f"Skipping backup: config file {config_path} is empty (0 bytes)")
             return False
 
+        try:
+            session_key = str(config_path.resolve())
+        except OSError:
+            session_key = str(config_path)
+        if session_key in _BACKED_UP_THIS_SESSION:
+            logger.debug(f"Backup already created this session: {config_path}")
+            return False
+
         backup_path = config_path.with_name(config_path.name + BACKUP_SUFFIX)
         shutil.copy2(config_path, backup_path)
+        _BACKED_UP_THIS_SESSION.add(session_key)
         logger.info(f"Created backup: {backup_path}")
         return True
     except OSError as e:
@@ -775,6 +791,46 @@ class BatchConfigEditor:
             self.has_changes = True
             return True
         return False
+
+    def contains_depot(self, depot_id: Union[str, int]) -> bool:
+        """True when the depot id is present in the AdditionalDepots section.
+
+        ``add_depot`` returns False both for "refused by a guard" and for
+        "already present", so the return value alone cannot tell a caller
+        whether the depot is actually mounted. This is the check that answers
+        that question against the in-memory content.
+        """
+        depot_id_str = _sanitize_id(depot_id)
+        if not depot_id_str or not self.content:
+            return False
+        bounds = _get_section_bounds(self.content, "AdditionalDepots")
+        if not bounds:
+            return False
+        section = self.content[bounds[1]:bounds[2]]
+        return bool(
+            re.search(
+                rf"^[ \t]*-[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*(?:#[^\r\n]*)?$",
+                section,
+                re.MULTILINE,
+            )
+        )
+
+    def contains_key(self, depot_id: Union[str, int]) -> bool:
+        """True when the depot id is present in the DecryptionKeys section."""
+        depot_id_str = _sanitize_id(depot_id)
+        if not depot_id_str or not self.content:
+            return False
+        bounds = _get_section_bounds(self.content, "DecryptionKeys")
+        if not bounds:
+            return False
+        section = self.content[bounds[1]:bounds[2]]
+        return bool(
+            re.search(
+                rf"^[ \t]*['\"]?{re.escape(depot_id_str)}['\"]?[ \t]*:",
+                section,
+                re.MULTILINE,
+            )
+        )
 
     def add_key(
         self,

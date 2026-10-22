@@ -50,11 +50,19 @@ def _is_network_available() -> bool:
         except Exception:
             return False
 
-try:
-    from core.steam_api import batched_get_product_info
-except ImportError:
-    # For testing purposes
-    batched_get_product_info = None
+def _get_batched_get_product_info():
+    """Lazily import the PICS batch product-info fetcher.
+
+    Imported on first use so that merely importing this module does not pull in
+    core.steam_api (and its requests / steam-client stack), which is a large
+    chunk of startup time. Returns None when the dependency is unavailable,
+    which callers already treat as "PICS unavailable, fall back".
+    """
+    try:
+        from core.steam_api import batched_get_product_info
+        return batched_get_product_info
+    except ImportError:
+        return None
 
 
 def _store_check_diag(appid, diag_meta):
@@ -107,6 +115,9 @@ class ManifestCheckTask(QObject):
         """Run the update checks asynchronously using batched API calls"""
         logger.info(f"Starting async update check for {len(self.games_list)} games")
         self._is_running = True
+
+        # Resolved lazily here (not at module import) to keep startup light.
+        batched_get_product_info = _get_batched_get_product_info()
 
         try:
             total_games = len(self.games_list)

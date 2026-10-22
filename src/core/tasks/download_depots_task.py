@@ -1040,24 +1040,6 @@ class DownloadDepotsTask(QObject):
                 skipped_depots.append(str(depot_id))
                 continue
 
-            try:
-                d_info = (game_data.get("depots") or {}).get(depot_id) or (game_data.get("depots") or {}).get(depot_id_str) or {}
-                size_str = d_info.get("size")
-                if size_str:
-                    depot_sizes.append(int(size_str))
-                else:
-                    depot_sizes.append(0)
-                    self.progress.emit(
-                        f"Warning: No size data for depot {depot_id}. "
-                        "Total progress may be inaccurate."
-                    )
-            except (ValueError, TypeError):
-                depot_sizes.append(0)
-                self.progress.emit(
-                    f"Warning: Invalid size data for depot {depot_id}. "
-                    "Total progress may be inaccurate."
-                )
-
             manifest_file_path = os.path.join(
                 manifest_dir, f"{depot_id}_{manifest_id}.manifest"
             )
@@ -1200,6 +1182,27 @@ class DownloadDepotsTask(QObject):
                     self.progress.emit(f"Using selective filelist: {len(selected_files)} file(s) checked")
                 except OSError as e:
                     self.progress.emit(f"Warning: Failed to write selective filelist: {e}")
+
+            # Size is resolved here (not earlier) so it stays 1:1 with `commands`:
+            # a depot skipped above must not leave a size behind, or every later
+            # depot would report the wrong size and inflate the job total.
+            try:
+                d_info = (game_data.get("depots") or {}).get(depot_id) or (game_data.get("depots") or {}).get(depot_id_str) or {}
+                size_str = d_info.get("size")
+                if size_str:
+                    depot_sizes.append(int(size_str))
+                else:
+                    depot_sizes.append(0)
+                    self.progress.emit(
+                        f"Warning: No size data for depot {depot_id}. "
+                        "Total progress may be inaccurate."
+                    )
+            except (ValueError, TypeError):
+                depot_sizes.append(0)
+                self.progress.emit(
+                    f"Warning: Invalid size data for depot {depot_id}. "
+                    "Total progress may be inaccurate."
+                )
 
             commands.append(cmd_args)
 

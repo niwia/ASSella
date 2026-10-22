@@ -8,10 +8,15 @@ Features:
 - Fast multi-tier evaluation:
   1. Local Cache / TTL / Cooldown check (instant, zero network).
   2. Steam PICS / SteamCMD timeupdated diff (skip games if Steam hasn't pushed updates).
-  3. Depot Delta calculation: compares Steam's current depots vs. locally known depots/keys.
-  4. Hubcap Preflight check via free /manifest/{appid}/contents endpoint (zero quota cost).
+  3. Depot Delta calculation: compares Steam's current depots against the keys held locally.
+  4. Hubcap lookup via the cached global depot-key index (no quota, one shared fetch).
   5. 6h cooldown on missing keys to protect Hubcap API.
   6. Non-blocking background worker with Qt signals.
+
+The delta is about KEYS, not depot ids: a depot we have seen before but whose
+key we do not hold is still missing. And only the depots the user's install
+can use count - a Proton install never touches the Linux depot of a title
+that also ships one.
 """
 
 import json
@@ -30,7 +35,12 @@ from managers.depot_key_manager import DepotKeyManager
 from utils.helpers import get_base_path
 from utils.lua_parsing import is_placeholder_key, iter_live_matches
 from utils.paths import Paths
-from utils.plugin_games import SHARED_REDISTS, load_plugin_library
+from utils.plugin_games import (
+    SHARED_REDISTS,
+    build_depot_comment,
+    build_key_comment,
+    load_plugin_library,
+)
 from utils.settings import get_settings
 from utils.sls_bridge import SLSBridge
 from utils.yaml_config_manager import (
@@ -45,6 +55,29 @@ try:
     from ui.assets import DEPOT_BLACKLIST
 except ImportError:
     DEPOT_BLACKLIST = set()
+
+# A DecryptionKeys line looks like:  1234567890: abcd...   # 2230763
+_KEY_LINE_RE = re.compile(r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*([^\r\n]*)")
+_APPID_COMMENT_RE = re.compile(r"#\s*(\d+)")
+
+
+def index_appids_in_key_comments(config_text: str) -> Dict[str, Set[str]]:
+    """Map every appid mentioned in a key comment to the keys it sits under.
+
+    The SLSsteam config can hold thousands of decryption keys. Looking for one
+    appid at a time means re-reading the file and re-scanning every key for
+    every appid, which crawls. One pass builds the whole index instead.
+    """
+    index: Dict[str, Set[str]] = {}
+    for line in config_text.splitlines():
+        match = _KEY_LINE_RE.match(line)
+        if not match:
+            continue
+        key = match.group(1)
+        for appid in _APPID_COMMENT_RE.findall(match.group(2)):
+            index.setdefault(appid, set()).add(key)
+    return index
+
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +215,15 @@ class At0mUpdateChecker(QObject):
                 cfg_keys = get_decryption_keys(cfg_path)
                 cfg_key_ids = set(str(k) for k in cfg_keys.keys())
 
+                # Read and index the config once, not once per appid.
+                cfg_text = ""
+                appid_key_index: Dict[str, Set[str]] = {}
+                try:
+                    cfg_text = cfg_path.read_text(encoding="utf-8", errors="ignore")
+                    appid_key_index = index_appids_in_key_comments(cfg_text)
+                except Exception:
+                    pass
+
                 for aid in cfg_apps:
                     aid_str = str(aid)
                     if not aid_str.isdigit() or aid_str in accela_installed or aid_str in discovered:
@@ -198,18 +240,14 @@ class At0mUpdateChecker(QObject):
                                 has_key = True
                                 break
 
-                    if not has_key:
-                        # Check comments in config.yaml for AppID reference
-                        try:
-                            cfg_text = cfg_path.read_text(encoding="utf-8", errors="ignore")
-                            for kid in cfg_key_ids:
-                                if kid in ALL_SHARED_REDISTS:
-                                    continue
-                                if re.search(rf"^[ \t]*['\"]?{re.escape(kid)}['\"]?[ \t]*:[ \t]*[^\r\n]*#{re.escape(aid_str)}", cfg_text, re.MULTILINE):
-                                    has_key = True
-                                    break
-                        except Exception:
-                            pass
+                    if not has_key and appid_key_index:
+                        # The config comments name the app a key belongs to.
+                        for kid in appid_key_index.get(aid_str, ()):  # noqa: B007
+                            if kid in ALL_SHARED_REDISTS:
+                                continue
+                            if kid in cfg_key_ids:
+                                has_key = True
+                                break
 
                     if has_key:
                         name = app_info.get("name") or f"App {aid_str}"
@@ -313,6 +351,207 @@ class At0mUpdateChecker(QObject):
 
     # ── Single Game Verification ─────────────────────────────────────────────
 
+    def _installed_depot_ids(self, appid: str) -> Set[str]:
+        """The depot ids this appid actually has installed.
+
+        The library scan knows them, but the scan may not have run yet, so
+        the appmanifest on disk is the fallback.
+        """
+        appid_str = str(appid)
+        try:
+            from utils.games_cache import get_games_cache
+            for g in get_games_cache().get_games() or []:
+                if str(g.get("appid", "")) != appid_str:
+                    continue
+                installed = g.get("installed_depots") or {}
+                if isinstance(installed, dict):
+                    return {str(d) for d in installed.keys()}
+                break
+        except Exception as e:
+            logger.debug(f"[At0mChecker] Could not read the installed depots for {appid_str}: {e}")
+
+        try:
+            from utils.steam_acf import find_appmanifest_path, parse_acf_file
+
+            acf_path = find_appmanifest_path({"appid": appid_str}, appid_str)
+            if acf_path:
+                parsed = parse_acf_file(acf_path)
+                installed = (
+                    parsed.get("AppState", {}).get("InstalledDepots", {}) or {}
+                )
+                return {str(d) for d in installed.keys()}
+        except Exception as e:
+            logger.debug(f"[At0mChecker] Could not read the appmanifest for {appid_str}: {e}")
+        return set()
+
+    def _detect_install_platform(self, appid: str, depots_dict: Dict[str, dict]) -> Optional[str]:
+        """
+        The platform the user has installed: "windows", "linux" or "macos".
+
+        Steam ships one depot per platform for multi-platform titles. A Proton
+        install only ever uses the Windows depot, so counting the Linux depot
+        as missing keeps the game in key-pending forever.
+        """
+        installed = self._installed_depot_ids(appid)
+        if not installed:
+            return None
+
+        platforms: Set[str] = set()
+        for did in installed:
+            ddata = depots_dict.get(did)
+            if not isinstance(ddata, dict):
+                continue
+            parts = [p.strip().lower() for p in str(ddata.get("oslist") or "").split(",") if p.strip()]
+            if len(parts) != 1:
+                continue  # a depot that serves several platforms tells us nothing
+            if parts[0] == "windows":
+                platforms.add("windows")
+            elif parts[0] == "linux":
+                platforms.add("linux")
+            elif parts[0] in ("macos", "macosx", "osx"):
+                platforms.add("macos")
+
+        if len(platforms) == 1:
+            return platforms.pop()
+        return None
+
+    def _collect_steam_depots(
+        self, appid: str, steam_info: Dict[str, Any]
+    ) -> Tuple[Set[str], Dict[str, dict], Optional[str]]:
+        """
+        The depots of this game that the user's install can actually use.
+
+        Returns (depot_ids, depots_dict, install_platform).
+        """
+        from ui.dialogs.depot_selection.rules import (
+            _depot_is_android,
+            _depot_is_macos,
+            _depot_matches_platform,
+        )
+        import platform as _platform
+
+        is_macos_system = _platform.system().lower() == "darwin"
+        depots_dict = steam_info.get("depots") or {}
+        install_platform = self._detect_install_platform(appid, depots_dict)
+
+        steam_depots: Set[str] = set()
+        for did, ddata in depots_dict.items():
+            did_str = str(did)
+            if not did_str.isdigit() or did_str in ALL_SHARED_REDISTS:
+                continue
+            if isinstance(ddata, dict):
+                if install_platform:
+                    # The install decides which depots matter: a Proton
+                    # install never touches the Linux depot.
+                    if not _depot_matches_platform(ddata, install_platform):
+                        continue
+                else:
+                    # Filter out macOS-only depots on non-macOS platforms
+                    if not is_macos_system and _depot_is_macos(ddata):
+                        continue
+                    # Filter out Android-only depots
+                    if _depot_is_android(ddata):
+                        continue
+                # Filter out 0-byte or empty placeholder depots
+                size = ddata.get("size")
+                if size is not None and str(size).strip() == "0":
+                    manifests = ddata.get("manifests") or {}
+                    pub = manifests.get("public") if isinstance(manifests, dict) else {}
+                    if not pub or (isinstance(pub, dict) and pub.get("download") in ("0", 0, None)):
+                        continue
+
+                # If depot has manifest or size, it is a content depot
+                if ddata.get("manifest_id") or ddata.get("manifests") or ddata.get("size") or ddata.get("is_dlc"):
+                    steam_depots.add(did_str)
+            else:
+                steam_depots.add(did_str)
+
+        return steam_depots, depots_dict, install_platform
+
+    def _classify_depots(self, depot_ids: List[str]) -> Tuple[List[str], List[str], Optional[str]]:
+        """
+        Split the depots by what the Hubcap index knows about them.
+
+        Returns (ready, awaiting, error):
+          ready    - Hubcap holds a decryption key for the depot.
+          awaiting - Hubcap has no key yet, or has not indexed the depot.
+          error    - set when the index could not be loaded, so nothing can
+                     be said about any of the depots.
+        """
+        from core.hubcap_key_index import STATE_AVAILABLE, get_index
+
+        index = get_index(allow_network=True)
+        if not index.loaded:
+            return (
+                [],
+                list(depot_ids),
+                index.error or "the Hubcap depot-key index is unavailable",
+            )
+
+        ready: List[str] = []
+        awaiting: List[str] = []
+        for did in depot_ids:
+            if index.state(did) == STATE_AVAILABLE:
+                ready.append(did)
+            else:
+                awaiting.append(did)
+        return ready, awaiting, None
+
+    @staticmethod
+    def _depot_info(depot_ids: List[str], depots_dict: Dict[str, dict], has_key: bool) -> List[Dict[str, Any]]:
+        info: List[Dict[str, Any]] = []
+        for did in depot_ids:
+            ddata = depots_dict.get(did)
+            name = ddata.get("name") if isinstance(ddata, dict) else ""
+            info.append({"id": str(did), "name": name or f"Depot {did}", "has_key": has_key})
+        return info
+
+    def _promote_if_key_ready(self, appid_str: str, cached: Dict) -> Optional[Tuple[str, dict]]:
+        """
+        Re-classify a pending game against the local Hubcap index.
+
+        The cooldown exists to spare Steam a request, not to freeze the
+        verdict: the index lives in memory, so the moment Hubcap publishes
+        the key the game can be promoted without asking anyone.
+        """
+        pending = [d for d in (cached.get("new_depots") or []) if isinstance(d, dict) and d.get("id")]
+        if not pending:
+            return None
+
+        ready, awaiting, error = self._classify_depots([str(d["id"]) for d in pending])
+        if error or not ready:
+            return None
+
+        app_name = cached.get("game_title") or f"App {appid_str}"
+        depots_info = [
+            {"id": str(d["id"]), "name": d.get("name") or f"Depot {d['id']}", "has_key": True}
+            for d in pending
+            if str(d["id"]) in set(ready)
+        ]
+        pending_info = [
+            {"id": str(d["id"]), "name": d.get("name") or f"Depot {d['id']}", "has_key": False}
+            for d in pending
+            if str(d["id"]) not in set(ready)
+        ]
+
+        self.db.save_at0m_update_status(
+            appid=appid_str,
+            game_title=app_name,
+            last_timeupdated=int(cached.get("last_timeupdated") or 0),
+            status="update_available",
+            new_depots=depots_info + pending_info,
+            cooldown_until=0,
+        )
+        logger.info(f"[At0mChecker] {appid_str} keys are on Hubcap now ({len(depots_info)} depot(s)).")
+        return "update_available", {
+            "appid": appid_str,
+            "game_title": app_name,
+            "status": "update_available",
+            "new_depots": depots_info + pending_info,
+            "pending_depots": pending_info,
+            "awaiting_hubcap": bool(pending_info),
+        }
+
     def check_game(
         self,
         appid: str,
@@ -320,13 +559,17 @@ class At0mUpdateChecker(QObject):
         force_refresh: bool = False,
     ) -> Tuple[str, dict]:
         """
-        Evaluates update / key status for a single AT0-M game.
+        Evaluates the key status for a single AT0-M game.
 
         Returns: (status, details)
         status can be:
-          - 'up_to_date': Game is up to date, no missing keys.
-          - 'update_available': Steam has new depots AND Hubcap has the keys ready!
-          - 'key_pending': Steam has new depots, but Hubcap does not have keys yet.
+          - 'up_to_date': every depot of this install has its key.
+          - 'update_available': Hubcap has the keys for the new depots.
+          - 'key_pending': Hubcap does not have those keys yet.
+          - 'cannot_determine': nobody could be asked, so nothing is known.
+
+        This method performs network calls, so it must never run on the GUI
+        thread.
         """
         appid_str = str(appid)
         now = int(time.time())
@@ -338,8 +581,13 @@ class At0mUpdateChecker(QObject):
             c_checked = cached.get("last_checked", 0)
             c_cooldown = cached.get("cooldown_until", 0)
 
-            # A. If keys were pending and cooldown is still active, honor cooldown
+            # A. If keys were pending and the cooldown is still active, honor
+            #    the cooldown for Steam - but the Hubcap index is local, so
+            #    the verdict can still improve when the key shows up.
             if c_status == "key_pending" and now < c_cooldown:
+                promoted = self._promote_if_key_ready(appid_str, cached)
+                if promoted is not None:
+                    return promoted
                 logger.debug(f"[At0mChecker] {appid_str} key_pending in cooldown ({c_cooldown - now}s left)")
                 return "key_pending", cached
 
@@ -355,45 +603,53 @@ class At0mUpdateChecker(QObject):
             # Fallback to DB app info if remote fetch failed
             steam_info = self.db.get_app_info(appid_str)
 
+        app_name = (
+            (steam_info.get("name") if steam_info else None)
+            or game_title
+            or (cached.get("game_title") if cached else "")
+            or f"App {appid_str}"
+        )
+
         if not steam_info or not steam_info.get("depots"):
-            logger.debug(f"[At0mChecker] Could not fetch Steam depots for {appid_str}")
-            return "up_to_date", (cached or {})
+            # Nobody could be asked. Reporting "up_to_date" would tell the
+            # user there is nothing to do, which is not what we know.
+            logger.info(f"[At0mChecker] Could not fetch Steam depots for {appid_str}")
+            return "cannot_determine", {
+                "appid": appid_str,
+                "game_title": app_name,
+                "status": "cannot_determine",
+                "new_depots": [],
+                "pending_depots": [],
+                "reason": "Steam did not answer",
+            }
 
         time_updated = int(steam_info.get("timeupdated") or steam_info.get("buildid") or 0)
-        app_name = steam_info.get("name") or game_title or (cached.get("game_title") if cached else "") or f"App {appid_str}"
 
         # Step 3: Steam timeupdated diff check
         if cached and not force_refresh:
             last_tu = cached.get("last_timeupdated", 0)
             if last_tu > 0 and time_updated > 0 and time_updated == last_tu:
-                # Steam timestamp hasn't changed at all! Zero further work.
-                self.db.save_at0m_update_status(
-                    appid=appid_str,
-                    game_title=app_name,
-                    last_timeupdated=time_updated,
-                    status="up_to_date",
-                    new_depots=[],
-                )
-                logger.debug(f"[At0mChecker] {appid_str} timeupdated unchanged ({time_updated}), skipping.")
-                return "up_to_date", {"appid": appid_str, "status": "up_to_date"}
+                # The depot set cannot have changed, so the previous verdict
+                # still holds - unless keys were missing, because that is
+                # exactly what the verdict is about.
+                if not (cached.get("new_depots") or []):
+                    self.db.save_at0m_update_status(
+                        appid=appid_str,
+                        game_title=app_name,
+                        last_timeupdated=time_updated,
+                        status="up_to_date",
+                        new_depots=[],
+                    )
+                    logger.debug(f"[At0mChecker] {appid_str} timeupdated unchanged ({time_updated}), skipping.")
+                    return "up_to_date", {"appid": appid_str, "status": "up_to_date"}
 
         # Step 4: Depot Delta calculation
-        steam_depots: Set[str] = set()
-        depots_dict = steam_info.get("depots") or {}
-        for did, ddata in depots_dict.items():
-            did_str = str(did)
-            if not did_str.isdigit() or did_str in ALL_SHARED_REDISTS:
-                continue
-            # Keep meaningful content depots
-            if isinstance(ddata, dict):
-                # If depot has manifest or size, it is a content depot
-                if ddata.get("manifest_id") or ddata.get("manifests") or ddata.get("size") or ddata.get("is_dlc"):
-                    steam_depots.add(did_str)
-            else:
-                steam_depots.add(did_str)
+        steam_depots, depots_dict, install_platform = self._collect_steam_depots(appid_str, steam_info)
 
-        known_depots, known_keys = self.get_locally_known_depots(appid_str)
-        missing_depots = steam_depots - known_depots
+        # Step 5: the delta is about KEYS, not about depot ids. A depot id we
+        # have seen before but whose key we do not hold is still missing.
+        _known_depots, known_keys = self.get_locally_known_depots(appid_str)
+        missing_depots = steam_depots - set(known_keys.keys())
 
         # If no missing depots, game is fully up to date!
         if not missing_depots:
@@ -406,68 +662,70 @@ class At0mUpdateChecker(QObject):
             )
             return "up_to_date", {"appid": appid_str, "status": "up_to_date"}
 
-        # Step 5: Check Hubcap Preflight for missing depots
-        logger.info(f"[At0mChecker] App {appid_str} ({app_name}) has {len(missing_depots)} missing depot(s): {missing_depots}")
-        from core import morrenus_api
-        hubcap_contents = morrenus_api.get_manifest_contents(appid_str)
+        # Step 6: ask Hubcap what it can do with the missing depots
+        logger.info(
+            f"[At0mChecker] App {appid_str} ({app_name}) is missing the key for "
+            f"{len(missing_depots)} depot(s): {sorted(missing_depots)}"
+        )
+        sorted_missing = sorted(missing_depots)
+        ready_depots, awaiting_depots, index_error = self._classify_depots(sorted_missing)
 
-        hubcap_depots = set()
-        if isinstance(hubcap_contents, dict) and not hubcap_contents.get("error"):
-            hubcap_depots = set(hubcap_contents.get("depot_ids") or [])
+        if index_error:
+            # The Hubcap index is unavailable, so we cannot tell whether the
+            # keys are published. That is not the same as "not published".
+            status = "cannot_determine"
+            details = {
+                "appid": appid_str,
+                "game_title": app_name,
+                "status": status,
+                "new_depots": [],
+                "pending_depots": [],
+                "reason": index_error,
+                "install_platform": install_platform,
+            }
+            logger.info(f"[At0mChecker] {appid_str} cannot be determined ({index_error}).")
+            return status, details
 
-        # Check if Hubcap has keys/manifests for any of the missing depots
-        ready_depots = missing_depots.intersection(hubcap_depots)
+        depots_info = self._depot_info(ready_depots, depots_dict, has_key=True)
+        pending_info = self._depot_info(awaiting_depots, depots_dict, has_key=False)
 
         if ready_depots:
-            # Hubcap has the missing depots ready!
+            # Hubcap holds the keys for at least one of the missing depots.
             status = "update_available"
-            depots_info = []
-            for did in ready_depots:
-                dname = depots_dict.get(did, {}).get("name") if isinstance(depots_dict.get(did), dict) else ""
-                depots_info.append({"id": did, "name": dname or f"Depot {did}", "has_key": True})
-
-            self.db.save_at0m_update_status(
-                appid=appid_str,
-                game_title=app_name,
-                last_timeupdated=time_updated,
-                status=status,
-                new_depots=depots_info,
-                cooldown_until=0,
-            )
-            details = {
-                "appid": appid_str,
-                "game_title": app_name,
-                "status": status,
-                "new_depots": depots_info,
-            }
-            logger.info(f"[At0mChecker] Update Available for {appid_str}: {len(depots_info)} depots ready on Hubcap.")
-            return status, details
+            cooldown_until = 0
         else:
-            # Steam has new depots, but Hubcap does not have keys yet -> key_pending
+            # Steam has new depots, but Hubcap does not have the keys yet.
             status = "key_pending"
             cooldown_until = now + KEY_PENDING_COOLDOWN_SECONDS
-            depots_info = []
-            for did in missing_depots:
-                dname = depots_dict.get(did, {}).get("name") if isinstance(depots_dict.get(did), dict) else ""
-                depots_info.append({"id": did, "name": dname or f"Depot {did}", "has_key": False})
 
-            self.db.save_at0m_update_status(
-                appid=appid_str,
-                game_title=app_name,
-                last_timeupdated=time_updated,
-                status=status,
-                new_depots=depots_info,
-                cooldown_until=cooldown_until,
+        self.db.save_at0m_update_status(
+            appid=appid_str,
+            game_title=app_name,
+            last_timeupdated=time_updated,
+            status=status,
+            new_depots=depots_info + pending_info,
+            cooldown_until=cooldown_until,
+        )
+        details = {
+            "appid": appid_str,
+            "game_title": app_name,
+            "status": status,
+            "new_depots": depots_info + pending_info,
+            "pending_depots": pending_info,
+            "awaiting_hubcap": bool(pending_info),
+            "install_platform": install_platform,
+        }
+
+        if status == "update_available":
+            logger.info(
+                f"[At0mChecker] Keys available for {appid_str}: {len(ready_depots)} depot(s) ready on Hubcap."
             )
-            details = {
-                "appid": appid_str,
-                "game_title": app_name,
-                "status": status,
-                "new_depots": depots_info,
-                "cooldown_until": cooldown_until,
-            }
-            logger.info(f"[At0mChecker] Keys Pending for {appid_str}: {len(missing_depots)} depots pending on Hubcap (cooldown 6h).")
-            return status, details
+        else:
+            logger.info(
+                f"[At0mChecker] Keys Pending for {appid_str}: {len(awaiting_depots)} depot(s) "
+                f"pending on Hubcap (cooldown 6h)."
+            )
+        return status, details
 
     # ── Background Scan Runner ───────────────────────────────────────────────
 
@@ -483,6 +741,22 @@ class At0mUpdateChecker(QObject):
 
         def _worker():
             try:
+                # The Hubcap depot-key index is a few megabytes and takes
+                # seconds to parse, so it is fetched here - on this background
+                # thread - and never on the GUI thread.
+                from core.hubcap_key_index import get_index
+                index = get_index(allow_network=True)
+                if not index.loaded:
+                    logger.warning(
+                        f"[At0mChecker] The Hubcap depot-key index is unavailable ({index.error}); "
+                        f"key states cannot be determined."
+                    )
+                else:
+                    logger.info(
+                        f"[At0mChecker] Hubcap index ready: {len(index.existing)} depot(s) with a key, "
+                        f"{len(index.pending)} awaiting one."
+                    )
+
                 all_games = self.get_all_at0m_games(live_games=live_games)
                 total = len(all_games)
                 logger.info(f"[At0mChecker] Starting check for {total} AT0-M / DLC game(s)...")
@@ -500,27 +774,33 @@ class At0mUpdateChecker(QObject):
                         logger.error(f"[At0mChecker] Error checking game {aid}: {e}")
 
                     self.progress.emit(idx + 1, total)
-
-                self.all_checked.emit()
             finally:
+                # The completion signal is emitted from the finally block so it
+                # fires exactly once, also when the scan aborted early. Callers
+                # use it to release whatever was queued behind this check.
                 self._is_checking = False
                 self._cancel_requested = False
+                self.all_checked.emit()
 
         threading.Thread(target=_worker, daemon=True, name="At0mUpdateCheckerThread").start()
 
     # ── Apply / Sync Action ──────────────────────────────────────────────────
 
-    def apply_update(self, appid: str) -> Tuple[bool, str]:
+    def sync_keys(self, appid: str) -> Tuple[bool, str]:
         """
-        Applies new keys/depots for an AT0-M game by reusing the proven refetch + sync flow:
-        1. Downloads fresh manifest ZIP and Lua from Hubcap.
-        2. Extracts decryption keys into keys.db.
-        3. Updates AdditionalDepots and DecryptionKeys in config.yaml.
-        4. Notifies SLSsteam file watcher.
-        5. Updates SQLite status back to 'up_to_date'.
+        Syncs the decryption keys Hubcap holds for this game into SLSsteam.
+
+        The user does not download anything here: Steam downloads the game,
+        ASSella only makes sure the keys SLSsteam needs are in place.
+
+        1. Downloads the fresh manifest ZIP and Lua from Hubcap.
+        2. Extracts the decryption keys into keys.db.
+        3. Adds the missing keys and depots to config.yaml.
+        4. Notifies the SLSsteam file watcher.
+        5. Re-evaluates the game so the status reflects reality.
         """
         appid_str = str(appid)
-        logger.info(f"[At0mChecker] Applying update for {appid_str}...")
+        logger.info(f"[At0mChecker] Syncing keys for {appid_str}...")
 
         try:
             from core import morrenus_api
@@ -548,30 +828,56 @@ class At0mUpdateChecker(QObject):
 
             # Sync new keys and depots to config.yaml
             cfg_path = get_user_config_path()
+            written = 0
             if cfg_path and cfg_path.exists():
                 cached_status = self.db.get_at0m_update_status(appid_str)
                 game_title = (cached_status.get("game_title") if cached_status else "") or f"App {appid_str}"
 
-                with batch_config_edit(cfg_path) as editor:
-                    for did, k in fresh_keys.items():
-                        if did not in ALL_SHARED_REDISTS:
-                            if did != appid_str:
-                                editor.add_depot(did, comment=f"{game_title} ({did})", app_id=appid_str)
-                            key_comment = f"{game_title} [AppKey]" if did == appid_str else f"{game_title} ({did})"
-                            editor.add_key(did, k, comment=key_comment)
+                # Only the keys we are missing. Rewriting a line that already
+                # holds the key would take the comment away from the game the
+                # key belongs to.
+                try:
+                    existing_keys = get_decryption_keys(cfg_path) or {}
+                except Exception as e:
+                    logger.debug(f"[At0mChecker] Could not read the existing keys: {e}")
+                    existing_keys = {}
+                todo = {
+                    did: k
+                    for did, k in fresh_keys.items()
+                    if did not in ALL_SHARED_REDISTS
+                    and did != appid_str
+                    and str(existing_keys.get(did, "")).lower() != k
+                }
 
-                if editor.has_changes:
-                    SLSBridge.notify_reload()
+                if todo:
+                    with batch_config_edit(cfg_path) as editor:
+                        for did, k in todo.items():
+                            editor.add_depot(did, comment=build_depot_comment(game_title, did, "", appid_str), app_id=appid_str)
+                            editor.add_key(did, k, comment=build_key_comment(game_title, did, "", appid_str))
+                        written = len(todo)
 
-            # Mark status back to up_to_date
-            self.db.save_at0m_update_status(
-                appid=appid_str,
-                status="up_to_date",
-                new_depots=[],
-                cooldown_until=0,
-            )
+                    if not editor.committed_successfully:
+                        return False, "The SLSsteam configuration could not be updated."
+                    if editor.has_changes:
+                        SLSBridge.notify_reload()
 
-            return True, "Successfully updated keys and configuration."
+            # Re-evaluate so the status reflects what is on disk now.
+            status, details = self.check_game(appid_str, force_refresh=True)
+            try:
+                self.game_checked.emit(appid_str, status, details)
+            except Exception as e:
+                logger.debug(f"[At0mChecker] Could not publish the status of {appid_str}: {e}")
+            if written:
+                return True, (
+                    f"Keys synced for {details.get('game_title') or appid_str}. "
+                    f"Launch or update the game in Steam to finish."
+                )
+            if status == "update_available":
+                return False, (
+                    "Hubcap has not published the decryption keys for this game yet. "
+                    "Nothing was written to the configuration."
+                )
+            return True, "The configuration already holds every key for this game."
         except Exception as e:
-            logger.error(f"[At0mChecker] Error applying update for {appid_str}: {e}")
+            logger.error(f"[At0mChecker] Error syncing keys for {appid_str}: {e}")
             return False, str(e)

@@ -384,7 +384,7 @@ def run_tests() -> bool:
             else:
                 log_fail("CRITICAL: Foreign base AppID '1145360' was permitted in AdditionalDepots!")
                 test_passed = False
-            # 3h. Verifying DLC-only transition to ACCELA mode retains base AppID in AdditionalApps
+            # 3h. Verifying DLC-only transition to ACCELA mode retains DLC AppID and excludes base AppID in AdditionalApps
             test_dlc_game = "999001"
             test_dlc_child = "999002"
             register_plugin_game(
@@ -397,10 +397,10 @@ def run_tests() -> bool:
             added_test_appids.append(test_dlc_game)
             unregister_plugin_game(test_dlc_game, keep_in_additional_apps=True)
             apps_after_transition = get_additional_apps(cfg_path)
-            if test_dlc_game in apps_after_transition and test_dlc_child not in apps_after_transition:
-                log_pass("DLC-only transition to ACCELA mode cleanly restored base AppID and pruned DLC AppID")
+            if test_dlc_child in apps_after_transition and test_dlc_game not in apps_after_transition:
+                log_pass("DLC-only transition to ACCELA mode cleanly preserved DLC AppID and excluded base AppID")
             else:
-                log_fail(f"CRITICAL: Transition to ACCELA mode failed to retain base AppID! Apps: {apps_after_transition}")
+                log_fail(f"CRITICAL: Transition to ACCELA mode failed DLC-only invariant! Apps: {apps_after_transition}")
                 test_passed = False
     finally:
         # ---------------------------------------------------------------------

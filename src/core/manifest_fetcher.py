@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from core import morrenus_api
-from core.steam_api import get_depot_info_from_api
 from managers.db_manager import DatabaseManager
 from utils.helpers import get_base_path
 from utils.lua_parsing import extract_token

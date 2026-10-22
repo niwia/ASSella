@@ -146,6 +146,43 @@ addappid(228980) -- Steamworks Shared
             synth_path.unlink()
 
     # -------------------------------------------------------------------------
+    # TEST 1B: Ambiguous DLC-only records must not assign every depot to each DLC
+    # -------------------------------------------------------------------------
+    log_step("TEST 1B: Ambiguous DLC-only Record Attribution")
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch("utils.helpers.get_base_path", return_value=tmp), patch(
+            "managers.db_manager.DatabaseManager"
+        ) as db_manager, patch(
+            "utils.plugin_games.load_plugin_library",
+            return_value={
+                "200": {
+                    "dlc_only": True,
+                    "dlc_appids": ["201", "202"],
+                    "depots": ["301", "302"],
+                }
+            },
+        ):
+            db_manager.return_value.get_app_info.return_value = None
+            mapping = build_app_to_depots_map(
+                "100",
+                game_data={"dlcs": {"200": "DLC pack"}},
+                candidate_depots=["301", "302"],
+            )
+
+    if "301" not in mapping.get("201", set()) and "301" not in mapping.get("202", set()):
+        log_pass("Ambiguous depot '301' is not nondeterministically assigned to either DLC")
+    else:
+        log_fail("Ambiguous depot '301' was incorrectly assigned to a DLC")
+        all_passed = False
+    if {"301", "302"}.issubset(mapping.get("100", set())):
+        log_pass("Unattributed depots remain in the base-game fallback, not DLC entitlements")
+    else:
+        log_fail("Unattributed depots did not follow the deterministic base-game fallback")
+        all_passed = False
+
+    # -------------------------------------------------------------------------
     # TEST 2: Real Corpus Fixture - 1043810 (Tactical Breach Wizards)
     # -------------------------------------------------------------------------
     log_step("TEST 2: Real Corpus Verification - 1043810 (Tactical Breach Wizards)")

@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Set
 
-from PyQt6.QtWidgets import QMessageBox
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.helpers import get_base_path
 from utils.paths import Paths
@@ -81,7 +81,7 @@ class GoldbergMixin:
         target_dirs = self._find_steam_api_dirs(game_directory)
         if not target_dirs:
             if show_dialog:
-                QMessageBox.information(
+                ThemedMessageBox.information(
                     self.main_window,
                     "No Steam API Files Found",
                     "No steam_api.dll, steam_api64.dll, libsteam_api.so or libsteam_api64.so files were found.",
@@ -103,7 +103,7 @@ class GoldbergMixin:
                 logger.error(f"Failed to apply Goldberg in {target_dir}: {e}")
 
         if show_dialog:
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 self.main_window,
                 "Apply Goldberg",
                 f"Applied Goldberg files to {processed} folder(s).",
@@ -121,7 +121,7 @@ class GoldbergMixin:
         target_dirs = self._find_steam_api_backup_dirs(game_directory)
         if not target_dirs:
             if show_dialog:
-                QMessageBox.information(
+                ThemedMessageBox.information(
                     self.main_window,
                     "No Backups Found",
                     "No .valve backup files were found.",
@@ -137,7 +137,7 @@ class GoldbergMixin:
                 logger.error(f"Failed to remove Goldberg from {target_dir}: {e}")
 
         if show_dialog:
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 self.main_window,
                 "Remove Goldberg",
                 f"Restored originals in {processed} folder(s).",

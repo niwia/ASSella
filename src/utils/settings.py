@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Tuple
 from PyQt6.QtCore import QSettings
 
 logger = logging.getLogger(__name__)
@@ -100,6 +100,28 @@ def get_settings() -> QSettings:
             pass
 
     return _settings_local.instance
+
+
+def preserve_branch_selection(settings: Any, appid: Any) -> Tuple[str, str]:
+    """Keep the branch the user already selected for a game.
+
+    ``core.morrenus_api.get_selected_branch`` documents the invariant that a
+    game installed on a beta branch must never be silently refreshed from the
+    public branch, so an existing value is never overwritten. Only a game that
+    never had a branch selection at all gets the "public" default.
+
+    Returns the effective ``(selected_branch, installed_branch)`` pair for the
+    caller's in-memory game data: a missing side falls back to the other one
+    for display, but nothing is written except the "public" default.
+    """
+    appid_str = str(appid)
+    selected = str(settings.value(f"selected_branch/{appid_str}", "", type=str) or "").strip()
+    installed = str(settings.value(f"installed_branch/{appid_str}", "", type=str) or "").strip()
+    if not selected and not installed:
+        settings.setValue(f"selected_branch/{appid_str}", "public")
+        settings.setValue(f"installed_branch/{appid_str}", "public")
+        return "public", "public"
+    return selected or installed, installed or selected
 
 
 def check_and_apply_halloween_theme(settings: QSettings) -> bool:

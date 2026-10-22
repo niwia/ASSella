@@ -13,17 +13,28 @@ from typing import Dict, Any, Tuple, Optional, List
 
 logger = logging.getLogger(__name__)
 
-SLS_CONFIG_DIR = Path.home() / ".config" / "SLSsteam"
-TICKETS_DIR = SLS_CONFIG_DIR / "Tickets"
+def get_sls_config_dir() -> Path:
+    """Return the SLSsteam configuration directory, respecting Native/Flatpak Steam environments."""
+    try:
+        from core.steam_helpers import get_steam_env
+        return get_steam_env().sls_config_dir
+    except Exception as e:
+        logger.warning(f"Error resolving SteamEnv for tickets: {e}")
+        return Path.home() / ".config" / "SLSsteam"
 
 
 def get_tickets_dir() -> Path:
     """Get the path to SLSsteam Tickets directory, creating it if needed."""
+    tdir = get_sls_config_dir() / "Tickets"
     try:
-        TICKETS_DIR.mkdir(parents=True, exist_ok=True)
+        tdir.mkdir(parents=True, exist_ok=True)
     except Exception as e:
-        logger.error(f"Failed to create tickets directory {TICKETS_DIR}: {e}")
-    return TICKETS_DIR
+        logger.error(f"Failed to create tickets directory {tdir}: {e}")
+    return tdir
+
+
+SLS_CONFIG_DIR = Path.home() / ".config" / "SLSsteam"
+TICKETS_DIR = SLS_CONFIG_DIR / "Tickets"
 
 
 def get_ticket_status(appid: str) -> Dict[str, Any]:
@@ -42,7 +53,7 @@ def get_ticket_status(appid: str) -> Dict[str, Any]:
     """
     appid_str = str(appid).strip()
     tdir = get_tickets_dir()
-    cdir = SLS_CONFIG_DIR / "cache"
+    cdir = get_sls_config_dir() / "cache"
 
     candidates = [
         tdir / f"ticket_{appid_str}.yaml",
@@ -376,7 +387,7 @@ def scan_all_available_tickets() -> Dict[str, str]:
     Returns a dict mapping appid -> path.
     """
     tdir = get_tickets_dir()
-    cdir = SLS_CONFIG_DIR / "cache"
+    cdir = get_sls_config_dir() / "cache"
     tickets = {}
 
     for d in (cdir, tdir):

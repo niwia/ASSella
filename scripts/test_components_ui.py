@@ -34,15 +34,31 @@ def check(cond: bool, label: str) -> bool:
     return cond
 
 
-def _build_fixtures(dest: Path) -> dict:
-    """Write tiny component archives + a manifest, mirroring the real format.
+def _make_component_archive(src: Path, out_file: Path) -> tuple:
+    """Deterministic tar.gz: fixed mtime, sorted entries, no owner metadata."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz", compresslevel=9) as tar:
+        for f in sorted(src.rglob("*")):
+            if not f.is_file():
+                continue
+            arcname = Path(src.name) / f.relative_to(src)
+            info = tar.gettarinfo(str(f), arcname=str(arcname))
+            info.mtime = 0
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            info.mode = 0o755 if info.mode & 0o100 else 0o644
+            with open(f, "rb") as fh:
+                tar.addfile(info, fh)
+    data = buffer.getvalue()
+    out_file.write_bytes(data)
+    import hashlib
+    file_count = sum(1 for p in src.rglob("*") if p.is_file())
+    return hashlib.sha256(data).hexdigest(), len(data), file_count
 
-    Uses the same deterministic packing as cloud/generate_components_manifest.py
-    so the code under test sees a genuine archive, but with a handful of bytes
-    instead of 35 MB so this stays fast on CI.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "cloud"))
-    from generate_components_manifest import make_archive
+
+def _build_fixtures(dest: Path) -> dict:
+    """Write tiny component archives + a manifest, mirroring the real format."""
+    make_archive = _make_component_archive
 
     fixtures = {
         "goldberg": "Goldberg",

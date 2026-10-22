@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtWidgets import QMessageBox
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class ChmodMixin:
         if game_directory and os.path.exists(game_directory):
             return True
         if show_dialog:
-            QMessageBox.warning(
+            ThemedMessageBox.warning(
                 self.main_window,
                 "Directory Not Found",
                 f"Game directory not found: {game_directory}",

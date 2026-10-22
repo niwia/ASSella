@@ -274,6 +274,7 @@ def fetch_steamcmd_info(app_id: str, include_header: bool = True) -> dict:
                             depot_info[str(depot_id)] = {
                                 "name": depot_data.get("name"),
                                 "oslist": config.get("oslist"),
+                                "osarch": config.get("osarch") or depot_data.get("osarch"),
                                 "language": config.get("language"),
                                 "steamdeck": config.get("steamdeck") == "1",
                                 "size": depot_size,
@@ -513,6 +514,7 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
                         "depot_id": str(did),
                         "name": dinfo.get("name"),
                         "oslist": dinfo.get("oslist"),
+                        "osarch": dinfo.get("osarch"),
                         "size_str": _fmt_sz(raw_sz) if raw_sz and str(raw_sz).isdigit() else "",
                         "size_bytes": int(raw_sz) if raw_sz and str(raw_sz).isdigit() else 0,
                         "is_dlc": bool(dinfo.get("is_dlc")),
@@ -759,6 +761,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
                     depot_info[depot_id] = {
                         "name": depot_name,
                         "oslist": oslist,
+                        "osarch": (value.get("config", {}).get("osarch") if isinstance(value.get("config"), dict) else None) or value.get("osarch"),
                         "language": None,
                         "steamdeck": False,
                         "size": raw_size,
@@ -1055,6 +1058,7 @@ def batched_get_product_info(
                                 depot_info[depot_id] = {
                                     "name": depot_data.get("name"),
                                     "oslist": config.get("oslist"),
+                                    "osarch": config.get("osarch") or depot_data.get("osarch"),
                                     "language": config.get("language"),
                                     "steamdeck": config.get("steamdeck") == "1",
                                     "size": None,

@@ -45,10 +45,10 @@ class LibraryTabBar(QWidget):
 
     def _setup_ui(self) -> None:
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 6)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        self.btn_accela = QPushButton("ACCELA")
+        self.btn_accela = QPushButton("ASSella")
         self.btn_accela.setCheckable(True)
         self.btn_accela.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_accela.clicked.connect(lambda: self.set_current_tab(TAB_ACCELA))
@@ -77,27 +77,37 @@ class LibraryTabBar(QWidget):
         self._apply_styles()
         self._update_tab_state()
 
+    def add_right_widget(self, widget: QWidget) -> None:
+        """Add a widget (such as the Sort button) aligned to the right side of the tab bar."""
+        self.layout().addWidget(widget)
+
     def _apply_styles(self) -> None:
         style = f"""
             QPushButton {{
                 background-color: rgba(255, 255, 255, 0.05);
                 color: rgba(255, 255, 255, 0.7);
                 border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 15px;
-                padding: 5px 16px;
-                font-size: 11px;
+                border-bottom: none;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                border-bottom-left-radius: 0px;
+                border-bottom-right-radius: 0px;
+                padding: 6px 18px;
+                font-size: 11.5px;
                 font-weight: 600;
-                min-height: 20px;
+                min-height: 22px;
             }}
             QPushButton:hover {{
                 background-color: rgba(255, 255, 255, 0.1);
                 color: #FFFFFF;
                 border-color: rgba(255, 255, 255, 0.2);
+                border-bottom: none;
             }}
             QPushButton:checked {{
                 background-color: {self.accent_color};
                 color: #000000;
                 border: 1px solid {self.accent_color};
+                border-bottom: none;
                 font-weight: bold;
             }}
         """
@@ -142,7 +152,7 @@ class LibraryTabBar(QWidget):
         c_atom = self._counts[TAB_ATOM]
         c_steam = self._counts[TAB_STEAM]
 
-        self.btn_accela.setText(f"ACCELA ({c_accela})" if c_accela > 0 else "ACCELA")
+        self.btn_accela.setText(f"ASSella ({c_accela})" if c_accela > 0 else "ASSella")
         self.btn_atom.setText(f"AT0-M ({c_atom})" if c_atom > 0 else "AT0-M")
         if self._is_scanning.get(TAB_STEAM):
             self.btn_steam.setText("Steam (Beta) (Scanning...)")

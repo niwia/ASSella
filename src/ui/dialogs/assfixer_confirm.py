@@ -29,6 +29,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ui.dialogs.themed_dialog import install_themed_frame
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,16 +71,9 @@ class AssfixerConfirmDialog(QDialog):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        self.setStyleSheet(f"""
-            QDialog {{
-                background-color: {self.bg_color};
-                color: #FFFFFF;
-            }}
-        """)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(22, 22, 22, 18)
-        root.setSpacing(14)
+        root = install_themed_frame(
+            self, "Confirm Config Repair", margins=(22, 22, 22, 18), spacing=14
+        )
 
         # ── Title ─────────────────────────────────────────────────────────
         title = QLabel("Config Repair / Resync")

@@ -68,6 +68,8 @@ from ui.dialogs.game_details.tickets_tab import (
     delete_installed_ticket,
 )
 
+from ui.dialogs.game_details.luafix_tab import init_luafix_tab
+
 __all__ = [
     "init_achievements_tab",
     "ensure_achievements_loaded",
@@ -113,4 +115,6 @@ __all__ = [
     "paste_and_import_ticket",
     "export_installed_ticket",
     "delete_installed_ticket",
+    "init_luafix_tab",
 ]
+
