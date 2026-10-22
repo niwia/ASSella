@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from PyQt6.QtCore import QTimer, QMetaObject, Qt, pyqtSlot, pyqtSignal
-from PyQt6.QtWidgets import QFileDialog, QMessageBox
+from PyQt6.QtWidgets import QFileDialog
 
 from core import steam_helpers
 from utils.activity import COMPONENT, CONFIG, log_step
@@ -414,7 +414,7 @@ class PostInstallMixin:
                                 final_bid = meta_bid or new_bid
                                 logger.info(f"[DEBUG_DEV] Rollback/manual install detected. Using manual build ID as final_bid: {final_bid}")
                             else:
-                                final_bid = meta_bid or target_bid or new_bid
+                                final_bid = new_bid or meta_bid or target_bid
                                 logger.info(f"[DEBUG_DEV] Standard install completed. final_bid: {final_bid}")
                             if final_bid:
                                 # Store per-branch: installed_buildid/appid/branch
@@ -472,12 +472,16 @@ class PostInstallMixin:
                                 or self.game_data.get("install_dir")
                                 or ""
                             )
+                            from utils.plugin_games import load_plugin_library
+                            prior_record = load_plugin_library().get(str(appid), {})
                             register_plugin_game(
                                 appid=str(appid),
                                 name=self.game_data.get("game_name", f"App {appid}"),
                                 depot_ids=selected_depots,
                                 decryption_keys=depot_keys,
                                 installdir=installdir,
+                                dlc_appids=prior_record.get("dlc_appids", []),
+                                is_dlc_only=bool(prior_record.get("dlc_only", False)),
                             )
                             logger.info(f"[TaskManager] Successfully synchronized AT0-M / SLSsteam registration for {appid}")
                         except Exception as _reg_err:

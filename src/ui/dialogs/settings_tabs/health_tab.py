@@ -1,6 +1,9 @@
 import logging
+import os
 import sys
 import threading
+from pathlib import Path
+from typing import Tuple
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot
 from PyQt6.QtWidgets import (
@@ -12,8 +15,8 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QScrollArea,
     QSizePolicy,
-    QMessageBox,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 logger = logging.getLogger(__name__)
 
@@ -85,19 +88,33 @@ class HealthStatusTile(QPushButton):
 
 
 def create_rec_setting_row(title: str, desc: str, checkbox: QCheckBox) -> QWidget:
+    """One recommended setting: a title and description beside its checkbox.
+
+    The colours come from the surface the row is drawn on, so the row stays
+    legible on a light background too. The checkbox is deliberately left
+    unstyled: the application stylesheet already draws it (transparent
+    indicator, no border), and a local override only fights that.
+    """
+    from utils.color_utils import get_raised_surface_tokens
+    from utils.settings import get_settings
+
+    settings = get_settings()
+    surface = settings.value("background_color", "#111318", type=str) if settings else "#111318"
+    tokens = get_raised_surface_tokens(surface)
+
     row = QWidget()
     row.setObjectName("rec_setting_row")
     row.setMinimumHeight(48)
-    row.setStyleSheet("""
-        QWidget#rec_setting_row {
-            background-color: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.07);
+    row.setStyleSheet(f"""
+        QWidget#rec_setting_row {{
+            background-color: {tokens["tint"]};
+            border: 1px solid {tokens["border"]};
             border-radius: 8px;
-        }
-        QWidget#rec_setting_row:hover {
-            background-color: rgba(255, 255, 255, 0.06);
-            border-color: rgba(255, 255, 255, 0.16);
-        }
+        }}
+        QWidget#rec_setting_row:hover {{
+            background-color: {tokens["tint_hover"]};
+            border-color: {tokens["border_hover"]};
+        }}
     """)
     h = QHBoxLayout(row)
     h.setContentsMargins(14, 8, 14, 8)
@@ -107,9 +124,9 @@ def create_rec_setting_row(title: str, desc: str, checkbox: QCheckBox) -> QWidge
     col.setSpacing(2)
 
     t_lbl = QLabel(title)
-    t_lbl.setStyleSheet("font-size: 9.5pt; font-weight: 600; color: #FFFFFF; border: none; background: transparent;")
+    t_lbl.setStyleSheet(f"font-size: 9.5pt; font-weight: 600; color: {tokens['ink']}; border: none; background: transparent;")
     d_lbl = QLabel(desc)
-    d_lbl.setStyleSheet("font-size: 8.2pt; color: rgba(255, 255, 255, 0.55); border: none; background: transparent;")
+    d_lbl.setStyleSheet(f"font-size: 8.2pt; color: {tokens['ink_muted']}; border: none; background: transparent;")
     d_lbl.setWordWrap(True)
 
     col.addWidget(t_lbl)
@@ -117,28 +134,6 @@ def create_rec_setting_row(title: str, desc: str, checkbox: QCheckBox) -> QWidge
     h.addLayout(col, 1)
 
     checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
-    checkbox.setStyleSheet("""
-        QCheckBox {
-            spacing: 0px;
-            border: none;
-            background: transparent;
-        }
-        QCheckBox::indicator {
-            width: 20px;
-            height: 20px;
-            border-radius: 5px;
-            border: 1px solid rgba(255, 255, 255, 0.25);
-            background: rgba(255, 255, 255, 0.05);
-        }
-        QCheckBox::indicator:hover {
-            border-color: rgba(255, 255, 255, 0.45);
-            background: rgba(255, 255, 255, 0.1);
-        }
-        QCheckBox::indicator:checked {
-            background-color: #81C784;
-            border: 1px solid #81C784;
-        }
-    """)
     h.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignVCenter)
     return row
 
@@ -213,13 +208,93 @@ def create_health_tab(dialog) -> QWidget:
     path_row.addWidget(dialog.health_refresh_btn, 0)
 
     sls_layout.addLayout(path_row)
+
+    # Crab Actions Row: h3adcrab, r3set-crab, smallcrab
+    crab_row = QHBoxLayout()
+    crab_row.setContentsMargins(2, 6, 2, 2)
+    crab_row.setSpacing(8)
+
+    crab_btn_style = f"""
+        QPushButton {{
+            background-color: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 6px;
+            color: #FFFFFF;
+            padding: 6px 14px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }}
+        QPushButton:hover {{
+            background-color: rgba(255, 255, 255, 0.16);
+            border-color: {dialog.accent_color};
+        }}
+    """
+    crab_danger_btn_style = """
+        QPushButton {
+            background-color: rgba(239, 68, 68, 0.10);
+            border: 1px solid rgba(239, 68, 68, 0.30);
+            border-radius: 6px;
+            color: #fca5a5;
+            padding: 6px 14px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(239, 68, 68, 0.22);
+            border-color: rgba(239, 68, 68, 0.55);
+            color: #FFFFFF;
+        }
+    """
+    dialog.health_h3adcrab_btn = QPushButton("h3adcrab")
+    dialog.health_h3adcrab_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.health_h3adcrab_btn.setStyleSheet(crab_btn_style)
+    dialog.health_h3adcrab_btn.setToolTip("Install or update SLSsteam via Headcrab installer")
+    dialog.health_h3adcrab_btn.clicked.connect(lambda: on_h3adcrab_clicked(dialog))
+    crab_row.addWidget(dialog.health_h3adcrab_btn, 1)
+
+    dialog.health_r3set_crab_btn = QPushButton("r3set-crab")
+    dialog.health_r3set_crab_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.health_r3set_crab_btn.setStyleSheet(crab_danger_btn_style)
+    dialog.health_r3set_crab_btn.setToolTip("Uninstall SLSsteam/Headcrab and reset Steam to vanilla")
+    dialog.health_r3set_crab_btn.clicked.connect(lambda: on_r3set_crab_clicked(dialog))
+    crab_row.addWidget(dialog.health_r3set_crab_btn, 1)
+
+    dialog.health_smallcrab_btn = QPushButton("smallcrab")
+    dialog.health_smallcrab_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.health_smallcrab_btn.setStyleSheet(crab_btn_style)
+    dialog.health_smallcrab_btn.setToolTip("Experimental Headcrab fork: patches the Steam launch scripts so SLSsteam loads")
+    dialog.health_smallcrab_btn.clicked.connect(lambda: on_smallcrab_clicked(dialog))
+    crab_row.addWidget(dialog.health_smallcrab_btn, 1)
+
+    sls_layout.addLayout(crab_row)
+
+    # Steam Updates Row: the steam.cfg block, and the button that flips it.
+    steam_updates_row = QHBoxLayout()
+    steam_updates_row.setContentsMargins(2, 2, 2, 2)
+    steam_updates_row.setSpacing(8)
+
+    dialog.health_steam_updates_lbl = QLabel("")
+    dialog.health_steam_updates_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
+    dialog.health_steam_updates_lbl.setWordWrap(True)
+    dialog.health_steam_updates_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    steam_updates_row.addWidget(dialog.health_steam_updates_lbl, 1)
+
+    dialog.health_steam_updates_btn = QPushButton("Disable Steam Updates")
+    dialog.health_steam_updates_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.health_steam_updates_btn.setStyleSheet(crab_btn_style)
+    dialog.health_steam_updates_btn.setToolTip("Steam reads steam.cfg when it starts, so this applies on the next Steam start.")
+    dialog.health_steam_updates_btn.clicked.connect(lambda: on_steam_updates_clicked(dialog))
+    steam_updates_row.addWidget(dialog.health_steam_updates_btn, 0)
+
+    sls_layout.addLayout(steam_updates_row)
+    refresh_steam_updates_control(dialog)
     layout.addWidget(sls_card)
 
     # ── 2. SLS Config (Linux/Steam Deck) ──────────────────────────────
     if sys.platform == "linux":
         sls_cfg_card, sls_cfg_layout = dialog._create_card_frame("SLS Config")
 
-        sls_cfg_desc = QLabel("Validate and synchronize ~/.config/SLSsteam/config.yaml against upstream template, or manage ID inheritance.")
+        sls_cfg_desc = QLabel("Validate and synchronize ~/.config/SLSsteam/config.yaml against upstream template.")
         sls_cfg_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; font-weight: 400; border: none; background: transparent;")
         sls_cfg_desc.setWordWrap(True)
         sls_cfg_layout.addWidget(sls_cfg_desc)
@@ -273,13 +348,6 @@ def create_health_tab(dialog) -> QWidget:
         dialog.assfixer_restore_btn.clicked.connect(lambda: run_assfixer_restore(dialog))
         btn_row.addWidget(dialog.assfixer_restore_btn)
 
-        dialog.sls_inh_btn = QPushButton("Inheritance")
-        dialog.sls_inh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        dialog.sls_inh_btn.setStyleSheet(btn_style)
-        dialog.sls_inh_btn.clicked.connect(lambda: open_sls_inheritance_dialog(dialog))
-        dialog.sls_inh_btn.hide()
-        btn_row.addWidget(dialog.sls_inh_btn)
-
         btn_row.addStretch()
         sls_cfg_layout.addLayout(btn_row)
 
@@ -318,7 +386,7 @@ def create_health_tab(dialog) -> QWidget:
     rec_layout.addWidget(create_rec_setting_row(
         "Hubcap Gateway (Auto)",
         "Smart fallback routing to bypass ISP throttling and rate limits",
-        dialog.twp_chk_gateway
+        dialog.twp_chk_gateway,
     ))
 
     dialog.twp_chk_sls_api = QCheckBox()
@@ -327,7 +395,7 @@ def create_health_tab(dialog) -> QWidget:
     rec_layout.addWidget(create_rec_setting_row(
         "SLSsteam Native API",
         "Native ACF generation and automated Steam game registration",
-        dialog.twp_chk_sls_api
+        dialog.twp_chk_sls_api,
     ))
 
     dialog.twp_chk_achievements = QCheckBox()
@@ -336,7 +404,7 @@ def create_health_tab(dialog) -> QWidget:
     rec_layout.addWidget(create_rec_setting_row(
         "Skip achievement generation",
         "Skip legacy achievement schema generation to accelerate downloads",
-        dialog.twp_chk_achievements
+        dialog.twp_chk_achievements,
     ))
 
     dialog.twp_chk_macos = QCheckBox()
@@ -345,7 +413,7 @@ def create_health_tab(dialog) -> QWidget:
     rec_layout.addWidget(create_rec_setting_row(
         "Hide Platform Clutter",
         "Filter out unnecessary macOS & Android depots from download queues",
-        dialog.twp_chk_macos
+        dialog.twp_chk_macos,
     ))
 
     dialog.health_apply_rec_btn = QPushButton("Apply Recommended Settings")
@@ -431,29 +499,9 @@ def refresh_health_tab_status(dialog) -> None:
 
     threading.Thread(target=_ver_worker, daemon=True).start()
 
-    # 4. Check SLS Inheritance orphans in background
-    if hasattr(dialog, "sls_inh_btn") and dialog.sls_inh_btn:
-        def _inh_worker():
-            try:
-                from ui.dialogs.sls_inheritance import scan_sls_orphans
-                orphans = scan_sls_orphans()
-                count = len(orphans)
-            except Exception:
-                count = 0
-
-            def _apply_inh_visibility():
-                if hasattr(dialog, "sls_inh_btn") and dialog.sls_inh_btn:
-                    if count > 0:
-                        dialog.sls_inh_btn.setText(f"Inheritance ({count})")
-                        dialog.sls_inh_btn.show()
-                    else:
-                        dialog.sls_inh_btn.hide()
-
-            QTimer.singleShot(0, _apply_inh_visibility)
-
-        threading.Thread(target=_inh_worker, daemon=True).start()
-
     update_rec_score_badge(dialog)
+
+    refresh_steam_updates_control(dialog)
 
 
 def handle_sls_version_check_done(dialog, result: dict) -> None:
@@ -507,14 +555,14 @@ def on_sls_version_tile_clicked(dialog) -> None:
     current_status = getattr(dialog.health_sls_ver_btn, "status_lbl", None)
     status_text = current_status.text() if current_status else ""
     if "Update!" in status_text and hasattr(dialog, "tab_widget") and dialog.tab_widget:
-        reply = QMessageBox.question(
+        reply = ThemedMessageBox.question(
             dialog,
             "SLSsteam Update Available",
             "A newer SLSsteam build is available. Switch to the SLS tab to install or update?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if reply == ThemedMessageBox.StandardButton.Yes:
             for i in range(dialog.tab_widget.count()):
                 if dialog.tab_widget.tabText(i) == "SLS":
                     dialog.tab_widget.setCurrentIndex(i)
@@ -617,17 +665,7 @@ def apply_health_recommended_settings(dialog) -> None:
         dialog.hide_android_depots_checkbox.setChecked(True)
 
     update_rec_score_badge(dialog)
-    QMessageBox.information(dialog, "Settings Applied", "Recommended workflow settings applied successfully!")
-
-
-def open_sls_inheritance_dialog(dialog) -> None:
-    try:
-        from ui.dialogs.sls_inheritance import SlsInheritanceDialog
-        parent = dialog.parent() if dialog.parent() else dialog
-        dlg = SlsInheritanceDialog(parent)
-        dlg.exec()
-    except Exception as e:
-        logger.error(f"Error opening SLS Inheritance dialog: {e}", exc_info=True)
+    ThemedMessageBox.information(dialog, "Settings Applied", "Recommended workflow settings applied successfully!")
 
 
 def run_assfixer_check(dialog) -> None:
@@ -655,13 +693,13 @@ def handle_assfixer_check_done(dialog, result) -> None:
     dialog.assfixer_check_btn.setEnabled(True)
     if needs_repair:
         dialog.assfixer_repair_btn.setEnabled(True)
-        dialog.assfixer_status_lbl.setText(f"🟡 {summary}")
+        dialog.assfixer_status_lbl.setText(f"[!] {summary}")
         dialog.assfixer_status_lbl.setStyleSheet("color: #e0af68; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
         if details:
             dialog.assfixer_status_lbl.setToolTip("\n".join(details))
     else:
         dialog.assfixer_repair_btn.setEnabled(True)
-        dialog.assfixer_status_lbl.setText(f"🟢 {summary}")
+        dialog.assfixer_status_lbl.setText(f"[OK] {summary}")
         dialog.assfixer_status_lbl.setStyleSheet("color: #9ece6a; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
         dialog.assfixer_status_lbl.setToolTip("")
 
@@ -698,24 +736,24 @@ def handle_assfixer_repair_done(dialog, result) -> None:
     dialog.assfixer_repair_btn.setEnabled(True)
     dialog.assfixer_restore_btn.setEnabled(has_bak)
     if success:
-        dialog.assfixer_status_lbl.setText(f"🟢 {msg}")
+        dialog.assfixer_status_lbl.setText(f"[OK] {msg}")
         dialog.assfixer_status_lbl.setStyleSheet("color: #9ece6a; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
-        QMessageBox.information(dialog, "ASSfixer", msg)
+        ThemedMessageBox.information(dialog, "ASSfixer", msg)
     else:
-        dialog.assfixer_status_lbl.setText(f"🔴 {msg}")
+        dialog.assfixer_status_lbl.setText(f"[FAIL] {msg}")
         dialog.assfixer_status_lbl.setStyleSheet("color: #f7768e; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
-        QMessageBox.warning(dialog, "ASSfixer", msg)
+        ThemedMessageBox.warning(dialog, "ASSfixer", msg)
 
 
 def run_assfixer_restore(dialog) -> None:
-    reply = QMessageBox.question(
+    reply = ThemedMessageBox.question(
         dialog,
         "Restore Config Backup",
         "Are you sure you want to restore the latest config backup?\nThis will overwrite current config.yaml.",
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.No,
     )
-    if reply != QMessageBox.StandardButton.Yes:
+    if reply != ThemedMessageBox.StandardButton.Yes:
         return
 
     try:
@@ -723,15 +761,270 @@ def run_assfixer_restore(dialog) -> None:
         success, msg, bak_path = restore_config_backup()
         dialog.assfixer_restore_btn.setEnabled(has_config_backup())
         if success:
-            dialog.assfixer_status_lbl.setText(f"🟢 {msg}")
+            dialog.assfixer_status_lbl.setText(f"[OK] {msg}")
             dialog.assfixer_status_lbl.setStyleSheet("color: #9ece6a; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
             dialog.assfixer_status_lbl.show()
-            QMessageBox.information(dialog, "Backup Restored", msg)
+            ThemedMessageBox.information(dialog, "Backup Restored", msg)
         else:
-            dialog.assfixer_status_lbl.setText(f"🔴 {msg}")
+            dialog.assfixer_status_lbl.setText(f"[FAIL] {msg}")
             dialog.assfixer_status_lbl.setStyleSheet("color: #f7768e; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
             dialog.assfixer_status_lbl.show()
-            QMessageBox.warning(dialog, "Restore Failed", msg)
+            ThemedMessageBox.warning(dialog, "Restore Failed", msg)
 
     except Exception as e:
-        QMessageBox.critical(dialog, "Restore Error", str(e))
+        ThemedMessageBox.critical(dialog, "Restore Error", str(e))
+
+
+def _launch_terminal_and_quit_app(dialog, cmd: list) -> bool:
+    """Launch terminal command and gracefully quit ASSella."""
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QApplication
+
+    launched = dialog._launch_terminal_command(cmd, os.path.expanduser("~"))
+    if launched:
+        QTimer.singleShot(600, QApplication.instance().quit)
+        return True
+    return False
+
+
+def _slssteam_config_path() -> Path:
+    """The SLSsteam config.yaml the user has to back up."""
+    try:
+        from utils.yaml_config_manager import get_user_config_path
+        return get_user_config_path()
+    except Exception as e:
+        logger.warning("Could not resolve the SLSsteam config path: %s", e)
+        from utils.assfixer import DEFAULT_CONFIG_PATH
+        return DEFAULT_CONFIG_PATH
+
+
+def _backup_slssteam_config(config_path: Path) -> Tuple[bool, str]:
+    """Copy config.yaml next to itself; the Health tab can restore it later.
+
+    Returns ``(ok, backup_path)``; the path is empty when there was nothing
+    to copy.
+    """
+    if not config_path.exists():
+        return True, ""
+    try:
+        from utils.assfixer import make_backup_with_rotation
+        backup = make_backup_with_rotation(config_path)
+    except Exception as e:
+        logger.error("Could not back up %s: %s", config_path, e)
+        return False, f"Could not back up {config_path}: {e}"
+    return True, str(backup)
+
+
+def _confirm_slssteam_backup(dialog, installer: str = "Headcrab") -> Tuple[bool, str]:
+    """Warn that the installer rewrites config.yaml, and offer the backup."""
+    config_path = _slssteam_config_path()
+
+    if installer == "smallcrab":
+        msg = (
+            "Headcrab - the installer smallcrab is forked from - rewrites the SLSsteam "
+            "configuration when it installs, and smallcrab patches the same Steam files.\n\n"
+            f"Config file:\n{config_path}\n\n"
+            "Back it up first if you keep custom settings there. ASSella can make the copy "
+            "for you and restore it later from Health -> SLS Config -> Restore Backup."
+        )
+    else:
+        msg = (
+            "Headcrab rewrites the SLSsteam configuration when it installs.\n\n"
+            f"Config file:\n{config_path}\n\n"
+            "Back it up first if you keep custom settings there. ASSella can make the copy "
+            "for you and restore it later from Health -> SLS Config -> Restore Backup."
+        )
+
+    choice = ThemedMessageBox.choices(
+        dialog,
+        "Back Up Your SLSsteam Config",
+        msg,
+        [
+            ("Back Up Now", "backup"),
+            ("Continue Without Backup", "skip"),
+            ("Cancel", "cancel"),
+        ],
+        default="backup",
+        severity="warning",
+    )
+
+    if choice == "cancel":
+        return False, ""
+    if choice != "backup":
+        return True, ""
+
+    ok, backup_path = _backup_slssteam_config(config_path)
+    if not ok:
+        ThemedMessageBox.warning(dialog, "Backup Failed", backup_path)
+        return True, ""
+    if not backup_path:
+        return True, ""
+    return True, f"\n\nBackup created: {backup_path}"
+
+
+def on_h3adcrab_clicked(dialog) -> None:
+    """Prompt user with Headcrab mirror options and execute selected script in terminal."""
+    proceed, backup_note = _confirm_slssteam_backup(dialog, installer="Headcrab")
+    if not proceed:
+        return
+
+    choice = ThemedMessageBox.choices(
+        dialog,
+        "Run Headcrab",
+        "Choose an installation script source to run in terminal:\n\n"
+        "Option 1: Primary mirror (Cloudflare Pages)\n"
+        "curl -fsSL headcrab.pages.dev | bash\n\n"
+        "Option 2: Alternative mirror (runn.i.ng / GitHub)\n"
+        'curl -fsSL "https://runn.i.ng/Deadboy666/h3adcr-b/refs/heads/main/headcrab.sh" | bash\n\n'
+        "A terminal window will open and ASSella will close so Headcrab can safely configure SLSsteam without file conflicts."
+        + backup_note,
+        [
+            ("Option 1 (Cloudflare)", "opt1"),
+            ("Option 2 (runn.i.ng)", "opt2"),
+            ("Cancel", "cancel"),
+        ],
+        default="opt1",
+    )
+    if choice == "opt1":
+        cmd = ["bash", "-c", "curl -fsSL headcrab.pages.dev | bash; echo; echo '--- Done. Press Enter to close ---'; read _"]
+        _launch_terminal_and_quit_app(dialog, cmd)
+    elif choice == "opt2":
+        cmd = ["bash", "-c", 'curl -fsSL "https://runn.i.ng/Deadboy666/h3adcr-b/refs/heads/main/headcrab.sh" | bash; echo; echo \'--- Done. Press Enter to close ---\'; read _']
+        _launch_terminal_and_quit_app(dialog, cmd)
+
+
+def on_r3set_crab_clicked(dialog) -> None:
+    """Confirm and run reset2vanilla script in terminal without emojis."""
+    reply = ThemedMessageBox.question(
+        dialog,
+        "Reset Steam to Vanilla",
+        "This will uninstall SLSsteam and Headcrab, and put Steam client back to original.\n"
+        "You will not lose the games you added.\n\n"
+        "A terminal window will open and ASSella will close to allow the reset process to run.\n\n"
+        "Do you want to proceed?",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.No,
+    )
+    if reply == ThemedMessageBox.StandardButton.Yes:
+        cmd = ["bash", "-c", 'curl -fsSL "https://raw.githubusercontent.com/Deadboy666/h3adcr-b-modul3s/refs/heads/main/reset2vanilla.sh" | bash; echo; echo \'--- Done. Press Enter to close ---\'; read _']
+        _launch_terminal_and_quit_app(dialog, cmd)
+
+
+# ── Steam updates (steam.cfg) ───────────────────────────────────────────
+
+def refresh_steam_updates_control(dialog) -> None:
+    """Show the live state of the steam.cfg update block in the Health tab."""
+    btn = getattr(dialog, "health_steam_updates_btn", None)
+    lbl = getattr(dialog, "health_steam_updates_lbl", None)
+    if btn is None:
+        return
+
+    from utils.steam_updates import are_steam_updates_blocked, find_steam_cfg, target_steam_cfg
+
+    blocked = are_steam_updates_blocked()
+    existing = find_steam_cfg()
+    path = existing if existing is not None else target_steam_cfg()
+
+    if blocked:
+        btn.setText("Enable Steam Updates")
+        if lbl is not None:
+            lbl.setText(f"Steam updates are blocked - {path} exists. Steam reads it at startup, so this applies on the next Steam start.")
+    else:
+        btn.setText("Disable Steam Updates")
+        if lbl is not None:
+            lbl.setText("Steam updates are allowed - no steam.cfg found. Steam reads it at startup, so this applies on the next Steam start.")
+
+    btn.setToolTip(
+        f"Toggles {path}\n"
+        "Steam reads steam.cfg when it starts, so the change applies on the next Steam start."
+    )
+
+
+def on_steam_updates_clicked(dialog) -> None:
+    """Create or remove steam.cfg, so Steam can (or cannot) update itself."""
+    from utils.steam_updates import are_steam_updates_blocked, set_steam_updates_blocked
+
+    blocked = are_steam_updates_blocked()
+
+    if blocked:
+        reply = ThemedMessageBox.question(
+            dialog,
+            "Enable Steam Updates",
+            "Enabling Steam updates is NOT recommended!\n\n"
+            "Allowing Steam to update itself may overwrite the launcher patches and cause SLSsteam to become incompatible or stop working.\n\n"
+            "Make sure you are aware of this before proceeding!\n\n"
+            "Are you sure you want to enable Steam updates?",
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.No,
+        )
+        if reply != ThemedMessageBox.StandardButton.Yes:
+            return
+
+    ok, message = set_steam_updates_blocked(not blocked)
+
+    refresh_steam_updates_control(dialog)
+    _refresh_main_window_status(dialog)
+
+    if not ok:
+        ThemedMessageBox.critical(dialog, "Steam Updates", message)
+        return
+
+    ThemedMessageBox.information(
+        dialog,
+        "Steam Updates",
+        message + "\n\nSteam reads steam.cfg when it starts - restart Steam for this to take effect.",
+    )
+
+
+def _refresh_main_window_status(dialog) -> None:
+    """Let the status visor show the new Steam Updates state right away."""
+    main_window = getattr(dialog, "main_window", None)
+    if main_window is None or not hasattr(main_window, "refresh_system_status"):
+        return
+    try:
+        main_window.refresh_system_status()
+    except Exception as e:
+        logger.warning("Could not refresh the main window status: %s", e)
+
+
+# ── smallcrab ───────────────────────────────────────────────────────────
+
+SMALLCRAB_URL = "https://raw.githubusercontent.com/niwia/smallcrab/main/smallcrab.sh"
+
+
+def _confirm_smallcrab(dialog, backup_note: str = "") -> bool:
+    """Explain what smallcrab does, then ask whether to run it."""
+    choice = ThemedMessageBox.choices(
+        dialog,
+        "Run smallcrab",
+        "smallcrab is an experimental fork of Headcrab.\n\n"
+        "What it does:\n"
+        "  - Patches your Steam client so SLSsteam loads.\n"
+        "  - Does not downgrade or update Steam.\n"
+        "  - Does not edit your configs.\n\n"
+        "It is recommended that you only run this if you know what this does.\n\n"
+        "The script may also ask to create steam.cfg, which stops Steam from updating "
+        "itself. You can undo that with the Steam Updates button in this tab.\n\n"
+        "A terminal window will open and ASSella will close, the same as the h3adcrab "
+        "button." + backup_note,
+        [
+            ("Run smallcrab", "run"),
+            ("Cancel", "cancel"),
+        ],
+        default="run",
+        severity="warning",
+    )
+    return choice == "run"
+
+
+def on_smallcrab_clicked(dialog) -> None:
+    """Warn about the config rewrite, then run smallcrab in a terminal."""
+    proceed, backup_note = _confirm_slssteam_backup(dialog, installer="smallcrab")
+    if not proceed:
+        return
+    if not _confirm_smallcrab(dialog, backup_note):
+        return
+
+    cmd = ["bash", "-c", f"curl -fsSL --retry 3 {SMALLCRAB_URL} | bash; echo; echo '--- Done. Press Enter to close ---'; read _"]
+    _launch_terminal_and_quit_app(dialog, cmd)
+

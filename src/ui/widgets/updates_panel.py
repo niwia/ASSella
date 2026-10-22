@@ -94,64 +94,135 @@ class UpdatesPanel(QFrame):
                 main_win.position_update_all_btn()
 
 class UpdateItemWidget(QFrame):
-    def __init__(self, appid, name, accent_color, parent=None):
+    """One row of the pending-updates list.
+
+    A row can carry a badge ("AT0-M", "Awaiting Hubcap Key") and an action
+    button ("Sync Keys"). Steam-managed (AT0-M) games are never downloaded by
+    ASSella - Steam does that - so their action syncs the decryption keys
+    into SLSsteam instead of queueing a DepotDownloader job.
+    """
+
+    def __init__(
+        self,
+        appid,
+        name,
+        accent_color,
+        parent=None,
+        badge_text: str = "",
+        badge_color: str = "#CE93D8",
+        action_text: str = "",
+        action_callback=None,
+        action_tooltip: str = "",
+    ):
         super().__init__(parent)
         self.appid = appid
         self.name = name
         self.accent_color = accent_color
         self.pixmap = None
-        
+        self.badge = None
+        self.action_btn = None
+
         self.setFixedHeight(38)
-        
+
         from utils.image_fetcher import ImageFetcher
         cache_path = ImageFetcher.get_cache_path(appid)
         if cache_path.exists():
             from PyQt6.QtGui import QPixmap
             self.pixmap = QPixmap(str(cache_path))
-            
+
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 2, 12, 2)
-        
+        lay.setSpacing(8)
+
         self.lbl = QLabel(name)
         self.lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; background: transparent; border: none;")
         self.lbl.setWordWrap(True)
         lay.addWidget(self.lbl, 1)
 
+        if badge_text:
+            self.badge = QLabel(badge_text)
+            self.badge.setStyleSheet(
+                f"color: {badge_color}; font-size: 8pt; font-weight: bold;"
+                f"background: transparent; border: 1px solid {badge_color};"
+                f"border-radius: 7px; padding: 1px 6px;"
+            )
+            self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lay.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        if action_text:
+            from PyQt6.QtWidgets import QPushButton
+            self.action_btn = QPushButton(action_text, self)
+            self.action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.action_btn.setFixedHeight(24)
+            self.action_btn.setToolTip(action_tooltip or action_text)
+            self.action_btn.setStyleSheet(
+                f"QPushButton {{ background-color: {accent_color}; color: #121214;"
+                f" border: none; border-radius: 12px; font-weight: bold; font-size: 8.5pt;"
+                f" padding-left: 10px; padding-right: 10px; }}"
+                f"QPushButton:hover {{ background-color: #FFFFFF; color: #000000; }}"
+                f"QPushButton:pressed {{ background-color: {accent_color}; }}"
+                f"QPushButton:disabled {{ color: rgba(255,255,255,0.4); background-color: {accent_color}; }}"
+            )
+            if action_callback is not None:
+                self.action_btn.clicked.connect(
+                    lambda _checked=False, cb=action_callback: cb(self.appid)
+                )
+            lay.addWidget(self.action_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # The header image is painted on the right edge of the row, so the
+        # layout has to leave room for it - otherwise the badge or the button
+        # would end up underneath the artwork.
+        if (badge_text or action_text) and self.pixmap and not self.pixmap.isNull():
+            img_w = int(self.height() * (self.pixmap.width() / max(1, self.pixmap.height())))
+            lay.setContentsMargins(12, 2, 12 + img_w, 2)
+
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def mousePressEvent(self, event):
-        super().mousePressEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
-            try:
-                main_win = None
-                p = self.parent()
-                while p:
-                    if hasattr(p, "game_manager"):
-                        main_win = p
-                        break
-                    p = p.parent()
-                if not main_win:
-                    from PyQt6.QtWidgets import QApplication
-                    for w in QApplication.topLevelWidgets():
-                        if hasattr(w, "game_manager"):
-                            main_win = w
+            appid = self.appid
+
+            def _open():
+                try:
+                    main_win = None
+                    p = self.parent()
+                    while p:
+                        if hasattr(p, "game_manager"):
+                            main_win = p
                             break
-                if main_win and hasattr(main_win, "game_manager"):
-                    game = main_win.game_manager.get_game(self.appid)
-                    if game:
-                        from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
-                        dlg = GameDetailsDialogV2(main_win, game)
-                        dlg.exec()
-            except Exception:
-                pass
+                        p = p.parent()
+                    if not main_win:
+                        from PyQt6.QtWidgets import QApplication
+                        for w in QApplication.topLevelWidgets():
+                            if hasattr(w, "game_manager"):
+                                main_win = w
+                                break
+                    if main_win and hasattr(main_win, "game_manager"):
+                        game = main_win.game_manager.get_game(appid)
+                        if game:
+                            from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+                            dlg = GameDetailsDialogV2(main_win, game)
+                            dlg.exec()
+                except Exception:
+                    pass
+
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, _open)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
 
     def enterEvent(self, event):
         super().enterEvent(event)
-        self.update()
-        
+        from PyQt6 import sip
+        if not sip.isdeleted(self):
+            self.update()
+
     def leaveEvent(self, event):
         super().leaveEvent(event)
-        self.update()
+        from PyQt6 import sip
+        if not sip.isdeleted(self):
+            self.update()
 
     def paintEvent(self, event):
         from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen

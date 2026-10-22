@@ -1,7 +1,5 @@
 import logging
-import urllib.request
 import threading
-import re
 
 from PyQt6.QtWidgets import (
     QDialog,
@@ -19,23 +17,15 @@ from PyQt6.QtCore import Qt, QMetaObject, Q_ARG, pyqtSlot
 from PyQt6.QtGui import QFont
 
 from utils.settings import get_settings
-from utils.version import app_version
+from utils.version import (
+    app_version,
+    get_branch_from_version,
+    get_build_date_display,
+    check_for_updates,
+)
+from ui.dialogs.themed_dialog import install_themed_frame
 
 logger = logging.getLogger(__name__)
-
-
-def _get_branch_from_version(version: str) -> str:
-    """Derive the branch label from the version string."""
-    v = version.lower()
-    if "+assela-" in v:
-        tag = v.split("+assela-", 1)[1]
-    else:
-        tag = v
-    if "rc" in tag or "beta" in tag:
-        return "beta"
-    if "alpha" in tag or "test" in tag or "dev" in tag:
-        return "test"
-    return "main"
 
 
 class CreditsDialog(QDialog):
@@ -55,9 +45,6 @@ class CreditsDialog(QDialog):
 
         self.setStyleSheet(
             f"""
-            QDialog {{
-                background-color: #151515;
-            }}
             QLabel {{
                 color: #e0e0e0;
                 background: transparent;
@@ -100,9 +87,7 @@ class CreditsDialog(QDialog):
             """
         )
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 16)
-        main_layout.setSpacing(0)
+        main_layout = install_themed_frame(self, margins=(20, 20, 20, 16), spacing=0)
 
         # ── Header ──────────────────────────────────────────────────────────
         main_layout.addWidget(self._build_header())
@@ -168,15 +153,17 @@ class CreditsDialog(QDialog):
         ver_row.setContentsMargins(0, 0, 0, 0)
         ver_row.setSpacing(8)
 
-        build_date = "03/09/2026"
+        build_date = get_build_date_display()
         ver_lbl = QLabel(f"v{app_version}  ·  {build_date}")
         ver_lbl.setStyleSheet("font-size: 11px; color: #666666;")
 
-        branch = _get_branch_from_version(app_version)
+        branch = get_branch_from_version(app_version)
         branch_colors = {
-            "beta":  ("#7B3F00", "#E07B00"),
-            "test":  ("#4A2300", "#FF8C00"),
-            "main":  ("#1a2a3a", "#4A90D9"),
+            "beta":   ("#7B3F00", "#E07B00"),
+            "canary": ("#4A2300", "#FF8C00"),
+            "test":   ("#4A2300", "#FF8C00"),
+            "main":   ("#1a2a3a", "#4A90D9"),
+            "stable": ("#1a2a3a", "#4A90D9"),
         }
         bg, fg = branch_colors.get(branch, ("#2a2a2a", "#888888"))
 
@@ -356,66 +343,27 @@ class CreditsDialog(QDialog):
         self.status_label.setText("Checking for updates...")
         self.status_label.setStyleSheet("color: #aaaaaa; font-size: 12px; background: transparent;")
 
-        def _extract_semver(raw: str) -> str:
-            if "+ASSella-" in raw:
-                return raw.split("+ASSella-", 1)[1].strip()
-            return raw.strip()
-
-        def _parse_version(v_str: str) -> tuple:
-            v_str = v_str.lstrip("v").strip()
-            m = re.match(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[._-]?(dev|alpha|beta|rc|release[_-]?candidate|hotfix|testing|canary)(\d*)|\-([a-zA-Z0-9.]+))?$", v_str, re.IGNORECASE)
-            if m:
-                major = int(m.group(1) or 0)
-                minor = int(m.group(2) or 0)
-                patch = int(m.group(3) or 0)
-                pre_type = m.group(4) or ""
-                pre_num_str = m.group(5) or ""
-                pre_extra = m.group(6) or ""
-                pre_weights = {"hotfix": 1, "rc": -1, "release_candidate": -1, "releasecandidate": -1, "beta": -2, "alpha": -3, "dev": -4, "testing": -4, "canary": -5}
-                if pre_type:
-                    norm_type = pre_type.lower().replace("-", "_")
-                    pre_val = pre_weights.get(norm_type, 1 if "hotfix" in norm_type else -4)
-                    pre_num = int(pre_num_str) if pre_num_str else 1
-                elif pre_extra:
-                    if "hotfix" in pre_extra.lower():
-                        hm = re.search(r'\d+', pre_extra)
-                        pre_val = 1
-                        pre_num = int(hm.group(0)) if hm else 1
-                    else:
-                        pre_val = -4
-                        pre_num = 0
-                else:
-                    pre_val = 0
-                    pre_num = 0
-                return (major, minor, patch, pre_val, pre_num)
-            return (0, 0, 0, 0, 0)
-
         def _check_sync():
             try:
-                local_clean = _extract_semver(app_version)
-                if "alpha" in local_clean.lower():
-                    branch = "alpha"
-                elif any(x in local_clean.lower() for x in ("beta", "rc")):
-                    branch = "beta"
+                configured_channel = self.settings.value("update_channel", "").strip().lower()
+                res = check_for_updates(configured_channel=configured_channel, current_version=app_version)
+                if res["status"] == "update_available":
+                    QMetaObject.invokeMethod(
+                        self, "_on_check_available",
+                        Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(str, res["remote_version"] or ""),
+                    )
+                elif res["status"] == "up_to_date":
+                    QMetaObject.invokeMethod(
+                        self, "_on_check_up_to_date",
+                        Qt.ConnectionType.QueuedConnection,
+                    )
                 else:
-                    branch = "main"
-                url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
-                req = urllib.request.Request(url, headers={"User-Agent": "ASSella-Updater"})
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    remote_raw = response.read().decode("utf-8").strip()
-                    remote_clean = _extract_semver(remote_raw)
-                    if remote_clean:
-                        if _parse_version(remote_clean) > _parse_version(local_clean):
-                            QMetaObject.invokeMethod(
-                                self, "_on_check_available",
-                                Qt.ConnectionType.QueuedConnection,
-                                Q_ARG(str, remote_clean),
-                            )
-                        else:
-                            QMetaObject.invokeMethod(
-                                self, "_on_check_up_to_date",
-                                Qt.ConnectionType.QueuedConnection,
-                            )
+                    QMetaObject.invokeMethod(
+                        self, "_on_check_failed",
+                        Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(str, res.get("error") or "Could not determine latest version."),
+                    )
             except Exception as e:
                 logger.warning(f"Credits check updates failed: {e}")
                 QMetaObject.invokeMethod(

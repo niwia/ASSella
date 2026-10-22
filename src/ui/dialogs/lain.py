@@ -9,7 +9,6 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -17,6 +16,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
+from ui.dialogs.themed_dialog import install_themed_frame
 
 from components.custom_widgets import ScaledButton, ScaledFontLabel
 
@@ -192,7 +193,7 @@ class LainMinigameDialog(QDialog):
 
     def _setup_ui(self) -> None:
         """Orchestrate the creation of the user interface."""
-        self.layout = QVBoxLayout(self)
+        self.layout = install_themed_frame(self, margins=(12, 10, 12, 12), spacing=8)
         self._create_header()
         self._create_stats_display()
         self._create_terminal_display()
@@ -672,15 +673,15 @@ class LainMinigameDialog(QDialog):
         self.game_completed.emit(final)
         logger.info(f"Lain minigame ended with score: {final}")
 
-        reply = QMessageBox.question(
+        reply = ThemedMessageBox.question(
             self,
             "Session Terminated",
             f"Final Score: {final}\n\nWould you like to play again?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes,
         )
 
-        if reply == QMessageBox.StandardButton.Yes:
+        if reply == ThemedMessageBox.StandardButton.Yes:
             if self.terminal_display:
                 self.terminal_display.clear()
             self._add_terminal_text(">>> REINITIALIZING...\n")

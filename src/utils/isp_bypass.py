@@ -285,6 +285,11 @@ def is_html_or_blocked_payload(resp: Optional[requests.Response]) -> bool:
     if resp is None:
         return True
     try:
+        # A 304 legitimately has no body, so the empty-payload rule below
+        # must not turn a conditional request into a false "blocked" report.
+        if getattr(resp, "status_code", None) == 304:
+            return False
+
         ctype = (resp.headers.get("content-type") or "").lower()
         if "text/html" in ctype:
             return True
@@ -470,6 +475,11 @@ def resolve_doh(domain: str = TARGET_DOMAIN) -> Optional[str]:
 
 _direct_connection_failed = False
 _last_direct_check_time = 0.0
+# Budget for the direct tier of the auto pipeline. The direct route is only a
+# probe; a blocked or poisoned connection is detected by the timeout and the
+# DoH tier resolves the same host successfully a moment later. Ten seconds of
+# waiting before that handover is dead time on every boot.
+_DIRECT_PROBE_TIMEOUT = 3.0
 
 def execute_hubcap_request(
     session: requests.Session,
@@ -572,7 +582,13 @@ def execute_hubcap_request(
     if use_direct:
         try:
             logger.debug(f"[ISPBypass] Trying direct request to {url}")
-            resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
+            # The direct tier is a probe: its only job is to find out whether
+            # the plain route works. When it does not, the DoH tier right
+            # behind it resolves the same host and succeeds, so waiting out a
+            # full timeout here only delays the answer. The fallback tiers keep
+            # the caller's full budget.
+            probe_timeout = min(timeout, _DIRECT_PROBE_TIMEOUT)
+            resp = session.request(method, url, headers=headers, params=params, timeout=probe_timeout, stream=stream)
             resp.raise_for_status()
 
             if not stream and is_html_or_blocked_payload(resp):

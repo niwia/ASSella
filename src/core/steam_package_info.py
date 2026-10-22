@@ -15,11 +15,12 @@ from typing import Dict, List, Optional, Set, Union
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache: {mtime: int, data: Dict[int, Set[str]]}
+# Module-level cache: {mtime: int, data: Dict[int, Set[str]], subs: Dict[int, Set[str]]}
 _PACKAGEINFO_CACHE: Dict[str, Union[float, Dict[int, Set[str]]]] = {
     "mtime": 0.0,
     "path": "",
     "data": {},
+    "subs": {},
 }
 
 
@@ -37,36 +38,35 @@ def get_packageinfo_path() -> Optional[Path]:
     return None
 
 
-def get_depots_for_app_from_packageinfo(app_id: Union[int, str]) -> Set[str]:
-    """
-    Parse packageinfo.vdf and extract the set of depot IDs belonging to
-    packages that contain the given AppID.
-    Results are cached in memory based on the file modification time.
+def _load_packageinfo() -> tuple[Dict[int, Set[str]], Dict[int, Set[str]]]:
+    """Parse packageinfo.vdf once per file version.
+
+    Returns ``(appid -> depot ids, appid -> package ids)``.  Both maps come out
+    of the same parse: the appcache is the only local source that knows which
+    packages a game belongs to, and it answers in milliseconds without asking
+    the network.
     """
     pkg_path = get_packageinfo_path()
     if not pkg_path:
-        return set()
-
-    try:
-        aid_int = int(str(app_id).strip())
-    except (ValueError, TypeError):
-        return set()
+        return {}, {}
 
     try:
         current_mtime = pkg_path.stat().st_mtime
     except OSError:
-        return set()
+        return {}, {}
 
     cached_mtime = _PACKAGEINFO_CACHE.get("mtime", 0.0)
     cached_path = _PACKAGEINFO_CACHE.get("path", "")
     cached_data: Dict[int, Set[str]] = _PACKAGEINFO_CACHE.get("data", {})
+    cached_subs: Dict[int, Set[str]] = _PACKAGEINFO_CACHE.get("subs", {})
 
     if str(pkg_path) == cached_path and current_mtime == cached_mtime and cached_data:
-        return set(cached_data.get(aid_int, set()))
+        return cached_data, cached_subs
 
     # Re-parse packageinfo.vdf
     logger.debug(f"[SteamPackageInfo] Parsing {pkg_path}...")
     new_map: Dict[int, Set[str]] = {}
+    new_subs: Dict[int, Set[str]] = {}
 
     try:
         import vdf
@@ -89,22 +89,57 @@ def get_depots_for_app_from_packageinfo(app_id: Union[int, str]) -> Set[str]:
                 root = list(data.values())[0] if data else {}
                 appids = list(root.get("appids", {}).values())
                 depotids = list(root.get("depotids", {}).values())
-                if appids and depotids:
-                    depot_str_set = {str(d) for d in depotids}
-                    for aid in appids:
+                for aid in appids:
+                    new_subs.setdefault(aid, set()).add(str(sub_id))
+                    if depotids:
                         if aid not in new_map:
                             new_map[aid] = set()
-                        new_map[aid].update(depot_str_set)
+                        new_map[aid].update({str(d) for d in depotids})
 
         _PACKAGEINFO_CACHE["mtime"] = current_mtime
         _PACKAGEINFO_CACHE["path"] = str(pkg_path)
         _PACKAGEINFO_CACHE["data"] = new_map
-        logger.debug(f"[SteamPackageInfo] Successfully cached {len(new_map)} apps from packageinfo.vdf")
-        return set(new_map.get(aid_int, set()))
+        _PACKAGEINFO_CACHE["subs"] = new_subs
+        logger.debug(
+            f"[SteamPackageInfo] Successfully cached {len(new_map)} apps and "
+            f"{len(new_subs)} package memberships from packageinfo.vdf"
+        )
+        return new_map, new_subs
 
     except Exception as e:
         logger.warning(f"[SteamPackageInfo] Failed to parse packageinfo.vdf: {e}")
+        return {}, {}
+
+
+def get_depots_for_app_from_packageinfo(app_id: Union[int, str]) -> Set[str]:
+    """
+    Parse packageinfo.vdf and extract the set of depot IDs belonging to
+    packages that contain the given AppID.
+    Results are cached in memory based on the file modification time.
+    """
+    try:
+        aid_int = int(str(app_id).strip())
+    except (ValueError, TypeError):
         return set()
+
+    data, _ = _load_packageinfo()
+    return set(data.get(aid_int, set()))
+
+
+def get_subs_for_app_from_packageinfo(app_id: Union[int, str]) -> List[str]:
+    """Package (sub) ids that contain the given AppID, from Steam's appcache.
+
+    The store's buy box shows one package per game, so a game sold in several
+    packages (complete editions, bundles' component subs) is under-reported
+    there.  The appcache knows every package the client has seen.
+    """
+    try:
+        aid_int = int(str(app_id).strip())
+    except (ValueError, TypeError):
+        return []
+
+    _, subs = _load_packageinfo()
+    return sorted(subs.get(aid_int, set()), key=lambda s: int(s))
 
 
 def get_steam_recommended_depots(

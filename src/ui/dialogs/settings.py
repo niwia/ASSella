@@ -12,12 +12,14 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QPushButton,
+    QGraphicsDropShadowEffect,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.dialog_helpers import create_standard_buttons
 from ui.dialogs.settings_sls import create_sls_tab
@@ -62,8 +64,6 @@ class SettingsDialog(QDialog):
         self.probe_cdn_checkbox = None
         self.manifest_provider_combo = None
         self.custom_plugins_checkbox = None
-        self.smart_depot_selection_checkbox = None
-        self.modern_depot_selection_checkbox = None
         self.use_lancache_checkbox = None
         self.autofetch_manifests_checkbox = None
         self.smart_update_mode_checkbox = None
@@ -74,7 +74,6 @@ class SettingsDialog(QDialog):
         self.fakeappid_db_integration_checkbox = None
         self.remote_web_ui_checkbox = None
         self.max_downloads_spinbox = None
-        self.steamless_remover_combo = None
         self.filter_soundtracks_checkbox = None
         self.filter_search_blacklist_checkbox = None
         self.hide_macos_depots_checkbox = None
@@ -90,16 +89,18 @@ class SettingsDialog(QDialog):
         self.download_slssteam_button = None
         self.slssteam_status_label = None
         self.slssteam_hash_warning_label = None
+        self.ignore_online_fixes_checkbox = None
         self.accent_color_button = None
         self.accent_reset_button = None
         self.all_games_online_checkbox = None
         self.enable_eosproxy_default_checkbox = None
-        self.experimental_ddm_checkbox = None
+        self.title_bar_search_checkbox = None
         self.bg_color_button = None
         self.bg_reset_button = None
         self.titlebar_position_checkbox = None
         self.sonic_mode_checkbox = None
         self.workshop_steam_checkbox = None
+        self.enable_workshop_downloader_checkbox = None
         self.workshop_max_dl_spinbox = None
         self.auto_tune_checkbox = None
         self.workshop_auto_tune_checkbox = None
@@ -129,7 +130,9 @@ class SettingsDialog(QDialog):
 
         # Save original API keys for restore on cancel
         self._original_morrenus_key = self.settings.value("morrenus_api_key", "", type=str)
+        self._original_title_bar_search = self.settings.value("title_bar_search_enabled", False, type=bool)
         self.settings.sync()
+        self._original_ignore_online_fixes = self.settings.value("luatools_ignore_online_fixes", False, type=bool)
         self._original_steam_username = self.settings.value("steam_username", "", type=str)
         from utils.helpers import decrypt_string
         # Recover the in-session password if one was entered earlier in this
@@ -162,6 +165,13 @@ class SettingsDialog(QDialog):
         self._original_material_preset = self.settings.value("material_preset", "ocean", type=str)
         self._original_update_interval = self.settings.value("update_check_interval_minutes", 45, type=int)
         self._original_experimental_acf = self.settings.value("experimental_acf_independent", False, type=bool)
+        # These two are written the moment the user flips them, so a Cancel has
+        # to put the stored values back.
+        self._original_enable_workshop_downloader = self.settings.value(
+            "enable_workshop_downloader", False, type=bool
+        )
+        self._original_all_games_online = self.settings.value("all_games_online", None)
+        self._original_all_games_online_beta = self.settings.value("all_games_online_beta", None)
 
         logger.debug("Opening SettingsDialog.")
         self._setup_ui()
@@ -329,13 +339,13 @@ class SettingsDialog(QDialog):
 
         # Left nav sidebar
         self._nav_list = QListWidget()
-        self._nav_list.setFixedWidth(135)
+        self._nav_list.setFixedWidth(148)
         self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._nav_font = QFont()
-        self._nav_font.setPointSize(9)
+        self._nav_font.setPointSize(12)
         self._nav_font.setWeight(QFont.Weight.DemiBold)
         self._nav_list.setFont(self._nav_font)
 
@@ -349,9 +359,9 @@ class SettingsDialog(QDialog):
             }}
             QListWidget::item {{
                 color: #EDEDED;
-                padding: 7px 12px;
+                padding: 8px 14px;
                 border: none;
-                font-size: 9.5pt;
+                font-size: 12pt;
                 font-weight: 600;
                 letter-spacing: 0.2px;
                 border-radius: 0px;
@@ -364,7 +374,7 @@ class SettingsDialog(QDialog):
                 background-color: rgba(255, 255, 255, 0.05);
                 color: {ac};
                 border-left: 3.5px solid {ac};
-                padding-left: 10.5px;
+                padding-left: 12px;
                 font-weight: 700;
             }}
         """)
@@ -409,10 +419,31 @@ class SettingsDialog(QDialog):
             def currentIndex(self):
                 return self._stack.currentIndex()
 
+            def removeTab(self, index):
+                """Drop a page and its navigation entry (QTabWidget parity).
+
+                The settings pages live in a QListWidget + QStackedWidget pair
+                rather than a real QTabWidget, so pages that appear at runtime
+                (the LuaTools page) need this shim to take a tab away again.
+                """
+                if index < 0 or index >= self._stack.count():
+                    return
+                self._nav.takeItem(index)
+                widget = self._stack.widget(index)
+                if widget is not None:
+                    self._stack.removeWidget(widget)
+                    widget.deleteLater()
+                self._tabs = {
+                    label: (i - 1 if i > index else i)
+                    for label, i in self._tabs.items()
+                    if i != index
+                }
+
         self.tab_widget = _TabShim(self._nav_list, self._page_stack)
 
         # Wire navigation clicks
         self._nav_list.currentRowChanged.connect(self._page_stack.setCurrentIndex)
+        self._nav_list.currentRowChanged.connect(lambda _idx: self._position_floating_buttons())
 
         content_widget = QWidget()
         content_widget.setLayout(content_row)
@@ -461,6 +492,10 @@ class SettingsDialog(QDialog):
         # Modular Settings tab unlocked via Konami cheat code
         if self.settings.value("konami_settings_unlocked", False, type=bool):
             tabs.create_mrc_settings_tab(self)
+
+        # LuaTools Settings tab unlocked via search secret keyword
+        if self.settings.value("luatools_unlocked", False, type=bool):
+            self.tab_widget.addTab(tabs.create_luatools_tab(self), "LuaTools")
 
         # Tab changed listener
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
@@ -520,14 +555,99 @@ class SettingsDialog(QDialog):
             from ui.dialogs.settings_tabs.components_card import on_tools_tab_opened
             on_tools_tab_opened(self)
 
+        elif tab_name == "LuaTools":
+            if hasattr(self, "update_luatools_ui_status"):
+                # The page is on screen now, so it is the right moment to spend
+                # one network refresh proving the stored token still works.
+                self.update_luatools_ui_status(validate=True)
+
     def _create_dialog_buttons(self) -> None:
-        """Create standard Ok/Cancel buttons."""
-        buttons = create_standard_buttons(self.accept, self.reject)
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color: rgba(255,255,255,0.08); margin: 0px;")
-        self.main_layout.addWidget(sep)
-        self.main_layout.addWidget(buttons)
+        """Create floating Ok/Cancel buttons with shadow in bottom right."""
+        self.button_container = QWidget(self)
+        self.button_container.setObjectName("FloatingSettingsButtons")
+        self.button_container.setStyleSheet("background: transparent;")
+        btn_layout = QHBoxLayout(self.button_container)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(8)
+
+        self.btn_ok = QPushButton("✓  OK", self.button_container)
+        self.btn_ok.setObjectName("SettingsOkButton")
+        self.btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ok.setFixedSize(88, 32)
+        self.btn_ok.setStyleSheet(f"""
+            QPushButton#SettingsOkButton {{
+                background-color: {self.accent_color};
+                color: #000000;
+                font-weight: bold;
+                font-size: 9.5pt;
+                border-radius: 14px;
+                border: none;
+            }}
+            QPushButton#SettingsOkButton:hover {{
+                background-color: #FFFFFF;
+                color: #000000;
+            }}
+            QPushButton#SettingsOkButton:pressed {{
+                background-color: rgba(255, 255, 255, 0.85);
+            }}
+        """)
+        shadow_ok = QGraphicsDropShadowEffect(self.btn_ok)
+        shadow_ok.setBlurRadius(16)
+        shadow_ok.setColor(QColor(0, 0, 0, 190))
+        shadow_ok.setOffset(0, 3)
+        self.btn_ok.setGraphicsEffect(shadow_ok)
+        self.btn_ok.clicked.connect(self.accept)
+
+        self.btn_cancel = QPushButton("✕  Cancel", self.button_container)
+        self.btn_cancel.setObjectName("SettingsCancelButton")
+        self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cancel.setFixedSize(88, 32)
+        self.btn_cancel.setStyleSheet(f"""
+            QPushButton#SettingsCancelButton {{
+                background-color: {self.accent_color};
+                color: #000000;
+                font-weight: bold;
+                font-size: 9.5pt;
+                border-radius: 14px;
+                border: none;
+            }}
+            QPushButton#SettingsCancelButton:hover {{
+                background-color: #FFFFFF;
+                color: #000000;
+            }}
+            QPushButton#SettingsCancelButton:pressed {{
+                background-color: rgba(255, 255, 255, 0.85);
+            }}
+        """)
+        shadow_cancel = QGraphicsDropShadowEffect(self.btn_cancel)
+        shadow_cancel.setBlurRadius(16)
+        shadow_cancel.setColor(QColor(0, 0, 0, 190))
+        shadow_cancel.setOffset(0, 3)
+        self.btn_cancel.setGraphicsEffect(shadow_cancel)
+        self.btn_cancel.clicked.connect(self.reject)
+
+        btn_layout.addWidget(self.btn_ok)
+        btn_layout.addWidget(self.btn_cancel)
+
+        self.button_container.adjustSize()
+        self._position_floating_buttons()
+
+    def _position_floating_buttons(self) -> None:
+        """Position floating buttons over the bottom right corner of the dialog."""
+        if hasattr(self, "button_container") and self.button_container:
+            self.button_container.adjustSize()
+            x = self.width() - self.button_container.width() - 16
+            y = self.height() - self.button_container.height() - 12
+            self.button_container.move(x, y)
+            self.button_container.raise_()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_floating_buttons()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._position_floating_buttons()
 
     # ── Signal Handlers & Delegation Slots ────────────────────────────────
     @pyqtSlot(object)
@@ -658,8 +778,8 @@ class SettingsDialog(QDialog):
         return tabs.add_tool_button(layout, text, tooltip, slot)
 
     @staticmethod
-    def _launch_terminal_command(cmd: list, cwd: str, needs_env: bool = False) -> None:
-        tabs.launch_terminal_command(cmd, cwd, needs_env)
+    def _launch_terminal_command(cmd: list, cwd: str, needs_env: bool = False) -> bool:
+        return tabs.launch_terminal_command(cmd, cwd, needs_env)
 
     @staticmethod
     def _manage_registry(filename: str, success_msg: str) -> None:
@@ -737,7 +857,7 @@ class SettingsDialog(QDialog):
         except Exception as e:
             import traceback
             logger.error(f"Error saving settings: {e}\n{traceback.format_exc()}")
-            QMessageBox.critical(
+            ThemedMessageBox.critical(
                 self,
                 "Error Saving Settings",
                 f"An error occurred while saving settings:\n{e}\n\nSee log file for details."
@@ -755,6 +875,24 @@ class SettingsDialog(QDialog):
             self.settings.setValue("remember_origins", self._original_remember_origins)
         if hasattr(self, "_original_simplify_denuvo_status"):
             self.settings.setValue("simplify_denuvo_status", self._original_simplify_denuvo_status)
+        if hasattr(self, "_original_ignore_online_fixes"):
+            self.settings.setValue("luatools_ignore_online_fixes", self._original_ignore_online_fixes)
+        if hasattr(self, "_original_enable_workshop_downloader"):
+            self.settings.setValue(
+                "enable_workshop_downloader", self._original_enable_workshop_downloader
+            )
+        for key in ("all_games_online", "all_games_online_beta"):
+            original = getattr(self, f"_original_{key}", None)
+            if original is None:
+                self.settings.remove(key)
+            else:
+                self.settings.setValue(key, original)
+        if hasattr(self, "_original_title_bar_search"):
+            self.settings.setValue("title_bar_search_enabled", self._original_title_bar_search)
+            if self.main_window and hasattr(self.main_window, "bottom_titlebar"):
+                titlebar = getattr(self.main_window, "bottom_titlebar", None)
+                if titlebar and hasattr(titlebar, "refresh_search_mode"):
+                    titlebar.refresh_search_mode()
 
         if hasattr(self, "_origins_movie") and self._origins_movie:
             self._origins_movie.stop()
@@ -768,11 +906,7 @@ class SettingsDialog(QDialog):
         if hasattr(self, "api_key_input") and self.api_key_input is not None:
             api_key = self.api_key_input.text().strip()
             self.settings.setValue("morrenus_api_key", api_key)
-        if hasattr(self, "use_wirecutter_checkbox") and self.use_wirecutter_checkbox is not None:
-            try:
-                self.settings.setValue("use_wirecutter", self.use_wirecutter_checkbox.isChecked())
-            except Exception:
-                pass
+
         if hasattr(self, "steam_username_input") and self.steam_username_input is not None:
             self.settings.setValue("steam_username", self.steam_username_input.text().strip())
         if hasattr(self, "steam_password_input") and self.steam_password_input is not None:
@@ -805,6 +939,11 @@ class SettingsDialog(QDialog):
             self.settings.setValue("log_filter_level", self.log_level_combo.currentText())
         if hasattr(self, "log_category_combo") and self.log_category_combo is not None:
             self.settings.setValue("log_filter_category", self.log_category_combo.currentText())
+        if hasattr(self, "ignore_online_fixes_checkbox") and self.ignore_online_fixes_checkbox is not None:
+            self.settings.setValue(
+                "luatools_ignore_online_fixes",
+                self.ignore_online_fixes_checkbox.isChecked(),
+            )
 
         try:
             from utils.logger import update_log_filters
@@ -849,30 +988,11 @@ class SettingsDialog(QDialog):
                 "custom_plugins_advanced",
                 self.custom_plugins_checkbox.isChecked(),
             )
-        if hasattr(self, "smart_depot_selection_checkbox") and self.smart_depot_selection_checkbox is not None:
-            self.settings.setValue(
-                "smart_depot_selection",
-                self.smart_depot_selection_checkbox.isChecked(),
-            )
-        else:
-            self.settings.setValue("smart_depot_selection", True)
 
-        if hasattr(self, "experimental_ddm_checkbox") and self.experimental_ddm_checkbox is not None:
-            self.settings.setValue(
-                "use_experimental_ddm",
-                self.experimental_ddm_checkbox.isChecked(),
-            )
-        else:
-            self.settings.setValue("use_experimental_ddm", True)
         if hasattr(self, "all_games_online_checkbox") and self.all_games_online_checkbox is not None:
             self.settings.setValue(
                 "all_games_online",
                 self.all_games_online_checkbox.isChecked(),
-            )
-        if hasattr(self, "modern_depot_selection_checkbox") and self.modern_depot_selection_checkbox is not None:
-            self.settings.setValue(
-                "use_modern_depot_dialog",
-                self.modern_depot_selection_checkbox.isChecked(),
             )
         if self.use_lancache_checkbox is not None:
             self.settings.setValue(
@@ -898,6 +1018,11 @@ class SettingsDialog(QDialog):
                 "auto_apply_goldberg", self.auto_apply_goldberg_checkbox.isChecked()
             )
 
+        if hasattr(self, "enable_workshop_downloader_checkbox") and self.enable_workshop_downloader_checkbox is not None:
+            self.settings.setValue(
+                "enable_workshop_downloader",
+                self.enable_workshop_downloader_checkbox.isChecked(),
+            )
         if self.workshop_steam_checkbox is not None:
             self.settings.setValue(
                 "workshop_steam_enabled",
@@ -919,21 +1044,6 @@ class SettingsDialog(QDialog):
                 self.workshop_cell_id_input.text().strip(),
             )
 
-        # Save Consolidated Steamless DRM Remover settings
-        if hasattr(self, "steamless_remover_combo") and self.steamless_remover_combo is not None:
-            drm_mode = self.steamless_remover_combo.currentData()
-            if drm_mode == "aio":
-                self.settings.setValue("use_steamless_aio", True)
-                self.settings.setValue("use_steamless", False)
-            elif drm_mode == "cli":
-                self.settings.setValue("use_steamless_aio", False)
-                self.settings.setValue("use_steamless", True)
-            else:
-                self.settings.setValue("use_steamless_aio", False)
-                self.settings.setValue("use_steamless", False)
-
-        if hasattr(self, "enable_denuvo_sync_checkbox") and self.enable_denuvo_sync_checkbox is not None:
-            self.settings.setValue("enable_denuvo_sync", self.enable_denuvo_sync_checkbox.isChecked())
 
         # Save Soundtrack and Search Blacklist filtering toggles
         if hasattr(self, "filter_soundtracks_checkbox") and self.filter_soundtracks_checkbox is not None:
@@ -1004,6 +1114,11 @@ class SettingsDialog(QDialog):
                 "check_updates_on_boot",
                 self.check_updates_on_boot_checkbox.isChecked()
             )
+        if hasattr(self, "title_bar_search_checkbox") and self.title_bar_search_checkbox is not None:
+            self.settings.setValue(
+                "title_bar_search_enabled",
+                self.title_bar_search_checkbox.isChecked(),
+            )
 
         if hasattr(self, "update_provider_combo") and self.update_provider_combo:
             self.settings.setValue(
@@ -1024,16 +1139,7 @@ class SettingsDialog(QDialog):
                 self.auto_tune_checkbox.isChecked(),
             )
 
-        if hasattr(self, "save_old_manifests_checkbox"):
-            try:
-                self.settings.setValue("save_old_manifests", self.save_old_manifests_checkbox.isChecked())
-            except RuntimeError:
-                pass
-        if hasattr(self, "max_old_manifests_spinbox"):
-            try:
-                self.settings.setValue("max_old_manifests", self.max_old_manifests_spinbox.value())
-            except RuntimeError:
-                pass
+
         if hasattr(self, "depot_toggles"):
             for tag, (btn, skey) in self.depot_toggles.items():
                 try:

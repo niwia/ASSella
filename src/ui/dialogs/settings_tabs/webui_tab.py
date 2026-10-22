@@ -13,8 +13,8 @@ from PyQt6.QtWidgets import (
     QLabel,
     QSpinBox,
     QPushButton,
-    QMessageBox,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.helpers import create_checkbox_setting
 
@@ -113,7 +113,7 @@ def check_port_availability(dialog) -> None:
                 is_our_running_port = True
 
     if is_our_running_port:
-        QMessageBox.information(
+        ThemedMessageBox.information(
             dialog,
             "Port Check",
             f"Port {port} is currently in use by this instance of ASSella (Active)."
@@ -125,13 +125,13 @@ def check_port_availability(dialog) -> None:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("127.0.0.1", port))
         s.close()
-        QMessageBox.information(
+        ThemedMessageBox.information(
             dialog,
             "Port Check",
             f"Port {port} is free and available!"
         )
     except OSError:
-        QMessageBox.warning(
+        ThemedMessageBox.warning(
             dialog,
             "Port Check",
             f"Port {port} is already in use by another application or the background service."
@@ -148,6 +148,7 @@ def get_service_status() -> str:
             ["systemctl", "--user", "is-active", "assella-testing.service"],
             capture_output=True,
             text=True,
+            timeout=2.0,
         )
         status = res.stdout.strip()
         if status == "active":
@@ -165,6 +166,7 @@ def is_service_enabled() -> bool:
             ["systemctl", "--user", "is-enabled", "assella-testing.service"],
             capture_output=True,
             text=True,
+            timeout=2.0,
         )
         return res.stdout.strip() == "enabled"
     except Exception:
@@ -211,31 +213,31 @@ def update_service_status(dialog) -> None:
 
 def start_service(dialog) -> None:
     try:
-        subprocess.run(["systemctl", "--user", "start", "assella-testing.service"])
+        subprocess.run(["systemctl", "--user", "start", "assella-testing.service"], timeout=5.0)
         update_service_status(dialog)
     except Exception as e:
-        QMessageBox.critical(dialog, "Service Error", f"Failed to start service: {e}")
+        ThemedMessageBox.critical(dialog, "Service Error", f"Failed to start service: {e}")
 
 
 def stop_service(dialog) -> None:
     try:
-        subprocess.run(["systemctl", "--user", "stop", "assella-testing.service"])
+        subprocess.run(["systemctl", "--user", "stop", "assella-testing.service"], timeout=5.0)
         update_service_status(dialog)
     except Exception as e:
-        QMessageBox.critical(dialog, "Service Error", f"Failed to stop service: {e}")
+        ThemedMessageBox.critical(dialog, "Service Error", f"Failed to stop service: {e}")
 
 
 def enable_boot(dialog) -> None:
     try:
-        subprocess.run(["systemctl", "--user", "enable", "assella-testing.service"])
+        subprocess.run(["systemctl", "--user", "enable", "assella-testing.service"], timeout=5.0)
         update_service_status(dialog)
     except Exception as e:
-        QMessageBox.critical(dialog, "Service Error", f"Failed to enable service on boot: {e}")
+        ThemedMessageBox.critical(dialog, "Service Error", f"Failed to enable service on boot: {e}")
 
 
 def disable_boot(dialog) -> None:
     try:
-        subprocess.run(["systemctl", "--user", "disable", "assella-testing.service"])
+        subprocess.run(["systemctl", "--user", "disable", "assella-testing.service"], timeout=5.0)
         update_service_status(dialog)
     except Exception as e:
-        QMessageBox.critical(dialog, "Service Error", f"Failed to disable service on boot: {e}")
+        ThemedMessageBox.critical(dialog, "Service Error", f"Failed to disable service on boot: {e}")

@@ -418,7 +418,7 @@ class CLITaskManager:
             from utils.dlc_helpers import is_dlc_only_mode
             is_dlc_only = is_dlc_only_mode(str(appid))
 
-        if steamless_enabled and not is_dlc_only:
+        if steamless_enabled and not is_dlc_only and not self._is_current_job_linux():
             self.logger.info("Steamless is enabled, starting DRM removal...")
             self._run_steamless()
 
@@ -454,6 +454,9 @@ class CLITaskManager:
                 self.logger.info(
                     "Linux Steam integration active, GreenLuma files skipped"
                 )
+                from utils.yaml_config_manager import is_slssteam_config_management_enabled
+                if is_slssteam_config_management_enabled():
+                    self._add_appids_to_slssteam_config()
 
         self.logger.info("All post-processing steps completed")
 
@@ -640,6 +643,8 @@ class CLITaskManager:
 
         if not os.path.exists(game_directory):
             return
+
+        self._set_linux_permissions(game_directory)
 
     def _apply_goldberg(self, game_directory: str, appid: str, game_name: str) -> bool:
         """Apply Goldberg files to a game directory (CLI mode)."""
@@ -902,45 +907,37 @@ class CLITaskManager:
             self.logger.exception(f"Error applying Goldberg: {e}")
             return False
 
+    def _is_current_job_linux(self) -> bool:
+        """Check if current job is downloading Linux native depots."""
+        if not self.game_data:
+            return False
+        selected_depots = self.game_data.get("selected_depots_list") or []
+        depots = self.game_data.get("depots") or {}
+        found_any = False
+        for d_id in selected_depots:
+            d_data = depots.get(str(d_id)) or {}
+            if not d_data:
+                continue
+            found_any = True
+            oslist = (d_data.get("oslist") or "").lower()
+            desc = (d_data.get("desc") or "").lower()
+            is_linux = (oslist == "linux") or ("[linux]" in desc) or ("linux" in desc)
+            if not is_linux:
+                return False
+        return found_any
+
     def _set_linux_permissions(self, game_directory: str):
         """Set executable permissions for Linux binaries."""
         self.logger.info(f"Setting executable permissions in: {game_directory}")
-
-        linux_binary_extensions = {".sh", ".x86", ".x86_64", ".bin"}
-        elf_magic = b"\x7fELF"
-        chmod_count = 0
-
-        for root, dirs, files in os.walk(game_directory):
-            for file in files:
-                file_path = os.path.join(root, file)
-                file_lower = file.lower()
-
-                should_chmod = False
-                if any(file_lower.endswith(ext) for ext in linux_binary_extensions):
-                    should_chmod = True
-                elif "." not in file:
-                    try:
-                        file_size = os.path.getsize(file_path)
-                        if file_size >= 1024:
-                            with open(file_path, "rb") as f:
-                                if f.read(4) == elf_magic:
-                                    should_chmod = True
-                    except (IOError, OSError):
-                        continue
-
-                if should_chmod:
-                    try:
-                        current_mode = os.stat(file_path).st_mode
-                        if not (current_mode & 0o111):
-                            os.chmod(file_path, current_mode | 0o755)
-                            chmod_count += 1
-                    except OSError:
-                        pass
-
-        if chmod_count > 0:
-            self.logger.info(
-                f"Set executable permissions for {chmod_count} Linux binaries"
-            )
+        try:
+            from managers.emulation.chmod import ChmodMixin
+            chmod_count = ChmodMixin._run_chmod_recursive(game_directory)
+            if chmod_count > 0:
+                self.logger.info(
+                    f"Set executable permissions for {chmod_count} Linux binaries"
+                )
+        except Exception as e:
+            self.logger.warning(f"Failed to set Linux binary permissions: {e}")
 
     def _add_appids_to_slssteam_config(self):
         """Add downloaded AppIDs to SLSsteam config.yaml on Linux"""

@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 # means a typical library is revalidated ~4 times a year.
 REVALIDATE_DAYS = 7
 
+# How long a "Steam has no artwork for this AppID" result is trusted before
+# trying the CDN again. Store pages appear after release, so this is bounded.
+MISSING_RETRY_DAYS = 7
+
 _META_FILENAME = ".revalidate.json"
 
 
@@ -115,6 +119,31 @@ def mark_checked(app_id: str, cache_dir: Path) -> None:
         # the server again - exactly what this is meant to prevent.
         entry["checked_at"] = time.time()
         _save(cache_dir, data)
+
+
+def is_missing(app_id: str, cache_dir: Path) -> bool:
+    """True when every artwork URL 404'd recently, so retrying is pointless.
+
+    Steam has no capsule for some AppIDs (demos, tools, delisted titles) and
+    those 404s used to be re-attempted on every scan. A miss is remembered for
+    ``MISSING_RETRY_DAYS`` because a store page can go live later.
+    """
+    entry = _load(cache_dir).get(str(app_id))
+    if not isinstance(entry, dict) or not entry.get("missing"):
+        return False
+    checked = float(entry.get("checked_at", 0) or 0)
+    return (time.time() - checked) < MISSING_RETRY_DAYS * 86400
+
+
+def record_missing(app_id: str, cache_dir: Path, url: str) -> None:
+    """Remember that the CDN has no artwork for this AppID."""
+    data = _load(cache_dir)
+    data[str(app_id)] = {
+        "missing": True,
+        "url": url,
+        "checked_at": time.time(),
+    }
+    _save(cache_dir, data)
 
 
 def prune(valid_appids: set) -> int:

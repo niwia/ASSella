@@ -19,11 +19,11 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QLineEdit,
     QPushButton,
-    QMessageBox,
     QScrollArea,
     QFrame,
     QCheckBox,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from managers.mrc_config_manager import MRCConfigManager
 from utils.settings import get_settings
@@ -59,7 +59,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     guard_desc = QLabel(
         f"<b>MRC Customization Inactive:</b> Active plugin is currently <code>{active_plugin or 'None'}</code>.<br><br>"
         "Manifest Request Code (MRC) authority hierarchy, secondary rescue routing, and race parameters require "
-        "<b><code>download-1.4.0-spacetest.lua</code></b> (SpaceBunny / SpaceTest). Standard <code>download.lua</code> "
+        "<b><code>spacebunny1.5.lua</code></b> (SpaceBunny). Standard <code>download.lua</code> "
         "does not read these parameters.<br><br>"
         "These options are hidden to prevent incompatible configuration overrides."
     )
@@ -67,7 +67,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     guard_desc.setWordWrap(True)
     guard_layout.addWidget(guard_desc)
 
-    goto_atom_btn = QPushButton("Go to at0-m Settings (Deploy SpaceTest)")
+    goto_atom_btn = QPushButton("Go to at0-m Settings (Deploy SpaceBunny 1.5)")
     goto_atom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     goto_atom_btn.setStyleSheet("""
         QPushButton {
@@ -298,7 +298,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
             guard_desc.setText(
                 f"<b>MRC Customization Inactive:</b> Active plugin is currently <code>{cur_act or 'None'}</code>.<br><br>"
                 "Manifest Request Code (MRC) authority hierarchy, secondary rescue routing, and race parameters require "
-                "<b><code>download-1.4.0-spacetest.lua</code></b> (SpaceBunny / SpaceTest). Standard <code>download.lua</code> "
+                "<b><code>spacebunny1.5.lua</code></b> (SpaceBunny). Standard <code>download.lua</code> "
                 "does not read these parameters.<br><br>"
                 "These options are hidden to prevent incompatible configuration overrides."
             )
@@ -552,7 +552,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
         settings.sync()
         welcome_status.setText("Welcome: Will show next boot")
         welcome_status.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: 500;")
-        QMessageBox.information(dialog, "Welcome Screen", "Welcome screen reset!\nIt will automatically show on the next launch.")
+        ThemedMessageBox.information(dialog, "Welcome Screen", "Welcome screen reset!\nIt will automatically show on the next launch.")
     reset_welcome_btn.clicked.connect(_on_reset_welcome)
     t_grid.addWidget(reset_welcome_btn, 0, 1)
 
@@ -596,7 +596,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
             clear_cache_btn.setText("Clear Cache"),
             clear_cache_btn.setEnabled(True)
         ))
-        QMessageBox.information(
+        ThemedMessageBox.information(
             dialog,
             "Cache Cleared",
             "Update status, build ID, and branch caches have been cleared successfully.\n\n"
@@ -629,7 +629,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     def _on_lock_menu():
         settings.setValue("konami_settings_unlocked", False)
         settings.sync()
-        QMessageBox.information(
+        ThemedMessageBox.information(
             dialog,
             "Testing Menu Locked",
             "The secret Testing menu has been locked!\nIt will be hidden when Settings is reopened.\n(Enter the cheatcode again to unlock)"
@@ -643,7 +643,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     def _on_reset_theme():
         settings.setValue("halloween_auto_applied", False)
         settings.sync()
-        QMessageBox.information(dialog, "Seasonal Theme", "Seasonal theme auto-activation flag reset.")
+        ThemedMessageBox.information(dialog, "Seasonal Theme", "Seasonal theme auto-activation flag reset.")
     reset_theme_btn.clicked.connect(_on_reset_theme)
     t_grid.addWidget(reset_theme_btn, 2, 2)
 
@@ -681,9 +681,56 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     install_byparr_btn.clicked.connect(_on_install_byparr)
     t_grid.addWidget(install_byparr_btn, 3, 1, 1, 2)
 
+    # 5. LuaTools Secret (Reset & Lock)
+    luatools_lbl = QLabel("LuaTools Secret:")
+    from utils.color_utils import get_raised_surface_tokens
+    _label_tokens = get_raised_surface_tokens(settings.value("background_color", "#111318", type=str))
+    luatools_lbl.setStyleSheet(f"color: {_label_tokens['ink']}; font-size: 8.5pt; font-weight: 500;")
+    t_grid.addWidget(luatools_lbl, 4, 0)
+
+    reset_luatools_btn = QPushButton("Reset & Lock LuaTools")
+    reset_luatools_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    reset_luatools_btn.setStyleSheet("""
+        QPushButton {
+            background-color: rgba(244, 67, 54, 0.15);
+            color: #EF5350;
+            border: 1px solid rgba(239, 83, 80, 0.45);
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(244, 67, 54, 0.28);
+        }
+    """)
+    def _on_reset_luatools():
+        settings.setValue("luatools_unlocked", False)
+        try:
+            from core.lua_tools_api import LuaToolsAPI
+            LuaToolsAPI.clear_session()
+        except Exception as e:
+            logger.warning(f"Error clearing LuaTools session during reset: {e}")
+        settings.sync()
+
+        # If LuaTools tab is open in SettingsDialog, remove it dynamically
+        for i in range(dialog.tab_widget.count()):
+            if dialog.tab_widget.tabText(i).lower() == "luatools":
+                dialog.tab_widget.removeTab(i)
+                break
+
+        ThemedMessageBox.information(
+            dialog,
+            "LuaTools Reset & Locked",
+            "The LuaTools secret feature has been disabled and its session reset.\n\n"
+            "The tab will be hidden until you type the 'luatools' keyword in the library search bar again."
+        )
+    reset_luatools_btn.clicked.connect(_on_reset_luatools)
+    t_grid.addWidget(reset_luatools_btn, 4, 1, 1, 2)
+
     test_layout.addLayout(t_grid)
 
-    # 5. Testing Toggles: SteamDB Scraping & Demo Mode
+    # 6. Testing Toggles: SteamDB Scraping & Demo Mode
     sep_line = QFrame()
     sep_line.setFrameShape(QFrame.Shape.HLine)
     sep_line.setStyleSheet("background-color: rgba(255, 255, 255, 0.08); margin: 6px 0;")

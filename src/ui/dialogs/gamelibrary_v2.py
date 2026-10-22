@@ -7,6 +7,7 @@ DRM & Tools, Steam Workshop Mods, and SLSsteam Ownership Tickets.
 import logging
 from typing import List
 
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
 from PyQt6.QtWidgets import (
     QDialog,
@@ -28,6 +29,12 @@ from ui.dialogs.game_details.widgets import (
     CenteredComboBox,
     HeroBanner,
     MaterialTile,
+)
+
+from ui.dialogs.game_details.window_style import (
+    adapt_child_stylesheets,
+    build_stylesheet,
+    ink_on,
 )
 
 from ui.dialogs.game_details.hero_header import (
@@ -119,6 +126,7 @@ from ui.dialogs.game_details.tickets_tab import (
     export_installed_ticket,
     delete_installed_ticket,
 )
+from ui.dialogs.game_details.luafix_tab import init_luafix_tab
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +138,7 @@ class GameDetailsDialogV2(QDialog):
     build_depots_loaded = pyqtSignal(str, dict)
     build_depots_error = pyqtSignal(str)
     workshop_check_finished = pyqtSignal(bool)
+    luafix_check_finished = pyqtSignal(bool, object)
     manifest_fetch_completed = pyqtSignal(str, str, str, str, str, str, object)
 
     # Rollback toggle: set False to use the old 65px hero layout
@@ -153,6 +162,7 @@ class GameDetailsDialogV2(QDialog):
         self.build_depots_loaded.connect(self._on_build_depots_loaded)
         self.build_depots_error.connect(self._on_build_depots_error)
         self.workshop_check_finished.connect(self._on_workshop_check_finished)
+        self.luafix_check_finished.connect(self._on_luafix_check_finished)
         self.manifest_fetch_completed.connect(self._on_manifest_fetch_completed)
 
         self.accent_color = getattr(parent, "accent_color", "#a1c9fd")
@@ -170,9 +180,14 @@ class GameDetailsDialogV2(QDialog):
         self._apply_stylesheet()
         self._setup_ui()
 
-        # Check workshop availability and downloaded content in background thread
-        from utils.workshop_helpers import check_game_workshop_available_async
-        check_game_workshop_available_async(self.appid, self.game_data, callback=self.workshop_check_finished.emit)
+        # Check workshop availability and downloaded content in background thread (only if enabled)
+        if self.settings.value("enable_workshop_downloader", False, type=bool):
+            from utils.workshop_helpers import check_game_workshop_available_async
+            check_game_workshop_available_async(self.appid, self.game_data, callback=self.workshop_check_finished.emit)
+
+        # Check lua.tools fixes availability asynchronously (only if unlocked & authenticated)
+        if self._is_luatools_available():
+            self._check_luafix_async()
 
         # Initial cached builds status for instant display (scraping is deferred until user clicks Builds tab)
         aid = int(self.appid) if self.appid.isdigit() else 0
@@ -215,118 +230,9 @@ class GameDetailsDialogV2(QDialog):
             pass
 
     def _apply_stylesheet(self):
-        ac = self.accent_color
-        bg = self.background_color
-        from utils.color_utils import get_dark_container_color
-        sel_bg_hex = get_dark_container_color(ac)
-        self.setStyleSheet(f"""
-            QDialog {{
-                background-color: {bg};
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-            }}
-            QFrame {{
-                border: none;
-                background: transparent;
-            }}
-            QLabel {{
-                color: #FFFFFF;
-                border: none;
-                background: transparent;
-                font-size: 9.5pt;
-            }}
-            QPushButton {{
-                background-color: rgba(255, 255, 255, 0.08);
-                color: #FFFFFF;
-                border: none;
-                border-radius: 4px;
-                padding: 5px 14px;
-                font-size: 9.5pt;
-            }}
-            QPushButton:hover {{
-                background-color: rgba(255, 255, 255, 0.16);
-                color: {ac};
-            }}
-            QPushButton:disabled {{
-                background-color: rgba(255, 255, 255, 0.02);
-                color: rgba(255, 255, 255, 0.098);
-            }}
-            QLineEdit {{
-                background-color: rgba(0, 0, 0, 0.196);
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.059);
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-size: 9.5pt;
-            }}
-            QLineEdit:focus {{ border-color: {ac}; }}
-            QLineEdit:disabled {{
-                color: rgba(255, 255, 255, 0.118);
-                border-color: rgba(255, 255, 255, 8);
-            }}
-            QComboBox {{
-                background-color: rgba(0, 0, 0, 0.196);
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.059);
-                border-radius: 6px;
-                padding: 3px 8px;
-                font-size: 9.5pt;
-            }}
-            QComboBox::drop-down {{ border: none; width: 18px; }}
-            QComboBox QAbstractItemView {{
-                background-color: #1b1b1f;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 8px;
-                selection-background-color: {sel_bg_hex};
-                selection-color: #FFFFFF;
-                font-size: 9.5pt;
-                outline: 0px;
-                padding: 4px;
-            }}
-            QComboBox QAbstractItemView::item {{
-                min-height: 28px;
-                padding: 4px 12px;
-                color: #E0E0E0;
-            }}
-            QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
-                background-color: {sel_bg_hex} !important;
-                color: #FFFFFF !important;
-            }}
-            QCheckBox {{
-                color: #FFFFFF;
-                font-size: 9.5pt;
-                spacing: 6px;
-            }}
-            QCheckBox::indicator {{
-                width: 14px; height: 14px;
-                border: 1px solid rgba(255, 255, 255, 0.078);
-                border-radius: 3px;
-                background: rgba(0, 0, 0, 0.157);
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {ac};
-                border-color: {ac};
-            }}
-            QScrollArea {{ border: none; background: transparent; }}
-            QScrollBar:vertical {{
-                border: none;
-                background: rgba(0, 0, 0, 0.059);
-                width: 4px;
-                margin: 0px;
-                border-radius: 2px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: rgba(255, 255, 255, 0.137);
-                min-height: 20px;
-                border-radius: 2px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: rgba(255, 255, 255, 0.255);
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0px;
-            }}
-        """)
+        self.setStyleSheet(
+            build_stylesheet(self.background_color, self.accent_color)
+        )
 
     def _setup_ui(self):
         root = QVBoxLayout(self)
@@ -346,11 +252,11 @@ class GameDetailsDialogV2(QDialog):
 
         # Tab Bar
         tab_bar_frame = QFrame()
-        tab_bar_frame.setStyleSheet("""
-            QFrame {
+        tab_bar_frame.setStyleSheet(f"""
+            QFrame {{
                 background-color: rgba(0, 0, 0, 0.078);
-                border-bottom: 1px solid rgba(255, 255, 255, 0.039);
-            }
+                border-bottom: 1px solid {ink_on(self.background_color, 0.039)};
+            }}
         """)
         tab_bar_layout = QHBoxLayout(tab_bar_frame)
         tab_bar_layout.setContentsMargins(8, 0, 8, 0)
@@ -403,6 +309,11 @@ class GameDetailsDialogV2(QDialog):
             self.ws_page_index = 4
             self._tickets_tab_index = 5
 
+        if self._is_luatools_available():
+            idx = len(self._pages_info)
+            self._pages_info.append(("LuaFix", idx))
+            self.luafix_page_index = idx
+
         for label, idx in self._pages_info:
             btn = QPushButton(label)
             btn.setFlat(True)
@@ -417,6 +328,9 @@ class GameDetailsDialogV2(QDialog):
                 from utils.dlc_helpers import is_dlc_only_mode
                 if is_dlc_only_mode(self.appid) or not self._has_workshop or is_atom:
                     btn.setVisible(False)
+            elif label == "LuaFix":
+                self.luafix_tab_btn = btn
+                btn.setVisible(False)
 
         tab_bar_layout.addStretch()
 
@@ -427,7 +341,7 @@ class GameDetailsDialogV2(QDialog):
             QPushButton {{
                 border: none; border-radius: 0;
                 padding: 0 8px; font-size: 9pt;
-                color: rgba(255, 255, 255, 0.6);
+                color: {ink_on(self.background_color, 0.6)};
             }}
             QPushButton:hover {{ color: {self.accent_color}; }}
         """)
@@ -447,10 +361,13 @@ class GameDetailsDialogV2(QDialog):
         self._init_achievements_tab()
         self._init_workshop_tab()
         self._init_tickets_tab()
+        if self._is_luatools_available():
+            self._init_luafix_tab()
         root.addWidget(self.stacked, 1)
 
         self._switch_tab(0)
         self._init_slsonline_logic()
+        adapt_child_stylesheets(self)
 
     def _switch_tab(self, index):
         self.stacked.setCurrentIndex(index)
@@ -473,10 +390,11 @@ class GameDetailsDialogV2(QDialog):
                     QPushButton {{
                         border: none; border-radius: 0;
                         padding: 0px 10px; font-size: 9pt;
-                        color: rgba(255, 255, 255, 0.65);
+                        color: {ink_on(self.background_color, 0.65)};
                     }}
                     QPushButton:hover {{ color: {self.accent_color}; }}
                 """)
+        adapt_child_stylesheets(self)
 
         if hasattr(self, "builds_page_index") and index == self.builds_page_index:
             self._ensure_builds_loaded()
@@ -701,24 +619,38 @@ class GameDetailsDialogV2(QDialog):
         fetch_steamdb_builds_async(self)
 
     def _populate_builds_cards(self, data: list):
+        if sip.isdeleted(self):
+            return
         populate_builds_cards(self, data)
 
     def _on_builds_loaded(self, builds: list):
+        if sip.isdeleted(self):
+            return
         on_builds_loaded(self, builds)
 
     def _on_builds_error(self, err_msg: str):
+        if sip.isdeleted(self):
+            return
         on_builds_error(self, err_msg)
 
     def _on_build_depots_loaded(self, build_id: str, depots: dict):
+        if sip.isdeleted(self):
+            return
         on_build_depots_loaded(self, build_id, depots)
 
     def _on_build_depots_error(self, err_msg: str):
+        if sip.isdeleted(self):
+            return
         on_build_depots_error(self, err_msg)
 
     def _on_build_card_clicked(self, idx: int):
+        if sip.isdeleted(self):
+            return
         on_build_card_clicked(self, idx)
 
     def _on_builds_download_clicked(self):
+        if sip.isdeleted(self):
+            return
         on_builds_download_clicked(self)
 
     # ──────────────────────────────────────────
@@ -772,7 +704,8 @@ class GameDetailsDialogV2(QDialog):
             or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
             or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
         )
-        if is_vapor:
+        ws_enabled = self.settings.value("enable_workshop_downloader", False, type=bool)
+        if not ws_enabled or is_vapor:
             dummy = QWidget()
             self.stacked.addWidget(dummy)
             return
@@ -822,3 +755,61 @@ class GameDetailsDialogV2(QDialog):
         from ui.dialogs.game_details.depots_tab import init_depots_tab
         init_depots_tab(self)
 
+    # ──────────────────────────────────────────
+    #  LuaFix Tab Delegations (lua.tools integration)
+    # ──────────────────────────────────────────
+    def _is_luatools_available(self) -> bool:
+        """Whether this window may show the LuaFix tab.
+
+        Answers from a per-window cache: the check reads the session file, and
+        building the details window asks three times.
+        """
+        if not self.settings.value("luatools_unlocked", False, type=bool):
+            return False
+        cached = getattr(self, "_luatools_available", None)
+        if cached is not None:
+            return cached
+        try:
+            from core.lua_tools_api import LuaToolsAPI
+            available = LuaToolsAPI.is_authenticated(allow_cached=True)
+        except (OSError, ValueError, ImportError) as e:
+            logger.warning(f"[LuaFix] Could not read the lua.tools session: {e}")
+            available = False
+        self._luatools_available = available
+        return available
+
+    def _init_luafix_tab(self):
+        init_luafix_tab(self)
+
+    def _check_luafix_async(self):
+        """Asynchronously check if this game has eligible fixes on lua.tools."""
+        if not self._is_luatools_available():
+            return
+
+        def _worker():
+            try:
+                from core.lua_tools_api import LuaToolsAPI
+                res = LuaToolsAPI.get_game_fixes(self.appid)
+                ignore_online = self.settings.value("luatools_ignore_online_fixes", False, type=bool)
+                fixes = LuaToolsAPI.filter_fixes(res.get("fixes", []), ignore_online=ignore_online)
+                has_fixes = bool(res.get("success") and len(fixes) > 0)
+                self.luafix_check_finished.emit(has_fixes, res)
+            except Exception as e:
+                logger.debug(f"[LuaFix] Async check failed for {self.appid}: {e}")
+                self.luafix_check_finished.emit(False, None)
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @pyqtSlot(bool, object)
+    def _on_luafix_check_finished(self, has_fixes: bool, res_data: object):
+        if not self._is_luatools_available():
+            if hasattr(self, "luafix_tab_btn") and self.luafix_tab_btn:
+                self.luafix_tab_btn.setVisible(False)
+            return
+        if hasattr(self, "luafix_tab_btn") and self.luafix_tab_btn:
+            self.luafix_tab_btn.setVisible(has_fixes)
+        if has_fixes and res_data:
+            self._cached_luafix_res = res_data
+            if hasattr(self, "_luafix_bridge"):
+                self._luafix_bridge.loaded.emit(res_data)

@@ -3,7 +3,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QSize
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from utils.paths import Paths
+
 # Re-exports for 100% backward compatibility
 from ui.dialogs.library.widgets import (
     format_game_display_name,
@@ -25,6 +27,8 @@ from ui.dialogs.library.widgets import (
     ElidedLabel,
     BlurredHeaderWidget,
     GameItemWidget,
+    GameTileWidget,
+    GameCompactWidget,
 )
 from ui.dialogs.library.scanner import LibraryScannerMixin
 from ui.dialogs.library.filter_sort import LibraryFilterSortMixin
@@ -215,6 +219,68 @@ class GameLibraryDialog(
         super().resizeEvent(event)
         self._position_selection_fab()
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if hasattr(self, "settings") and self.settings:
+            self.accent_color = self.settings.value("accent_color", getattr(self, "accent_color", "#a1c9fd"))
+        QTimer.singleShot(50, self._position_selection_fab)
+
+    def update_style(self) -> None:
+        """Update colors and icons when theme or accent color changes."""
+        if hasattr(self, "settings") and self.settings:
+            self.accent_color = self.settings.value("accent_color", getattr(self, "accent_color", "#a1c9fd"))
+            self.background_color = self.settings.value("background_color", getattr(self, "background_color", "#000000"))
+        self._setup_style()
+
+    def _show_sort_menu(self) -> None:
+        """Show minimal dropdown menu for sorting options."""
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"""
+            QMenu {{
+                background-color: #1a1a20;
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 6px 18px;
+                border-radius: 4px;
+                font-size: 12px;
+                color: #FFFFFF;
+            }}
+            QMenu::item:selected {{
+                background-color: rgba(255, 255, 255, 0.12);
+                color: {self.accent_color};
+            }}
+            """
+        )
+
+        current_data = self.sort_combo.currentData() if hasattr(self, "sort_combo") else "pinned_first"
+        for i in range(self.sort_combo.count()):
+            label = self.sort_combo.itemText(i)
+            data = self.sort_combo.itemData(i)
+            action = QAction(label, menu)
+            action.setCheckable(True)
+            if data == current_data:
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, idx=i, l=label: self._on_sort_menu_item_selected(idx, l))
+            menu.addAction(action)
+
+        if hasattr(self, "sort_button") and self.sort_button:
+            menu.exec(self.sort_button.mapToGlobal(self.sort_button.rect().bottomLeft()))
+
+    def _on_sort_menu_item_selected(self, index: int, label: str) -> None:
+        if hasattr(self, "sort_combo"):
+            self.sort_combo.setCurrentIndex(index)
+        if hasattr(self, "sort_button"):
+            self.sort_button.setText(f"Sort by: {label} ▾")
+
+
+
     def _setup_ui(self) -> None:
         """Create and arrange UI elements."""
         window_layout = QVBoxLayout(self)
@@ -230,18 +296,14 @@ class GameLibraryDialog(
         layout.setContentsMargins(16, 12, 16, 16)
         window_layout.addWidget(content_widget, 1)
 
-        applist_2_0_enabled = self.applist_2_0_enabled
-
-        # --- Top Bar ---
-        top_layout = QHBoxLayout()
-        top_layout.setContentsMargins(0, 0, 0, 0)
-
+        # Hidden compatibility controls (to preserve references used by mixins and tests)
         self.scan_button = QPushButton("Scan Libraries")
         self.scan_button.clicked.connect(self._scan_for_games)
-
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search games..." if applist_2_0_enabled else "Filter games...")
-        self.search_input.textChanged.connect(self._on_search_changed)
+        self.scan_imports_button = QPushButton("Scan for LUA")
+        self.scan_imports_button.clicked.connect(self._on_scan_imports_clicked)
+        self.select_mode_button = QPushButton("Select")
+        self.select_mode_button.setCheckable(True)
+        self.select_mode_button.clicked.connect(self._toggle_select_mode)
 
         self.sort_combo = QComboBox()
         self.sort_combo.addItem("Pinned First", "pinned_first")
@@ -256,252 +318,123 @@ class GameLibraryDialog(
 
         # Load last saved sort option
         if self.settings:
-            saved_sort = self.settings.value("library_sort_option", "recently_installed", type=str)
+            saved_sort = self.settings.value("library_sort_option", "pinned_first", type=str)
             idx = self.sort_combo.findData(saved_sort)
             if idx != -1:
                 self.sort_combo.setCurrentIndex(idx)
 
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
 
-        self.select_mode_button = QPushButton("Select")
-        self.select_mode_button.setCheckable(True)
-        self.select_mode_button.setFixedWidth(80)
-        self.select_mode_button.clicked.connect(self._toggle_select_mode)
+        # --- Row 1: Centered Search Bar (Pill Shape with View Mode Switcher Button) ---
+        search_container = QWidget()
+        search_layout = QHBoxLayout(search_container)
+        search_layout.setContentsMargins(0, 0, 0, 10)
+        search_layout.setSpacing(0)
 
-        if applist_2_0_enabled:
-            self.search_input.setFixedWidth(220)
-            self.search_input.setFixedHeight(36)
-            self.search_input.setStyleSheet(
-                f"""
-                QLineEdit {{
-                    background-color: rgba(255, 255, 255, 0.05);
-                    color: #FFFFFF;
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 18px;
-                    padding: 0px 16px;
-                    font-size: 12px;
-                }}
-                QLineEdit:focus {{
-                    border: 2px solid {self.accent_color};
-                    background-color: rgba(255, 255, 255, 0.08);
-                    padding: 0px 15px;
-                }}
-                """
-            )
-            self.sort_combo.setFixedHeight(36)
-            self.sort_combo.setStyleSheet(
-                f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.05);
-                    color: #FFFFFF;
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 18px;
-                    padding: 0px 16px;
-                    font-size: 12px;
-                }}
-                QComboBox:hover {{
-                    background-color: rgba(255, 255, 255, 0.08);
-                    border-color: rgba(255, 255, 255, 0.2);
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 0px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: {self.background_color};
-                    color: #FFFFFF;
-                    selection-background-color: rgba(255, 255, 255, 0.12);
-                    selection-color: {self.accent_color};
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 8px;
-                    padding: 4px;
-                }}
-                """
-            )
-            self.select_mode_button.setFixedWidth(85)
-            self.select_mode_button.setFixedHeight(36)
-            self.select_mode_button.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background-color: rgba(255, 255, 255, 0.05);
-                    color: #FFFFFF;
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 18px;
-                    padding: 0px 16px;
-                    font-size: 12px;
-                    font-weight: bold;
-                }}
-                QPushButton:hover {{
-                    background-color: rgba(255, 255, 255, 0.08);
-                    border-color: rgba(255, 255, 255, 0.2);
-                }}
-                QPushButton:checked {{
-                    background-color: {self.accent_color};
-                    color: #000000;
-                    border: none;
-                }}
-                """
-            )
-            top_layout.addWidget(self.search_input)
-            top_layout.addStretch()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search games...")
+        self.search_input.setFixedHeight(38)
+        self.search_input.setMinimumWidth(320)
+        self.search_input.setMaximumWidth(580)
+        self.search_input.setStyleSheet(
+            f"""
+            QLineEdit {{
+                background-color: rgba(255, 255, 255, 0.06);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 19px;
+                padding: 0px 20px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                background-color: rgba(255, 255, 255, 0.09);
+                border: 2px solid {self.accent_color};
+                padding: 0px 19px;
+            }}
+            """
+        )
+        self.search_input.textChanged.connect(self._on_search_changed)
 
-            # Scan Imports button (Scan for user-provided LUA files)
-            self.scan_imports_button = QPushButton("Scan for LUA")
-            self.scan_imports_button.setToolTip(
-                "Scan for user-provided .lua files in the cached_luas folder "
-                "that are not yet registered in the library"
-            )
-            self.scan_imports_button.setFixedHeight(36)
-            self.scan_imports_button.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background-color: rgba(255, 255, 255, 0.05);
-                    color: #FFFFFF;
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 18px;
-                    padding: 0px 16px;
-                    font-size: 12px;
-                }}
-                QPushButton:hover {{
-                    background-color: rgba(255, 255, 255, 0.08);
-                    border-color: rgba(255, 255, 255, 0.2);
-                }}
-                QPushButton:pressed {{
-                    background-color: {self.accent_color};
-                    color: #000000;
-                    border: none;
-                }}
-                """
-            )
-            self.scan_imports_button.clicked.connect(self._on_scan_imports_clicked)
-            top_layout.addWidget(self.scan_imports_button)
+        search_layout.addStretch(1)
+        search_layout.addWidget(self.search_input, 4)
+        search_layout.addStretch(1)
+        layout.addWidget(search_container)
 
-            top_layout.addWidget(QLabel("Sort by:"))
-            top_layout.addWidget(self.sort_combo)
-            top_layout.addWidget(self.select_mode_button)
-        else:
-            self.search_input.setFixedWidth(150)
-            top_layout.addWidget(self.scan_button)
-            top_layout.addStretch()
-            top_layout.addWidget(QLabel("Search:"))
-            top_layout.addWidget(self.search_input)
-            top_layout.addWidget(QLabel("Sort by:"))
-            top_layout.addWidget(self.sort_combo)
-            top_layout.addWidget(self.select_mode_button)
-
-        layout.addLayout(top_layout)
-
-        # --- Tab Navigation Bar ---
+        # --- Row 2: Tabs (left) & Sort by (right) ---
         self.tab_bar = LibraryTabBar(accent_color=self.accent_color, parent=self)
         self.tab_bar.current_tab_changed.connect(self._on_tab_changed)
+
+        # Minimal borderless "Sort by: [Current Option] ▾" button
+        saved_label = self.sort_combo.currentText() or "Pinned First"
+        self.sort_button = QPushButton(f"Sort by: {saved_label} ▾")
+        self.sort_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sort_button.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {self.accent_color};
+                border: none;
+                padding: 4px 10px;
+                font-size: 12px;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                color: #FFFFFF;
+            }}
+            """
+        )
+        self.sort_button.clicked.connect(self._show_sort_menu)
+        self.tab_bar.add_right_widget(self.sort_button)
         layout.addWidget(self.tab_bar)
 
         # --- Games List ---
         self.games_list = QListWidget()
         self.games_list.setSpacing(2)
-        self.games_list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
-        self.games_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         layout.addWidget(self.games_list)
 
-        # --- Selection FAB (floating button) ---
-        self.selection_fab = QPushButton("Actions  ▼", self)
-        self.selection_fab.setVisible(False)
+        # --- Persistent Floating Options / Actions Button ---
+        self.selection_fab = QPushButton("options", self)
+        self.selection_fab.setObjectName("SelectionFab")
+        self.selection_fab.setVisible(True)
         self.selection_fab.setCursor(Qt.CursorShape.PointingHandCursor)
         self.selection_fab.setStyleSheet(
             f"""
-            QPushButton {{
+            QPushButton#SelectionFab {{
                 background-color: {self.accent_color};
                 color: #000000;
                 border: none;
                 border-radius: 18px;
-                padding: 8px 16px;
-                font-size: 9.5pt;
+                min-height: 36px;
+                max-height: 36px;
+                padding: 0px 20px;
+                font-size: 12px;
                 font-weight: bold;
             }}
-            QPushButton:hover {{
+            QPushButton#SelectionFab:hover {{
                 background-color: #FFFFFF;
                 color: #000000;
             }}
             """
         )
-        self.selection_fab.clicked.connect(self._show_fab_menu)
+        self.selection_fab.clicked.connect(self._on_fab_clicked)
 
         shadow = QGraphicsDropShadowEffect(self.selection_fab)
         shadow.setBlurRadius(15)
-        shadow.setColor(QColor(0, 0, 0, 150))
+        shadow.setColor(QColor(0, 0, 0, 160))
         shadow.setOffset(0, 4)
         self.selection_fab.setGraphicsEffect(shadow)
 
-        # Setup custom Material Floating Action Button Menu container
-        self.fab_menu_container = QWidget(self)
-        self.fab_menu_container.setVisible(False)
-        self.fab_menu_container.setStyleSheet("background: transparent;")
-        
-        menu_layout = QVBoxLayout(self.fab_menu_container)
-        menu_layout.setContentsMargins(0, 0, 0, 0)
-        menu_layout.setSpacing(8)
-        
-        # Action 1: Update Selected
-        row_update = QHBoxLayout()
-        row_update.setSpacing(8)
-        lbl_update = QLabel("Update Selected")
-        lbl_update.setStyleSheet("background-color: #1a1a20; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 4px; padding: 4px 8px; color: #FFFFFF; font-size: 8.5pt;")
-        btn_update = QPushButton("↻")
-        btn_update.setFixedSize(32, 32)
-        btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_update.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.accent_color};
-                color: #000000;
-                border: none;
-                border-radius: 16px;
-                font-size: 11pt;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: #FFFFFF;
-                color: #000000;
-            }}
-        """)
-        btn_update.clicked.connect(self._on_update_action_clicked)
-        row_update.addWidget(lbl_update)
-        row_update.addWidget(btn_update)
-        menu_layout.addLayout(row_update)
-        
-        # Action 2: Uninstall Selected
-        row_uninstall = QHBoxLayout()
-        row_uninstall.setSpacing(8)
-        lbl_uninstall = QLabel("Uninstall Selected")
-        lbl_uninstall.setStyleSheet("background-color: #1a1a20; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 4px; padding: 4px 8px; color: #FFFFFF; font-size: 8.5pt;")
-        btn_uninstall = QPushButton("🗑")
-        btn_uninstall.setFixedSize(32, 32)
-        btn_uninstall.setCursor(Qt.CursorShape.PointingHandCursor)
-        
-        from utils.color_utils import get_semantic_colors
-        sem_colors = get_semantic_colors(self.accent_color)
-        err_color = sem_colors["error"]
-        
-        btn_uninstall.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {err_color};
-                color: #FFFFFF;
-                border: none;
-                border-radius: 16px;
-                font-size: 10pt;
-            }}
-            QPushButton:hover {{
-                background-color: #FFFFFF;
-                color: {err_color};
-            }}
-        """)
-        btn_uninstall.clicked.connect(self._on_uninstall_action_clicked)
-        row_uninstall.addWidget(lbl_uninstall)
-        row_uninstall.addWidget(btn_uninstall)
-        menu_layout.addLayout(row_uninstall)
+        # Multi-selection actions are handled via right-aligned drop-up QMenu in _show_fab_menu()
+        self.fab_menu_container = None
+        self.btn_select_all = None
+        self.btn_move_atom = None
+        self.btn_update = None
+        self.btn_uninstall = None
+        self.btn_clear = None
 
-        # --- Status Footer ---
+        # --- Status Footer (omitted from layout to maximize space for games list) ---
         self.info_label = QLabel("Found 0 installed Steam games")
-        layout.addWidget(self.info_label)
+        self.info_label.setVisible(False)
 
     def _connect_signals(self) -> None:
         """Connect GameManager and local signals."""
@@ -522,6 +455,7 @@ class GameLibraryDialog(
         )
 
         self.games_list.itemClicked.connect(self._on_item_selected)
+        self.games_list.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.games_list.customContextMenuRequested.connect(self._show_games_list_context_menu)
         self.goldberg_check_complete.connect(self._on_goldberg_check_complete)
         self.manifest_download_complete.connect(self._on_manifest_download_complete)

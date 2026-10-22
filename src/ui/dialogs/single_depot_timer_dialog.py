@@ -1,12 +1,12 @@
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
 )
 
+from ui.dialogs.themed_dialog import install_themed_frame
 from utils.settings import get_settings
 from utils.color_utils import get_best_foreground_color
 
@@ -25,7 +25,7 @@ class SingleDepotTimerDialog(QDialog):
     def __init__(self, parent=None, title="Single Depot Option", message="Game has only one depot.\n\nProceed to download and add it to queue?", seconds=3):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setFixedSize(410, 165)
+        self.setFixedWidth(410)
         self.seconds = seconds
         
         settings = get_settings()
@@ -33,18 +33,11 @@ class SingleDepotTimerDialog(QDialog):
         bg = settings.value("background_color", "#141416", type=str)
         text_color = get_best_foreground_color(ac)
 
-        self.setStyleSheet(f"""
-            QDialog {{
-                background-color: {bg};
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 10px;
-            }}
-            QLabel {{ color: #FFFFFF; font-size: 9.5pt; }}
+        self.setStyleSheet("""
+            QLabel { color: #FFFFFF; font-size: 9.5pt; }
         """)
         
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 16, 18, 16)
-        lay.setSpacing(14)
+        lay = install_themed_frame(self, title, margins=(18, 16, 18, 16), spacing=14)
         
         msg_lbl = QLabel(message)
         msg_lbl.setWordWrap(True)
@@ -120,6 +113,9 @@ class SingleDepotTimerDialog(QDialog):
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._on_tick)
         self.timer.start()
+
+        # The frame and title bar add height, so size to the finished layout.
+        self.adjustSize()
 
     def _on_yes_clicked(self):
         self.timer.stop()

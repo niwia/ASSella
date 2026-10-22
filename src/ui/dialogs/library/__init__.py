@@ -8,6 +8,8 @@ from ui.dialogs.library.widgets import (
     ElidedLabel,
     BlurredHeaderWidget,
     GameItemWidget,
+    GameTileWidget,
+    GameCompactWidget,
 )
 from ui.dialogs.library.scanner import LibraryScannerMixin
 from ui.dialogs.library.filter_sort import LibraryFilterSortMixin
@@ -28,6 +30,8 @@ __all__ = [
     "ElidedLabel",
     "BlurredHeaderWidget",
     "GameItemWidget",
+    "GameTileWidget",
+    "GameCompactWidget",
     "LibraryScannerMixin",
     "LibraryFilterSortMixin",
     "LibraryImageLoaderMixin",

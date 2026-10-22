@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 )
 
 from components.custom_widgets import ScaledFontLabel, ScaledLabel
+from ui.dialogs.themed_dialog import install_themed_frame
 from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -32,8 +33,7 @@ class ChmodResumeDialog(QDialog):
 
     def _setup_ui(self, game_name, file_count, success):
         """Setup the dialog UI"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout = install_themed_frame(self, "Make Executable Complete")
         layout.setSpacing(15)
 
         # Get colors from settings

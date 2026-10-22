@@ -6,8 +6,42 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Common AppIDs to ignore (Steamworks redistributables, etc.)
-IGNORED_APPIDS = {"228980", "105600"}
+# Steam installs its own tools next to games, with real appmanifest files and
+# installdirs, so a naive glob lists Proton, the runtime containers and
+# redistributables as if they were games. Match the names Valve ships - plus
+# the unambiguous AppIDs - rather than trying to guess from StateFlags, which
+# is identical for games and tools.
+_TOOL_APPIDS = {
+    "480",            # Spacewar (Valve's public test app)
+    "228980",         # Steamworks Common Redistributables
+    "1070560",        # Steam Linux Runtime 1.0 (scout)
+    "1391110",        # Steam Linux Runtime 2.0 (soldier)
+    "1628350",        # Steam Linux Runtime 3.0 (sniper)
+    "4183110",        # Steam Linux Runtime 4.0
+    "4185400",        # Steam Linux Runtime 4.0 - Arm64
+}
+
+_TOOL_NAME_RE = re.compile(
+    r"^(proton\b"
+    r"|steamlinuxruntime"
+    r"|steam linux runtime\b"
+    r"|steamworks (common redistributables|shared)\b"
+    r"|steamvr\b"
+    r"|steam controller configs\b"
+    r"|steam audio\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_steam_tool(appid: str, game_name: str, installdir: str) -> bool:
+    """True for Valve runtime/tool manifests that are not user games."""
+    if appid in _TOOL_APPIDS:
+        return True
+    return bool(
+        _TOOL_NAME_RE.match(game_name)
+        or _TOOL_NAME_RE.match(installdir)
+    )
+
 
 _RE_APPID = re.compile(r'"appid"\s+"(\d+)"')
 _RE_NAME = re.compile(r'"name"\s+"([^"]+)"')
@@ -34,7 +68,7 @@ def _parse_acf_file(acf_path: Path) -> Optional[Dict[str, Any]]:
         fname = acf_path.stem  # appmanifest_12345
         appid = fname.replace("appmanifest_", "")
 
-    if not appid or not appid.isdigit() or appid in IGNORED_APPIDS:
+    if not appid or not appid.isdigit() or appid in _TOOL_APPIDS:
         return None
 
     # StateFlags (4 = fully installed; bitmask 4 must be set)
@@ -57,6 +91,9 @@ def _parse_acf_file(acf_path: Path) -> Optional[Dict[str, Any]]:
 
     if not game_name:
         game_name = installdir
+
+    if _is_steam_tool(appid, game_name, installdir):
+        return None
 
     # Size on disk
     m_size = _RE_SIZE.search(content)
@@ -232,6 +269,11 @@ def scan_acf_files(
                     "is_accela_install": is_accela or is_atom,
                     "is_atom": is_atom,
                     "is_vapor": is_atom,
+                    # True when the AT0-M migration could not adopt the Steam
+                    # appmanifest (Steam was running). The game is AT0-M but
+                    # still needs the manifest adoption, so it must stay
+                    # re-runnable.
+                    "acf_pending": bool(plugin_record and plugin_record.get("acf_pending")),
                 }
                 results.append(game_data)
         except OSError as e:

@@ -19,9 +19,10 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QButtonGroup,
     QProgressBar,
-    QMessageBox,
     QFrame,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
+from ui.dialogs.themed_dialog import install_themed_frame
 
 from core.steam_helpers import get_steam_libraries, find_steam_install
 from utils.paths import is_valid_download_directory
@@ -94,17 +95,9 @@ class MoveStorageDialog(QDialog):
         self.worker: Optional[StorageMoveWorker] = None
 
         self.setWindowTitle(f"Move Game Storage - {self.game_name}")
-        self.setFixedSize(500, 360)
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #12131a;
-                color: #FFFFFF;
-            }
-        """)
+        self.setFixedWidth(500)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
+        layout = install_themed_frame(self, margins=(20, 20, 20, 20), spacing=14)
 
         title = QLabel(f"Move <b>{self.game_name}</b> to another drive")
         title.setStyleSheet("font-size: 11pt; font-weight: bold; color: #FFFFFF;")
@@ -250,10 +243,13 @@ class MoveStorageDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
+        # The title bar and frame add height; size to the finished layout.
+        self.adjustSize()
+
     def _start_move(self):
         checked_id = self.btn_group.checkedId()
         if checked_id < 0 or checked_id >= len(self.target_libs):
-            QMessageBox.warning(self, "No Storage Selected", "Please select a target storage library.")
+            ThemedMessageBox.warning(self, "No Storage Selected", "Please select a target storage library.")
             return
 
         target_lib = self.target_libs[checked_id]
@@ -266,7 +262,7 @@ class MoveStorageDialog(QDialog):
             free_bytes = shutil.disk_usage(target_lib).free
             game_size = self.game_data.get("size_on_disk", 0)
             if game_size and free_bytes < (game_size + 1024**3):  # 1GB margin
-                QMessageBox.warning(
+                ThemedMessageBox.warning(
                     self,
                     "Insufficient Disk Space",
                     f"Target drive only has {_format_bytes(free_bytes)} free, which may not be enough for this game ({_format_bytes(game_size)})."
@@ -296,7 +292,7 @@ class MoveStorageDialog(QDialog):
         self.cancel_btn.setEnabled(True)
 
         if not success:
-            QMessageBox.critical(self, "Move Failed", f"Failed to move game storage:\n\n{msg}")
+            ThemedMessageBox.critical(self, "Move Failed", f"Failed to move game storage:\n\n{msg}")
             return
 
         new_install_path = msg
@@ -333,7 +329,7 @@ class MoveStorageDialog(QDialog):
             except Exception as e:
                 logger.warning(f"Could not update plugin_library.json installdir: {e}")
 
-        QMessageBox.information(
+        ThemedMessageBox.information(
             self,
             "Move Complete",
             f"Successfully moved '{self.game_name}' to:\n{target_lib}"

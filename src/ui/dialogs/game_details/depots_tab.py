@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtProperty, QPropertyAnimation, QEasingCurve
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtProperty, QPropertyAnimation, QEasingCurve, QSize
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen
 from PyQt6.QtWidgets import (
     QWidget,
@@ -27,8 +27,8 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QAbstractItemView,
-    QMessageBox,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.game_details.hero_header import section_title
 from utils.yaml_config_manager import (
@@ -41,7 +41,13 @@ from utils.yaml_config_manager import (
     _get_section_bounds,
 )
 from utils.sls_bridge import SLSBridge
-from utils.plugin_games import SHARED_REDISTS, load_plugin_library
+from utils.plugin_games import (
+    SHARED_REDISTS,
+    build_depot_comment,
+    build_key_comment,
+    comment_has_owner_tag,
+    load_plugin_library,
+)
 from utils.lua_parsing import iter_live_matches
 from ui.assets import DEPOT_BLACKLIST
 
@@ -59,57 +65,23 @@ class _EnrichmentBridge(QObject):
     enriched = pyqtSignal()
 
 
-def _format_enriched_depot_desc(depot_id: str, fallback_desc: str, enrich_data: Optional[Dict[str, Any]] = None) -> str:
-    """Format depot title with OS, language, DLC badges, and enriched name from Steam PICS / SteamDB."""
-    if not enrich_data:
-        return fallback_desc
-
-    raw_name = enrich_data.get("name") or ""
-    # Strip redundant DLC prefix if present in scraped name
-    cleaned_name = re.sub(r"^DLC\s+\d+\s*-?\s*", "", str(raw_name), flags=re.IGNORECASE).strip()
-
-    # Determine base descriptive text
-    if cleaned_name and not re.match(r"^(?:Depot|App)\s+\d+$", cleaned_name, re.IGNORECASE):
-        base_desc = cleaned_name
-    elif fallback_desc and not re.match(r"^Depot\s+\d+$", fallback_desc, re.IGNORECASE):
-        base_desc = fallback_desc
-    else:
-        base_desc = f"Depot {depot_id}"
-
-    oslist = str(enrich_data.get("oslist") or "").lower()
-    os_tag = ""
-    if oslist == "windows":
-        os_tag = "[Windows]"
-    elif oslist == "linux":
-        os_tag = "[Linux]"
-    elif oslist in ("macos", "macosx"):
-        os_tag = "[macOS]"
-    elif "windows" in oslist and "linux" in oslist:
-        os_tag = "[Windows, Linux]"
-    elif "all" in oslist:
-        os_tag = "[All]"
-
-    lang = str(enrich_data.get("language") or "").strip()
-    lang_tag = f"[{lang.capitalize()}]" if lang and lang.lower() not in ("english", "none", "") else ""
-
-    is_dlc = enrich_data.get("is_dlc")
-    dlc_id = enrich_data.get("dlcappid")
-    dlc_tag = ""
-    if is_dlc:
-        dlc_tag = f"[DLC {dlc_id}]" if dlc_id and str(dlc_id).isdigit() else "[DLC]"
-
-    tags = []
-    base_lower = base_desc.lower()
-    if os_tag and os_tag.lower() not in base_lower:
-        tags.append(os_tag)
-    if lang_tag and lang_tag.lower() not in base_lower:
-        tags.append(lang_tag)
-    if dlc_tag and dlc_tag.lower() not in base_lower:
-        tags.append(dlc_tag)
-
-    if tags:
-        return f"{' '.join(tags)}  {base_desc}".strip()
-    return base_desc
+def _format_enriched_depot_desc(
+    depot_id: str,
+    fallback_desc: str,
+    enrich_data: Optional[Dict[str, Any]] = None,
+    has_os_icon: bool = False,
+    base_appid: Optional[str] = None,
+) -> str:
+    """Format depot title with OS, architecture, language, DLC badges, and clean name using format_depot_row_label."""
+    from utils.depot_tag_helpers import format_depot_row_label
+    return format_depot_row_label(
+        depot_id=str(depot_id),
+        depot_data=enrich_data or {},
+        base_desc=fallback_desc,
+        has_os_icon=has_os_icon,
+        show_os_badge=(not has_os_icon),
+        base_appid=base_appid,
+    )
 
 
 class MiniSwitchToggle(QWidget):
@@ -263,6 +235,7 @@ def _make_local_indicator(in_local: bool) -> QWidget:
 def _make_table(columns: List[str], accent_color: str) -> QTableWidget:
     """Create a styled table widget matching ASSella design conventions."""
     tbl = QTableWidget()
+    tbl.setIconSize(QSize(18, 18))
     tbl.setColumnCount(len(columns))
     for c_idx, col_name in enumerate(columns):
         item = QTableWidgetItem(col_name)
@@ -726,19 +699,36 @@ def init_depots_tab(dialog) -> None:
 
         # 4. Merge game_data metadata
         gd = dialog.game_data or {}
-        gd_dlcs = gd.get("dlcs") or {}
+        gd_dlcs_raw = gd.get("dlcs") or {}
+        if isinstance(gd_dlcs_raw, dict):
+            gd_dlcs = {str(k): str(v) for k, v in gd_dlcs_raw.items()}
+        elif isinstance(gd_dlcs_raw, (list, set)):
+            gd_dlcs = {str(d): f"DLC {d}" for d in gd_dlcs_raw}
+        else:
+            gd_dlcs = {}
         for dlc_id, dlc_desc in gd_dlcs.items():
-            lua_dlcs.setdefault(str(dlc_id), str(dlc_desc))
+            lua_dlcs.setdefault(dlc_id, dlc_desc)
 
-        gd_depots = gd.get("depots") or {}
-        for d, dinfo in gd_depots.items():
-            d_str = str(d)
-            if isinstance(dinfo, dict):
-                desc = dinfo.get("desc") or dinfo.get("name") or ""
-                lua_depots.setdefault(d_str, desc)
-                k = dinfo.get("key") or dinfo.get("decryption_key")
+        gd_depots_raw = gd.get("depots") or {}
+        if isinstance(gd_depots_raw, dict):
+            gd_depots = {str(k): (v if isinstance(v, dict) else {"desc": str(v)}) for k, v in gd_depots_raw.items()}
+        elif isinstance(gd_depots_raw, (list, set)):
+            gd_depots = {str(d): {"desc": f"Depot {d}"} for d in gd_depots_raw}
+        else:
+            gd_depots = {}
+
+        for d_str, dinfo in gd_depots.items():
+            desc = dinfo.get("desc") or dinfo.get("name") or ""
+            lua_depots.setdefault(d_str, desc)
+            k = dinfo.get("key") or dinfo.get("decryption_key")
+            if k and len(str(k)) == 64:
+                lua_keys.setdefault(d_str, str(k).lower())
+
+        gd_keys = gd.get("keys") or {}
+        if isinstance(gd_keys, dict):
+            for did, k in gd_keys.items():
                 if k and len(str(k)) == 64:
-                    lua_keys.setdefault(d_str, str(k).lower())
+                    lua_keys.setdefault(str(did), str(k).lower())
 
         # 5. Check config.yaml entries specifically tagged with this game's name or AppID
         tagged_apps_from_config: Dict[str, str] = {}
@@ -754,7 +744,7 @@ def init_depots_tab(dialog) -> None:
                         m = re.match(r"^[ \t]*-[ \t]*(\d+)[ \t]*(?:#[ \t]*(.*))?$", line)
                         if m:
                             aid, comment = m.group(1), (m.group(2) or "")
-                            if (game_name and game_name.lower() in comment.lower()) or appid_str in comment:
+                            if (game_name and game_name.lower() in comment.lower()) or comment_has_owner_tag(comment, appid_str):
                                 if aid != appid_str:
                                     clean_c = re.sub(r"^\[DLC\]\s*", "", comment.strip(), flags=re.IGNORECASE)
                                     tagged_apps_from_config[aid] = clean_c or f"DLC {aid}"
@@ -766,7 +756,7 @@ def init_depots_tab(dialog) -> None:
                         m = re.match(r"^[ \t]*-[ \t]*(\d+)[ \t]*(?:#[ \t]*(.*))?$", line)
                         if m:
                             did, comment = m.group(1), (m.group(2) or "")
-                            if (game_name and game_name.lower() in comment.lower()) or appid_str in comment:
+                            if (game_name and game_name.lower() in comment.lower()) or comment_has_owner_tag(comment, appid_str):
                                 tagged_depots_from_config.add(did)
 
                 key_bounds = _get_section_bounds(cfg_text, "DecryptionKeys")
@@ -776,7 +766,7 @@ def init_depots_tab(dialog) -> None:
                         m = re.match(r"^[ \t]*['\"]?(\d+)['\"]?[ \t]*:[ \t]*['\"]?([a-fA-F0-9]{64})['\"]?[ \t]*(?:#[ \t]*(.*))?$", line)
                         if m:
                             did, kval, comment = m.group(1), m.group(2), (m.group(3) or "")
-                            if (game_name and game_name.lower() in comment.lower()) or appid_str in comment:
+                            if (game_name and game_name.lower() in comment.lower()) or comment_has_owner_tag(comment, appid_str):
                                 tagged_keys_from_config[did] = kval.lower()
             except Exception as e:
                 logger.debug(f"[DepotsTab] Error reading tagged config comments: {e}")
@@ -818,6 +808,10 @@ def init_depots_tab(dialog) -> None:
         # Pure license DLCs have no dedicated depot payload or decryption key
         content_dlcs = {d for d in dlc_id_set if (d in game_keys or d in lua_depots or d in gd_depots)}
         pure_license_dlcs = dlc_id_set - content_dlcs
+        dlc_content_depots = set(dlc_id_set)
+        for depot_id, depot_info in gd_depots.items():
+            if isinstance(depot_info, dict) and str(depot_info.get("dlcappid") or "").strip() in dlc_id_set:
+                dlc_content_depots.add(depot_id)
 
         # Build Depots list for THIS GAME ONLY:
         # Collect any shared redistributables explicitly required/referenced by this game
@@ -835,7 +829,8 @@ def init_depots_tab(dialog) -> None:
             | plugin_depots
             | set(game_keys.keys())
             | tagged_depots_from_config
-        ) - ALL_SHARED_REDISTS - {appid_str} - dlc_id_set
+            | set(gd_depots.keys())
+        ) - ALL_SHARED_REDISTS - {appid_str} - pure_license_dlcs
 
         from utils.yaml_config_manager import is_depot_shared_with_other_games
         from managers.db_manager import DatabaseManager
@@ -856,8 +851,21 @@ def init_depots_tab(dialog) -> None:
                 or (f"[DLC] {lua_dlcs.get(d)}" if d in lua_dlcs else None)
                 or f"Depot {d}"
             )
-            enrich_info = cached_enrichments.get(d) or cached_app_depots.get(d)
-            enriched_desc = _format_enriched_depot_desc(d, desc, enrich_info)
+            if d in dlc_content_depots and not desc.upper().startswith("[DLC]"):
+                desc = f"[DLC] {desc}"
+            enrich_info = cached_enrichments.get(d) or cached_app_depots.get(d) or {}
+
+            from utils.depot_tag_helpers import get_os_icon
+            accent_val = getattr(dialog, "accent_color", None) or ac
+            active_tint = QColor(accent_val) if accent_val and QColor(accent_val).isValid() else None
+            os_icon = get_os_icon(enrich_info.get("oslist"), tint_color=active_tint) if enrich_info else None
+            enriched_desc = _format_enriched_depot_desc(
+                depot_id=d,
+                fallback_desc=desc,
+                enrich_data=enrich_info,
+                has_os_icon=bool(os_icon),
+                base_appid=appid_str,
+            )
 
             size_str = ""
             if enrich_info:
@@ -880,6 +888,8 @@ def init_depots_tab(dialog) -> None:
                 "id": d,
                 "desc": enriched_desc,
                 "raw_desc": desc,
+                "enrich_info": enrich_info,
+                "os_icon": os_icon,
                 "has_key": (d in valid_key_depots),
                 "is_shared": is_shared,
                 "size_str": size_str,
@@ -1219,6 +1229,8 @@ def init_depots_tab(dialog) -> None:
                 desc_text = f"{desc_text} [Shared]"
             desc_item = QTableWidgetItem(desc_text)
             desc_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            if item.get("os_icon"):
+                desc_item.setIcon(item["os_icon"])
             tooltip_parts = [desc_text]
             if item.get("size_str"):
                 tooltip_parts.append(f"Size: {item['size_str']}")
@@ -1328,16 +1340,16 @@ def init_depots_tab(dialog) -> None:
         """Unlock custom depot and configuration selection after confirmation dialog."""
         nonlocal is_unlocked
         if not is_unlocked:
-            reply = QMessageBox.warning(
+            reply = ThemedMessageBox.warning(
                 dialog,
                 "Advanced Configuration",
                 "Modifying depot and configuration entries is intended for advanced users only.\n\n"
                 "Excluding required depots or keys may prevent Steam from downloading or launching the game properly.\n\n"
                 "Do you want to unlock custom configuration editing?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                ThemedMessageBox.StandardButton.No,
             )
-            if reply == QMessageBox.StandardButton.Yes:
+            if reply == ThemedMessageBox.StandardButton.Yes:
                 is_unlocked = True
                 unlock_btn.setText("Unlocked")
                 unlock_btn.setStyleSheet(unlock_btn_style_unlocked)
@@ -1390,7 +1402,7 @@ def init_depots_tab(dialog) -> None:
                         continue  # Safeguard: AppIDs must never be in AdditionalDepots
                     desired = desired_depots.get(did, did in state["live_depots"])
                     if desired and did not in state["live_depots"]:
-                        comment = f"{game_name} ({did})"
+                        comment = build_depot_comment(game_name, did, "", appid_str)
                         editor.add_depot(did, comment=comment, app_id=appid_str)
                         added_count += 1
                     elif not desired and did in state["live_depots"]:
@@ -1404,7 +1416,7 @@ def init_depots_tab(dialog) -> None:
                     kval = item["key"]
                     if desired and not item["in_config"]:
                         if kval:
-                            comment = f"{game_name} [AppKey]" if kid == appid_str else f"{game_name} ({kid})"
+                            comment = build_key_comment(game_name, kid, "", appid_str)
                             editor.add_key(kid, kval, comment=comment)
                             added_count += 1
                     elif not desired and item["in_config"]:
@@ -1430,7 +1442,7 @@ def init_depots_tab(dialog) -> None:
                     if did == appid_str:
                         continue  # Safeguard: AppIDs must never be in AdditionalDepots
                     if did not in state["live_depots"] and did in valid_keys:
-                        comment = f"{game_name} ({did})"
+                        comment = build_depot_comment(game_name, did, "", appid_str)
                         editor.add_depot(did, comment=comment, app_id=appid_str)
                         added_count += 1
 
@@ -1439,7 +1451,7 @@ def init_depots_tab(dialog) -> None:
                     kid = item["id"]
                     kval = item["key"]
                     if kval and not item["in_config"]:
-                        comment = f"{game_name} [AppKey]" if kid == appid_str else f"{game_name} ({kid})"
+                        comment = build_key_comment(game_name, kid, "", appid_str)
                         editor.add_key(kid, kval, comment=comment)
                         added_count += 1
 
@@ -1516,7 +1528,7 @@ def init_depots_tab(dialog) -> None:
     def _on_refetch():
         """Refetch fresh Lua metadata and keys from Hubcap API."""
         from core import morrenus_api
-        from PyQt6.QtWidgets import QMessageBox
+        from ui.dialogs.themed_message_box import ThemedMessageBox
 
         stats = morrenus_api.get_user_stats()
         daily_limit = stats.get("daily_limit") or stats.get("role_daily_limit") or 135
@@ -1525,7 +1537,7 @@ def init_depots_tab(dialog) -> None:
         remaining = max(0, daily_limit - daily_usage)
 
         if not can_make_requests or remaining <= 0:
-            QMessageBox.warning(
+            ThemedMessageBox.warning(
                 dialog,
                 "API Token Limit Reached",
                 f"Daily Hubcap API token limit reached (0/{daily_limit} tokens remaining).\n\n"
@@ -1535,16 +1547,16 @@ def init_depots_tab(dialog) -> None:
             status_lbl.setText(f"API token limit reached (0/{daily_limit}). Please wait for daily reset.")
             return
 
-        reply = QMessageBox.question(
+        reply = ThemedMessageBox.question(
             dialog,
             "Confirm API Refetch",
             f"This action will consume your daily Hubcap API tokens.\n\n"
             f"You have {remaining}/{daily_limit} tokens remaining.\n\n"
             f"Do you want to continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.Cancel,
+            ThemedMessageBox.StandardButton.Cancel,
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if reply != ThemedMessageBox.StandardButton.Yes:
             return
 
         refetch_btn.setEnabled(False)
@@ -1556,10 +1568,21 @@ def init_depots_tab(dialog) -> None:
 
         def _worker():
             try:
+                # 1. Force a fresh download from Hubcap. The cached zip is kept
+                # until the new one arrives: deleting it first would leave the
+                # user with no manifest at all if the download fails.
                 zip_path, err = morrenus_api.download_manifest(appid_str, force_update=True)
                 if zip_path and os.path.exists(zip_path):
                     import zipfile
                     with zipfile.ZipFile(zip_path, "r") as zf:
+                        all_discovered_depots = set()
+                        for fname in zf.namelist():
+                            if fname.endswith(".manifest"):
+                                bname = os.path.basename(fname)
+                                parts = bname.split("_")
+                                if parts and parts[0].isdigit():
+                                    all_discovered_depots.add(parts[0])
+
                         lua_files = [f for f in zf.namelist() if f.endswith(".lua")]
                         if lua_files:
                             from utils.helpers import get_base_path
@@ -1567,6 +1590,9 @@ def init_depots_tab(dialog) -> None:
                             dest_lua.parent.mkdir(parents=True, exist_ok=True)
                             lua_data = zf.read(lua_files[0]).decode("utf-8", errors="ignore")
                             dest_lua.write_text(lua_data, encoding="utf-8")
+
+                            for m in iter_live_matches(lua_data, r'addappid\((\d+)'):
+                                all_discovered_depots.add(m.group(1))
 
                             # Extract and persist keys to SQLite
                             fresh_keys = {}
@@ -1576,38 +1602,82 @@ def init_depots_tab(dialog) -> None:
                                 from managers.depot_key_manager import DepotKeyManager
                                 DepotKeyManager.get_instance().save_depot_keys(appid_str, fresh_keys)
 
-                                # Sync fresh keys and depots to config.yaml and plugin library
-                                try:
-                                    from utils.yaml_config_manager import (
-                                        get_user_config_path,
-                                        batch_config_edit,
-                                        SHARED_REDISTS,
-                                    )
-                                    from utils.sls_bridge import SLSBridge
-                                    from utils.plugin_games import load_plugin_library, save_plugin_library
+                            # Sync fresh keys and mountable depots to config.yaml and plugin library
+                            try:
+                                import time
+                                from utils.yaml_config_manager import (
+                                    get_user_config_path,
+                                    batch_config_edit,
+                                    SHARED_REDISTS,
+                                )
+                                from utils.sls_bridge import SLSBridge
+                                from utils.plugin_games import load_plugin_library, save_plugin_library
 
-                                    cfg_path = get_user_config_path()
-                                    lib = load_plugin_library()
-                                    rec = lib.get(appid_str)
-                                    is_dlc_only = rec.get("dlc_only", False) if rec else False
-                                    game_name = dialog.game_data.get("game_name") or f"App {appid_str}"
+                                cfg_path = get_user_config_path()
+                                lib = load_plugin_library()
+                                rec = lib.get(appid_str)
+                                is_dlc_only = rec.get("dlc_only", False) if rec else False
+                                game_name = dialog.game_data.get("game_name") or f"App {appid_str}"
+                                registered_depots = {
+                                    str(d) for d in (rec.get("depots", []) if rec else [])
+                                }
+                                registered_dlc_apps = {
+                                    str(d) for d in (rec.get("dlc_appids", []) if rec else [])
+                                }
+                                discovered_dlc_apps = {
+                                    str(d) for d in (dialog.game_data.get("dlcs") or {})
+                                } | registered_dlc_apps
 
-                                    if cfg_path and cfg_path.exists():
-                                        with batch_config_edit(cfg_path) as editor:
-                                            for did, k in fresh_keys.items():
-                                                if did not in SHARED_REDISTS:
-                                                    if did != appid_str and not is_dlc_only:
-                                                        editor.add_depot(did, comment=f"{game_name} ({did})", app_id=appid_str)
-                                                    key_comment = f"{game_name} [AppKey]" if did == appid_str else f"{game_name} ({did})"
-                                                    editor.add_key(did, k, comment=key_comment)
-                                        if editor.has_changes:
-                                            SLSBridge.notify_reload()
+                                # Only a depot with a decryption key can be served
+                                # by SLSsteam. Mounting an unkeyed depot in
+                                # AdditionalApps produces DepotWithoutKey.
+                                keyed_depots = {
+                                    d for d in all_discovered_depots
+                                    if d != appid_str
+                                    and d not in discovered_dlc_apps
+                                    and d in fresh_keys
+                                    and d not in SHARED_REDISTS
+                                    and (not is_dlc_only or d in registered_depots)
+                                }
+                                allowed_key_ids = (
+                                    registered_depots | registered_dlc_apps | {appid_str} | SHARED_REDISTS
+                                    if is_dlc_only
+                                    else keyed_depots | {appid_str} | SHARED_REDISTS
+                                )
+                                publish_keys = {
+                                    did: key for did, key in fresh_keys.items()
+                                    if did in allowed_key_ids
+                                }
 
-                                    if rec:
-                                        rec.setdefault("keys", {}).update(fresh_keys)
-                                        save_plugin_library(lib)
-                                except Exception as sync_err:
-                                    logger.debug(f"[DepotsTab] Error syncing refetched keys to config: {sync_err}")
+                                if cfg_path and cfg_path.exists():
+                                    with batch_config_edit(cfg_path) as editor:
+                                        for did, k in publish_keys.items():
+                                            editor.add_key(did, k, comment=build_key_comment(game_name, did, "", appid_str))
+                                        for did in keyed_depots:
+                                            if not is_dlc_only:
+                                                editor.add_depot(did, comment=build_depot_comment(game_name, did, "", appid_str), app_id=appid_str)
+                                    if editor.has_changes:
+                                        SLSBridge.notify_reload()
+
+                                if rec:
+                                    rec.setdefault("keys", {}).update(publish_keys)
+                                    if not is_dlc_only:
+                                        # A DLC-only record keeps its curated
+                                        # depot list; bulk-adding every depot
+                                        # would override the DLC-only scoping.
+                                        existing_deps = set(str(d) for d in rec.get("depots", []))
+                                        existing_deps.update(keyed_depots)
+                                        rec["depots"] = sorted(list(existing_deps), key=lambda x: int(x) if x.isdigit() else 0)
+                                    rec["updated_at"] = int(time.time())
+                                    save_plugin_library(lib)
+
+                                if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict):
+                                    g_deps = set(str(d) for d in dialog.game_data.get("depots", []))
+                                    g_deps.update(keyed_depots)
+                                    dialog.game_data["depots"] = sorted(list(g_deps), key=lambda x: int(x) if x.isdigit() else 0)
+                                    dialog.game_data.setdefault("keys", {}).update(publish_keys)
+                            except Exception as sync_err:
+                                logger.debug(f"[DepotsTab] Error syncing refetched keys to config: {sync_err}")
 
                     try:
                         from managers.db_manager import DatabaseManager

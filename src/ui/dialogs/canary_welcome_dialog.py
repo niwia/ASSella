@@ -53,6 +53,7 @@ from ui.widgets.switch_toggle import SwitchToggle
 from utils.settings import get_settings
 from utils.paths import Paths
 from utils.color_utils import get_semantic_colors
+from utils.version import app_version
 
 logger = logging.getLogger(__name__)
 
@@ -425,7 +426,8 @@ class CanaryWelcomeDialog(QDialog):
         """)
         titles_layout.addWidget(self.awake_title_lbl)
 
-        self.awake_sub_lbl = QLabel("Welcome to ASSella Canary. Let's configure your setup.")
+        _short_version = ".".join(app_version.split(".")[:2])
+        self.awake_sub_lbl = QLabel(f"Welcome to ASSella {_short_version}. Let's configure your setup.")
         self.awake_sub_lbl.setStyleSheet("""
             color: rgba(255, 255, 255, 0.75);
             font-size: 9pt;
@@ -980,7 +982,7 @@ class CanaryWelcomeDialog(QDialog):
         layout.addWidget(t_lbl)
 
         sub_lbl = QLabel(
-            "Download games, depot manifests, and workshop items directly inside the official Steam client UI."
+            "With atom you can download using native steam client. you can configure this in settings - at0m section later."
         )
         sub_lbl.setWordWrap(True)
         sub_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 9pt;")
@@ -1212,15 +1214,19 @@ class CanaryWelcomeDialog(QDialog):
         c2 = QVBoxLayout()
         c2.setSpacing(6)
 
-        c2_title = QLabel("Downloads & LAN Cache")
+        c2_title = QLabel("Downloads & Local Network Transfer")
         c2_title.setStyleSheet("font-size: 10.5pt; font-weight: bold; color: #FFFFFF;")
         c2.addWidget(c2_title)
 
-        self.chk_lan_cache = QCheckBox("Enable LAN Cache")
+        self.chk_lan_cache = QCheckBox("Game File Transfer over Local Network:")
         self.chk_lan_cache.setChecked(self.settings.value("use_lancache", True, type=bool))
         c2.addWidget(self.chk_lan_cache)
 
-        lbl_lan_desc = QLabel("Use network saved game files (default: ON)")
+        lbl_lan_desc = QLabel(
+            "If this is enabled, Steam allows to transfer game files from other PCs on your local "
+            "network, reducing your Internet traffic while downloading or updating a game"
+        )
+        lbl_lan_desc.setWordWrap(True)
         lbl_lan_desc.setStyleSheet("font-size: 8pt; color: rgba(255,255,255,0.55);")
         c2.addWidget(lbl_lan_desc)
 
@@ -1280,8 +1286,8 @@ class CanaryWelcomeDialog(QDialog):
 
         b_row.addStretch()
 
-        btn_finish = QPushButton("Finish & Start Exploring")
-        btn_finish.setFixedSize(185, 36)
+        btn_finish = QPushButton("Finish")
+        btn_finish.setFixedSize(140, 36)
         btn_finish.setStyleSheet(self._btn_primary_style())
         btn_finish.clicked.connect(self._save_and_finish)
         b_row.addWidget(btn_finish)

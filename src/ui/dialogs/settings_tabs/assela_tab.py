@@ -14,10 +14,10 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QPushButton,
     QSlider,
-    QMessageBox,
     QSizePolicy,
     QScrollArea,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.helpers import create_checkbox_setting
 
@@ -42,7 +42,6 @@ def create_assela_tab(dialog) -> QWidget:
 
     # Section 1 Card: ASSella Settings
     assella_card, assella_lay = dialog._create_card_frame("ASSella Settings")
-    dialog.smart_depot_selection_checkbox = None
     if dialog.settings.value("smart_depot_selection") is None:
         dialog.settings.setValue("smart_depot_selection", True)
 
@@ -99,19 +98,29 @@ def create_assela_tab(dialog) -> QWidget:
     )
     assella_lay.addWidget(dialog.enable_eosproxy_default_checkbox)
 
-    dialog.experimental_ddm_checkbox = None
     if dialog.settings.value("use_experimental_ddm") is None:
         dialog.settings.setValue("use_experimental_ddm", True)
 
-    # 5. Modern Depot Selection Dialog (Experimental)
-    dialog.modern_depot_selection_checkbox = create_checkbox_setting(
-        "Modern Depot Selection Dialog (Experimental)",
-        "use_modern_depot_dialog",
+
+    # 6. Title Bar Search Widget
+    dialog.title_bar_search_checkbox = create_checkbox_setting(
+        "Search Widget in Title Bar",
+        "title_bar_search_enabled",
         False,
         dialog,
-        "Enable the experimental modern two-column layout for depot selection (games with more than 2 depots).",
+        "Show a live search bar and quick-results dropdown directly in the top title bar instead of the search button.",
     )
-    assella_lay.addWidget(dialog.modern_depot_selection_checkbox)
+
+    def _on_search_widget_toggled(state):
+        is_checked = (state == Qt.CheckState.Checked.value or state is True)
+        dialog.settings.setValue("title_bar_search_enabled", is_checked)
+        if hasattr(dialog, "main_window") and dialog.main_window:
+            titlebar = getattr(dialog.main_window, "bottom_titlebar", None)
+            if titlebar and hasattr(titlebar, "refresh_search_mode"):
+                titlebar.refresh_search_mode()
+
+    dialog.title_bar_search_checkbox.stateChanged.connect(_on_search_widget_toggled)
+    assella_lay.addWidget(dialog.title_bar_search_checkbox)
 
     # 4. Download Animation (Test/Halloween styles)
     anim_row = QHBoxLayout()
@@ -512,25 +521,25 @@ def uninstall_assela(dialog) -> None:
     desktop_entry = os.path.expanduser("~/.local/share/applications/accela.desktop")
     has_backup = os.path.isfile(backup_path)
 
-    reply = QMessageBox.question(
+    reply = ThemedMessageBox.question(
         dialog,
         "Uninstall ASSella",
         "This will remove ASSella and revert the desktop shortcut to ACCELA.\n\nAre you sure?",
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
     )
-    if reply != QMessageBox.StandardButton.Yes:
+    if reply != ThemedMessageBox.StandardButton.Yes:
         return
 
     restore = False
     if has_backup:
-        restore_reply = QMessageBox.question(
+        restore_reply = ThemedMessageBox.question(
             dialog,
             "Restore Original ACCELA?",
             "A backup of the original ACCELA (ACCELA.AppImage.bak) was found.\n\n"
             "Would you like to restore it after uninstalling ASSella?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
         )
-        restore = restore_reply == QMessageBox.StandardButton.Yes
+        restore = restore_reply == ThemedMessageBox.StandardButton.Yes
 
     errors = []
 
@@ -578,9 +587,9 @@ def uninstall_assela(dialog) -> None:
             errors.append(f"Could not update desktop entry: {e}")
 
     if errors:
-        QMessageBox.warning(dialog, "Uninstall — Partial", "\n".join(errors))
+        ThemedMessageBox.warning(dialog, "Uninstall — Partial", "\n".join(errors))
     else:
         msg = "ASSella has been uninstalled."
         if restore:
             msg += "\nOriginal ACCELA has been restored."
-        QMessageBox.information(dialog, "Done", msg)
+        ThemedMessageBox.information(dialog, "Done", msg)

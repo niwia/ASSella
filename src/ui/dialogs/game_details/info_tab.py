@@ -27,16 +27,23 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QGridLayout,
     QScrollArea,
-    QMessageBox,
     QProgressDialog,
     QApplication,
 )
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.game_details.widgets import CenteredComboBox, MaterialTile
 from ui.dialogs.game_details.hero_header import thin_line, get_last_checked
 from ui.progress_button import ProgressButton
 from utils.helpers import get_base_path
+from utils.qt_utils import clear_layout
 from utils.lua_parsing import iter_live_matches
+from utils.steam_acf import (
+    ACF_DEFERRED,
+    ACF_FAILED,
+    ensure_acf_has_installed_depots,
+    find_appmanifest_path,
+)
 from utils.yaml_config_manager import (
     get_user_config_path, add_fake_app_id, remove_fake_app_id,
     get_fake_appid, is_slssteam_config_management_enabled,
@@ -400,12 +407,12 @@ def init_info_tab(dialog) -> None:
             if dialog.parent_window and hasattr(dialog.parent_window, "game_manager") and dialog.parent_window.game_manager:
                 try:
                     dialog.parent_window.game_manager.game_update_status_changed.disconnect(dialog._on_status_changed)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[GameDetails] Could not disconnect game_update_status_changed: {e}")
                 try:
                     dialog.parent_window.game_manager.game_hubcap_status_checked.disconnect(dialog._on_hubcap_status_changed)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[GameDetails] Could not disconnect game_hubcap_status_checked: {e}")
         dialog.finished.connect(_cleanup_signals)
 
     info_tab_container = QWidget()
@@ -574,8 +581,8 @@ def load_branches_immediate(dialog) -> None:
         elif dialog.game_data.get("buildid"):
             fallback = {"public": {"buildid": str(dialog.game_data.get("buildid"))}}
             on_branches_loaded(dialog, fallback)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[GameDetails] Could not load the branch list: {e}")
 
     threading.Thread(target=lambda: silent_refresh_branches(dialog), daemon=True).start()
 
@@ -606,8 +613,8 @@ def load_branches_async(dialog, force_refresh: bool = False) -> None:
                 dialog.branches_loaded.emit(fallback)
                 threading.Thread(target=lambda: silent_refresh_branches(dialog), daemon=True).start()
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[GameDetails] Could not read the cached build id: {e}")
 
     def _fetch():
         try:
@@ -630,8 +637,8 @@ def silent_refresh_branches(dialog) -> None:
         fresh = get_app_branches(dialog.appid, force_refresh=True)
         if fresh:
             dialog.branches_loaded.emit(fresh)
-    except BaseException:
-        pass
+    except BaseException as e:
+        logger.debug(f"[GameDetails] Background branch refresh failed: {e}")
 
 
 def on_branches_loaded(dialog, branches_dict: dict) -> None:
@@ -988,8 +995,8 @@ def get_available_depots(dialog) -> dict:
                 if b.get("depots") and isinstance(b["depots"], dict):
                     for d_id, d_info in b["depots"].items():
                         depots_dict[str(d_id)] = d_info
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[GameDetails] Could not read the cached build depots: {e}")
 
     if not depots_dict:
         try:
@@ -1023,8 +1030,8 @@ def get_available_depots(dialog) -> dict:
                 ins_depots = vd.get("AppState", {}).get("InstalledDepots")
                 if isinstance(ins_depots, dict) and ins_depots:
                     depots_dict = ins_depots
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[GameDetails] Could not read installed depots from {acf_path}: {e}")
 
     return depots_dict
 
@@ -1072,7 +1079,7 @@ def trigger_rollback_job(dialog, depot_id, build_id: str, manifest_id: str = Non
     elif depot_id and manifest_id:
         depots_map = {str(depot_id): str(manifest_id)}
     else:
-        QMessageBox.warning(dialog, "Missing Fields", "Please specify Depot ID, Build ID, and Manifest ID.")
+        ThemedMessageBox.warning(dialog, "Missing Fields", "Please specify Depot ID, Build ID, and Manifest ID.")
         return
 
     dialog._last_rollback_pin_build = pin_build
@@ -1089,7 +1096,8 @@ def trigger_rollback_job(dialog, depot_id, build_id: str, manifest_id: str = Non
         do_package_and_submit_manual_job(dialog, None, None, depots_map, build_id, pin_build=pin_build)
         return
 
-    progress = QProgressDialog(f"Generating {len(missing_manifests)} manifest(s) from Hubcap...", None, 0, len(missing_manifests), dialog)
+    from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+    progress = ThemedProgressDialog(f"Generating {len(missing_manifests)} manifest(s) from Hubcap...", None, 0, len(missing_manifests), dialog)
     progress.setWindowModality(Qt.WindowModality.WindowModal)
     progress.setCancelButton(None)
     progress.show()
@@ -1127,10 +1135,10 @@ def trigger_rollback_job(dialog, depot_id, build_id: str, manifest_id: str = Non
             if progress:
                 try:
                     progress.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[GameDetails] Could not close the progress dialog: {e}")
             if error_msg:
-                QMessageBox.critical(dialog, "Manifest Retrieval Failed", f"Failed to download manifest from Hubcap:\n\n{error_msg}")
+                ThemedMessageBox.critical(dialog, "Manifest Retrieval Failed", f"Failed to download manifest from Hubcap:\n\n{error_msg}")
                 return
             do_package_and_submit_manual_job(dialog, None, None, depots_map, build_id, pin_build=pin_build)
 
@@ -1147,12 +1155,12 @@ def on_manifest_fetch_completed(dialog, error_msg, src_manifest_path_str, manife
     if progress_dialog:
         try:
             progress_dialog.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[GameDetails] Could not close the manifest progress dialog: {e}")
 
     if error_msg:
         global_manifests_dir = get_base_path() / "manifests"
-        QMessageBox.critical(
+        ThemedMessageBox.critical(
             dialog,
             "Manifest Retrieval Failed",
             f"Failed to automatically download manifest from Hubcap.\n\n"
@@ -1169,9 +1177,6 @@ def on_manifest_fetch_completed(dialog, error_msg, src_manifest_path_str, manife
 
 
 def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filename, depot_id, build_id, manifest_id=None, pin_build: bool = True) -> None:
-    import zipfile
-    import shutil
-
     if isinstance(depot_id, dict):
         depots_map = {str(k): str(v) for k, v in depot_id.items()}
     else:
@@ -1208,7 +1213,7 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
             dialog.exclude_tile.setEnabled(False)
     except Exception as e:
         logger.error(f"Failed to create temporary manifest zip: {e}", exc_info=True)
-        QMessageBox.critical(dialog, "Error", f"Failed to package manifest file: {e}")
+        ThemedMessageBox.critical(dialog, "Error", f"Failed to package manifest file: {e}")
         return
 
     is_vapor_mode = bool(
@@ -1247,7 +1252,7 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
             f"The manifest(s) were seeded into Steam's depotcache.<br><br>"
             f"<i>Steam will apply this build automatically on next launch or update.</i>"
         )
-        QMessageBox.information(dialog, "Native Rollback Applied", msg)
+        ThemedMessageBox.information(dialog, "Native Rollback Applied", msg)
         return
 
     game_data = dialog.game_data.copy()
@@ -1288,10 +1293,7 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
 
 
 def build_uninstall_panel(dialog) -> None:
-    while dialog._uninstall_content.count():
-        item = dialog._uninstall_content.takeAt(0)
-        if item.widget():
-            item.widget().deleteLater()
+    clear_layout(dialog._uninstall_content)
 
     from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
     is_dlc = is_dlc_only_mode(dialog.appid)
@@ -1328,15 +1330,30 @@ def build_uninstall_panel(dialog) -> None:
         dialog._uninstall_content.addWidget(warn)
 
         dialog._uninstall_opts = {}
-        options = [("wipe_sls_only", "I bought the game")]
+        options = [
+            (
+                "wipe_sls_only",
+                "I bought the game",
+                "Removes SLSsteam integrations while keeping game files, saves, and prefix intact.",
+            )
+        ]
         if platform.system() == "Linux":
             options.extend([
-                ("compat", "Remove Proton/Wine prefix"),
-                ("saves", "Remove local cloud saves"),
+                (
+                    "compat",
+                    "Remove Proton/Wine prefix (Warning: Contains Windows saves)",
+                    "Permanently deletes the entire Proton prefix directory, including any local Windows save games stored in AppData, Documents, and Saved Games.",
+                ),
+                (
+                    "saves",
+                    "Remove local cloud saves",
+                    "Permanently deletes local copies of Steam Cloud saves stored in the Steam userdata directory.",
+                ),
             ])
 
-        for key, text in options:
+        for key, text, tooltip in options:
             cb = QCheckBox(text)
+            cb.setToolTip(tooltip)
             cb.setStyleSheet("color: #ffd0c8; font-size: 9.5pt; background: transparent;")
             dialog._uninstall_opts[key] = cb
             dialog._uninstall_content.addWidget(cb)
@@ -1428,7 +1445,7 @@ def uninstall_scroll_to_bottom(dialog) -> None:
 def do_dlc_uninstall(dialog) -> None:
     checked = [did for did, cb in getattr(dialog, "_dlc_checkboxes", {}).items() if cb.isChecked()]
     if not checked:
-        QMessageBox.information(dialog, "Nothing selected", "Select at least one DLC to remove.")
+        ThemedMessageBox.information(dialog, "Nothing selected", "Select at least one DLC to remove.")
         return
     gd = dict(dialog.game_data)
     gd["_dlc_uninstall_ids"] = checked
@@ -1646,16 +1663,17 @@ def on_netsock_btn_clicked(dialog) -> None:
     is_currently_active = bool(cur_opt and "netsock.so" in cur_opt)
 
     if not is_currently_active:
-        reply = QMessageBox.warning(
+        from ui.dialogs.themed_message_box import ThemedMessageBox
+        reply = ThemedMessageBox.warning(
             dialog,
             "Netsock Compatibility Warning",
             "Netsock injects via LD_AUDIT for Steam Networking Sockets multiplayer.\n\n"
             "⚠️ Notice: This may not work with Easy Anti-Cheat (EAC) games or titles with strict anti-cheat.\n\n"
             "Do you want to enable Netsock for this game?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+            buttons=ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            default_button=ThemedMessageBox.StandardButton.Yes,
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if reply != ThemedMessageBox.StandardButton.Yes:
             dialog.netsock_tile.setChecked(False)
             dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
             return
@@ -1667,19 +1685,20 @@ def on_netsock_btn_clicked(dialog) -> None:
             dialog.netsock_tile.setChecked(True)
             dialog.netsock_tile.update_state(True, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
             dialog.netsock_tile.setToolTip("Netsock LD_AUDIT patch active. Click to disable.")
-            QMessageBox.information(dialog, "Netsock Enabled", "Netsock multiplayer patch has been enabled for this game.")
+            ThemedMessageBox.information(dialog, "Netsock Enabled", "Netsock multiplayer patch has been enabled for this game.")
         else:
-            QMessageBox.warning(dialog, "Error", "Failed to write LaunchOptions to config.yaml.")
+            ThemedMessageBox.warning(dialog, "Error", "Failed to write LaunchOptions to config.yaml.")
             dialog.netsock_tile.setChecked(False)
             dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
     else:
+        from ui.dialogs.themed_message_box import ThemedMessageBox
         if remove_launch_option(config, str(dialog.appid)):
             dialog.netsock_tile.setChecked(False)
             dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
             dialog.netsock_tile.setToolTip("Enable Netsock LD_AUDIT patch for Steam Networking Sockets.")
-            QMessageBox.information(dialog, "Netsock Disabled", "Netsock multiplayer patch has been removed for this game.")
+            ThemedMessageBox.information(dialog, "Netsock Disabled", "Netsock multiplayer patch has been removed for this game.")
         else:
-            QMessageBox.warning(dialog, "Error", "Failed to remove LaunchOptions from config.yaml.")
+            ThemedMessageBox.warning(dialog, "Error", "Failed to remove LaunchOptions from config.yaml.")
 
 
 def on_eos_btn_clicked(dialog) -> None:
@@ -1696,29 +1715,29 @@ def on_eos_btn_clicked(dialog) -> None:
         if status == "active":
             success = EOSDetector.remove_proxy(install_path)
             if success:
-                QMessageBox.information(dialog, "EOS Proxy", "Epic Online Services proxy removed successfully.")
+                ThemedMessageBox.information(dialog, "EOS Proxy", "Epic Online Services proxy removed successfully.")
             else:
-                QMessageBox.warning(dialog, "EOS Proxy", "Failed to remove Epic Online Services proxy.")
+                ThemedMessageBox.warning(dialog, "EOS Proxy", "Failed to remove Epic Online Services proxy.")
         elif status == "stale":
             success = EOSDetector.apply_proxy(install_path)
             if success:
-                QMessageBox.information(dialog, "EOS Proxy", "Epic Online Services proxy reapplied successfully.")
+                ThemedMessageBox.information(dialog, "EOS Proxy", "Epic Online Services proxy reapplied successfully.")
             else:
-                QMessageBox.warning(dialog, "EOS Proxy", "Failed to reapply Epic Online Services proxy.")
+                ThemedMessageBox.warning(dialog, "EOS Proxy", "Failed to reapply Epic Online Services proxy.")
         else:
             success = EOSDetector.apply_proxy(install_path)
             if success:
-                QMessageBox.information(dialog, "EOS Proxy", "Epic Online Services proxy enabled successfully.")
+                ThemedMessageBox.information(dialog, "EOS Proxy", "Epic Online Services proxy enabled successfully.")
             else:
                 from utils.eos_detector import ensure_eos_proxy_dll
                 proxy_src = ensure_eos_proxy_dll()
                 if not proxy_src or not proxy_src.exists():
-                    QMessageBox.critical(dialog, "Error", "EOS proxy DLL (EOSSDK-Win64-Shipping.dll) could not be found or downloaded.")
+                    ThemedMessageBox.critical(dialog, "Error", "EOS proxy DLL (EOSSDK-Win64-Shipping.dll) could not be found or downloaded.")
                 else:
-                    QMessageBox.warning(dialog, "EOS Proxy", "No target EOSSDK-Win64-Shipping.dll found to replace.")
+                    ThemedMessageBox.warning(dialog, "EOS Proxy", "No target EOSSDK-Win64-Shipping.dll found to replace.")
     except Exception as e:
         logger.error(f"Failed to toggle EOS Proxy: {e}", exc_info=True)
-        QMessageBox.critical(dialog, "Error", f"Failed to toggle EOS Proxy:\n{e}")
+        ThemedMessageBox.critical(dialog, "Error", f"Failed to toggle EOS Proxy:\n{e}")
 
     update_eos_btn_state(dialog)
 
@@ -1997,16 +2016,16 @@ def on_hubcap_status_changed(dialog, changed_appid, needs_update, update_in_prog
 def on_pin_build_toggled(dialog, pinned: bool) -> None:
     from utils.dlc_helpers import is_dlc_only_mode
     if pinned and is_dlc_only_mode(dialog.appid):
-        res = QMessageBox.warning(
+        res = ThemedMessageBox.warning(
             dialog,
             "Pin Build Warning",
             f"'{dialog.game_data.get('game_name', 'This game')}' is currently in DLC-Only mode.\n\n"
             "Pinning a build for a DLC-only game is typically not required and may freeze manifest tracking.\n\n"
             "Are you sure you want to enable Pin Build?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.No,
         )
-        if res != QMessageBox.StandardButton.Yes:
+        if res != ThemedMessageBox.StandardButton.Yes:
             if hasattr(dialog, "pin_tile") and dialog.pin_tile:
                 dialog.pin_tile.blockSignals(True)
                 dialog.pin_tile.setChecked(False)
@@ -2027,8 +2046,8 @@ def on_pin_build_toggled(dialog, pinned: bool) -> None:
             get_update_cache().save_async()
             if dialog.parent_window and hasattr(dialog.parent_window, "game_manager") and dialog.parent_window.game_manager:
                 dialog.parent_window.game_manager.game_update_status_changed.emit(dialog.appid, "up_to_date")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[GameDetails] Could not record the up-to-date status: {e}")
 
         if hasattr(dialog, "update_all_tile") and dialog.update_all_tile:
             dialog.update_all_tile.setChecked(False)
@@ -2071,7 +2090,8 @@ def on_pin_build_toggled(dialog, pinned: bool) -> None:
                 cp = get_user_config_path()
                 if cp.exists():
                     current_pins = get_manifest_ids(cp)
-                    game_depots = set(str(d) for d in (dialog.game_data.get("depots") or {}).keys())
+                    raw_deps = dialog.game_data.get("depots")
+                    game_depots = set(str(d) for d in (raw_deps.keys() if isinstance(raw_deps, dict) else (raw_deps or [])))
                     game_depots.add(str(dialog.appid))
                     to_remove = [d for d in current_pins if d in game_depots]
                     if to_remove:
@@ -2143,8 +2163,8 @@ def get_installed_buildid(dialog) -> str:
                     acf_path = str(p)
                     dialog.game_data["appmanifest_path"] = acf_path
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[GameDetails] Could not locate the app manifest for {dialog.appid}: {e}")
 
     if acf_path and os.path.exists(acf_path):
         try:
@@ -2155,8 +2175,8 @@ def get_installed_buildid(dialog) -> str:
                 found_bid = m.group(1).strip()
                 dialog.game_data["buildid"] = found_bid
                 return found_bid
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[GameDetails] Could not read the build id from the app manifest: {e}")
 
     if dialog.settings and dialog.appid:
         installed_branch = dialog.settings.value(f"installed_branch/{dialog.appid}", "", type=str)
@@ -2181,8 +2201,8 @@ def get_installed_buildid(dialog) -> str:
                     if mbid and mbid.isdigit() and mbid != "0":
                         dialog.game_data["buildid"] = mbid
                         return mbid
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[GameDetails] Could not read the build id from the manifest metadata: {e}")
 
     if bid and bid.lower() not in ("unknown", "none", "0", ""):
         return bid
@@ -2208,8 +2228,8 @@ def update_depot_label(dialog) -> None:
                     btn_text = f"Depots: {len(sel)} Selected"
                 else:
                     btn_text = "Depots: Select"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[GameDetails] Could not compute the depot button text: {e}")
     if hasattr(dialog, "choose_depots_btn") and dialog.choose_depots_btn:
         dialog.choose_depots_btn.setText(btn_text)
 
@@ -2246,29 +2266,29 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
 
     cp = get_user_config_path()
     if not cp.exists():
-        QMessageBox.warning(dialog, "Config Not Found", "SLSsteam config.yaml could not be found.")
+        ThemedMessageBox.warning(dialog, "Config Not Found", "SLSsteam config.yaml could not be found.")
         return
 
     current_dlcs = get_dlc_data(cp, dialog.appid)
     game_name = dialog.game_data.get("game_name", f"AppID {dialog.appid}")
 
     if current_dlcs:
-        ans = QMessageBox.question(
+        ans = ThemedMessageBox.question(
             dialog,
             "Revert DLC from DlcData",
             f"This game currently has {len(current_dlcs)} DLC(s) configured under DlcData in SLSsteam config.yaml.\n\n"
             f"Are you sure you want to revert and remove these DLC entries from DlcData for '{game_name}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
         )
-        if ans == QMessageBox.StandardButton.Yes:
+        if ans == ThemedMessageBox.StandardButton.Yes:
             if remove_dlc_data(cp, dialog.appid):
-                QMessageBox.information(
+                ThemedMessageBox.information(
                     dialog,
                     "DlcData Reverted",
                     f"✓ Successfully removed DlcData entries for '{game_name}'.",
                 )
             else:
-                QMessageBox.warning(dialog, "Action Failed", "Could not remove entries from DlcData.")
+                ThemedMessageBox.warning(dialog, "Action Failed", "Could not remove entries from DlcData.")
             refresh_dlcdata_btn_text(dialog)
         return
 
@@ -2281,13 +2301,13 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
         f"You can revert this action at any time using this same button.\n\n"
         f"Do you want to proceed?"
     )
-    ans = QMessageBox.question(
+    ans = ThemedMessageBox.question(
         dialog,
         "Move DLC to DlcData (Advanced)",
         warn_msg,
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
     )
-    if ans != QMessageBox.StandardButton.Yes:
+    if ans != ThemedMessageBox.StandardButton.Yes:
         return
 
     dialog.dlcdata_exp_btn.setEnabled(False)
@@ -2297,7 +2317,7 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
     try:
         dlc_list = get_all_dlcs_for_app(dialog.appid, dialog.game_data)
         if not dlc_list:
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 dialog,
                 "No DLCs Found",
                 f"No downloadable or store DLCs could be found for '{game_name}'.",
@@ -2307,153 +2327,23 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
         dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
         ok = add_dlc_data_batch(cp, dialog.appid, dlc_dict)
         if ok:
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 dialog,
                 "DLCs Moved to DlcData",
                 f"✓ Successfully wrote {len(dlc_dict)} DLC(s) for '{game_name}' to DlcData in config.yaml.\n\n"
                 f"SLSsteam will now explicitly report all these DLCs to the game.",
             )
         else:
-            QMessageBox.critical(
+            ThemedMessageBox.critical(
                 dialog,
                 "Write Failed",
                 "Failed to write entries to DlcData in config.yaml.",
             )
     except Exception as e:
-        QMessageBox.critical(dialog, "Error", f"Failed to move DLCs: {e}")
+        ThemedMessageBox.critical(dialog, "Error", f"Failed to move DLCs: {e}")
     finally:
         dialog.dlcdata_exp_btn.setEnabled(True)
         refresh_dlcdata_btn_text(dialog)
-
-
-def _atomic_write_acf(acf_path: str, content: str) -> bool:
-    """Back up and atomically replace a Steam ACF.
-
-    Steam parses ``appmanifest_*.acf`` strictly; a partial write can make it drop
-    the app from the library entirely. Write to a sibling temp file, fsync, then
-    ``os.replace`` so Steam only ever observes a complete file. A timestamped
-    backup is kept because we are editing Steam's own state.
-    """
-    path = Path(acf_path)
-    if not path.exists():
-        return False
-    try:
-        stamp = int(time.time())
-        backup = path.with_suffix(path.suffix + f".assella-bak-{stamp}")
-        shutil.copy2(path, backup)
-    except Exception as e:
-        logger.warning(f"[VaporTransition] Could not back up ACF {acf_path}: {e}")
-        return False
-
-    tmp = path.with_suffix(path.suffix + f".tmp-{os.getpid()}")
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-        return True
-    except Exception as e:
-        logger.warning(f"[VaporTransition] Atomic ACF write failed for {acf_path}: {e}")
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
-        return False
-
-
-def _ensure_acf_has_installed_depots(acf_path: str, appid: str, depot_ids: list, game_data: dict) -> None:
-    """Make Steam adopt an already-downloaded (ACCELA/DepotDownloader) install.
-
-    Deliberately does NOT touch StateFlags or AutoUpdateBehavior. The files on
-    disk are current for the pinned build, so declaring "update required" only
-    invites Steam to re-fetch a manifest for content we already have. All Steam
-    ACFs on this machine sit at StateFlags=4; leaving them alone is correct.
-    """
-    if not acf_path or not os.path.exists(acf_path):
-        return
-    try:
-        with open(acf_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-
-        needs_size = False
-        m_size = re.search(r'"SizeOnDisk"\s*"(\d+)"', content)
-        if m_size and m_size.group(1) == "0":
-            needs_size = True
-
-        install_path = game_data.get("install_path")
-        if not install_path and game_data.get("library_path"):
-            folder_name = game_data.get("installdir") or game_data.get("game_name")
-            if folder_name:
-                cand_install = Path(game_data["library_path"]) / "steamapps" / "common" / folder_name
-                if cand_install.is_dir():
-                    install_path = str(cand_install)
-
-        actual_size = 0
-        if install_path and os.path.isdir(install_path):
-            try:
-                for root, _, files in os.walk(install_path):
-                    for file in files:
-                        try:
-                            actual_size += os.path.getsize(os.path.join(root, file))
-                        except Exception:
-                            pass
-            except Exception as e:
-                logger.warning(f"[VaporTransition] Error calculating size: {e}")
-
-        # No manifest handling here, ever.
-        #
-        # `setManifestid` in a Hubcap Lua is a *pinning* directive, not download
-        # metadata. Writing it into a Steam ACF (or config.yaml) makes Steam
-        # verify against that exact manifest, which fights the live branch and
-        # triggers needless re-downloads. Build pinning is handled exclusively by
-        # core.native_steam.steam_manifest_pinning via the ManifestIds section,
-        # and only when the user opts into "Pin build". This function therefore
-        # never reads, resolves, or writes manifest GIDs -- Steam derives them
-        # itself from the depotcache/CDN during adoption.
-        wanted = [str(d).strip() for d in (depot_ids or []) if str(d).strip() and str(d).strip() != str(appid)]
-
-        has_entries = bool(
-            re.search(r'"InstalledDepots"\s*\{[^}]*"\d+"\s*\n\s*\{', content)
-        )
-
-        if not has_entries and wanted:
-            depots_lines = []
-            per_depot = actual_size // max(1, len(wanted))
-            for did_str in wanted:
-                dsize = actual_size if len(wanted) == 1 else per_depot
-                # "0" tells Steam "manifest unknown, verify it yourself". This is
-                # the correct hint: Steam then matches the depot against the
-                # files already on disk instead of pinning a stale GID.
-                depots_lines.append(
-                    f'\t\t"{did_str}"\n\t\t{{\n\t\t\t"manifest"\t\t"0"\n\t\t\t"size"\t\t"{dsize}"\n\t\t}}'
-                )
-            if depots_lines:
-                new_block = '\t"InstalledDepots"\n\t{\n' + "\n".join(depots_lines) + '\n\t}'
-                if re.search(r'"InstalledDepots"\s*\{\s*\}', content):
-                    content = re.sub(
-                        r'"InstalledDepots"\s*\{\s*\}', new_block.replace("\\", "\\\\"), content, count=1
-                    )
-                else:
-                    content = re.sub(
-                        r'("AppState"\s*\{)', rf'\1\n{new_block}', content, count=1
-                    )
-
-        if (needs_size or not m_size) and actual_size > 0:
-            if m_size:
-                content = re.sub(r'"SizeOnDisk"\s*"\d+"', f'"SizeOnDisk"\t\t"{actual_size}"', content)
-            else:
-                content = re.sub(r'("AppState"\s*\{)', rf'\1\n\t"SizeOnDisk"\t\t"{actual_size}"', content)
-
-        if not _atomic_write_acf(acf_path, content):
-            return
-        logger.info(
-            f"[VaporTransition] Updated ACF {acf_path}: "
-            f"{len(wanted)} depot(s) listed "
-            "(StateFlags and manifests left untouched)"
-        )
-    except Exception as e:
-        logger.warning(f"[VaporTransition] Graceful fallback on updating ACF {acf_path}: {e}")
 
 
 def on_move_to_vapor_clicked(dialog) -> None:
@@ -2464,15 +2354,18 @@ def on_move_to_vapor_clicked(dialog) -> None:
     # Verify plugins are present before converting to AT0-M
     from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
     if not are_plugins_present():
-        box = QMessageBox(dialog)
-        box.setWindowTitle("AT0-M Plugins Required")
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setText("AT0-M mode requires SLSsteam plugins (download.lua and spliced-tickets.lua).\n\nThe plugins were not found in your SLSsteam plugins directory.")
-        box.setInformativeText("Please go to Settings -> AT0-M and enable/deploy plugin support (or enable 'I'm using custom plugins (Advanced)') before moving games to AT0-M.")
-        settings_btn = box.addButton("Open AT0-M Settings", QMessageBox.ButtonRole.ActionRole)
-        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() == settings_btn:
+        action = ThemedMessageBox.choices(
+            dialog,
+            "AT0-M Plugins Required",
+            "AT0-M mode requires SLSsteam plugins (download interceptor and spliced-tickets.lua).\n\n"
+            "The plugins were not found in your SLSsteam plugins directory.",
+            [("Open AT0-M Settings", "settings"), ("Cancel", "cancel")],
+            default="cancel",
+            severity="warning",
+            informative="Please go to Settings -> AT0-M and enable/deploy plugin support "
+            "(or enable 'I'm using custom plugins (Advanced)') before moving games to AT0-M.",
+        )
+        if action == "settings":
             parent = getattr(dialog, "parent_window", None)
             while parent and not hasattr(parent, "open_settings") and hasattr(parent, "parent"):
                 parent = parent.parent()
@@ -2487,287 +2380,74 @@ def on_move_to_vapor_clicked(dialog) -> None:
         return
 
     if is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True):
-        warn_box = QMessageBox.warning(
+        warn_box = ThemedMessageBox.warning(
             dialog,
             "Custom Plugins Active",
             "Custom plugins mode is active. Third-party plugin support and compatibility cannot be guaranteed.\n\n"
             "Do you want to proceed with converting to AT0-M?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.No,
         )
-        if warn_box != QMessageBox.StandardButton.Yes:
+        if warn_box != ThemedMessageBox.StandardButton.Yes:
             return
 
-    reply = QMessageBox.question(
-        dialog,
-        "Move to plugin AT0-M",
-        f"Are you sure you want to convert '{game_name}' to AT0-M (Steam Native)?\n\n"
-        "• ACCELA marker folders (.ACCELA / .DepotDownloader) will be removed.\n"
-        "• Required AppID, DepotIDs, and DecryptionKeys will be registered in SLSsteam config.\n"
-        "• Updates will be handled natively by Steam client instead of ACCELA.\n\n"
-        "Do you want to proceed?",
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.No,
+    # Check for complications before moving
+    from utils.plugin_games import detect_migration_complications, migrate_game_to_atom
+
+    complications = detect_migration_complications(game_data, dialog.settings)
+    if complications.get("has_complications"):
+        from ui.dialogs.atom_complications_dialog import AtomMigrationComplicationsDialog
+        from PyQt6.QtWidgets import QDialog
+
+        comp_dlg = AtomMigrationComplicationsDialog(dialog, game_name, appid, complications)
+        if comp_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+    else:
+        reply = ThemedMessageBox.question(
+            dialog,
+            "Move to AT0-M",
+            f"Are you sure you want to convert '{game_name}' to AT0-M (Steam Native)?\n\n"
+            "• ACCELA marker folders (.DepotDownloader) will be removed.\n"
+            "• Required AppID, DepotIDs, and DecryptionKeys will be registered in SLSsteam config.\n"
+            "• Updates will be handled natively by Steam client instead of ACCELA.\n\n"
+            "Do you want to proceed?",
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.No,
+        )
+        if reply != ThemedMessageBox.StandardButton.Yes:
+            return
+
+    res = migrate_game_to_atom(
+        game_data,
+        settings=dialog.settings,
+        auto_revert_goldberg=True,
+        auto_revert_eos=True,
     )
-    if reply != QMessageBox.StandardButton.Yes:
+
+    if not res.get("success"):
+        ThemedMessageBox.critical(
+            dialog,
+            "Migration Failed",
+            f"'{game_name}' could not be converted to AT0-M:\n\n"
+            f"{res.get('error', 'Unknown error')}\n\n"
+            "The game was left as an ASSella install. See the log for details.",
+        )
         return
 
-    from managers.db_manager import DatabaseManager
-    from utils.plugin_games import register_plugin_game
-    from utils.helpers import get_base_path
-
-    depot_ids = []
-    decryption_keys = {}
-    depot_names = {}
-    installdir = game_data.get("installdir") or game_data.get("game_name") or ""
-
-    # Check DatabaseManager for known depots
-    try:
-        db = DatabaseManager()
-        app_info = db.get_app_info(appid, bypass_expiration=True)
-        if app_info and app_info.get("depots"):
-            for did, dinfo in app_info["depots"].items():
-                did_str = str(did)
-                depot_ids.append(did_str)
-                if isinstance(dinfo, dict) and dinfo.get("name"):
-                    depot_names[did_str] = dinfo["name"]
-    except Exception as e:
-        logger.debug(f"[VaporTransition] DB lookup error: {e}")
-
-    # Check local .depot files
-    depot_file = get_base_path() / "depots" / f"{appid}.depot"
-    if depot_file.exists():
-        try:
-            with open(depot_file, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    parts = line.strip().split(":")
-                    if parts and parts[0].strip().isdigit():
-                        did = parts[0].strip()
-                        if did not in depot_ids:
-                            depot_ids.append(did)
-                        if len(parts) > 1 and parts[1].strip() and not parts[1].strip().isdigit():
-                            depot_names[did] = parts[1].strip()
-        except Exception:
-            pass
-
-    # Extract keys from cached lua / manifest zip if available
-    lua_file = get_base_path() / "cached_luas" / f"{appid}.lua"
-    zip_file = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid}.zip"
-
-    # Also query authoritative local SQLite DepotKeyManager
-    try:
-        from managers.depot_key_manager import DepotKeyManager
-        stored_keys = DepotKeyManager.get_instance().get_depot_keys(appid)
-        for did, key in stored_keys.items():
-            if key:
-                decryption_keys[str(did)] = key
-                if str(did) != str(appid) and str(did) not in depot_ids:
-                    depot_ids.append(str(did))
-    except Exception as e:
-        logger.debug(f"[VaporTransition] DepotKeyManager lookup error: {e}")
-
-    def extract_keys_from_lua_text(lua_text: str):
-        for m in iter_live_matches(lua_text, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'):
-            did = m.group(1)
-            key = m.group(2)
-            decryption_keys[did] = key
-            if str(did) != str(appid) and did not in depot_ids:
-                depot_ids.append(did)
-
-    if lua_file.exists():
-        try:
-            with open(lua_file, "r", encoding="utf-8", errors="ignore") as lf:
-                extract_keys_from_lua_text(lf.read())
-        except Exception:
-            pass
-
-    if zip_file.exists():
-        try:
-            with zipfile.ZipFile(zip_file, "r") as zf:
-                for name in zf.namelist():
-                    if name.endswith(".lua"):
-                        extract_keys_from_lua_text(zf.read(name).decode("utf-8", errors="ignore"))
-        except Exception:
-            pass
-
-    # Check if this game is in DLC-only mode
-    from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info, filter_dlc_depots_only
-    dlc_appids = []
-    is_dlc = is_dlc_only_mode(appid) or game_data.get("is_dlc_only")
-    if is_dlc:
-        try:
-            d_info = get_dlc_only_info(appid)
-            if d_info:
-                dlc_appids = [str(x["dlc_appid"]) for x in d_info if x.get("dlc_appid")]
-        except Exception:
-            pass
-        if not dlc_appids:
-            depots_meta = (game_data.get("depots") or {})
-            for did in depot_ids:
-                meta = depots_meta.get(str(did)) or {}
-                dlc_id = str(meta.get("dlcappid") or "").strip()
-                if dlc_id and dlc_id != str(appid) and dlc_id not in dlc_appids:
-                    dlc_appids.append(dlc_id)
-
-    # Respect user's saved depot selection if available
-    from utils.dlc_helpers import get_saved_depot_selection
-    saved_selection = get_saved_depot_selection(appid)
-    if not saved_selection and game_data:
-        saved_selection = game_data.get("selected_depots") or (
-            game_data.get("metadata", {}).get("selected_depots_list")
-        )
-    if saved_selection:
-        saved_depot_set = {str(d) for d in saved_selection}
-        user_depots = [d for d in depot_ids if str(d) in saved_depot_set]
-        if user_depots:
-            depot_ids = user_depots
-
-    # Clean depot IDs and decryption keys (depot_ids never has AppIDs; decryption_keys retains AppID)
-    if is_dlc:
-        depot_ids = filter_dlc_depots_only(depot_ids, appid, depots_meta=game_data.get("depots"), dlc_appids=dlc_appids)
-    else:
-        depot_ids = [d for d in depot_ids if str(d) != str(appid) and str(d) not in dlc_appids]
-    decryption_keys = {d: k for d, k in decryption_keys.items()}
-
-    # If any depot is missing its decryption key, attempt an emergency fetch via Hubcap API
-    missing_key_depots = [d for d in depot_ids if str(d) not in decryption_keys]
-    if missing_key_depots:
-        try:
-            logger.info(f"[VaporTransition] Missing keys for depot(s) {missing_key_depots}. Fetching fresh Hubcap bundle...")
-            from core import morrenus_api
-            zip_res, z_err = morrenus_api.download_manifest(appid, force_update=True)
-            if zip_res and os.path.exists(zip_res):
-                fresh_keys = {}
-                with zipfile.ZipFile(zip_res, "r") as zf:
-                    for name in zf.namelist():
-                        if name.endswith(".lua"):
-                            lua_txt = zf.read(name).decode("utf-8", errors="ignore")
-                            for m in iter_live_matches(lua_txt, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'):
-                                did_found, k_found = m.group(1), m.group(2)
-                                fresh_keys[did_found] = k_found
-                if fresh_keys:
-                    from managers.depot_key_manager import DepotKeyManager
-                    DepotKeyManager.get_instance().save_depot_keys(appid, fresh_keys)
-                    for did_f, k_f in fresh_keys.items():
-                        decryption_keys[did_f] = k_f
-                        if did_f != str(appid) and did_f not in depot_ids:
-                            depot_ids.append(did_f)
-                    logger.info(f"[VaporTransition] Recovered {len(fresh_keys)} fresh key(s) from Hubcap bundle.")
-        except Exception as e:
-            logger.warning(f"[VaporTransition] Failed to fetch missing keys from Hubcap: {e}")
-
-    # Warn and exclude depots with missing decryption keys (e.g. blacklisted/unavailable in Hubcap)
-    from utils.plugin_games import SHARED_REDISTS
-    unkeyed_depots = [d for d in depot_ids if str(d) not in decryption_keys and str(d) not in SHARED_REDISTS]
-    if unkeyed_depots:
-        logger.warning(f"[VaporTransition] Depots missing decryption keys: {unkeyed_depots}. Excluded to prevent Steam download errors.")
-        depot_ids = [d for d in depot_ids if d not in unkeyed_depots]
-        QMessageBox.warning(
-            dialog,
-            "Unkeyed Depots Excluded",
-            f"The following depot(s) have no decryption keys available (e.g. blacklisted in Hubcap):\n\n"
-            f"{', '.join(str(d) for d in unkeyed_depots)}\n\n"
-            f"These depots have been excluded so Steam will not fail with DepotWithoutKey.",
-        )
-
-    # Register into plugin_library and config.yaml
-    register_plugin_game(
-        appid=appid,
-        name=game_name,
-        depot_ids=depot_ids,
-        decryption_keys=decryption_keys,
-        installdir=installdir,
-        depot_names=depot_names,
-        dlc_appids=dlc_appids,
-    )
-
-    # Remove ACCELA markers from install folder
-    install_path = game_data.get("install_path")
-    if install_path and os.path.isdir(install_path):
-        for marker_name in (".assella", ".ASSELLA", ".ACCELA", ".accela", ".DepotDownloader", ".depotdownloader"):
-            m_path = os.path.join(install_path, marker_name)
-            if os.path.exists(m_path):
-                try:
-                    if os.path.isdir(m_path):
-                        shutil.rmtree(m_path, ignore_errors=True)
-                    else:
-                        os.remove(m_path)
-                    logger.info(f"[VaporTransition] Removed marker {m_path}")
-                except Exception as e:
-                    logger.warning(f"[VaporTransition] Could not remove marker {m_path}: {e}")
-
-    # Update settings
-    if dialog.settings:
-        dialog.settings.setValue(f"exclude_from_update_all/{appid}", True)
-        dialog.settings.setValue(f"selected_branch/{appid}", "public")
-        dialog.settings.setValue(f"installed_branch/{appid}", "public")
-
-    # Update game data dict
+    # Update in-memory game_data
     game_data["is_vapor"] = True
     game_data["is_atom"] = True
+    game_data["is_plugin_game"] = True
     game_data["source"] = "at0-m"
     game_data["update_status"] = "at0m"
-    game_data["selected_branch"] = "public"
-    game_data["installed_branch"] = "public"
 
-    # Ensure the appmanifest ACF lists the installed depots so Steam adopts the
-    # existing files. StateFlags/AutoUpdateBehavior are intentionally not touched.
-    # If no ACF exists on disk, we log gracefully and fall back to triggering the install API directly without crashing.
-    try:
-        acf_path = game_data.get("appmanifest_path")
-        if not acf_path and game_data.get("library_path"):
-            cand = Path(game_data["library_path"]) / "steamapps" / f"appmanifest_{appid}.acf"
-            if cand.exists():
-                acf_path = str(cand)
-        if not acf_path:
-            from core.steam_helpers import get_steam_libraries
-            for lib in (get_steam_libraries() or []):
-                cand = Path(lib) / "steamapps" / f"appmanifest_{appid}.acf"
-                if cand.exists():
-                    acf_path = str(cand)
-                    break
-        if acf_path and os.path.exists(acf_path):
-            _ensure_acf_has_installed_depots(acf_path, appid, depot_ids, game_data)
-        else:
-            logger.info(f"[VaporTransition] No existing ACF found for {appid}; install API will handle clean adoption.")
-    except Exception as _acf_err:
-        logger.warning(f"[VaporTransition] ACF update fallback: {_acf_err}")
-
-    # Fast safeguard: verify manifests are seeded in Steam central depotcache
-    try:
-        from core.native_steam.native_steam_handoff import sync_manifests_to_depotcache
-        dest_lib = game_data.get("library_path") or game_data.get("install_path") or ""
-        sync_manifests_to_depotcache(appid, dest_lib)
-    except Exception as _e:
-        logger.debug(f"[VaporTransition] Manifest depotcache safeguard: {_e}")
-
-    # Trigger Steam install/discovery API after 5 seconds
-    # Allows SLSsteam inotify watcher to reload config.yaml and unlock licenses in memory
-    dest_lib = game_data.get("library_path") or ""
-    try:
-        from core.native_steam.native_steam_handoff import resolve_library_index
-        lib_idx = resolve_library_index(dest_lib)
-    except Exception:
-        lib_idx = 0
-
-    def _delayed_atom_api_worker():
-        import time
-        time.sleep(5)
-        try:
-            logger.info(f"[VaporTransition] Triggering delayed AT0-M install pipe for '{game_name}' ({appid}) into library index {lib_idx}...")
-            from core.steam_helpers import slssteam_api_send
-            slssteam_api_send(f"install|{appid}|{lib_idx}")
-        except Exception as _api_err:
-            logger.warning(f"[VaporTransition] Error sending delayed AT0-M API command: {_api_err}")
-
-    threading.Thread(target=_delayed_atom_api_worker, daemon=True).start()
-
-    QMessageBox.information(
+    ThemedMessageBox.information(
         dialog,
-        "Moved to plugin AT0-M",
-        f"'{game_name}' has been successfully moved to AT0-M mode.\n"
-        f"Registered {len(depot_ids)} depot(s) and {len(decryption_keys)} decryption key(s) into SLSsteam.\n\n"
-        f"Steam will automatically verify and adopt the game files.",
+        "Moved to AT0-M",
+        f"'{game_name}' has been successfully moved to AT0-M (Steam Native) mode.\n"
+        f"Registered {res.get('depots_count', 0)} depot(s) and {res.get('keys_count', 0)} decryption key(s) into SLSsteam.\n\n"
+        "Please restart Steam now so Steam client can adopt the game files and update your library.\n\n"
+        "After restarting, select your desired branch (Public/Beta/etc.) in Steam's library view.",
     )
 
     # Close dialog and refresh parent
@@ -2798,7 +2478,7 @@ def on_remove_from_vapor_clicked(dialog) -> None:
     appid = str(dialog.appid)
     game_name = game_data.get("game_name") or f"App {appid}"
 
-    reply = QMessageBox.question(
+    reply = ThemedMessageBox.question(
         dialog,
         "Move to ASSella",
         f"Move '{game_name}' from AT0-M to ASSella Managed?\n\n"
@@ -2806,10 +2486,10 @@ def on_remove_from_vapor_clicked(dialog) -> None:
         "• Marks the install as ASSella-managed (.DepotDownloader)\n"
         "• Prompts for depot selection and verifies game files\n\n"
         "Do you want to proceed?",
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.No,
     )
-    if reply != QMessageBox.StandardButton.Yes:
+    if reply != ThemedMessageBox.StandardButton.Yes:
         return
 
     from utils.plugin_games import convert_plugin_game_to_accela
@@ -2868,7 +2548,7 @@ def on_remove_from_vapor_clicked(dialog) -> None:
         except Exception as e:
             logger.warning(f"[AtomTransition] Could not trigger manifest verification: {e}")
 
-    QMessageBox.information(
+    ThemedMessageBox.information(
         dialog,
         "Moved to ACCELA",
         f"'{game_name}' is now managed by ACCELA.\n"

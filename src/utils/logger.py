@@ -126,7 +126,6 @@ class QtLogHandler(QObject, logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            text = SensitiveDataFilter.sanitize_text(self.format(record))
             explicit = getattr(record, "user_visible", None)
             if explicit is None:
                 # No explicit intent on the record. Show our own INFO and above,
@@ -139,6 +138,13 @@ class QtLogHandler(QObject, logging.Handler):
                 )
             else:
                 visible = bool(explicit)
+            # Formatting sanitizes the message, which costs five regex passes
+            # plus two settings lookups per record. A library scan emits about a
+            # thousand DEBUG records in two seconds and every one of them was
+            # sanitized and then thrown away, which was a measurable part of the
+            # boot cost. Invisible records carry no text; the status pager
+            # discards them before reading it.
+            text = SensitiveDataFilter.sanitize_text(self.format(record)) if visible else ""
             payload = {
                 "text": text,
                 "level": record.levelno,
@@ -292,18 +298,18 @@ def update_log_filters():
                 if isinstance(filt, LogCategoryFilter):
                     handler.removeFilter(filt)
 
-            # Ensure SensitiveDataFilter is attached
-            has_sensitive_filter = any(
-                isinstance(f, SensitiveDataFilter) for f in handler.filters
-            )
-            if not has_sensitive_filter:
-                handler.addFilter(SensitiveDataFilter())
-
             # The file is the bug-report artifact. It keeps redaction but opts
             # out of the display filters: applying the user's on-screen level or
             # category to it would strip DEBUG from the very file people attach
             # when asking for help. Both are display concerns.
             is_file = isinstance(handler, LineRotatingFileHandler)
+
+            # Ensure SensitiveDataFilter is attached to all handlers
+            has_sensitive_filter = any(
+                isinstance(f, SensitiveDataFilter) for f in handler.filters
+            )
+            if not has_sensitive_filter:
+                handler.addFilter(SensitiveDataFilter())
 
             if not is_file:
                 handler.addFilter(LogCategoryFilter(level_str, category_str))

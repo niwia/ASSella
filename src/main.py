@@ -7,11 +7,12 @@ import ctypes
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import QApplication
 from utils.paths import Paths
-from PyQt6.QtCore import QTimer, QMetaObject, Qt, Q_ARG
+from PyQt6.QtCore import QTimer
 from ui.main_window import MainWindow
 from ui.theme import update_appearance
 from managers.cli_manager import run_cli_mode, open_cli_terminal
 from utils.logger import setup_logging
+from utils.main_thread import post_to_main_thread
 from utils.settings import get_settings
 from utils.yaml_config_manager import (
     backup_config_on_startup,
@@ -283,6 +284,15 @@ def main():
                         add_fake_app_id(config_path, "0", game_name="All Unowned Apps", fake_appid="480")
             except Exception as ex:
                 logger.debug(f"Failed to ensure all_games_online FakeAppId: {ex}")
+
+            # A Steam update would replace the files SLSsteam patches, so the
+            # config keeps DisableUpdates set. The writer memoises "already
+            # correct", so this costs nothing once the file agrees.
+            try:
+                from utils.yaml_config_manager import update_yaml_boolean_value
+                update_yaml_boolean_value(config_path, "DisableUpdates", True)
+            except Exception as ex:
+                logger.debug(f"Failed to ensure DisableUpdates in the SLSsteam config: {ex}")
     except OSError as e:
         logger.error(f"Startup I/O error (Config/Backup): {e}")
 
@@ -337,6 +347,11 @@ def main():
         # ---------------------------------------------------------------------
         if command_line_zips or command_line_appid:
 
+            def add_manifest_to_queue(path):
+                """Run on the Qt main thread; queues a downloaded manifest ZIP."""
+                logger.info(f"Adding to queue: {os.path.basename(path)}")
+                main_win.job_queue.add_job(path)
+
             def threaded_manifest_download(appid):
                 """Background thread to handle network I/O."""
                 try:
@@ -349,14 +364,11 @@ def main():
                         logger.error(f"Failed to download manifest: {error}")
                         return
 
-                    # Schedule the UI update on the main thread
-                    # We use QMetaObject.invokeMethod to safely cross thread boundaries
-                    QMetaObject.invokeMethod(
-                        main_win,
-                        "add_job_safely",
-                        Qt.ConnectionType.QueuedConnection,
-                        Q_ARG(str, zip_file),
-                    )
+                    # Hand the ZIP to the Qt main thread through the app's bridge.
+                    # QMetaObject.invokeMethod only resolves Qt slots, so it could
+                    # not reach a plain Python method (it raised and the ZIP was
+                    # silently dropped); post_to_main_thread is the supported path.
+                    post_to_main_thread(add_manifest_to_queue, zip_file)
                 except Exception as ex:
                     logger.error(f"Threaded download failed: {ex}")
 
@@ -373,13 +385,6 @@ def main():
                     logger.info(f"Adding {len(command_line_zips)} ZIP file(s) to queue")
                     for zip_file in command_line_zips:
                         main_win.job_queue.add_job(zip_file)
-
-            def add_job_safely_patch(path):
-                logger.info(f"Adding to queue: {os.path.basename(path)}")
-                main_win.job_queue.add_job(path)
-
-            # Monkey-patching the method onto the instance for safety
-            main_win.add_job_safely = add_job_safely_patch
 
             QTimer.singleShot(0, process_command_line_args)
 

@@ -1,6 +1,12 @@
-# ── AppImage binaries (too large for git; use GitHub Releases) ──────────────
+# ── AppImage & distribution archives (too large for git; use GitHub Releases) ───
 *.AppImage
 *.AppImage.bak
+*.tar.gz
+*tar.gz
+*.tar.gsz
+*tar.gsz
+*.zip
+*.sha256
 
 # ── Personal config with API keys ───────────────────────────────────────────
 # The real config lives at ~/.config/Tachibana Labs/ACCELA.conf
@@ -41,6 +47,9 @@ plugins_manifest.json
 plugins/
 r2-publish/
 .wrangler/
+cloud/
+depotmapping.md
+pluginfindings.md
 
 # ── Optional components (downloaded on demand from R2) ───────────────────────
 src/deps/Goldberg/
@@ -50,3 +59,8 @@ src/deps/SLScheevo/
 # ── OS junk ─────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# ── VitePress / Docs ────────────────────────────────────────────────────────
+node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/

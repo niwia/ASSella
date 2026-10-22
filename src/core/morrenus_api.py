@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 import ssl
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -283,6 +284,147 @@ _last_generate_usage_fetch: float = 0.0
 _STATS_CACHE_TTL: float = 60.0  # 60s minimum interval between API calls to avoid 429
 
 
+def is_stats_cache_from_previous_utc_day(cached_stats: Any) -> bool:
+    """Return True if cached_stats timestamp is from a prior UTC calendar day."""
+    if not isinstance(cached_stats, dict):
+        return False
+    ts_str = cached_stats.get("timestamp")
+    if not ts_str:
+        return False
+    try:
+        if str(ts_str).endswith("Z"):
+            ts_str = str(ts_str)[:-1] + "+00:00"
+        cached_dt = datetime.datetime.fromisoformat(str(ts_str))
+        if cached_dt.tzinfo is None:
+            cached_dt = cached_dt.replace(tzinfo=datetime.timezone.utc)
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        return cached_dt.date() < now_utc.date()
+    except Exception as e:
+        logger.debug(f"[Hubcap] Error checking UTC timestamp: {e}")
+        return False
+
+
+def compute_api_key_expiry_info(
+    expires_str: Optional[str],
+    api_key: str = "",
+    settings: Optional[Any] = None,
+    now_utc: Optional[datetime.datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Computes remaining days/hours, percentage, and semantic warning color for API key expiry.
+
+    Rules:
+    - >= 75% remaining: Green (#10b981)
+    - 25% - 74.9% remaining: Orange (#f59e0b)
+    - < 25% remaining: Red (#ef4444)
+    - <= 24 hours remaining: display in hours ('{hours}h')
+    - Expired: '0d' in Red
+    - Never expires / lifetime: '∞' in Green
+    """
+    if now_utc is None:
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+    elif now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=datetime.timezone.utc)
+
+    if not expires_str or str(expires_str).strip().lower() in ("", "never", "none", "null"):
+        return {
+            "text": "∞",
+            "color": "#10b981",
+            "status": "success",
+            "percentage": 100.0,
+            "days": 999999,
+            "hours": 999999,
+            "is_expired": False,
+            "is_lifetime": True,
+            "formatted_date": "Never",
+        }
+
+    try:
+        clean_exp = str(expires_str).strip()
+        if clean_exp.endswith("Z"):
+            clean_exp = clean_exp[:-1] + "+00:00"
+        dt = datetime.datetime.fromisoformat(clean_exp)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        formatted_date = dt.strftime("%d/%m/%Y")
+    except Exception as e:
+        logger.debug(f"[Hubcap] Could not parse expiration date '{expires_str}': {e}")
+        return {
+            "text": "Unknown",
+            "color": "rgba(255, 255, 255, 0.75)",
+            "status": "neutral",
+            "percentage": 0.0,
+            "days": 0,
+            "hours": 0,
+            "is_expired": False,
+            "is_lifetime": False,
+            "formatted_date": "Unknown",
+        }
+
+    delta = dt - now_utc
+    total_seconds = delta.total_seconds()
+
+    if total_seconds <= 0:
+        return {
+            "text": "0d",
+            "color": "#ef4444",
+            "status": "error",
+            "percentage": 0.0,
+            "days": 0,
+            "hours": 0,
+            "is_expired": True,
+            "is_lifetime": False,
+            "formatted_date": formatted_date,
+        }
+
+    # Baseline tracking in QSettings for percentage
+    import hashlib
+    if settings is None:
+        from utils.settings import get_settings
+        settings = get_settings()
+
+    key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12] if api_key else "default"
+    stored_hash = str(settings.value("hubcap_key_hash", "", type=str) or "")
+    stored_total = float(settings.value("hubcap_key_total_seconds", 0.0, type=float) or 0.0)
+
+    if stored_hash != key_hash or stored_total <= 0.0 or total_seconds > stored_total:
+        stored_total = total_seconds
+        settings.setValue("hubcap_key_hash", key_hash)
+        settings.setValue("hubcap_key_total_seconds", float(stored_total))
+
+    percentage = min(100.0, max(0.0, (total_seconds / stored_total) * 100.0))
+
+    days = int(total_seconds // 86400)
+    hours = int(total_seconds // 3600)
+
+    if total_seconds <= 86400:
+        display_text = f"{max(1, hours)}h"
+    else:
+        display_text = f"{days}d"
+
+    if percentage >= 75.0:
+        color = "#10b981"  # Emerald green fallback
+        status = "success"
+    elif percentage >= 25.0:
+        color = "#f59e0b"  # Amber / orange fallback
+        status = "warning"
+    else:
+        color = "#ef4444"  # Red fallback
+        status = "error"
+
+    return {
+        "text": display_text,
+        "color": color,
+        "status": status,
+        "percentage": percentage,
+        "days": days,
+        "hours": hours,
+        "is_expired": False,
+        "is_lifetime": False,
+        "formatted_date": formatted_date,
+    }
+
+
 def get_user_stats(force: bool = False) -> Dict:
     """Retrieves user statistics with cached fallback on network timeout or rate limit."""
     global _last_user_stats_fetch
@@ -290,7 +432,8 @@ def get_user_stats(force: bool = False) -> Dict:
     cached = settings.value("last_cached_user_stats", None)
 
     now = time.time()
-    if not force and cached and (now - _last_user_stats_fetch < _STATS_CACHE_TTL):
+    cache_day_expired = is_stats_cache_from_previous_utc_day(cached)
+    if not force and not cache_day_expired and cached and (now - _last_user_stats_fetch < _STATS_CACHE_TTL):
         logger.debug("[Hubcap] Using recently cached user stats (throttled)")
         return cached
 
@@ -306,6 +449,10 @@ def get_user_stats(force: bool = False) -> Dict:
     _last_user_stats_fetch = now + 60.0
     if isinstance(cached, dict) and cached:
         logger.info("Using cached user stats due to network request error / rate limit")
+        if cache_day_expired:
+            fallback_copy = dict(cached)
+            fallback_copy["daily_usage"] = 0
+            return fallback_copy
         return cached
     return res
 
@@ -520,19 +667,29 @@ def download_manifest(
 
     from utils.isp_bypass import execute_hubcap_request
 
+    try:
+        manifests_dir.mkdir(parents=True, exist_ok=True)
+        temp_fd, temp_name = tempfile.mkstemp(
+            prefix=f".{public_path.name}.", suffix=".part", dir=manifests_dir
+        )
+        os.close(temp_fd)
+        temp_path = Path(temp_name)
+    except OSError as e:
+        return None, f"Could not prepare manifest cache file: {e}"
+
     def _stream_to_file(url: str) -> None:
         r = execute_hubcap_request(
             get_session(), "GET", url, headers=headers, stream=True, timeout=60
         )
         r.raise_for_status()
-        with open(public_path, "wb") as f:
+        with open(temp_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
 
     def _cleanup_partial() -> None:
-        if public_path.exists():
+        if temp_path.exists():
             try:
-                os.remove(public_path)
+                temp_path.unlink()
             except OSError:
                 pass
 
@@ -552,6 +709,14 @@ def download_manifest(
         except Exception as fallback_err:
             _cleanup_partial()
             return None, _handle_request_exception(fallback_err, f"Download {app_id} (fallback)")
+
+    # Publish a complete download in one filesystem operation. A failed refresh
+    # must not truncate or remove the previously cached bundle.
+    try:
+        os.replace(temp_path, public_path)
+    except OSError as e:
+        _cleanup_partial()
+        return None, f"Could not replace cached manifest: {e}"
 
     if branch == "public":
         return str(public_path), None
@@ -625,45 +790,122 @@ def get_manifest_contents(app_id: Union[str, int], branch: str = "public") -> Di
     return data
 
 
-_depot_keys_cache: Optional[Tuple[float, Dict]] = None
-
-
-def get_hubcap_depot_keys(force: bool = False) -> Dict:
+def fetch_depot_keys_index(etag: Optional[str] = None) -> Dict[str, Any]:
     """
-    Calls /api/v1/depot-keys to fetch the global list of existing and pending depot IDs with keys.
+    GET /api/v1/depot-keys, optionally conditional on a previously seen ETag.
 
-    This endpoint is FREE (zero quota consumed) and fast. It returns:
+    The endpoint returns every depot id in existence (~380k ids, ~7 MB of
+    JSON), so the caller is expected to keep the result rather than to ask
+    for it repeatedly.
+
+    Returns a dict:
+        ok          - the request succeeded
+        not_modified - the server answered 304, the copy we hold is current
+        data        - the parsed payload (None when not_modified)
+        etag        - the ETag the server handed out
+        error       - a human readable reason when ok is False
+    """
+    headers = _get_headers()
+    if not headers:
+        return {
+            "ok": False,
+            "not_modified": False,
+            "data": None,
+            "etag": None,
+            "error": "API Key is not set. Please set it in Settings.",
+        }
+
+    headers = dict(headers)
+    if etag:
+        headers["If-None-Match"] = etag
+
+    url = f"{BASE_URL}/depot-keys"
+    try:
+        from utils.isp_bypass import execute_hubcap_request
+
+        # The payload is several megabytes, so the default 10s budget is too
+        # tight for a slow line.
+        response = execute_hubcap_request(
+            get_session(), "GET", url, headers=headers, timeout=60
+        )
+        if response.status_code == 304:
+            return {
+                "ok": True,
+                "not_modified": True,
+                "data": None,
+                "etag": response.headers.get("ETag") or etag,
+                "error": None,
+            }
+        response.raise_for_status()
+
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "json" not in content_type:
+            return {
+                "ok": False,
+                "not_modified": False,
+                "data": None,
+                "etag": response.headers.get("ETag"),
+                "error": f"unexpected content type '{content_type or 'unknown'}' (ISP block?)",
+            }
+
+        data = response.json()
+        if not isinstance(data, dict) or "existing_depot_ids" not in data:
+            return {
+                "ok": False,
+                "not_modified": False,
+                "data": None,
+                "etag": response.headers.get("ETag"),
+                "error": "the depot-key index had an unexpected shape",
+            }
+        # depot_ids duplicates the two lists; drop it before the payload is
+        # kept around, it is the third copy of ~380k strings.
+        data.pop("depot_ids", None)
+        return {
+            "ok": True,
+            "not_modified": False,
+            "data": data,
+            "etag": response.headers.get("ETag"),
+            "error": None,
+        }
+    except Exception as e:
+        error_msg = _handle_request_exception(e, "API GET to /depot-keys")
+        return {
+            "ok": False,
+            "not_modified": False,
+            "data": None,
+            "etag": None,
+            "error": error_msg,
+        }
+
+
+def get_hubcap_depot_keys(force: bool = False, allow_network: bool = False) -> Dict:
+    """
+    The global list of existing and pending depot IDs with keys.
+
+    This endpoint is FREE (zero quota consumed) and returns:
         - status: 'success'
         - total_depot_ids: int
         - pending_count: int
         - existing_count: int
         - pending_depot_ids: set[str] (depots Hubcap is still awaiting keys for)
         - existing_depot_ids: set[str] (depots Hubcap currently has decryption keys for)
+
+    The payload is several megabytes, so it is cached on disk for two hours
+    and refreshed in the background. ``allow_network`` stays False by
+    default: a caller on the GUI thread must never pay for the download.
+    The background AT0-M checker keeps the index fresh.
     """
-    global _depot_keys_cache
-    now = time.time()
-    if not force and _depot_keys_cache:
-        cached_time, cached_val = _depot_keys_cache
-        if (now - cached_time) < 120:
-            return dict(cached_val)
+    from core.hubcap_key_index import get_index
 
-    logger.info("Fetching Hubcap depot-keys index (/depot-keys)")
-    data = _make_json_request("GET", "/depot-keys")
-    if isinstance(data, dict) and "error" not in data:
-        # Coerce to sets once, here, so every caller gets the same shape.
-        data["existing_depot_ids"] = {str(d) for d in data.get("existing_depot_ids", [])}
-        data["pending_depot_ids"] = {str(d) for d in data.get("pending_depot_ids", [])}
-        _depot_keys_cache = (now, data)
-        return dict(data)
-
-    # Callers read an empty existing_depot_ids as "Hubcap has no key for this
-    # yet", which is what decides whether to refetch a manifest bundle. A
-    # failed or mis-shaped response yields the same empty set, so without this
-    # the entire recovery path would look like "nothing new upstream" and fail
-    # silently. Say so instead.
-    err = (data or {}).get("error") if isinstance(data, dict) else repr(data)
-    logger.warning(
-        f"[Hubcap] /depot-keys index unavailable ({err}); treating every depot as "
-        f"still missing a key, so the bundle refetch will be skipped."
-    )
-    return data if isinstance(data, dict) else {}
+    index = get_index(allow_network=allow_network or force, force=force)
+    if not index.loaded:
+        # Callers read an empty existing_depot_ids as "Hubcap has no key for
+        # this yet", which is what decides whether to refetch a manifest
+        # bundle. A failed or mis-shaped response yields the same empty set,
+        # so without this the entire recovery path would look like "nothing
+        # new upstream" and fail silently. Say so instead.
+        logger.warning(
+            f"[Hubcap] /depot-keys index unavailable ({index.error}); treating every "
+            f"depot as still missing a key, so the bundle refetch will be skipped."
+        )
+    return index.to_dict()

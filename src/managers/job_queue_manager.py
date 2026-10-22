@@ -3,7 +3,7 @@ import sys
 import logging
 import time
 import threading
-from PyQt6.QtWidgets import QMessageBox
+from ui.dialogs.themed_message_box import ThemedMessageBox
 from PyQt6.QtCore import Qt, QMetaObject, Q_ARG, QTimer, QObject, pyqtSlot
 
 from core import steam_helpers
@@ -110,7 +110,7 @@ class JobQueueManager(QObject):
         """Internal: actually add the job on the main thread."""
         if not os.path.exists(file_path):
             logger.error(f"Failed to add job: file {file_path} does not exist.")
-            QMessageBox.critical(
+            ThemedMessageBox.critical(
                 self.main_window,
                 "Error",
                 f"Could not add job: File not found at {file_path}",
@@ -296,15 +296,15 @@ class JobQueueManager(QObject):
 
         prompt_text = f"{prefix}Steam-integrated changes were created. Would you like to {action_word} Steam now to apply them?"
 
-        reply = QMessageBox.question(
+        reply = ThemedMessageBox.question(
             self.main_window,
             Title,
             prompt_text,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.No,
         )
 
-        if reply == QMessageBox.StandardButton.Yes:
+        if reply == ThemedMessageBox.StandardButton.Yes:
             logger.info(f"User agreed to {action_word} Steam.")
             # Run heavy lifting in background
             threading.Thread(target=self._perform_steam_restart, daemon=True).start()

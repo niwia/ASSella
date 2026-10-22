@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 )
 
 from components.custom_widgets import ScaledFontLabel, ScaledLabel
+from ui.dialogs.themed_dialog import install_themed_frame
 from utils.logger import open_log_directory
 from utils.settings import get_settings
 
@@ -44,10 +45,8 @@ class StatusDialog(QDialog):
         self.steamless_status_text: str = ""
         self.last_game_name: str = ""
 
-        # Main Layout
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(10, 10, 10, 10)
-        self.layout.setSpacing(5)
+        # Main Layout (the title bar takes its text from setWindowTitle above)
+        self.layout = install_themed_frame(self, margins=(10, 10, 10, 10), spacing=5)
 
         self._gather_status()
         self._setup_ui()

@@ -66,6 +66,75 @@ def get_best_foreground_color(bg_hex: str, dark_color: str = "#121214", light_co
         return light_color
 
 
+def _surface_hex(surface_hex) -> str:
+    """
+    Best-effort normalised hex for a surface colour. Anything unparseable becomes
+    the app's default dark background, so callers always get usable tokens rather
+    than a silent inversion.
+    """
+    if not isinstance(surface_hex, str):
+        return "#111318"
+    color = QColor(surface_hex)
+    return color.name() if color.isValid() else "#111318"
+
+
+def is_light_color(color_hex: str) -> bool:
+    """
+    True when `color_hex` reads as a light surface (WCAG relative luminance above
+    0.5) — a surface that needs dark ink and dark overlay tints instead of white
+    ones. Unparseable values are treated as dark, which keeps the app's
+    long-standing dark look as the fallback.
+    """
+    try:
+        return get_relative_luminance(_surface_hex(color_hex)) > 0.5
+    except Exception as e:
+        logger.error(f"Error classifying surface color '{color_hex}': {e}")
+        return False
+
+
+def surface_overlay_rgb(surface_hex: str) -> str:
+    """
+    The RGB triplet translucent overlays sitting on `surface_hex` should use, as a
+    plain "r, g, b" string ready for rgba(): white on a dark surface, black on a
+    light one. Lets a tile/chip/card tint itself with its surface at any alpha and
+    stay visible on either.
+    """
+    return "0, 0, 0" if is_light_color(surface_hex) else "255, 255, 255"
+
+
+def get_raised_surface_tokens(surface_hex: str) -> dict:
+    """
+    Ink and overlay colours for raised elements (tiles, chips, cards) sitting on
+    `surface_hex`, so they stay legible on any background a theme picks.
+
+    `ink` is the WCAG-chosen readable text colour for the surface; the muted,
+    faint, subtle and disabled inks are the surface's overlay colour at the alphas
+    the app has always used. tint/border are the raised element's own background
+    and outline, with hover and disabled variants.
+
+    On the built-in dark themes every value is byte-identical to the literals this
+    replaces, so the default look does not move.
+
+    Keys: ink, ink_muted, ink_faint, ink_disabled, ink_subtle,
+          tint, tint_hover, tint_disabled, border, border_hover, border_disabled
+    """
+    surface = _surface_hex(surface_hex)
+    overlay = surface_overlay_rgb(surface)
+    return {
+        "ink": get_best_foreground_color(surface, dark_color="#121214", light_color="#FFFFFF"),
+        "ink_muted": f"rgba({overlay}, 0.6)",
+        "ink_faint": f"rgba({overlay}, 0.7)",
+        "ink_disabled": f"rgba({overlay}, 0.3)",
+        "ink_subtle": f"rgba({overlay}, 0.2)",
+        "tint": f"rgba({overlay}, 0.05)",
+        "tint_hover": f"rgba({overlay}, 0.10)",
+        "tint_disabled": f"rgba({overlay}, 0.02)",
+        "border": f"rgba({overlay}, 0.08)",
+        "border_hover": f"rgba({overlay}, 0.15)",
+        "border_disabled": f"rgba({overlay}, 0.04)",
+    }
+
+
 def get_dark_container_color(accent_hex: str) -> str:
     """
     Generates a dark-mode friendly container color (Tone 30-ish in HCT/Material space)

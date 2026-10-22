@@ -5,9 +5,13 @@ The classification rules are the part most likely to break silently - they
 decide which depots get ticked by default - and they are now free of Qt, so
 they can be tested directly rather than through a dialog.
 
-Also pins the two structural guarantees of the split:
-  * every moved definition is byte-identical to the pre-split source
+Also pins the structural guarantees of the split:
+  * the layout stayed thin - a small composer plus one mixin per behaviour
   * the facade still exports every symbol the nine importers use
+
+The Tier 1 split moved definitions byte-for-byte; anything deepened since (the
+manifest dump in manifest_dump.py) is covered by its own suite instead of by
+identity.
 
     QT_QPA_PLATFORM=offscreen python3 scripts/test_depot_selection.py
 """
@@ -67,9 +71,40 @@ def main() -> int:
         n = len(p.read_text().splitlines()) if p.is_file() else 0
         check(p.is_file(), f"{name} exists ({n} lines)")
     check(
+        len((pkg / "dialog.py").read_text().splitlines()) < 600,
+        "dialog.py is a thin composer - behaviours live in _mixins/",
+    )
+    mixins = sorted(p.stem for p in (pkg / "_mixins").glob("*.py"))
+    check(len(mixins) >= 10, f"_mixins/ present ({len(mixins)} modules, {', '.join(mixins)})")
+    check(
         len((facade.__file__ and (SRC_DIR/'ui'/'dialogs'/'depotselection.py')).read_text().splitlines()) < 80,
         "facade is small (re-export surface only)",
     )
+    check((pkg / "storage_targets.py").is_file(),
+          "storage_targets.py holds the drive rules both depot dialogs share")
+    single_src = (SRC_DIR / "ui" / "dialogs" / "single_depot_dialog.py").read_text()
+    check("storage_targets" in single_src and "_format_storage_info" not in single_src,
+          "the single-depot dialog takes its drives from storage_targets")
+    check((pkg / "depot_metadata.py").is_file(),
+          "depot_metadata.py holds the depot facts the metadata mixin renders")
+    metadata_src = (pkg / "_mixins" / "metadata.py").read_text()
+    check("depot_metadata" in metadata_src and "manifests.get(self.branch) or manifests.get" not in metadata_src,
+          "the metadata mixin asks depot_metadata instead of walking manifests itself")
+    mixins_src = (pkg / "_mixins" / "table.py").read_text()
+    check("depot_metadata.manifest_size" in mixins_src,
+          "the missing-depot rows take their size from depot_metadata")
+    check((pkg / "executable_probe.py").is_file(),
+          "executable_probe.py holds the search for the game's launch executable")
+    executable_src = (pkg / "_mixins" / "executable.py").read_text()
+    check("executable_probe" in executable_src and "import struct" not in executable_src,
+          "the executable mixin asks executable_probe instead of parsing Steam's cache itself")
+    check((pkg / "selection_policy.py").is_file(),
+          "selection_policy.py holds which depots each preset ticks")
+    selection_src = (pkg / "_mixins" / "selection.py").read_text()
+    check("selection_policy" in selection_src and "get_smart_default_depots" not in selection_src,
+          "the selection mixin asks selection_policy instead of choosing depots itself")
+    check(selection_src.count("setCheckState(Qt.CheckState.Checked)") == 1,
+          "every preset ticks rows through one helper")
 
     # -------------------------------------------------------------- rules
     print("\n=== platform rules ===")
@@ -116,12 +151,19 @@ def main() -> int:
 
     # ------------------------------------------------------- no click-sort
     print("\n=== table is not click-sortable; select-all still wired ===")
-    dlg_src = (pkg / "dialog.py").read_text()
+    # The table code now lives in _mixins/. These are guarantees about the
+    # shipped dialog as a whole, so scan the whole package, not one file.
+    dlg_src = "\n".join(p.read_text() for p in sorted(pkg.rglob("*.py")))
     check("setSortingEnabled(True)" not in dlg_src,
           "click-to-sort is never enabled")
     check("setSortingEnabled(False)" in dlg_src, "sorting explicitly disabled")
     check("_on_header_section_clicked" in dlg_src, "header select-all handler present")
     check("set_check_state_and_count" in dlg_src, "header checkbox state/count still updated")
+    check("_selectable_rows" in dlg_src, "select-all walks one shared set of selectable rows")
+    check(dlg_src.count("_selectable_rows()") == 2,
+          "the header tally and the ticking both go through that one walk")
+    check("counts_toward_select_all" in dlg_src,
+          "whether a row may carry a tick is the policy module's rule")
     check("def __lt__" not in (pkg / "items.py").read_text(),
           "item classes no longer implement __lt__")
 

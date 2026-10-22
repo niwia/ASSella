@@ -155,17 +155,34 @@ class AppInfoEditor:
         Returns:
             True if token was set/created successfully
         """
+        if not isinstance(app_id, int) or not (0 <= app_id <= 0xFFFFFFFF):
+            try:
+                app_id = int(app_id)
+                if not (0 <= app_id <= 0xFFFFFFFF):
+                    logger.error(f"Invalid app_id: {app_id} (out of uint32 range)")
+                    return False
+            except (ValueError, TypeError):
+                logger.error(f"Invalid app_id: {app_id}")
+                return False
+
         if isinstance(token, str):
-            token = int(token)
+            try:
+                token = int(token, 0)
+            except ValueError:
+                logger.error(f"Cannot parse PICS token for App {app_id}: non-numeric token")
+                return False
+
+        if not isinstance(token, int) or not (0 <= token <= 0xFFFFFFFFFFFFFFFF):
+            logger.error(f"Invalid PICS token for App {app_id}: must be unsigned 64-bit integer")
+            return False
 
         app = self.get_app(app_id)
 
         if app:
             # Update existing app
-            old_token = app["pics_token"]
             app["pics_token"] = token
             self.modified_apps.add(app_id)
-            logger.info(f"Updated token for App {app_id}: {old_token} -> {token}")
+            logger.info(f"Updated token for App {app_id} (token redacted)")
         else:
             # Create new app entry
             # SHA1 hash placeholder (20 bytes of zeros)
@@ -195,7 +212,7 @@ class AppInfoEditor:
 
             self.apps.insert(insert_pos, app_data)
             self.modified_apps.add(app_id)
-            logger.info(f"Created new entry for App {app_id} with token {token}")
+            logger.info(f"Created new entry for App {app_id} (token set)")
 
         return True
 
@@ -268,17 +285,33 @@ def add_token_to_appinfo(appinfo_path: Path, app_id: str, token: str) -> bool:
     Returns:
         True if token was added/updated successfully
     """
+    backup_path = appinfo_path.with_suffix(".vdf.bak")
+    backup_created = False
     try:
         if not appinfo_path.exists():
             logger.warning(f"appinfo.vdf not found at {appinfo_path}")
             return False
 
+        # Pre-validate inputs before touching anything
+        try:
+            app_id_int = int(app_id)
+            if not (0 <= app_id_int <= 0xFFFFFFFF):
+                logger.error(f"Invalid app_id {app_id}: must be unsigned 32-bit integer")
+                return False
+            token_int = int(token, 0) if isinstance(token, str) else int(token)
+            if not (0 <= token_int <= 0xFFFFFFFFFFFFFFFF):
+                logger.error(f"Invalid PICS token for App {app_id}: must be unsigned 64-bit integer")
+                return False
+        except (ValueError, TypeError) as val_err:
+            logger.error(f"Failed to validate app_id or token: {val_err}")
+            return False
+
         # Create backup
-        backup_path = appinfo_path.with_suffix(".vdf.bak")
         try:
             import shutil
 
             shutil.copy2(appinfo_path, backup_path)
+            backup_created = True
             logger.info(f"Created backup: {backup_path}")
         except Exception as e:
             logger.warning(f"Failed to create backup: {e}")
@@ -288,15 +321,32 @@ def add_token_to_appinfo(appinfo_path: Path, app_id: str, token: str) -> bool:
         if not editor.read_appinfo():
             return False
 
-        app_id_int = int(app_id)
-        editor.set_token(app_id_int, token)
+        if not editor.set_token(app_id_int, token_int):
+            return False
 
         if editor.modified_apps:
-            return editor.write_appinfo()
+            success = editor.write_appinfo()
+            if not success:
+                if backup_created and backup_path.exists():
+                    try:
+                        import shutil
+                        shutil.copy2(backup_path, appinfo_path)
+                        logger.warning(f"Restored {appinfo_path} from {backup_path} after failed write")
+                    except Exception as rb_err:
+                        logger.error(f"Failed to restore backup after write failure: {rb_err}")
+                return False
+            return True
 
         logger.debug(f"No changes needed for App {app_id}")
         return True
 
     except Exception as e:
         logger.error(f"Failed to add token to appinfo.vdf: {e}", exc_info=True)
+        if backup_created and backup_path.exists():
+            try:
+                import shutil
+                shutil.copy2(backup_path, appinfo_path)
+                logger.warning(f"Restored {appinfo_path} from {backup_path} after unexpected error")
+            except Exception:
+                pass
         return False

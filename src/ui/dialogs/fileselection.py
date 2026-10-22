@@ -17,10 +17,11 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QHeaderView,
     QApplication,
-    QMessageBox,
-    QFileDialog,
-    QProgressDialog,
 )
+from ui.dialogs.themed_file_dialog import ThemedFileDialog
+from ui.dialogs.themed_message_box import ThemedMessageBox
+from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+from ui.dialogs.themed_dialog import install_themed_frame
 
 logger = logging.getLogger(__name__)
 
@@ -109,10 +110,6 @@ class FileSelectionDialog(QDialog):
 
         self.setStyleSheet(
             f"""
-            QDialog {{
-                background-color: {self.background_color};
-                color: #FFFFFF;
-            }}
             QLabel {{
                 color: #FFFFFF;
                 font-size: 9.5pt;
@@ -175,9 +172,7 @@ class FileSelectionDialog(QDialog):
             """
         )
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout = install_themed_frame(self, margins=(12, 12, 12, 12), spacing=10)
 
         # Header info
         info_label = QLabel(
@@ -473,7 +468,7 @@ class FileSelectionDialog(QDialog):
 
     def _browse_destination(self):
         cur = self.dest_edit.text() or os.path.expanduser("~/Downloads")
-        chosen = QFileDialog.getExistingDirectory(self, "Select Download Folder", cur)
+        chosen = ThemedFileDialog.getExistingDirectory(self, "Select Download Folder", cur)
         if chosen:
             self.dest_edit.setText(chosen)
 
@@ -498,7 +493,7 @@ class FileSelectionDialog(QDialog):
     def _on_confirm(self):
         selected = self._collect_selected_files()
         if not selected:
-            QMessageBox.warning(
+            ThemedMessageBox.warning(
                 self, "Warning", "Please select at least one file to download."
             )
             return
@@ -508,18 +503,18 @@ class FileSelectionDialog(QDialog):
     def _on_direct_download_clicked(self):
         selected = self._collect_selected_files()
         if not selected:
-            QMessageBox.warning(self, "No Files Selected", "Please select at least one file to download.")
+            ThemedMessageBox.warning(self, "No Files Selected", "Please select at least one file to download.")
             return
 
         dest_folder = self.dest_edit.text().strip()
         if not dest_folder:
-            QMessageBox.warning(self, "No Destination", "Please choose a destination folder.")
+            ThemedMessageBox.warning(self, "No Destination", "Please choose a destination folder.")
             return
 
         try:
             os.makedirs(dest_folder, exist_ok=True)
         except OSError as e:
-            QMessageBox.critical(self, "Error", f"Failed to create destination folder:\n{e}")
+            ThemedMessageBox.critical(self, "Error", f"Failed to create destination folder:\n{e}")
             return
 
         # Resolve manifest and keys if not passed explicitly
@@ -543,10 +538,10 @@ class FileSelectionDialog(QDialog):
                 keys_path = cand_keys
 
         if not manifest_file or not os.path.exists(manifest_file):
-            QMessageBox.critical(self, "Error", f"Could not find depot manifest file in {temp_dir}.")
+            ThemedMessageBox.critical(self, "Error", f"Could not find depot manifest file in {temp_dir}.")
             return
         if not keys_path or not os.path.exists(keys_path):
-            QMessageBox.critical(self, "Error", f"Could not find depot decryption keys file in {temp_dir}.")
+            ThemedMessageBox.critical(self, "Error", f"Could not find depot decryption keys file in {temp_dir}.")
             return
 
         # Write selective filelist
@@ -556,7 +551,7 @@ class FileSelectionDialog(QDialog):
                 for fp in selected:
                     fl.write(fp.replace("\\", "/") + "\n")
         except OSError as e:
-            QMessageBox.critical(self, "Error", f"Failed to write filelist: {e}")
+            ThemedMessageBox.critical(self, "Error", f"Failed to write filelist: {e}")
             return
 
         from utils.helpers import get_dotnet_path, resource_path
@@ -577,7 +572,7 @@ class FileSelectionDialog(QDialog):
             "-max-downloads", "8"
         ]
 
-        progress_dialog = QProgressDialog(f"Downloading {len(selected)} file(s)...", "Cancel", 0, 100, self)
+        progress_dialog = ThemedProgressDialog(f"Downloading {len(selected)} file(s)...", "Cancel", 0, 100, self)
         progress_dialog.setWindowTitle("Downloading Selected Files")
         progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         progress_dialog.setMinimumDuration(0)
@@ -600,19 +595,20 @@ class FileSelectionDialog(QDialog):
                     pass
 
             if success:
-                box = QMessageBox(self)
-                box.setWindowTitle("Download Complete")
-                box.setText(f"Successfully downloaded {len(selected)} file(s) to:\n{dest_folder}")
-                open_btn = box.addButton("Open Folder", QMessageBox.ButtonRole.ActionRole)
-                box.addButton(QMessageBox.StandardButton.Ok)
-                box.exec()
-                if box.clickedButton() == open_btn:
+                action = ThemedMessageBox.choices(
+                    self,
+                    "Download Complete",
+                    f"Successfully downloaded {len(selected)} file(s) to:\n{dest_folder}",
+                    [("Open Folder", "open"), ("Close", "close")],
+                    default="open",
+                )
+                if action == "open":
                     QDesktopServices.openUrl(QUrl.fromLocalFile(dest_folder))
             else:
                 if "cancelled" in err.lower():
-                    QMessageBox.information(self, "Cancelled", "Direct download was cancelled.")
+                    ThemedMessageBox.information(self, "Cancelled", "Direct download was cancelled.")
                 else:
-                    QMessageBox.critical(self, "Download Error", f"Download failed:\n{err}")
+                    ThemedMessageBox.critical(self, "Download Error", f"Download failed:\n{err}")
 
         thread.progress_signal.connect(on_progress)
         thread.finished_signal.connect(on_finished)

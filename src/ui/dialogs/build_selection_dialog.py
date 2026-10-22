@@ -24,11 +24,33 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 
+from PyQt6 import sip
 from ui.material_progress import MaterialSpinner
 from utils.color_utils import get_dark_container_color, get_best_foreground_color
 from utils.settings import get_settings
+from utils.qt_utils import clear_layout
+from ui.dialogs.themed_dialog import install_themed_frame
 
 logger = logging.getLogger("ACCELA.build_selection")
+
+
+class BuildSelectionCard(QFrame):
+    """QFrame subclass for build cards that handles clicks safely without monkey-patching."""
+    def __init__(self, dialog, idx: int, parent=None):
+        super().__init__(parent)
+        self.dialog = dialog
+        self.idx = idx
+        self._normal_style = None
+        self._selected_style = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            from PyQt6 import sip
+            if not sip.isdeleted(self.dialog):
+                self.dialog._on_card_clicked(self.idx)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
 
 
 class BuildSelectionDialog(QDialog):
@@ -71,14 +93,6 @@ class BuildSelectionDialog(QDialog):
         self.setWindowTitle(f"Build History — {self.game_name}")
         self.setMinimumSize(460, 380)
         self.resize(480, 400)
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #12131a;
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 10px;
-            }
-        """)
 
         self.builds_loaded.connect(self._on_builds_loaded)
         self.builds_error.connect(self._on_builds_error)
@@ -88,9 +102,7 @@ class BuildSelectionDialog(QDialog):
         self._load_builds()
 
     def _build_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(12)
+        main_layout = install_themed_frame(self, margins=(16, 16, 16, 16), spacing=12)
 
         # --- Header ---
         header_layout = QVBoxLayout()
@@ -269,14 +281,18 @@ class BuildSelectionDialog(QDialog):
                 data = scraper.get_patchnotes(aid_int, limit=25)
                 if data:
                     SteamDBBuildsCache().save_builds(aid_int, data)
-                self.builds_loaded.emit(data or [])
+                if not sip.isdeleted(self):
+                    self.builds_loaded.emit(data or [])
             except Exception as e:
                 logger.error(f"Failed to fetch SteamDB builds for {self.app_id}: {e}")
-                self.builds_error.emit(str(e))
+                if not sip.isdeleted(self):
+                    self.builds_error.emit(str(e))
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_builds_loaded(self, builds: list):
+        if sip.isdeleted(self):
+            return
         if builds:
             self._populate_cards(builds)
             self.stack.setCurrentIndex(1)
@@ -287,6 +303,8 @@ class BuildSelectionDialog(QDialog):
             self.stack.setCurrentIndex(2)
 
     def _on_builds_error(self, err_msg: str):
+        if sip.isdeleted(self):
+            return
         if self.cards_layout.count() > 1:
             self.stack.setCurrentIndex(1)
         else:
@@ -294,13 +312,11 @@ class BuildSelectionDialog(QDialog):
             self.stack.setCurrentIndex(2)
 
     def _populate_cards(self, data: list):
+        if sip.isdeleted(self):
+            return
+
         # Clear existing cards except the trailing stretch
-        while self.cards_layout.count() > 1:
-            item = self.cards_layout.takeAt(0)
-            if item.widget():
-                w = item.widget()
-                w.setParent(None)
-                w.deleteLater()
+        clear_layout(self.cards_layout, keep_trailing_stretch=True)
 
         self._build_cards = []
         self._builds_data = data
@@ -317,7 +333,7 @@ class BuildSelectionDialog(QDialog):
             time_str = str(item.get("time", "")).strip()
             is_current = bool(build_id and self.current_build_id and build_id == self.current_build_id)
 
-            card = QFrame()
+            card = BuildSelectionCard(self, idx)
             card.setObjectName("build_card")
             card.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -412,8 +428,6 @@ class BuildSelectionDialog(QDialog):
             if card_depots:
                 self._update_card_depots(card, build_id, card_depots)
 
-            card.mousePressEvent = lambda _e, i=idx: self._on_card_clicked(i)
-
             self.cards_layout.insertWidget(idx, card)
             self._build_cards.append((card, item))
 
@@ -424,12 +438,9 @@ class BuildSelectionDialog(QDialog):
                 self._on_card_clicked(idx)
 
     def _update_card_depots(self, card: QFrame, build_id: str, depots: dict):
-        if not card or not hasattr(card, "_depots_layout"):
+        if not card or not hasattr(card, "_depots_layout") or sip.isdeleted(card):
             return
-        while card._depots_layout.count():
-            it = card._depots_layout.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        clear_layout(card._depots_layout)
 
         if not depots:
             card._depots_container.setVisible(False)
@@ -449,9 +460,10 @@ class BuildSelectionDialog(QDialog):
         for did, dinfo in d_items[:3]:
             det = dinfo.get("details") or {}
             mid = dinfo.get("manifest_id") or ""
-            os_icon = det.get("os_icon") or "📦"
+            os_badge = det.get("os_badge", "Content")
             dname = det.get("name") or f"Depot {did}"
-            pill_txt = f"{os_icon} {did} • {dname}"
+            os_str = f"[{os_badge}] " if os_badge and os_badge != "Content" else ""
+            pill_txt = f"{os_str}{did} • {dname}"
             if len(pill_txt) > 28:
                 pill_txt = pill_txt[:26] + "…"
             lbl = QLabel(pill_txt)
@@ -465,7 +477,7 @@ class BuildSelectionDialog(QDialog):
                     color: rgba(255, 255, 255, 0.85);
                 }
             """)
-            lbl.setToolTip(f"Depot: {did} ({det.get('os_badge', 'Content')})\nName: {det.get('name', dname)}\nManifest: {mid}")
+            lbl.setToolTip(f"Depot: {did} ({os_badge})\nName: {det.get('name', dname)}\nManifest: {mid}")
             card._depots_layout.addWidget(lbl)
 
         if len(d_items) > 3:

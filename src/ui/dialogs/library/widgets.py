@@ -3,7 +3,7 @@ import math
 from pathlib import Path
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QPixmap, QPainter, QBrush, QLinearGradient, QColor, QFontMetrics
+from PyQt6.QtGui import QPixmap, QPainter, QBrush, QLinearGradient, QColor, QFontMetrics, QImage
 from PyQt6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -38,6 +38,20 @@ def format_game_display_name(game_data: dict) -> str:
             if branch and branch != "public":
                 parts.append(f"({branch})")
     return " ".join(parts)
+
+
+DLC_MODE_SUFFIX = " [DLC MODE]"
+
+
+def split_dlc_mode(display_name: str) -> tuple:
+    """Split the DLC-mode marker off a display name.
+
+    The library shows the marker as its own accented chip, so it must not be
+    part of the name the eliding label measures and truncates.
+    """
+    if display_name.endswith(DLC_MODE_SUFFIX):
+        return display_name[: -len(DLC_MODE_SUFFIX)], True
+    return display_name, False
 
 
 def format_size(size_bytes: int) -> str:
@@ -169,6 +183,7 @@ class GameItemWidget(QWidget):
         self.checkbox = None
         self.applist_2_0_enabled = applist_2_0_enabled
         self.parent_dialog = parent_dialog
+        self.appid = str(game_data.get("appid", "") or "")
         self._init_ui(size_str)
 
     def _init_ui(self, size_str: str) -> None:
@@ -235,13 +250,35 @@ class GameItemWidget(QWidget):
         info_layout.setContentsMargins(0, 8, 0, 8)
         info_layout.setSpacing(6)
 
-        self.name_label = ElidedLabel(display_name)
+        name_only, dlc_mode = split_dlc_mode(display_name)
+        self.name_label = ElidedLabel(name_only)
         font = self.name_label.font()
         font.setPointSize(12)
         font.setBold(True)
         self.name_label.setFont(font)
         self.name_label.setStyleSheet("color: #FFFFFF; font-size: 12pt; font-weight: bold;")
-        info_layout.addWidget(self.name_label)
+
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(6)
+        name_row.addWidget(self.name_label, 1)
+        self.dlc_mode_badge = None
+        if dlc_mode:
+            self.dlc_mode_badge = QLabel("DLC MODE")
+            self.dlc_mode_badge.setSizePolicy(
+                QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+            )
+            self.dlc_mode_badge.setToolTip(
+                "This game is tracked as DLC-only: main depots are not downloaded."
+            )
+            self.dlc_mode_badge.setStyleSheet(
+                f"color: {self.accent_color};"
+                f" border: 1px solid {self.accent_color};"
+                " border-radius: 4px; padding: 0px 5px;"
+                " font-size: 9px; font-weight: bold;"
+            )
+            name_row.addWidget(self.dlc_mode_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        info_layout.addLayout(name_row)
 
         # Size
         size_label = QLabel(f"Size: {size_str}")
@@ -249,10 +286,11 @@ class GameItemWidget(QWidget):
         info_layout.addWidget(size_label)
 
         # Check if this item belongs to the Steam (Beta) tab
-        is_steam_tab = (
+        self._is_steam_tab = (
             (self.parent_dialog and getattr(self.parent_dialog, "_active_tab", "") == "steam")
             or self.game_data.get("is_steam_tab", False)
         )
+        is_steam_tab = self._is_steam_tab
 
         # Manifest cache status (skip entirely for Steam tab)
         self.manifest_label = QLabel()
@@ -322,7 +360,7 @@ class GameItemWidget(QWidget):
                 if is_at0m_game and update_status == "update_available":
                     text = "AT0-M: Keys Ready"
                 elif is_at0m_game and update_status == "key_pending":
-                    text = "AT0-M: Keys Pending"
+                    text = "AT0-M: Awaiting Hubcap Key"
                 self.status_label.setText(text)
                 self.status_label.setStyleSheet(
                     f"color: {color}; "
@@ -349,7 +387,20 @@ class GameItemWidget(QWidget):
             ratings_row.addWidget(self.proton_badge, 0, Qt.AlignmentFlag.AlignVCenter)
             right_col.addLayout(ratings_row)
         else:
-            self.status_label.setVisible(False)
+            if self._dlc_mode_applied():
+                self.status_label.setText("[DLC Only]")
+                self.status_label.setStyleSheet(
+                    f"color: {self.accent_color}; "
+                    f"background-color: rgba(161, 201, 253, 0.15); "
+                    f"border-radius: 10px; "
+                    f"padding: 3px 10px; "
+                    f"font-size: 11px; "
+                    f"font-weight: bold;"
+                )
+                self.status_label.setVisible(True)
+                right_col.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignRight)
+            else:
+                self.status_label.setVisible(False)
             right_col.addStretch(1)
 
         layout.addLayout(right_col)
@@ -485,7 +536,7 @@ class GameItemWidget(QWidget):
             if is_at0m_game and update_status == "update_available":
                 text = "AT0-M: Keys Ready"
             elif is_at0m_game and update_status == "key_pending":
-                text = "AT0-M: Keys Pending"
+                text = "AT0-M: Awaiting Hubcap Key"
 
             if hasattr(self, "status_label") and self.status_label:
                 self.status_label.setText(text)
@@ -613,6 +664,20 @@ class GameItemWidget(QWidget):
         else:
             self.proton_badge.hide()
 
+    def _dlc_mode_applied(self) -> bool:
+        """True when this game is tracked through DLC-only mode."""
+        if self.game_data.get("is_dlc_only"):
+            return True
+        appid = str(self.game_data.get("appid", "") or "")
+        if not appid:
+            return False
+        try:
+            from utils.dlc_helpers import is_dlc_only_mode
+            return bool(is_dlc_only_mode(appid))
+        except Exception as exc:
+            logger.debug("DLC mode lookup failed for %s: %s", appid, exc)
+            return False
+
     def set_image(self, pixmap: QPixmap) -> None:
         """Sets the image on the label, scaling it nicely with right-fade blend."""
         if not pixmap or pixmap.isNull():
@@ -624,6 +689,13 @@ class GameItemWidget(QWidget):
             Qt.AspectRatioMode.KeepAspectRatioByExpanding,
             Qt.TransformationMode.SmoothTransformation,
         )
+
+        if self._is_steam_tab and not self._dlc_mode_applied():
+            # A Steam game that is not tracked in DLC mode is a catalogue
+            # entry, not managed content: keep its artwork muted.
+            scaled = QPixmap.fromImage(
+                scaled.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
+            )
 
         cropped_faded = QPixmap(target_size)
         cropped_faded.fill(Qt.GlobalColor.transparent)
@@ -653,3 +725,337 @@ class GameItemWidget(QWidget):
     def sizeHint(self) -> QSize:
         """Return size hint that matches the desired row height."""
         return QSize(400, 130)
+
+
+class GameTileWidget(GameItemWidget):
+    """
+    Vertical card widget for displaying a game item in a 3x3 grid (Tiles mode).
+    Layout:
+    [ Header image ~214x100 ]
+    [ Game Name (bold, white) ]
+    [ Subtitle / Publisher or Size ]
+    [ App ID: {appid} ]
+    [ Badges (DLC / Status / Proton / Denuvo) ]
+    """
+
+    def __init__(
+        self,
+        game_data: dict,
+        size_str: str,
+        accent_color: str,
+        background_color: str,
+        select_mode: bool = False,
+        is_selected: bool = False,
+        applist_2_0_enabled: bool = True,
+        parent_dialog = None,
+    ):
+        super().__init__(
+            game_data,
+            size_str,
+            accent_color,
+            background_color,
+            select_mode=select_mode,
+            is_selected=is_selected,
+            applist_2_0_enabled=applist_2_0_enabled,
+            parent_dialog=parent_dialog,
+        )
+
+    def _init_ui(self, size_str: str) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 8)
+        layout.setSpacing(4)
+
+        # 1. Image Container (460x215 ratio scaled to ~214x100)
+        self.image_label = QLabel()
+        self.image_label.setFixedSize(214, 100)
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        name = self.game_data.get("game_name", "Unknown")
+        display_name = format_game_display_name(self.game_data)
+        self.image_label.setText(name[:2].upper())
+
+        self.image_label.setStyleSheet(
+            f"""
+            QLabel {{
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                border-bottom-left-radius: 4px;
+                border-bottom-right-radius: 4px;
+                background-color: rgba(255, 255, 255, 0.03);
+                color: {self.accent_color};
+                font-size: 16px;
+                font-weight: bold;
+            }}
+            """
+        )
+        layout.addWidget(self.image_label, 0, Qt.AlignmentFlag.AlignCenter)
+
+        # Multi-select Checkbox overlay
+        self.checkbox = QCheckBox(self.image_label)
+        self.checkbox.setChecked(self._is_selected)
+        self.checkbox.move(8, 8)
+        self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.checkbox.setStyleSheet(
+            f"""
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid rgba(255, 255, 255, 180);
+                border-radius: 9px;
+                background-color: rgba(0, 0, 0, 160);
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {self.accent_color};
+                border: 2px solid #000000;
+            }}
+            """
+        )
+        self.checkbox.setVisible(self._select_mode)
+
+        # 2. Text info container
+        info_layout = QVBoxLayout()
+        info_layout.setContentsMargins(4, 2, 4, 0)
+        info_layout.setSpacing(2)
+
+        # Title
+        name_only, dlc_mode = split_dlc_mode(display_name)
+        self.name_label = QLabel(name_only)
+        self.name_label.setWordWrap(False)
+        fm = QFontMetrics(self.name_label.font())
+        elided = fm.elidedText(name_only, Qt.TextElideMode.ElideRight, 206)
+        self.name_label.setText(elided)
+        self.name_label.setToolTip(name_only)
+        self.name_label.setStyleSheet("color: #FFFFFF; font-size: 10pt; font-weight: bold;")
+        info_layout.addWidget(self.name_label)
+
+        # Subtitle (Publisher / Developer if present, or size)
+        pub = self.game_data.get("publisher") or self.game_data.get("developer")
+        if not pub:
+            pub = f"Size: {size_str}" if size_str and size_str != "0 B" else (f"Build: {self.game_data.get('buildid')}" if self.game_data.get('buildid') else "Steam App")
+        self.sub_label = QLabel(str(pub))
+        self.sub_label.setToolTip(str(pub))
+        fm_sub = QFontMetrics(self.sub_label.font())
+        self.sub_label.setText(fm_sub.elidedText(str(pub), Qt.TextElideMode.ElideRight, 206))
+        self.sub_label.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8.5pt;")
+        info_layout.addWidget(self.sub_label)
+
+        # App ID
+        appid = str(self.game_data.get("appid", ""))
+        self.appid_label = QLabel(f"App ID: {appid}" if appid and appid not in ("0", "N/A", "unknown") else "")
+        self.appid_label.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 8.5pt; font-family: monospace;")
+        info_layout.addWidget(self.appid_label)
+
+        # Check if Steam tab
+        self._is_steam_tab = (
+            (self.parent_dialog and getattr(self.parent_dialog, "_active_tab", "") == "steam")
+            or self.game_data.get("is_steam_tab", False)
+        )
+
+        # Badges row
+        badges_row = QHBoxLayout()
+        badges_row.setContentsMargins(0, 2, 0, 0)
+        badges_row.setSpacing(4)
+
+        self.dlc_mode_badge = None
+        if dlc_mode:
+            self.dlc_mode_badge = QLabel("DLC")
+            self.dlc_mode_badge.setToolTip("DLC-only mode")
+            self.dlc_mode_badge.setStyleSheet(
+                f"color: {self.accent_color}; border: 1px solid {self.accent_color}; "
+                "border-radius: 3px; padding: 0px 4px; font-size: 8pt; font-weight: bold;"
+            )
+            badges_row.addWidget(self.dlc_mode_badge)
+
+        self.status_label = QLabel()
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        badges_row.addWidget(self.status_label)
+
+        self.pinned_build_label = QLabel()
+        self.pinned_build_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.pinned_build_label.setVisible(False)
+        self.pinned_label = self.pinned_build_label
+        badges_row.addWidget(self.pinned_build_label)
+
+        self.denuvo_badge = QLabel()
+        self.denuvo_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.denuvo_badge.hide()
+        badges_row.addWidget(self.denuvo_badge)
+
+        self.proton_badge = QLabel()
+        self.proton_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.proton_badge.hide()
+        badges_row.addWidget(self.proton_badge)
+
+        self.manifest_label = QLabel()
+        if not self._is_steam_tab:
+            badges_row.addWidget(self.manifest_label)
+            self.update_manifest_label()
+        else:
+            self.manifest_label.setVisible(False)
+
+        badges_row.addStretch()
+        info_layout.addLayout(badges_row)
+
+        layout.addLayout(info_layout)
+        self.update_status_label()
+
+    def set_image(self, pixmap: QPixmap) -> None:
+        """Sets the image on the label with rounded corners."""
+        if not pixmap or pixmap.isNull():
+            return
+        target_size = self.image_label.size()
+        scaled = pixmap.scaled(
+            target_size,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        if self._is_steam_tab and not self._dlc_mode_applied():
+            scaled = QPixmap.fromImage(
+                scaled.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
+            )
+
+        rounded = QPixmap(target_size)
+        rounded.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(rounded)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        from PyQt6.QtGui import QPainterPath
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, target_size.width(), target_size.height(), 6, 6)
+        painter.setClipPath(path)
+
+        dx = (target_size.width() - scaled.width()) // 2
+        dy = (target_size.height() - scaled.height()) // 2
+        painter.drawPixmap(dx, dy, scaled)
+        painter.end()
+
+        self.image_label.setPixmap(rounded)
+
+    def sizeHint(self) -> QSize:
+        return QSize(226, 195)
+
+
+class GameCompactWidget(GameItemWidget):
+    """
+    Compact single-line text row widget (Text-only mode).
+    [ Checkbox ] [ Name (bold) ] [ Badges ] [ App ID ] [ Size ]
+    """
+
+    def __init__(
+        self,
+        game_data: dict,
+        size_str: str,
+        accent_color: str,
+        background_color: str,
+        select_mode: bool = False,
+        is_selected: bool = False,
+        applist_2_0_enabled: bool = True,
+        parent_dialog = None,
+    ):
+        super().__init__(
+            game_data,
+            size_str,
+            accent_color,
+            background_color,
+            select_mode=select_mode,
+            is_selected=is_selected,
+            applist_2_0_enabled=applist_2_0_enabled,
+            parent_dialog=parent_dialog,
+        )
+
+    def _init_ui(self, size_str: str) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 4, 14, 4)
+        layout.setSpacing(10)
+
+        # Checkbox
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(self._is_selected)
+        self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.checkbox.setStyleSheet(
+            f"""
+            QCheckBox::indicator {{
+                width: 16px;
+                height: 16px;
+                border: 2px solid rgba(255, 255, 255, 180);
+                border-radius: 8px;
+                background-color: rgba(0, 0, 0, 160);
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {self.accent_color};
+                border: 2px solid #000000;
+            }}
+            """
+        )
+        self.checkbox.setVisible(self._select_mode)
+        layout.addWidget(self.checkbox)
+
+        # Title
+        display_name = format_game_display_name(self.game_data)
+        name_only, dlc_mode = split_dlc_mode(display_name)
+        self.name_label = QLabel(name_only)
+        self.name_label.setToolTip(name_only)
+        self.name_label.setStyleSheet("color: #FFFFFF; font-size: 11px; font-weight: bold;")
+        layout.addWidget(self.name_label, 1)
+
+        # Check if Steam tab
+        self._is_steam_tab = (
+            (self.parent_dialog and getattr(self.parent_dialog, "_active_tab", "") == "steam")
+            or self.game_data.get("is_steam_tab", False)
+        )
+
+        # DLC Badge
+        self.dlc_mode_badge = None
+        if dlc_mode:
+            self.dlc_mode_badge = QLabel("DLC")
+            self.dlc_mode_badge.setStyleSheet(
+                f"color: {self.accent_color}; border: 1px solid {self.accent_color}; "
+                "border-radius: 3px; padding: 0px 4px; font-size: 8pt; font-weight: bold;"
+            )
+            layout.addWidget(self.dlc_mode_badge)
+
+        self.status_label = QLabel()
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        layout.addWidget(self.status_label)
+
+        self.pinned_build_label = QLabel()
+        self.pinned_build_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.pinned_build_label.setVisible(False)
+        self.pinned_label = self.pinned_build_label
+        layout.addWidget(self.pinned_build_label)
+
+        self.denuvo_badge = QLabel()
+        self.denuvo_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.denuvo_badge.hide()
+        layout.addWidget(self.denuvo_badge)
+
+        self.proton_badge = QLabel()
+        self.proton_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.proton_badge.hide()
+        layout.addWidget(self.proton_badge)
+
+        self.manifest_label = QLabel()
+        if not self._is_steam_tab:
+            layout.addWidget(self.manifest_label)
+            self.update_manifest_label()
+        else:
+            self.manifest_label.setVisible(False)
+
+        # App ID
+        appid = str(self.game_data.get("appid", ""))
+        self.appid_label = QLabel(f"AppID: {appid}" if appid and appid not in ("0", "N/A", "unknown") else "")
+        self.appid_label.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 9px; font-family: monospace;")
+        layout.addWidget(self.appid_label)
+
+        # Size
+        self.size_label = QLabel(size_str)
+        self.size_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 10px;")
+        layout.addWidget(self.size_label)
+
+        self.update_pinned_label()
+
+    def set_image(self, pixmap: QPixmap) -> None:
+        """Compact text view does not display images."""
+        pass
+
+    def sizeHint(self) -> QSize:
+        return QSize(400, 34)

@@ -34,9 +34,13 @@ def _depot_matches_platform(depot_data: dict, platform: str) -> bool:
 
     return False
 def _depot_is_macos(depot_data: dict) -> bool:
-    """Check if a depot is macOS-only."""
+    """Check if a depot is macOS-only (does not support Windows or Linux)."""
     oslist = (depot_data.get("oslist") or "").lower()
     desc = (depot_data.get("desc") or "").lower()
+
+    # If it also supports Windows or Linux, it is a shared depot, NOT macOS-only
+    if "windows" in oslist or "win" in oslist or "linux" in oslist or "[windows]" in desc or "[linux]" in desc:
+        return False
 
     # Check oslist
     if oslist in ("macosx", "macos"):
@@ -48,9 +52,13 @@ def _depot_is_macos(depot_data: dict) -> bool:
 
     return False
 def _depot_is_android(depot_data: dict) -> bool:
-    """Check if a depot is Android-only."""
+    """Check if a depot is Android-only (does not support Windows or Linux)."""
     oslist = (depot_data.get("oslist") or "").lower()
     desc = (depot_data.get("desc") or "").lower()
+
+    # If it also supports Windows or Linux, it is a shared depot, NOT Android-only
+    if "windows" in oslist or "win" in oslist or "linux" in oslist or "[windows]" in desc or "[linux]" in desc:
+        return False
 
     # Check oslist
     if oslist == "android":
@@ -93,14 +101,16 @@ def get_smart_default_depots(depots: dict, target_platform: str = "linux", langu
     if not depots:
         return []
 
-    # Check if there are any native Linux depots
+    # Check if there are any dedicated native Linux depots (not shared with Windows)
     has_linux = False
     for d_id, d_data in depots.items():
         if not isinstance(d_data, dict) or _depot_is_macos(d_data) or _depot_is_android(d_data):
             continue
         oslist = (d_data.get("oslist") or "").lower()
         desc = (d_data.get("desc") or "").lower()
-        if "linux" in oslist or "[linux]" in desc:
+        is_lin = "linux" in oslist or "[linux]" in desc
+        is_win = "windows" in oslist or "win" in oslist or "[windows]" in desc or ".exe" in desc
+        if is_lin and not is_win:
             has_linux = True
             break
 
@@ -109,6 +119,8 @@ def get_smart_default_depots(depots: dict, target_platform: str = "linux", langu
     else:
         active_platform = "windows"
 
+    from utils.depot_tag_helpers import extract_arch_code
+
     # Check if 64-bit depots exist for active platform
     has_64 = False
     for d_id, d_data in depots.items():
@@ -116,9 +128,8 @@ def get_smart_default_depots(depots: dict, target_platform: str = "linux", langu
             continue
         if not _depot_matches_platform(d_data, active_platform):
             continue
-        osarch = str(d_data.get("osarch") or "").lower()
-        desc = (d_data.get("desc") or "").lower()
-        if osarch == "64" or "64-bit" in desc or "x64" in desc or "64 bit" in desc or "[64]" in desc:
+        desc = (d_data.get("desc") or "")
+        if extract_arch_code(d_data, desc) == "x64":
             has_64 = True
             break
 
@@ -152,10 +163,8 @@ def get_smart_default_depots(depots: dict, target_platform: str = "linux", langu
 
         # 4. Filter 32-bit if 64-bit exists
         if has_64:
-            osarch = str(d_data.get("osarch") or "").lower()
-            desc = (d_data.get("desc") or "").lower()
-            is_32 = osarch == "32" or "32-bit" in desc or "x86" in desc or "32 bit" in desc or "[32]" in desc or "[x86]" in desc
-            if is_32:
+            desc = (d_data.get("desc") or "")
+            if extract_arch_code(d_data, desc) == "x86":
                 continue
 
         # 5. Language filtering if applicable

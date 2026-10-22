@@ -36,11 +36,14 @@ BACKEND_ASSELLA = 1
 BACKEND_NATIVE_STEAM = 2
 
 
+from ui.dialog_titlebar import DialogTitleBar
+
+
 class DownloadBackendDialog(QDialog):
     """
     Compact dialog asking whether to download via Steam or ASSella.
     Includes early plugin presence check with blocking for Steam option.
-    Clean borderless cards with soft hover/selection glow.
+    Clean borderless cards with custom ASSella title bar and full-width buttons.
     """
 
     def __init__(
@@ -68,16 +71,27 @@ class DownloadBackendDialog(QDialog):
 
         self.setWindowTitle("Download Method")
         self.setFixedWidth(440)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         self._init_ui()
 
     def _init_ui(self):
-        self.setStyleSheet("""
-            QDialog {
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(0)
+
+        # Outer Container Frame
+        self.container = QFrame(self)
+        self.container.setObjectName("dialogContainer")
+        self.container.setStyleSheet("""
+            QFrame#dialogContainer {
                 background-color: #1a1c23;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 10px;
+            }
+            * {
+                outline: none;
             }
             QLabel {
                 color: #FFFFFF;
@@ -85,16 +99,33 @@ class DownloadBackendDialog(QDialog):
                 background: transparent;
             }
         """)
+        root.addWidget(self.container)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 20, 22, 18)
-        layout.setSpacing(16)
+        container_lay = QVBoxLayout(self.container)
+        container_lay.setContentsMargins(0, 0, 0, 16)
+        container_lay.setSpacing(12)
+
+        # Custom Themed Title Bar
+        self.title_bar = DialogTitleBar(
+            self,
+            title="Download Method",
+            can_minimize=False,
+            can_maximize=False,
+            use_power_close=True,
+        )
+        container_lay.addWidget(self.title_bar)
+
+        # Body area
+        body_lay = QVBoxLayout()
+        body_lay.setContentsMargins(20, 4, 20, 4)
+        body_lay.setSpacing(14)
+        container_lay.addLayout(body_lay)
 
         # Title: Download : {game_name} via
         title_lbl = QLabel(f"Download : <b style='color: {self.accent_color};'>{self.game_name}</b> via")
         title_lbl.setStyleSheet("font-size: 11pt; color: rgba(255, 255, 255, 0.95); border: none; background: transparent;")
         title_lbl.setWordWrap(True)
-        layout.addWidget(title_lbl)
+        body_lay.addWidget(title_lbl)
 
         # Options Container (Two borderless cards side by side)
         cards_layout = QHBoxLayout()
@@ -170,7 +201,7 @@ class DownloadBackendDialog(QDialog):
         self.assella_card.mousePressEvent = lambda e: self._select_backend(BACKEND_ASSELLA)
         cards_layout.addWidget(self.assella_card)
 
-        layout.addLayout(cards_layout)
+        body_lay.addLayout(cards_layout)
 
         # Plugin Missing Helper Link/Button (if blocked)
         self.plugin_help_btn = QPushButton("Enable Plugin Support in Settings")
@@ -190,7 +221,7 @@ class DownloadBackendDialog(QDialog):
         """)
         self.plugin_help_btn.clicked.connect(self._open_settings_atom)
         self.plugin_help_btn.setVisible(not self._plugins_available)
-        layout.addWidget(self.plugin_help_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
+        body_lay.addWidget(self.plugin_help_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         # Remember my choice Checkbox
         self.remember_chk = QCheckBox("Remember my choice")
@@ -202,24 +233,34 @@ class DownloadBackendDialog(QDialog):
                 color: rgba(255, 255, 255, 0.75);
                 spacing: 7px;
                 border: none;
+                outline: none;
                 background: transparent;
+            }
+            QCheckBox:focus {
+                border: none;
+                outline: none;
             }
             QCheckBox::indicator {
                 width: 15px;
                 height: 15px;
-                border: 1px solid rgba(255, 255, 255, 0.25);
+                border: none;
                 border-radius: 3px;
-                background: rgba(255, 255, 255, 0.05);
+                background: rgba(255, 255, 255, 0.12);
+                outline: none;
             }
             QCheckBox::indicator:hover {
-                border-color: rgba(255, 255, 255, 0.5);
+                background: rgba(255, 255, 255, 0.22);
             }
             QCheckBox::indicator:checked {
                 background: %s;
-                border-color: %s;
+                border: none;
             }
-        """ % (self.accent_color, self.accent_color))
-        layout.addWidget(self.remember_chk)
+            QCheckBox::indicator:focus {
+                border: none;
+                outline: none;
+            }
+        """ % self.accent_color)
+        body_lay.addWidget(self.remember_chk)
 
         # Custom plugin warning (visible only when Steam is chosen and bypass is active with physical plugins missing)
         self.custom_plugin_warn_lbl = QLabel("⚠️ Custom plugins active — third-party plugin support cannot be guaranteed!")
@@ -229,53 +270,62 @@ class DownloadBackendDialog(QDialog):
         self.custom_plugin_warn_lbl.setVisible(
             self._selected_backend == BACKEND_NATIVE_STEAM and is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True)
         )
-        layout.addWidget(self.custom_plugin_warn_lbl)
+        body_lay.addWidget(self.custom_plugin_warn_lbl)
 
-        # Bottom buttons row: Cancel / Proceed
+        # Bottom buttons row: Cancel / Proceed (big buttons filling the bottom width)
         bot_layout = QHBoxLayout()
-        bot_layout.setContentsMargins(0, 4, 0, 0)
+        bot_layout.setContentsMargins(0, 8, 0, 0)
         bot_layout.setSpacing(10)
 
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setObjectName("cancel_btn")
-        self.cancel_btn.setFixedSize(85, 30)
+        self.cancel_btn.setFixedHeight(38)
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_btn.setStyleSheet("""
             QPushButton#cancel_btn {
                 background-color: rgba(255, 255, 255, 0.06);
                 color: rgba(255, 255, 255, 0.85);
                 border: none;
+                outline: none;
                 border-radius: 6px;
-                font-size: 8.5pt;
+                font-size: 9pt;
+                font-weight: 500;
             }
             QPushButton#cancel_btn:hover {
                 background-color: rgba(255, 255, 255, 0.12);
                 color: #FFFFFF;
             }
+            QPushButton#cancel_btn:focus {
+                outline: none;
+                border: none;
+            }
         """)
         self.cancel_btn.clicked.connect(self._on_cancel)
-        bot_layout.addWidget(self.cancel_btn)
-
-        bot_layout.addStretch()
+        bot_layout.addWidget(self.cancel_btn, 1)
 
         # Foreground color chosen for maximum contrast against accent
         btn_fg = get_best_foreground_color(self.accent_color, dark_color="#121214", light_color="#FFFFFF")
 
         self.proceed_btn = QPushButton("Proceed")
         self.proceed_btn.setObjectName("proceed_btn")
-        self.proceed_btn.setFixedSize(85, 30)
+        self.proceed_btn.setFixedHeight(38)
         self.proceed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.proceed_btn.setStyleSheet(f"""
             QPushButton#proceed_btn {{
                 background-color: {self.accent_color};
                 color: {btn_fg};
                 border: none;
+                outline: none;
                 border-radius: 6px;
-                font-size: 8.5pt;
+                font-size: 9pt;
                 font-weight: bold;
             }}
             QPushButton#proceed_btn:hover {{
                 opacity: 0.9;
+            }}
+            QPushButton#proceed_btn:focus {{
+                outline: none;
+                border: none;
             }}
             QPushButton#proceed_btn:disabled {{
                 background-color: rgba(255, 255, 255, 0.05);
@@ -283,9 +333,9 @@ class DownloadBackendDialog(QDialog):
             }}
         """)
         self.proceed_btn.clicked.connect(self._on_proceed)
-        bot_layout.addWidget(self.proceed_btn)
+        bot_layout.addWidget(self.proceed_btn, 1)
 
-        layout.addLayout(bot_layout)
+        body_lay.addLayout(bot_layout)
 
         self._update_cards_ui()
 
@@ -318,6 +368,7 @@ class DownloadBackendDialog(QDialog):
             QFrame {{
                 background-color: rgba({self._r}, {self._g}, {self._b}, 0.20);
                 border: none;
+                outline: none;
                 border-radius: 10px;
             }}
             QFrame:hover {{
@@ -332,6 +383,7 @@ class DownloadBackendDialog(QDialog):
             QFrame {
                 background-color: rgba(255, 255, 255, 0.04);
                 border: none;
+                outline: none;
                 border-radius: 10px;
             }
             QFrame:hover {
@@ -346,6 +398,7 @@ class DownloadBackendDialog(QDialog):
             QFrame {
                 background-color: rgba(255, 255, 255, 0.02);
                 border: none;
+                outline: none;
                 border-radius: 10px;
             }
             QLabel {

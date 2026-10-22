@@ -5,7 +5,6 @@ Enforces a 3-second lockout countdown before dismissal to ensure the user acknow
 
 from PyQt6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -15,6 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor
 
+from ui.dialogs.themed_dialog import install_themed_frame
 from utils.settings import get_settings
 
 
@@ -30,13 +30,6 @@ class DlcModeWarningDialog(QDialog):
         self.setMinimumWidth(440)
         self.setMaximumWidth(520)
 
-        # Disable dialog close 'X' until countdown completes
-        self.setWindowFlags(
-            Qt.WindowType.Dialog
-            | Qt.WindowType.WindowTitleHint
-            | Qt.WindowType.CustomizeWindowHint
-        )
-
         self._countdown = 3
         settings = get_settings()
         self.accent_color = getattr(parent, "accent_color", None) or (settings.value("accent_color", "#a1c9fd") if settings else "#a1c9fd")
@@ -45,8 +38,10 @@ class DlcModeWarningDialog(QDialog):
         self._start_timer()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 20)
+        # The window is frameless now, and the title bar carries no close
+        # button while the lockout is running (the flag juggling that used to
+        # block the desktop's X is gone with it).
+        layout = install_themed_frame(self, "DLC Mode", use_power_close=False)
         layout.setSpacing(20)
 
         # Content message
@@ -82,15 +77,6 @@ class DlcModeWarningDialog(QDialog):
 
         btn_layout.addWidget(self.ok_btn)
         layout.addLayout(btn_layout)
-
-        # Dialog styling
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #1a1b20;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 8px;
-            }
-        """)
 
     def _update_button_style(self):
         if self._countdown > 0:
@@ -148,14 +134,6 @@ class DlcModeWarningDialog(QDialog):
             self.ok_btn.setText("Understood")
             self.ok_btn.setEnabled(True)
             self._update_button_style()
-            # Enable default close behavior
-            self.setWindowFlags(
-                Qt.WindowType.Dialog
-                | Qt.WindowType.WindowTitleHint
-                | Qt.WindowType.WindowCloseButtonHint
-                | Qt.WindowType.CustomizeWindowHint
-            )
-            self.show()
 
     def closeEvent(self, event):
         if self._countdown > 0:

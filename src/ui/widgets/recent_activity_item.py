@@ -118,4 +118,6 @@ class RecentActivityItemWidget(QFrame):
         if self.is_game and event.button() == Qt.MouseButton.LeftButton:
             if self.parent_terminal and hasattr(self.parent_terminal, "_open_game_details"):
                 self.parent_terminal._open_game_details(self.appid)
-        super().mousePressEvent(event)
+            event.accept()
+        else:
+            super().mousePressEvent(event)

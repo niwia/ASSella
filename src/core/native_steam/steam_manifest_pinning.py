@@ -10,7 +10,9 @@ via download.lua, and will be locked from auto-updating those depots.
 """
 
 import logging
+import os
 import re
+import zipfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -78,6 +80,7 @@ def set_manifest_ids(
         return True
 
     try:
+        config_path = Path(config_path)
         if not config_path.exists():
             config_path.parent.mkdir(parents=True, exist_ok=True)
             content = "Plugins: yes\nManifestIds:\n"
@@ -120,10 +123,13 @@ def set_manifest_ids(
 
 def remove_manifest_ids(config_path: Path, depot_ids: List[str]) -> bool:
     """Remove specific depot IDs from the ManifestIds section in config.yaml, preserving comments for remaining entries."""
-    if not config_path.exists() or not depot_ids:
+    if not config_path or not depot_ids:
         return True
 
     try:
+        config_path = Path(config_path)
+        if not config_path.exists():
+            return True
         content = config_path.read_text(encoding="utf-8", errors="ignore")
         bounds = _get_section_bounds(content, "ManifestIds")
         if not bounds:
@@ -196,19 +202,66 @@ def resolve_pinned_manifests(game_data: Dict[str, Any], appid: str) -> Dict[str,
             if gid and str(gid).isdigit() and str(depot_id) not in manifest_map:
                 manifest_map[str(depot_id)] = str(gid)
 
-    # 4. Fall back to Voices recommended build overrides
-    if not manifest_map:
-        try:
-            from managers.voices_manager import VoicesManager
-            rec = VoicesManager.get_instance().get_recommendation(
-                appid_str, game_data.get("game_name", "")
-            )
-            if rec and rec.get("manifest_overrides"):
-                for d, gid in rec["manifest_overrides"].items():
-                    if d and gid:
-                        manifest_map[str(d)] = str(gid)
-        except Exception:
-            pass
+    # 4. Check installed appmanifest acf on disk if available
+    try:
+        from utils.steam_acf import find_appmanifest_path, parse_acf_file
+        acf_path = find_appmanifest_path(game_data, appid_str)
+        if acf_path and os.path.exists(acf_path):
+            acf_data = parse_acf_file(acf_path)
+            for did, dinfo in (acf_data.get("AppState", {}).get("InstalledDepots") or {}).items():
+                if isinstance(dinfo, dict):
+                    mid = dinfo.get("manifest")
+                    if mid and str(mid).isdigit() and str(did) not in manifest_map and str(did) != appid_str:
+                        manifest_map[str(did)] = str(mid)
+    except Exception as e:
+        logger.debug(f"[ManifestPinning] ACF manifest scan fallback error: {e}")
+
+    # 5. Check local .DepotDownloader directory for *.manifest files
+    try:
+        from utils.plugin_games import _resolve_install_path
+        install_path = _resolve_install_path(game_data)
+        if install_path:
+            for sub in (".DepotDownloader", ".assella", ".accela"):
+                dd_dir = os.path.join(install_path, sub)
+                if os.path.isdir(dd_dir):
+                    for fname in os.listdir(dd_dir):
+                        m_file = re.match(r"^(\d+)_(\d+)\.manifest$", fname)
+                        if m_file:
+                            did, mid = m_file.group(1), m_file.group(2)
+                            if did not in manifest_map and did != appid_str:
+                                manifest_map[did] = mid
+    except Exception as e:
+        logger.debug(f"[ManifestPinning] .DepotDownloader manifest scan error: {e}")
+
+    # 6. Supplement / discover from cached hubcap manifest bundles for this build/game
+    try:
+        from utils.helpers import get_base_path
+        hubcap_dir = Path(get_base_path()) / "hubcap_manifests"
+        if hubcap_dir.exists():
+            build_id = str(
+                game_data.get("buildid")
+                or (settings.value(f"installed_buildid/{appid_str}", "") if settings else "")
+            ).strip()
+            zips = []
+            if build_id:
+                specific = hubcap_dir / f"accela_fetch_{appid_str}_build_{build_id}.zip"
+                if specific.exists():
+                    zips.append(specific)
+            zips.extend(hubcap_dir.glob(f"accela_fetch_{appid_str}*.zip"))
+            for z_path in zips:
+                try:
+                    with zipfile.ZipFile(z_path, "r") as zf:
+                        for name in zf.namelist():
+                            base_name = os.path.basename(name)
+                            m_file = re.match(r"^(\d+)_(\d+)\.manifest$", base_name)
+                            if m_file:
+                                did, mid = m_file.group(1), m_file.group(2)
+                                if did not in manifest_map and did != appid_str:
+                                    manifest_map[did] = mid
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.debug(f"[ManifestPinning] Zip manifest scan fallback error: {e}")
 
     if manifest_map:
         logger.info(
@@ -216,3 +269,4 @@ def resolve_pinned_manifests(game_data: Dict[str, Any], appid: str) -> Dict[str,
         )
 
     return manifest_map
+

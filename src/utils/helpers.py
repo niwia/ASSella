@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from utils.paths import Paths
+from utils.qt_utils import clear_layout
 
 logger = logging.getLogger(__name__)
 
@@ -1510,14 +1511,13 @@ class FontSelectionDialog(QDialog):
         except Exception:
             pass
 
+        from ui.dialogs.themed_dialog import install_themed_frame
+
         self.setWindowTitle("Select Font")
         self.setMinimumWidth(400)
         self.resize(400, 290)
         
         self.setStyleSheet("""
-            QDialog {
-                background-color: #121214;
-            }
             QLabel[form_label="true"] {
                 color: #FFFFFF;
                 font-size: 9.5pt;
@@ -1540,9 +1540,7 @@ class FontSelectionDialog(QDialog):
             }
         """)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(14)
+        layout = install_themed_frame(self, margins=(16, 16, 16, 16), spacing=14)
 
         form_layout = QFormLayout()
         form_layout.setSpacing(10)
@@ -1657,6 +1655,7 @@ class FontSelectionDialog(QDialog):
         if result == QDialog.DialogCode.Accepted:
             return dialog.get_selected_font(), True
         return initial_font, False
+
 
 
 

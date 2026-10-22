@@ -10,7 +10,8 @@ import urllib.request
 from pathlib import Path
 
 from PyQt6.QtCore import QMetaObject, QObject, Qt, Q_ARG
-from PyQt6.QtWidgets import QMessageBox, QProgressDialog
+from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.paths import Paths
 from utils.version import app_version
@@ -42,7 +43,7 @@ class AppUpdateManager(QObject):
         if not appimage_path or not os.path.exists(appimage_path):
             appimage_path = default_appimage
         if not os.path.exists(appimage_path):
-            QMessageBox.information(
+            ThemedMessageBox.information(
                 self._parent, "Self-Update",
                 "Could not locate the installed ASSella.AppImage to update."
             )
@@ -62,22 +63,27 @@ class AppUpdateManager(QObject):
 
         local_clean = extract_semver(app_version)
 
-        reply = QMessageBox.question(
+        reply = ThemedMessageBox.question(
             self._parent, "Install Update",
             f"A new version of ASSella is available ({tag or 'the latest build'}).\n\n"
             "Would you like to download and install it now?\n"
             "The app will need to be restarted after the update.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if reply != ThemedMessageBox.StandardButton.Yes:
             return
 
-        progress = QProgressDialog("Connecting to GitHub...", "Cancel", 0, 100, self._parent)
+        progress = ThemedProgressDialog("Connecting to GitHub...", "Cancel", 0, 100, self._parent)
         progress.setWindowTitle("Downloading Update")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
         progress.setValue(2)
+        # The application event loop owns the dialog; show it before the worker
+        # starts and never inspect widget state from that worker.
+        progress.show()
+        cancel_event = threading.Event()
+        progress.canceled.connect(cancel_event.set)
 
         def _download_worker():
             import json
@@ -138,6 +144,9 @@ class AppUpdateManager(QObject):
 
                 if not download_url:
                     raise RuntimeError("No AppImage asset found in the release.")
+
+                if cancel_event.is_set():
+                    return
 
                 # --- Delta (appimageupdatetool, then zsync) ----------------
                 # Prefer the bundled AppImageUpdate, which reads the update string
@@ -203,6 +212,8 @@ class AppUpdateManager(QObject):
 
                 # 2. zsync CLI (system install, or already on PATH)
                 if not delta_ok:
+                    if cancel_event.is_set():
+                        return
                     try:
                         zsync_bin = shutil.which("zsync")
                         if not zsync_bin:
@@ -241,12 +252,22 @@ class AppUpdateManager(QObject):
                     except Exception as e:
                         logger.warning(f"zsync delta attempt failed ({e}); falling back to full download.")
 
+                if cancel_event.is_set():
+                    if tmp_path is not None:
+                        try:
+                            Path(tmp_path).unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    return
+
                 if delta_ok and tmp_path is not None:
                     try:
                         os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
                         shutil.move(str(tmp_path), appimage_path)
                         QMetaObject.invokeMethod(progress, "setValue",
                             Qt.ConnectionType.QueuedConnection, Q_ARG(int, 100))
+                        QMetaObject.invokeMethod(progress, "finish",
+                            Qt.ConnectionType.QueuedConnection)
                         QMetaObject.invokeMethod(self._parent, "_on_update_success",
                             Qt.ConnectionType.QueuedConnection)
                         return
@@ -255,6 +276,8 @@ class AppUpdateManager(QObject):
                         tmp_path = None
 
                 logger.info(f"Self-update fallback: downloading from {download_url}")
+                if cancel_event.is_set():
+                    return
                 tmp_path = dest_dir / "ASSella.AppImage.part"
 
                 QMetaObject.invokeMethod(progress, "setLabelText",
@@ -269,7 +292,7 @@ class AppUpdateManager(QObject):
                     chunk_size = 512 * 1024
                     with open(tmp_path, "wb") as f:
                         while True:
-                            if progress.wasCanceled():
+                            if cancel_event.is_set():
                                 try:
                                     os.remove(tmp_path)
                                 except OSError:
@@ -340,6 +363,8 @@ class AppUpdateManager(QObject):
 
                 QMetaObject.invokeMethod(progress, "setValue",
                     Qt.ConnectionType.QueuedConnection, Q_ARG(int, 100))
+                QMetaObject.invokeMethod(progress, "finish",
+                    Qt.ConnectionType.QueuedConnection)
                 QMetaObject.invokeMethod(self._parent, "_on_update_success",
                     Qt.ConnectionType.QueuedConnection)
 
@@ -350,6 +375,8 @@ class AppUpdateManager(QObject):
                         os.remove(tmp_path)
                     except Exception:
                         pass
+                QMetaObject.invokeMethod(progress, "finish",
+                    Qt.ConnectionType.QueuedConnection)
                 QMetaObject.invokeMethod(self._parent, "_on_update_failed",
                     Qt.ConnectionType.QueuedConnection, Q_ARG(str, str(e)))
 

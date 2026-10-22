@@ -181,8 +181,13 @@ class NativeSteamDownloadTask(QObject):
         log_offset = sls_log.stat().st_size if sls_log.exists() else 0
 
         # 3. Patch config.yaml (BEFORE deploying plugins)
+        from utils.dlc_helpers import is_dlc_only_mode, get_all_dlcs_for_app
+        is_dlc = is_dlc_only_mode(appid) or bool(game_data.get("is_dlc_only"))
+        discovered_dlcs = get_all_dlcs_for_app(appid, game_data, allow_network=not is_dlc)
+        dlc_appids = [str(item["dlc_appid"]) for item in discovered_dlcs if item.get("dlc_appid")]
         patch_ok = self._patch_config(
-            config_path, appid, game_name, depot_keys, selected_depots=selected_depots, game_data=game_data
+            config_path, appid, game_name, depot_keys, selected_depots=selected_depots,
+            game_data=game_data, dlc_appids=dlc_appids,
         )
         if not patch_ok:
             msg = "Failed to patch SLSsteam config.yaml."
@@ -214,7 +219,7 @@ class NativeSteamDownloadTask(QObject):
         # 4. Verify SLSsteam plugins are present
         from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
         if not are_plugins_present():
-            msg = "AT0-M plugins (download.lua / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
+            msg = "AT0-M plugins (download interceptor / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
             self.error.emit((RuntimeError, msg, None))
@@ -277,7 +282,7 @@ class NativeSteamDownloadTask(QObject):
             # Register into plugin_library so AT0-M tracks it
             try:
                 from utils.plugin_games import register_plugin_game
-                from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
+                from utils.dlc_helpers import is_dlc_only_mode, get_all_dlcs_for_app
 
                 depot_names: Dict[str, str] = {}
                 depots_meta = (game_data.get("depots") or {}) if game_data else {}
@@ -289,21 +294,19 @@ class NativeSteamDownloadTask(QObject):
 
                 is_dlc = is_dlc_only_mode(appid) or bool(game_data and game_data.get("is_dlc_only"))
                 dlc_appids: List[str] = []
-                if is_dlc:
-                    try:
-                        d_info = get_dlc_only_info(appid)
-                        if d_info:
-                            dlc_appids = [str(x["dlc_appid"]) for x in d_info if x.get("dlc_appid")]
-                    except Exception:
-                        pass
-                    if not dlc_appids:
-                        for did in depot_keys.keys():
-                            did_str = str(did)
-                            meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
-                            if isinstance(meta, dict):
-                                dlc_id = str(meta.get("dlcappid") or "").strip()
-                                if dlc_id and dlc_id != appid and dlc_id not in dlc_appids:
-                                    dlc_appids.append(dlc_id)
+                try:
+                    d_info = get_all_dlcs_for_app(appid, game_data, allow_network=not is_dlc)
+                    dlc_appids = [str(x["dlc_appid"]) for x in d_info if x.get("dlc_appid")]
+                except Exception as e:
+                    logger.debug(f"[NativeSteamDL] DLC AppID lookup failed for {appid}: {e}")
+                if not dlc_appids:
+                    for did in depot_keys.keys():
+                        did_str = str(did)
+                        meta = depots_meta.get(did_str) or depots_meta.get(int(did_str) if did_str.isdigit() else did_str) or {}
+                        if isinstance(meta, dict):
+                            dlc_id = str(meta.get("dlcappid") or "").strip()
+                            if dlc_id and dlc_id != appid and dlc_id not in dlc_appids:
+                                dlc_appids.append(dlc_id)
 
                 installdir = game_data.get("install_dir") or game_data.get("installdir") or ""
                 register_plugin_game(
@@ -314,6 +317,7 @@ class NativeSteamDownloadTask(QObject):
                     installdir=installdir,
                     depot_names=depot_names,
                     dlc_appids=dlc_appids,
+                    is_dlc_only=is_dlc,
                 )
 
                 # Clean legacy ACCELA markers from install folder if any exist
@@ -350,8 +354,8 @@ class NativeSteamDownloadTask(QObject):
                     from utils.settings import get_settings
                     settings = get_settings()
                     settings.remove(f"game_update_status/{appid}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[NativeSteamDL] Could not clear game_update_status/{appid}: {e}")
             except Exception as e:
                 logger.warning(f"[NativeSteamDL] Could not register into plugin_library: {e}")
 
@@ -375,16 +379,18 @@ class NativeSteamDownloadTask(QObject):
                     with open(f"/proc/{pid_dir}/comm", "r", encoding="utf-8", errors="ignore") as f:
                         if f.read().strip() != "steam":
                             continue
-                except OSError:
+                except OSError as e:
+                    logger.debug(f"[NativeSteamDL] Could not read /proc/{pid_dir}/comm: {e}")
                     continue
                 try:
                     with open(f"/proc/{pid_dir}/maps", "r", encoding="utf-8", errors="ignore") as f:
                         if "SLSsteam.so" in f.read():
                             return True
-                except OSError:
+                except OSError as e:
+                    logger.debug(f"[NativeSteamDL] Could not read /proc/{pid_dir}/maps: {e}")
                     continue
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug(f"[NativeSteamDL] Steam process scan failed: {e}")
         return False
 
     def _get_config_dir(self) -> Optional[Path]:
@@ -394,8 +400,8 @@ class NativeSteamDownloadTask(QObject):
             env = get_steam_env()
             if env.sls_config_dir and env.sls_config_dir.is_dir():
                 return env.sls_config_dir
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] SLS config dir lookup failed: {e}")
 
         flatpak = Path.home() / ".var/app/com.valvesoftware.Steam/.config/SLSsteam"
         native = Path.home() / ".config/SLSsteam"
@@ -407,7 +413,8 @@ class NativeSteamDownloadTask(QObject):
         try:
             native.mkdir(parents=True, exist_ok=True)
             return native
-        except OSError:
+        except OSError as e:
+            logger.debug(f"[NativeSteamDL] Could not create {native}: {e}")
             return None
 
     def _get_primary_steamapps(self, dest_path: str) -> Optional[Path]:
@@ -424,8 +431,8 @@ class NativeSteamDownloadTask(QObject):
             env = get_steam_env()
             if env.steamapps_paths:
                 return env.steamapps_paths[0]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] Steam apps path lookup failed: {e}")
 
         for p in [
             Path.home() / ".local/share/Steam/steamapps",
@@ -612,7 +619,8 @@ class NativeSteamDownloadTask(QObject):
         resolved_dlc_appids = set(str(d) for d in (dlc_appids or []))
         if game_data:
             if game_data.get("dlcs"):
-                for d in game_data["dlcs"].keys():
+                dlc_iter = game_data["dlcs"].keys() if isinstance(game_data["dlcs"], dict) else game_data["dlcs"]
+                for d in dlc_iter:
                     resolved_dlc_appids.add(str(d))
             if game_data.get("depots"):
                 for dinfo in game_data["depots"].values():
@@ -689,6 +697,14 @@ class NativeSteamDownloadTask(QObject):
                     content = fixed_content
             else:
                 content = fixed_content.rstrip() + f"\n\nAdditionalApps:\n{entry_line}"
+            for did in sorted(dlc_appids, key=lambda x: int(x) if x.isdigit() else 0):
+                bounds = _get_section_bounds(content, "AdditionalApps")
+                section = content[bounds[1]:bounds[2]] if bounds else ""
+                if not re.search(rf"^[ \t]*-[ \t]*{re.escape(did)}(?:[ \t]*#[^\r\n]*)?$", section, re.MULTILINE):
+                    if bounds:
+                        content = _append_to_additional_apps(content, did, f"[DLC] {game_name} ({did})", bounds)
+                    else:
+                        content = content.rstrip() + f"\n\nAdditionalApps:\n  - {did} # [DLC] {game_name}\n"
 
         # 3. Format AdditionalDepots with descriptive comments
         from utils.yaml_config_manager import SHARED_REDISTS
@@ -703,7 +719,7 @@ class NativeSteamDownloadTask(QObject):
                     set(str(d) for d in game_data["depots"].keys()) if (game_data and game_data.get("depots")) else set()
                 )
             )
-            new_depot_ids = [d for d in raw_candidates if d != appid_str and d not in dlc_appids]
+            new_depot_ids = [d for d in raw_candidates if d != appid_str]
 
         # In AT0-M mode: Only include depots that have decryption keys (or are shared redists)
         # to prevent Steam "DepotWithoutKey" errors (e.g. blacklisted/missing depots like in 883710)
@@ -731,12 +747,12 @@ class NativeSteamDownloadTask(QObject):
                 if m:
                     did = m.group(1)
                     # Never keep base AppIDs in AdditionalDepots
-                    if did != appid_str and did not in dlc_appids:
+                    if did != appid_str:
                         existing_depots_comments[did] = m.group(2).strip() if m.group(2) else ""
 
         # If user explicitly selected depots, prune any depots of THIS game that are not selected
         if game_data and game_data.get("depots") and selected_depots:
-            all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str and str(d) not in dlc_appids}
+            all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str}
             user_depots_set = set(new_depot_ids)
             for d in all_game_depots:
                 if d in existing_depots_comments and d not in user_depots_set and d not in shared_redists:
@@ -894,8 +910,8 @@ class NativeSteamDownloadTask(QObject):
                                 logger.info(f"[NativeSteamDL] License event confirmed: {line.strip()}")
                                 return True
                     curr_offset = sz
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug(f"[NativeSteamDL] content_log poll failed: {e}")
             time.sleep(0.2)
         return False
 
@@ -971,8 +987,8 @@ class NativeSteamDownloadTask(QObject):
                                         self.progress.emit("[Native Steam] Steam download started...")
                                         return True
                             c_offset = c_size
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.debug(f"[NativeSteamDL] content_log download poll failed: {e}")
 
                 # 3. Check SLS log for "Installed <appid>"
                 if sls_log and sls_log.exists():
@@ -987,8 +1003,8 @@ class NativeSteamDownloadTask(QObject):
                                             f"[NativeSteamDL] SLS log confirmed install for {appid} on attempt {attempt}"
                                         )
                             s_offset = s_size
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.debug(f"[NativeSteamDL] SLS log install poll failed: {e}")
 
                 time.sleep(0.5)
 
@@ -1040,8 +1056,8 @@ class NativeSteamDownloadTask(QObject):
                                 if started_pattern.search(line):
                                     self.progress.emit("[Native Steam] Steam download started...")
                         content_log_offset = c_size
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.debug(f"[NativeSteamDL] content_log started poll failed: {e}")
 
             # 2. Check ACF file
             try:
@@ -1078,8 +1094,8 @@ class NativeSteamDownloadTask(QObject):
                                     self.speed_update.emit(
                                         f"{done_mb:.1f}/{total_mb:.1f} MB"
                                     )
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug(f"[NativeSteamDL] progress poll failed: {e}")
 
             # 3. Check SLS log for debug lines
             if sls_log.exists():
@@ -1089,11 +1105,11 @@ class NativeSteamDownloadTask(QObject):
                         with open(sls_log, "r", encoding="utf-8", errors="replace") as f:
                             f.seek(sls_log_offset)
                             for line in f:
-                                if "AuthenticateDepotID" in line or "download.lua" in line:
+                                if "AuthenticateDepotID" in line or ".lua" in line:
                                     self.progress.emit(f"[SLS] {line.strip()}")
                         sls_log_offset = s_size
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.debug(f"[NativeSteamDL] SLS log poll failed: {e}")
 
         if not self._is_running:
             return False
@@ -1105,8 +1121,8 @@ class NativeSteamDownloadTask(QObject):
                 if m and int(m.group(1)) == ACF_STATE_INSTALLED:
                     self.progress_percentage.emit(100)
                     return True
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug(f"[NativeSteamDL] Could not read ACF {acf_path}: {e}")
 
         return False
 
@@ -1115,8 +1131,8 @@ class NativeSteamDownloadTask(QObject):
         try:
             from core.steam_helpers import get_steam_env
             return get_steam_env().sls_log_path
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] SLS log path lookup failed: {e}")
         flatpak_log = Path.home() / ".var/app/com.valvesoftware.Steam/.SLSsteam.log"
         native_log = Path.home() / ".SLSsteam.log"
         return flatpak_log if flatpak_log.exists() else native_log
@@ -1130,8 +1146,8 @@ class NativeSteamDownloadTask(QObject):
                 p = Path(env.steam_path) / "logs" / "content_log.txt"
                 if p.exists():
                     return p
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] content_log path lookup failed: {e}")
 
         for candidate in [
             Path.home() / ".local/share/Steam/logs/content_log.txt",
@@ -1158,16 +1174,16 @@ class NativeSteamDownloadTask(QObject):
                 try:
                     p.unlink()
                     logger.info(f"[NativeSteamDL] Removed plugin: {p.name}")
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.debug(f"[NativeSteamDL] Could not remove plugin {p.name}: {e}")
         self._deployed_plugins.clear()
 
         # Delete backup
         if self._config_backup_path and self._config_backup_path.exists():
             try:
                 self._config_backup_path.unlink()
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug(f"[NativeSteamDL] Could not delete backup config: {e}")
             self._config_backup_path = None
         logger.info("[NativeSteamDL] Success cleanup done")
 
@@ -1194,8 +1210,8 @@ class NativeSteamDownloadTask(QObject):
                 try:
                     from utils.yaml_config_manager import remove_additional_app
                     remove_additional_app(config_path, self._appid)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[NativeSteamDL] Could not drop {self._appid} from {config_path}: {e}")
 
         # Remove deployed plugins
         for p in self._deployed_plugins:
@@ -1203,8 +1219,8 @@ class NativeSteamDownloadTask(QObject):
                 try:
                     p.unlink()
                     logger.info(f"[NativeSteamDL] Removed plugin: {p.name}")
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.debug(f"[NativeSteamDL] Could not remove plugin {p.name}: {e}")
         self._deployed_plugins.clear()
 
         # Remove incomplete ACF
@@ -1214,8 +1230,8 @@ class NativeSteamDownloadTask(QObject):
                 if '"StateFlags"\t\t"4"' not in txt and '"StateFlags"\t"4"' not in txt:
                     self._acf_path.unlink()
                     logger.info(f"[NativeSteamDL] Removed incomplete ACF: {self._acf_path}")
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug(f"[NativeSteamDL] Could not remove incomplete ACF: {e}")
 
         # Send uninstall to SLSsteam API to clean Steam memory state
         if self._appid:

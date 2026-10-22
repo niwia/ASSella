@@ -1,11 +1,12 @@
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog,
-    QVBoxLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
 )
+
+from ui.dialogs.themed_dialog import install_themed_frame
 
 
 class WindowsDepotWarningDialog(QDialog):
@@ -18,17 +19,7 @@ class WindowsDepotWarningDialog(QDialog):
         self.accent_color = accent_color
         self.seconds_left = 10
 
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #1a1a24;
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 10px;
-            }
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout = install_themed_frame(self, "Disable Windows Depots")
         layout.setSpacing(14)
 
         # Title
