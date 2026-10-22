@@ -30,6 +30,15 @@ curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/beta/install.sh | bas
 
 Read the full step-by-step setup in the [Installation Guide](/install).
 
+## Documentation & Guides
+
+- 🎮 **[Online Multiplayer Guide](/online-multiplayer)** — Play online co-op and multiplayer games using SLSonline, Netsock, and EOS Proxy.
+- 🕹️ **[Uran (Decky Plugin)](/uran)** — Native SteamOS Game Mode companion for your Steam Deck.
+- 🎨 **[Themes Guide](/themes)** — Customize ASSella's visual appearance.
+- 📦 **[Optional Components](/optional-components)** — Goldberg, Steamless, and SLScheevo setup.
+- 🔧 **[Game Mode Boot Loop Fix (TTY)](/recovery-tty)** — Emergency SteamOS recovery guide.
+- 📚 **[Dependencies](/dependencies)** — Runtime packages and system requirements.
+
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 

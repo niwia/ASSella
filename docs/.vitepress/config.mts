@@ -21,6 +21,7 @@ export default defineConfig({
       {
         text: 'Documentation',
         items: [
+          { text: 'Online Multiplayer', link: '/online-multiplayer' },
           { text: 'Themes', link: '/themes' },
           { text: 'Dependencies', link: '/dependencies' },
           { text: 'Optional Components', link: '/optional-components' },
@@ -41,6 +42,7 @@ export default defineConfig({
       {
         text: 'Reference & Guides',
         items: [
+          { text: 'Online Multiplayer Guide', link: '/online-multiplayer' },
           { text: 'Themes Guide', link: '/themes' },
           { text: 'Dependencies', link: '/dependencies' },
           { text: 'Optional Components', link: '/optional-components' },
