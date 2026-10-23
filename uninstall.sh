@@ -7,14 +7,16 @@ if [ -f "$SCRIPT_DIR/install.sh" ]; then
 else
     echo "Running ASSella Uninstaller..."
     INSTALL_DESTINATION="$HOME/.local/share/ACCELA"
-    DESKTOP_ENTRY="$HOME/.local/share/applications/accela.desktop"
-    ICON_PATH="$HOME/.local/share/icons/hicolor/256x256/apps/accela.png"
+    PRIMARY_DESKTOP_ENTRY="$HOME/.local/share/applications/assella.desktop"
+    LEGACY_DESKTOP_ENTRY="$HOME/.local/share/applications/accela.desktop"
+    PRIMARY_ICON_PATH="$HOME/.local/share/icons/hicolor/256x256/apps/assella.png"
+    LEGACY_ICON_PATH="$HOME/.local/share/icons/hicolor/256x256/apps/accela.png"
 
     rm -f "$INSTALL_DESTINATION/ASSella.AppImage"
     rm -f "$INSTALL_DESTINATION/ACCELA.AppImage"
     rm -f "$INSTALL_DESTINATION/version"
-    rm -f "$DESKTOP_ENTRY"
-    rm -f "$ICON_PATH"
+    rm -f "$PRIMARY_DESKTOP_ENTRY" "$LEGACY_DESKTOP_ENTRY"
+    rm -f "$PRIMARY_ICON_PATH" "$LEGACY_ICON_PATH"
 
     if [ -f "$INSTALL_DESTINATION/ACCELA.AppImage.bak" ]; then
         mv "$INSTALL_DESTINATION/ACCELA.AppImage.bak" "$INSTALL_DESTINATION/ACCELA.AppImage"
