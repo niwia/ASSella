@@ -76,5 +76,10 @@ test -f "$PRIMARY_DESKTOP_ENTRY"
 DESKTOP_TMP=""
 ICON_TMP=""
 
+# Stdin pipe execution (curl ... | bash): BASH_SOURCE must not trigger an
+# unbound variable error under set -u, and must execute main.
+help_output=$(cat "$REPO_DIR/install.sh" | bash -s -- --help)
+echo "$help_output" | grep -q 'ASSella Installer & Management Suite'
+
 echo "desktop shortcut symlink-loop & robust installer regression: PASS"
 
