@@ -339,6 +339,34 @@ class TestAcfHelper(unittest.TestCase):
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_text(encoding="utf-8"), "original")
 
+    def test_real_manifest_is_written_and_stateflags_restored(self):
+        """When manifest GID is known, write it instead of '0' and restore StateFlags to 4."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            acf = self._write_acf(
+                tmp,
+                '"AppState"\n'
+                '\t{\n'
+                '\t\t"StateFlags"\t\t"518"\n'
+                '\t\t"InstalledDepots"\n'
+                '\t\t{\n'
+                '\t\t\t"555"\n'
+                '\t\t\t{\n'
+                '\t\t\t\t"manifest"\t\t"0"\n'
+                '\t\t\t}\n'
+                '\t\t}\n'
+                '\t}\n',
+            )
+            game_data = {"manifests": {"555": "987654321012345"}}
+            status = ensure_acf_has_installed_depots(
+                acf, "111", ["555"], game_data, steam_running=False
+            )
+            self.assertEqual(status, ACF_WRITTEN)
+            content = Path(acf).read_text(encoding="utf-8")
+            self.assertIn('"manifest"\t\t"987654321012345"', content)
+            self.assertIn('"StateFlags"\t\t"4"', content)
+
 
 class TestDepotScopeResolution(unittest.TestCase):
     """The depot scope must never drop a depot that is on disk.

@@ -122,57 +122,160 @@ def _parse_installed_depots(body: str) -> Tuple[List[str], Dict[str, str]]:
     return order, entries
 
 
-def _format_depot_entry(indent: str, depot_id: str, size: int) -> str:
+def _resolve_depot_manifest(
+    depot_id: str,
+    appid: str = "",
+    game_data: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Find the best matching manifest ID for a depot from metadata, depotcache, or bundle cache."""
+    depot_id_str = str(depot_id)
+
+    # 1. From game_data metadata/manifests
+    if game_data:
+        for m_dict in (
+            game_data.get("manifests"),
+            game_data.get("metadata", {}).get("manifests"),
+            game_data.get("manifest_overrides"),
+        ):
+            if isinstance(m_dict, dict) and m_dict.get(depot_id_str):
+                mid = str(m_dict[depot_id_str]).strip()
+                if mid.isdigit() and mid != "0":
+                    return mid
+
+        depot_info = (game_data.get("depots") or {}).get(depot_id_str)
+        if isinstance(depot_info, dict):
+            gid = depot_info.get("manifest_id") or depot_info.get("gid")
+            if not (gid and str(gid).isdigit() and str(gid) != "0"):
+                try:
+                    from utils.branch_helpers import resolve_branch_manifest_gid
+                    gid = resolve_branch_manifest_gid(depot_info, game_data.get("branch") or "public")
+                except Exception:
+                    pass
+            if gid and str(gid).isdigit() and str(gid) != "0":
+                return str(gid)
+
+    # 2. From Steam active depotcache directories
+    try:
+        from core.native_steam.native_steam_handoff import get_depotcache_dirs
+        for ddir in get_depotcache_dirs():
+            if not ddir.is_dir():
+                continue
+            candidates: List[Tuple[str, float]] = []
+            for mf in ddir.glob(f"{depot_id_str}_*.manifest"):
+                m_file = re.match(rf"^{depot_id_str}_(\d+)\.manifest$", mf.name)
+                if m_file:
+                    mid = m_file.group(1)
+                    if mid != "0":
+                        try:
+                            candidates.append((mid, mf.stat().st_mtime))
+                        except OSError:
+                            candidates.append((mid, 0.0))
+            if candidates:
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                return candidates[0][0]
+    except Exception as e:
+        logger.debug(f"[SteamACF] depotcache lookup failed for depot {depot_id_str}: {e}")
+
+    # 3. From cached Hubcap bundles in hubcap_manifests
+    if appid:
+        try:
+            import zipfile
+            from utils.helpers import get_base_path
+            hubcap_dir = Path(get_base_path()) / "hubcap_manifests"
+            if hubcap_dir.exists():
+                for z_path in hubcap_dir.glob(f"accela_fetch_{appid}*.zip"):
+                    try:
+                        with zipfile.ZipFile(z_path, "r") as zf:
+                            for name in zf.namelist():
+                                base_name = os.path.basename(name)
+                                m_file = re.match(rf"^{depot_id_str}_(\d+)\.manifest$", base_name)
+                                if m_file:
+                                    mid = m_file.group(1)
+                                    if mid != "0":
+                                        return mid
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug(f"[SteamACF] hubcap_manifests lookup failed for depot {depot_id_str}: {e}")
+
+    return None
+
+
+def _format_depot_entry(indent: str, depot_id: str, size: int, manifest_id: Optional[str] = None) -> str:
     """Render one InstalledDepots entry.
 
     ``"manifest" "0"`` tells Steam "manifest unknown, verify it yourself". This is
     the correct hint: Steam then matches the depot against the files already on
     disk instead of pinning a stale GID.
     """
+    mid = manifest_id if (manifest_id and str(manifest_id).isdigit() and str(manifest_id) != "0") else "0"
     return (
         f'{indent}"{depot_id}"\n'
         f"{indent}{{\n"
-        f'{indent}\t"manifest"\t\t"0"\n'
+        f'{indent}\t"manifest"\t\t"{mid}"\n'
         f'{indent}\t"size"\t\t"{size}"\n'
         f"{indent}}}"
     )
 
 
 def _merge_installed_depots(
-    content: str, wanted: List[str], per_depot_size: int
-) -> Tuple[str, List[str]]:
-    """Add the depots from ``wanted`` that the ACF does not list yet.
+    content: str,
+    wanted: List[str],
+    per_depot_size: int,
+    appid: str = "",
+    game_data: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, List[str], List[str]]:
+    """Add missing depots and upgrade existing depot entries that have manifest "0".
 
-    Existing entries are kept verbatim -- only the depots Steam does not know
-    about are added. Returns (new content, list of depot ids that were added).
+    Returns (new content, list of depot ids that were added, list of depot ids whose manifest was upgraded).
     """
     block = _find_vdf_block(content, "InstalledDepots")
     if block is None:
-        return content, []
+        return content, [], []
     body_start, body_end, body = block
     order, entries = _parse_installed_depots(body)
     missing = [d for d in wanted if d not in entries]
-    if not missing:
-        return content, []
 
     indent = "\t\t"
     first = _DEPOT_ENTRY_RE.search(body)
     if first:
         indent = first.group(1)
 
-    entry_texts = [entries[d] for d in order]
-    entry_texts.extend(_format_depot_entry(indent, d, per_depot_size) for d in missing)
+    entry_texts: List[str] = []
+    upgraded: List[str] = []
+    for d in order:
+        txt = entries[d]
+        if re.search(r'"manifest"\s*"0"', txt):
+            real_mid = _resolve_depot_manifest(d, appid, game_data)
+            if real_mid:
+                txt = re.sub(r'"manifest"\s*"0"', f'"manifest"\t\t"{real_mid}"', txt)
+                upgraded.append(d)
+        entry_texts.append(txt)
+
+    added: List[str] = []
+    for d in missing:
+        real_mid = _resolve_depot_manifest(d, appid, game_data)
+        entry_texts.append(_format_depot_entry(indent, d, per_depot_size, real_mid))
+        added.append(d)
+
     new_body = "\n" + "\n".join(entry_texts) + "\n"
-    return content[:body_start] + new_body + content[body_end:], missing
+    return content[:body_start] + new_body + content[body_end:], added, upgraded
 
 
 def _insert_installed_depots_block(
-    content: str, wanted: List[str], per_depot_size: int
+    content: str,
+    wanted: List[str],
+    per_depot_size: int,
+    appid: str = "",
+    game_data: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, List[str]]:
     """Create the InstalledDepots block when the ACF does not have one yet."""
     if not wanted:
         return content, []
-    entries = [_format_depot_entry("\t\t", d, per_depot_size) for d in wanted]
+    entries = [
+        _format_depot_entry("\t\t", d, per_depot_size, _resolve_depot_manifest(d, appid, game_data))
+        for d in wanted
+    ]
     new_block = '\t"InstalledDepots"\n\t{\n' + "\n".join(entries) + "\n\t}"
     m = re.search(r'("AppState"\s*\{)', content)
     if not m:
@@ -291,19 +394,22 @@ def ensure_acf_has_installed_depots(
         needs_size = m_size is None or m_size.group(1) == "0"
 
         block = _find_vdf_block(content, "InstalledDepots")
+        has_upgradeable_manifest = False
         if block is None:
             missing = list(wanted)
         else:
             _, entries = _parse_installed_depots(block[2])
             missing = [d for d in wanted if d not in entries]
+            has_upgradeable_manifest = any(
+                re.search(r'"manifest"\s*"0"', ent)
+                and _resolve_depot_manifest(did, appid, game_data) is not None
+                for did, ent in entries.items()
+            )
 
         # Decide whether there is anything to write BEFORE asking whether Steam
-        # is running. A manifest that already lists every depot and has a real
-        # SizeOnDisk needs no write, so reporting it as "deferred" would send
-        # the user to a pointless re-run for a game that is already correct --
-        # and on most desktops Steam is always running, so that would be every
-        # game.
-        if not missing and not needs_size:
+        # is running. A manifest that already lists every depot, has no upgradeable
+        # "0" manifests, and has a real SizeOnDisk needs no write.
+        if not missing and not needs_size and not has_upgradeable_manifest:
             logger.debug(
                 f"[SteamACF] {acf_path} already lists all {len(wanted)} depot(s) for {appid}; nothing to do."
             )
@@ -321,7 +427,7 @@ def ensure_acf_has_installed_depots(
         # Measuring walks the whole install, so it happens only once a write is
         # actually going to happen.
         actual_size = _measure_install_size(game_data or {})
-        if not missing and actual_size <= 0:
+        if not missing and not has_upgradeable_manifest and actual_size <= 0:
             # Only SizeOnDisk was missing, and the install could not be
             # measured: writing "0" would be worse than leaving the file alone.
             logger.debug(f"[SteamACF] No install size available for {appid}; leaving {acf_path} untouched.")
@@ -334,10 +440,15 @@ def ensure_acf_has_installed_depots(
         # listed.
         per_depot_size = actual_size if len(wanted) == 1 else actual_size // max(1, len(wanted))
 
+        upgraded: List[str] = []
         if block is None:
-            content, added = _insert_installed_depots_block(content, wanted, per_depot_size)
+            content, added = _insert_installed_depots_block(
+                content, wanted, per_depot_size, appid=appid, game_data=game_data
+            )
         else:
-            content, added = _merge_installed_depots(content, wanted, per_depot_size)
+            content, added, upgraded = _merge_installed_depots(
+                content, wanted, per_depot_size, appid=appid, game_data=game_data
+            )
 
         if needs_size and actual_size > 0:
             if m_size:
@@ -347,6 +458,13 @@ def ensure_acf_has_installed_depots(
                     r'("AppState"\s*\{)', rf'\1\n\t"SizeOnDisk"\t\t"{actual_size}"', content
                 )
 
+        # If depots were upgraded or mounted, restore StateFlags to 4 (StateFullyInstalled)
+        # and clear UpdateResult if Steam previously marked it update-required/paused due to 401 CDN rejections.
+        m_flags = re.search(r'"StateFlags"\s*"(\d+)"', content)
+        if m_flags and m_flags.group(1) in ("518", "534", "6"):
+            content = re.sub(r'"StateFlags"\s*"(518|534|6)"', '"StateFlags"\t\t"4"', content)
+            content = re.sub(r'"UpdateResult"\s*"[1-9]\d*"', '"UpdateResult"\t\t"0"', content)
+
         if content == original_content:
             logger.debug(f"[SteamACF] No effective change for {acf_path}; skipping the write.")
             return ACF_SKIPPED
@@ -355,7 +473,7 @@ def ensure_acf_has_installed_depots(
             return ACF_FAILED
         logger.info(
             f"[SteamACF] Updated ACF {acf_path}: {len(wanted)} depot(s) wanted, "
-            f"{len(added)} added (StateFlags and manifests left untouched)"
+            f"{len(added)} added, {len(upgraded)} manifest(s) upgraded"
         )
         return ACF_WRITTEN
     except Exception as e:

@@ -1219,6 +1219,15 @@ def migrate_game_to_atom(
     # 5. Update QSettings
     settings_obj.setValue(f"exclude_from_update_all/{appid_str}", True)
 
+    # 6. Sync manifests to central depotcache so Steam and ensure_acf have local .manifest files
+    dest_lib = game_data.get("library_path") or install_path or ""
+    try:
+        from core.native_steam.native_steam_handoff import sync_manifests_to_depotcache
+
+        sync_manifests_to_depotcache(appid_str, dest_lib)
+    except Exception as e:
+        logger.warning(f"[PluginGames] Depotcache sync failed for {appid_str}: {e}")
+
     # 7. Adopt Steam appmanifest ACF
     from utils.steam_acf import find_appmanifest_path, ensure_acf_has_installed_depots, ACF_DEFERRED
 
@@ -1263,15 +1272,6 @@ def migrate_game_to_atom(
         acf_status = ensure_acf_has_installed_depots(acf_path, appid_str, adopted_depots, game_data)
         if acf_status == ACF_DEFERRED:
             acf_deferred = True
-
-    # 6. Sync manifests to central depotcache
-    try:
-        from core.native_steam.native_steam_handoff import sync_manifests_to_depotcache
-
-        dest_lib = game_data.get("library_path") or install_path or ""
-        sync_manifests_to_depotcache(appid_str, dest_lib)
-    except Exception as e:
-        logger.warning(f"[PluginGames] Depotcache sync failed for {appid_str}: {e}")
 
     # 7. Record acf_pending if deferred, and retire ASSella markers
     marker_retained = False
