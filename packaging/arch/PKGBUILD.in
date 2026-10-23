@@ -61,17 +61,17 @@ package() {
   install -dm755 "$pkgdir/usr/lib/assella"
   install -dm755 "$pkgdir/usr/bin"
   install -dm755 "$pkgdir/usr/share/applications"
-  install -dm755 "$pkgdir/usr/share/icons/hicolor/500x500/apps"
+  install -dm755 "$pkgdir/usr/share/icons/hicolor/256x256/apps"
   install -dm755 "$pkgdir/usr/share/pixmaps"
 
   install -m755 "$srcdir/ASSella.AppImage" "$pkgdir/usr/lib/assella/ASSella.AppImage"
 
-  # icon.png is 500x500; install it at its natural size so desktop environments
-  # do not upscale a mismatched density.
-  install -Dm644 "$srcdir/assella.png" "$pkgdir/usr/share/icons/hicolor/500x500/apps/assella.png"
+  # 256x256 is a size hicolor's index actually lists, so theme lookup resolves
+  # it. The natural-size 500x500 copy still goes to /usr/share/pixmaps below.
+  install -Dm644 "$srcdir/assella.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/assella.png"
   install -Dm644 "$srcdir/assella.png" "$pkgdir/usr/share/pixmaps/assella.png"
   # Legacy alias kept so existing ACCELA launchers keep resolving.
-  ln -sf assella.png "$pkgdir/usr/share/icons/hicolor/500x500/apps/accela.png"
+  ln -sf assella.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/accela.png"
   ln -sf assella.png "$pkgdir/usr/share/pixmaps/accela.png"
 
   # Must be named assella.desktop: src/main.py calls
