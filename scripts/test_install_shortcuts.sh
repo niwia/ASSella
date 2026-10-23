@@ -11,6 +11,10 @@ trap 'rm -rf "$TEST_HOME"' EXIT
 # shellcheck source=/dev/null
 source "$REPO_DIR/install.sh"
 
+# install.sh installs its own cleanup trap, replacing the one above. Re-register
+# one that also removes the test home, or every run leaks a temp directory.
+trap 'cleanup; rm -rf "$TEST_HOME"' EXIT INT TERM
+
 DESKTOP_DIR="$TEST_HOME/.local/share/applications"
 PRIMARY_DESKTOP_ENTRY="$DESKTOP_DIR/assella.desktop"
 LEGACY_DESKTOP_ENTRY="$DESKTOP_DIR/accela.desktop"
@@ -30,6 +34,7 @@ test "$(readlink "$LEGACY_DESKTOP_ENTRY")" = "assella.desktop"
 grep -q '^Exec=' "$PRIMARY_DESKTOP_ENTRY"
 grep -q '^Icon=assella$' "$PRIMARY_DESKTOP_ENTRY"
 grep -q '^Comment=Steam Game & Depot Management Suite$' "$PRIMARY_DESKTOP_ENTRY"
+grep -q '^StartupWMClass=ASSella$' "$PRIMARY_DESKTOP_ENTRY"
 test -z "$DESKTOP_TMP"
 
 # Test that paths containing spaces get properly quoted around the executable
@@ -53,6 +58,23 @@ if command -v curl &>/dev/null; then
     test "$(cat "$PRIMARY_ICON_PATH")" = "existing icon data"
     test -z "$ICON_TMP"
 fi
+
+# Interrupted-run cleanup: tracked temp files and stale hidden mktemp leftovers
+# must be removed, while the committed desktop entry survives.
+DESKTOP_TMP=$(mktemp "$DESKTOP_DIR/.assella.desktop.tmp.XXXXXX")
+ICON_TMP=$(mktemp "$ICON_DIR/.assella.png.tmp.XXXXXX")
+stale_desktop="$DESKTOP_DIR/.assella.desktop.tmp.stale"
+stale_icon="$ICON_DIR/.assella.png.tmp.stale"
+: > "$stale_desktop"
+: > "$stale_icon"
+cleanup
+test ! -e "$DESKTOP_TMP"
+test ! -e "$ICON_TMP"
+test ! -e "$stale_desktop"
+test ! -e "$stale_icon"
+test -f "$PRIMARY_DESKTOP_ENTRY"
+DESKTOP_TMP=""
+ICON_TMP=""
 
 echo "desktop shortcut symlink-loop & robust installer regression: PASS"
 

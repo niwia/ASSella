@@ -67,10 +67,15 @@ cleanup() {
     fi
 
     rm -f "${DESKTOP_TMP:-}" "${ICON_TMP:-}" 2>/dev/null || true
-    rm -f "${DESKTOP_DIR:-}/.assella.desktop.tmp."* \
-          "${ICON_DIR:-}/.assella.png.tmp."* \
-          "${PRIMARY_DESKTOP_ENTRY:-}.tmp."* \
-          "${PRIMARY_ICON_PATH:-}.tmp."* 2>/dev/null || true
+    # Sweep hidden mktemp leftovers from a run killed before its trap fired
+    # (SIGKILL cannot be trapped). Guard the directories: an empty value would
+    # turn the pattern into a glob at the filesystem root.
+    if [ -n "${DESKTOP_DIR:-}" ]; then
+        rm -f "$DESKTOP_DIR/.assella.desktop.tmp."* 2>/dev/null || true
+    fi
+    if [ -n "${ICON_DIR:-}" ]; then
+        rm -f "$ICON_DIR/.assella.png.tmp."* 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -114,6 +119,7 @@ Icon=assella
 Terminal=false
 Type=Application
 Categories=Utility;Game;
+StartupWMClass=ASSella
 MimeType=x-scheme-handler/accela;
 EOL
     chmod 0644 "$desktop_tmp"
@@ -669,7 +675,7 @@ do_install() {
     if [ "${ASSELLA_NO_ZSYNC:-0}" != "1" ] && command -v zsync &>/dev/null && [ -f "$INSTALL_DESTINATION/ASSella.AppImage" ]; then
         echo -e "${CYAN}[INFO] zsync delta update available — syncing changed blocks only.${NC}"
         local zsync_url="${LATEST_URL}.zsync"
-        if curl -fsL --max-time 30 -o "${DL_TMP}.zsync" "$zsync_url" 2>/dev/null; then
+        if curl -fsL --retry 3 --retry-delay 2 --max-time 30 -o "${DL_TMP}.zsync" "$zsync_url" 2>/dev/null; then
             local zsync_log="${DL_TMP}.zsync.log"
             if zsync -i "$INSTALL_DESTINATION/ASSella.AppImage" -o "$DL_TMP" "$zsync_url" >"$zsync_log" 2>&1; then
                 [ -s "$zsync_log" ] && sed 's/^/    /' "$zsync_log"

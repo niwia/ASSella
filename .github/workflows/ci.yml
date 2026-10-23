@@ -153,6 +153,15 @@ jobs:
         run: |
           python scripts/check_themed_dialogs.py
 
+      # install.sh is the first thing a user runs and the only code that edits
+      # their desktop entries, so its symlink handling gets a real shell test.
+      # The test reproduces the assella.desktop <-> accela.desktop loop that
+      # broke updates on Steam Deck, and is hermetic (temp HOME, no network).
+      - name: Installer Script Regression
+        run: |
+          bash -n install.sh uninstall.sh scripts/install-armada.sh
+          ./scripts/test_install_shortcuts.sh
+
       # Behavioural suites. All are hermetic: no Steam install, no network, no
       # display and no pre-existing SLSsteam config, so they are safe on a clean
       # runner. They cover the logic that regresses silently - depot->app
