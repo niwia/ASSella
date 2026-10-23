@@ -58,11 +58,19 @@ IS_CACHYOS=false
 INTERACTIVE=false
 TMP_DIR=""
 SKIP_CHECKSUM=false
+DESKTOP_TMP=""
+ICON_TMP=""
 
 cleanup() {
     if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ]; then
         rm -rf "$TMP_DIR" 2>/dev/null || true
     fi
+
+    rm -f "${DESKTOP_TMP:-}" "${ICON_TMP:-}" 2>/dev/null || true
+    rm -f "${DESKTOP_DIR:-}/.assella.desktop.tmp."* \
+          "${ICON_DIR:-}/.assella.png.tmp."* \
+          "${PRIMARY_DESKTOP_ENTRY:-}.tmp."* \
+          "${PRIMARY_ICON_PATH:-}.tmp."* 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -76,6 +84,74 @@ declare -A PKG_FUSE_CMD=(
     [solus]="sudo eopkg install -y fuse"
     [gentoo]="sudo emerge --ask sys-fs/fuse"
 )
+
+write_desktop_entry() {
+    local desktop_tmp
+    local exec_cmd="${EXEC_COMMAND:-$INSTALL_DESTINATION/ACCELA.AppImage %u}"
+
+    # Ensure executable path is quoted if unquoted and containing whitespace
+    if [[ "$exec_cmd" != \"* ]] && [[ "$exec_cmd" == *" "* ]]; then
+        local bin_part="${exec_cmd%% %*}"
+        local arg_part="${exec_cmd#$bin_part}"
+        if [[ "$bin_part" != \"*\" ]]; then
+            exec_cmd="\"$bin_part\"$arg_part"
+        fi
+    fi
+
+    mkdir -p "$DESKTOP_DIR"
+    # Create the file beside the destination, then rename it.  This replaces a
+    # destination symlink itself instead of following it (which previously
+    # allowed assella.desktop and accela.desktop to become a symlink loop).
+    desktop_tmp=$(mktemp "$DESKTOP_DIR/.assella.desktop.tmp.XXXXXX")
+    DESKTOP_TMP="$desktop_tmp"
+    cat >"$desktop_tmp" <<EOL
+[Desktop Entry]
+Version=2.0
+Name=ASSella
+Comment=Steam Game & Depot Management Suite
+Exec=$exec_cmd
+Icon=assella
+Terminal=false
+Type=Application
+Categories=Utility;Game;
+MimeType=x-scheme-handler/accela;
+EOL
+    chmod 0644 "$desktop_tmp"
+    mv -f "$desktop_tmp" "$PRIMARY_DESKTOP_ENTRY"
+    DESKTOP_TMP=""
+    test -f "$PRIMARY_DESKTOP_ENTRY"
+    test ! -L "$PRIMARY_DESKTOP_ENTRY"
+    grep -q '^Exec=' "$PRIMARY_DESKTOP_ENTRY"
+
+    # Always recreate the legacy name as a one-way alias.  rm also handles a
+    # broken symlink, unlike tests based only on -f.
+    rm -f "$LEGACY_DESKTOP_ENTRY"
+    ln -s "assella.desktop" "$LEGACY_DESKTOP_ENTRY"
+}
+
+install_application_icon() {
+    local icon_tmp
+
+    mkdir -p "$ICON_DIR"
+    icon_tmp=$(mktemp "$ICON_DIR/.assella.png.tmp.XXXXXX")
+    ICON_TMP="$icon_tmp"
+    if curl -fsSL --retry 3 --retry-delay 2 -o "$icon_tmp" \
+        "https://raw.githubusercontent.com/niwia/ASSella/main/src/res/logo/icon.png"; then
+        chmod 0644 "$icon_tmp"
+        mv -f "$icon_tmp" "$PRIMARY_ICON_PATH"
+        ICON_TMP=""
+    else
+        rm -f "$icon_tmp"
+        ICON_TMP=""
+        echo -e "${YELLOW}[WARN] Could not download application icon; keeping any existing regular icon.${NC}"
+    fi
+
+    # Maintain legacy alias if the primary icon exists as a regular file
+    if [ -f "$PRIMARY_ICON_PATH" ] && [ ! -L "$PRIMARY_ICON_PATH" ]; then
+        rm -f "$LEGACY_ICON_PATH"
+        ln -s "assella.png" "$LEGACY_ICON_PATH"
+    fi
+}
 
 # ------------------------------------------------------------------------------
 #  1. System & Distro Detection
@@ -614,7 +690,7 @@ do_install() {
     fi
 
     if [ "$used_zsync" = false ]; then
-        if ! curl -fL --progress-bar -o "$DL_TMP" "$LATEST_URL"; then
+        if ! curl -fL --retry 3 --retry-delay 2 --progress-bar -o "$DL_TMP" "$LATEST_URL"; then
             echo -e "${RED}[ERROR] Download failed! Please check your connection to GitHub.${NC}"
             rm -f "$DL_TMP"
             pause_if_interactive
@@ -626,8 +702,8 @@ do_install() {
     local sha_state="missing"
     local expected_sha="" actual_sha=""
 
-    if curl -fsL --max-time 20 -o "$DL_TMP.sha256" "${LATEST_URL}.sha256" 2>/dev/null || \
-       curl -fsL --max-time 20 -o "$DL_TMP.sha256" "${LATEST_URL}.zsync.sha256" 2>/dev/null; then
+    if curl -fsL --retry 3 --retry-delay 2 --max-time 20 -o "$DL_TMP.sha256" "${LATEST_URL}.sha256" 2>/dev/null || \
+       curl -fsL --retry 3 --retry-delay 2 --max-time 20 -o "$DL_TMP.sha256" "${LATEST_URL}.zsync.sha256" 2>/dev/null; then
         expected_sha=$(grep -oiE '[a-f0-9]{64}' "$DL_TMP.sha256" | head -n1)
         if [ -z "$expected_sha" ]; then
             sha_state="malformed"
@@ -707,7 +783,8 @@ do_install() {
     echo "$LATEST_VER" > "$VERSION_FILE"
 
     # Compatibility symlink ACCELA.AppImage -> ASSella.AppImage
-    ln -sf ASSella.AppImage "$INSTALL_DESTINATION/ACCELA.AppImage"
+    rm -f "$INSTALL_DESTINATION/ACCELA.AppImage"
+    ln -s "ASSella.AppImage" "$INSTALL_DESTINATION/ACCELA.AppImage"
     echo -e "${GREEN}[INFO] Created compatibility symlink ACCELA.AppImage -> ASSella.AppImage.${NC}"
 
     # Handle NixOS Launcher Script
@@ -734,32 +811,11 @@ EOL
 
     # Desktop Shortcut Creation
     echo -e "${YELLOW}[INFO] Configuring desktop shortcut ($PRIMARY_DESKTOP_ENTRY)...${NC}"
-    mkdir -p "$DESKTOP_DIR"
-    cat >"$PRIMARY_DESKTOP_ENTRY" <<EOL
-[Desktop Entry]
-Version=2.0
-Name=ASSella
-Comment=god is in the ass
-Exec=$EXEC_COMMAND
-Icon=assella
-Terminal=false
-Type=Application
-Categories=Utility;Game;
-MimeType=x-scheme-handler/accela;
-EOL
-
-    # If legacy accela.desktop existed, symlink it for backward compatibility
-    if [ -f "$LEGACY_DESKTOP_ENTRY" ] || [ -L "$LEGACY_DESKTOP_ENTRY" ]; then
-        ln -sf assella.desktop "$LEGACY_DESKTOP_ENTRY"
-    fi
+    write_desktop_entry
 
     # Application Icon Download
     echo -e "${YELLOW}[INFO] Applying application icon...${NC}"
-    mkdir -p "$ICON_DIR"
-    curl -sL -o "$PRIMARY_ICON_PATH" "https://raw.githubusercontent.com/niwia/ASSella/main/src/res/logo/icon.png" || true
-    if [ -f "$LEGACY_ICON_PATH" ] || [ -L "$LEGACY_ICON_PATH" ]; then
-        ln -sf assella.png "$LEGACY_ICON_PATH"
-    fi
+    install_application_icon
 
     # Update system desktop database
     if command -v update-desktop-database &>/dev/null; then
@@ -1153,4 +1209,6 @@ main() {
     esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

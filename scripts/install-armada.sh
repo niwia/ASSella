@@ -127,7 +127,8 @@ chmod +x "$LAUNCHER"
 ICON_PATH="$INSTALL_DIR/src/res/logo/icon.png"
 DESKTOP_FILE="$APP_DIR/assella.desktop"
 
-cat << EOF > "$DESKTOP_FILE"
+desktop_tmp=$(mktemp "${APP_DIR}/.assella.desktop.tmp.XXXXXX")
+cat << EOF > "$desktop_tmp"
 [Desktop Entry]
 Name=ASSella
 GenericName=Game Depot Downloader
@@ -139,7 +140,8 @@ Type=Application
 Categories=Utility;Game;
 StartupNotify=true
 EOF
-chmod +x "$DESKTOP_FILE"
+chmod 0644 "$desktop_tmp"
+mv -f "$desktop_tmp" "$DESKTOP_FILE"
 
 echo -e "${GREEN}✓ Created launcher: $LAUNCHER${NC}"
 echo -e "${GREEN}✓ Created desktop entry: $DESKTOP_FILE${NC}"
