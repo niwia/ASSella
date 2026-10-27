@@ -250,7 +250,7 @@ def create_downloads_tab(dialog) -> QWidget:
 
     # Manifest & MRC Provider Card
     mrc_card, mrc_layout = dialog._create_card_frame("Manifest & MRC Provider (local)")
-    mrc_layout.setSpacing(6)
+    mrc_layout.setSpacing(8)
 
     mrc_desc = QLabel(
         "Select the default way for ASSella to fetch manifests when updating games! (Default: Auto)"
@@ -259,18 +259,22 @@ def create_downloads_tab(dialog) -> QWidget:
     mrc_desc.setWordWrap(True)
     mrc_layout.addWidget(mrc_desc)
 
+    # Row 1: Provider selection with full text width
     mrc_row = QHBoxLayout()
-    mrc_row.setSpacing(8)
+    mrc_row.setSpacing(10)
 
     mrc_lbl = QLabel("Provider:")
     mrc_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500;")
     mrc_row.addWidget(mrc_lbl)
 
     dialog.manifest_provider_combo = QComboBox()
-    dialog.manifest_provider_combo.setFixedWidth(160)
+    dialog.manifest_provider_combo.setMinimumWidth(260)
+    dialog.manifest_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
     dialog.manifest_provider_combo.addItem("Auto (Race Wudrm & ManifestDeX)", "auto")
     dialog.manifest_provider_combo.addItem("Wudrm (Primary)", "wudrm")
     dialog.manifest_provider_combo.addItem("ManifestDeX", "manifestdex")
+    dialog.manifest_provider_combo.addItem("SteamRun (Testing)", "steamrun")
+    dialog.manifest_provider_combo.addItem("OpenSteamTool (Testing)", "opensteamtool")
     dialog.manifest_provider_combo.addItem("Hubcap Manifest (Direct API)", "hubcap")
 
     current_provider = dialog.settings.value("manifest_provider", "auto", type=str).lower()
@@ -286,21 +290,47 @@ def create_downloads_tab(dialog) -> QWidget:
 
     dialog.manifest_provider_combo.currentIndexChanged.connect(_on_provider_changed)
     mrc_row.addWidget(dialog.manifest_provider_combo)
+    mrc_row.addStretch()
+    mrc_layout.addLayout(mrc_row)
 
-    test_btn = QPushButton("Test Server")
+    # Row 2: Dedicated testing row with ample room for status text
+    test_row = QHBoxLayout()
+    test_row.setSpacing(10)
+
+    test_btn = QPushButton("Test Provider")
     test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    mrc_row.addWidget(test_btn)
+    test_btn.setStyleSheet(f"""
+        QPushButton {{
+            background-color: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            padding: 5px 14px;
+            color: #FFFFFF;
+            font-size: 8.5pt;
+            font-weight: 600;
+        }}
+        QPushButton:hover {{
+            background-color: rgba(255, 255, 255, 0.16);
+            border-color: {dialog.accent_color};
+        }}
+        QPushButton:disabled {{
+            background-color: rgba(255, 255, 255, 0.04);
+            color: rgba(255, 255, 255, 0.4);
+            border-color: rgba(255, 255, 255, 0.08);
+        }}
+    """)
+    test_row.addWidget(test_btn)
 
     test_status_lbl = QLabel("")
-    test_status_lbl.setStyleSheet("font-size: 9pt; font-weight: 500;")
-    mrc_row.addWidget(test_status_lbl)
-    mrc_row.addStretch()
+    test_status_lbl.setStyleSheet("font-size: 8.5pt; font-weight: 500;")
+    test_row.addWidget(test_status_lbl)
+    test_row.addStretch()
 
     def _on_test_clicked():
         provider = dialog.manifest_provider_combo.currentData() or "auto"
         test_btn.setEnabled(False)
         test_status_lbl.setText("Testing latency...")
-        test_status_lbl.setStyleSheet("color: #90CAF9; font-size: 9pt;")
+        test_status_lbl.setStyleSheet("color: #90CAF9; font-size: 8.5pt;")
 
         from utils.task_runner import TaskRunner
         if not hasattr(dialog, "_mrc_test_runner") or dialog._mrc_test_runner is None:
@@ -312,18 +342,18 @@ def create_downloads_tab(dialog) -> QWidget:
                 ok, elapsed_ms, err_msg = result
                 if ok:
                     test_status_lbl.setText(f"✓ Operational ({elapsed_ms} ms)")
-                    test_status_lbl.setStyleSheet("color: #81C784; font-size: 9pt; font-weight: bold;")
+                    test_status_lbl.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: bold;")
                 else:
                     test_status_lbl.setText(f"⚠ Failed ({err_msg or 'Error'})")
-                    test_status_lbl.setStyleSheet("color: #E57373; font-size: 9pt; font-weight: bold;")
+                    test_status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt; font-weight: bold;")
             else:
                 test_status_lbl.setText("⚠ Failed (Error)")
-                test_status_lbl.setStyleSheet("color: #E57373; font-size: 9pt; font-weight: bold;")
+                test_status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt; font-weight: bold;")
 
         def _on_test_error(err_tuple):
             test_btn.setEnabled(True)
             test_status_lbl.setText("⚠ Failed (Error)")
-            test_status_lbl.setStyleSheet("color: #E57373; font-size: 9pt; font-weight: bold;")
+            test_status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt; font-weight: bold;")
 
         from ui.dialogs.settings_tabs.morrenus_tab import benchmark_mrc_provider
         worker = dialog._mrc_test_runner.run(benchmark_mrc_provider, provider)
@@ -331,10 +361,10 @@ def create_downloads_tab(dialog) -> QWidget:
         worker.error.connect(_on_test_error)
 
     test_btn.clicked.connect(_on_test_clicked)
+    mrc_layout.addLayout(test_row)
 
-    mrc_layout.addLayout(mrc_row)
     gen_layout.addWidget(mrc_card)
-
+    gen_layout.addSpacing(38)
     gen_layout.addStretch()
     dl_subtabs.addTab(general_widget, "General")
 

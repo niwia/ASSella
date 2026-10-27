@@ -93,13 +93,14 @@ class MiniSwitchToggle(QWidget):
     """
     toggled = pyqtSignal(bool)
 
-    def __init__(self, checked: bool = False, read_only: bool = True, parent=None):
+    def __init__(self, checked: bool = False, read_only: bool = True, greyscaled: bool = False, parent=None):
         super().__init__(parent)
         self._checked = checked
-        self._read_only = read_only
+        self._read_only = read_only or greyscaled
+        self._greyscaled = greyscaled
         self._hovered = False
         self.setFixedSize(36, 18)
-        self.setCursor(Qt.CursorShape.PointingHandCursor if not read_only else Qt.CursorShape.ArrowCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if not self._read_only else Qt.CursorShape.ArrowCursor)
 
         # Knob slide range: unchecked = 2.0 (left), checked = 20.0 (right)
         self._circle_pos = 20.0 if checked else 2.0
@@ -134,12 +135,22 @@ class MiniSwitchToggle(QWidget):
             self.toggled.emit(self._checked)
 
     def setReadOnly(self, read_only: bool) -> None:
-        self._read_only = read_only
-        self.setCursor(Qt.CursorShape.PointingHandCursor if not read_only else Qt.CursorShape.ArrowCursor)
+        self._read_only = read_only or self._greyscaled
+        self.setCursor(Qt.CursorShape.PointingHandCursor if not self._read_only else Qt.CursorShape.ArrowCursor)
         self.update()
 
     def isReadOnly(self) -> bool:
         return self._read_only
+
+    def setGreyscaled(self, greyscaled: bool) -> None:
+        self._greyscaled = greyscaled
+        if greyscaled:
+            self._read_only = True
+        self.setCursor(Qt.CursorShape.ArrowCursor if self._read_only else Qt.CursorShape.PointingHandCursor)
+        self.update()
+
+    def isGreyscaled(self) -> bool:
+        return self._greyscaled
 
     def enterEvent(self, event):
         self._hovered = True
@@ -153,7 +164,7 @@ class MiniSwitchToggle(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            if not self._read_only:
+            if not self._read_only and not self._greyscaled:
                 self.setChecked(not self._checked)
             event.accept()
         else:
@@ -167,23 +178,27 @@ class MiniSwitchToggle(QWidget):
         h = self.height()
         radius = h / 2.0
 
-        # Background track: Green if checked, Red if unchecked
-        track_color = QColor("#4CAF50") if self._checked else QColor("#E53935")
-        if self._read_only:
-            track_color.setAlpha(190)
+        if self._greyscaled:
+            track_color = QColor(255, 255, 255, 30)
+            knob_color = QColor(135, 135, 135)
         else:
-            track_color.setAlpha(255)
+            # Background track: Green if checked, Red if unchecked
+            track_color = QColor("#4CAF50") if self._checked else QColor("#E53935")
+            if self._read_only:
+                track_color.setAlpha(190)
+            else:
+                track_color.setAlpha(255)
+            knob_color = QColor("#FFFFFF")
 
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(track_color))
         p.drawRoundedRect(0, 0, w, h, radius, radius)
 
-
-        # White knob circle
+        # Knob circle
         knob_d = 14.0
         knob_y = (h - knob_d) / 2.0
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(QColor("#FFFFFF")))
+        p.setBrush(QBrush(knob_color))
         p.drawEllipse(int(self._circle_pos), int(knob_y), int(knob_d), int(knob_d))
         p.end()
 
@@ -200,14 +215,14 @@ class _ToggleContainer(QWidget):
         lay.addWidget(toggle)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and not self.toggle.isReadOnly():
+        if event.button() == Qt.MouseButton.LeftButton and not self.toggle.isReadOnly() and not self.toggle.isGreyscaled():
             self.toggle.setChecked(not self.toggle.isChecked())
             event.accept()
         else:
             super().mousePressEvent(event)
 
 
-def _make_local_indicator(in_local: bool) -> QWidget:
+def _make_local_indicator(in_local: bool, is_missing: bool = False) -> QWidget:
     """Create a sleek, non-interactive indicator for Local DB status (never toggleable)."""
     container = QWidget()
     container.setStyleSheet("background: transparent;")
@@ -224,7 +239,14 @@ def _make_local_indicator(in_local: bool) -> QWidget:
                 border-radius: 5px;
             }
         """)
+        dot.setToolTip("Decryption key present in local database")
         h_lay.addWidget(dot)
+    elif is_missing:
+        lbl = QLabel("—")
+        lbl.setStyleSheet("color: rgba(255, 255, 255, 0.25); font-weight: bold; font-size: 11px;")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setToolTip("Decryption key not available locally or on Hubcap")
+        h_lay.addWidget(lbl)
     else:
         empty = QLabel("")
         h_lay.addWidget(empty)
@@ -266,14 +288,27 @@ def _make_table(columns: List[str], accent_color: str) -> QTableWidget:
             selection-color: #FFFFFF;
         }}
         QTableWidget::item {{
+            color: #FFFFFF;
             padding: 4px 8px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.03);
             border: none;
+        }}
+        QTableWidget::item:disabled {{
+            color: rgba(255, 255, 255, 0.38);
+            background-color: transparent;
         }}
         QTableWidget::item:selected {{
             background-color: rgba(255, 255, 255, 0.06);
             border: none;
             color: #FFFFFF;
+        }}
+        QToolTip {{
+            background-color: #1e2029;
+            color: #FFFFFF;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            padding: 5px 8px;
+            font-size: 8.5pt;
         }}
         QHeaderView::section {{
             background-color: rgba(255, 255, 255, 0.04);
@@ -297,8 +332,8 @@ def _set_table_height(tbl: QTableWidget, row_count: int) -> None:
     tbl.setFixedHeight(total_h)
 
 
-def _make_bulk_toggle_bar(category_name: str, on_toggle_cb) -> Tuple[QFrame, MiniSwitchToggle, QPushButton, QPushButton]:
-    """Create a sleek footer bar with a Select All / None switch and quick buttons for categories with >5 items."""
+def _make_bulk_toggle_bar(category_name: str, on_toggle_cb) -> Tuple[QFrame, MiniSwitchToggle]:
+    """Create a sleek footer bar with a Select All / None switch for categories with >=5 items."""
     bar = QFrame()
     bar.setStyleSheet("background: transparent; border: none;")
     lay = QHBoxLayout(bar)
@@ -314,62 +349,7 @@ def _make_bulk_toggle_bar(category_name: str, on_toggle_cb) -> Tuple[QFrame, Min
     lay.addWidget(toggle)
 
     lay.addStretch()
-
-    btn_all = QPushButton("All")
-    btn_all.setFixedSize(38, 22)
-    btn_all.setStyleSheet("""
-        QPushButton {
-            background-color: rgba(255, 255, 255, 0.08);
-            color: rgba(255, 255, 255, 0.85);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 4px;
-            font-size: 8pt;
-            font-weight: 500;
-        }
-        QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.15);
-            color: #FFFFFF;
-        }
-        QPushButton:disabled {
-            background-color: rgba(255, 255, 255, 0.03);
-            color: rgba(255, 255, 255, 0.3);
-            border-color: rgba(255, 255, 255, 0.05);
-        }
-    """)
-
-    btn_none = QPushButton("None")
-    btn_none.setFixedSize(44, 22)
-    btn_none.setStyleSheet("""
-        QPushButton {
-            background-color: rgba(255, 255, 255, 0.08);
-            color: rgba(255, 255, 255, 0.85);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 4px;
-            font-size: 8pt;
-            font-weight: 500;
-        }
-        QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.15);
-            color: #FFFFFF;
-        }
-        QPushButton:disabled {
-            background-color: rgba(255, 255, 255, 0.03);
-            color: rgba(255, 255, 255, 0.3);
-            border-color: rgba(255, 255, 255, 0.05);
-        }
-    """)
-
-    def _do_toggle(val: bool):
-        toggle.setChecked(val)
-        on_toggle_cb(val)
-
-    btn_all.clicked.connect(lambda: _do_toggle(True))
-    btn_none.clicked.connect(lambda: _do_toggle(False))
-
-    lay.addWidget(btn_all)
-    lay.addWidget(btn_none)
-
-    return bar, toggle, btn_all, btn_none
+    return bar, toggle
 
 
 def init_depots_tab(dialog) -> None:
@@ -411,7 +391,7 @@ def init_depots_tab(dialog) -> None:
     apps_table.setColumnWidth(2, 75)
     layout.addWidget(apps_table)
 
-    apps_bulk_bar, apps_bulk_toggle, apps_btn_all, apps_btn_none = _make_bulk_toggle_bar(
+    apps_bulk_bar, apps_bulk_toggle = _make_bulk_toggle_bar(
         "AppIDs", lambda chk: _on_bulk_toggle_apps(chk)
     )
     layout.addWidget(apps_bulk_bar)
@@ -426,7 +406,7 @@ def init_depots_tab(dialog) -> None:
     depots_table.setColumnWidth(2, 75)
     layout.addWidget(depots_table)
 
-    depots_bulk_bar, depots_bulk_toggle, depots_btn_all, depots_btn_none = _make_bulk_toggle_bar(
+    depots_bulk_bar, depots_bulk_toggle = _make_bulk_toggle_bar(
         "Depots", lambda chk: _on_bulk_toggle_depots(chk)
     )
     layout.addWidget(depots_bulk_bar)
@@ -443,16 +423,11 @@ def init_depots_tab(dialog) -> None:
     keys_table.setColumnWidth(3, 75)
     layout.addWidget(keys_table)
 
-    keys_bulk_bar, keys_bulk_toggle, keys_btn_all, keys_btn_none = _make_bulk_toggle_bar(
+    keys_bulk_bar, keys_bulk_toggle = _make_bulk_toggle_bar(
         "Keys", lambda chk: _on_bulk_toggle_keys(chk)
     )
     layout.addWidget(keys_bulk_bar)
 
-    # Master Select All / None toggle bar at the bottom of the tab
-    tab_bulk_bar, tab_bulk_toggle, tab_btn_all, tab_btn_none = _make_bulk_toggle_bar(
-        "All Sections", lambda chk: _on_bulk_toggle_all(chk)
-    )
-    layout.addWidget(tab_bulk_bar)
 
     # Status Label
     status_lbl = QLabel("")
@@ -465,10 +440,15 @@ def init_depots_tab(dialog) -> None:
             if at0m_stat.get("status") == "update_available":
                 new_deps = at0m_stat.get("new_depots", [])
                 cnt = len(new_deps) if isinstance(new_deps, list) else 1
-                status_lbl.setText(f"★ Update Available: {cnt} new depot key(s) ready on Hubcap! Click 'Refetch' to fetch keys.")
+                ready_ids = [str(d.get("id")) for d in new_deps if isinstance(d, dict) and d.get("has_key")]
+                ready_str = f" ({', '.join(ready_ids)})" if ready_ids else ""
+                status_lbl.setText(f"★ Update Available: {cnt} new depot key(s) ready on Hubcap{ready_str}! Click 'API Refetch' to fetch keys.")
                 status_lbl.setStyleSheet("color: #4DD0E1; font-size: 8.5pt; font-weight: bold;")
             elif at0m_stat.get("status") == "key_pending":
-                status_lbl.setText("ℹ Steam has updated depots, but keys are pending on Hubcap (cooldown active).")
+                new_deps = at0m_stat.get("new_depots", [])
+                pending_ids = [str(d.get("id")) for d in new_deps if isinstance(d, dict) and not d.get("has_key")]
+                pending_str = f" for depot(s) {', '.join(pending_ids)}" if pending_ids else ""
+                status_lbl.setText(f"ℹ Steam has updated depots, but keys are pending on Hubcap{pending_str} (cooldown active).")
                 status_lbl.setStyleSheet("color: #FFB74D; font-size: 8.5pt;")
     except Exception:
         pass
@@ -893,6 +873,141 @@ def init_depots_tab(dialog) -> None:
                 "has_key": (d in valid_key_depots),
                 "is_shared": is_shared,
                 "size_str": size_str,
+                "is_missing": False,
+            })
+
+        # Collect missing / pending depots from:
+        # 1. at0m_update_status table (new_depots)
+        # 2. missing_hubcap_depots table
+        # 3. cached_app_depots matching active install platform that lack keys
+        missing_depots_map: Dict[str, Dict[str, Any]] = {}
+
+        at0m_stat = db_mgr.get_at0m_update_status(appid_str)
+        if at0m_stat and isinstance(at0m_stat.get("new_depots"), list):
+            for nd in at0m_stat["new_depots"]:
+                if isinstance(nd, dict) and nd.get("id"):
+                    nid = str(nd["id"])
+                    if nid not in valid_key_depots and nid != appid_str and nid not in ALL_SHARED_REDISTS:
+                        has_key = bool(nd.get("has_key"))
+                        if has_key:
+                            missing_depots_map[nid] = {
+                                "status": "ready_on_hubcap",
+                                "tag": "[Key Ready]",
+                                "tooltip": f"Depot {nid} has an AES decryption key available on Hubcap.\nClick 'API Refetch' to download keys and manifest.",
+                            }
+                        else:
+                            missing_depots_map[nid] = {
+                                "status": "key_pending",
+                                "tag": "[Awaiting Key]",
+                                "tooltip": f"Depot {nid} is registered on Steam, but its AES decryption key is pending on Hubcap (cooldown active).\nIt cannot be downloaded or injected into SLSsteam until the key is published.",
+                            }
+
+        for row in db_mgr.get_missing_hubcap_depots(appid_str):
+            mid = str(row.get("depot_id") or "")
+            if mid and mid not in valid_key_depots and mid not in missing_depots_map and mid != appid_str and mid not in ALL_SHARED_REDISTS:
+                missing_depots_map[mid] = {
+                    "status": "missing_hubcap",
+                    "tag": "[No Key]",
+                    "tooltip": f"Depot {mid} was reported missing from Hubcap servers.\nNo AES decryption key or manifest is available.",
+                }
+
+        try:
+            from managers.at0m_update_checker import At0mUpdateChecker
+            install_platform = At0mUpdateChecker()._detect_install_platform(appid_str, cached_app_depots)
+        except Exception:
+            install_platform = None
+
+        from ui.dialogs.depot_selection.rules import _depot_matches_platform
+        for d, ddata in cached_app_depots.items():
+            did_str = str(d)
+            if (
+                did_str not in valid_key_depots
+                and did_str not in game_depots_set
+                and did_str not in missing_depots_map
+                and did_str != appid_str
+                and did_str not in ALL_SHARED_REDISTS
+                and isinstance(ddata, dict)
+            ):
+                if install_platform and not _depot_matches_platform(ddata, install_platform):
+                    continue
+                size = ddata.get("size")
+                if size is not None and str(size).strip() == "0":
+                    manifests = ddata.get("manifests") or {}
+                    pub = manifests.get("public") if isinstance(manifests, dict) else {}
+                    if not pub or (isinstance(pub, dict) and pub.get("download") in ("0", 0, None)):
+                        continue
+                if ddata.get("manifest_id") or ddata.get("manifests") or ddata.get("size") or ddata.get("is_dlc"):
+                    from core.hubcap_key_index import get_index, STATE_AVAILABLE
+                    index = get_index(allow_network=False)
+                    if index.loaded and index.state(did_str) == STATE_AVAILABLE:
+                        m_stat = "ready_on_hubcap"
+                        m_tag = "[Key Ready]"
+                        m_tip = f"Depot {did_str} has an AES decryption key available on Hubcap.\nClick 'API Refetch' to download keys and manifest."
+                    else:
+                        m_stat = "key_pending"
+                        m_tag = "[Awaiting Key]"
+                        m_tip = f"Depot {did_str} is registered on Steam, but its AES decryption key is pending on Hubcap.\nIt cannot be enabled in SLSsteam until the key is published."
+                    missing_depots_map[did_str] = {
+                        "status": m_stat,
+                        "tag": m_tag,
+                        "tooltip": m_tip,
+                    }
+
+        # Add missing / pending depots to depots_list
+        existing_depot_ids = {d["id"] for d in depots_list}
+        for d in sorted(missing_depots_map.keys() - existing_depot_ids, key=lambda x: int(x) if x.isdigit() else 0):
+            m_info = missing_depots_map[d]
+            desc = (
+                plugin_depot_names.get(d)
+                or lua_depots.get(d)
+                or (gd_depots.get(d, {}).get("desc") if isinstance(gd_depots.get(d), dict) else "")
+                or (f"[DLC] {lua_dlcs.get(d)}" if d in lua_dlcs else None)
+                or f"Depot {d}"
+            )
+            if d in dlc_content_depots and not desc.upper().startswith("[DLC]"):
+                desc = f"[DLC] {desc}"
+            enrich_info = cached_enrichments.get(d) or cached_app_depots.get(d) or {}
+
+            accent_val = getattr(dialog, "accent_color", None) or ac
+            active_tint = QColor(accent_val) if accent_val and QColor(accent_val).isValid() else None
+            os_icon = get_os_icon(enrich_info.get("oslist"), tint_color=active_tint) if enrich_info else None
+            enriched_desc = _format_enriched_depot_desc(
+                depot_id=d,
+                fallback_desc=desc,
+                enrich_data=enrich_info,
+                has_os_icon=bool(os_icon),
+                base_appid=appid_str,
+            )
+
+            size_str = ""
+            if enrich_info:
+                size_str = enrich_info.get("size_str") or ""
+                if not size_str and enrich_info.get("size_bytes"):
+                    try:
+                        from utils.helpers import format_bytes
+                        size_str = format_bytes(enrich_info["size_bytes"])
+                    except Exception:
+                        size_str = str(enrich_info["size_bytes"])
+                elif not size_str and enrich_info.get("size") and str(enrich_info["size"]).isdigit():
+                    try:
+                        from utils.helpers import format_bytes
+                        size_str = format_bytes(int(enrich_info["size"]))
+                    except Exception:
+                        size_str = str(enrich_info["size"])
+
+            depots_list.append({
+                "id": d,
+                "desc": enriched_desc,
+                "raw_desc": desc,
+                "enrich_info": enrich_info,
+                "os_icon": os_icon,
+                "has_key": False,
+                "is_shared": False,
+                "size_str": size_str,
+                "is_missing": True,
+                "missing_status": m_info["status"],
+                "missing_tag": m_info["tag"],
+                "missing_tooltip": m_info["tooltip"],
             })
 
         # Build Keys list for THIS GAME ONLY:
@@ -905,6 +1020,7 @@ def init_depots_tab(dialog) -> None:
                 "is_appkey": True,
                 "in_config": (appid_str in live_keys),
                 "in_local": bool(appid_str in local_db_keys or appid_str in lua_keys or appid_str in plugin_keys),
+                "is_missing": False,
             })
 
         all_target_key_ids = (set(game_depots_set) | set(game_keys.keys()) | set(tagged_keys_from_config.keys())) - {appid_str} - ALL_SHARED_REDISTS
@@ -918,6 +1034,23 @@ def init_depots_tab(dialog) -> None:
                 "is_appkey": False,
                 "in_config": (d in live_keys),
                 "in_local": bool(d in local_db_keys or d in lua_keys or d in plugin_keys),
+                "is_missing": False,
+            })
+
+        # Append missing / pending keys to keys_list
+        existing_key_ids = {k["id"] for k in keys_list}
+        for d in sorted(missing_depots_map.keys() - existing_key_ids, key=lambda x: int(x) if x.isdigit() else 0):
+            m_info = missing_depots_map[d]
+            keys_list.append({
+                "id": d,
+                "key": "",
+                "is_appkey": False,
+                "in_config": False,
+                "in_local": False,
+                "is_missing": True,
+                "missing_status": m_info["status"],
+                "missing_tag": m_info["tag"],
+                "missing_tooltip": m_info["tooltip"],
             })
 
         return {
@@ -966,29 +1099,21 @@ def init_depots_tab(dialog) -> None:
         _internal_bulk_update = True
         try:
             apps = state["apps"]
-            if len(apps) > 5:
+            if len(apps) >= 5:
                 all_apps_on = bool(apps) and all(desired_apps.get(item["id"], False) for item in apps)
                 apps_bulk_toggle.setChecked(all_apps_on, animate=False)
 
             depots = state["depots"]
-            if len(depots) > 5:
-                all_depots_on = bool(depots) and all(desired_depots.get(item["id"], False) for item in depots)
+            valid_depots = [d for d in depots if not d.get("is_missing")]
+            if len(depots) >= 5:
+                all_depots_on = bool(valid_depots) and all(desired_depots.get(item["id"], False) for item in valid_depots)
                 depots_bulk_toggle.setChecked(all_depots_on, animate=False)
 
             keys = state["keys"]
-            valid_keys = [k for k in keys if k.get("key")]
-            if len(keys) > 5:
+            valid_keys = [k for k in keys if k.get("key") and not k.get("is_missing")]
+            if len(keys) >= 5:
                 all_keys_on = bool(valid_keys) and all(desired_keys.get(item["id"], False) for item in valid_keys)
                 keys_bulk_toggle.setChecked(all_keys_on, animate=False)
-
-            # Master tab toggle (if any category has >5 items)
-            if len(apps) > 5 or len(depots) > 5 or len(keys) > 5:
-                all_master_on = (
-                    (not apps or all(desired_apps.get(item["id"], False) for item in apps))
-                    and (not depots or all(desired_depots.get(item["id"], False) for item in depots))
-                    and (not valid_keys or all(desired_keys.get(item["id"], False) for item in valid_keys))
-                )
-                tab_bulk_toggle.setChecked(all_master_on, animate=False)
         finally:
             _internal_bulk_update = False
 
@@ -1008,18 +1133,20 @@ def init_depots_tab(dialog) -> None:
                 # Auto-enable matching key in DecryptionKeys if valid key exists
                 if aid in key_toggles and not desired_keys.get(aid, False):
                     key_meta = next((k for k in state["keys"] if k["id"] == aid), None)
-                    if key_meta and key_meta.get("key"):
+                    if key_meta and key_meta.get("key") and not key_meta.get("is_missing"):
                         desired_keys[aid] = True
                         key_toggles[aid].setChecked(True, animate=True)
 
                 # Auto-enable associated DLC depots and their keys
                 for did in assoc_depots:
+                    d_meta = next((d for d in state["depots"] if d["id"] == did), None)
                     if did in depot_toggles and not desired_depots.get(did, False):
-                        desired_depots[did] = True
-                        depot_toggles[did].setChecked(True, animate=True)
+                        if not d_meta or not d_meta.get("is_missing"):
+                            desired_depots[did] = True
+                            depot_toggles[did].setChecked(True, animate=True)
                     if did in key_toggles and not desired_keys.get(did, False):
                         d_key_meta = next((k for k in state["keys"] if k["id"] == did), None)
-                        if d_key_meta and d_key_meta.get("key"):
+                        if d_key_meta and d_key_meta.get("key") and not d_key_meta.get("is_missing"):
                             desired_keys[did] = True
                             key_toggles[did].setChecked(True, animate=True)
             else:
@@ -1043,6 +1170,8 @@ def init_depots_tab(dialog) -> None:
             return
         state = _collect_state()
         for item in state["depots"]:
+            if checked and item.get("is_missing"):
+                continue  # Cannot enable missing depots
             did = item["id"]
             desired_depots[did] = checked
             if did in depot_toggles:
@@ -1059,7 +1188,7 @@ def init_depots_tab(dialog) -> None:
         state = _collect_state()
         for item in state["keys"]:
             kid = item["id"]
-            if checked and not item.get("key"):
+            if checked and (not item.get("key") or item.get("is_missing")):
                 continue  # Cannot enable missing keys
             desired_keys[kid] = checked
             if kid in key_toggles:
@@ -1083,6 +1212,8 @@ def init_depots_tab(dialog) -> None:
 
         # 2. Depots
         for item in state["depots"]:
+            if checked and item.get("is_missing"):
+                continue  # Cannot enable missing depots
             did = item["id"]
             desired_depots[did] = checked
             if did in depot_toggles:
@@ -1091,7 +1222,7 @@ def init_depots_tab(dialog) -> None:
         # 3. Keys
         for item in state["keys"]:
             kid = item["id"]
-            if checked and not item.get("key"):
+            if checked and (not item.get("key") or item.get("is_missing")):
                 continue  # Cannot enable missing keys
             desired_keys[kid] = checked
             if kid in key_toggles:
@@ -1208,11 +1339,9 @@ def init_depots_tab(dialog) -> None:
 
         _set_table_height(apps_table, len(apps))
 
-        # Bulk Select All/None for AdditionalApps (>5 items)
-        apps_bulk_bar.setVisible(len(apps) > 5)
+        # Bulk Select All/None for AdditionalApps (>=5 items)
+        apps_bulk_bar.setVisible(len(apps) >= 5)
         apps_bulk_toggle.setReadOnly(not is_unlocked)
-        apps_btn_all.setEnabled(is_unlocked)
-        apps_btn_none.setEnabled(is_unlocked)
 
         # 2. Populate AdditionalDepots Table
         depots = state["depots"]
@@ -1220,61 +1349,97 @@ def init_depots_tab(dialog) -> None:
         for row, item in enumerate(depots):
             did = item["id"]
             is_live = did in live_depots
+            is_missing = item.get("is_missing", False)
 
             id_item = QTableWidgetItem(did)
             id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            if is_missing:
+                id_item.setForeground(QColor(130, 130, 130))
+                font_id = id_item.font()
+                font_id.setItalic(True)
+                id_item.setFont(font_id)
+                id_item.setToolTip(item.get("missing_tooltip") or f"Depot {did} key is missing / awaiting Hubcap.")
 
             desc_text = item["desc"]
             if item.get("is_shared"):
                 desc_text = f"{desc_text} [Shared]"
+            if is_missing and item.get("missing_tag"):
+                desc_text = f"{item['missing_tag']}  {desc_text}"
+
             desc_item = QTableWidgetItem(desc_text)
             desc_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             if item.get("os_icon"):
                 desc_item.setIcon(item["os_icon"])
-            tooltip_parts = [desc_text]
-            if item.get("size_str"):
-                tooltip_parts.append(f"Size: {item['size_str']}")
-            if item.get("is_shared"):
-                tooltip_parts.append("Shared with another game / protected from removal")
-            desc_item.setToolTip("\n".join(tooltip_parts))
+            if is_missing:
+                m_stat = item.get("missing_status")
+                if m_stat == "ready_on_hubcap":
+                    desc_item.setForeground(QColor("#4DD0E1"))
+                elif m_stat == "key_pending":
+                    desc_item.setForeground(QColor("#FFB74D"))
+                else:
+                    desc_item.setForeground(QColor(130, 130, 130))
+                font_desc = desc_item.font()
+                font_desc.setItalic(True)
+                desc_item.setFont(font_desc)
+                desc_item.setToolTip(item.get("missing_tooltip") or desc_text)
+            else:
+                tooltip_parts = [desc_text]
+                if item.get("size_str"):
+                    tooltip_parts.append(f"Size: {item['size_str']}")
+                if item.get("is_shared"):
+                    tooltip_parts.append("Shared with another game / protected from removal")
+                desc_item.setToolTip("\n".join(tooltip_parts))
 
             depots_table.setItem(row, 0, id_item)
             depots_table.setItem(row, 1, desc_item)
 
-            current_checked = desired_depots.get(did, is_live)
-            toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
-            depot_toggles[did] = toggle
+            if is_missing:
+                toggle = MiniSwitchToggle(checked=False, read_only=True)
+                toggle.setEnabled(False)
+                toggle.setToolTip(item.get("missing_tooltip") or "Depot key is not available — cannot enable in AdditionalDepots.")
+                depot_toggles[did] = toggle
+                depots_table.setCellWidget(row, 2, _ToggleContainer(toggle))
+            else:
+                current_checked = desired_depots.get(did, is_live)
+                toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
+                depot_toggles[did] = toggle
 
-            def _make_depot_toggle_cb(depot_id: str, is_sh: bool):
-                def _cb(checked: bool):
-                    desired_depots[depot_id] = checked
-                    # STRICTLY ONE-WAY: does not touch AdditionalApps
-                    _update_sync_button_label(state)
-                    _update_bulk_states(state)
-                    if not checked and is_sh:
-                        status_lbl.setText(f"Depot {depot_id} is shared with other games. It will remain protected in config.")
-                    else:
-                        status_lbl.setText(f"Depot {depot_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
-                return _cb
+                def _make_depot_toggle_cb(depot_id: str, is_sh: bool):
+                    def _cb(checked: bool):
+                        desired_depots[depot_id] = checked
+                        # STRICTLY ONE-WAY: does not touch AdditionalApps
+                        _update_sync_button_label(state)
+                        _update_bulk_states(state)
+                        if not checked and is_sh:
+                            status_lbl.setText(f"Depot {depot_id} is shared with other games. It will remain protected in config.")
+                        else:
+                            status_lbl.setText(f"Depot {depot_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
+                    return _cb
 
-            toggle.toggled.connect(_make_depot_toggle_cb(did, bool(item.get("is_shared"))))
-            depots_table.setCellWidget(row, 2, _ToggleContainer(toggle))
+                toggle.toggled.connect(_make_depot_toggle_cb(did, bool(item.get("is_shared"))))
+                depots_table.setCellWidget(row, 2, _ToggleContainer(toggle))
 
         _set_table_height(depots_table, len(depots))
 
-        # Bulk Select All/None for AdditionalDepots (>5 items)
-        depots_bulk_bar.setVisible(len(depots) > 5)
+        # Bulk Select All/None for AdditionalDepots (>=5 items)
+        depots_bulk_bar.setVisible(len(depots) >= 5)
         depots_bulk_toggle.setReadOnly(not is_unlocked)
-        depots_btn_all.setEnabled(is_unlocked)
-        depots_btn_none.setEnabled(is_unlocked)
 
         # 3. Populate DecryptionKeys Table
         keys = state["keys"]
         keys_table.setRowCount(len(keys))
         for row, item in enumerate(keys):
             kid = item["id"]
+            is_missing = item.get("is_missing", False)
+
             id_item = QTableWidgetItem(kid)
             id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            if is_missing:
+                id_item.setForeground(QColor(130, 130, 130))
+                font_id = id_item.font()
+                font_id.setItalic(True)
+                id_item.setFont(font_id)
+
             # Add depot/app description tooltip for quick identification
             matching_desc = next((d["desc"] for d in state["depots"] if d["id"] == kid), None)
             if not matching_desc and (kid == appid_str or item.get("is_appkey")):
@@ -1287,51 +1452,68 @@ def init_depots_tab(dialog) -> None:
                 id_item.setToolTip(matching_desc)
             keys_table.setItem(row, 0, id_item)
 
-            raw_key = item["key"]
-            short_key = f"{raw_key[:15]}..." if len(raw_key) > 15 else (raw_key or "N/A")
-            key_item = QTableWidgetItem(short_key)
-            key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            if raw_key:
-                key_item.setToolTip(raw_key)
-            keys_table.setItem(row, 1, key_item)
+            if is_missing:
+                key_text = item.get("missing_tag", "[No Key]")
+                key_item = QTableWidgetItem(key_text)
+                key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                m_stat = item.get("missing_status")
+                if m_stat == "ready_on_hubcap":
+                    key_item.setForeground(QColor("#4DD0E1"))
+                elif m_stat == "key_pending":
+                    key_item.setForeground(QColor("#FFB74D"))
+                else:
+                    key_item.setForeground(QColor(130, 130, 130))
+                font_k = key_item.font()
+                font_k.setItalic(True)
+                key_item.setFont(font_k)
+                key_item.setToolTip(item.get("missing_tooltip") or "No AES decryption key available.")
+                keys_table.setItem(row, 1, key_item)
 
-            # Config column (switch toggle)
-            is_cfg = item["in_config"]
-            current_checked = desired_keys.get(kid, is_cfg)
-            toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
-            key_toggles[kid] = toggle
+                toggle = MiniSwitchToggle(checked=False, read_only=True)
+                toggle.setEnabled(False)
+                toggle.setToolTip(item.get("missing_tooltip") or "Decryption key not available — cannot enable.")
+                key_toggles[kid] = toggle
+                keys_table.setCellWidget(row, 2, _ToggleContainer(toggle))
 
-            def _make_key_toggle_cb(key_id: str):
-                def _cb(checked: bool):
-                    desired_keys[key_id] = checked
-                    # STRICTLY ONE-WAY: does not touch AdditionalApps
-                    _update_sync_button_label(state)
-                    _update_bulk_states(state)
-                    status_lbl.setText(f"Key {key_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
-                return _cb
+                loc_ind = _make_local_indicator(in_local=False, is_missing=True)
+                keys_table.setCellWidget(row, 3, loc_ind)
+            else:
+                raw_key = item["key"]
+                short_key = f"{raw_key[:15]}..." if len(raw_key) > 15 else (raw_key or "N/A")
+                key_item = QTableWidgetItem(short_key)
+                key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                if raw_key:
+                    key_item.setToolTip(raw_key)
+                keys_table.setItem(row, 1, key_item)
 
-            toggle.toggled.connect(_make_key_toggle_cb(kid))
-            keys_table.setCellWidget(row, 2, _ToggleContainer(toggle))
+                # Config column (switch toggle)
+                is_cfg = item["in_config"]
+                current_checked = desired_keys.get(kid, is_cfg)
+                toggle = MiniSwitchToggle(checked=current_checked, read_only=(not is_unlocked))
+                key_toggles[kid] = toggle
 
-            # Local column (strictly non-interactive status indicator)
-            is_loc = item["in_local"]
-            loc_ind = _make_local_indicator(in_local=is_loc)
-            keys_table.setCellWidget(row, 3, loc_ind)
+                def _make_key_toggle_cb(key_id: str):
+                    def _cb(checked: bool):
+                        desired_keys[key_id] = checked
+                        # STRICTLY ONE-WAY: does not touch AdditionalApps
+                        _update_sync_button_label(state)
+                        _update_bulk_states(state)
+                        status_lbl.setText(f"Key {key_id} {'enabled' if checked else 'disabled'}. Click 'Sync Changes' to apply.")
+                    return _cb
+
+                toggle.toggled.connect(_make_key_toggle_cb(kid))
+                keys_table.setCellWidget(row, 2, _ToggleContainer(toggle))
+
+                # Local column (strictly non-interactive status indicator)
+                is_loc = item["in_local"]
+                loc_ind = _make_local_indicator(in_local=is_loc, is_missing=False)
+                keys_table.setCellWidget(row, 3, loc_ind)
 
         _set_table_height(keys_table, len(keys))
 
-        # Bulk Select All/None for DecryptionKeys (>5 items)
-        keys_bulk_bar.setVisible(len(keys) > 5)
+        # Bulk Select All/None for DecryptionKeys (>=5 items)
+        keys_bulk_bar.setVisible(len(keys) >= 5)
         keys_bulk_toggle.setReadOnly(not is_unlocked)
-        keys_btn_all.setEnabled(is_unlocked)
-        keys_btn_none.setEnabled(is_unlocked)
-
-        # Master Select All/None at bottom of tab (if any category has >5 items)
-        has_large = len(apps) > 5 or len(depots) > 5 or len(keys) > 5
-        tab_bulk_bar.setVisible(has_large)
-        tab_bulk_toggle.setReadOnly(not is_unlocked)
-        tab_btn_all.setEnabled(is_unlocked)
-        tab_btn_none.setEnabled(is_unlocked)
 
         _update_sync_button_label(state)
         _update_bulk_states(state)
@@ -1392,14 +1574,17 @@ def init_depots_tab(dialog) -> None:
 
                 # Cleanup safeguard: if base appid was accidentally in live AdditionalDepots, prune it
                 if appid_str in state["live_depots"]:
+                    logger.warning(
+                        f"[DepotsTab] Pruned base AppID '{appid_str}' from AdditionalDepots for {game_name}"
+                    )
                     editor.remove_depot(appid_str, check_shared=False)
                     removed_count += 1
 
                 # 2. Depots (add if desired and missing, remove if unchecked and present)
                 for item in state["depots"]:
                     did = item["id"]
-                    if did == appid_str:
-                        continue  # Safeguard: AppIDs must never be in AdditionalDepots
+                    if did == appid_str or item.get("is_missing"):
+                        continue  # Safeguard: AppIDs and missing depots must never be in AdditionalDepots
                     desired = desired_depots.get(did, did in state["live_depots"])
                     if desired and did not in state["live_depots"]:
                         comment = build_depot_comment(game_name, did, "", appid_str)
@@ -1412,6 +1597,8 @@ def init_depots_tab(dialog) -> None:
                 # 3. Keys (add if desired and missing, remove if unchecked and present)
                 for item in state["keys"]:
                     kid = item["id"]
+                    if item.get("is_missing") or not item.get("key"):
+                        continue  # Safeguard: missing keys must never be added to DecryptionKeys
                     desired = desired_keys.get(kid, kid in state["live_keys"])
                     kval = item["key"]
                     if desired and not item["in_config"]:
@@ -1426,6 +1613,9 @@ def init_depots_tab(dialog) -> None:
                 # Standard locked sync: automatically add missing entries
                 # Cleanup safeguard: if base appid was accidentally in live AdditionalDepots, prune it
                 if appid_str in state["live_depots"]:
+                    logger.warning(
+                        f"[DepotsTab] Pruned base AppID '{appid_str}' from AdditionalDepots for {game_name}"
+                    )
                     editor.remove_depot(appid_str, check_shared=False)
                     removed_count += 1
 
@@ -1751,24 +1941,23 @@ def init_depots_tab(dialog) -> None:
                             "dl_str": "",
                         }
 
-            # 2. Query SteamDB if Byparr is active
-            if ByparrManager.is_running():
-                try:
-                    scraper = SteamDBScraper()
-                    sdb_depots = scraper.get_app_depots(appid_str)
-                    if sdb_depots:
-                        for did, sdata in sdb_depots.items():
-                            if did in new_enrichments:
-                                if sdata.get("name"):
-                                    new_enrichments[did]["name"] = sdata["name"]
-                                if sdata.get("oslist"):
-                                    new_enrichments[did]["oslist"] = sdata["oslist"]
-                                if sdata.get("size_str"):
-                                    new_enrichments[did]["size_str"] = sdata["size_str"]
-                            else:
-                                new_enrichments[did] = sdata
-                except Exception as e:
-                    logger.debug(f"[DepotsTab] SteamDB enrichment failed: {e}")
+            # 2. Query SteamDB (via Fast-Path race or Byparr)
+            try:
+                scraper = SteamDBScraper()
+                sdb_depots = scraper.get_app_depots(appid_str)
+                if sdb_depots:
+                    for did, sdata in sdb_depots.items():
+                        if did in new_enrichments:
+                            if sdata.get("name"):
+                                new_enrichments[did]["name"] = sdata["name"]
+                            if sdata.get("oslist"):
+                                new_enrichments[did]["oslist"] = sdata["oslist"]
+                            if sdata.get("size_str"):
+                                new_enrichments[did]["size_str"] = sdata["size_str"]
+                        else:
+                            new_enrichments[did] = sdata
+            except Exception as e:
+                logger.debug(f"[DepotsTab] SteamDB enrichment failed: {e}")
 
             if new_enrichments:
                 db.save_depot_enrichments(appid_str, new_enrichments)

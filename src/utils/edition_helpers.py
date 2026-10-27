@@ -9,7 +9,7 @@ them directly to their corresponding depot selections.
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils import edition_catalog
 from utils.dlc_helpers import is_base_game_main_depot, is_dlc_depot
@@ -128,7 +128,7 @@ def get_available_platforms(
 
     platforms: List[str] = []
     if supported:
-        if "linux" in supported and has_linux and not hide_linux:
+        if has_linux and not hide_linux:
             platforms.append("linux")
         if "windows" in supported and not hide_windows:
             platforms.append("windows")
@@ -282,13 +282,12 @@ def resolve_edition_depots(
 
     base_depots: Set[str] = set()
     dlc_depots: Set[str] = set()
+    dlc_groups: Dict[str, List[Tuple[str, dict]]] = {}
 
     for did, d_data in depots.items():
         if not isinstance(d_data, dict):
             continue
         if _depot_is_macos(d_data) or _depot_is_android(d_data):
-            continue
-        if not _depot_matches_platform(d_data, target_platform):
             continue
         did_str = str(did).strip()
         desc = str(d_data.get("desc") or d_data.get("name") or "")
@@ -298,9 +297,43 @@ def resolve_edition_depots(
             is_dlc = False
 
         if is_dlc:
-            dlc_depots.add(did_str)
-        elif did_str in smart_candidates or not smart_candidates:
-            base_depots.add(did_str)
+            cand = str(d_data.get("dlcappid") or "").strip()
+            group_key = cand if cand and cand != aid_str else did_str
+            dlc_groups.setdefault(group_key, []).append((did_str, d_data))
+        elif _depot_matches_platform(d_data, target_platform):
+            if did_str in smart_candidates or not smart_candidates:
+                base_depots.add(did_str)
+
+    # For each DLC group, collect depots matching target_platform.
+    # If matching depots have 0 total size (stubs) and a content depot exists for this DLC,
+    # include the content depot as well so users actually get the DLC data.
+    for group_key, group_items in dlc_groups.items():
+        matched_dids = [
+            did for did, d_data in group_items if _depot_matches_platform(d_data, target_platform)
+        ]
+        matched_size = sum(
+            int(d_data.get("size") or 0)
+            for did, d_data in group_items
+            if did in matched_dids
+        )
+        if matched_dids and matched_size > 0:
+            for did in matched_dids:
+                dlc_depots.add(did)
+        else:
+            content_dids = [
+                did for did, d_data in group_items if int(d_data.get("size") or 0) > 0
+            ]
+            if content_dids:
+                for did in matched_dids:
+                    dlc_depots.add(did)
+                for did in content_dids:
+                    dlc_depots.add(did)
+            else:
+                for did in matched_dids:
+                    dlc_depots.add(did)
+                if not matched_dids:
+                    for did, _ in group_items:
+                        dlc_depots.add(did)
 
     if not base_depots and dlc_depots:
         base_depots = set(dlc_depots)
@@ -309,9 +342,8 @@ def resolve_edition_depots(
     complete_depots = base_depots | dlc_depots
     editions: List[Dict[str, Any]] = []
 
-    # Fetch store packages from Steam store API
-    # A cold appdetails call measured 1.3-1.8 s, so a 1.5 s budget used to time
-    # out and silently leave the store tiers out of the menu.
+    # Fetch store packages from Steam Store API via GetItems.
+    # A single GetItems call returns both packages and bundle IDs for an app.
     store_pkgs = fetch_store_packages(aid_str, timeout=6.0) if include_store else []
     pkg_contents = {}
     if store_pkgs:

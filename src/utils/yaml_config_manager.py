@@ -135,6 +135,7 @@ from utils.yaml.plugins import (  # noqa: F401
     deploy_all_sls_plugins,
     deploy_sls_plugin,
     ensure_plugins_enabled,
+    ensure_sls_plugin_config_sections,
     get_sls_plugins_dirs,
     is_slssteam_plugins_enabled,
     sync_plugins_on_startup,

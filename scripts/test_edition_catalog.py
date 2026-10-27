@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -38,27 +39,7 @@ def check(condition: bool, label: str) -> None:
         print(f"  [FAIL] {label}")
 
 
-BUNDLE_HTML = """
-<html><head><title>Save 60% on Planet Zoo: Premium Edition on Steam</title></head>
-<body>
-<div class="pageheader">Planet Zoo: Premium Edition</div>
-<a href="https://store.steampowered.com/app/703080/Planet_Zoo/"><img></a>
-<a href="https://store.steampowered.com/app/1471590/Deluxe/"><img></a>
-<a href="https://store.steampowered.com/app/1471590/Deluxe/"><img></a>
-<div class="tab_item_name">Planet Zoo</div>
-</body></html>
-"""
-
-APP_HTML = """
-<html><body>
-<a class="btn" href="https://store.steampowered.com/bundle/13931/?snr=1_5_9__603">Bundle info</a>
-<a class="btn" href="https://store.steampowered.com/bundle/22933/">Bundle info</a>
-<a class="btn" href="https://store.steampowered.com/bundle/13931/">again</a>
-<div class="game_area_purchase">...</div>
-</body></html>
-"""
-
-FRONT_PAGE_HTML = "<html><title>Welcome to Steam</title><body>Welcome to Steam</body></html>"
+# ------------------------------------------------------------------- mocks
 
 APPINFO = {
     "status": "success",
@@ -68,6 +49,53 @@ APPINFO = {
             "extended": {"listofdlc": "1471590, 2675740, 2837730"},
         }
     },
+}
+
+# GetItems response for appid 703080: packages + bundles
+GETITEMS_APP_703080 = {
+    "response": {
+        "store_items": [{
+            "appid": 703080,
+            "name": "Planet Zoo",
+            "purchase_options": [
+                {"packageid": 13930, "purchase_option_name": "Planet Zoo"},
+                {"bundleid": 13931, "purchase_option_name": "Premium Edition"},
+                {"bundleid": 22933, "purchase_option_name": "Deluxe Bundle"},
+            ],
+        }]
+    }
+}
+
+# GetItems response for bundle 13931 (Premium Edition - valid)
+GETITEMS_BUNDLE_13931 = {
+    "response": {
+        "store_items": [{
+            "id": 13931,
+            "name": "Planet Zoo: Premium Edition",
+            "included_appids": [703080, 1471590],
+        }]
+    }
+}
+
+# GetItems response for bundle 22933 (delisted - empty)
+GETITEMS_BUNDLE_22933 = {
+    "response": {
+        "store_items": []
+    }
+}
+
+# GetItems response for package-only app (no bundles)
+GETITEMS_APP_NO_BUNDLES = {
+    "response": {
+        "store_items": [{
+            "appid": 555,
+            "name": "Probe Game",
+            "purchase_options": [
+                {"packageid": 1001, "purchase_option_name": "Probe Game - $4.99 $3.74", "final_price_in_cents": 374},
+                {"packageid": 1002, "purchase_option_name": "Probe Deluxe", "final_price_in_cents": 999},
+            ],
+        }]
+    }
 }
 
 
@@ -90,27 +118,45 @@ def main() -> int:
 
         calls: list[str] = []
 
-        def fake_get(url: str, timeout: float) -> str | None:
+        def fake_get_json(url: str, timeout: float = 20.0) -> dict | None:
             calls.append(url)
-            if "/bundle/13931/" in url:
-                return BUNDLE_HTML
-            if "/bundle/22933/" in url:
-                return FRONT_PAGE_HTML
-            if "/app/703080/" in url:
-                return APP_HTML
             if "steamcmd" in url:
-                return json.dumps(APPINFO)
+                return APPINFO
+            if "GetItems" in url:
+                # URL is percent-encoded; decode the input_json parameter
+                _, _, rest = url.partition("input_json=")
+                body = json.loads(urllib.parse.unquote(rest)) if rest else {}
+                ids = body.get("ids", [])
+                # Check if it's an appid query
+                bundle_items = []
+                for item_id in ids:
+                    if "appid" in item_id:
+                        aid = item_id["appid"]
+                        if aid == 703080:
+                            return GETITEMS_APP_703080
+                        if aid == 555:
+                            return GETITEMS_APP_NO_BUNDLES
+                    elif "bundleid" in item_id:
+                        bid = item_id["bundleid"]
+                        if bid == 13931:
+                            bundle_items.extend(GETITEMS_BUNDLE_13931["response"]["store_items"])
+                        elif bid == 22933:
+                            bundle_items.extend(GETITEMS_BUNDLE_22933["response"]["store_items"])
+                if bundle_items:
+                    return {"response": {"store_items": bundle_items}}
+                if any("bundleid" in item_id for item_id in ids):
+                    return {"response": {"store_items": []}}
             return None
 
-        ec._store_get = fake_get  # type: ignore[assignment]
+        ec._get_json = fake_get_json  # type: ignore[assignment]
 
-        print("=== a bundle page gives its name and the apps it carries ===")
+        print("=== a bundle gives its name and the apps it carries ===")
         bundle = ec.fetch_bundle(13931)
         check(bundle is not None, "the bundle answers")
         assert bundle is not None
-        check(bundle["name"] == "Planet Zoo: Premium Edition", "the pageheader wins over the title")
-        check(bundle["app_ids"] == ["703080", "1471590"], "app links are deduped in page order")
-        check(ec.fetch_bundle(22933) is None, "a front page answer means the bundle is delisted")
+        check(bundle["name"] == "Planet Zoo: Premium Edition", "the name comes from JSON")
+        check(bundle["app_ids"] == ["703080", "1471590"], "included_appids are returned")
+        check(ec.fetch_bundle(22933) is None, "a delisted bundle returns None")
 
         print("=== a cached bundle needs no network ===")
         before = len(calls)
@@ -119,9 +165,9 @@ def main() -> int:
         check(len(calls) == before, "nothing was fetched a second time")
         check(ec.fetch_bundle(13931, allow_network=False) is not None, "offline reads the cache")
 
-        print("=== bundle ids are read from the app page ===")
+        print("=== bundle ids are read from GetItems purchase_options ===")
         ids = ec.discover_bundle_ids("703080")
-        check(ids == [13931, 22933], "the ids come out in page order without duplicates")
+        check(ids == [13931, 22933], "the ids come from purchase_options without duplicates")
         check(cache.exists(), "the catalogue is written to disk")
 
         print("=== app facts give the platforms and the DLC app ids ===")
@@ -174,7 +220,7 @@ def main() -> int:
         ec.fetch_bundle(13931)
         check(len(calls) == before + 1, "an expired entry goes back to the store")
 
-        print("=== store packages are cached on disk and named without the price ===")
+        print("=== store packages are cached on disk and named from option_text ===")
         check(
             ec.clean_package_name("Vampire Survivors - $4.99 $3.74") == "Vampire Survivors",
             "two appended prices are both dropped",
@@ -183,34 +229,11 @@ def main() -> int:
             ec.clean_package_name("Darkest Dungeon - $24.99") == "Darkest Dungeon",
             "one appended price is dropped",
         )
-        store_answer = json.dumps({
-            "555": {
-                "success": True,
-                "data": {
-                    "package_groups": [{
-                        "subs": [
-                            {"packageid": 1001, "option_text": "Probe Game - $4.99 $3.74",
-                             "price_in_cents_with_discount": 374},
-                            {"packageid": 1002, "option_description": "Probe Deluxe",
-                             "price_in_cents_with_discount": 999},
-                        ]
-                    }]
-                },
-            }
-        })
 
-        def fake_appdetails(url: str, timeout: float) -> str | None:
-            calls.append(url)
-            if "appdetails" in url and "appids=555" in url:
-                return store_answer
-            return None
-
-        ec._store_get = fake_appdetails  # type: ignore[assignment]
         first = ec.fetch_store_packages("555")
         check(len(first) == 2, "both packages come back")
-        check(first[0]["name"] == "Probe Game", "the package option text is cleaned")
-        check(first[0]["price"] == 374, "the discounted price is kept")
-        check(first[1]["name"] == "Probe Deluxe", "a description is used when there is no text")
+        check(first[0]["name"] == "Probe Game", "the package purchase_option_name is cleaned")
+        check(first[0]["price"] == 374, "the discounted price in cents is kept")
 
         data = json.loads(cache.read_text(encoding="utf-8"))
         check(
@@ -227,11 +250,29 @@ def main() -> int:
         ec.fetch_store_packages("555")
         check(len(calls) == before + 1, "an expired package answer goes back to the store")
 
-        ec._store_get = lambda url, timeout: None  # type: ignore[assignment]
+        ec._get_json = lambda url, timeout=20.0: None  # type: ignore[assignment]
         check(
             ec.fetch_store_packages("999", allow_network=False) == [],
             "the network is never asked when it is disabled",
         )
+        ec._get_json = fake_get_json  # type: ignore[assignment]
+
+        print("=== single round-trip populates both packages and bundle ids ===")
+        before = len(calls)
+        pkgs_703080 = ec.fetch_store_packages("703080")
+        check(len(calls) == before, "packages for 703080 were already cached by discover_bundle_ids")
+        check(len(pkgs_703080) == 1 and pkgs_703080[0]["packageid"] == 13930, "package was cached correctly")
+
+        print("=== batched bundle fetching resolves multiple bundles in one call ===")
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        data["bundle_data"] = {}
+        cache.write_text(json.dumps(data), encoding="utf-8")
+        before = len(calls)
+        batch = ec.fetch_bundles_batch([13931, 22933])
+        check(len(calls) == before + 1, "all missing bundles are fetched in exactly one network call")
+        check(len(batch) == 2, "both requested bundles have entries in result")
+        check(batch[0] is not None and batch[0]["id"] == 13931, "valid bundle is returned")
+        check(batch[1] is None, "delisted bundle returns None")
 
         print("=== an unreadable cache starts empty ===")
         cache.write_text("{not json", encoding="utf-8")

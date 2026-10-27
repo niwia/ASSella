@@ -263,21 +263,6 @@ class GameItemWidget(QWidget):
         name_row.setSpacing(6)
         name_row.addWidget(self.name_label, 1)
         self.dlc_mode_badge = None
-        if dlc_mode:
-            self.dlc_mode_badge = QLabel("DLC MODE")
-            self.dlc_mode_badge.setSizePolicy(
-                QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
-            )
-            self.dlc_mode_badge.setToolTip(
-                "This game is tracked as DLC-only: main depots are not downloaded."
-            )
-            self.dlc_mode_badge.setStyleSheet(
-                f"color: {self.accent_color};"
-                f" border: 1px solid {self.accent_color};"
-                " border-radius: 4px; padding: 0px 5px;"
-                " font-size: 9px; font-weight: bold;"
-            )
-            name_row.addWidget(self.dlc_mode_badge, 0, Qt.AlignmentFlag.AlignVCenter)
         info_layout.addLayout(name_row)
 
         # Size
@@ -338,7 +323,17 @@ class GameItemWidget(QWidget):
                 update_status = "at0m"
 
             is_at0m = update_status in ("vapor", "at0m", "at0-m")
-            if is_at0m:
+            if self._dlc_mode_applied() and update_status not in ("update_available", "key_pending"):
+                self.status_label.setText("[DLC Only]")
+                self.status_label.setStyleSheet(
+                    f"color: {self.accent_color}; "
+                    f"background-color: rgba(161, 201, 253, 0.15); "
+                    f"border-radius: 10px; "
+                    f"padding: 3px 10px; "
+                    f"font-size: 11px; "
+                    f"font-weight: bold;"
+                )
+            elif is_at0m:
                 self.status_label.setText("[AT0-M]")
                 self.status_label.setStyleSheet(
                     "color: #CE93D8; "
@@ -897,7 +892,7 @@ class GameTileWidget(GameItemWidget):
         info_layout.addLayout(badges_row)
 
         layout.addLayout(info_layout)
-        self.update_status_label()
+        self.update_pinned_label()
 
     def set_image(self, pixmap: QPixmap) -> None:
         """Sets the image on the label with rounded corners."""

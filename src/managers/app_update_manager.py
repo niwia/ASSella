@@ -158,19 +158,22 @@ class AppUpdateManager(QObject):
 
                 # 1. Bundled appimageupdatetool
                 try:
-                    # Locate the bundled updater. Paths.BASE_DIR is <root>/src in a source tree but
-                    # the AppImage puts the launcher in <root>/bin, one level up, so
-                    # check both. Walking up from __file__ used to assume the source
-                    # layout and silently miss the bundled binary inside the AppImage.
+                    # Locate the bundled updater. Inside an AppImage, BASE_DIR is
+                    # <mount>/bin/src (where the Python code lives) but the
+                    # executable binaries sit at <mount>/bin/. The APPDIR env var
+                    # is the canonical mount point and is already used elsewhere
+                    # in the codebase for the same purpose (see isp_bypass.py).
+                    appdir = os.environ.get("APPDIR")
+                    updater_candidates = []
+                    if appdir:
+                        updater_candidates.append(Path(appdir) / "bin" / "appimageupdatetool")
+                    updater_candidates.extend((
+                        Paths.BASE_DIR.parent / "appimageupdatetool",
+                        Paths.BASE_DIR.parent / "bin" / "appimageupdatetool",
+                        Paths.BASE_DIR / "appimageupdatetool",
+                    ))
                     bundled = next(
-                        (
-                            candidate
-                            for candidate in (
-                                Paths.BASE_DIR / "appimageupdatetool",
-                                Paths.BASE_DIR.parent / "bin" / "appimageupdatetool",
-                            )
-                            if candidate.exists() and os.access(candidate, os.X_OK)
-                        ),
+                        (c for c in updater_candidates if c and c.exists() and os.access(c, os.X_OK)),
                         None,
                     )
                     updater = str(bundled) if bundled else ""
@@ -210,12 +213,25 @@ class AppUpdateManager(QObject):
                 except Exception as e:
                     logger.warning(f"appimageupdatetool delta failed ({e}); falling back.")
 
-                # 2. zsync CLI (system install, or already on PATH)
+                # 2. zsync CLI — prefer bundled copy inside the AppImage, then system PATH
                 if not delta_ok:
                     if cancel_event.is_set():
                         return
                     try:
-                        zsync_bin = shutil.which("zsync")
+                        _appdir = os.environ.get("APPDIR")
+                        _bundled_zsync_candidates = []
+                        if _appdir:
+                            _bundled_zsync_candidates.append(Path(_appdir) / "bin" / "zsync")
+                        _bundled_zsync_candidates.extend((
+                            Paths.BASE_DIR.parent / "zsync",
+                            Paths.BASE_DIR.parent / "bin" / "zsync",
+                            Paths.BASE_DIR / "bin" / "zsync",
+                        ))
+                        _bundled_zsync = next(
+                            (c for c in _bundled_zsync_candidates if c and c.exists() and os.access(c, os.X_OK)),
+                            None,
+                        )
+                        zsync_bin = str(_bundled_zsync) if _bundled_zsync else shutil.which("zsync")
                         if not zsync_bin:
                             logger.info("zsync binary not found; using full download.")
                         elif not os.path.exists(appimage_path):
@@ -231,6 +247,7 @@ class AppUpdateManager(QObject):
                                 [zsync_bin, "-i", str(seed_copy), "-o", str(zsync_out),
                                  f"{download_url}.zsync"],
                                 capture_output=True, text=True, timeout=1800,
+                                cwd=str(dest_dir),
                             )
                             for line in ((proc.stdout or "") + (proc.stderr or "")).splitlines():
                                 if line.strip():
@@ -256,8 +273,8 @@ class AppUpdateManager(QObject):
                     if tmp_path is not None:
                         try:
                             Path(tmp_path).unlink(missing_ok=True)
-                        except OSError:
-                            pass
+                        except OSError as e:
+                            logger.debug(f"Could not remove tmp_path {tmp_path} on cancel: {e}")
                     return
 
                 if delta_ok and tmp_path is not None:

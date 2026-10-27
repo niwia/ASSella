@@ -184,6 +184,8 @@ def register_plugin_game(
     depot_names: Optional[Dict[Union[str, int], str]] = None,
     dlc_appids: Optional[List[Union[str, int]]] = None,
     is_dlc_only: Optional[bool] = None,
+    app_token: Optional[Union[str, int]] = None,
+    app_tokens: Optional[Dict[Union[str, int], str]] = None,
 ) -> bool:
     """
     Register a newly installed or downloaded game as plugin-managed.
@@ -241,6 +243,54 @@ def register_plugin_game(
     published_ids = set(clean_depots) | set(clean_dlc_appids) | {appid_str} | set(SHARED_REDISTS)
     published_keys = {did: key for did, key in clean_keys.items() if did in published_ids}
 
+    # Collect AppTokens to inject
+    tokens_to_inject: Dict[str, str] = {}
+    if app_token:
+        tokens_to_inject[appid_str] = str(app_token).strip()
+    if app_tokens:
+        for aid, tok in app_tokens.items():
+            aid_s = str(aid).strip()
+            tok_s = str(tok).strip()
+            if aid_s and tok_s:
+                tokens_to_inject[aid_s] = tok_s
+
+    # If base token not provided, query DepotKeyManager
+    if appid_str not in tokens_to_inject:
+        try:
+            from managers.depot_key_manager import DepotKeyManager
+            dkm_tok = DepotKeyManager.get_instance().get_app_token(appid_str)
+            if dkm_tok:
+                tokens_to_inject[appid_str] = str(dkm_tok).strip()
+        except Exception as e:
+            logger.debug(f"[PluginGames] Could not query DepotKeyManager for token: {e}")
+
+    # Query DLC tokens in DepotKeyManager if DLC AppIDs are present
+    for dlc_id in clean_dlc_appids:
+        if dlc_id not in tokens_to_inject:
+            try:
+                from managers.depot_key_manager import DepotKeyManager
+                dlc_tok = DepotKeyManager.get_instance().get_app_token(dlc_id)
+                if dlc_tok:
+                    tokens_to_inject[dlc_id] = str(dlc_tok).strip()
+            except Exception as e:
+                logger.debug(f"[PluginGames] Could not query DepotKeyManager for DLC token {dlc_id}: {e}")
+
+    # Query depot tokens in DepotKeyManager for selected depots
+    for did in clean_depots:
+        if did not in tokens_to_inject and did != appid_str:
+            try:
+                from managers.depot_key_manager import DepotKeyManager
+                depot_tok = DepotKeyManager.get_instance().get_app_token(did)
+                if depot_tok:
+                    tokens_to_inject[did] = str(depot_tok).strip()
+            except Exception as e:
+                logger.debug(f"[PluginGames] Could not query DepotKeyManager for depot token {did}: {e}")
+
+    if is_dlc_only:
+        allowed_token_ids = set(clean_dlc_appids) | set(clean_depots)
+        tokens_to_inject = {aid: tok for aid, tok in tokens_to_inject.items() if aid in allowed_token_ids}
+        tokens_to_inject.pop(appid_str, None)
+
     lib = load_plugin_library()
     game_record = {
         "appid": appid_str,
@@ -251,6 +301,8 @@ def register_plugin_game(
         "depot_names": clean_depot_names,
         "dlc_only": is_dlc_only,
         "dlc_appids": clean_dlc_appids,
+        "token": tokens_to_inject.get(appid_str, ""),
+        "app_tokens": tokens_to_inject,
         "updated_at": int(time.time()),
         "source": "plugin_native",
     }
@@ -274,6 +326,7 @@ def register_plugin_game(
             # DLC-only: add DLC AppIDs to AdditionalApps, NOT the base game appid.
             for dlc_id in clean_dlc_appids:
                 editor.add_app(dlc_id, comment=f"{name} DLC ({dlc_id})")
+            editor.remove_app_token(appid_str)
         else:
             # Full game owns its base and discovered DLC entitlements.
             editor.add_app(appid_str, comment=name)
@@ -310,6 +363,13 @@ def register_plugin_game(
             else:
                 key_comment = build_key_comment(name, did, clean_depot_names.get(did, ""), appid_str)
             editor.add_key(did, key, comment=key_comment)
+
+        # Add AppTokens with game comment
+        for tok_aid, tok_val in tokens_to_inject.items():
+            if is_dlc_only and tok_aid == appid_str:
+                continue
+            tok_comment = f"[DLC] {name} ({tok_aid})" if tok_aid != appid_str else name
+            editor.add_token(tok_aid, tok_val, comment=tok_comment)
 
     if not editor.committed_successfully:
         logger.error(
@@ -483,6 +543,8 @@ def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool
                     editor.remove_fake_app_id(dlc_id)
                     editor.remove_app_token(dlc_id)
                     editor.remove_launch_option(dlc_id)
+                for did in target_game.get("depot_ids", []):
+                    editor.remove_app_token(did)
 
                 # 1d. Remove secondary sections (GameTitles, ManifestIds, CDKeys, etc.)
                 for sec in (
@@ -720,7 +782,7 @@ def collect_game_depots_and_keys(
     the user's depot scope is the caller's decision, so the caller can report
     what it left out.
     """
-    from utils.lua_parsing import iter_live_matches
+    from utils.lua_parsing import iter_live_matches, extract_all_tokens, extract_token
 
     appid_str = str(appid).strip()
     depot_ids: List[str] = []
@@ -773,28 +835,45 @@ def collect_game_depots_and_keys(
         logger.debug(f"[PluginGames] DepotKeyManager lookup error for {appid_str}: {e}")
 
     # 4. Extract from cached Lua or manifest zip
-    def _extract_keys_from_lua(lua_text: str):
+    def _extract_keys_and_tokens_from_lua(lua_text: str):
         for m in iter_live_matches(lua_text, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'):
             did, key = m.group(1), m.group(2).lower()
             decryption_keys[did] = key
             if did != appid_str and did not in depot_ids:
                 depot_ids.append(did)
+        try:
+            tokens = extract_all_tokens(lua_text)
+            if not tokens:
+                s_tok = extract_token(lua_text, appid_str)
+                if s_tok:
+                    tokens[appid_str] = s_tok
+            if tokens:
+                from managers.depot_key_manager import DepotKeyManager
+                dkm = DepotKeyManager.get_instance()
+                for aid, tok in tokens.items():
+                    dkm.save_app_token(aid, tok)
+        except Exception as e:
+            logger.debug(f"[PluginGames] Could not save app token for {appid_str}: {e}")
 
     lua_file = get_base_path() / "cached_luas" / f"{appid_str}.lua"
     if lua_file.exists():
         try:
             with open(lua_file, "r", encoding="utf-8", errors="ignore") as lf:
-                _extract_keys_from_lua(lf.read())
+                _extract_keys_and_tokens_from_lua(lf.read())
         except Exception as e:
             logger.debug(f"[PluginGames] Could not read cached Lua for {appid_str}: {e}")
 
-    zip_file = get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid_str}.zip"
-    if zip_file.exists():
+    zip_files = [
+        get_base_path() / "hubcap_manifests" / f"accela_fetch_{appid_str}.zip",
+        Path.home() / ".local" / "share" / "ACCELA" / "hubcap_manifests" / f"accela_fetch_{appid_str}.zip",
+    ]
+    zip_file = next((candidate for candidate in zip_files if candidate.exists()), None)
+    if zip_file:
         try:
             with zipfile.ZipFile(zip_file, "r") as zf:
                 for name in zf.namelist():
                     if name.endswith(".lua"):
-                        _extract_keys_from_lua(zf.read(name).decode("utf-8", errors="ignore"))
+                        _extract_keys_and_tokens_from_lua(zf.read(name).decode("utf-8", errors="ignore"))
         except Exception as e:
             logger.debug(f"[PluginGames] Could not read manifest zip for {appid_str}: {e}")
 
@@ -819,11 +898,22 @@ def collect_game_depots_and_keys(
                                 fresh_keys[did_f] = k_f
                 if fresh_keys:
                     from managers.depot_key_manager import DepotKeyManager
-                    DepotKeyManager.get_instance().save_depot_keys(appid_str, fresh_keys)
+                    dkm = DepotKeyManager.get_instance()
+                    dkm.save_depot_keys(appid_str, fresh_keys)
                     for did_f, k_f in fresh_keys.items():
                         decryption_keys[did_f] = k_f
                         if did_f != appid_str and did_f not in depot_ids:
                             depot_ids.append(did_f)
+                    try:
+                        fresh_tokens = extract_all_tokens(lua_txt)
+                        if not fresh_tokens:
+                            s_tok = extract_token(lua_txt, appid_str)
+                            if s_tok:
+                                fresh_tokens[appid_str] = s_tok
+                        for aid, tok in fresh_tokens.items():
+                            dkm.save_app_token(aid, tok)
+                    except Exception as e:
+                        logger.debug(f"[PluginGames] Emergency token save error: {e}")
                     logger.info(f"[PluginGames] Recovered {len(fresh_keys)} fresh key(s) from Hubcap for {appid_str}.")
         except Exception as e:
             logger.warning(f"[PluginGames] Hubcap emergency key recovery failed for {appid_str}: {e}")
@@ -1051,6 +1141,51 @@ def detect_migration_complications(game_data: Dict[str, Any], settings: Any = No
     }
 
 
+def can_use_atom_mode(config_path: Optional[Path] = None) -> Tuple[bool, str]:
+    """Check whether the environment is ready for AT0-M mode.
+
+    Verifies:
+      1. SLSsteam config.yaml exists.
+      2. Plugins: yes is enabled in config.yaml.
+      3. AdditionalDepots section exists in config.yaml.
+      4. DecryptionKeys section exists in config.yaml.
+      5. An active interceptor plugin (e.g. download.lua or SpaceBunny) is deployed.
+
+    Returns:
+      (True, "") if ready, or (False, "Reason...") if not.
+    """
+    from utils.yaml.core import _get_section_bounds
+    from utils.yaml.yaml_values import get_yaml_boolean_value
+    from utils.plugin_manager import get_active_interceptor_filename, is_plugin_check_bypassed
+    from utils.yaml.plugins import ensure_sls_plugin_config_sections
+
+    cfg_path = config_path if config_path is not None else get_user_config_path()
+    if not cfg_path.exists():
+        return False, f"SLSsteam config not found at {cfg_path}"
+
+    # Auto-seed required sections if config exists
+    ensure_sls_plugin_config_sections(cfg_path)
+
+    if not get_yaml_boolean_value(cfg_path, "Plugins", default=False):
+        return False, "Plugins are not enabled in SLSsteam config ('Plugins: yes' missing or false)"
+
+    try:
+        content = cfg_path.read_text(encoding="utf-8")
+        if _get_section_bounds(content, "AdditionalDepots") is None:
+            return False, "Missing 'AdditionalDepots:' section in SLSsteam config"
+        if _get_section_bounds(content, "DecryptionKeys") is None:
+            return False, "Missing 'DecryptionKeys:' section in SLSsteam config"
+    except Exception as e:
+        return False, f"Could not read SLSsteam config: {e}"
+
+    if not is_plugin_check_bypassed():
+        interceptor = get_active_interceptor_filename()
+        if not interceptor:
+            return False, "No active download interceptor plugin (e.g. download.lua or SpaceBunny) is deployed"
+
+    return True, ""
+
+
 def migrate_game_to_atom(
     game_data: Dict[str, Any],
     settings: Any = None,
@@ -1061,12 +1196,13 @@ def migrate_game_to_atom(
     Core single-game migration engine: converts an ASSella-managed game to AT0-M (Steam Native) mode.
     Handles:
     - DLC-only mapped entitlements (only user-selected DLC depots, DLC AppIDs, DLC keys)
+    - Full game entitlements (all depots and keys from Hubcap bundle without smart depot filtering)
     - Reverting Goldberg emulator to genuine Steam binaries
     - Reverting EOS proxy to genuine DLL
     - In-place atomic config.yaml updates (preserving inode)
-    - Removal of .DepotDownloader / .ACCELA markers
-    - Steam ACF adoption with deferral tracking
+    - Removal of stale appmanifest ACF without calling SLSsteam install API pipe
     - Depotcache manifest pre-seeding
+    - Removal of .DepotDownloader / .ACCELA markers
     """
     from utils.settings import get_settings
 
@@ -1143,28 +1279,33 @@ def migrate_game_to_atom(
             except Exception as e:
                 logger.warning(f"[PluginGames] DLC emergency key fetch failed: {e}")
     else:
+        # Full game: inject all depots and keys from Hubcap bundle without smart depot filtering
         dlc_appids = []
         depot_ids, decryption_keys, depot_names = collect_game_depots_and_keys(
             appid_str, game_data=game_data, allow_hubcap_fetch=True
         )
-        from utils.dlc_helpers import resolve_depot_scope
 
-        explicit_scope = game_data.get("selected_depots")
-        scope = explicit_scope if explicit_scope is not None else (
-            get_saved_depot_selection(appid_str)
-            or game_data.get("metadata", {}).get("selected_depots_list")
-        )
-        if scope is not None:
-            depot_ids, _ = resolve_depot_scope(appid_str, depot_ids, extra_scope=scope)
 
-    # 3. Guard against unkeyed depots (prevent DepotWithoutKey)
+    # 3. Guard against unkeyed depots (prevent DepotWithoutKey / partial migration)
     valid_keys_and_redists = set(decryption_keys.keys()) | SHARED_REDISTS
     excluded_unkeyed = [d for d in depot_ids if d not in valid_keys_and_redists]
     if excluded_unkeyed:
-        logger.warning(
-            f"[PluginGames] Excluded {len(excluded_unkeyed)} unkeyed depot(s) for {appid_str}: {excluded_unkeyed}"
+        logger.error(
+            f"[PluginGames] Cannot migrate '{game_name}' ({appid_str}) to AT0-M: "
+            f"Missing decryption keys for {len(excluded_unkeyed)} depot(s): {excluded_unkeyed}. "
+            "Migration aborted to prevent partial installation."
         )
-        depot_ids = [d for d in depot_ids if d in valid_keys_and_redists]
+        err_msg = (
+            "No valid decryption keys found"
+            if not decryption_keys
+            else f"Missing decryption keys for depot(s): {', '.join(excluded_unkeyed)}"
+        )
+        return {
+            "success": False,
+            "error": err_msg,
+            "appid": appid_str,
+            "name": game_name,
+        }
 
     if not depot_ids and not dlc_appids:
         logger.warning(
@@ -1192,6 +1333,7 @@ def migrate_game_to_atom(
         depot_names=depot_names,
         dlc_appids=dlc_appids if is_dlc else None,
         is_dlc_only=is_dlc,
+        app_token=game_data.get("app_token") or game_data.get("token"),
     )
     if not registered:
         return {
@@ -1220,7 +1362,7 @@ def migrate_game_to_atom(
     settings_obj.setValue(f"exclude_from_update_all/{appid_str}", True)
 
     # 7. Adopt Steam appmanifest ACF
-    from utils.steam_acf import find_appmanifest_path, ensure_acf_has_installed_depots, ACF_DEFERRED
+    from utils.steam_acf import find_appmanifest_path
 
     # The ACF may only advertise the depots registration actually mounted: a
     # depot the config editor refused is not served by SLSsteam, and listing it
@@ -1249,20 +1391,49 @@ def migrate_game_to_atom(
                 for d, key in candidate_keys.items()
                 if str(d) in allowed_key_ids and editor.contains_key(d)
             }
-    except Exception:
+    except Exception as e:
         logger.exception(
-            f"[PluginGames] Could not verify mounted depots/keys for {appid_str}; "
-            "the appmanifest will not claim unverified content."
+            f"[PluginGames] Could not verify mounted depots/keys for {appid_str}: {e}; "
+            "falling back to known depots for ACF adoption."
         )
-        adopted_depots = []
-        adopted_keys = {}
+        # Even if config verification failed, try with known depots — the ACF
+        # repair logic will discover missing depots from disk anyway.
+        adopted_depots = [str(d) for d in candidate_depots if str(d) != appid_str]
+        adopted_keys = dict(candidate_keys)
 
-    acf_deferred = False
+    # If config verification passed but all depots were filtered out
+    # (e.g. depot IDs don't match what SLSsteam expects), fall back to
+    # known depots so the ACF can still be repaired.
+    if not adopted_depots and candidate_depots:
+        logger.warning(
+            f"[PluginGames] No depots passed config verification for {appid_str}; "
+            f"using {len(candidate_depots)} known depot(s) as fallback for ACF repair."
+        )
+        adopted_depots = [str(d) for d in candidate_depots if str(d) != appid_str]
+        adopted_keys = dict(candidate_keys)
+
     acf_path = find_appmanifest_path(game_data, appid_str)
-    if acf_path:
-        acf_status = ensure_acf_has_installed_depots(acf_path, appid_str, adopted_depots, game_data)
-        if acf_status == ACF_DEFERRED:
-            acf_deferred = True
+    acf_updated = False
+    if acf_path and os.path.exists(acf_path):
+        # Update StateFlags to 6 (UpdateRequired | FullyInstalled) instead of deleting.
+        # This signals to Steam that files exist on disk but an update/verification pass is required.
+        try:
+            from utils.steam_acf import set_acf_state_flags
+
+            if set_acf_state_flags(acf_path, 6):
+                acf_updated = True
+                logger.info(
+                    f"[PluginGames] Set StateFlags=6 on ACF {acf_path} for {appid_str}; "
+                    "Steam will see update available and verify/adopt files."
+                )
+            else:
+                logger.warning(
+                    f"[PluginGames] Could not update StateFlags on ACF {acf_path}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"[PluginGames] Error updating StateFlags on ACF {acf_path}: {e}"
+            )
 
     # 6. Sync manifests to central depotcache
     try:
@@ -1273,20 +1444,9 @@ def migrate_game_to_atom(
     except Exception as e:
         logger.warning(f"[PluginGames] Depotcache sync failed for {appid_str}: {e}")
 
-    # 7. Record acf_pending if deferred, and retire ASSella markers
+    # 7. Retire ASSella markers
     marker_retained = False
     marker_retained_reasons: List[str] = []
-    if acf_deferred:
-        lib = load_plugin_library()
-        record = lib.setdefault(appid_str, {})
-        record["acf_pending"] = True
-        if not save_plugin_library(lib):
-            logger.error(
-                f"[PluginGames] Failed to save acf_pending state for {appid_str}; "
-                "keeping ASSella marker so migration can be retried."
-            )
-            marker_retained = True
-            marker_retained_reasons.append("plugin library could not save the deferred ACF state")
 
     if not marker_retained:
         _remove_accela_markers(install_path)
@@ -1296,7 +1456,8 @@ def migrate_game_to_atom(
         "success": True,
         "appid": appid_str,
         "name": game_name,
-        "acf_deferred": acf_deferred,
+        "acf_updated": acf_updated,
+        "acf_deleted": False,
         "marker_retained": marker_retained,
         "marker_retained_reason": "; ".join(marker_retained_reasons),
         "depots_count": len(adopted_depots),
@@ -1320,7 +1481,6 @@ def batch_convert_games_to_atom(
 
     migrated: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
-    acf_pending: List[Dict[str, Any]] = []
     markers_retained: List[Dict[str, Any]] = []
     total = len(games)
 
@@ -1350,8 +1510,6 @@ def batch_convert_games_to_atom(
                 "depots": res.get("depots_count", 0),
                 "keys": res.get("keys_count", 0),
             })
-            if res.get("acf_deferred"):
-                acf_pending.append({"appid": appid_str, "name": game_name})
             if res.get("marker_retained"):
                 markers_retained.append({
                     "appid": appid_str,
@@ -1367,8 +1525,6 @@ def batch_convert_games_to_atom(
             })
 
     result: Dict[str, Any] = {"migrated": migrated, "failed": failed}
-    if acf_pending:
-        result["acf_pending"] = acf_pending
     if markers_retained:
         result["markers_retained"] = markers_retained
     return result

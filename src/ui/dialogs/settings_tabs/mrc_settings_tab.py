@@ -54,12 +54,12 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     active_lower = active_plugin.lower()
     is_spacetest = ("spacetest" in active_lower) or ("spacebunny" in active_lower)
 
-    # MRC Guard Card (shown when active plugin is not download-1.4.0-spacetest.lua / spacebunny)
+    # MRC Guard Card (shown when the active plugin does not support MRC settings).
     guard_card, guard_layout = dialog._create_card_frame("MRC Configuration Guard")
     guard_desc = QLabel(
         f"<b>MRC Customization Inactive:</b> Active plugin is currently <code>{active_plugin or 'None'}</code>.<br><br>"
         "Manifest Request Code (MRC) authority hierarchy, secondary rescue routing, and race parameters require "
-        "<b><code>spacebunny1.5.lua</code></b> (SpaceBunny). Standard <code>download.lua</code> "
+        "<b><code>SpaceBunny 1.7+</code></b>. Standard <code>download.lua</code> "
         "does not read these parameters.<br><br>"
         "These options are hidden to prevent incompatible configuration overrides."
     )
@@ -67,7 +67,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     guard_desc.setWordWrap(True)
     guard_layout.addWidget(guard_desc)
 
-    goto_atom_btn = QPushButton("Go to at0-m Settings (Deploy SpaceBunny 1.5)")
+    goto_atom_btn = QPushButton("Go to at0-m Settings (Deploy SpaceBunny)")
     goto_atom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     goto_atom_btn.setStyleSheet("""
         QPushButton {
@@ -117,10 +117,12 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     auth_lbl = QLabel("Primary Authority:")
     auth_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500;")
     dialog.mrc_auth_combo = QComboBox()
-    dialog.mrc_auth_combo.setFixedWidth(160)
-    dialog.mrc_auth_combo.addItem("Wudrm (Primary)", "wudrm")
-    dialog.mrc_auth_combo.addItem("ManifestDeX", "manifestdex")
-    idx = dialog.mrc_auth_combo.findData(cfg.get("authority", "wudrm"))
+    dialog.mrc_auth_combo.setFixedWidth(190)
+    dialog.mrc_auth_combo.addItem("ManifestDeX (Primary)", "manifestdex")
+    dialog.mrc_auth_combo.addItem("Wudrm", "wudrm")
+    dialog.mrc_auth_combo.addItem("SteamRun (Testing)", "steamrun")
+    dialog.mrc_auth_combo.addItem("OpenSteamTool (Testing)", "opensteamtool")
+    idx = dialog.mrc_auth_combo.findData(cfg.get("authority", "manifestdex"))
     if idx >= 0:
         dialog.mrc_auth_combo.setCurrentIndex(idx)
     p_grid.addWidget(auth_lbl, 0, 0)
@@ -130,10 +132,12 @@ def create_mrc_settings_tab(dialog) -> QWidget:
     rescue_lbl = QLabel("Secondary Rescue:")
     rescue_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500;")
     dialog.mrc_rescue_combo = QComboBox()
-    dialog.mrc_rescue_combo.setFixedWidth(160)
-    dialog.mrc_rescue_combo.addItem("ManifestDeX", "manifestdex")
+    dialog.mrc_rescue_combo.setFixedWidth(190)
     dialog.mrc_rescue_combo.addItem("Wudrm", "wudrm")
-    idx = dialog.mrc_rescue_combo.findData(cfg.get("rescue", "manifestdex"))
+    dialog.mrc_rescue_combo.addItem("ManifestDeX", "manifestdex")
+    dialog.mrc_rescue_combo.addItem("SteamRun (Testing)", "steamrun")
+    dialog.mrc_rescue_combo.addItem("OpenSteamTool (Testing)", "opensteamtool")
+    idx = dialog.mrc_rescue_combo.findData(cfg.get("rescue", "wudrm"))
     if idx >= 0:
         dialog.mrc_rescue_combo.setCurrentIndex(idx)
     p_grid.addWidget(rescue_lbl, 1, 0)
@@ -298,7 +302,7 @@ def create_mrc_settings_tab(dialog) -> QWidget:
             guard_desc.setText(
                 f"<b>MRC Customization Inactive:</b> Active plugin is currently <code>{cur_act or 'None'}</code>.<br><br>"
                 "Manifest Request Code (MRC) authority hierarchy, secondary rescue routing, and race parameters require "
-                "<b><code>spacebunny1.5.lua</code></b> (SpaceBunny). Standard <code>download.lua</code> "
+                "<b><code>SpaceBunny 1.7+</code></b>. Standard <code>download.lua</code> "
                 "does not read these parameters.<br><br>"
                 "These options are hidden to prevent incompatible configuration overrides."
             )

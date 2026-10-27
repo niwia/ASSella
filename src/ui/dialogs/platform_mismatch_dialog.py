@@ -36,7 +36,8 @@ from utils.color_utils import get_best_foreground_color
 logger = logging.getLogger(__name__)
 
 ACTION_CANCEL = 0
-ACTION_FORCE_PROTON = 1
+ACTION_PROCEED = 1
+ACTION_FORCE_PROTON = 1  # Backward-compatibility alias
 ACTION_ASSELLA_DOWNLOAD = 2
 
 
@@ -117,29 +118,33 @@ class PlatformMismatchDialog(QDialog):
         # Main Title
         title_lbl = QLabel("Platform Compatibility Mismatch")
         title_lbl.setStyleSheet(
-            "font-size: 11pt; font-weight: bold; color: rgba(255, 255, 255, 0.95);"
+            "font-size: 11pt; font-weight: bold; color: rgba(255, 255, 255, 0.95); border: none; background: transparent;"
         )
         body_lay.addWidget(title_lbl)
 
         # Description
         desc_lbl = QLabel(
-            "Steam on Linux will attempt to download the native Linux version of this game. "
-            "However, only Windows depots and decryption keys are available in the source repository.\n\n"
-            "If handed off to Steam without Proton, Steam will download 0 bytes."
+            "Steam on Linux will attempt to download the native Linux version of this game.\n\n"
+            "Only Windows keys are available. Please switch to Proton in Steam compatibility options after install."
         )
         desc_lbl.setWordWrap(True)
         desc_lbl.setStyleSheet(
-            "font-size: 9pt; color: rgba(255, 255, 255, 0.75); line-height: 140%;"
+            "font-size: 9pt; color: rgba(255, 255, 255, 0.75); line-height: 140%; border: none; background: transparent;"
         )
         body_lay.addWidget(desc_lbl)
 
         # Detail Box
         info_frame = QFrame()
+        info_frame.setObjectName("mismatchInfoFrame")
         info_frame.setStyleSheet("""
-            QFrame {
+            QFrame#mismatchInfoFrame {
                 background-color: rgba(255, 255, 255, 0.04);
                 border: 1px solid rgba(255, 255, 255, 0.08);
                 border-radius: 8px;
+            }
+            QLabel {
+                border: none;
+                background: transparent;
             }
         """)
         info_lay = QVBoxLayout(info_frame)
@@ -155,10 +160,12 @@ class PlatformMismatchDialog(QDialog):
             h.setSpacing(8)
             lbl_key = QLabel(label)
             lbl_key.setStyleSheet(
-                "font-size: 8.5pt; font-weight: bold; color: rgba(255, 255, 255, 0.55);"
+                "border: none; background: transparent; font-size: 8.5pt; font-weight: bold; color: rgba(255, 255, 255, 0.55);"
             )
             lbl_val = QLabel(value)
-            lbl_val.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.90);")
+            lbl_val.setStyleSheet(
+                "border: none; background: transparent; font-size: 8.5pt; color: rgba(255, 255, 255, 0.90);"
+            )
             lbl_val.setWordWrap(True)
             h.addWidget(lbl_key)
             h.addWidget(lbl_val, 1)
@@ -167,7 +174,6 @@ class PlatformMismatchDialog(QDialog):
         info_lay.addLayout(_row("Game:", f"{self.game_name} ({self.app_id})"))
         info_lay.addLayout(_row("Native Steam Depots (Linux):", linux_depots_str))
         info_lay.addLayout(_row("Available Depots (Windows):", win_depots_str))
-        info_lay.addLayout(_row("Auto-Detected Proton:", self.preferred_tool))
 
         body_lay.addWidget(info_frame)
 
@@ -181,11 +187,11 @@ class PlatformMismatchDialog(QDialog):
             c = QColor("#6c5ce7")
         fg = get_best_foreground_color(c)
 
-        # Option A: Force Proton & Install via Steam
-        self.btn_force_proton = QPushButton("Force Proton & Install via Steam")
-        self.btn_force_proton.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_force_proton.setFixedHeight(38)
-        self.btn_force_proton.setStyleSheet(f"""
+        # Option A: Proceed
+        self.btn_proceed = QPushButton("Proceed")
+        self.btn_proceed.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_proceed.setFixedHeight(38)
+        self.btn_proceed.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.accent_color};
                 color: {fg};
@@ -202,8 +208,9 @@ class PlatformMismatchDialog(QDialog):
                 background-color: rgba({c.red()}, {c.green()}, {c.blue()}, 0.70);
             }}
         """)
-        self.btn_force_proton.clicked.connect(self._on_force_proton)
-        btn_lay.addWidget(self.btn_force_proton)
+        self.btn_proceed.clicked.connect(self._on_proceed)
+        self.btn_force_proton = self.btn_proceed  # Backward-compatibility alias
+        btn_lay.addWidget(self.btn_proceed)
 
         # Option B: Download via ASSella
         self.btn_assella = QPushButton("Download via ASSella")
@@ -258,9 +265,12 @@ class PlatformMismatchDialog(QDialog):
         container_lay.addLayout(body_lay)
         root.addWidget(self.container)
 
-    def _on_force_proton(self):
-        self._action = ACTION_FORCE_PROTON
+    def _on_proceed(self):
+        self._action = ACTION_PROCEED
         self.accept()
+
+    def _on_force_proton(self):
+        self._on_proceed()
 
     def _on_assella(self):
         self._action = ACTION_ASSELLA_DOWNLOAD

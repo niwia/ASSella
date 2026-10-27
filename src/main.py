@@ -275,15 +275,27 @@ def main():
                 logger.error(f"Failed to check and merge Fake AppID database: {ex}")
 
             try:
-                from utils.yaml_config_manager import get_fake_appid, add_fake_app_id
+                from utils.yaml_config_manager import get_fake_appid, add_fake_app_id, remove_fake_app_id
                 all_on = settings.value("all_games_online", None)
                 if all_on is None:
                     all_on = settings.value("all_games_online_beta", None)
-                if all_on is None or bool(all_on):
+
+                # Normalize boolean
+                if isinstance(all_on, str):
+                    all_on_bool = all_on.strip().lower() in ("true", "1", "yes")
+                elif all_on is not None:
+                    all_on_bool = bool(all_on)
+                else:
+                    all_on_bool = True  # Default on if never set
+
+                if all_on_bool:
                     if get_fake_appid(config_path, "0") is None:
                         add_fake_app_id(config_path, "0", game_name="All Unowned Apps", fake_appid="480")
+                else:
+                    if get_fake_appid(config_path, "0") is not None:
+                        remove_fake_app_id(config_path, "0")
             except Exception as ex:
-                logger.debug(f"Failed to ensure all_games_online FakeAppId: {ex}")
+                logger.debug(f"Failed to sync all_games_online FakeAppId: {ex}")
 
             # A Steam update would replace the files SLSsteam patches, so the
             # config keeps DisableUpdates set. The writer memoises "already

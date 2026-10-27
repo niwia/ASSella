@@ -70,6 +70,24 @@ class SelectionMixin:
         if getattr(self, "_has_saved_selection", False) or getattr(self, "_user_interacted", False):
             return
 
+        if hasattr(self, "_multi_platform_editions") and self._multi_platform_editions:
+            plat = getattr(self, "_default_platform", "windows")
+            eds = self._multi_platform_editions.get(plat) or []
+            if not eds:
+                eds = next(iter(self._multi_platform_editions.values()), [])
+            highest_ed = eds[0] if eds else None
+            if highest_ed and highest_ed.get("depot_ids"):
+                from utils.dlc_helpers import is_dlc_depot, is_base_game_main_depot
+                target_ids = set()
+                for did in highest_ed["depot_ids"]:
+                    d_data = self.depots.get(did) or self.depots.get(int(did) if did.isdigit() else 0) or {}
+                    desc = str(d_data.get("desc") or d_data.get("name") or "")
+                    if is_dlc_depot(did, desc=desc, base_appid=str(self.app_id), depot_meta=d_data) and not is_base_game_main_depot(did, desc, str(self.app_id)):
+                        target_ids.add(str(did))
+                if target_ids:
+                    self._apply_depot_checks(target_ids)
+                    return
+
         facts = []
         for i in range(self.table_widget.rowCount()):
             id_item = self.table_widget.item(i, 0)
@@ -372,7 +390,18 @@ class SelectionMixin:
             )
             self.edition_button.setToolTip(selection_policy.edition_button_tooltip(edition))
 
-        self._apply_depot_checks({str(d) for d in edition.get("depot_ids", set())})
+        target_ids = {str(d) for d in edition.get("depot_ids", set())}
+        if getattr(self, "_dlc_only_mode", False):
+            from utils.dlc_helpers import is_dlc_depot, is_base_game_main_depot
+            filtered = set()
+            for did in target_ids:
+                d_data = self.depots.get(did) or self.depots.get(int(did) if did.isdigit() else 0) or {}
+                desc = str(d_data.get("desc") or d_data.get("name") or "")
+                if is_dlc_depot(did, desc=desc, base_appid=str(self.app_id), depot_meta=d_data) and not is_base_game_main_depot(did, desc, str(self.app_id)):
+                    filtered.add(did)
+            target_ids = filtered
+
+        self._apply_depot_checks(target_ids)
 
     def _select_baseline_depots(self):
         """Legacy helper for selecting standard/baseline edition."""
@@ -385,6 +414,8 @@ class SelectionMixin:
 
     def _refresh_dlc_only_style(self) -> None:
         """Update the DLC Only button style to reflect its on/off state."""
+        if getattr(self, "_dlc_only_btn", None) is None:
+            return
         if not self._dlc_only_btn.isEnabled():
             self._dlc_only_btn.setStyleSheet("""
                 QPushButton {
@@ -430,6 +461,8 @@ class SelectionMixin:
 
     def _on_dlc_only_toggled(self) -> None:
         """Toggle DLC Only mode, show 3-second lockout warning, and auto-select DLC depots."""
+        if getattr(self, "_dlc_only_btn", None) is None:
+            return
         new_state = self._dlc_only_btn.isChecked()
         if new_state:
             try:

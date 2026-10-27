@@ -579,12 +579,7 @@ class TestMigrationOrdering(unittest.TestCase):
             self.assertIn("555: " + "a" * 64, content)  # the depot key
 
     def test_markers_survive_a_failed_final_library_save(self):
-        """A pending ACF flag that cannot be persisted must keep the marker.
-
-        The game is already in SLSsteam at that point, but without the library
-        record the migration cannot be re-run, so the ASSella identity is left
-        intact and the failure is reported instead of silently dropping it.
-        """
+        """A library registration failure must abort migration and keep markers intact."""
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -597,7 +592,7 @@ class TestMigrationOrdering(unittest.TestCase):
             game["appmanifest_path"] = str(acf)
 
             cfg = Path(tmp) / "config.yaml"
-            cfg.write_text("AdditionalApps:\n", encoding="utf-8")
+            cfg.write_text("AdditionalApps:\nAdditionalDepots:\nDecryptionKeys:\n", encoding="utf-8")
             lib_path = Path(tmp) / "plugin_library.json"
             lib_path.write_text("{}", encoding="utf-8")
             settings = MagicMock()
@@ -606,18 +601,18 @@ class TestMigrationOrdering(unittest.TestCase):
             with patch("utils.plugin_games.get_user_config_path", return_value=cfg), patch(
                 "utils.plugin_games.get_plugin_library_path", return_value=lib_path
             ), patch("utils.plugin_games.collect_game_depots_and_keys", return_value=(
-                ["555"], {"555": "a" * 64}, {"555": "Content"}
+                ["555"], {"555": "a" * 64, "111": "b" * 64}, {"555": "Content"}
             )), patch(
-                "utils.plugin_games.save_plugin_library", side_effect=[True, False]
+                "utils.plugin_games.save_plugin_library", return_value=False
             ), patch("utils.steam_acf.steam_is_running", return_value=True), patch(
                 "utils.sls_bridge.SLSBridge.notify_reload"
             ), patch("utils.settings.get_settings", return_value=settings):
                 results = batch_convert_games_to_atom([game])
 
-            self.assertEqual(len(results["migrated"]), 1)
+            self.assertEqual(len(results["migrated"]), 0)
+            self.assertEqual(len(results["failed"]), 1)
             self.assertTrue(marker.exists())
-            self.assertEqual(len(results["markers_retained"]), 1)
-            self.assertEqual(results["markers_retained"][0]["appid"], "111")
+            self.assertTrue(acf.exists())
 
     def test_acf_and_counts_use_only_config_mounted_depots_and_keys(self):
         """A stale library overclaim must not reach ACF or migration reporting."""
@@ -649,9 +644,7 @@ class TestMigrationOrdering(unittest.TestCase):
             ), patch("utils.plugin_games.register_plugin_game", return_value=True), patch(
                 "utils.plugin_games.load_plugin_library", return_value={"111": record}
             ), patch("utils.steam_acf.steam_is_running", return_value=False), patch(
-                "utils.steam_acf.ensure_acf_has_installed_depots", return_value=ACF_WRITTEN
-            ) as ensure_acf, patch(
-                "utils.steam_acf.find_appmanifest_path", return_value=acf
+                "utils.steam_acf.find_appmanifest_path", return_value=str(acf)
             ), patch("utils.plugin_games._remove_accela_markers"), patch(
                 "core.native_steam.native_steam_handoff.sync_manifests_to_depotcache"
             ):
@@ -660,7 +653,9 @@ class TestMigrationOrdering(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertEqual(result["depots_count"], 1)
             self.assertEqual(result["keys_count"], 2)
-            self.assertEqual(ensure_acf.call_args.args[2], ["555"])
+            self.assertTrue(result.get("acf_updated"))
+            self.assertTrue(acf.exists())
+            self.assertIn('"StateFlags"\t\t"6"', acf.read_text(encoding="utf-8"))
 
     def test_explicit_depot_selection_wins_over_saved_selection(self):
         """A current dialog selection must not be replaced by stale QSettings."""
@@ -669,14 +664,15 @@ class TestMigrationOrdering(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             install = self._install_dir(tmp)
             game = self._game(install)
+            game["is_dlc_only"] = True
             game["selected_depots"] = ["555"]
             with patch("utils.dlc_helpers.get_saved_depot_selection", return_value=["999"]), patch(
-                "utils.dlc_helpers.resolve_depot_scope", return_value=(["555"], ["999"])
-            ) as resolve_scope:
+                "utils.dlc_helpers.resolve_dlc_mapping_for_selection", return_value=({"222": ["555"]}, ["555"])
+            ) as resolve_mapping:
                 results = self._run_batch([game], tmp)
 
             self.assertEqual(len(results["migrated"]), 1)
-            resolve_scope.assert_called_once_with("111", ["555"], extra_scope=["555"])
+            resolve_mapping.assert_called_once_with("111", selected_items=["555"], game_data=game)
 
     def test_goldberg_restore_failure_preserves_original_binary(self):
         """A failed restore must not first delete the installed game binary."""

@@ -4,7 +4,7 @@
     "narrow": 0
   },
   "core/at0m.py": {
-    "broad": 4,
+    "broad": 5,
     "narrow": 0
   },
   "core/lua_tools_api.py": {
@@ -152,6 +152,10 @@
     "narrow": 0
   },
   "ui/dialogs/depot_selection/_mixins/build_ui.py": {
+    "broad": 3,
+    "narrow": 0
+  },
+  "ui/dialogs/depot_selection/_mixins/header_image.py": {
     "broad": 1,
     "narrow": 0
   },
@@ -164,7 +168,7 @@
     "narrow": 0
   },
   "ui/dialogs/depot_selection/dialog.py": {
-    "broad": 4,
+    "broad": 5,
     "narrow": 2
   },
   "ui/dialogs/depot_selection/executable_probe.py": {
@@ -174,6 +178,10 @@
   "ui/dialogs/depot_selection/manifest_dump.py": {
     "broad": 0,
     "narrow": 1
+  },
+  "ui/dialogs/depot_selection/rules.py": {
+    "broad": 1,
+    "narrow": 0
   },
   "ui/dialogs/depot_selection/views.py": {
     "broad": 1,
@@ -218,6 +226,10 @@
   "ui/dialogs/library/acf_scanner.py": {
     "broad": 5,
     "narrow": 1
+  },
+  "ui/dialogs/library/actions.py": {
+    "broad": 0,
+    "narrow": 2
   },
   "ui/dialogs/library/filter_sort.py": {
     "broad": 3,
@@ -276,15 +288,15 @@
     "narrow": 2
   },
   "ui/dialogs/single_depot_dialog.py": {
-    "broad": 6,
-    "narrow": 2
+    "broad": 9,
+    "narrow": 3
   },
   "ui/dialogs/storage_lock.py": {
     "broad": 1,
     "narrow": 0
   },
   "ui/main_window.py": {
-    "broad": 10,
+    "broad": 9,
     "narrow": 1
   },
   "ui/text_menus.py": {
@@ -307,6 +319,10 @@
     "broad": 1,
     "narrow": 0
   },
+  "utils/assella_metadata.py": {
+    "broad": 0,
+    "narrow": 1
+  },
   "utils/assfixer.py": {
     "broad": 9,
     "narrow": 0
@@ -318,6 +334,14 @@
   "utils/depot_utils.py": {
     "broad": 3,
     "narrow": 4
+  },
+  "utils/dlc_helpers.py": {
+    "broad": 1,
+    "narrow": 0
+  },
+  "utils/edition_catalog.py": {
+    "broad": 0,
+    "narrow": 2
   },
   "utils/eos_detector.py": {
     "broad": 1,
@@ -356,7 +380,7 @@
     "narrow": 0
   },
   "utils/settings.py": {
-    "broad": 5,
+    "broad": 6,
     "narrow": 0
   },
   "utils/sls_bridge.py": {

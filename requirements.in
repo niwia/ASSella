@@ -21,7 +21,7 @@ cachetools==5.5.2
 capstone==5.0.6
 configobj==5.0.9
 cryptography==46.0.3
-curl-cffi==0.13.0
+curl-cffi==0.17.0
 gevent==25.9.1
 gevent-eventemitter==2.1
 protobuf==5.29.5

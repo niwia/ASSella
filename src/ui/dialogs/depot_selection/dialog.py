@@ -95,7 +95,9 @@ class DepotSelectionDialog(
         # Only route to SingleDepotSelectionDialog if not DLC-only and there are NO missing depots from Hubcap.
         # If DLCs/depots are missing, full DepotSelectionDialog MUST be shown so the user sees
         # the greyed out missing depots and their statuses.
-        if not is_dlc and not missing and (is_single or (isinstance(depots, dict) and len(depots) == 1)):
+        from ui.dialogs.depot_selection.rules import is_effectively_single_depot
+        effective_single = is_single or (isinstance(depots, dict) and is_effectively_single_depot(depots, missing))
+        if not is_dlc and not missing and effective_single:
             from ui.dialogs.single_depot_dialog import SingleDepotSelectionDialog
             return SingleDepotSelectionDialog(*args, **kwargs)
 
@@ -121,6 +123,7 @@ class DepotSelectionDialog(
         lock_storage=False,
         dlc_only_mode=False,
         lock_dlc_only=False,
+        is_atom_mode=False,
         **kwargs,
     ):
         super().__init__(parent)
@@ -134,9 +137,10 @@ class DepotSelectionDialog(
             lock_dlc_only=lock_dlc_only or kwargs.get("lock_dlc_only", False),
             dlc_catalog=kwargs.get("dlc_catalog") or {},
             editions=kwargs.get("editions"),
+            is_atom_mode=is_atom_mode or kwargs.get("is_atom_mode", False),
         )
-        self.resize(840, 580)
-        self.setMinimumSize(800, 560)
+        self.resize(700, 540)
+        self.setMinimumSize(620, 480)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.Dialog)
         self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setStyleSheet("""
@@ -152,9 +156,10 @@ class DepotSelectionDialog(
         root_layout.setSpacing(0)
 
         from ui.dialog_titlebar import DialogTitleBar
+        bar_title = "Select DLC Depots (AT0-M)" if (self._is_atom_mode and self._dlc_only_mode) else ("Configure AT0-M Depots" if self._is_atom_mode else "Select Depots to Download")
         self.title_bar = DialogTitleBar(
             self,
-            title="Select Depots to Download",
+            title=bar_title,
             can_minimize=True,
             can_maximize=True,
             use_power_close=True,
@@ -218,6 +223,7 @@ class DepotSelectionDialog(
         self.preferred_library_path = library_path
         self.lock_storage = lock_storage
         self.lock_dlc_only = lock_dlc_only
+        self._is_atom_mode = bool(kwargs.get("is_atom_mode", False))
         self._settings = get_settings()
         self._dlc_only_mode = bool(
             dlc_only_mode
@@ -283,57 +289,6 @@ class DepotSelectionDialog(
         if editions or kwargs.get("editions"):
             self._multi_platform_editions = editions or kwargs.get("editions")
 
-    def _load_settings(self) -> None:
-        """Read the depot-visibility filters and accent colour from settings.
-
-        A settings failure must not stop the dialog, so every filter falls
-        back to its default and accent_color to the built-in pink.
-        """
-        # Check if we should hide macOS & Android depots
-        try:
-            from utils.settings import get_settings
-            settings = get_settings()
-            self._settings = settings
-            self._hide_macos = settings.value("hide_macos_depots", True, type=bool)
-            self._hide_android = settings.value("hide_android_depots", True, type=bool)
-            self._filter_soundtracks = settings.value("filter_soundtracks", True, type=bool)
-            self._hide_artbooks = settings.value("hide_artbooks_depots", True, type=bool)
-            self._hide_demos = settings.value("hide_demos_depots", True, type=bool)
-            self._hide_tools = settings.value("hide_tools_depots", True, type=bool)
-            self._show_hidden_depots = settings.value("show_hidden_depots_in_selector", False, type=bool)
-            self.accent_color = settings.value("accent_color", "#C06C84", type=str)
-        except Exception:
-            self._settings = None
-            self._hide_macos = True
-            self._hide_android = True
-            self._filter_soundtracks = True
-            self._hide_artbooks = True
-            self._hide_demos = True
-            self._hide_tools = True
-            self._show_hidden_depots = False
-            self.accent_color = "#C06C84"
-
-    def _resolve_accent_colors(self) -> Tuple[int, int, int]:
-        """Turn the accent colour into an RGB triple for the table stylesheet.
-
-        Returns the components rather than storing them so the caller keeps
-        them as locals, matching how the stylesheet f-strings consume them.
-        """
-        # Dynamically generate solid dark container color for selection background
-        from utils.color_utils import get_dark_container_color
-        sel_bg_hex = get_dark_container_color(self.accent_color)
-
-        # Parse hex to RGB
-        hex_c = self.accent_color.lstrip('#')
-        try:
-            accent_r = int(hex_c[0:2], 16)
-            accent_g = int(hex_c[2:4], 16)
-            accent_b = int(hex_c[4:6], 16)
-        except Exception:
-            accent_r, accent_g, accent_b = 192, 108, 132
-
-        return accent_r, accent_g, accent_b
-
     def _load_selection_state(self) -> None:
         """Load DLC-only mode and whether a previous depot selection exists.
 
@@ -341,9 +296,9 @@ class DepotSelectionDialog(
         decide what to preselect.
         """
         # Load DLC-only mode state
-        self._dlc_only_mode = (
-            self._settings.value(f"dlc_only_mode/{self.app_id}", False, type=bool)
-            if self._settings else False
+        self._dlc_only_mode = bool(
+            self._dlc_only_mode
+            or (self._settings.value(f"dlc_only_mode/{self.app_id}", False, type=bool) if self._settings else False)
         )
 
         # Check if saved depot selections exist from previous sessions
@@ -420,46 +375,6 @@ class DepotSelectionDialog(
         """Returns whether DLC configuration was written to SLSsteam config."""
         return getattr(self, "_config_written", False)
 
-    def _handle_inject_btn_clicked(self):
-        """Injects all currently checked DLCs into DlcData in SLSsteam config.yaml."""
-        checked_dlcs = self.get_selected_dlc_data()
-        if not checked_dlcs:
-            ThemedMessageBox.warning(
-                self,
-                "No DLCs Selected",
-                "Please select at least one DLC to inject into SLSsteam config.",
-            )
-            return
-
-        try:
-            from utils.yaml.dlc import add_dlc_data_batch
-            from utils.yaml_config_manager import get_user_config_path, remove_additional_app
-
-            config_path = get_user_config_path()
-            if not config_path or not config_path.exists():
-                raise RuntimeError("SLSsteam config.yaml could not be found.")
-
-            add_dlc_data_batch(config_path, self.app_id, checked_dlcs)
-            if getattr(self, "_dlc_only_mode", False):
-                remove_additional_app(config_path, self.app_id)
-                get_settings().setValue(f"dlc_only_mode/{self.app_id}", True)
-
-            self._injection_only = True
-            self._config_written = True
-            ThemedMessageBox.information(
-                self,
-                "DLC Data Injected",
-                f"✓ Successfully injected {len(checked_dlcs)} DLC(s) into DlcData for '{self.game_name}'.\n\n"
-                f"SLSsteam will now explicitly report these DLCs as owned.",
-            )
-            super().accept()
-        except Exception as exc:
-            logger.warning(f"[DepotSelectionDialog] Could not inject DLC data: {exc}", exc_info=True)
-            ThemedMessageBox.warning(
-                self,
-                "Injection Failed",
-                f"Failed writing DLC data to SLSsteam config.yaml:\n\n{exc}",
-            )
 
     def get_selected_files(self):
         """Returns the list of custom checked relative file paths."""
@@ -470,6 +385,11 @@ class DepotSelectionDialog(
         return self._dlc_only_mode
 
     def accept(self):
+        if getattr(self, "_is_atom_mode", False):
+            if hasattr(self, "_handle_move_to_atom_clicked"):
+                self._handle_move_to_atom_clicked()
+                return
+
         selected_depots = self.get_selected_depots()
         checked_dlcs = self.get_selected_dlc_data()
 
@@ -588,6 +508,44 @@ class DepotSelectionDialog(
             if not self.isMinimized():
                 self.raise_()
                 self.activateWindow()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        try:
+            from PyQt6.QtGui import QPainter, QColor, QRadialGradient
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            w = self.width()
+            center_x = w * 0.5
+            center_y = 65.0
+            radius = max(w * 0.65, 320.0)
+
+            grad = QRadialGradient(center_x, center_y, radius)
+
+            # Prioritize extracted thumbnail color for ambient background, falling back to accent_color
+            base_col = getattr(self, "_ambient_color", None)
+            if not base_col or not isinstance(base_col, QColor) or not base_col.isValid():
+                accent_hex = getattr(self, "accent_color", "#C06C84") or "#C06C84"
+                base_col = QColor(accent_hex)
+                if not base_col.isValid():
+                    base_col = QColor(192, 108, 132)
+
+            # Subtle atmospheric glow (~10% center, ~4% mid, 0% edge)
+            center_col = QColor(base_col.red(), base_col.green(), base_col.blue(), 26)
+            mid_col = QColor(base_col.red(), base_col.green(), base_col.blue(), 10)
+            outer_col = QColor(base_col.red(), base_col.green(), base_col.blue(), 0)
+
+            grad.setColorAt(0.0, center_col)
+            grad.setColorAt(0.45, mid_col)
+            grad.setColorAt(1.0, outer_col)
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(grad)
+            painter.drawRect(self.rect())
+            painter.end()
+        except Exception:
+            pass
 
     def showEvent(self, a0):
         super().showEvent(a0)

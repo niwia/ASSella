@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import Optional, Union
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
@@ -115,6 +115,27 @@ class DialogTitleBar(QFrame):
         self.title_label.setStyleSheet(f"color: {accent}; font-weight: bold; font-size: 9.5pt; border: none; background: transparent;")
 
         # Update button icons
+        for btn, svg in [
+            (self.minimize_btn, MINIMIZE),
+            (self.maximize_btn, MAXIMIZE),
+            (self.close_btn, POWER_SVG),
+        ]:
+            if btn:
+                pixmap = self._build_svg_pixmap(svg, accent_color)
+                btn.setIcon(QIcon(pixmap))
+                btn.setIconSize(pixmap.size())
+
+    def update_accent_color(self, color: Union[QColor, str]) -> None:
+        """Update title text color and control icons to the given color."""
+        if not color:
+            return
+        accent_color = QColor(color) if isinstance(color, str) else color
+        if not accent_color.isValid():
+            return
+        accent_hex = accent_color.name()
+        self.title_label.setStyleSheet(
+            f"color: {accent_hex}; font-weight: bold; font-size: 9.5pt; border: none; background: transparent;"
+        )
         for btn, svg in [
             (self.minimize_btn, MINIMIZE),
             (self.maximize_btn, MAXIMIZE),

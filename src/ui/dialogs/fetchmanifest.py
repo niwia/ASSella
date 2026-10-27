@@ -455,11 +455,12 @@ class FetchManifestDialog(QDialog):
 
         status_sub_layout.addStretch(1)
 
-        self.username_label = QLabel("--")
+        self.username_label = QLabel("--:")
+        self.username_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.username_label.setStyleSheet("color: #8ab4f8; font-size: 11px;")
         status_sub_layout.addWidget(self.username_label)
 
-        status_sub_layout.addSpacing(12)
+        status_sub_layout.addSpacing(4)
 
         self.usage_label = QLabel("--/--")
         self.usage_label.setStyleSheet("color: #8ab4f8; font-size: 11px;")
@@ -644,11 +645,11 @@ class FetchManifestDialog(QDialog):
         # Update User Stats
         stats = result.get("stats", {})
         if stats.get("error"):
-            self.username_label.setText("Error")
+            self.username_label.setText("Error:")
             self.usage_label.setText("--")
         else:
             uname = stats.get('username', 'Unknown')
-            self.username_label.setText(str(uname))
+            self.username_label.setText(f"{uname}:")
             usage = stats.get("daily_usage", 0)
             limit = stats.get("daily_limit", 0)
             self.usage_label.setText(f"{usage}/{limit}")
@@ -1181,7 +1182,7 @@ class FetchManifestDialog(QDialog):
         self.settings.setValue(f"selected_branch/{app_id}", selected_branch)
         self._toggle_inputs(False)
         self._set_loading_active(True)
-        self.status_label.setText(f"Checking updates & fetching manifest for App ID {app_id} (Branch: {selected_branch})...")
+        self.status_label.setText("Fetching from Hubcap...")
 
         worker = self.task_runner.run(self.check_and_download_manifest, app_id, selected_branch)
         worker.finished.connect(self.on_download_finished)
@@ -1339,6 +1340,7 @@ class FetchManifestDialog(QDialog):
             )
             from ui.dialogs.platform_mismatch_dialog import (
                 PlatformMismatchDialog,
+                ACTION_PROCEED,
                 ACTION_FORCE_PROTON,
                 ACTION_ASSELLA_DOWNLOAD,
                 ACTION_CANCEL,
@@ -1355,12 +1357,9 @@ class FetchManifestDialog(QDialog):
                 )
                 m_dlg.exec()
                 m_act = m_dlg.get_action()
-                if m_act == ACTION_FORCE_PROTON:
-                    pref_tool = mismatch_details.get("preferred_tool", "proton_experimental")
-                    self.status_label.setText(f"Configuring Proton ({pref_tool}) for Steam...")
-                    ok = force_proton_for_app(aid_str, tool_name=pref_tool, restart_steam_if_running=True)
-                    if not ok:
-                        logger.error(f"[FetchManifest] Failed to configure Proton for AppID {aid_str}")
+                if m_act in (ACTION_PROCEED, ACTION_FORCE_PROTON):
+                    # Proceed normally without forcing Proton or restarting Steam
+                    pass
                 elif m_act == ACTION_ASSELLA_DOWNLOAD:
                     self.status_label.setText("Switching to ASSella downloader...")
                     self._start_assella_flow(aid_str)
@@ -1457,7 +1456,7 @@ class FetchManifestDialog(QDialog):
         aid_str = str(app_id).strip()
         self._toggle_inputs(False)
         self._set_loading_active(True)
-        self.status_label.setText(f"Checking branches for App ID {aid_str}...")
+        self.status_label.setText("Checking branches...")
         worker = self.task_runner.run(self._fetch_branches_and_prompt, aid_str)
         worker.finished.connect(self._on_branches_fetched)
         worker.error.connect(self.on_task_error)
@@ -1479,7 +1478,7 @@ class FetchManifestDialog(QDialog):
         branch = getattr(self, "_current_selected_branch", "public")
         metadata = {"branch": branch, "download_backend": "assella"}
         
-        self.status_label.setText("Processing manifest data...")
+        self.status_label.setText("Processing manifests...")
         self._toggle_inputs(False)
 
         def _parse_task():
@@ -1524,7 +1523,7 @@ class FetchManifestDialog(QDialog):
                 except Exception as _del_err:
                     logger.debug(f"Could not remove corrupt zip {filepath}: {_del_err}")
 
-                self.status_label.setText(f"Cached manifest was invalid. Re-downloading fresh bundle for App {app_id}...")
+                self.status_label.setText("Re-downloading manifests...")
                 self._toggle_inputs(False)
                 self._set_loading_active(True)
                 worker = self.task_runner.run(self.check_and_download_manifest, app_id, branch)
@@ -1563,8 +1562,10 @@ class FetchManifestDialog(QDialog):
             appid = str(parsed_data.get("appid", ""))
             missing_depots = parsed_data.get("missing_depots_from_hubcap") or []
             
+            from ui.dialogs.depot_selection.rules import is_effectively_single_depot, get_effective_single_depot
+
             selected_depots = None
-            is_single = (len(depots) == 1 and not missing_depots)
+            is_single = is_effectively_single_depot(depots, missing_depots)
 
             show_timer = (is_single and auto_skip and has_default_dl)
             open_dialog = False
@@ -1573,7 +1574,8 @@ class FetchManifestDialog(QDialog):
                 dlg = SingleDepotTimerDialog(self, "Single Depot Option", "Game has only one depot.\n\nProceed to download and add it to queue?", seconds=3)
                 res = dlg.exec()
                 if res == SingleDepotTimerDialog.ACTION_YES:
-                    selected_depots = list(depots.keys())
+                    single_id, _ = get_effective_single_depot(depots, appid)
+                    selected_depots = [single_id] if single_id else list(depots.keys())
                     metadata["library_path"] = default_dl
                 elif res == SingleDepotTimerDialog.ACTION_MANUAL:
                     open_dialog = True
@@ -1690,6 +1692,8 @@ class FetchManifestDialog(QDialog):
                     return
 
                 selected_depots = depot_dialog.get_selected_depots()
+                selected_dlc_data = depot_dialog.get_selected_dlc_data() if hasattr(depot_dialog, "get_selected_dlc_data") else {}
+                metadata["selected_dlc_appids"] = list(selected_dlc_data.keys())
                 selected_storage = depot_dialog.get_selected_storage()
                 if selected_storage:
                     metadata["library_path"] = selected_storage
@@ -1929,4 +1933,3 @@ class FetchManifestDialog(QDialog):
                     logger.debug(f"Error stopping {runner_name}: {e}")
 
         super().closeEvent(event)
-

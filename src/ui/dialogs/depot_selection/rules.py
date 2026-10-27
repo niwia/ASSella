@@ -207,3 +207,60 @@ def format_size(size_bytes):
         return f"{bytes_val:.2f} PiB"
     except Exception:
         return "Unknown"
+
+
+def is_effectively_single_depot(depots: dict, missing_depots=None) -> bool:
+    """Return True if depots contain only one active content depot and no missing depots,
+    taking into account the 'show_hidden_depots_in_selector' setting.
+    """
+    if not isinstance(depots, dict) or not depots:
+        return False
+    if missing_depots:
+        return False
+
+    # If user enabled "show hidden depots in selector" in settings,
+    # then hidden depots are visible in the main table and count as full options.
+    try:
+        from utils.settings import get_settings
+        settings = get_settings()
+        show_hidden = settings.value("show_hidden_depots_in_selector", False, type=bool)
+        if show_hidden:
+            return len(depots) == 1
+    except Exception:
+        pass
+
+    # Filter out hidden depots (macOS, Android, bonus/media/soundtrack/etc.)
+    active_depots = []
+    for did, d_data in depots.items():
+        if not isinstance(d_data, dict):
+            active_depots.append(str(did))
+            continue
+        if _depot_is_macos(d_data) or _depot_is_android(d_data) or is_bonus_or_media_depot(d_data):
+            continue
+        active_depots.append(str(did))
+
+    # If all depots were filtered out as hidden, fallback to total depot count
+    if not active_depots and depots:
+        return len(depots) == 1
+
+    return len(active_depots) == 1
+
+
+def get_effective_single_depot(depots: dict, app_id: str = "") -> tuple:
+    """Return (depot_id, depot_data) for the single active depot from a depots dict."""
+    if not isinstance(depots, dict) or not depots:
+        return str(app_id), {}
+
+    active = {}
+    for did, d_data in depots.items():
+        if str(did) == str(app_id):
+            continue
+        if isinstance(d_data, dict) and (_depot_is_macos(d_data) or _depot_is_android(d_data) or is_bonus_or_media_depot(d_data)):
+            continue
+        active[str(did)] = d_data
+
+    target_dict = active if active else {str(k): v for k, v in depots.items() if str(k) != str(app_id)}
+    if not target_dict:
+        return str(app_id), {}
+    first_id = next(iter(target_dict.keys()))
+    return first_id, target_dict.get(first_id, {})

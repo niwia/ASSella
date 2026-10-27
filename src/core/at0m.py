@@ -219,6 +219,37 @@ class WudrmMRCFetcher:
             logger.debug(f"[MRC/Tier1] Request error: {e}")
         return None
 
+    def _parse_mrc_payload(self, text: str) -> Optional[str]:
+        """Extract valid MRC from plain text, JSON, or embedded numeric string."""
+        if not text:
+            return None
+        cleaned = text.strip()
+        if self._is_valid_mrc(cleaned):
+            return cleaned
+
+        try:
+            import json
+            data = json.loads(cleaned)
+            if isinstance(data, (int, str)):
+                candidate = str(data).strip()
+                if self._is_valid_mrc(candidate):
+                    return candidate
+            elif isinstance(data, dict):
+                for key in ("content", "mrc", "code", "manifest_code", "manifestRequestCode", "data", "result"):
+                    if key in data and data[key] is not None:
+                        val = str(data[key]).strip()
+                        if self._is_valid_mrc(val):
+                            return val
+        except Exception:
+            pass
+
+        import re
+        match = re.search(r'\b\d{16,20}\b', cleaned)
+        if match:
+            return match.group(0)
+
+        return None
+
     def _fetch_tier2(self, url: str) -> Optional[str]:
         """
         Tier 2: curl_cffi Chrome 120 TLS impersonation, with system curl fallback.
@@ -232,10 +263,10 @@ class WudrmMRCFetcher:
                     impersonate="chrome120",
                     timeout=self.timeout,
                 )
-                body = r.text.strip()
-                if self._is_valid_mrc(body):
-                    return body
-                logger.debug(f"[MRC/Tier2] cffi non-numeric body (HTTP {r.status_code})")
+                mrc = self._parse_mrc_payload(r.text)
+                if mrc:
+                    return mrc
+                logger.debug(f"[MRC/Tier2] cffi non-valid MRC body (HTTP {r.status_code})")
             except Exception as e:
                 logger.debug(f"[MRC/Tier2] cffi request error: {e}")
 
@@ -244,10 +275,10 @@ class WudrmMRCFetcher:
             cmd = ["curl", "-s", "--max-time", str(int(self.timeout)), "-H", "User-Agent: Valve/Steam HTTP Client 1.0", url]
             res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=self.timeout + 1)
             if res.returncode == 0:
-                body = res.stdout.strip()
-                if self._is_valid_mrc(body):
+                mrc = self._parse_mrc_payload(res.stdout)
+                if mrc:
                     logger.debug("[MRC/Tier2] System curl successfully fetched MRC")
-                    return body
+                    return mrc
         except Exception as e:
             logger.debug(f"[MRC/Tier2] system curl fallback error: {e}")
 
@@ -289,14 +320,66 @@ class WudrmMRCFetcher:
             headers = {"User-Agent": "ManifestDeX/1.0", "Accept": "*/*"}
             r = self.session.get(url, headers=headers, timeout=self.timeout)
             if r.status_code == 200:
-                body = r.text.strip()
-                if self._is_valid_mrc(body):
+                mrc = self._parse_mrc_payload(r.text)
+                if mrc:
                     logger.info(f"[MRC/ManifestDeX] ✅ Got MRC from ManifestDeX for {manifest_id_str}")
-                    return body
+                    return mrc
             else:
                 logger.debug(f"[MRC/ManifestDeX] HTTP {r.status_code} for {manifest_id_str}")
         except Exception as e:
             logger.debug(f"[MRC/ManifestDeX] Request error for {manifest_id_str}: {e}")
+        return None
+
+    def fetch_steamrun(self, manifest_id_str: str) -> Optional[str]:
+        """Fetch MRC from SteamRun provider (https://manifest.steam.run/api/manifest/{gid}). Testing only."""
+        url = f"https://manifest.steam.run/api/manifest/{manifest_id_str}"
+        headers = {"User-Agent": "Valve/Steam HTTP Client 1.0", "Accept": "application/json, text/plain, */*"}
+        try:
+            r = self.session.get(url, headers=headers, timeout=self.timeout)
+            if r.status_code == 200:
+                mrc = self._parse_mrc_payload(r.text)
+                if mrc:
+                    logger.info(f"[MRC/SteamRun] ✅ Got MRC from SteamRun for {manifest_id_str}")
+                    return mrc
+            else:
+                logger.debug(f"[MRC/SteamRun] HTTP {r.status_code} for {manifest_id_str}")
+        except Exception as e:
+            logger.debug(f"[MRC/SteamRun] Request error for {manifest_id_str}: {e}")
+
+        # Tier 2 fallback (TLS impersonation)
+        mrc_t2 = self._fetch_tier2(url)
+        if mrc_t2:
+            logger.info(f"[MRC/SteamRun] ✅ Got MRC via Tier 2 for {manifest_id_str}")
+            return mrc_t2
+
+        return None
+
+    def fetch_opensteamtool(self, manifest_id_str: str) -> Optional[str]:
+        """Fetch MRC from OpenSteamTool provider (https://manifest.opensteamtool.com/manifest/{gid}). Testing only."""
+        urls = [
+            f"https://manifest.opensteamtool.com/manifest/{manifest_id_str}",
+            f"https://manifest.opensteamtool.com/{manifest_id_str}",
+        ]
+        headers = {"User-Agent": "Valve/Steam HTTP Client 1.0", "Accept": "application/json, text/plain, */*"}
+        for url in urls:
+            try:
+                r = self.session.get(url, headers=headers, timeout=self.timeout)
+                if r.status_code == 200:
+                    mrc = self._parse_mrc_payload(r.text)
+                    if mrc:
+                        logger.info(f"[MRC/OpenSteamTool] ✅ Got MRC from OpenSteamTool for {manifest_id_str}")
+                        return mrc
+                else:
+                    logger.debug(f"[MRC/OpenSteamTool] HTTP {r.status_code} for {url}")
+            except Exception as e:
+                logger.debug(f"[MRC/OpenSteamTool] Request error for {url}: {e}")
+
+            # Tier 2 fallback (anti-bot / Cloudflare bypass)
+            mrc_t2 = self._fetch_tier2(url)
+            if mrc_t2:
+                logger.info(f"[MRC/OpenSteamTool] ✅ Got MRC via Tier 2 for {manifest_id_str}")
+                return mrc_t2
+
         return None
 
     def race_mrc(self, manifest_id_str: str, timeout: float = 4.0) -> Tuple[Optional[str], Optional[str]]:
@@ -365,13 +448,17 @@ class WudrmMRCFetcher:
             return self.fetch_manifestdex(manifest_id_str)
         elif provider == "wudrm":
             return self.fetch_wudrm(manifest_id_str)
+        elif provider == "steamrun":
+            return self.fetch_steamrun(manifest_id_str)
+        elif provider == "opensteamtool":
+            return self.fetch_opensteamtool(manifest_id_str)
         return None
 
     def get_manifest_request_code(self, manifest_id: Union[str, int], provider: Optional[str] = None) -> Optional[str]:
         """
         Fetches the 64-bit Manifest Request Code for a given manifest GID.
         Checks in-memory and persistent SQLite cache first, then dispatches to
-        the configured provider ('auto', 'wudrm', 'manifestdex').
+        the configured provider ('auto', 'wudrm', 'manifestdex', 'steamrun', 'opensteamtool').
         """
         manifest_id_str = str(manifest_id).strip()
         if provider is None:
@@ -397,6 +484,10 @@ class WudrmMRCFetcher:
             mrc = self.fetch_manifestdex(manifest_id_str)
         elif provider == "wudrm":
             mrc = self.fetch_wudrm(manifest_id_str)
+        elif provider == "steamrun":
+            mrc = self.fetch_steamrun(manifest_id_str)
+        elif provider == "opensteamtool":
+            mrc = self.fetch_opensteamtool(manifest_id_str)
         else:
             _, mrc = self.race_mrc(manifest_id_str)
 
@@ -702,7 +793,7 @@ def generate_single_manifest(
                 if res:
                     return res, None
 
-        elif provider in ("wudrm", "manifestdex"):
+        elif provider in ("wudrm", "manifestdex", "steamrun", "opensteamtool"):
             mrc = _mrc_fetcher.fetch_mrc_single(manifest_str, provider=provider)
             if mrc:
                 res = _try_download_and_unpack(mrc, provider)

@@ -426,6 +426,7 @@ def perform_steam_handoff(
             depot_names=depot_names,
             dlc_appids=dlc_appids,
             is_dlc_only=is_dlc,
+            app_token=game_data.get("app_token") or game_data.get("token"),
         )
 
         # Clean legacy ACCELA markers from install folder if any exist

@@ -1,6 +1,7 @@
 # ── AppImage & distribution archives (too large for git; use GitHub Releases) ───
 *.AppImage
 *.AppImage.bak
+*.zsync
 *.tar.gz
 *tar.gz
 *.tar.gsz
@@ -43,8 +44,9 @@ gifs/
 scratch/
 
 # ── Plugin distribution & R2 publishing ──────────────────────────────────────
-plugins_manifest.json
-plugins/
+/plugins_manifest.json
+/plugins/
+!src/res/plugins/
 r2-publish/
 .wrangler/
 cloud/

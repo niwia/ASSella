@@ -241,7 +241,7 @@ class GameDetailsDialogV2(QDialog):
 
         from ui.dialog_titlebar import DialogTitleBar
         title_text = f"{self.game_data.get('game_name', 'Game')} — Details"
-        self.title_bar = DialogTitleBar(self, title=title_text, can_minimize=False, can_maximize=False, use_power_close=True)
+        self.title_bar = DialogTitleBar(self, title=title_text, can_minimize=False, can_maximize=True, use_power_close=True)
         root.addWidget(self.title_bar)
 
         # Hero Banner — v2 or legacy
@@ -409,12 +409,12 @@ class GameDetailsDialogV2(QDialog):
         self._builds_fetch_requested = True
         CACHE_FRESH_SECONDS = 3600
         try:
-            from core.steamdb_scraper import ByparrManager
-            has_byparr = ByparrManager.find_byparr_dir() is not None
+            from core.steamdb_scraper import ByparrManager, cffi_requests
+            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or (cffi_requests is not None)
         except Exception:
-            has_byparr = False
+            has_solver = False
 
-        if not has_byparr:
+        if not has_solver:
             self.builds_center_stack.setCurrentIndex(2)
             if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
                 self.builds_bottom_bar.setVisible(False)

@@ -166,7 +166,7 @@ def main() -> int:
     check("25799969" in dlg.builds_btn.text(), "current build id on the Build button")
 
     check(bool(find_buttons(dlg, "Download") or find_buttons(dlg, "OK")), "Download button present")
-    check(bool(find_buttons(dlg, "Close") or find_buttons(dlg, "Cancel")), "Close button present")
+    check(dlg.title_bar is not None and getattr(dlg.title_bar, "close_btn", None) is not None, "Titlebar close button present")
 
     check(dlg.title_bar is not None, "titlebar created")
     check(dlg.anchor_row == -1, "anchor_row initialised")
@@ -348,7 +348,21 @@ def main() -> int:
     )
     check(all(isinstance(v, dict) for v in dlg7.missing_depots_info.values()),
           "string metadata coerced to a dict")
-    dlg7.close()
+    # ----------------------------- user accent preserved on controls
+    print("\n=== user accent preserved on controls ===")
+    from PyQt6.QtGui import QColor
+    user_accent = (dlg.accent_color or "#a1c9fd").lower()
+    check(user_accent in dlg.download_btn.styleSheet().lower(),
+          "Download button retains user accent color")
+    check(user_accent in dlg.table_widget.styleSheet().lower(),
+          "Table widget retains user accent color")
+
+    test_color = QColor(60, 120, 240)
+    dlg._apply_dynamic_theme(test_color)
+    check(dlg._ambient_color == test_color,
+          "_apply_dynamic_theme sets _ambient_color for background")
+    check(user_accent in dlg.download_btn.styleSheet().lower(),
+          "Download button keeps user accent color after ambient color update")
 
     dlg.close()
     app.processEvents()

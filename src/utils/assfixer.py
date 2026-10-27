@@ -171,24 +171,63 @@ def _fetch_url(url: str, timeout: int) -> str:
         return resp.read().decode("utf-8")
 
 
-def fetch_template(url: str = TEMPLATE_SOURCE_URL) -> str:
-    """Download upstream template (YAML or C++ embedded) and return the YAML template."""
-    raw = None
+def get_bundled_or_cached_template() -> Optional[str]:
+    """Retrieve template from local user cache or bundled resources."""
+    cache_path = Path.home() / ".config" / "SLSsteam" / "sls_config_template.yaml"
+    if cache_path.is_file():
+        try:
+            txt = cache_path.read_text(encoding="utf-8")
+            if txt and len(txt) > 200:
+                return txt
+        except Exception as e:
+            logger.debug(f"[AssFixer] Could not read cached template from {cache_path}: {e}")
+
     try:
-        raw = _fetch_url(url, TEMPLATE_TIMEOUT)
-    except Exception as exc:
-        if url == TEMPLATE_SOURCE_URL and FALLBACK_TEMPLATE_SOURCE_URL:
-            logger.info(f"Primary template fetch failed ({exc}), trying fallback {FALLBACK_TEMPLATE_SOURCE_URL}...")
+        from utils.helpers import get_base_path
+        bundled = get_base_path() / "res" / "sls_config_template.yaml"
+        if bundled.is_file():
+            txt = bundled.read_text(encoding="utf-8")
+            if txt and len(txt) > 200:
+                return txt
+    except Exception as e:
+        logger.debug(f"[AssFixer] Could not load bundled template via get_base_path: {e}")
+
+    cand = Path(__file__).resolve().parent.parent / "res" / "sls_config_template.yaml"
+    if cand.is_file():
+        try:
+            txt = cand.read_text(encoding="utf-8")
+            if txt and len(txt) > 200:
+                return txt
+        except Exception as e:
+            logger.debug(f"[AssFixer] Could not load candidate template from {cand}: {e}")
+    return None
+
+
+def fetch_template(url: str = TEMPLATE_SOURCE_URL) -> str:
+    """Download upstream template (YAML or C++ embedded) and return the YAML template, with offline/cache fallback."""
+    raw = None
+    cache_path = Path.home() / ".config" / "SLSsteam" / "sls_config_template.yaml"
+
+    try:
+        raw = _fetch_url(url, min(TEMPLATE_TIMEOUT, 8))
+        tmpl = extract_template_yaml(raw)
+        if tmpl and len(tmpl) > 200:
             try:
-                raw = _fetch_url(FALLBACK_TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
-            except Exception as exc2:
-                raise RuntimeError(f"Failed to download template: {exc2}")
-        else:
-            raise RuntimeError(f"Failed to download template: {exc}")
-    tmpl = extract_template_yaml(raw)
-    if not tmpl:
-        raise RuntimeError("Could not find valid YAML template in downloaded content.")
-    return tmpl
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(tmpl, encoding="utf-8")
+            except Exception as w_err:
+                logger.debug(f"[AssFixer] Could not update template cache: {w_err}")
+            return tmpl
+    except Exception as exc:
+        logger.info(f"[AssFixer] Upstream template fetch failed ({exc}), checking local cache / bundled template...")
+
+    # Fallback to local cache or bundled template
+    local_tmpl = get_bundled_or_cached_template()
+    if local_tmpl:
+        logger.info("[AssFixer] Using local cached/bundled SLSsteam config template.")
+        return local_tmpl
+
+    raise RuntimeError("Could not fetch upstream template and no local cached template was available.")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1228,7 +1267,13 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
             logger.debug(f"Upstream template fetched successfully ({len(template_yaml)} chars, {len(key_types)} key types inferred).")
         except Exception as e:
             logger.warning(f"Network fetch failed for upstream template: {e}")
-            return True, f"Network check failed: {e}", [f"Could not fetch template from {TEMPLATE_SOURCE_URL}: {e}"]
+            local_fallback = get_bundled_or_cached_template()
+            if local_fallback:
+                logger.info("[AssFixer] Upstream template fetch failed, using local cached/bundled template.")
+                template_yaml = local_fallback
+                key_types = infer_key_types(template_yaml)
+            else:
+                return True, f"Network check failed: {e}", [f"Could not fetch template from {TEMPLATE_SOURCE_URL}: {e}"]
     else:
         # Fallback to local template if offline
         from utils.helpers import get_base_path

@@ -54,32 +54,34 @@ def init_hero_v2(dialog, root) -> None:
     dialog.hero = HeroBanner(bg_hex=dialog.background_color)
     dialog.hero.setFixedHeight(125)
     banner_layout = QVBoxLayout(dialog.hero)
-    banner_layout.setContentsMargins(14, 8, 120, 8)
+    banner_layout.setContentsMargins(14, 8, 14, 8)
     banner_layout.setSpacing(4)
+
+    # Top row: Left side has title and appid, Right side has ProtonDB badge
+    top_row = QHBoxLayout()
+    top_row.setContentsMargins(0, 0, 0, 0)
+    top_row.setSpacing(10)
 
     left_col = QVBoxLayout()
     left_col.setContentsMargins(0, 0, 0, 0)
     left_col.setSpacing(2)
 
-    # Top-left Ratings badges row (Denuvo + ProtonDB pills)
+    # Optional Denuvo badge row
     dialog._ratings_row = QHBoxLayout()
     dialog._ratings_row.setSpacing(6)
     dialog._ratings_row.setContentsMargins(0, 0, 0, 0)
     dialog._denuvo_badge_lbl = QLabel()
     dialog._denuvo_badge_lbl.hide()
-    dialog._proton_badge_lbl = QLabel()
-    dialog._proton_badge_lbl.hide()
     dialog._ratings_row.addWidget(dialog._denuvo_badge_lbl)
-    dialog._ratings_row.addWidget(dialog._proton_badge_lbl)
     dialog._ratings_row.addStretch()
     left_col.addLayout(dialog._ratings_row)
 
     dialog.name_lbl = QLabel()
     dialog.name_lbl.setStyleSheet(
-        "font-size: 12.5pt; font-weight: bold; color: #FFFFFF; background: transparent;"
+        "font-size: 13pt; font-weight: bold; color: #FFFFFF; background: transparent;"
     )
     dialog.name_lbl.setWordWrap(True)
-    dialog.name_lbl.setMaximumHeight(38)
+    dialog.name_lbl.setMaximumHeight(44)
     left_col.addWidget(dialog.name_lbl)
 
     dialog.appid_lbl = QLabel(f"App ID: {dialog.appid}")
@@ -87,8 +89,19 @@ def init_hero_v2(dialog, root) -> None:
         "font-size: 8.5pt; color: rgba(255, 255, 255, 0.706); background: transparent; font-weight: bold;"
     )
     left_col.addWidget(dialog.appid_lbl)
+    top_row.addLayout(left_col, 1)
 
-    banner_layout.addLayout(left_col)
+    # Top-right container for ProtonDB pill badge
+    right_badge_col = QVBoxLayout()
+    right_badge_col.setContentsMargins(0, 2, 0, 0)
+    right_badge_col.setSpacing(0)
+    dialog._proton_badge_lbl = QLabel()
+    dialog._proton_badge_lbl.hide()
+    right_badge_col.addWidget(dialog._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+    right_badge_col.addStretch()
+    top_row.addLayout(right_badge_col, 0)
+
+    banner_layout.addLayout(top_row)
 
     update_title(dialog)
 
@@ -174,16 +187,12 @@ def init_hero_legacy(dialog, root) -> None:
     name_col = QVBoxLayout()
     name_col.setSpacing(2)
 
-    # Top-left Ratings badges row (Denuvo + ProtonDB pills)
     dialog._ratings_row = QHBoxLayout()
     dialog._ratings_row.setSpacing(6)
     dialog._ratings_row.setContentsMargins(0, 0, 0, 0)
     dialog._denuvo_badge_lbl = QLabel()
     dialog._denuvo_badge_lbl.hide()
-    dialog._proton_badge_lbl = QLabel()
-    dialog._proton_badge_lbl.hide()
     dialog._ratings_row.addWidget(dialog._denuvo_badge_lbl)
-    dialog._ratings_row.addWidget(dialog._proton_badge_lbl)
     dialog._ratings_row.addStretch()
     name_col.addLayout(dialog._ratings_row)
 
@@ -200,8 +209,11 @@ def init_hero_legacy(dialog, root) -> None:
     )
     name_col.addWidget(dialog.appid_lbl)
     name_col.addStretch()
-    banner_layout.addLayout(name_col)
-    banner_layout.addStretch()
+    banner_layout.addLayout(name_col, 1)
+
+    dialog._proton_badge_lbl = QLabel()
+    dialog._proton_badge_lbl.hide()
+    banner_layout.addWidget(dialog._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
 
     update_title(dialog)
 

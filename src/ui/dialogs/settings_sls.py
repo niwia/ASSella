@@ -322,27 +322,31 @@ def create_sls_tab(dialog) -> QWidget:
     saved_all_online = dialog.settings.value("all_games_online", None)
     if saved_all_online is None:
         saved_all_online = dialog.settings.value("all_games_online_beta", None)
-    if saved_all_online is None:
-        # Only the effective default; leave the stored value unset until the
-        # user actually flips the switch, so opening Settings writes nothing.
+    if isinstance(saved_all_online, str):
+        saved_all_online = saved_all_online.strip().lower() in ("true", "1", "yes")
+    elif saved_all_online is not None:
+        saved_all_online = bool(saved_all_online)
+    else:
         saved_all_online = True
 
-    current_all_online = (
-        get_fake_appid(cfg_path, "0") == "480"
-        if cfg_path.exists() and get_fake_appid(cfg_path, "0") is not None
-        else bool(saved_all_online)
-    )
+    current_all_online = saved_all_online
 
-    if current_all_online and cfg_path.exists() and get_fake_appid(cfg_path, "0") is None:
-        add_fake_app_id(cfg_path, "0", game_name="All Unowned Apps", fake_appid="480")
+    if cfg_path.exists():
+        has_entry = get_fake_appid(cfg_path, "0") is not None
+        if current_all_online and not has_entry:
+            add_fake_app_id(cfg_path, "0", game_name="All Unowned Apps", fake_appid="480")
+        elif not current_all_online and has_entry:
+            remove_fake_app_id(cfg_path, "0", fake_appid="480")
+            remove_fake_app_id(cfg_path, "0")
 
     dialog.all_games_online_checkbox = create_checkbox_setting(
         "All games online",
         "all_games_online",
-        True,
+        current_all_online,
         dialog,
         "Uses 0: 480 in SLSsteam FakeAppIds to map all unowned games to Spacewar (480) for online networking features.",
     )
+    dialog.all_games_online_checkbox.setChecked(current_all_online)
 
     def _on_all_games_online_toggled(state):
         is_checked = bool(state)

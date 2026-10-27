@@ -1224,6 +1224,11 @@ class SettingsDialog(QDialog):
             self.settings.setValue("vapor_default_download_action", action)
             self.settings.setValue("native_steam_default_action", action)
 
+        dlc_act_combo = getattr(self, "at0m_dlc_action_combo", None)
+        if dlc_act_combo is not None:
+            dlc_action = dlc_act_combo.currentData() or "ask"
+            self.settings.setValue("at0m_default_dlc_action", dlc_action)
+
         start_combo = getattr(self, "at0m_start_mode_combo", None) or getattr(self, "vapor_start_mode_combo", None)
         if start_combo is not None:
             start_act = start_combo.currentData() or "immediate"

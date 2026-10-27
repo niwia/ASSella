@@ -8,7 +8,7 @@ cachetools==5.5.2
     #   steam
 capstone==5.0.6
     # via -r requirements.in
-certifi==2026.7.22
+certifi==2026.10.23
     # via
     #   curl-cffi
     #   requests
@@ -22,7 +22,7 @@ configobj==5.0.9
     # via -r requirements.in
 cryptography==46.0.3
     # via -r requirements.in
-curl-cffi==0.13.0
+curl-cffi==0.17.0
     # via -r requirements.in
 gevent==25.9.1
     # via

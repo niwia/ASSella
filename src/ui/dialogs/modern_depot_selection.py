@@ -1670,6 +1670,21 @@ class ModernDepotSelectionDialog(QDialog):
                 selected.append(str(id_item.data(Qt.ItemDataRole.UserRole)))
         return selected
 
+    def get_selected_dlc_data(self) -> Dict[str, str]:
+        """Returns {dlc_app_id: dlc_name} for checked DLC rows."""
+        checked = {}
+        for r in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(r, 0)
+            if not id_item or id_item.checkState() != Qt.CheckState.Checked:
+                continue
+            is_dlc = bool(id_item.data(Qt.ItemDataRole.UserRole + 20) or id_item.data(Qt.ItemDataRole.UserRole + 21))
+            if is_dlc:
+                raw_id = str(id_item.data(Qt.ItemDataRole.UserRole) or "").strip()
+                name_item = self.table_widget.item(r, 1)
+                name = name_item.text().strip() if name_item else f"DLC {raw_id}"
+                checked[raw_id] = name
+        return checked
+
     def get_selected_files(self) -> List[str]:
         """Returns custom selective file paths."""
         return self.selected_files

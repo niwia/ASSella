@@ -67,6 +67,22 @@ def is_dlc_depot(
         if not bool(_BASE_DEPOT_RE.match(desc.strip())):
             return True
 
+    if base_appid_str and not dlc_set and not meta_dlc:
+        try:
+            from managers.db_manager import DatabaseManager
+            db = DatabaseManager()
+            info = db.get_app_info(base_appid_str, bypass_expiration=True)
+            if info and info.get("depots"):
+                d_meta = info["depots"].get(depot_id_str)
+                if isinstance(d_meta, dict) and (d_meta.get("is_dlc") or d_meta.get("dlcappid")):
+                    return True
+            if info and info.get("listofdlc"):
+                dlcs = [str(x).strip() for x in str(info["listofdlc"]).split(",") if str(x).strip()]
+                if depot_id_str in dlcs:
+                    return True
+        except Exception:
+            pass
+
     return False
 
 
@@ -1308,17 +1324,82 @@ def sync_dlc_only_sls_config(
     else:
         # Regular game mode - ensure base game in AdditionalApps
         added = add_additional_app(config_path, appid_str, game_name)
-        # Remove individual DLCs from AdditionalApps if they were present
-        if dlc_list:
-            for dlc_entry in dlc_list:
-                remove_additional_app(config_path, str(dlc_entry["dlc_appid"]))
 
-        # If the game has 64 or more DLCs, ensure DlcData is populated
-        if dlc_list and len(dlc_list) >= 64:
-            dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
-            add_dlc_data_batch(config_path, appid_str, dlc_dict)
-        elif not dlc_list or len(dlc_list) < 64:
+        # Sync DLC entitlements based on user selection or discovered DLCs
+        selected_depots_raw = (
+            game_data.get("selected_depots_list") if game_data else None
+        )
+        selected_depots = (
+            set(str(d).strip() for d in selected_depots_raw if str(d).strip().isdigit())
+            if selected_depots_raw is not None
+            else None
+        )
+        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+
+        selected_dlcs = []
+        unselected_dlcs = []
+        explicit_selected_dlc_ids = None
+        if game_data and "selected_dlc_appids" in game_data:
+            raw_selected_dlc_ids = game_data.get("selected_dlc_appids") or []
+            explicit_selected_dlc_ids = {
+                str(d).strip()
+                for d in raw_selected_dlc_ids
+                if str(d).strip().isdigit() and str(d).strip() != appid_str
+            }
+        if selected_depots is not None:
+            for dlc_entry in dlc_list:
+                dlc_aid = str(dlc_entry["dlc_appid"]).strip()
+                has_content_depot = False
+                dlc_depot_selected = False
+                for did, dinfo in depots_meta.items():
+                    if isinstance(dinfo, dict) and str(dinfo.get("dlcappid") or "").strip() == dlc_aid:
+                        has_content_depot = True
+                        if str(did).strip() in selected_depots:
+                            dlc_depot_selected = True
+                            break
+                explicitly_selected = (
+                    explicit_selected_dlc_ids is not None
+                    and dlc_aid in explicit_selected_dlc_ids
+                )
+                if (
+                    explicitly_selected
+                    or dlc_aid in selected_depots
+                    or dlc_depot_selected
+                    or (explicit_selected_dlc_ids is None and not has_content_depot)
+                ):
+                    selected_dlcs.append(dlc_entry)
+                else:
+                    unselected_dlcs.append(dlc_entry)
+        else:
+            selected_dlcs = dlc_list
+            unselected_dlcs = []
+
+        # Remove unselected DLCs if previously present
+        for dlc_entry in unselected_dlcs:
+            remove_additional_app(config_path, str(dlc_entry["dlc_appid"]).strip())
+
+        # If 64 or more selected DLCs, bypass via DlcData
+        if len(selected_dlcs) >= 64:
             remove_dlc_data(config_path, appid_str)
+            dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in selected_dlcs}
+            add_dlc_data_batch(config_path, appid_str, dlc_dict)
+            for dlc_entry in selected_dlcs:
+                remove_additional_app(config_path, str(dlc_entry["dlc_appid"]).strip())
+        else:
+            remove_dlc_data(config_path, appid_str)
+            for dlc_entry in selected_dlcs:
+                dlc_id = str(dlc_entry["dlc_appid"]).strip()
+                dlc_name = dlc_entry.get("dlc_name") or f"DLC {dlc_id}"
+                comment = f"[DLC] {dlc_name} / {game_name}" if game_name else f"[DLC] {dlc_name}"
+                add_additional_app(config_path, dlc_id, comment)
+
+        logger.info(
+            "[DLC Sync] AppID %s: selected=%d, removed=%d, storage=%s",
+            appid_str,
+            len(selected_dlcs),
+            len(unselected_dlcs),
+            "DlcData" if len(selected_dlcs) >= 64 else "AdditionalApps",
+        )
         return added
 
 

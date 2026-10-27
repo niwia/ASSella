@@ -758,6 +758,19 @@ def on_branch_combo_changed(dialog) -> None:
         dialog.settings.setValue(f"installed_buildid/{dialog.appid}/{sel_branch}", installed_bid)
         dialog.settings.setValue(f"installed_buildid/{dialog.appid}", installed_bid)
 
+    # Format human-readable date if branch timebuildupdated/timeupdated is present
+    branch_date_str = ""
+    if isinstance(b_info, dict):
+        raw_ts = b_info.get("timebuildupdated") or b_info.get("timeupdated")
+        if raw_ts:
+            try:
+                ts_int = int(raw_ts)
+                if ts_int > 1000000000:
+                    from datetime import datetime
+                    branch_date_str = datetime.fromtimestamp(ts_int).strftime("%b %d, %Y")
+            except (ValueError, TypeError, OverflowError):
+                branch_date_str = ""
+
     if hasattr(dialog, "build_val_lbl"):
         if installed_bid:
             is_older = False
@@ -767,18 +780,33 @@ def on_branch_combo_changed(dialog) -> None:
                 except (ValueError, TypeError):
                     is_older = (branch_bid != installed_bid)
 
-            dialog.build_val_lbl.setText(installed_bid)
             if is_older:
+                dialog.build_val_lbl.setText(installed_bid)
                 dialog.build_val_lbl.setStyleSheet("color: #FFB84D; font-size: 9.5pt; font-weight: bold; background: transparent;")
-                dialog.build_val_lbl.setToolTip(f"Installed Build: {installed_bid}\nLatest on Steam ({sel_branch}): Build {branch_bid} (Update available)")
+                tt = f"Installed Build: {installed_bid}\nLatest on Steam ({sel_branch}): Build {branch_bid}"
+                if branch_date_str:
+                    tt += f" ({branch_date_str})"
+                tt += " • Update available"
+                dialog.build_val_lbl.setToolTip(tt)
             else:
+                display_text = f"{installed_bid} ({branch_date_str})" if branch_date_str else installed_bid
+                dialog.build_val_lbl.setText(display_text)
                 dialog.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold; background: transparent;")
-                dialog.build_val_lbl.setToolTip(f"Installed Build: {installed_bid} (Up to date)")
+                tt = f"Installed Build: {installed_bid}"
+                if branch_date_str:
+                    tt += f" ({branch_date_str})"
+                tt += " • Up to date"
+                dialog.build_val_lbl.setToolTip(tt)
         else:
             if branch_bid:
-                dialog.build_val_lbl.setText(branch_bid)
+                display_text = f"{branch_bid} ({branch_date_str})" if branch_date_str else branch_bid
+                dialog.build_val_lbl.setText(display_text)
                 dialog.build_val_lbl.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold; background: transparent;")
-                dialog.build_val_lbl.setToolTip(f"Latest on Steam ({sel_branch}): Build {branch_bid}\n(Game not installed or build ID unknown)")
+                tt = f"Latest on Steam ({sel_branch}): Build {branch_bid}"
+                if branch_date_str:
+                    tt += f" ({branch_date_str})"
+                tt += "\n(Game not installed or build ID unknown)"
+                dialog.build_val_lbl.setToolTip(tt)
             else:
                 dialog.build_val_lbl.setText("Unknown")
                 dialog.build_val_lbl.setStyleSheet(f"color: {dialog.accent_color}; font-size: 9.5pt; font-weight: bold; background: transparent;")
@@ -1768,26 +1796,29 @@ def init_slsonline_logic(dialog) -> None:
                     dialog.sls_tile.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {text_color}; opacity: 0.85; background: transparent;")
 
             def _refresh_sls_state():
-                global_all_online = bool(config.exists() and get_fake_appid(config, "0") == "480")
                 existing = get_fake_appid(config, dialog.appid) if config.exists() else None
+                global_all_online = bool(config.exists() and get_fake_appid(config, "0") == "480")
 
                 dialog.sls_tile.blockSignals(True)
-                if global_all_online:
-                    dialog.sls_tile.setChecked(True)
-                    _apply_split_style(True)
-                    dialog.sls_input.setText(existing or "480")
-                    dialog.sls_input_container.setVisible(True)
-                    dialog.sls_tile.setToolTip("SLSonline is enabled globally for all games (0: 480). Click to manage in Settings → SLS.")
-                elif existing:
+                if existing:
                     dialog.sls_tile.setChecked(True)
                     _apply_split_style(True)
                     dialog.sls_input.setText(existing)
+                    dialog.sls_input.setReadOnly(False)
                     dialog.sls_input_container.setVisible(True)
-                    dialog.sls_tile.setToolTip("")
+                    dialog.sls_tile.setToolTip("Game-specific SLSonline Fake AppID")
+                elif global_all_online:
+                    dialog.sls_tile.setChecked(True)
+                    _apply_split_style(True)
+                    dialog.sls_input.setText("480")
+                    dialog.sls_input.setReadOnly(True)
+                    dialog.sls_input_container.setVisible(True)
+                    dialog.sls_tile.setToolTip("SLSonline is enabled globally for all unowned games (0: 480). Manage in Settings → SLS.")
                 else:
                     dialog.sls_tile.setChecked(False)
                     _apply_split_style(False)
                     dialog.sls_input.setText("480")
+                    dialog.sls_input.setReadOnly(False)
                     dialog.sls_input_container.setVisible(False)
                     dialog.sls_tile.setToolTip("")
                 dialog.sls_tile.blockSignals(False)
@@ -1797,7 +1828,8 @@ def init_slsonline_logic(dialog) -> None:
 
             def _tog(checked):
                 cur_global = bool(config.exists() and get_fake_appid(config, "0") == "480")
-                if cur_global:
+                cur_existing = get_fake_appid(config, dialog.appid) if config.exists() else None
+                if cur_global and not cur_existing:
                     dialog.sls_tile.blockSignals(True)
                     dialog.sls_tile.setChecked(True)
                     _apply_split_style(True)
@@ -1809,6 +1841,7 @@ def init_slsonline_logic(dialog) -> None:
 
                 _apply_split_style(checked)
                 dialog.sls_input_container.setVisible(checked)
+                dialog.sls_input.setReadOnly(False)
                 fid = dialog.sls_input.text().strip() or "480"
                 name = dialog.game_data.get("game_name", "Unknown")
                 if checked:
@@ -1827,7 +1860,7 @@ def init_slsonline_logic(dialog) -> None:
                 update_eos_btn_state(dialog)
 
             def _fin():
-                if dialog.sls_tile.isChecked():
+                if dialog.sls_tile.isChecked() and not dialog.sls_input.isReadOnly():
                     fid = dialog.sls_input.text().strip() or "480"
                     name = dialog.game_data.get("game_name", "Unknown")
                     cur = get_fake_appid(config, dialog.appid)
@@ -2149,10 +2182,20 @@ def reconstruct_manifests_from_depotcache(dialog) -> None:
 
 
 def get_installed_buildid(dialog) -> str:
-    bid = str(dialog.game_data.get("buildid") or "").strip()
-    if bid and bid.isdigit() and bid != "0":
-        return bid
+    # 1. Prefer verified installed_buildid from QSettings for the installed branch
+    if dialog.settings and dialog.appid:
+        installed_branch = dialog.settings.value(f"installed_branch/{dialog.appid}", "", type=str)
+        if installed_branch:
+            saved = dialog.settings.value(f"installed_buildid/{dialog.appid}/{installed_branch}", "", type=str)
+            if saved and str(saved).isdigit() and str(saved) != "0":
+                dialog.game_data["buildid"] = str(saved)
+                return str(saved)
+        saved = dialog.settings.value(f"installed_buildid/{dialog.appid}", "", type=str)
+        if saved and str(saved).isdigit() and str(saved) != "0":
+            dialog.game_data["buildid"] = str(saved)
+            return str(saved)
 
+    # 2. Check ACF on disk (Steam manifest registered build)
     acf_path = dialog.game_data.get("appmanifest_path")
     if not acf_path and dialog.appid and dialog.appid not in ("0", "N/A", "unknown"):
         from core.steam_helpers import get_steam_libraries
@@ -2178,18 +2221,12 @@ def get_installed_buildid(dialog) -> str:
         except Exception as e:
             logger.debug(f"[GameDetails] Could not read the build id from the app manifest: {e}")
 
-    if dialog.settings and dialog.appid:
-        installed_branch = dialog.settings.value(f"installed_branch/{dialog.appid}", "", type=str)
-        if installed_branch:
-            saved = dialog.settings.value(f"installed_buildid/{dialog.appid}/{installed_branch}", "", type=str)
-            if saved and str(saved).isdigit() and str(saved) != "0":
-                dialog.game_data["buildid"] = str(saved)
-                return str(saved)
-        saved = dialog.settings.value(f"installed_buildid/{dialog.appid}", "", type=str)
-        if saved and str(saved).isdigit() and str(saved) != "0":
-            dialog.game_data["buildid"] = str(saved)
-            return str(saved)
+    # 3. Fall back to game_data["buildid"]
+    bid = str(dialog.game_data.get("buildid") or "").strip()
+    if bid and bid.isdigit() and bid != "0":
+        return bid
 
+    # 4. Fall back to metadata directory
     if dialog.appid and dialog.appid not in ("0", "N/A", "unknown"):
         try:
             import json
@@ -2391,8 +2428,17 @@ def on_move_to_vapor_clicked(dialog) -> None:
         if warn_box != ThemedMessageBox.StandardButton.Yes:
             return
 
-    # Check for complications before moving
-    from utils.plugin_games import detect_migration_complications, migrate_game_to_atom
+    # Check for AT0-M readiness and complications before moving
+    from utils.plugin_games import can_use_atom_mode, detect_migration_complications, migrate_game_to_atom
+
+    can_atom, atom_err = can_use_atom_mode()
+    if not can_atom:
+        ThemedMessageBox.warning(
+            dialog,
+            "AT0-M Setup Incomplete",
+            f"Cannot move to AT0-M mode:\n\n{atom_err}\n\nPlease check your AT0-M and SLSsteam configuration in Settings.",
+        )
+        return
 
     complications = detect_migration_complications(game_data, dialog.settings)
     if complications.get("has_complications"):

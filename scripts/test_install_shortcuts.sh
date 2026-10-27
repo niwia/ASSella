@@ -30,7 +30,7 @@ write_desktop_entry
 
 test -f "$PRIMARY_DESKTOP_ENTRY"
 test ! -L "$PRIMARY_DESKTOP_ENTRY"
-test "$(readlink "$LEGACY_DESKTOP_ENTRY")" = "assella.desktop"
+test ! -e "$LEGACY_DESKTOP_ENTRY"
 grep -q '^Exec=' "$PRIMARY_DESKTOP_ENTRY"
 grep -q '^Icon=assella$' "$PRIMARY_DESKTOP_ENTRY"
 grep -q '^Comment=Steam Game & Depot Management Suite$' "$PRIMARY_DESKTOP_ENTRY"

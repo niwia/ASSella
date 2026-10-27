@@ -52,11 +52,13 @@ class DownloadBackendDialog(QDialog):
         app_id: str = "",
         game_name: str = "",
         accent_color: str = "#6c5ce7",
+        mode: str = "download",
     ):
         super().__init__(parent)
         self.app_id = str(app_id)
         self.game_name = game_name or f"App {app_id}"
         self.accent_color = accent_color
+        self.mode = mode
         self._choice = BACKEND_CANCEL
         self.settings = get_settings()
 
@@ -69,7 +71,8 @@ class DownloadBackendDialog(QDialog):
             c = QColor("#6c5ce7")
         self._r, self._g, self._b = c.red(), c.green(), c.blue()
 
-        self.setWindowTitle("Download Method")
+        win_title = "DLC Mode Selection" if self.mode == "dlc" else "Download Method"
+        self.setWindowTitle(win_title)
         self.setFixedWidth(440)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -106,9 +109,10 @@ class DownloadBackendDialog(QDialog):
         container_lay.setSpacing(12)
 
         # Custom Themed Title Bar
+        bar_title = "DLC Setup Method" if self.mode == "dlc" else "Download Method"
         self.title_bar = DialogTitleBar(
             self,
-            title="Download Method",
+            title=bar_title,
             can_minimize=False,
             can_maximize=False,
             use_power_close=True,
@@ -121,8 +125,9 @@ class DownloadBackendDialog(QDialog):
         body_lay.setSpacing(14)
         container_lay.addLayout(body_lay)
 
-        # Title: Download : {game_name} via
-        title_lbl = QLabel(f"Download : <b style='color: {self.accent_color};'>{self.game_name}</b> via")
+        # Title: Setup DLCs / Download : {game_name} via
+        action_verb = "Setup DLCs for" if self.mode == "dlc" else "Download"
+        title_lbl = QLabel(f"{action_verb} : <b style='color: {self.accent_color};'>{self.game_name}</b> via")
         title_lbl.setStyleSheet("font-size: 11pt; color: rgba(255, 255, 255, 0.95); border: none; background: transparent;")
         title_lbl.setWordWrap(True)
         body_lay.addWidget(title_lbl)
@@ -473,9 +478,13 @@ class DownloadBackendDialog(QDialog):
         self._choice = self._selected_backend
         if self.should_remember():
             val = "native" if self._choice == BACKEND_NATIVE_STEAM else "assella"
-            self.settings.setValue("at0m_default_download_action", val)
-            self.settings.setValue("vapor_default_download_action", val)
-            logger.info(f"[DownloadBackendDialog] Saved default download method: {val}")
+            if getattr(self, "mode", "download") == "dlc":
+                self.settings.setValue("at0m_default_dlc_action", val)
+                logger.info(f"[DownloadBackendDialog] Saved default DLC method: {val}")
+            else:
+                self.settings.setValue("at0m_default_download_action", val)
+                self.settings.setValue("vapor_default_download_action", val)
+                logger.info(f"[DownloadBackendDialog] Saved default download method: {val}")
         self.accept()
 
     def _on_cancel(self):

@@ -99,6 +99,17 @@ def get_settings() -> QSettings:
         except Exception:
             pass
 
+        # Migrate default download plugin to spacebunny1.5.lua starting this version
+        try:
+            if not _settings_local.instance.value("spacebunny_default_migrated_v27", False, type=bool):
+                cur_plugin = _settings_local.instance.value("selected_download_plugin", "")
+                if not cur_plugin or cur_plugin == "download.lua":
+                    _settings_local.instance.setValue("selected_download_plugin", "spacebunny1.5.lua")
+                _settings_local.instance.setValue("spacebunny_default_migrated_v27", True)
+                _settings_local.instance.sync()
+        except Exception:
+            pass
+
     return _settings_local.instance
 
 

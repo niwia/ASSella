@@ -330,6 +330,11 @@ def _apply_stylesheet(
             border: none;
         }}
 
+        QTableView::item:disabled, QTableWidget::item:disabled {{
+            color: rgba(255, 255, 255, 0.38);
+            background-color: transparent;
+        }}
+
         QListWidget::item:hover, QTreeWidget::item:hover {{
             background-color: {hover_bg};
             color: {accent_light};
@@ -415,11 +420,12 @@ def _apply_stylesheet(
         }}
 
         QToolTip {{
-            background-color: {surface_variant};
-            color: {accent_color.name()};
-            padding: 6px;
-            border: 1px solid {outline};
+            background-color: #1e2029;
+            color: #FFFFFF;
+            padding: 6px 10px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 4px;
+            font-size: 8.5pt;
         }}
 
         QScrollBar:vertical {{

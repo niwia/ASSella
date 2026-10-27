@@ -123,16 +123,18 @@ StartupWMClass=ASSella
 MimeType=x-scheme-handler/accela;
 EOL
     chmod 0644 "$desktop_tmp"
+    # Unlink any existing entry/symlink so older coreutils mv (e.g. <= 8.32 on Ubuntu 22.04)
+    # does not fail with ELOOP ("Too many levels of symbolic links") when stat'ing DEST.
+    rm -f "$PRIMARY_DESKTOP_ENTRY"
     mv -f "$desktop_tmp" "$PRIMARY_DESKTOP_ENTRY"
     DESKTOP_TMP=""
     test -f "$PRIMARY_DESKTOP_ENTRY"
     test ! -L "$PRIMARY_DESKTOP_ENTRY"
     grep -q '^Exec=' "$PRIMARY_DESKTOP_ENTRY"
 
-    # Always recreate the legacy name as a one-way alias.  rm also handles a
-    # broken symlink, unlike tests based only on -f.
+    # Clean up any legacy accela.desktop entry or symlink so application launchers
+    # do not display duplicate ASSella entries (issue #31).
     rm -f "$LEGACY_DESKTOP_ENTRY"
-    ln -s "assella.desktop" "$LEGACY_DESKTOP_ENTRY"
 }
 
 install_application_icon() {
@@ -144,6 +146,7 @@ install_application_icon() {
     if curl -fsSL --retry 3 --retry-delay 2 -o "$icon_tmp" \
         "https://raw.githubusercontent.com/niwia/ASSella/main/src/res/logo/icon.png"; then
         chmod 0644 "$icon_tmp"
+        rm -f "$PRIMARY_ICON_PATH"
         mv -f "$icon_tmp" "$PRIMARY_ICON_PATH"
         ICON_TMP=""
     else
@@ -769,14 +772,26 @@ do_install() {
             ;;
     esac
 
-    # Promote verified download into place
+    # Promote verified download into place safely with rollback
+    local backup_target="$INSTALL_DESTINATION/ASSella.AppImage.bak"
+    local had_previous=0
+    if [ -f "$INSTALL_DESTINATION/ASSella.AppImage" ]; then
+        had_previous=1
+        mv -f "$INSTALL_DESTINATION/ASSella.AppImage" "$backup_target"
+    fi
+
     if ! mv -f "$DL_TMP" "$INSTALL_DESTINATION/ASSella.AppImage"; then
         echo -e "${RED}[ERROR] Failed to move verified binary into place.${NC}"
+        if [ "$had_previous" -eq 1 ] && [ -f "$backup_target" ]; then
+            echo -e "${YELLOW}[INFO] Restoring previous ASSella.AppImage from backup...${NC}"
+            mv -f "$backup_target" "$INSTALL_DESTINATION/ASSella.AppImage"
+        fi
         rm -f "$DL_TMP"
         pause_if_interactive
         return 1
     fi
 
+    rm -f "$backup_target"
     chmod +x "$INSTALL_DESTINATION/ASSella.AppImage"
 
     # Backup previous non-symlink ACCELA.AppImage

@@ -37,6 +37,7 @@ from utils.yaml_config_manager import (
     get_additional_apps,
     get_additional_depots,
     get_decryption_keys,
+    get_app_tokens,
     is_depot_shared_with_other_games,
     _get_section_bounds,
     _validate_yaml_content,
@@ -184,6 +185,7 @@ def run_tests() -> bool:
             decryption_keys=keys_1,
             installdir="Cubing Forge",
             depot_names=depot_names_1,
+            app_token="9876543210123456789",
         )
         if not success:
             log_fail("register_plugin_game returned False for 4959210")
@@ -196,11 +198,18 @@ def run_tests() -> bool:
         live_apps = get_additional_apps(cfg_path)
         live_depots = get_additional_depots(cfg_path)
         live_keys = get_decryption_keys(cfg_path)
+        live_tokens = get_app_tokens(cfg_path)
 
         if appid_1 in live_apps:
             log_pass(f"Base AppID '{appid_1}' is present in AdditionalApps")
         else:
             log_fail(f"Base AppID '{appid_1}' is MISSING from AdditionalApps")
+            test_passed = False
+
+        if appid_1 in live_tokens and live_tokens[appid_1] == "9876543210123456789":
+            log_pass(f"AppToken for '{appid_1}' is present in AppTokens ({live_tokens[appid_1]})")
+        else:
+            log_fail(f"AppToken for '{appid_1}' is MISSING or incorrect in AppTokens: {live_tokens}")
             test_passed = False
 
         if appid_1 not in live_depots:
@@ -402,6 +411,27 @@ def run_tests() -> bool:
             else:
                 log_fail(f"CRITICAL: Transition to ACCELA mode failed DLC-only invariant! Apps: {apps_after_transition}")
                 test_passed = False
+
+            # 3i. Verifying BatchConfigEditor add_token and remove_app_token
+            log_info("Testing BatchConfigEditor add_token and remove_app_token...")
+            editor.add_token("999999", "111222333444", comment="Test Token")
+
+        tokens_3i = get_app_tokens(cfg_path)
+        if "999999" in tokens_3i and tokens_3i["999999"] == "111222333444":
+            log_pass("editor.add_token successfully added token to AppTokens in config.yaml")
+        else:
+            log_fail(f"editor.add_token failed to persist in config.yaml: {tokens_3i}")
+            test_passed = False
+
+        with batch_config_edit(cfg_path) as editor:
+            editor.remove_app_token("999999")
+
+        tokens_3i_after = get_app_tokens(cfg_path)
+        if "999999" not in tokens_3i_after:
+            log_pass("editor.remove_app_token successfully removed token from AppTokens")
+        else:
+            log_fail("editor.remove_app_token failed to remove token from config.yaml")
+            test_passed = False
     finally:
         # ---------------------------------------------------------------------
         # TEST 4: Cleanup & State Reversal
