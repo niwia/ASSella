@@ -31,7 +31,7 @@ app_version = _load_version()
 # version file, so this constant is the authoritative build date and has to be
 # bumped together with src/res/version. A version file that does carry a build
 # stamp ('20261022+ASSella-3.0.1') wins over it - see get_build_date().
-BUILD_DATE = "2026-10-26"
+BUILD_DATE = "2026-10-27"
 
 
 def _stamp_date(raw: str) -> str:
