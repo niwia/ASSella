@@ -18,6 +18,7 @@ export default defineConfig({
       { text: 'Installation Guide', link: '/install' },
       { text: 'Arch', link: '/arch-repo' },
       { text: 'Uran', link: '/uran' },
+      { text: 'Epsilon', link: '/epsilon' },
       {
         text: 'Documentation',
         items: [
@@ -37,7 +38,8 @@ export default defineConfig({
         items: [
           { text: 'Installation Guide', link: '/install' },
           { text: 'Arch', link: '/arch-repo' },
-          { text: 'Uran (Decky Plugin)', link: '/uran' }
+          { text: 'Uran (Decky Plugin)', link: '/uran' },
+          { text: 'Epsilon (Browser Bridge)', link: '/epsilon' }
         ]
       },
       {
