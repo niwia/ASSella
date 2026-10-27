@@ -67,13 +67,12 @@ Verified zero imports anywhere outside `src/deps/` vendored sample scripts:
 If you later add code that needs one of these, add it back to
 `requirements.in` and recompile — do not edit `requirements.txt`.
 
-### `rich` replaces `urwid` for CLI mode
+### Do not remove `urwid`
 
-`rich` powers the terminal UI in CLI mode (`ui/text_menus.py` and `managers/cli_manager.py`).
-`managers/cli_manager.py` imports `ui/text_menus.py` at module level, so `rich` is a declared
-runtime dependency. `urwid` was previously used but was replaced by `rich` to provide clean,
-accessible terminal menus, tables, and progress bars without curses screen-hijacking.
-
+`urwid` looks unused because only `ui/text_menus.py` imports it — and that file
+looks CLI-only. But `managers/cli_manager.py` imports it **at module level,
+unconditionally**, so dropping `urwid` breaks CLI mode with a bare
+`ModuleNotFoundError` at import. This was tried and reverted.
 
 ## The smoke import gate
 

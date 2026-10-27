@@ -21,6 +21,7 @@ export default defineConfig({
       {
         text: 'Documentation',
         items: [
+          { text: 'Command Line Interface (CLI)', link: '/cli' },
           { text: 'Online Multiplayer', link: '/online-multiplayer' },
           { text: 'Themes', link: '/themes' },
           { text: 'Dependencies', link: '/dependencies' },
@@ -42,6 +43,7 @@ export default defineConfig({
       {
         text: 'Reference & Guides',
         items: [
+          { text: 'Command Line Interface (CLI)', link: '/cli' },
           { text: 'Online Multiplayer Guide', link: '/online-multiplayer' },
           { text: 'Themes Guide', link: '/themes' },
           { text: 'Dependencies', link: '/dependencies' },
