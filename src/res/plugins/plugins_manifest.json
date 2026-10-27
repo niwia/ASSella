@@ -1,0 +1,56 @@
+{
+  "manifest_version": 1,
+  "updated_at": "2026-10-23T08:01:35Z",
+  "plugins": {
+    "download.lua": {
+      "name": "Download Interceptor",
+      "filename": "download.lua",
+      "version": "1.0.1",
+      "category": "interceptor",
+      "description": "Native Steam download interception and depot streaming plugin for SLSsteam.",
+      "sha256": "8e822aecfea085cfcada45b9ed0e8f2c09bc04b76c667cc1904342c9197be627",
+      "size_bytes": 9166,
+      "required": false
+    },
+    "spacebunny1.5.lua": {
+      "name": "SpaceBunny 1.5",
+      "filename": "spacebunny1.5.lua",
+      "version": "1.5.0",
+      "category": "interceptor",
+      "description": "SLSsteam download interceptor with MRC authority hierarchy, curl timeout fixes, and monotonic clocks.",
+      "sha256": "8c9956ab351fe0a454bbf51b67334566a06ad254f62a658d7943112e19b49026",
+      "size_bytes": 35767,
+      "required": true
+    },
+    "spliced-tickets.lua": {
+      "name": "Spliced Tickets",
+      "filename": "spliced-tickets.lua",
+      "version": "1.0.0",
+      "category": "companion",
+      "description": "App and depot ownership ticket splicing handler for SLSsteam.",
+      "sha256": "62f377e39368d94612371ca62791ac90fad258a360482e6be380069ca1d94eda",
+      "size_bytes": 2187,
+      "required": true
+    },
+    "lobster.lua": {
+      "name": "Lobster",
+      "filename": "lobster.lua",
+      "version": "1.0.0",
+      "category": "companion",
+      "description": "SLSsteam config recovery plugin: restores AdditionalDepots and DecryptionKeys if stripped by Headcrab updates.",
+      "sha256": "d8950f939437f75a0c16d91e42256bcb36e3dfb02f034040ebcaf0c7a9bfcd02",
+      "size_bytes": 12343,
+      "required": false
+    },
+    "hubcap.lua": {
+      "name": "Hubcap",
+      "filename": "hubcap.lua",
+      "version": "1.0.0",
+      "category": "companion",
+      "description": "Hubcap manifest and key bridge plugin for SLSsteam.",
+      "sha256": "1e4fd91d3206cac1635eccb3df50796a944d9bbd8ffa5023d3005f72078a75eb",
+      "size_bytes": 29609,
+      "required": false
+    }
+  }
+}

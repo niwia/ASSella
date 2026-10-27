@@ -16,9 +16,10 @@ class ElidedLabel(QLabel):
     ``full_text`` and in the tooltip.
     """
 
-    def __init__(self, text: str = "", parent=None):
+    def __init__(self, text: str = "", parent=None, enable_tooltip: bool = True):
         super().__init__(parent)
         self._full_text = ""
+        self._enable_tooltip = enable_tooltip
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(0)
         self.setText(text)
@@ -29,7 +30,6 @@ class ElidedLabel(QLabel):
 
     def setText(self, text: str):  # noqa: N802 - Qt naming
         self._full_text = text or ""
-        self.setToolTip(self._full_text)
         self._update_elided()
 
     def resizeEvent(self, event):  # noqa: N802 - Qt naming
@@ -40,8 +40,17 @@ class ElidedLabel(QLabel):
         width = self.width()
         if width <= 0:
             super().setText(self._full_text)
+            if self._enable_tooltip:
+                self.setToolTip("")
             return
         elided = self.fontMetrics().elidedText(
             self._full_text, Qt.TextElideMode.ElideRight, width
         )
         super().setText(elided)
+        if self._enable_tooltip:
+            if elided != self._full_text:
+                self.setToolTip(self._full_text)
+            else:
+                self.setToolTip("")
+        else:
+            self.setToolTip("")

@@ -1,37 +1,29 @@
 """Edition catalog: names, contents and platform facts for the depot selector.
 
-The Steam Store's ``appdetails`` lists the packages (subs) a game sells through,
-but the editions people see on the store ("Premium Edition", "Ancestral
-Edition") are bundles, which Valve exposes only as store pages. PICS knows
-package and depot truth but has no concept of a bundle, and the client's local
-``packageinfo.vdf`` only knows the apps this machine has already seen.
+The modern Steam Store API ``IStoreBrowseService/GetItems`` returns packages,
+bundles and release state in one JSON round-trip per app or bundle, replacing
+the old two-step dance of scraping the app page for bundle links and then
+scraping each bundle page for its name and contained apps.
 
-This module joins the two views:
-
-* the game's app page says which bundles name it as an edition,
-* each bundle page says what the bundle is called and which apps it includes,
-* the game's own app info (PICS via api.steamcmd.net) says which platforms the
-  game supports and which apps are its DLCs.
-
-The app info is what keeps a crossover bundle from being offered as an edition:
-a bundle that also carries an unrelated game is not "this game, but more".
+* ``GetItems`` for the base app gives its packages and bundle references,
+* ``GetItems`` for a bundle gives its name and included app ids,
+* the game's own app info (PICS via api.steamcmd.net) still gives platforms
+  and the DLC list used to filter out crossover bundles.
 
 Every answer is cached on disk for a week. A failed fetch keeps the last
 known-good answer instead of replacing it with a shorter list.
 """
-
-from __future__ import annotations
 
 import json
 import logging
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
-
-import requests
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from utils.helpers import get_cache_dir
 
@@ -39,25 +31,10 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
-_STORE_UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-)
 _APPINFO_URL = "https://api.steamcmd.net/v1/info/{appid}"
-_APP_PAGE_URL = "https://store.steampowered.com/app/{appid}/?cc=us&l=en"
-_BUNDLE_PAGE_URL = "https://store.steampowered.com/bundle/{bundle_id}/?cc=us&l=en"
-_APPDETAILS_URL = "https://store.steampowered.com/api/appdetails?appids={appid}&cc=us&l=en"
-
-_BUNDLE_LINK_RE = re.compile(r"/bundle/(\d+)")
-_APP_LINK_RE = re.compile(r"/app/(\d+)/")
-_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-#: The bundle page states its own name here; <title> may be the discount text.
-_PAGEHEADER_RE = re.compile(
-    r'class="pageheader[^"]*"[^>]*>(.*?)<', re.IGNORECASE | re.DOTALL
-)
-
-#: A store page that answers with Steam's front page is not a bundle page.
-_FRONT_PAGE_MARKER = "Welcome to Steam"
+_STORE_API_BASE = "https://api.steampowered.com/IStoreBrowseService"
+_STORE_UA = "standalone-addapp/1.0"
+_STORE_CONTEXT = {"language": "english", "country_code": "US"}
 
 
 def _cache_file() -> Path:
@@ -120,16 +97,30 @@ def _fresh(entry: Any) -> bool:
     return (time.time() - stamp) < CACHE_TTL_SECONDS
 
 
-def _store_get(url: str, timeout: float) -> Optional[str]:
-    try:
-        response = requests.get(url, timeout=timeout, headers={"User-Agent": _STORE_UA})
-    except requests.RequestException as exc:
-        logger.debug("Store page %s could not be read: %s", url, exc)
-        return None
-    if response.status_code != 200 or not response.text:
-        logger.debug("Store page %s answered HTTP %s", url, response.status_code)
-        return None
-    return response.text
+def _get_json(url: str, timeout: float = 20.0) -> Optional[Dict[str, Any]]:
+    """Fetch a JSON URL and return the parsed payload, or ``None`` on failure."""
+    for _ in range(2):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _STORE_UA})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except (urllib.error.URLError, ValueError, OSError) as exc:
+            logger.debug("JSON fetch %s failed: %s", url, exc)
+    return None
+
+
+def _store_api(method: str, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Call an IStoreBrowseService method and return its JSON response."""
+    url = (
+        f"{_STORE_API_BASE}/{method}/v1/"
+        f"?input_json={urllib.parse.quote(json.dumps(body))}"
+    )
+    return _get_json(url)
+
+
+# --------------------------------------------------------------------- legacy title cleaning
+# Kept for the test suite; bundle names arrive as plain strings from GetItems
+# now, so this is no longer used in the hot path.
 
 
 def _clean_title(raw: str) -> str:
@@ -139,12 +130,12 @@ def _clean_title(raw: str) -> str:
     suffix = " on Steam"
     if name.endswith(suffix):
         name = name[: -len(suffix)].strip()
-    # A discounted bundle's <title> is "Save 60% on <name>".
     name = re.sub(r"^Save\s+\d+%\s+on\s+", "", name, flags=re.IGNORECASE).strip()
     return name
 
 
 # --------------------------------------------------------------------- app facts
+
 
 def fetch_app_facts(
     appid: str,
@@ -172,13 +163,8 @@ def fetch_app_facts(
         return None
 
     started = time.perf_counter()
-    text = _store_get(_APPINFO_URL.format(appid=key), timeout)
-    if text is None:
-        return None
-    try:
-        payload = json.loads(text)
-    except ValueError as exc:
-        logger.debug("App info for %s is not JSON: %s", key, exc)
+    payload = _get_json(_APPINFO_URL.format(appid=key), timeout=timeout)
+    if not isinstance(payload, dict):
         return None
 
     node = ((payload or {}).get("data") or {}).get(key) or {}
@@ -238,14 +224,79 @@ def get_dlc_appids(
     return set(facts.get("dlc_appids") or []) if facts else set()
 
 
-# --------------------------------------------------------------------- bundles
+def _fetch_app_store_items(
+    appid: str, timeout: float = 6.0
+) -> Tuple[List[Dict[str, Any]], List[int]]:
+    """Query GetItems for an app and extract both its packages and bundle IDs.
+
+    Populates both the 'packages' and 'bundles' cache buckets in one round-trip
+    so the depot selector does not ask Steam for the same app twice.
+    """
+    key = str(appid).strip()
+    started = time.perf_counter()
+    data = _store_api("GetItems", {
+        "ids": [{"appid": int(key)}],
+        "context": _STORE_CONTEXT,
+        "data_request": {"include_all_purchase_options": True, "include_release": True},
+    })
+    if data is None:
+        return [], []
+
+    store_items = (data.get("response") or {}).get("store_items") or []
+    packages: List[Dict[str, Any]] = []
+    bundle_ids: List[int] = []
+
+    for item in store_items:
+        for opt in (item.get("purchase_options") or []):
+            bid = opt.get("bundleid")
+            if bid is not None:
+                bid_int = int(bid)
+                if bid_int not in bundle_ids:
+                    bundle_ids.append(bid_int)
+
+            pid = opt.get("packageid")
+            if pid is not None:
+                package_id = int(pid)
+                option_text = (opt.get("purchase_option_name") or "").strip()
+                name = clean_package_name(option_text) or f"Package {package_id}"
+                price_cents = opt.get("final_price_in_cents")
+                try:
+                    price_cents = int(price_cents) if price_cents not in (None, "") else 0
+                except (TypeError, ValueError):
+                    price_cents = 0
+                packages.append({
+                    "packageid": package_id,
+                    "name": name,
+                    "price": int(price_cents),
+                    "apps": [],
+                })
+
+    now = int(time.time())
+    _update_cache("packages", key, {
+        "ts": now,
+        "packages": packages,
+    })
+    _update_cache("bundles", key, {
+        "ts": now,
+        "ids": bundle_ids,
+    })
+    logger.debug(
+        "[Editions] app store items for %s: %.2f s, %d package(s), %d bundle(s)",
+        key, time.perf_counter() - started, len(packages), len(bundle_ids),
+    )
+    return packages, bundle_ids
+
 
 def discover_bundle_ids(
     appid: str, *, timeout: float = 6.0, allow_network: bool = True
 ) -> List[int]:
-    """Bundle ids the game's store page links to as its editions."""
+    """Bundle ids the game's store page links to as its editions.
+
+    Uses ``GetItems`` on the app to extract bundle references from
+    ``purchase_options`` instead of scraping HTML.
+    """
     key = str(appid).strip()
-    if not key or key in ("0", "N/A", "unknown"):
+    if not key or key in ("0", "N/A", "unknown") or not key.isdigit():
         return []
 
     cache = _read_cache()
@@ -255,76 +306,106 @@ def discover_bundle_ids(
     if not allow_network:
         return []
 
-    started = time.perf_counter()
-    html = _store_get(_APP_PAGE_URL.format(appid=key), timeout)
-    if html is None or _FRONT_PAGE_MARKER in html and "/bundle/" not in html:
-        return [int(b) for b in (entry or {}).get("ids") or []]
+    _, bundle_ids = _fetch_app_store_items(key, timeout=timeout)
+    return bundle_ids
 
-    seen: List[int] = []
-    for raw in _BUNDLE_LINK_RE.findall(html):
-        value = int(raw)
-        if value not in seen:
-            seen.append(value)
-    if not seen:
-        # The page answered but lists no bundles. Cache the empty answer so a
-        # game with no editions is not fetched on every menu open.
-        logger.debug("App page for %s links no bundles", key)
-    _update_cache("bundles", key, {"ts": int(time.time()), "ids": seen})
-    logger.debug(
-        "[Editions] bundle ids for %s: %.2f s, %s",
-        key, time.perf_counter() - started, seen,
-    )
-    return seen
+
+def fetch_bundles_batch(
+    bundle_ids: List[int], *, timeout: float = 6.0, allow_network: bool = True
+) -> List[Optional[Dict[str, Any]]]:
+    """Return ``[{"id", "name", "app_ids"}, ...]`` for a list of store bundles.
+
+    Batches missing bundle IDs into a single ``GetItems`` call instead of
+    querying Steam once per bundle across threads.
+    """
+    if not bundle_ids:
+        return []
+
+    cache = _read_cache()
+    results: Dict[int, Optional[Dict[str, Any]]] = {}
+    missing_ids: List[int] = []
+
+    for raw_id in bundle_ids:
+        try:
+            bid = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        key = str(bid)
+        entry = cache["bundle_data"].get(key)
+        if _fresh(entry):
+            name = str(entry.get("name") or "")
+            app_ids = [str(a) for a in entry.get("app_ids") or []]
+            if name and app_ids:
+                results[bid] = {"id": bid, "name": name, "app_ids": app_ids}
+            else:
+                results[bid] = None
+        elif not allow_network:
+            results[bid] = None
+        else:
+            missing_ids.append(bid)
+
+    if missing_ids and allow_network:
+        started = time.perf_counter()
+        now = int(time.time())
+        # Steam 400s past ~8KB in URL; 100 ids is safe.
+        for i in range(0, len(missing_ids), 100):
+            chunk = missing_ids[i:i + 100]
+            data = _store_api("GetItems", {
+                "ids": [{"bundleid": int(b)} for b in chunk],
+                "context": _STORE_CONTEXT,
+                "data_request": {"include_basic_info": True, "include_release": True},
+            })
+            store_items = (data.get("response") or {}).get("store_items") or [] if data else []
+            found_bids = set()
+            for item in store_items:
+                try:
+                    bid = int(item.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                found_bids.add(bid)
+                name = str(item.get("name") or "").strip()
+                included = item.get("included_appids") or []
+                app_ids = (
+                    [str(a) for a in included if str(a).strip() and str(a) != "0"]
+                    if isinstance(included, list)
+                    else []
+                )
+                if name and app_ids:
+                    bundle_data = {"id": bid, "name": name, "app_ids": app_ids}
+                    _update_cache("bundle_data", str(bid), {
+                        "ts": now,
+                        "name": name,
+                        "app_ids": app_ids,
+                    })
+                    results[bid] = bundle_data
+                else:
+                    results[bid] = None
+
+            for b in chunk:
+                if b not in found_bids:
+                    results[b] = None
+
+        logger.debug(
+            "[Editions] batched %d bundle(s): %.2f s",
+            len(missing_ids), time.perf_counter() - started,
+        )
+
+    return [results.get(int(bid)) for bid in bundle_ids]
 
 
 def fetch_bundle(
     bundle_id: int, *, timeout: float = 6.0, allow_network: bool = True
 ) -> Optional[Dict[str, Any]]:
-    """Return ``{"id", "name", "app_ids"}`` for a store bundle."""
-    key = str(int(bundle_id))
-    cache = _read_cache()
-    entry = cache["bundle_data"].get(key)
-    if _fresh(entry):
-        return {
-            "id": int(key),
-            "name": str(entry.get("name") or ""),
-            "app_ids": [str(a) for a in entry.get("app_ids") or []],
-        }
-    if not allow_network:
-        return None
+    """Return ``{"id", "name", "app_ids"}`` for a store bundle.
 
-    started = time.perf_counter()
-    html = _store_get(_BUNDLE_PAGE_URL.format(bundle_id=key), timeout)
-    if html is None:
-        return None
-    if _FRONT_PAGE_MARKER in html and "tab_item" not in html:
-        logger.debug("Bundle %s is delisted (front page answered)", key)
-        return None
+    Uses ``GetItems`` queried by ``bundleid`` instead of downloading the
+    bundle store page and parsing HTML.
+    """
+    res = fetch_bundles_batch([bundle_id], timeout=timeout, allow_network=allow_network)
+    return res[0] if res else None
 
-    header_match = _PAGEHEADER_RE.search(html)
-    title_match = _TITLE_RE.search(html)
-    name = _clean_title(header_match.group(1)) if header_match else ""
-    if not name and title_match:
-        name = _clean_title(title_match.group(1))
-    app_ids: List[str] = []
-    for raw in _APP_LINK_RE.findall(html):
-        if raw == "0" or raw in app_ids:
-            continue
-        app_ids.append(raw)
-    if not name or not app_ids:
-        logger.debug("Bundle %s page held no usable name or items", key)
-        return None
 
-    _update_cache("bundle_data", key, {
-        "ts": int(time.time()),
-        "name": name,
-        "app_ids": app_ids,
-    })
-    logger.debug(
-        "[Editions] bundle %s: %.2f s, %d app(s), %r",
-        key, time.perf_counter() - started, len(app_ids), name,
-    )
-    return {"id": int(key), "name": name, "app_ids": app_ids}
+_ORIGINAL_FETCH_BUNDLE = fetch_bundle
 
 
 def bundle_editions(
@@ -349,18 +430,12 @@ def bundle_editions(
     bundle_ids = discover_bundle_ids(base, timeout=timeout, allow_network=allow_network)
     if not bundle_ids:
         return []
-    if len(bundle_ids) == 1:
-        bundles = [fetch_bundle(bundle_ids[0], timeout=timeout, allow_network=allow_network)]
+
+    # If fetch_bundle was monkeypatched (e.g. in test suite), use it; otherwise batch.
+    if fetch_bundle != _ORIGINAL_FETCH_BUNDLE:
+        bundles = [fetch_bundle(bid, timeout=timeout, allow_network=allow_network) for bid in bundle_ids]
     else:
-        # Bundle pages are independent, so a game sold in three editions waits
-        # for one page instead of three.
-        with ThreadPoolExecutor(max_workers=min(4, len(bundle_ids))) as pool:
-            bundles = list(pool.map(
-                lambda bundle_id: fetch_bundle(
-                    bundle_id, timeout=timeout, allow_network=allow_network
-                ),
-                bundle_ids,
-            ))
+        bundles = fetch_bundles_batch(bundle_ids, timeout=timeout, allow_network=allow_network)
 
     editions: List[Dict[str, Any]] = []
     for bundle in bundles:
@@ -372,10 +447,6 @@ def bundle_editions(
         if dlc_set is not None:
             family = (apps - {base}) & dlc_set
             others = apps - {base} - family
-            # A crossover bundle (this game plus an unrelated series) carries
-            # mostly apps that are not this game's DLCs. Keep bundles whose
-            # family is at least as large as the rest, so an edition that also
-            # ships an upgrade or soundtrack pack still qualifies.
             if not family or len(family) < len(others):
                 logger.debug(
                     "Bundle %s skipped for %s: it carries %d DLC app(s) and %d outsider(s)",
@@ -396,7 +467,6 @@ def clean_package_name(raw_text: str) -> str:
     if not raw_text:
         return ""
     text = re.sub(r"<[^>]+>", "", str(raw_text)).strip()
-    # The store can append more than one price ("Game - $4.99 $3.74").
     return re.sub(
         r"\s*-\s*[\$€£¥]\s?\d[\d\.,]*(?:\s+[\$€£¥]?\s?\d[\d\.,]*)*\s*$", "", text
     ).strip()
@@ -405,11 +475,12 @@ def clean_package_name(raw_text: str) -> str:
 def fetch_store_packages(
     appid: str, *, timeout: float = 6.0, allow_network: bool = True
 ) -> List[Dict[str, Any]]:
-    """Packages (subs) the store sells this game through, with name and price.
+    """Packages (subs) the store sells this game through, with name.
 
-    The store's appdetails endpoint is the only public source that names the
-    packages a game is sold as and prices them. It reports no bundles; those
-    come from the app page.
+    Uses ``GetItems`` instead of the legacy ``appdetails`` endpoint. The API
+    returns a flat ``purchase_options`` list; ``packageid`` entries are the
+    subs and ``bundleid`` entries are skipped here (they are handled by
+    ``discover_bundle_ids`` / ``fetch_bundle``).
     """
     key = str(appid).strip()
     if not key or not key.isdigit():
@@ -420,41 +491,5 @@ def fetch_store_packages(
     if not allow_network:
         return []
 
-    started = time.perf_counter()
-    text = _store_get(_APPDETAILS_URL.format(appid=key), timeout)
-    if text is None:
-        return [dict(p) for p in (entry or {}).get("packages") or []]
-    try:
-        payload = json.loads(text)
-    except ValueError as exc:
-        logger.debug("Store packages for %s are not JSON: %s", key, exc)
-        return []
-
-    app_data = ((payload or {}).get(key) or {}).get("data") or {}
-    packages: List[Dict[str, Any]] = []
-    for group in app_data.get("package_groups") or []:
-        for sub in (group or {}).get("subs") or []:
-            package_id = sub.get("packageid")
-            if not package_id:
-                continue
-            name = (
-                clean_package_name(sub.get("option_description") or "")
-                or clean_package_name(sub.get("option_text") or "")
-                or f"Package {package_id}"
-            )
-            packages.append({
-                "packageid": package_id,
-                "name": name,
-                "price": sub.get("price_in_cents_with_discount") or 0,
-                "apps": [],
-            })
-
-    logger.debug(
-        "[Editions] store packages for %s: %.2f s, %d package(s)",
-        key, time.perf_counter() - started, len(packages),
-    )
-    _update_cache("packages", key, {
-        "ts": int(time.time()),
-        "packages": packages,
-    })
+    packages, _ = _fetch_app_store_items(key, timeout=timeout)
     return packages

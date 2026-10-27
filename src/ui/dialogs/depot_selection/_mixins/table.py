@@ -56,7 +56,7 @@ class DepotTableMixin:
 
     def _build_config_text(self, d_id, d_data, is_first=False) -> str:
         original_desc = d_data.get("desc") or d_data.get("name") or ""
-        for p in ("[Checking]", "[Missing]", "[Recovered]", "[No Key]", "[Key Ready]", "[Missing from Hubcap]", "[Unavailable on Hubcap (404)]"):
+        for p in ("[Checking]", "[Missing]", "[Recovered]", "[No Key]", "[Key Ready]", "[Unavailable]", "[Missing from Hubcap]", "[Unavailable on Hubcap (404)]"):
             original_desc = original_desc.replace(p, "").strip()
         original_desc = re.sub(
             r"\s*-\s*Depot\s*" + re.escape(str(d_id)),
@@ -233,7 +233,15 @@ class DepotTableMixin:
                 default_eds = self._multi_platform_editions.get(self._default_platform, [])
                 highest_ed = default_eds[0] if default_eds else None
                 if highest_ed and highest_ed.get("depot_ids"):
-                    pre_selected_set = set(highest_ed["depot_ids"])
+                    if getattr(self, "_dlc_only_mode", False):
+                        pre_selected_set = set()
+                        for did, d_data in self.depots.items():
+                            d_data = d_data if isinstance(d_data, dict) else {}
+                            desc = str(d_data.get("desc") or d_data.get("name") or "")
+                            if is_dlc_depot(did, desc=desc, base_appid=str(self.app_id), depot_meta=d_data) and not is_base_game_main_depot(did, desc, str(self.app_id)):
+                                pre_selected_set.add(str(did))
+                    else:
+                        pre_selected_set = set(highest_ed["depot_ids"])
                     if hasattr(self, "edition_button"):
                         short = highest_ed.get("short_name", "Complete")
                         if len(self._available_platforms) > 1:
@@ -242,10 +250,26 @@ class DepotTableMixin:
                         else:
                             self.edition_button.setText(f"{short} ▾")
                 else:
-                    pre_selected_set = set(get_smart_default_depots(self.depots, target_platform=self._default_platform))
+                    if getattr(self, "_dlc_only_mode", False):
+                        pre_selected_set = set()
+                        for did, d_data in self.depots.items():
+                            d_data = d_data if isinstance(d_data, dict) else {}
+                            desc = str(d_data.get("desc") or d_data.get("name") or "")
+                            if is_dlc_depot(did, desc=desc, base_appid=str(self.app_id), depot_meta=d_data) and not is_base_game_main_depot(did, desc, str(self.app_id)):
+                                pre_selected_set.add(str(did))
+                    else:
+                        pre_selected_set = set(get_smart_default_depots(self.depots, target_platform=self._default_platform))
             except Exception as _e:
                 logger.debug(f"[DepotSelection] Complete edition initial lookup failed: {_e}")
-                pre_selected_set = set(get_smart_default_depots(self.depots, target_platform="linux"))
+                if getattr(self, "_dlc_only_mode", False):
+                    pre_selected_set = set()
+                    for did, d_data in self.depots.items():
+                        d_data = d_data if isinstance(d_data, dict) else {}
+                        desc = str(d_data.get("desc") or d_data.get("name") or "")
+                        if is_dlc_depot(did, desc=desc, base_appid=str(self.app_id), depot_meta=d_data) and not is_base_game_main_depot(did, desc, str(self.app_id)):
+                            pre_selected_set.add(str(did))
+                else:
+                    pre_selected_set = set(get_smart_default_depots(self.depots, target_platform="linux"))
 
         include_hidden = getattr(self, "_show_hidden_depots", False) and bool(hidden_depots)
 
@@ -408,7 +432,10 @@ class DepotTableMixin:
                 d_id_item.setForeground(darker_grey)
                 d_id_item.setToolTip("Owned legitimately on Steam")
             else:
-                is_chk = (dlc_app_id in injected_dlcs) or (dlc_app_id in pre_selected_set)
+                if self.selected_depots is not None:
+                    is_chk = (dlc_app_id in injected_dlcs) or (dlc_app_id in pre_selected_set)
+                else:
+                    is_chk = True if is_dlc_mode else ((dlc_app_id in injected_dlcs) or (dlc_app_id in pre_selected_set))
                 d_id_item.setCheckState(Qt.CheckState.Checked if is_chk else Qt.CheckState.Unchecked)
                 d_id_item.setFlags(d_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsUserCheckable)
                 d_id_item.setToolTip("Toggle DLC entitlement for SLSsteam config")
@@ -769,8 +796,12 @@ class DepotTableMixin:
             self.status_summary_label.setText(summary_text)
 
         if hasattr(self, "download_btn"):
-            self.download_btn.setText(f"Download Selected ({sel_count}/{total_count})")
-            self.download_btn.setEnabled(sel_count > 0)
+            prefix = "Register to AT0-M" if getattr(self, "_is_atom_mode", False) else "Download"
+            if total_count > 0:
+                self.download_btn.setText(f"{prefix} ({sel_count}/{total_count})")
+            else:
+                self.download_btn.setText(prefix)
+            self.download_btn.setEnabled(sel_count > 0 or (getattr(self, "_is_atom_mode", False) and dlcdata_sel > 0))
         if hasattr(self, "inject_btn"):
             self.inject_btn.setText(f"Inject DLC Data Only ({dlcdata_sel})")
             self.inject_btn.setEnabled(dlcdata_sel > 0)

@@ -26,6 +26,16 @@ class MigrationMixin:
         is_dlc_only = bool(getattr(self, "_dlc_only_mode", False))
 
         from ui.dialogs.themed_message_box import ThemedMessageBox
+        from utils.plugin_games import can_use_atom_mode, migrate_game_to_atom
+
+        can_atom, atom_err = can_use_atom_mode()
+        if not can_atom:
+            ThemedMessageBox.warning(
+                self,
+                "AT0-M Setup Incomplete",
+                f"Cannot transition to AT0-M mode:\n\n{atom_err}\n\nPlease check your AT0-M and SLSsteam configuration in Settings.",
+            )
+            return
 
         reply = ThemedMessageBox.question(
             self,
@@ -42,7 +52,6 @@ class MigrationMixin:
             return
 
         try:
-            from utils.plugin_games import migrate_game_to_atom
             from utils.yaml.dlc import add_dlc_data_batch
             from utils.yaml_config_manager import get_user_config_path
 

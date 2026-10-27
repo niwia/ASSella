@@ -238,7 +238,19 @@ jobs:
             echo "appimageupdatetool bundled and verified executable."
           fi
 
-          # 6. Bundle Tor Executable
+          # 6. Bundle zsync binary for delta-update fallback when appimageupdatetool
+          #    is unavailable. zsync is already installed in the CI image (see
+          #    "Install System Packaging Tools"). A bundled copy means users who
+          #    updated via full download never need to install it system-wide.
+          if [ -f "/usr/bin/zsync" ]; then
+            cp /usr/bin/zsync AppDir/bin/zsync
+            chmod +x AppDir/bin/zsync
+            echo "zsync bundled into AppDir/bin/zsync."
+          else
+            echo "::warning::zsync not found on build host — delta updates will fall back to full download."
+          fi
+
+          # 8. Bundle Tor Executable
           if [ -f "/usr/bin/tor" ]; then
             cp /usr/bin/tor AppDir/bin/tor
           elif [ -f "bin/tor" ]; then
@@ -246,22 +258,32 @@ jobs:
           fi
           chmod +x AppDir/bin/tor 2>/dev/null || true
 
-          # 7. Bundle Relocatable Standalone Python 3.13 Runtime
+          # 9. Bundle Relocatable Standalone Python 3.13 Runtime
           echo "Downloading relocatable python-build-standalone runtime (Python 3.13)..."
           curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.13.0+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz"
           tar -xzf /tmp/cpython-standalone.tar.gz -C AppDir/bin/
           mv AppDir/bin/python AppDir/bin/.venv
 
-          # 8. Install application dependencies into bundled runtime
+          # 10. Install application dependencies into bundled runtime
           AppDir/bin/.venv/bin/python3 -m pip install --upgrade pip setuptools wheel
           AppDir/bin/.venv/bin/python3 -m pip install -r requirements.txt
           find AppDir/bin/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
-          # 9. Sanity check: Verify all required imports inside bundled AppDir runtime
+          # 11. Sanity check: Verify all required imports inside bundled AppDir runtime
           echo "Verifying AppDir runtime imports..."
           QT_QPA_PLATFORM=offscreen AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, urwid, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
           test -x AppDir/bin/appimageupdatetool || { echo "::error::appimageupdatetool missing from AppDir"; exit 1; }
           echo "appimageupdatetool present and executable."
+          # zsync is optional — we bundle it when available so delta updates work
+          # even when the user has no system zsync. Its absence is a warning, not a
+          # fatal error: the full-download path still works.
+          if [ -f "AppDir/bin/zsync" ]; then
+            AppDir/bin/zsync -V >/dev/null 2>&1 || \
+              echo "::warning::Bundled zsync present but fails to execute"
+            echo "zsync bundled and verified executable."
+          else
+            echo "::warning::zsync not bundled — delta updates require system zsync or fall back to full download."
+          fi
 
       - name: Upload Assemble AppDir Log on Failure
         if: failure()

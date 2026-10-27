@@ -1145,8 +1145,12 @@ class DownloadDepotsTask(QObject):
                 str(max_downloads),
                 "-dir",
                 download_dir,
-                "-validate",
             ]
+
+            # Only validate existing files when explicitly verifying integrity or requested
+            is_verify = game_data.get("job_type") == "verify" or game_data.get("validate", False)
+            if is_verify:
+                cmd_args.append("-validate")
 
             # Check selected branch (falls back to the installed ACF betakey, then public)
             from core.morrenus_api import get_selected_branch

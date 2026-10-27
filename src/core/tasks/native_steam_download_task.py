@@ -318,6 +318,7 @@ class NativeSteamDownloadTask(QObject):
                     depot_names=depot_names,
                     dlc_appids=dlc_appids,
                     is_dlc_only=is_dlc,
+                    app_token=game_data.get("app_token") or game_data.get("token"),
                 )
 
                 # Clean legacy ACCELA markers from install folder if any exist
@@ -533,13 +534,24 @@ class NativeSteamDownloadTask(QObject):
 
                 # Persist to DepotKeyManager (SQLite)
                 try:
+                    from utils.lua_parsing import extract_all_tokens, extract_token
                     dkm = DepotKeyManager.get_instance()
                     keys_to_save = {str(d): k for d, k in depot_keys.items()}
                     if keys_to_save:
                         dkm.save_depot_keys(appid_str, keys_to_save)
                         logger.info(f"[NativeSteamDL] Persisted {len(keys_to_save)} keys to DepotKeyManager for {appid_str}")
+                    tokens_map = extract_all_tokens(lua_txt)
+                    if not tokens_map:
+                        single_t = extract_token(lua_txt, appid_str)
+                        if single_t:
+                            tokens_map[appid_str] = single_t
+                    for aid, tok in tokens_map.items():
+                        dkm.save_app_token(aid, tok)
+                        if aid == appid_str:
+                            game_data["token"] = tok
+                            game_data["app_token"] = tok
                 except Exception as e:
-                    logger.debug(f"[NativeSteamDL] Error persisting keys to DepotKeyManager: {e}")
+                    logger.debug(f"[NativeSteamDL] Error persisting keys/tokens to DepotKeyManager: {e}")
 
             except Exception as e:
                 logger.error(f"[NativeSteamDL] Error parsing Lua content: {e}")
@@ -551,6 +563,10 @@ class NativeSteamDownloadTask(QObject):
             if cached_dkm_keys:
                 for d, k in cached_dkm_keys.items():
                     depot_keys.setdefault(str(d), k)
+            cached_tok = dkm.get_app_token(appid_str)
+            if cached_tok:
+                game_data.setdefault("token", cached_tok)
+                game_data.setdefault("app_token", cached_tok)
         except Exception as e:
             logger.debug(f"[NativeSteamDL] Error checking DepotKeyManager: {e}")
 
@@ -874,6 +890,53 @@ class NativeSteamDownloadTask(QObject):
             content = content[: bounds_keys[0]] + key_block + content[bounds_keys[2] :]
         else:
             content = content.rstrip() + "\n\n" + key_block
+
+        # 4b. Format AppTokens
+        from utils.yaml_config_manager import _add_map_item_in_memory, _remove_entry_in_memory
+        token_val = None
+        if game_data and (game_data.get("app_token") or game_data.get("token")):
+            token_val = str(game_data.get("app_token") or game_data.get("token")).strip()
+        if not token_val:
+            try:
+                from managers.depot_key_manager import DepotKeyManager
+                tok = DepotKeyManager.get_instance().get_app_token(appid_str)
+                if tok:
+                    token_val = str(tok).strip()
+            except Exception as e:
+                logger.debug(f"[NativeSteamDL] Could not query DepotKeyManager for token: {e}")
+
+        if token_val and not is_dlc:
+            content, _ = _add_map_item_in_memory(
+                content, "AppTokens", appid_str, token_val, game_name
+            )
+        elif is_dlc:
+            bounds_tok = _get_section_bounds(content, "AppTokens")
+            if bounds_tok:
+                pattern_tok = re.compile(
+                    rf"^[ \t]*['\"]?{re.escape(appid_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
+                    re.MULTILINE,
+                )
+                content, _ = _remove_entry_in_memory(content, "AppTokens", pattern_tok)
+            try:
+                from managers.depot_key_manager import DepotKeyManager
+                dkm = DepotKeyManager.get_instance()
+                if dlc_appids:
+                    for dlc_id in dlc_appids:
+                        dlc_tok = dkm.get_app_token(dlc_id)
+                        if dlc_tok:
+                            content, _ = _add_map_item_in_memory(
+                                content, "AppTokens", dlc_id, str(dlc_tok).strip(), f"[DLC] {game_name} ({dlc_id})"
+                            )
+                for did in (new_depot_ids or []):
+                    did_str = str(did).strip()
+                    if did_str != appid_str and (not dlc_appids or did_str not in dlc_appids):
+                        depot_tok = dkm.get_app_token(did_str)
+                        if depot_tok:
+                            content, _ = _add_map_item_in_memory(
+                                content, "AppTokens", did_str, str(depot_tok).strip(), f"[DLC Depot] {game_name} ({did_str})"
+                            )
+            except Exception as e:
+                logger.debug(f"[NativeSteamDL] Could not query DepotKeyManager for DLC tokens: {e}")
 
         # 5. Write atomically in a single pass to avoid multiple reload notifications
         if not _atomic_write(config_path, content):

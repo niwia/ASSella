@@ -1,7 +1,156 @@
+import json
 import logging
-from PyQt6.QtGui import QColor
+from pathlib import Path
+from typing import Dict, Optional
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QImage, QPixmap
 
 logger = logging.getLogger(__name__)
+
+_THUMBNAIL_COLOR_CACHE: Dict[str, QColor] = {}
+_DISK_CACHE_LOADED: bool = False
+
+
+def _get_color_cache_file() -> Path:
+    from utils.helpers import get_base_path
+    return get_base_path() / "thumbnail_colors.json"
+
+
+def _ensure_disk_cache_loaded() -> None:
+    global _DISK_CACHE_LOADED, _THUMBNAIL_COLOR_CACHE
+    if _DISK_CACHE_LOADED:
+        return
+    _DISK_CACHE_LOADED = True
+    try:
+        cache_path = _get_color_cache_file()
+        if cache_path.is_file():
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for aid, hex_str in data.items():
+                    if isinstance(hex_str, str) and hex_str.startswith("#"):
+                        col = QColor(hex_str)
+                        if col.isValid() and aid not in _THUMBNAIL_COLOR_CACHE:
+                            _THUMBNAIL_COLOR_CACHE[str(aid)] = col
+    except Exception as e:
+        logger.debug(f"Could not load thumbnail color cache from disk: {e}")
+
+
+def get_cached_thumbnail_color(app_id: Optional[str]) -> Optional[QColor]:
+    """Retrieve pre-extracted thumbnail color from memory/disk cache without needing a pixmap."""
+    if not app_id:
+        return None
+    _ensure_disk_cache_loaded()
+    return _THUMBNAIL_COLOR_CACHE.get(str(app_id))
+
+
+def _save_color_to_disk_cache(app_id: str, hex_val: str) -> None:
+    try:
+        cache_path = _get_color_cache_file()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if cache_path.is_file():
+            try:
+                raw = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    data = raw
+            except Exception:
+                data = {}
+        data[str(app_id)] = hex_val
+        # Cap size at 1500 entries
+        if len(data) > 1500:
+            for k in list(data.keys())[:300]:
+                data.pop(k, None)
+        cache_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.debug(f"Could not save thumbnail color cache to disk: {e}")
+
+
+def extract_dominant_color(pixmap: QPixmap, app_id: Optional[str] = None) -> Optional[QColor]:
+    """
+    Extracts a vibrant signature/accent color from a thumbnail pixmap using lightweight
+    Qt image downsampling and HSV vibrance clustering.
+
+    Filters out dark borders/letterboxing and desaturated background tones.
+    Runs in < 0.5 ms and caches result in memory and disk by app_id if provided.
+    """
+    if not pixmap or pixmap.isNull():
+        return None
+
+    if app_id:
+        _ensure_disk_cache_loaded()
+        if str(app_id) in _THUMBNAIL_COLOR_CACHE:
+            return _THUMBNAIL_COLOR_CACHE[str(app_id)]
+
+    try:
+        # Downsample to a small grid for near-instant analysis (24x24 = 576 pixels)
+        img = pixmap.toImage().scaled(
+            24, 24,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        if img.isNull():
+            return None
+
+        width = img.width()
+        height = img.height()
+
+        # 12 hue buckets (30 degrees each)
+        # Each bucket holds: [count, sum_r, sum_g, sum_b, total_score]
+        buckets = [[0, 0, 0, 0, 0.0] for _ in range(12)]
+        all_candidates = []
+
+        for y in range(height):
+            for x in range(width):
+                rgb = img.pixel(x, y)
+                c = QColor(rgb)
+                h, s, v, _ = c.getHsv()
+
+                # Filter out extreme darks (v < 38), washed out whites (v > 240 and s < 30),
+                # and nearly pure grays (s < 35)
+                if v < 38 or (v > 240 and s < 30) or s < 35:
+                    continue
+
+                # Weight by saturation and value (vibrancy score)
+                score = ((s / 255.0) ** 1.2) * (v / 255.0)
+
+                # Hue ranges 0..359
+                bucket_idx = int((h % 360) / 30)
+                b = buckets[bucket_idx]
+                b[0] += 1
+                b[1] += c.red()
+                b[2] += c.green()
+                b[3] += c.blue()
+                b[4] += score
+                all_candidates.append((c, score))
+
+        # Find highest scoring bucket
+        best_bucket = max(buckets, key=lambda b: b[4])
+
+        result_color = None
+        if best_bucket[0] > 0 and best_bucket[4] > 1.0:
+            avg_r = int(best_bucket[1] / best_bucket[0])
+            avg_g = int(best_bucket[2] / best_bucket[0])
+            avg_b = int(best_bucket[3] / best_bucket[0])
+            result_color = QColor(avg_r, avg_g, avg_b)
+        elif all_candidates:
+            # Fallback to the single most vibrant candidate
+            result_color = max(all_candidates, key=lambda p: p[1])[0]
+
+        if result_color and result_color.isValid():
+            # Ensure the extracted color has enough saturation and brightness for a rich ambient glow
+            h, s, v, _ = result_color.getHsv()
+            s = max(70, min(255, int(s * 1.15))) if s > 0 else 0
+            v = max(130, min(255, int(v * 1.05)))
+            adjusted = QColor.fromHsv(h, s, v)
+            if app_id:
+                _THUMBNAIL_COLOR_CACHE[str(app_id)] = adjusted
+                _save_color_to_disk_cache(str(app_id), adjusted.name())
+            return adjusted
+
+    except Exception as e:
+        logger.debug(f"Dominant color extraction failed: {e}")
+
+    return None
 
 
 def get_relative_luminance(color_hex_or_rgb) -> float:

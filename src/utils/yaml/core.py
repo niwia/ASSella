@@ -719,8 +719,13 @@ class BatchConfigEditor:
 
                 if not is_known_dlc and app_id:
                     try:
-                        from utils.dlc_helpers import is_dlc_depot
-                        if is_dlc_depot(depot_id_str, base_appid=app_id):
+                        from utils.dlc_helpers import build_app_to_depots_map, is_dlc_depot
+                        app_map = build_app_to_depots_map(app_id)
+                        for dlc_aid, dset in app_map.items():
+                            if str(dlc_aid) != str(app_id) and (depot_id_str == str(dlc_aid) or depot_id_str in dset):
+                                is_known_dlc = True
+                                break
+                        if not is_known_dlc and is_dlc_depot(depot_id_str, base_appid=app_id):
                             is_known_dlc = True
                     except Exception:
                         pass
@@ -831,6 +836,25 @@ class BatchConfigEditor:
                 re.MULTILINE,
             )
         )
+
+    def contains_token(self, app_id: Union[str, int]) -> bool:
+        """True when the app id is present in the AppTokens section."""
+        app_id_str = _sanitize_id(app_id)
+        if not app_id_str or not self.content:
+            return False
+        bounds = _get_section_bounds(self.content, "AppTokens")
+        if not bounds:
+            return False
+        section = self.content[bounds[1]:bounds[2]]
+        return bool(
+            re.search(
+                rf"^[ \t]*['\"]?{re.escape(app_id_str)}['\"]?[ \t]*:[ \t]*[^\r\n#]+(?:#[^\r\n]*)?$",
+                section,
+                re.MULTILINE,
+            )
+        )
+
+    contains_app_token = contains_token
 
     def add_key(
         self,
@@ -1012,6 +1036,28 @@ class BatchConfigEditor:
             self.has_changes = True
             return True
         return False
+
+    def add_token(
+        self,
+        app_id: Union[str, int],
+        token: Union[str, int],
+        comment: str = "",
+    ) -> bool:
+        app_id_str = _sanitize_id(app_id)
+        token_str = str(token).strip()
+        if not app_id_str or not token_str:
+            return False
+        comment_clean = _sanitize_comment(comment)
+        new_content, changed = _add_map_item_in_memory(
+            self.content, "AppTokens", app_id_str, token_str, comment_clean
+        )
+        if changed:
+            self.content = new_content
+            self.has_changes = True
+            return True
+        return False
+
+    add_app_token = add_token
 
     def remove_app_token(self, app_id: Union[str, int]) -> bool:
         app_id_str = _sanitize_id(app_id)

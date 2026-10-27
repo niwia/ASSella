@@ -207,7 +207,12 @@ class PostInstallMixin:
             return
 
         self._set_linux_binary_permissions()
-        if self.slssteam_mode_was_active and config_enabled:
+        # Config synchronization must not depend on the mode snapshot captured
+        # when the job started. Branch/rollback jobs can enter ASSella mode with
+        # a stale flag, but the existing SLS config is still the authoritative
+        # entitlement store. The sync helper safely no-ops when the config is
+        # absent; config_enabled still respects an explicit user disablement.
+        if config_enabled:
             self._add_appids_to_slssteam_config()
     def _finalize_eosproxy(self):
         """Automatically detect and apply EOS proxy if enabled in settings."""
@@ -474,14 +479,20 @@ class PostInstallMixin:
                             )
                             from utils.plugin_games import load_plugin_library
                             prior_record = load_plugin_library().get(str(appid), {})
+                            sync_dlc_appids = prior_record.get("dlc_appids", [])
+                            if not sync_dlc_appids:
+                                from utils.dlc_helpers import get_all_dlcs_for_app
+                                discovered_dlcs = get_all_dlcs_for_app(str(appid), self.game_data, allow_network=False)
+                                sync_dlc_appids = [str(d["dlc_appid"]) for d in discovered_dlcs if d.get("dlc_appid")]
                             register_plugin_game(
                                 appid=str(appid),
                                 name=self.game_data.get("game_name", f"App {appid}"),
                                 depot_ids=selected_depots,
                                 decryption_keys=depot_keys,
                                 installdir=installdir,
-                                dlc_appids=prior_record.get("dlc_appids", []),
+                                dlc_appids=sync_dlc_appids,
                                 is_dlc_only=bool(prior_record.get("dlc_only", False)),
+                                app_token=self.game_data.get("app_token") or self.game_data.get("token"),
                             )
                             logger.info(f"[TaskManager] Successfully synchronized AT0-M / SLSsteam registration for {appid}")
                         except Exception as _reg_err:
@@ -631,6 +642,8 @@ class PostInstallMixin:
                             game_name=self.game_data.get("game_name", ""),
                             library_path=self.current_dest_path or "",
                             main_window=self.main_window,
+                            game_data=self.game_data,
+                            size_on_disk=size_on_disk,
                         )
                     return
         except Exception as e:
@@ -840,7 +853,14 @@ class PostInstallMixin:
                     logger.debug(f"Could not convert plugin game {main_appid}: {e}")
 
                 from utils.dlc_helpers import sync_dlc_only_sls_config
-                sync_dlc_only_sls_config(config_path, str(main_appid), game_name, self.game_data)
+                synced = sync_dlc_only_sls_config(
+                    config_path, str(main_appid), game_name, self.game_data
+                )
+                logger.info(
+                    "[SLS Sync] Completed config synchronization for AppID %s (result=%s)",
+                    main_appid,
+                    synced,
+                )
 
         except OSError as e:
             logger.warning(f"Failed to add AppIDs to SLSsteam config: {e}")

@@ -197,6 +197,8 @@ jobs:
                        test_language_depots \
                        test_depots_tab_state \
                        test_update_checker \
+                       test_sls_lua_config_and_dialogs \
+                       test_atom_dlc_and_byparr \
                        test_steam_updates; do
             echo "::group::$suite"
             QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp \

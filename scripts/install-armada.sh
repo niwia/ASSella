@@ -141,6 +141,7 @@ Categories=Utility;Game;
 StartupNotify=true
 EOF
 chmod 0644 "$desktop_tmp"
+rm -f "$DESKTOP_FILE"
 mv -f "$desktop_tmp" "$DESKTOP_FILE"
 
 echo -e "${GREEN}✓ Created launcher: $LAUNCHER${NC}"

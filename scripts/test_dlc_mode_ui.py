@@ -43,6 +43,7 @@ def main() -> int:
     from ui.dialogs.library.widgets import (
         DLC_MODE_SUFFIX,
         GameItemWidget,
+        GameTileWidget,
         format_game_display_name,
         split_dlc_mode,
     )
@@ -82,20 +83,34 @@ def main() -> int:
             "#a1c9fd",
             "#111318",
         )
-        check(card.dlc_mode_badge is not None, "a DLC-mode card gets a badge")
         check(card.name_label.text() == "Probe Game",
               f"the marker is not part of the elided name (got {card.name_label.text()!r})")
-        check("DLC MODE" in (card.dlc_mode_badge.text() if card.dlc_mode_badge else ""),
-              "the badge says DLC MODE")
-        check("#a1c9fd" in (card.dlc_mode_badge.styleSheet() if card.dlc_mode_badge else ""),
-              "the badge uses the accent colour")
+        check(card.dlc_mode_badge is None, "GameItemWidget avoids duplicate title badge")
+        check(card.status_label.text() == "[DLC Only]",
+              f"the status label says [DLC Only] (got {card.status_label.text()!r})")
+        check("#a1c9fd" in card.status_label.styleSheet(),
+              "the status badge uses the accent colour")
+
+        grid_card = GameTileWidget(
+            {"appid": probe_appid, "game_name": "Probe Game"},
+            "1 GiB",
+            "#a1c9fd",
+            "#111318",
+        )
+        check(grid_card.dlc_mode_badge is not None, "a DLC-mode tile card gets a badge")
+        check("DLC" in (grid_card.dlc_mode_badge.text() if grid_card.dlc_mode_badge else ""),
+              "the tile badge says DLC")
+        check("#a1c9fd" in (grid_card.dlc_mode_badge.styleSheet() if grid_card.dlc_mode_badge else ""),
+              "the tile badge uses the accent colour")
+        grid_card.deleteLater()
         card.deleteLater()
     finally:
         settings.remove(f"dlc_only_mode/{probe_appid}")
 
     plain = GameItemWidget({"appid": "990002", "game_name": "Plain Game"},
                            "1 GiB", "#a1c9fd", "#111318")
-    check(plain.dlc_mode_badge is None, "a normal card gets no badge")
+    check(plain.status_label.text() != "[DLC Only]", "a normal card gets no DLC badge")
+    check(plain.dlc_mode_badge is None, "a normal card gets no title badge")
     plain.deleteLater()
 
     print()

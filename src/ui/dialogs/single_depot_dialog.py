@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from PyQt6.QtCore import Qt, pyqtSignal, QEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent, QTimer
 from PyQt6.QtGui import QPixmap, QIcon, QColor
 from PyQt6.QtWidgets import (
     QDialog,
@@ -100,10 +100,19 @@ class SingleDepotSelectionDialog(QDialog):
             self._settings = None
             self.accent_color = "#C06C84"
 
+        # Check for cached thumbnail color to apply on first paint immediately
+        try:
+            from utils.color_utils import get_cached_thumbnail_color
+            cached_col = get_cached_thumbnail_color(str(self.app_id))
+            if cached_col and cached_col.isValid():
+                self._ambient_color = cached_col
+        except Exception:
+            pass
+
         # Resolve the single depot ID and metadata
         if self.depots:
-            self.single_depot_id = str(next(iter(self.depots.keys())))
-            self.single_depot_data = self.depots.get(self.single_depot_id, {})
+            from ui.dialogs.depot_selection.rules import get_effective_single_depot
+            self.single_depot_id, self.single_depot_data = get_effective_single_depot(self.depots, self.app_id)
             if not isinstance(self.single_depot_data, dict):
                 self.single_depot_data = {}
         else:
@@ -175,6 +184,8 @@ class SingleDepotSelectionDialog(QDialog):
             can_maximize=False,
             use_power_close=True,
         )
+        if getattr(self, "_ambient_color", None):
+            self.title_bar.update_accent_color(self._ambient_color)
         root_layout.addWidget(self.title_bar)
 
         content_widget = QWidget()
@@ -199,14 +210,53 @@ class SingleDepotSelectionDialog(QDialog):
         title_layout = QVBoxLayout()
         title_layout.setSpacing(2)
 
-        display_title = (
-            f"{self.game_name} ({self.app_id})"
-            if self.app_id and self.app_id not in ("0", "unknown", "None", "") and f"({self.app_id})" not in str(self.game_name)
-            else self.game_name
-        )
-        self.title_label = QLabel(display_title)
+        title_hlayout = QHBoxLayout()
+        title_hlayout.setSpacing(6)
+        title_hlayout.setContentsMargins(0, 0, 0, 0)
+
+        clean_name = str(self.game_name)
+        if self.app_id and f"({self.app_id})" in clean_name:
+            clean_name = clean_name.replace(f"({self.app_id})", "").strip()
+
+        self.title_label = QLabel(clean_name)
         self.title_label.setStyleSheet("font-size: 12pt; font-weight: bold; color: #FFFFFF;")
-        title_layout.addWidget(self.title_label)
+        title_hlayout.addWidget(self.title_label)
+
+        if self.app_id and str(self.app_id) not in ("0", "unknown", "None", ""):
+            aid_str = str(self.app_id).strip()
+            self.appid_btn = QPushButton(f"({aid_str})")
+            self.appid_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.appid_btn.setToolTip(f"Click to copy AppID ({aid_str})")
+            self.appid_btn.setStyleSheet("""
+                QPushButton {
+                    background: transparent;
+                    border: none;
+                    color: rgba(255, 255, 255, 0.55);
+                    font-style: italic;
+                    font-size: 11pt;
+                    padding: 0px 2px;
+                    text-align: left;
+                }
+                QPushButton:hover {
+                    color: #FFFFFF;
+                    text-decoration: underline;
+                }
+                QPushButton:pressed {
+                    color: #4CAF50;
+                }
+            """)
+
+            def _copy_appid_single():
+                from PyQt6.QtWidgets import QApplication, QToolTip
+                QApplication.clipboard().setText(aid_str)
+                pos = self.appid_btn.mapToGlobal(self.appid_btn.rect().bottomLeft())
+                QToolTip.showText(pos, f"✓ Copied AppID: {aid_str}", self.appid_btn, msecDisplayTime=2000)
+
+            self.appid_btn.clicked.connect(_copy_appid_single)
+            title_hlayout.addWidget(self.appid_btn)
+
+        title_hlayout.addStretch()
+        title_layout.addLayout(title_hlayout)
 
         # --- Branch & Builds Row ---
         controls_row = QHBoxLayout()
@@ -271,14 +321,29 @@ class SingleDepotSelectionDialog(QDialog):
             controls_row.addWidget(self.branch_combo)
         else:
             self.branch_combo = None
-            branch_lbl = QLabel(f"Branch: <b style='color: #FFFFFF;'>{self.branch or 'public'}</b>")
-            branch_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.7);")
-            controls_row.addWidget(branch_lbl)
+            self.branch_btn = QPushButton(f"Branch: {self.branch or 'public'}")
+            self.branch_btn.setFixedHeight(28)
+            self.branch_btn.setMinimumWidth(110)
+            self.branch_btn.setEnabled(False)
+            self.branch_btn.setToolTip("No alternative branches available")
+            self.branch_btn.setStyleSheet("""
+                QPushButton, QPushButton:disabled {
+                    background-color: rgba(255, 255, 255, 0.03);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 6px;
+                    color: rgba(255, 255, 255, 0.40);
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                    padding: 2px 12px;
+                }
+            """)
+            controls_row.addWidget(self.branch_btn)
 
         controls_row.addSpacing(4)
 
         display_bid = self.current_build_id or "Latest"
         self.builds_btn = QPushButton(f"Build: {display_bid}")
+        self.builds_btn.setToolTip(f"Build ID: {display_bid} (Click to switch builds)")
         self.builds_btn.setFixedHeight(28)
         self.builds_btn.setMinimumWidth(110)
         self.builds_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -430,15 +495,16 @@ class SingleDepotSelectionDialog(QDialog):
         else:
             bottom_bar.addStretch(1)
 
-        ok_btn = QPushButton("OK")
-        ok_btn.setObjectName("ok_button")
-        ok_btn.setFixedHeight(28)
-        ok_btn.setMinimumWidth(80)
-        ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        ok_btn.clicked.connect(self._on_ok_clicked)
         from utils.color_utils import get_best_foreground_color
         btn_text_color = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")
-        ok_btn.setStyleSheet(f"""
+
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.setObjectName("ok_button")
+        self.ok_btn.setFixedHeight(28)
+        self.ok_btn.setMinimumWidth(80)
+        self.ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ok_btn.clicked.connect(self._on_ok_clicked)
+        self.ok_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.accent_color};
                 color: {btn_text_color};
@@ -473,7 +539,7 @@ class SingleDepotSelectionDialog(QDialog):
             }}
         """)
 
-        bottom_bar.addWidget(ok_btn)
+        bottom_bar.addWidget(self.ok_btn)
         bottom_bar.addWidget(cancel_btn)
 
         main_layout.addLayout(bottom_bar)
@@ -706,23 +772,35 @@ class SingleDepotSelectionDialog(QDialog):
         self.fetcher.start()
 
     def _on_image_fetched(self, image_data):
-        if image_data:
-            pixmap = QPixmap()
-            pixmap.loadFromData(image_data)
-            self.header_label.setPixmap(pixmap)
-        else:
+        try:
+            if image_data:
+                pixmap = QPixmap()
+                if pixmap.loadFromData(image_data) and not pixmap.isNull():
+                    self.header_label.setPixmap(pixmap)
+                    from utils.color_utils import extract_dominant_color
+                    dom_col = extract_dominant_color(pixmap, app_id=str(self.app_id) if hasattr(self, "app_id") else None)
+                    if dom_col and dom_col.isValid():
+                        self._apply_dynamic_theme(dom_col)
+                else:
+                    self._show_no_image()
+            else:
+                self._show_no_image()
+        except Exception:
             self._show_no_image()
 
     def _show_no_image(self):
-        from PyQt6.QtGui import QPainter, QColor, QFont
-        pixmap = QPixmap(110, 52)
-        pixmap.fill(QColor(25, 25, 35))
-        painter = QPainter(pixmap)
-        painter.setPen(QColor(255, 255, 255, 100))
-        painter.setFont(QFont("Arial", 8))
-        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "No Image")
-        painter.end()
-        self.header_label.setPixmap(pixmap)
+        try:
+            from PyQt6.QtGui import QPainter, QColor, QFont
+            pixmap = QPixmap(110, 52)
+            pixmap.fill(QColor(25, 25, 35))
+            painter = QPainter(pixmap)
+            painter.setPen(QColor(255, 255, 255, 100))
+            painter.setFont(QFont("Arial", 8))
+            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "No Image")
+            painter.end()
+            self.header_label.setPixmap(pixmap)
+        except Exception:
+            pass
 
     def _on_select_files_clicked(self):
         if not self.depot_checkbox.isChecked():
@@ -796,14 +874,13 @@ class SingleDepotSelectionDialog(QDialog):
             except Exception as e:
                 logger.debug(f"[SingleDepot] API enrichment error: {e}")
 
-            # 3. Fallback to SteamDB scraper if byparr is running
+            # 3. Fallback to SteamDB scraper (via Fast-Path race or Byparr)
             try:
-                from core.steamdb_scraper import ByparrManager, SteamDBScraper
-                if ByparrManager.is_running():
-                    scraper = SteamDBScraper()
-                    depots_info = scraper.get_app_depots(str(self.app_id))
-                    if depots_info:
-                        return depots_info
+                from core.steamdb_scraper import SteamDBScraper
+                scraper = SteamDBScraper()
+                depots_info = scraper.get_app_depots(str(self.app_id))
+                if depots_info:
+                    return depots_info
             except Exception:
                 pass
             return {}
@@ -852,6 +929,10 @@ class SingleDepotSelectionDialog(QDialog):
         if self.depot_checkbox.isChecked():
             return [str(self.single_depot_id)]
         return []
+
+    def get_selected_dlc_data(self) -> Dict[str, str]:
+        """Single depot base games have no separate DLC selections."""
+        return {}
 
     def get_selected_files(self) -> List[str]:
         return self.selected_files
@@ -1048,12 +1129,67 @@ class SingleDepotSelectionDialog(QDialog):
                 selected_bid, patch_depots = dlg.get_selected_build()
                 self._apply_build_selection(selected_bid, patch_depots)
 
+    def _apply_dynamic_theme(self, color: QColor) -> None:
+        """Dynamically adapt ambient color and titlebar without touching button styling."""
+        if not color or not isinstance(color, QColor) or not color.isValid():
+            return
+        self._ambient_color = color
+        if hasattr(self, "title_bar") and self.title_bar:
+            self.title_bar.update_accent_color(color)
+        self.update()
+
+    def closeEvent(self, a0):
+        if hasattr(self, "fetcher") and self.fetcher is not None:
+            try:
+                self.fetcher.stop()
+            except RuntimeError:
+                pass
+        super().closeEvent(a0)
+
     def changeEvent(self, a0):
         super().changeEvent(a0)
         if a0 and a0.type() == QEvent.Type.WindowStateChange:
             if not self.isMinimized():
                 self.raise_()
                 self.activateWindow()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        try:
+            from PyQt6.QtGui import QPainter, QColor, QRadialGradient
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            w = self.width()
+            center_x = w * 0.5
+            center_y = 65.0
+            radius = max(w * 0.65, 320.0)
+
+            grad = QRadialGradient(center_x, center_y, radius)
+
+            # Prioritize extracted thumbnail color for ambient background, falling back to accent_color
+            base_col = getattr(self, "_ambient_color", None)
+            if not base_col or not isinstance(base_col, QColor) or not base_col.isValid():
+                accent_hex = getattr(self, "accent_color", "#C06C84") or "#C06C84"
+                base_col = QColor(accent_hex)
+                if not base_col.isValid():
+                    base_col = QColor(192, 108, 132)
+
+            # Subtle atmospheric glow (~10% center, ~4% mid, 0% edge)
+            center_col = QColor(base_col.red(), base_col.green(), base_col.blue(), 26)
+            mid_col = QColor(base_col.red(), base_col.green(), base_col.blue(), 10)
+            outer_col = QColor(base_col.red(), base_col.green(), base_col.blue(), 0)
+
+            grad.setColorAt(0.0, center_col)
+            grad.setColorAt(0.45, mid_col)
+            grad.setColorAt(1.0, outer_col)
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(grad)
+            painter.drawRect(self.rect())
+            painter.end()
+        except Exception:
+            pass
 
     def showEvent(self, a0):
         super().showEvent(a0)

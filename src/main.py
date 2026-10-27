@@ -89,10 +89,10 @@ def main():
         logger.warning(f"Error initializing VoicesManager: {e}")
 
     # Pre-scan for headless/helper mode to set environment variable before QApplication is created
-    headless_mode = "--headless" in sys.argv or "--helper" in sys.argv or "-helper" in sys.argv or "--check-updates" in sys.argv
+    headless_mode = "--headless" in sys.argv or "--helper" in sys.argv or "-helper" in sys.argv or "--check-updates" in sys.argv or "-cli" in sys.argv or "--cli" in sys.argv
     if not headless_mode:
         for arg in sys.argv:
-            if arg.startswith("accela://") and ("download/" in arg or "helper/" in arg):
+            if arg.startswith("accela://") and ("download/" in arg or "helper/" in arg or "cli/" in arg):
                 headless_mode = True
                 break
 
@@ -227,25 +227,16 @@ def main():
     # -------------------------------------------------------------------------
     # CLI Mode Execution
     # -------------------------------------------------------------------------
-    if cli_mode and (command_line_zips or command_line_appid):
-        if cli_mode and sys.platform == "linux":
-            if command_line_appid:
-                logger.info(
-                    f"Opening CLI mode in external terminal for AppID {command_line_appid}"
-                )
-                if open_cli_terminal(appid=command_line_appid):
-                    return None
-            elif command_line_zips:
-                logger.info("Opening CLI mode in external terminal for ZIP(s)")
-                if open_cli_terminal(zip_path=command_line_zips[0]):
-                    return None
-
-        if command_line_appid:
-            logger.info(f"Will process AppID {command_line_appid} via CLI")
-            return run_cli_mode(app, None, logger, appid=command_line_appid)
-        else:
-            logger.info(f"Processing {len(command_line_zips)} ZIPs via CLI")
-            return run_cli_mode(app, command_line_zips, logger)
+    if cli_mode:
+        from managers.cli_manager import run_cli_dispatcher
+        code = run_cli_dispatcher(
+            app=app,
+            raw_args=args,
+            logger=logger,
+            command_line_appid=command_line_appid,
+            command_line_zips=command_line_zips,
+        )
+        sys.exit(code if isinstance(code, int) else 0)
 
     # -------------------------------------------------------------------------
     # GUI Mode Initialization
@@ -275,15 +266,27 @@ def main():
                 logger.error(f"Failed to check and merge Fake AppID database: {ex}")
 
             try:
-                from utils.yaml_config_manager import get_fake_appid, add_fake_app_id
+                from utils.yaml_config_manager import get_fake_appid, add_fake_app_id, remove_fake_app_id
                 all_on = settings.value("all_games_online", None)
                 if all_on is None:
                     all_on = settings.value("all_games_online_beta", None)
-                if all_on is None or bool(all_on):
+
+                # Normalize boolean
+                if isinstance(all_on, str):
+                    all_on_bool = all_on.strip().lower() in ("true", "1", "yes")
+                elif all_on is not None:
+                    all_on_bool = bool(all_on)
+                else:
+                    all_on_bool = True  # Default on if never set
+
+                if all_on_bool:
                     if get_fake_appid(config_path, "0") is None:
                         add_fake_app_id(config_path, "0", game_name="All Unowned Apps", fake_appid="480")
+                else:
+                    if get_fake_appid(config_path, "0") is not None:
+                        remove_fake_app_id(config_path, "0")
             except Exception as ex:
-                logger.debug(f"Failed to ensure all_games_online FakeAppId: {ex}")
+                logger.debug(f"Failed to sync all_games_online FakeAppId: {ex}")
 
             # A Steam update would replace the files SLSsteam patches, so the
             # config keeps DisableUpdates set. The writer memoises "already

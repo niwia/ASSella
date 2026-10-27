@@ -305,6 +305,13 @@ class MainWindow(QMainWindow):
             run_boot_update_check()
             run_boot_config_check()
 
+            # Non-blocking autodeploy for lobster.lua if AT0-M is enabled and lobster is missing
+            try:
+                from utils.plugin_manager import autodeploy_lobster_if_needed
+                autodeploy_lobster_if_needed()
+            except Exception as e:
+                logger.debug(f"Lobster autodeploy check skipped/failed: {e}")
+
             # The ProtonDB prefetch is queued behind the update check instead
             # of running here: it issues one HTTP request per installed game,
             # and doing that while the manifest check is still hammering Steam
@@ -1390,7 +1397,7 @@ class MainWindow(QMainWindow):
         self.progress_controls_layout.setContentsMargins(2, 1, 2, 1)
         self.progress_controls_layout.setSpacing(6)
 
-        self.speed_label = ElidedLabel("")
+        self.speed_label = ElidedLabel("", enable_tooltip=False)
         self.speed_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.speed_label.setVisible(False)
         self.progress_controls_layout.addWidget(self.speed_label, 1)
@@ -1736,7 +1743,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
             try:
                 from core.steamdb_scraper import ByparrManager
-                has_byparr = ByparrManager.find_byparr_dir() is not None
+                has_byparr = ByparrManager.is_available()
                 if not has_byparr:
                     self.steamdb_container.setVisible(False)
                 else:
@@ -1839,13 +1846,14 @@ class MainWindow(QMainWindow):
         self.quote_label.setToolTip(tooltip)
 
     def check_steamdb_status(self) -> None:
-        """Asynchronously verify that Byparr is running and SteamDB Cloudflare bypass works."""
+        """Asynchronously verify that SteamDB is accessible via fast-path or Byparr."""
         if getattr(self, "_steamdb_check_running", False):
             return
 
         try:
-            from core.steamdb_scraper import ByparrManager
-            if not ByparrManager.find_byparr_dir():
+            from core.steamdb_scraper import ByparrManager, cffi_requests
+            has_solver = ByparrManager.is_available() or (cffi_requests is not None)
+            if not has_solver:
                 if hasattr(self, "steamdb_container"):
                     self.steamdb_container.setVisible(False)
                 return
@@ -1856,37 +1864,34 @@ class MainWindow(QMainWindow):
         if hasattr(self, "steamdb_status_value") and self.steamdb_status_value:
             self.steamdb_status_value.setText("Checking...")
             self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
-            self.steamdb_status_value.setToolTip("Verifying Byparr solver and SteamDB connection...")
+            self.steamdb_status_value.setToolTip("Verifying SteamDB connection and bypass status...")
 
         def _worker():
             try:
-                from core.steamdb_scraper import ByparrManager
-                if not ByparrManager.find_byparr_dir():
-                    self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(False))
-                    return
-                ok = ByparrManager.verify_steamdb_bypass(timeout_seconds=30)
-                logger.info(f"[SteamDB Visor] verify_steamdb_bypass result: {ok}")
-                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(ok))
+                from core.steamdb_scraper import verify_steamdb_status
+                ok, provider = verify_steamdb_status(timeout_seconds=5)
+                logger.info(f"[SteamDB Visor] verify_steamdb_status result: {ok} ({provider})")
+                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(ok, provider))
             except Exception as e:
                 logger.debug(f"[SteamDB] Error during SteamDB status verification: {e}")
-                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(False))
+                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(False, "Offline"))
             finally:
                 self._steamdb_check_running = False
 
         import threading
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_steamdb_status_result(self, is_working: bool) -> None:
-        """Display SteamDB visor item if Byparr is installed and working/ready."""
+    def _on_steamdb_status_result(self, is_working: bool, provider: str = "") -> None:
+        """Display SteamDB visor item if SteamDB is working/ready."""
         self._steamdb_verified = is_working
         if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
             try:
-                from core.steamdb_scraper import ByparrManager
-                has_byparr = ByparrManager.find_byparr_dir() is not None
+                from core.steamdb_scraper import ByparrManager, cffi_requests
+                has_solver = ByparrManager.is_available() or (cffi_requests is not None)
             except Exception:
-                has_byparr = False
+                has_solver = False
 
-            if not has_byparr:
+            if not has_solver:
                 self.steamdb_container.setVisible(False)
                 return
 
@@ -1894,16 +1899,17 @@ class MainWindow(QMainWindow):
             if is_working:
                 self.steamdb_status_value.setText("Ready")
                 self.steamdb_status_value.setStyleSheet(self._get_status_style("success"))
+                mode_info = f" via {provider}" if provider else ""
                 self.steamdb_status_value.setToolTip(
-                    "SteamDB: Cloudflare Turnstile bypass active via Byparr\n"
+                    f"SteamDB: Active{mode_info}\n"
                     "Version history, patch notes & depot enrichment enabled."
                 )
-                logger.info("[SteamDB Visor] SteamDB status updated to: Ready")
+                logger.info(f"[SteamDB Visor] SteamDB status updated to: Ready ({provider})")
             else:
                 self.steamdb_status_value.setText("Offline")
                 self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
                 self.steamdb_status_value.setToolTip(
-                    "SteamDB: Solver is currently offline.\n"
+                    "SteamDB: Service or solver is currently offline.\n"
                     "It will start automatically when version history or builds are accessed."
                 )
                 logger.info("[SteamDB Visor] SteamDB status updated to: Offline")
@@ -2304,6 +2310,7 @@ class MainWindow(QMainWindow):
                     if parsed_data and parsed_data.get("depots"):
                         depots = parsed_data.get("depots")
                         selected_depots = None
+                        selected_dlc_appids = None
                         val = settings.value(f"depot_selection/{appid}", "", type=str)
                         should_prompt = True
                         prev_selected = None
@@ -2333,7 +2340,7 @@ class MainWindow(QMainWindow):
                             else:
                                 # Depot dialog must run on the main thread
                                 from ui.dialogs.depotselection import DepotSelectionDialog
-                                result_holder = [None]
+                                result_holder = [None, None]
                                 done_event = threading.Event()
 
                                 # Bind every loop-scoped value as a default
@@ -2373,6 +2380,9 @@ class MainWindow(QMainWindow):
                                         )
                                         if depot_dialog.exec():
                                             _result_holder[0] = depot_dialog.get_selected_depots()
+                                            _result_holder[1] = list(
+                                                depot_dialog.get_selected_dlc_data().keys()
+                                            )
                                     except Exception as err:
                                         logger.error(
                                             f"Error displaying depot selection dialog for {_appid} "
@@ -2399,6 +2409,7 @@ class MainWindow(QMainWindow):
                                     selected_depots = None
                                 else:
                                     selected_depots = result_holder[0]
+                                    selected_dlc_appids = result_holder[1] or []
 
                         if not selected_depots:
                             logger.info(f"Update All: skipping {name} — depot selection cancelled or no depots selected")
@@ -2419,6 +2430,8 @@ class MainWindow(QMainWindow):
                             logger.warning(f"Failed to cache depot selection: {e}")
 
                         metadata["selected_depots_list"] = selected_depots
+                        if selected_dlc_appids is not None:
+                            metadata["selected_dlc_appids"] = selected_dlc_appids
 
                     self.job_queue.add_job(local_path, metadata)
                     queued += 1
@@ -2496,22 +2509,20 @@ class MainWindow(QMainWindow):
     @pyqtSlot(int, int)
     @pyqtSlot(int, int, str)
     def _set_update_all_btn_preparing_slot(self, done: int, total: int, current_name: str = "") -> None:
-        """Main-thread slot: update the Update All button text to show preparation progress."""
+        """Main-thread slot: keep the Update All button disabled and greyed out while queueing updates."""
         try:
             # The button lives on the dashboard widget, not on the ui_state.
             term = getattr(self, "simplified_terminal", None)
             btn = getattr(term, "update_all_btn", None) if term else None
             if btn:
+                btn.setEnabled(False)
                 if done < total:
                     if current_name:
-                        short_name = current_name if len(current_name) <= 16 else f"{current_name[:13]}..."
-                        btn.setText(f" Preparing {short_name} ({done + 1}/{total})...")
+                        btn.setToolTip(f"Preparing updates... ({done} of {total} ready - {current_name})")
                     else:
-                        btn.setText(f" Preparing... ({done}/{total})")
+                        btn.setToolTip(f"Preparing updates... ({done} of {total} ready)")
                 else:
-                    btn.setText(f" Queued ({done}/{total})")
-                btn.setEnabled(False)
-                btn.setToolTip(f"Preparing updates... ({done} of {total} ready)")
+                    btn.setToolTip("Queueing updates...")
         except Exception:
             pass
 

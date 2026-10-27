@@ -243,6 +243,13 @@ class DepotMetadataMixin:
                             except Exception as _pe:
                                 logger.warning(f"[DepotSelection] Error parsing freshly fetched zip: {_pe}")
 
+                        cached_keys = DepotKeyManager().get_depot_keys(app_id_str) or {}
+                        for did in target_dids:
+                            did_str = str(did)
+                            if did_str not in cached_keys and did_str not in recovered:
+                                if key_states.get(did_str) == "available":
+                                    key_states[did_str] = "blacklisted"
+
                     # 2. Check remaining missing depots
                     for did in target_dids:
                         did_str = str(did)
@@ -309,6 +316,12 @@ class DepotMetadataMixin:
                         tip = (
                             f"Depot {did_str} has a decryption key on Hubcap. "
                             f"Refresh the manifest bundle to pick it up."
+                        )
+                    elif state == "blacklisted":
+                        tag = "[Unavailable]"
+                        tip = (
+                            f"Depot {did_str} decryption key exists on Hubcap but the depot "
+                            f"is omitted or blacklisted from the manifest bundle."
                         )
                     elif state == "pending":
                         tag = "[No Key]"
@@ -476,9 +489,8 @@ class DepotMetadataMixin:
                 scraper = SteamDBScraper()
                 depots_info = {}
 
-                # Try SteamDB via Byparr if running
-                if ByparrManager.is_running():
-                    depots_info = scraper.get_app_depots(str(self.app_id))
+                # Try SteamDB (via Fast-Path race or Byparr)
+                depots_info = scraper.get_app_depots(str(self.app_id))
 
                 # Fast fallback: if SteamDB returned empty or Byparr is not running, query Steam Store API
                 if not depots_info:

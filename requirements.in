@@ -21,7 +21,7 @@ cachetools==5.5.2
 capstone==5.0.6
 configobj==5.0.9
 cryptography==46.0.3
-curl-cffi==0.13.0
+curl-cffi==0.17.0
 gevent==25.9.1
 gevent-eventemitter==2.1
 protobuf==5.29.5
@@ -32,10 +32,9 @@ pysocks==1.7.1
 pyqt6==6.9.1
 zstandard==0.25.0
 
-# urwid powers the CLI depot/DLC selection menus. `managers/cli_manager.py`
-# imports `ui/text_menus.py` at module level, so this is NOT optional: dropping it
-# breaks CLI mode with a bare ModuleNotFoundError at import time.
-urwid==2.6.16
+# rich powers the CLI depot/DLC selection menus, progress bars, and terminal formatting.
+# `managers/cli_manager.py` imports `ui/text_menus.py` at module level.
+rich>=13.7.0
 
 # wsproto is required by steam.client for Steam WebSocket protocol support
 wsproto==1.2.0

@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -23,34 +24,52 @@ def calculate_sha256(file_path: Path) -> str:
     return h.hexdigest()
 
 
+def extract_plugin_version(file_path: Path) -> str | None:
+    """Try to extract version string from Lua file header or VERSION variable."""
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="ignore")
+        # Match table.VERSION = "1.8.2..." or standalone/table-member VERSION = "1.2.0..."
+        m = re.search(r'\b(?:(?:SpaceBunny|HubcapResolver|Lobster|\w+)\.)?VERSION\s*=\s*["\']([^"\']+)["\']', content)
+        if m:
+            sem = re.search(r'(\d+\.\d+(?:\.\d+)?(?:[a-zA-Z0-9_\.\-]+)?)', m.group(1))
+            if sem:
+                return sem.group(1)
+        # Match header line comment e.g. -- spacebunny.lua (1.8.2)
+        m2 = re.search(r'^--\s*[\w\.\-]+\.lua\s*\((v?\d+(?:\.\d+)*(?:[a-zA-Z0-9_\.\-]+)?)\)', content, re.MULTILINE)
+        if m2:
+            return m2.group(1).lstrip("v")
+        m3 = re.search(r'^--\s*[\w\.\-]+\.lua\s+v?(\d+\.\d+(?:\.\d+)*(?:[a-zA-Z0-9_\.\-]+)?)', content, re.MULTILINE)
+        if m3:
+            return m3.group(1)
+    except Exception:
+        pass
+    return None
+
+
 DEFAULT_DESCRIPTIONS = {
     "download.lua": {
         "name": "Download Interceptor",
         "description": "Native Steam download interception and depot streaming plugin for SLSsteam.",
         "version": "1.0.1",
         "category": "interceptor",
+        "required": False,
+        "is_default": False,
+    },
+    "spacebunny.lua": {
+        "name": "SpaceBunny",
+        "description": "Standardized SLSsteam download interceptor with multi-provider MRC authority & circuit breakers.",
+        "version": "1.8.2",
+        "category": "interceptor",
         "required": True,
+        "is_default": True,
     },
     "spacebunny1.5.lua": {
-        "name": "SpaceBunny 1.5",
-        "description": "SLSsteam download interceptor with MRC authority hierarchy, curl timeout fixes, and monotonic clocks.",
-        "version": "1.5.0",
+        "name": "SpaceBunny (Legacy)",
+        "description": "Legacy alias pointing to SpaceBunny 1.8.2.",
+        "version": "1.8.2",
         "category": "interceptor",
         "required": False,
-    },
-    "spacebunnny1.5.lua": {
-        "name": "SpaceBunny 1.5",
-        "description": "SLSsteam download interceptor with MRC authority hierarchy, curl timeout fixes, and monotonic clocks.",
-        "version": "1.5.0",
-        "category": "interceptor",
-        "required": False,
-    },
-    "download-1.4.0-spacetest.lua": {
-        "name": "SpaceTest 1.4.0",
-        "description": "Experimental download interceptor with wudrm MRC authority model.",
-        "version": "1.4.0",
-        "category": "interceptor",
-        "required": False,
+        "is_default": False,
     },
     "spliced-tickets.lua": {
         "name": "Spliced Tickets",
@@ -58,6 +77,20 @@ DEFAULT_DESCRIPTIONS = {
         "version": "1.0.0",
         "category": "companion",
         "required": True,
+    },
+    "lobster.lua": {
+        "name": "Lobster",
+        "description": "SLSsteam config recovery plugin: restores AdditionalDepots and DecryptionKeys if stripped by Headcrab updates.",
+        "version": "1.2.0",
+        "category": "companion",
+        "required": True,
+    },
+    "hubcap.lua": {
+        "name": "Hubcap Auto-Fetch",
+        "description": "Standalone Hubcap key resolver. Automatically fetches missing AES decryption keys from Hubcap API.",
+        "version": "1.0.0",
+        "category": "companion",
+        "required": False,
     },
 }
 
@@ -106,21 +139,28 @@ def generate_manifest(plugins_dir: Path, output_file: Path, force_bump: bool = F
                 "name": fname.replace(".lua", "").replace("-", " ").title(),
                 "description": f"SLSsteam plugin {fname}",
                 "version": "1.0.0",
-                "category": "interceptor" if fname != "spliced-tickets.lua" else "companion",
+                "category": "companion" if fname in ("lobster.lua", "hubcap.lua", "spliced-tickets.lua") else "interceptor",
                 "required": False,
             },
         )
 
+        detected_version = extract_plugin_version(lua_file)
+        base_version = detected_version or meta.get("version", "1.0.0")
+
         old_entry = existing_plugins.get(fname, {})
         old_sha = old_entry.get("sha256", "")
-        old_version = old_entry.get("version", meta.get("version", "1.0.0"))
+        old_version = old_entry.get("version")
 
-        if force_bump or not old_sha or old_sha != curr_sha256:
-            new_version = increment_version(old_version) if old_sha else old_version
+        if detected_version:
+            new_version = detected_version
+        elif not old_sha:
+            new_version = base_version
+        elif old_sha != curr_sha256 or force_bump:
+            new_version = increment_version(old_version or base_version)
         else:
-            new_version = old_version
+            new_version = old_version or base_version
 
-        plugins[fname] = {
+        plugin_entry = {
             "name": meta["name"],
             "filename": fname,
             "version": new_version,
@@ -130,10 +170,15 @@ def generate_manifest(plugins_dir: Path, output_file: Path, force_bump: bool = F
             "size_bytes": curr_size,
             "required": meta["required"],
         }
+        if "is_default" in meta:
+            plugin_entry["is_default"] = meta["is_default"]
+
+        plugins[fname] = plugin_entry
 
     manifest = {
         "manifest_version": 1,
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "default_interceptor": "spacebunny.lua",
         "plugins": plugins,
     }
 

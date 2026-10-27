@@ -314,6 +314,9 @@ class TaskManager(
             pre_selected = (self.current_job_metadata or {}).get("selected_depots_list")
             if pre_selected:
                 self.game_data["selected_depots_list"] = pre_selected
+                pre_dlcs = (self.current_job_metadata or {}).get("selected_dlc_appids")
+                if pre_dlcs is not None:
+                    self.game_data["selected_dlc_appids"] = pre_dlcs
                 library_dest = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path")
                 # Persist confirmed pre-selection so future updates recall it
                 appid = str((self.game_data or {}).get("appid", ""))
@@ -477,6 +480,9 @@ class TaskManager(
             selected_depots = (
                 self.main_window.ui_state.depot_dialog.get_selected_depots()
             )
+            selected_dlc_data = (
+                self.main_window.ui_state.depot_dialog.get_selected_dlc_data()
+            )
             selected_files = (
                 self.main_window.ui_state.depot_dialog.get_selected_files()
             )
@@ -485,6 +491,7 @@ class TaskManager(
             )
             if self.game_data:
                 self.game_data["selected_depots_list"] = selected_depots
+                self.game_data["selected_dlc_appids"] = list(selected_dlc_data.keys())
                 if selected_files:
                     self.game_data["selected_files_list"] = selected_files
 
@@ -853,6 +860,7 @@ class TaskManager(
                 )
                 from ui.dialogs.platform_mismatch_dialog import (
                     PlatformMismatchDialog,
+                    ACTION_PROCEED,
                     ACTION_FORCE_PROTON,
                     ACTION_ASSELLA_DOWNLOAD,
                     ACTION_CANCEL,
@@ -870,9 +878,9 @@ class TaskManager(
                     )
                     m_dlg.exec()
                     m_act = m_dlg.get_action()
-                    if m_act == ACTION_FORCE_PROTON:
-                        pref_tool = mismatch_details.get("preferred_tool", "proton_experimental")
-                        force_proton_for_app(appid_str, tool_name=pref_tool, restart_steam_if_running=True)
+                    if m_act in (ACTION_PROCEED, ACTION_FORCE_PROTON):
+                        # Proceed normally without forcing Proton or restarting Steam
+                        pass
                     elif m_act == ACTION_ASSELLA_DOWNLOAD:
                         use_native_steam = False
                     else:  # ACTION_CANCEL
@@ -1217,6 +1225,7 @@ class TaskManager(
             )
             from ui.dialogs.platform_mismatch_dialog import (
                 PlatformMismatchDialog,
+                ACTION_PROCEED,
                 ACTION_FORCE_PROTON,
                 ACTION_ASSELLA_DOWNLOAD,
                 ACTION_CANCEL,
@@ -1232,9 +1241,9 @@ class TaskManager(
                 )
                 m_dlg.exec()
                 m_act = m_dlg.get_action()
-                if m_act == ACTION_FORCE_PROTON:
-                    pref_tool = mismatch_details.get("preferred_tool", "proton_experimental")
-                    force_proton_for_app(app_id_str, tool_name=pref_tool, restart_steam_if_running=True)
+                if m_act in (ACTION_PROCEED, ACTION_FORCE_PROTON):
+                    # Proceed normally without forcing Proton or restarting Steam
+                    pass
                 elif m_act == ACTION_ASSELLA_DOWNLOAD:
                     logger.info(f"[TaskManager] User chose ASSella downloader for {app_id_str}")
                     if self.main_window and hasattr(self.main_window, "open_download_dialog"):
@@ -1594,12 +1603,16 @@ class TaskManager(
         if not self.download_task or not self.current_job:
             return
 
+        display_name = ""
+        if self.game_data and isinstance(self.game_data, dict):
+            display_name = str(self.game_data.get("game_name") or self.game_data.get("name") or "").strip()
+        if not display_name and self.current_job:
+            display_name = os.path.basename(self.current_job)
+
         reply = ThemedMessageBox.question(
             self.main_window,
             "Cancel Job",
-            f"Are you sure you want to cancel the download for '{
-                os.path.basename(self.current_job)
-            }'?",
+            f"Are you sure you want to cancel the download for '{display_name}'?",
             ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
             ThemedMessageBox.StandardButton.No,
         )

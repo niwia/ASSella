@@ -215,7 +215,10 @@ def get_wirecutter_endpoint() -> str:
         from utils.settings import get_settings
         custom_wc = get_settings().value("wirecutter_url", "", type=str)
         if custom_wc and custom_wc.strip():
-            return custom_wc.strip().rstrip("/")
+            url = custom_wc.strip().rstrip("/")
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = f"https://{url}"
+            return url
     except Exception:
         pass
     return get_default_wirecutter_endpoint()

@@ -201,6 +201,39 @@ def main() -> int:
     check(set(tokens) == set(ORIGINAL_DARK_TOKENS),
           "a tile without a surface source still gets a full token set")
 
+    # ------------------------------------------------ thumbnail dominant color & disk cache
+    print("\n=== thumbnail dominant color & disk cache ===")
+    from PyQt6.QtGui import QPixmap, QColor, QPainter
+
+    # Create synthetic test pixmap with a bright crimson patch
+    test_px = QPixmap(100, 100)
+    test_px.fill(QColor(10, 10, 10))
+    p = QPainter(test_px)
+    p.fillRect(20, 20, 60, 60, QColor(220, 40, 60))
+    p.end()
+
+    # Test extraction
+    extracted = cu.extract_dominant_color(test_px, app_id="9999991")
+    check(extracted is not None and extracted.isValid(), "extracted color is valid")
+    check(extracted.red() > extracted.blue() and extracted.red() > extracted.green(),
+          "dominant red hue detected accurately")
+
+    # Test memory cache
+    cached_mem = cu.get_cached_thumbnail_color("9999991")
+    check(cached_mem is not None and cached_mem == extracted,
+          "cached color retrieved from memory cache")
+
+    # Test disk cache round-trip
+    cu._THUMBNAIL_COLOR_CACHE.clear()
+    cu._DISK_CACHE_LOADED = False
+    cached_disk = cu.get_cached_thumbnail_color("9999991")
+    check(cached_disk is not None and cached_disk.name() == extracted.name(),
+          "cached color successfully persisted and reloaded from disk cache")
+
+    # Test un-cached appid
+    check(cu.get_cached_thumbnail_color("999999999") is None,
+          "unknown appid returns None from cache")
+
     del app
     print(f"\n{'=' * 60}")
     if _failures:

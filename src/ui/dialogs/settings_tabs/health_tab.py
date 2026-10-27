@@ -260,10 +260,20 @@ def create_health_tab(dialog) -> QWidget:
     crab_row.addWidget(dialog.health_r3set_crab_btn, 1)
 
     dialog.health_smallcrab_btn = QPushButton("smallcrab")
-    dialog.health_smallcrab_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.health_smallcrab_btn.setStyleSheet(crab_btn_style)
-    dialog.health_smallcrab_btn.setToolTip("Experimental Headcrab fork: patches the Steam launch scripts so SLSsteam loads")
-    dialog.health_smallcrab_btn.clicked.connect(lambda: on_smallcrab_clicked(dialog))
+    dialog.health_smallcrab_btn.setEnabled(False)
+    dialog.health_smallcrab_btn.setCursor(Qt.CursorShape.ForbiddenCursor)
+    dialog.health_smallcrab_btn.setStyleSheet("""
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.35);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 9pt;
+            font-weight: 500;
+        }
+    """)
+    dialog.health_smallcrab_btn.setToolTip("smallcrab installer is temporarily disabled")
     crab_row.addWidget(dialog.health_smallcrab_btn, 1)
 
     sls_layout.addLayout(crab_row)
@@ -1018,13 +1028,6 @@ def _confirm_smallcrab(dialog, backup_note: str = "") -> bool:
 
 
 def on_smallcrab_clicked(dialog) -> None:
-    """Warn about the config rewrite, then run smallcrab in a terminal."""
-    proceed, backup_note = _confirm_slssteam_backup(dialog, installer="smallcrab")
-    if not proceed:
-        return
-    if not _confirm_smallcrab(dialog, backup_note):
-        return
-
-    cmd = ["bash", "-c", f"curl -fsSL --retry 3 {SMALLCRAB_URL} | bash; echo; echo '--- Done. Press Enter to close ---'; read _"]
-    _launch_terminal_and_quit_app(dialog, cmd)
+    """smallcrab installer is temporarily disabled."""
+    return
 

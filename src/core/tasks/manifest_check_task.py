@@ -544,29 +544,27 @@ class ManifestCheckTask(QObject):
         depots_dir = Path(get_base_path()) / "depots"
         depot_file = depots_dir / f"{appid}.depot"
 
-        if not depot_file.exists():
-            # No saved manifest file, cannot determine version
-            logger.info(f"[UpdateCheck {appid}] Cannot determine status: Local depot file does not exist ({depot_file})")
-            return "cannot_determine"
-
-        # Read the saved manifest IDs from the depot file
         saved_depots = {}
-        try:
-            with open(depot_file, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or ":" not in line:
-                        continue
-                    parts = line.split(":", 2)
-                    depot_id = parts[0].strip()
-                    manifest_id = parts[1].strip()
-                    saved_depots[depot_id] = manifest_id
-        except Exception as e:
-            logger.error(f"[UpdateCheck {appid}] Error reading depot file {depot_file}: {e}")
-            return "cannot_determine"
+        if depot_file.exists() and depot_file.stat().st_size > 0:
+            try:
+                with open(depot_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or ":" not in line:
+                            continue
+                        parts = line.split(":", 2)
+                        depot_id = parts[0].strip()
+                        manifest_id = parts[1].strip()
+                        saved_depots[depot_id] = manifest_id
+            except Exception as e:
+                logger.error(f"[UpdateCheck {appid}] Error reading depot file {depot_file}: {e}")
+
+        # Self-healing fallback: If depot file is missing or empty, recover from installed files
+        if not saved_depots:
+            saved_depots = ManifestCheckTask._recover_saved_depots(appid, game_data, depot_file)
 
         if not saved_depots:
-            logger.info(f"[UpdateCheck {appid}] Cannot determine status: Local depot file ({depot_file}) is empty or contains no valid depot entries")
+            logger.info(f"[UpdateCheck {appid}] Cannot determine status: Local depot file ({depot_file}) is missing/empty and could not be recovered")
             return "cannot_determine"
 
         # Compare manifest IDs for each saved depot
@@ -783,6 +781,10 @@ class ManifestCheckTask(QObject):
                             )
                             any_update_available = True
                             _depot_diffs.append((saved_depot_id, saved_manifest_id, current_manifest_id))
+                        else:
+                            logger.debug(
+                                f"[UpdateCheck {appid}] Depot {saved_depot_id} manifest matches remote ({current_manifest_id})"
+                            )
                     else:
                         reason_msg = f"Steam API returned no manifest_id for depot {saved_depot_id} on branch '{selected_branch}'"
                         reasons.append(reason_msg)
@@ -817,6 +819,31 @@ class ManifestCheckTask(QObject):
                 settings = get_settings()
                 settings.setValue(f"installed_buildid/{appid}/{selected_branch}", branch_buildid)
                 settings.setValue(f"installed_buildid/{appid}", branch_buildid)
+                game_data["buildid"] = branch_buildid
+
+                # Synchronize metadata.json in game directory if present so local metadata doesn't stay stale
+                install_path = game_data.get("install_path")
+                if install_path:
+                    meta_json_path = Path(install_path) / ".DepotDownloader" / "metadata.json"
+                    if meta_json_path.exists():
+                        try:
+                            import json
+                            m_dict = json.loads(meta_json_path.read_text(encoding="utf-8"))
+                            if str(m_dict.get("buildid")) != str(branch_buildid):
+                                m_dict["buildid"] = str(branch_buildid)
+                                m_dict["schema_version"] = m_dict.get("schema_version", 1)
+                                tmp_p = meta_json_path.with_suffix(f".json.tmp.{os.getpid()}")
+                                with open(tmp_p, "w", encoding="utf-8") as tf:
+                                    json.dump(m_dict, tf, indent=4)
+                                    tf.flush()
+                                    os.fsync(tf.fileno())
+                                os.replace(tmp_p, meta_json_path)
+                        except Exception as meta_err:
+                            logger.debug(f"[UpdateCheck {appid}] Could not update metadata.json buildid: {meta_err}")
+
+            logger.info(
+                f"[UpdateCheck {appid}] All installed depot manifests match remote ({list(saved_depots.keys())}). Status: up_to_date."
+            )
             _store_check_diag(appid, diag_meta)
             return "up_to_date"
 
@@ -921,6 +948,86 @@ class ManifestCheckTask(QObject):
             f"[UpdateCheck {appid}] [DLC Only] Cannot determine status: None of the selected DLC depots {selected_depot_ids} resolved to a public manifest ID in Steam API data"
         )
         return "cannot_determine"
+
+    @staticmethod
+    def _recover_saved_depots(appid: str, game_data: dict, depot_file: Path) -> dict:
+        """
+        Self-healing helper: If {appid}.depot is missing or empty, attempt to recover
+        installed depot manifests from .DepotDownloader directory or appmanifest ACF.
+        If successfully recovered, writes the .depot file for future checks.
+        """
+        recovered = {}
+        # 1. Try scanning .DepotDownloader folder in install_path
+        install_path = game_data.get("install_path")
+        if install_path and os.path.exists(install_path):
+            ddm_dir = os.path.join(install_path, ".DepotDownloader")
+            if os.path.exists(ddm_dir):
+                try:
+                    for fname in os.listdir(ddm_dir):
+                        if fname.endswith(".manifest") and not fname.endswith(".manifest.sha"):
+                            base = fname[:-9]
+                            parts = base.split("_", 1)
+                            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                                did, mid = parts[0], parts[1]
+                                if did not in recovered:
+                                    recovered[did] = mid
+                                else:
+                                    prev_file = os.path.join(ddm_dir, f"{did}_{recovered[did]}.manifest")
+                                    curr_file = os.path.join(ddm_dir, fname)
+                                    if os.path.exists(curr_file) and os.path.exists(prev_file):
+                                        if os.path.getmtime(curr_file) > os.path.getmtime(prev_file):
+                                            recovered[did] = mid
+                except Exception as e:
+                    logger.debug(f"[UpdateCheck {appid}] Error recovering depots from .DepotDownloader: {e}")
+
+        # 2. Try scanning appmanifest ACF InstalledDepots
+        if not recovered:
+            acf_path = game_data.get("appmanifest_path")
+            if not acf_path and appid and appid not in ("0", "N/A", "unknown"):
+                try:
+                    from core.steam_helpers import get_steam_libraries
+                    for lib in get_steam_libraries():
+                        cand = Path(lib) / "steamapps" / f"appmanifest_{appid}.acf"
+                        if cand.exists():
+                            acf_path = str(cand)
+                            break
+                except Exception as lib_err:
+                    logger.debug(f"[UpdateCheck {appid}] Could not discover Steam libraries for ACF: {lib_err}")
+                    acf_path = None
+
+            if acf_path and os.path.exists(acf_path):
+                try:
+                    from utils.steam_acf import parse_acf_file
+                    acf_data = parse_acf_file(acf_path)
+                    installed_depots = (
+                        acf_data.get("AppState", {}).get("InstalledDepots")
+                        or acf_data.get("InstalledDepots", {})
+                    )
+                    if isinstance(installed_depots, dict):
+                        for did, dinfo in installed_depots.items():
+                            if str(did).isdigit():
+                                mid = ""
+                                if isinstance(dinfo, dict):
+                                    mid = str(dinfo.get("manifest") or dinfo.get("manifest_id") or "").strip()
+                                elif isinstance(dinfo, (str, int)):
+                                    mid = str(dinfo).strip()
+                                if mid and mid.isdigit():
+                                    recovered[str(did)] = mid
+                except Exception as e:
+                    logger.debug(f"[UpdateCheck {appid}] Error recovering depots from ACF: {e}")
+
+        # If recovered, write out the .depot file so subsequent checks are fast
+        if recovered:
+            try:
+                depot_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(depot_file, "w", encoding="utf-8") as f:
+                    for did, mid in sorted(recovered.items(), key=lambda x: int(x[0]) if x[0].isdigit() else x[0]):
+                        f.write(f"{did}: {mid}\n")
+                logger.info(f"[UpdateCheck {appid}] Successfully self-healed missing depot file with {len(recovered)} depot(s): {recovered}")
+            except Exception as e:
+                logger.warning(f"[UpdateCheck {appid}] Recovered depots but failed to persist {depot_file}: {e}")
+
+        return recovered
 
     def stop(self):
         """Stop the task"""

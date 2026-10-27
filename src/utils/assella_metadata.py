@@ -38,6 +38,7 @@ def write_accela_metadata(
         metadata_path = os.path.join(ddm_dir, "metadata.json")
         
         meta = {
+            "schema_version": 1,
             "appid": str(game_data.get("appid", "")),
             "buildid": str(game_data.get("buildid", "")),
             "game_name": game_data.get("game_name", ""),
@@ -49,8 +50,13 @@ def write_accela_metadata(
         if game_data.get("selected_depots_list"):
             meta["selected_depots_list"] = game_data["selected_depots_list"]
             
-        with open(metadata_path, "w", encoding="utf-8") as f:
+        # Atomic write: write to temp file, flush/sync, then rename to prevent truncation on crash/suspend
+        tmp_metadata_path = f"{metadata_path}.tmp.{os.getpid()}"
+        with open(tmp_metadata_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_metadata_path, metadata_path)
 
         # NOTE: No .assella/.accela side-markers are written anymore. The
         # .DepotDownloader folder (with this metadata.json) is the sole
@@ -61,6 +67,12 @@ def write_accela_metadata(
         logger.info(f"Successfully saved ACCELA metadata to {metadata_path}")
         return metadata_path
     except Exception as e:
+        # Clean up orphaned temp file if still present
+        try:
+            if 'tmp_metadata_path' in locals() and os.path.exists(tmp_metadata_path):
+                os.unlink(tmp_metadata_path)
+        except OSError:
+            pass
         logger.error(f"Failed to write metadata.json at {ddm_dir}: {e}", exc_info=True)
         return None
 

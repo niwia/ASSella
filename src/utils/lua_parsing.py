@@ -32,6 +32,7 @@ __all__ = [
     "coerce_depot_id",
     "coerce_manifest_gid",
     "extract_token",
+    "extract_all_tokens",
 ]
 
 # Hubcap's literal marker for "this depot has no obtainable key". It is not a
@@ -325,16 +326,30 @@ def extract_token(content: str, appid: Optional[object] = None) -> Optional[str]
     if appid is not None:
         aid = coerce_depot_id(appid)
         if aid:
-            pattern = r'addtoken\s*\(\s*' + re.escape(aid) + r'\s*,\s*["\']([^"\']+)["\']\s*\)'
+            pattern = r'addtoken\s*\(\s*' + re.escape(aid) + r'\s*,\s*["\']?([^"\'\s,\)]+)["\']?\s*\)'
             match = find_live(content, pattern, re.IGNORECASE)
             if match:
-                return match.group(1)
+                return match.group(1).strip()
             return None
 
     match = find_live(
-        content, r'addtoken\s*\(\s*[0-9]+\s*,\s*["\']([^"\']+)["\']\s*\)', re.IGNORECASE
+        content, r'addtoken\s*\(\s*[0-9]+\s*,\s*["\']?([^"\'\s,\)]+)["\']?\s*\)', re.IGNORECASE
     )
-    return match.group(1) if match else None
+    return match.group(1).strip() if match else None
+
+
+def extract_all_tokens(content: str) -> dict[str, str]:
+    """Extract all (appid, token) pairs from a Lua, ignoring commented-out lines."""
+    tokens: dict[str, str] = {}
+    if not content:
+        return tokens
+    for m in iter_live_matches(
+        content, r'addtoken\s*\(\s*(\d+)\s*,\s*["\']?([^"\'\s,\)]+)["\']?\s*\)', re.IGNORECASE
+    ):
+        aid, tok = m.group(1), m.group(2).strip()
+        if aid and tok:
+            tokens[aid] = tok
+    return tokens
 
 
 def has_live_token(content: str, appid: Optional[object] = None) -> bool:

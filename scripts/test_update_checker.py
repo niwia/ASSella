@@ -183,12 +183,12 @@ class TestUpdateCheckerFallback(UpdateCheckerTestCase):
 
 class TestBuildDateHelpers(unittest.TestCase):
     def test_default_build_date(self):
-        self.assertEqual(version_mod.BUILD_DATE, "2026-10-23")
-        self.assertEqual(get_build_date(), "2026-10-23")
-        self.assertEqual(get_build_date_display(), "23/10/2026")
+        self.assertEqual(version_mod.BUILD_DATE, "2026-10-26")
+        self.assertEqual(get_build_date(), "2026-10-26")
+        self.assertEqual(get_build_date_display(), "26/10/2026")
 
     def test_version_file_matches_the_release(self):
-        self.assertEqual(app_version, "3.0.3")
+        self.assertEqual(app_version, "3.0.4")
 
     def test_build_stamp_in_version_file_wins(self):
         """A dated build ('20261024+ASSella-3.0.1') carries its own build date."""

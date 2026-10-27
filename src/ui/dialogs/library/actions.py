@@ -503,8 +503,122 @@ class LibraryActionsMixin:
             )
             return
 
+        self._dismiss_steam_loading_overlay()
+
+        from utils.settings import get_settings
+        from utils.plugin_manager import are_plugins_present
+        settings = get_settings()
+
+        # Check if game was already configured in a specific mode (memory detection)
+        detected_mode = self._detect_configured_dlc_mode(appid, discovery)
+
+        dlc_action = settings.value("at0m_default_dlc_action", "ask", type=str)
+        if detected_mode:
+            mode_choice = detected_mode
+            logger.info(f"DLC configuration for {name} ({appid}) automatically routed to existing mode: {mode_choice}")
+        elif dlc_action in ("native", "assella"):
+            mode_choice = dlc_action
+        else:
+            from ui.dialogs.download_backend_dialog import (
+                DownloadBackendDialog,
+                BACKEND_CANCEL,
+                BACKEND_ASSELLA,
+                BACKEND_NATIVE_STEAM,
+            )
+            parent_widget = self if isinstance(self, QWidget) else getattr(self, "main_window", None)
+            accent_color = getattr(self, "accent_color", "#6c5ce7")
+            dlg = DownloadBackendDialog(
+                parent=parent_widget,
+                app_id=appid,
+                game_name=name,
+                accent_color=accent_color,
+                mode="dlc",
+            )
+            dlg.exec()
+            choice = dlg.get_choice()
+            if choice == BACKEND_CANCEL:
+                return
+            mode_choice = "native" if choice == BACKEND_NATIVE_STEAM else "assella"
+
+        if mode_choice == "native":
+            if not discovery.has_sized_depots:
+                catalog_dlcs = {
+                    str(k): str(v)
+                    for k, v in (discovery.catalog or {}).items()
+                    if str(k).strip() and str(k).strip() != str(appid).strip()
+                }
+                dlc_count = len(catalog_dlcs)
+                if not dlc_count:
+                    ThemedMessageBox.information(
+                        self,
+                        "No DLCs Detected",
+                        f"No downloadable or depot-less DLCs were found for {name}.",
+                    )
+                    return
+
+                if dlc_count <= 63:
+                    answer = ThemedMessageBox.question(
+                        self,
+                        "Depot-less DLCs Detected",
+                        f"<b>{name}</b> has <b>{dlc_count}</b> DLC(s), but none of them require downloading content files.\n\n"
+                        "SLSsteam will automatically unlock most depot-less games.\n\n"
+                        f"Would you like ASSella to register these {dlc_count} DLC(s) into SLSsteam AdditionalApps?",
+                        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                        ThemedMessageBox.StandardButton.Yes,
+                    )
+                    if answer != ThemedMessageBox.StandardButton.Yes:
+                        return
+                    self._register_depotless_dlcs_to_atom(appid, name, catalog_dlcs, mode="additional_apps")
+                    return
+                else:
+                    from ui.dialogs.dlc_selection_checklist_dialog import (
+                        HighDlcPromptDialog,
+                        DlcSelectionChecklistDialog,
+                    )
+                    parent_widget = self if isinstance(self, QWidget) else getattr(self, "main_window", None)
+                    accent_color = getattr(self, "accent_color", "#6c5ce7")
+                    prompt_dlg = HighDlcPromptDialog(
+                        parent=parent_widget,
+                        app_id=appid,
+                        game_name=name,
+                        dlc_count=dlc_count,
+                        accent_color=accent_color,
+                    )
+                    prompt_dlg.exec()
+                    high_choice = prompt_dlg.get_choice()
+                    if high_choice == "dlc_data":
+                        self._register_depotless_dlcs_to_atom(appid, name, catalog_dlcs, mode="dlc_data")
+                    elif high_choice == "manual":
+                        chk_dlg = DlcSelectionChecklistDialog(
+                            parent=parent_widget,
+                            app_id=appid,
+                            game_name=name,
+                            catalog=catalog_dlcs,
+                            accent_color=accent_color,
+                        )
+                        if chk_dlg.exec():
+                            selected_dlcs = chk_dlg.get_selected_dlcs()
+                            if not selected_dlcs:
+                                ThemedMessageBox.information(self, "Nothing Selected", f"No DLCs were selected for {name}.")
+                                return
+                            sub_mode = "dlc_data" if len(selected_dlcs) >= 64 else "additional_apps"
+                            self._register_depotless_dlcs_to_atom(appid, name, selected_dlcs, mode=sub_mode)
+                    return
+            else:
+                # Sized DLC depots exist -> launch AT0-M depot selection flow
+                self._show_steam_loading_overlay(f"Fetching manifest for {name}...")
+                game_data_dlc = dict(game_data)
+                game_data_dlc["_dlc_only"] = True
+                game_data_dlc["_lock_dlc_only"] = True
+                game_data_dlc["_lock_storage"] = True
+                game_data_dlc["_is_atom_dlc"] = True
+                game_data_dlc["_dlc_catalog"] = dict(discovery.catalog)
+                game_data_dlc["_dlc_discovery"] = discovery
+                self._fetch_game_manifest(game_data_dlc, is_verify=False)
+                return
+
+        # ASSella mode flow (the old way)
         if not discovery.has_sized_depots:
-            self._dismiss_steam_loading_overlay()
             answer = ThemedMessageBox.warning(
                 self,
                 "No Downloadable DLC Depots",
@@ -517,20 +631,126 @@ class LibraryActionsMixin:
             )
             if answer != ThemedMessageBox.StandardButton.Yes:
                 return
-            self._show_steam_loading_overlay(f"Fetching manifest for {name}...")
 
-        overlay = getattr(self, "_steam_tab_loading_overlay", None)
-        if overlay:
-            overlay.set_label(f"Fetching manifest for {name}...")
-        else:
-            self._show_steam_loading_overlay(f"Fetching manifest for {name}...")
-
+        self._show_steam_loading_overlay(f"Fetching manifest for {name}...")
         game_data_dlc = dict(game_data)
         game_data_dlc["_dlc_only"] = True
         game_data_dlc["_lock_dlc_only"] = True
         game_data_dlc["_lock_storage"] = True
         game_data_dlc["_dlc_catalog"] = dict(discovery.catalog)
         self._fetch_game_manifest(game_data_dlc, is_verify=False)
+
+    def _register_depotless_dlcs_to_atom(
+        self, appid: str, name: str, dlc_dict: Dict[str, str], mode: str = "additional_apps"
+    ) -> bool:
+        """Register depot-less DLCs to SLSsteam config (either AdditionalApps or DlcData) for an owned Steam game."""
+        from PyQt6.QtWidgets import QWidget
+        from utils.yaml_config_manager import get_user_config_path, remove_additional_app
+        from utils.settings import get_settings
+        from ui.dialogs.themed_message_box import ThemedMessageBox
+
+        parent_widget = self if isinstance(self, QWidget) else getattr(self, "main_window", None)
+        config_path = get_user_config_path()
+        if not config_path or not config_path.exists():
+            ThemedMessageBox.critical(parent_widget, "Config Error", "SLSsteam config.yaml could not be found.")
+            return False
+
+        try:
+            if mode == "dlc_data":
+                from utils.yaml.dlc import add_dlc_data_batch
+                add_dlc_data_batch(config_path, appid, dlc_dict)
+            else:
+                from utils.yaml.apps import add_additional_apps_batch
+                apps_list = [(did, dname) for did, dname in dlc_dict.items()]
+                add_additional_apps_batch(config_path, apps_list)
+
+            # Strict DLC-only invariant: base game AppID must NEVER be in AdditionalApps
+            remove_additional_app(config_path, appid)
+            get_settings().setValue(f"dlc_only_mode/{appid}", True)
+
+            target_section = "DlcData" if mode == "dlc_data" else "AdditionalApps"
+            ThemedMessageBox.information(
+                parent_widget,
+                "DLCs Registered",
+                f"✓ Successfully registered {len(dlc_dict)} DLC(s) for '{name}' into SLSsteam {target_section}!\n\n"
+                "Please restart Steam now so Steam client can unlock and recognize your DLCs.",
+            )
+            return True
+        except Exception as exc:
+            logger.error(f"[Library] Failed to register depot-less DLCs to AT0-M: {exc}", exc_info=True)
+            ThemedMessageBox.critical(
+                parent_widget, "Registration Error", f"Failed to register DLCs into SLSsteam config:\n\n{exc}"
+            )
+            return False
+
+    def _detect_configured_dlc_mode(self, appid: str, discovery: Any = None) -> Optional[str]:
+        """Detect whether a game's DLCs were already configured in AT0-M or ASSella mode.
+
+        Returns:
+            "native" for AT0-M mode,
+            "assella" for ACCELA / ASSella mode,
+            or None if unconfigured.
+        """
+        appid_str = str(appid).strip()
+        if not appid_str:
+            return None
+
+        # 1. Check AT0-M configuration:
+        try:
+            from utils.plugin_games import load_plugin_library
+            plugin_lib = load_plugin_library()
+            p_rec = plugin_lib.get(appid_str, {})
+            if p_rec.get("is_atom") or p_rec.get("is_dlc_only") or p_rec.get("dlc_appids"):
+                return "native"
+        except Exception as e:
+            logger.debug(f"[DLCModeDetect] Error checking plugin_library for {appid_str}: {e}")
+
+        try:
+            from utils.yaml_config_manager import (
+                get_user_config_path,
+                get_dlc_data,
+                get_additional_apps,
+                get_additional_depots,
+            )
+            cfg_path = get_user_config_path()
+            if cfg_path and cfg_path.exists():
+                dlc_data = get_dlc_data(cfg_path, appid_str)
+                if dlc_data:
+                    return "native"
+
+                catalog = getattr(discovery, "catalog", {}) if discovery else {}
+                catalog_dlc_ids = {str(k).strip() for k in catalog.keys() if str(k).strip() != appid_str}
+                if catalog_dlc_ids:
+                    add_apps = set(get_additional_apps(cfg_path))
+                    if any(dlc_id in add_apps for dlc_id in catalog_dlc_ids):
+                        return "native"
+
+                cand_depots = getattr(discovery, "depots", []) if discovery else []
+                cand_depot_ids = {str(d.depot_id).strip() for d in cand_depots}
+                if cand_depot_ids:
+                    add_depots = set(get_additional_depots(cfg_path))
+                    if any(did in add_depots for did in cand_depot_ids):
+                        return "native"
+        except Exception as e:
+            logger.debug(f"[DLCModeDetect] Error checking SLSsteam config for {appid_str}: {e}")
+
+        # 2. Check ASSella (ACCELA) mode:
+        try:
+            from utils.helpers import get_base_path
+            depot_file = Path(get_base_path()) / "depots" / f"{appid_str}.depot"
+            if depot_file.exists() and depot_file.stat().st_size > 0:
+                return "assella"
+        except Exception as e:
+            logger.debug(f"[DLCModeDetect] Error checking .depot file for {appid_str}: {e}")
+
+        try:
+            from utils.dlc_helpers import is_dlc_only_mode
+            if is_dlc_only_mode(appid_str):
+                return "assella"
+        except Exception as e:
+            logger.debug(f"[DLCModeDetect] Error checking is_dlc_only_mode for {appid_str}: {e}")
+
+        return None
 
     def _save_config_only_dlc_mode(self, appid: str, game_data: dict, depot_dialog) -> bool:
         """Record DLC mode for a game whose DLCs have no downloadable depot.
@@ -664,12 +884,14 @@ class LibraryActionsMixin:
         )
         from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
 
-        if not are_plugins_present() and not is_plugin_check_bypassed():
+        from utils.plugin_games import can_use_atom_mode
+        can_use, reason = can_use_atom_mode()
+        if not can_use:
             ThemedMessageBox.warning(
                 self._dialog_parent(),
-                "AT0-M Plugins Required",
-                "AT0-M mode requires SLSsteam plugins (download interceptor and spliced-tickets.lua).\n\n"
-                "Please go to Settings -> AT0-M and enable/deploy plugin support before moving games to AT0-M.",
+                "AT0-M Mode Unavailable",
+                f"AT0-M mode cannot be used yet:\n\n{reason}\n\n"
+                "Please configure SLSsteam and deploy plugin support in Settings -> AT0-M.",
             )
             return
 
@@ -1107,7 +1329,7 @@ class LibraryActionsMixin:
             except Exception as e:
                 logger.warning(f"Error parsing cached depot selection: {e}")
 
-        if not cached_selected and isinstance(installed_depots, list):
+        if not cached_selected and isinstance(installed_depots, list) and not is_dlc_only:
             cached_selected = [str(d) for d in installed_depots]
 
         # A verify or DLC-only action must always show the dialog, overriding the cache reuse above.
@@ -1719,8 +1941,97 @@ class LibraryActionsMixin:
 
         acf = os.path.join(path, "steamapps", f"appmanifest_{appid}.acf")
         acf_existed = os.path.exists(acf)
+        from utils.plugin_games import is_plugin_game
+        is_at0m = (
+            game_data.get("update_status") in ("at0m", "vapor", "at0-m")
+            or is_plugin_game(appid)
+        )
 
-        if acf_existed:
+        # AT0-M mode with existing manifest: prompt user with options:
+        # Top: Delete Manifest (.acf) [Recommended]
+        # Bottom: Mark Update Only (StateFlags=6)
+        if acf_existed and is_at0m:
+            from ui.dialogs.atom_manifest_fix_dialog import (
+                AtomManifestFixDialog,
+                ACTION_DELETE_ACF,
+                ACTION_MARK_UPDATE,
+            )
+            dlg = AtomManifestFixDialog(
+                self,
+                game_name=game_data.get("game_name", appid),
+                appid=appid,
+                acf_path=acf,
+            )
+            if not dlg.exec() or dlg.choice not in (ACTION_DELETE_ACF, ACTION_MARK_UPDATE):
+                return
+
+            if dlg.choice == ACTION_DELETE_ACF:
+                try:
+                    os.remove(acf)
+                    logger.info(f"[Library] Deleted ACF manifest {acf} for {appid} (AT0-M mode)")
+                    ThemedMessageBox.information(
+                        self,
+                        "Manifest Removed",
+                        f"Deleted {os.path.basename(acf)}.\n\n"
+                        "Please restart Steam now so Steam client can cleanly discover and adopt the installed files."
+                    )
+                    if hasattr(self, "game_manager") and self.game_manager:
+                        try:
+                            self.game_manager.scan_steam_libraries_async()
+                        except Exception as e:
+                            logger.debug(f"[Library] Steam library rescan request failed: {e}")
+                except Exception as e:
+                    logger.warning(f"Could not remove manifest file {acf}: {e}")
+                    ThemedMessageBox.critical(self, "Error", f"Could not remove manifest file {acf}:\n{e}")
+                return
+
+            elif dlg.choice == ACTION_MARK_UPDATE:
+                from utils.steam_acf import set_acf_state_flags
+                ok = set_acf_state_flags(acf, 6)
+                if ok:
+                    logger.info(f"[Library] Set StateFlags=6 on ACF {acf} for {appid} (AT0-M mode)")
+                    ThemedMessageBox.information(
+                        self,
+                        "Installation Set to Update",
+                        f"Set state to update required (StateFlags=6) for {game_data.get('game_name', appid)}.\n\n"
+                        "Steam will now show an update available to verify and adopt existing files. Please restart Steam."
+                    )
+                else:
+                    logger.warning(f"Could not set StateFlags on manifest file {acf}")
+                return
+        # First try: repair the ACF in-place if it exists and is broken (ASSella mode)
+        elif acf_existed:
+            try:
+                from utils.steam_acf import ensure_acf_has_installed_depots
+
+                depot_ids = game_data.get("depot_ids") or []
+                status = ensure_acf_has_installed_depots(
+                    acf, appid, depot_ids, game_data
+                )
+                if status == "written":
+                    logger.info(f"[Library] In-place ACF repair succeeded for {appid}")
+                    ThemedMessageBox.information(
+                        self, "Done",
+                        f"Installation repaired for {game_data.get('game_name', appid)}. "
+                        "Steam should now recognize it as fully installed."
+                    )
+                    if hasattr(self, "game_manager") and self.game_manager:
+                        try:
+                            self.game_manager.scan_steam_libraries_async()
+                        except Exception as e:
+                            logger.debug(f"[Library] Steam library rescan request failed: {e}")
+                    return
+                elif status == "skipped":
+                    # ACF is already valid — nothing to do
+                    ThemedMessageBox.information(
+                        self, "Done",
+                        f"{game_data.get('game_name', appid)} ACF looks healthy — nothing to fix."
+                    )
+                    return
+            except Exception as e:
+                logger.warning(f"[Library] In-place ACF repair failed for {appid}: {e}")
+
+            # If in-place repair didn't work, ask user before deleting
             if not self._confirm_action(
                 "Confirm", "Remove manifest file? Steam will re-verify files."
             ):
@@ -1739,19 +2050,32 @@ class LibraryActionsMixin:
         if sys.platform == "linux":
             try:
                 from utils.slssteam_integration import install_via_sls, _experimental_mode_enabled, patch_acf_via_sls
-                if _experimental_mode_enabled():
+                if is_at0m:
+                    try:
+                        from core.native_steam.native_steam_handoff import sync_manifests_to_depotcache
+                        sync_manifests_to_depotcache(appid, path)
+                    except Exception as s_err:
+                        logger.debug(f"Depotcache sync during fix for {appid}: {s_err}")
                     install_via_sls(
                         appid=appid,
                         game_name=game_data.get("game_name", ""),
                         library_path=path,
+                        game_data=game_data,
+                    )
+                elif _experimental_mode_enabled():
+                    install_via_sls(
+                        appid=appid,
+                        game_name=game_data.get("game_name", ""),
+                        library_path=path,
+                        game_data=game_data,
                     )
                 else:
                     patch_acf_via_sls(appid, library_path=path)
             except Exception as sls_err:
                 logger.warning(f"SLS install error during fix for {appid}: {sls_err}")
 
-        # Fallback ACF generation if manifest still missing
-        if not os.path.exists(acf):
+        # Fallback: regenerate ACF if manifest still missing after failed repair (only for non-AT0-M games)
+        if not is_at0m and not os.path.exists(acf):
             try:
                 from utils.steam_manifest import write_acf_file
                 info = None
@@ -1943,6 +2267,11 @@ class LibraryActionsMixin:
                                 lib = load_plugin_library()
                                 rec = lib.get(appid, {})
                                 d_names = {d_id: depots.get(d_id, {}).get("desc", "") for d_id in chosen}
+                                dlc_appids = rec.get("dlc_appids", [])
+                                if not dlc_appids:
+                                    from utils.dlc_helpers import get_all_dlcs_for_app
+                                    discovered_dlcs = get_all_dlcs_for_app(appid, game_data, allow_network=False)
+                                    dlc_appids = [str(d["dlc_appid"]) for d in discovered_dlcs if d.get("dlc_appid")]
                                 register_plugin_game(
                                     appid=appid,
                                     name=game_data.get("game_name", ""),
@@ -1950,8 +2279,9 @@ class LibraryActionsMixin:
                                     decryption_keys=rec.get("keys", {}),
                                     installdir=game_data.get("install_dir", ""),
                                     depot_names=d_names,
-                                    dlc_appids=rec.get("dlc_appids", []),
+                                    dlc_appids=dlc_appids,
                                     is_dlc_only=bool(rec.get("dlc_only", False)),
+                                    app_token=rec.get("token") or (game_data.get("app_token") or game_data.get("token") if game_data else None),
                                 )
                             except Exception as _e:
                                 logger.warning(f"Could not sync AT0-M depots after selection: {_e}")
@@ -2901,6 +3231,40 @@ class LibraryActionsMixin:
                 lock_dlc_only = bool(game_data.get("_lock_dlc_only"))
                 dlc_only_mode = bool(game_data.get("_dlc_only") or lock_dlc_only)
 
+                is_atom_dlc = bool(game_data.get("_is_atom_dlc"))
+                if is_atom_dlc:
+                    from ui.dialogs.atom_dlc_selection_dialog import AtomDlcSelectionDialog
+                    accent_color = getattr(self, "accent_color", "#6c5ce7")
+                    atom_dlg = AtomDlcSelectionDialog(
+                        parent=parent_widget,
+                        app_id=parsed_data["appid"],
+                        game_name=parsed_data.get("game_name") or game_data.get("name") or game_info.get("name") or f"App {parsed_data['appid']}",
+                        accent_color=accent_color,
+                        discovery=game_data.get("_dlc_discovery"),
+                        manifest_data=parsed_data,
+                        cached_selected_depots=cached_selected,
+                    )
+                    atom_dlg.exec()
+                    if hasattr(self, "_active_fetches"):
+                        self._active_fetches.discard(appid)
+                    if dialog and hasattr(dialog, "validate_btn") and dialog.validate_btn:
+                        dialog.validate_btn.set_loading(False)
+                        dialog.validate_btn.setEnabled(True)
+                        if hasattr(dialog, "_update_validate_button_state"):
+                            dialog._update_validate_button_state()
+                        elif hasattr(dialog, "_update_validate_button"):
+                            dialog._update_validate_button()
+                    if dialog:
+                        try:
+                            dialog.accept()
+                        except RuntimeError:
+                            pass
+                    try:
+                        self.accept()
+                    except RuntimeError:
+                        pass
+                    return
+
                 depot_dialog = DepotSelectionDialog(
                     parsed_data["appid"],
                     parsed_data.get("game_name", ""),
@@ -2919,6 +3283,7 @@ class LibraryActionsMixin:
                     lock_dlc_only=lock_dlc_only,
                     dlc_catalog=game_data.get("_dlc_catalog") or {},
                     editions=parsed_data.get("editions") or game_data.get("editions"),
+                    is_atom_mode=bool(game_data.get("_is_atom_dlc")),
                 )
 
                 # Apply recommended build selection if set
@@ -2940,6 +3305,8 @@ class LibraryActionsMixin:
 
                 if depot_dialog.exec():
                     selected_depots = depot_dialog.get_selected_depots()
+                    selected_dlc_data = depot_dialog.get_selected_dlc_data()
+                    metadata["selected_dlc_appids"] = list(selected_dlc_data.keys())
                     selected_storage = depot_dialog.get_selected_storage()
                     if selected_storage:
                         metadata["library_path"] = selected_storage
@@ -3025,6 +3392,24 @@ class LibraryActionsMixin:
                 return
 
         self._dismiss_steam_loading_overlay()
+
+        # If AT0-M DLC mode was chosen or registered, do NOT submit to ASSella download queue
+        is_atom_dlc = bool(game_data.get("_is_atom_dlc"))
+        if is_atom_dlc or ('depot_dialog' in locals() and getattr(depot_dialog, "_atom_registered", False)):
+            logger.info("AT0-M DLC registration completed for AppID %s; skipping downloader job queue.", appid)
+            if hasattr(self, "_active_fetches"):
+                self._active_fetches.discard(appid)
+            if dialog:
+                try:
+                    dialog.accept()
+                except RuntimeError as e:
+                    logger.debug(f"[Library] Could not close the details dialog: {e}")
+            try:
+                self.accept()
+            except RuntimeError as e:
+                logger.debug(f"[Library] Could not close the dialog: {e}")
+            return
+
         self.main_window.job_queue.add_job(filepath, metadata)
         if dialog:
             try:

@@ -43,6 +43,44 @@ def ensure_plugins_enabled(config_path: Optional[Path] = None) -> bool:
 
     return update_yaml_boolean_value(config_path, "Plugins", True)
 
+
+def ensure_sls_plugin_config_sections(config_path: Optional[Path] = None) -> bool:
+    """Ensure Plugins: yes, AdditionalDepots:, and DecryptionKeys: exist in config.yaml.
+
+    Preserves file inode and formatting. Returns True if all sections exist or were added.
+    """
+    if config_path is None:
+        config_path = get_user_config_path()
+
+    if not config_path.exists():
+        logger.debug(f"ensure_sls_plugin_config_sections: Config not found at {config_path}")
+        return False
+
+    # 1. Ensure Plugins: yes
+    ensure_plugins_enabled(config_path)
+
+    try:
+        from utils.yaml.core import _get_section_bounds, _write_in_place
+        content = config_path.read_text(encoding="utf-8")
+        modified = False
+
+        for sec in ("AdditionalDepots", "DecryptionKeys"):
+            bounds = _get_section_bounds(content, sec)
+            if bounds is None:
+                if not content.endswith("\n"):
+                    content += "\n"
+                content += f"\n{sec}:\n"
+                modified = True
+
+        if modified:
+            _write_in_place(config_path, content)
+            logger.info(f"ensure_sls_plugin_config_sections: Added missing sections to {config_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to ensure SLS plugin config sections in {config_path}: {e}")
+        return False
+
+
 def get_sls_plugins_dirs() -> List[Path]:
     """Resolve target plugin directories based on detected Native/Flatpak Steam environments."""
     dirs: List[Path] = []
