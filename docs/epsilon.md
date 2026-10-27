@@ -55,9 +55,9 @@ curl -fsSL https://raw.githubusercontent.com/niwia/Uran/main/install_epsilon.sh 
 4. Generates and activates a user systemd socket `epsilon.socket` listening on `127.0.0.1:1952`.
 
 ::: tip Custom Installation Directory
-If you prefer to install Epsilon in a specific directory instead of `~/epsilon`, pass the path as an argument:
+By default, Epsilon installs to `~/epsilon`. If you prefer a custom folder inside your home directory, pass it as an argument:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/niwia/Uran/main/install_epsilon.sh | bash -s -- /path/to/custom/dir
+curl -fsSL https://raw.githubusercontent.com/niwia/Uran/main/install_epsilon.sh | bash -s -- "$HOME/my_epsilon"
 ```
 :::
 
