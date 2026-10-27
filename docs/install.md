@@ -39,6 +39,52 @@ If the website isn't accessible, try switching to a different DNS provider (such
 Treat it like a password and never share it publicly or include it in screenshots. You will need this key when configuring ASSella.
 :::
 
+::: details I need a photo tutorial
+
+#### Step 1: Visit Hubcap and click Continue to Discord
+Navigate to [hubcapmanifest.com](https://hubcapmanifest.com/) and click the **Continue to Discord** button.
+
+<img src="/images/hubcap/site_1.png" alt="Hubcap - Continue to Discord" style="border-radius: 8px; margin: 0.8rem 0; max-width: 100%;" />
+
+#### Step 2: Authorize Discord account
+Authorize the Hubcap Web Login application to link your verified Discord account.
+
+<img src="/images/hubcap/site_2.png" alt="Discord Authorization Screen" style="border-radius: 8px; margin: 0.8rem 0; max-width: 100%;" />
+
+#### Step 3: Click API in the top navigation bar
+Once logged in, click the **API** link in the top menu bar.
+
+<img src="/images/hubcap/site_3.png" alt="Hubcap Navigation - Click API" style="border-radius: 8px; margin: 0.8rem 0; max-width: 100%;" />
+
+#### Step 4: Click Generate Key
+Under the **My Key** tab, click the **Generate Key** button.
+
+<img src="/images/hubcap/site_4.png" alt="Hubcap API Access - Generate Key" style="border-radius: 8px; margin: 0.8rem 0; max-width: 100%;" />
+
+#### Step 5: Copy your generated API key
+Copy your key by clicking the copy icon next to the key field.
+
+<img src="/images/hubcap/site_5.png" alt="Hubcap - Copy API Key" style="border-radius: 8px; margin: 0.8rem 0; max-width: 100%;" />
+
+:::
+
+::: details Bonus: Where to enter or check your API key in ASSella
+
+#### Step 1: Open Settings
+In the main ASSella window, click the **Settings** (gear) icon located in the upper right header.
+
+<img src="/images/hubcap/assella_settings_step1.png" alt="ASSella Main Window - Settings Gear Icon" style="border-radius: 8px; margin: 0.8rem 0; max-width: 100%;" />
+
+#### Step 2: Paste your API Key and verify connection
+In the Settings dialog:
+1. Locate the **Hubcap API Key** input field.
+2. Click **Paste** (or press Ctrl+V) to insert your API key.
+3. Click **OK** to save. The Hubcap stats indicator below will reflect your active connection status.
+
+<img src="/images/hubcap/assella_settings_step2.png" alt="ASSella Settings - Hubcap API Key Input and Status" style="border-radius: 8px; margin: 0.8rem 0; max-width: 100%;" />
+
+:::
+
 ---
 
 ## 2. Choose your installation path
