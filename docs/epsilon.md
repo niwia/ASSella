@@ -137,9 +137,31 @@ systemctl --user stop epsilon.socket epsilon.service
 systemctl --user restart epsilon.socket
 ```
 
+### Updating Epsilon from GitHub
+
+Epsilon can be kept updated in multiple ways:
+
+1. **Automatic Daily Updates**:
+   The installer automatically configures and enables a user systemd timer (`epsilon-updater.timer`) that silently checks GitHub main and applies code updates once a day in the background.
+
+2. **Manual 1-Command Update**:
+   To immediately pull the latest code and reload the bridge at any time, run:
+   ```bash
+   ~/epsilon/epsilon/update.sh
+   ```
+   Alternatively, you can re-run the remote curl installer at any time to refresh components in-place:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/niwia/Uran/main/install_epsilon.sh | bash
+   ```
+
+### Updating the Photar Browser Script
+
+Photar includes built-in Tampermonkey auto-update URLs (`@updateURL` and `@downloadURL`).
+Tampermonkey checks GitHub automatically in the background and updates Photar whenever a new version is published. You can also trigger an update check manually inside Tampermonkey's dashboard under **Installed Userscripts &rarr; Check for script updates**.
+
 ### Uninstall Epsilon
 
-To completely remove Epsilon and its systemd socket:
+To completely remove Epsilon, its updater timer, and its systemd socket:
 
 ```bash
 ~/epsilon/epsilon/uninstall.sh
