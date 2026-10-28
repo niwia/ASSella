@@ -89,10 +89,10 @@ def main():
         logger.warning(f"Error initializing VoicesManager: {e}")
 
     # Pre-scan for headless/helper mode to set environment variable before QApplication is created
-    headless_mode = "--headless" in sys.argv or "--helper" in sys.argv or "-helper" in sys.argv or "--check-updates" in sys.argv
+    headless_mode = "--headless" in sys.argv or "--helper" in sys.argv or "-helper" in sys.argv or "--check-updates" in sys.argv or "-cli" in sys.argv or "--cli" in sys.argv
     if not headless_mode:
         for arg in sys.argv:
-            if arg.startswith("accela://") and ("download/" in arg or "helper/" in arg):
+            if arg.startswith("accela://") and ("download/" in arg or "helper/" in arg or "cli/" in arg):
                 headless_mode = True
                 break
 
@@ -227,25 +227,16 @@ def main():
     # -------------------------------------------------------------------------
     # CLI Mode Execution
     # -------------------------------------------------------------------------
-    if cli_mode and (command_line_zips or command_line_appid):
-        if cli_mode and sys.platform == "linux":
-            if command_line_appid:
-                logger.info(
-                    f"Opening CLI mode in external terminal for AppID {command_line_appid}"
-                )
-                if open_cli_terminal(appid=command_line_appid):
-                    return None
-            elif command_line_zips:
-                logger.info("Opening CLI mode in external terminal for ZIP(s)")
-                if open_cli_terminal(zip_path=command_line_zips[0]):
-                    return None
-
-        if command_line_appid:
-            logger.info(f"Will process AppID {command_line_appid} via CLI")
-            return run_cli_mode(app, None, logger, appid=command_line_appid)
-        else:
-            logger.info(f"Processing {len(command_line_zips)} ZIPs via CLI")
-            return run_cli_mode(app, command_line_zips, logger)
+    if cli_mode:
+        from managers.cli_manager import run_cli_dispatcher
+        code = run_cli_dispatcher(
+            app=app,
+            raw_args=args,
+            logger=logger,
+            command_line_appid=command_line_appid,
+            command_line_zips=command_line_zips,
+        )
+        sys.exit(code if isinstance(code, int) else 0)
 
     # -------------------------------------------------------------------------
     # GUI Mode Initialization

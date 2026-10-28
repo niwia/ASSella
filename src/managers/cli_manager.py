@@ -36,12 +36,24 @@ from utils.yaml_config_manager import (
     is_slssteam_mode_enabled,
 )
 
-# Import text menus for CLI mode (urwid-based, cross-platform)
+# Import text menus for CLI mode (Rich-based, cross-platform)
 from ui.text_menus import (
     select_depots,
     select_dlcs,
     select_steam_library,
     select_destination_path,
+)
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.prompt import Prompt
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+    TimeRemainingColumn,
 )
 
 LINUX_TERMINALS = [
@@ -104,10 +116,11 @@ def open_cli_terminal(
 ) -> bool:
     """Open a new terminal running ACCELA CLI mode.
 
-    Args:
-        appid: AppID to download from Morrenus API
-        zip_path: Path to a ZIP file to process
+    If already attached to an interactive terminal, returns False to stay in current session.
     """
+    if sys.stdin.isatty():
+        return False
+
     cmd = _get_terminal_command(appid, zip_path)
     if not cmd:
         return False
@@ -120,73 +133,732 @@ def open_cli_terminal(
         return False
 
 
+def _clean_shutdown(app: QApplication):
+    """Ensure clean shutdown of Qt threads and logging handlers."""
+    TaskRunner.stop_all_active()
+    app.processEvents()
+
+    from utils.logger import qt_log_handler
+
+    root_logger = logging.getLogger()
+    try:
+        root_logger.removeHandler(qt_log_handler)
+    except (RuntimeError, TypeError):
+        pass
+
+    logging.shutdown()
+
+
+def _print_cli_help(console: Console):
+    """Print formatted CLI command reference."""
+    panel = Panel(
+        "[bold white]ASSella CLI — Command Reference[/bold white]\n\n"
+        "[bold cyan]Usage:[/bold cyan] assella -cli <command> [arguments] [options]\n\n"
+        "[bold yellow]Commands:[/bold yellow]\n"
+        "  [bold green]update-all[/bold green]                Check for updates across all installed ASSella games\n"
+        "  [bold green]library search[/bold green] <query>    Search installed games in local Steam libraries\n"
+        "  [bold green]list[/bold green] [query]              List / search local installed games\n"
+        "  [bold green]search[/bold green] <query>            Search online Hubcap manifest repository\n"
+        "  [bold green]download[/bold green] <title|appid>  Download a game using DepotDownloader\n"
+        "  [bold green]<file.zip>[/bold green]                Process and install a local manifest ZIP bundle\n\n"
+        "[bold yellow]Download Options:[/bold yellow]\n"
+        "  [cyan]--auto, --smart[/cyan]           Auto-select recommended depots for current OS\n"
+        "  [cyan]--all[/cyan]                     Select all available depots\n"
+        "  [cyan]--branch <name>[/cyan]           Specify target Steam branch (e.g. public, beta)\n"
+        "  [cyan]--dest <path>[/cyan]             Custom destination folder\n",
+        title="[bold magenta]ASSella Command Line Interface[/bold magenta]",
+        border_style="magenta",
+    )
+    console.print()
+    console.print(panel)
+
+
+def run_download_with_rich_progress(
+    download_task: DownloadDepotsTask,
+    game_data: Dict[str, Any],
+    selected_depots: list[str],
+    dest_path: str,
+    console: Console,
+    logger: logging.Logger,
+) -> bool:
+    """Run DownloadDepotsTask while driving a live Rich progress bar."""
+    game_name = game_data.get("game_name", "Game")
+    total_depots = len(selected_depots)
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}"),
+        BarColumn(bar_width=35),
+        TaskProgressColumn(),
+        TextColumn("{task.fields[speed]}"),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False,
+    )
+
+    task_id = progress.add_task(
+        f"Downloading {game_name} ({total_depots} depot{'s' if total_depots != 1 else ''})",
+        total=100,
+        speed="",
+    )
+
+    def on_pct(pct: int):
+        progress.update(task_id, completed=min(100, max(0, pct)))
+
+    def on_speed(spd: str):
+        short_spd = spd.split("|")[0].strip() if "|" in spd else spd
+        progress.update(task_id, speed=f"[bold green]{short_spd}[/bold green]")
+
+    def on_task_progress_msg(msg: str):
+        if any(w in msg.lower() for w in ("error", "warning", "lancache", "fallback", "skipped")):
+            progress.console.print(f"[yellow]{msg}[/yellow]")
+        logger.debug(f"[DepotDownloader] {msg}")
+
+    download_task.progress_percentage.connect(on_pct)
+    download_task.speed_update.connect(on_speed)
+    download_task.progress.connect(on_task_progress_msg)
+
+    download_task_runner = TaskRunner()
+    download_worker = download_task_runner.run(
+        download_task.run, game_data, selected_depots, dest_path
+    )
+
+    loop = QEventLoop()
+    download_worker.finished.connect(loop.quit)
+
+    error_holder = [None]
+
+    def on_err(err_tuple):
+        error_holder[0] = err_tuple
+        loop.quit()
+
+    download_task.error.connect(on_err)
+
+    try:
+        with progress:
+            loop.exec()
+    except (KeyboardInterrupt, SystemExit):
+        download_task.stop()
+        progress.console.print("\n[yellow]Download cancelled by user. Terminating background downloader...[/yellow]")
+        return False
+
+    if error_holder[0]:
+        console.print(f"[bold red]Download error: {error_holder[0][1]}[/bold red]")
+        return False
+
+    return True
+
+
+def run_cli_update_check(logger: logging.Logger, console: Optional[Console] = None) -> int:
+    """Check all installed ASSella games for updates and display a Rich status table."""
+    if console is None:
+        console = Console()
+
+    console.print(Panel("[bold magenta]ASSella Library Update Check[/bold magenta]", border_style="magenta"))
+
+    from managers.game_manager import GameManager
+    from core.tasks.manifest_check_task import ManifestCheckTask
+    from utils.update_status_cache import get_update_cache
+    from utils.game_modes import is_accela_managed, is_atom_managed
+
+    class MockMainWindow:
+        def __init__(self):
+            self.settings = get_settings()
+
+    with console.status("[bold cyan]Scanning local Steam libraries for installed games...[/bold cyan]"):
+        game_manager = GameManager(MockMainWindow())
+        game_manager._perform_scan()
+
+    accela_games = [
+        g for g in game_manager.games
+        if (is_accela_managed(g) or is_atom_managed(g))
+        and g.get("appid") not in ("0", "N/A", "unknown", None)
+    ]
+
+    if not accela_games:
+        console.print("[yellow]No ASSella-managed games found in Steam libraries.[/yellow]")
+        return 0
+
+    console.print(f"Found [bold cyan]{len(accela_games)}[/bold cyan] managed game(s). Checking for updates...")
+
+    check_results: Dict[str, str] = {}
+    task = ManifestCheckTask(accela_games, trigger="USER_MANUAL")
+
+    def on_checked(aid: str, status: str):
+        check_results[aid] = status
+        game_manager._on_game_update_checked(aid, status)
+
+    task.game_update_checked.connect(on_checked)
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]Checking manifests:[/] {task.description}"),
+        BarColumn(bar_width=35),
+        TaskProgressColumn(),
+        console=console,
+    )
+    task_id = progress.add_task("Checking updates...", total=len(accela_games))
+
+    def on_task_prog(current: int, total: int):
+        progress.update(task_id, completed=current, total=total)
+
+    task.progress.connect(on_task_prog)
+
+    with progress:
+        try:
+            task.run()
+        except Exception as e:
+            console.print(f"[bold red]Update check error: {e}[/bold red]")
+            return 1
+
+    get_update_cache().save()
+
+    # Build results table
+    table = Table(
+        title="[bold white]ASSella Library Update Status[/bold white]",
+        header_style="bold magenta",
+        border_style="bright_black",
+        show_header=True,
+    )
+    table.add_column("#", style="bold cyan", justify="right", width=4)
+    table.add_column("AppID", style="green", width=12)
+    table.add_column("Game Name", style="white", min_width=25)
+    table.add_column("Installed Build", style="yellow", justify="center", width=16)
+    table.add_column("Status", justify="center", width=22)
+
+    up_to_date_count = 0
+    update_avail_count = 0
+    unknown_count = 0
+
+    for idx, g in enumerate(accela_games, start=1):
+        aid = str(g.get("appid"))
+        name = g.get("game_name") or g.get("name") or g.get("install_dir") or "Unknown"
+        build = str(g.get("buildid") or "-")
+        status_code = check_results.get(aid, "cannot_determine")
+
+        if status_code == "up_to_date":
+            status_text = "[green]✓ Up to date[/green]"
+            up_to_date_count += 1
+        elif status_code == "update_available":
+            status_text = "[bold yellow]▲ Update Available[/bold yellow]"
+            update_avail_count += 1
+        elif status_code == "at0m":
+            status_text = "[cyan]AT0-M[/cyan]"
+            up_to_date_count += 1
+        else:
+            status_text = "[dim]? Unknown[/dim]"
+            unknown_count += 1
+
+        table.add_row(str(idx), aid, name, build, status_text)
+
+    console.print()
+    console.print(table)
+    summary_str = f"[bold white]Summary:[/] [green]{up_to_date_count} Up to date[/green] • [bold yellow]{update_avail_count} Update(s) available[/bold yellow]"
+    if unknown_count:
+        summary_str += f" • [dim]{unknown_count} Unknown[/dim]"
+    console.print(summary_str)
+    return 0
+
+
+def run_cli_library_search(query: str, logger: logging.Logger, console: Optional[Console] = None) -> int:
+    """Search installed games in local Steam libraries matching query."""
+    if console is None:
+        console = Console()
+
+    from managers.game_manager import GameManager
+    from utils.game_modes import is_accela_managed, is_atom_managed
+
+    class MockMainWindow:
+        def __init__(self):
+            self.settings = get_settings()
+
+    with console.status(f"[bold cyan]Searching local Steam libraries for '{query}'...[/bold cyan]"):
+        game_manager = GameManager(MockMainWindow())
+        game_manager._perform_scan()
+
+    q_lower = query.strip().lower()
+    matches = []
+    for g in game_manager.games:
+        aid = str(g.get("appid", ""))
+        name = str(g.get("game_name") or g.get("name") or g.get("install_dir") or "")
+        if not q_lower or q_lower in aid.lower() or q_lower in name.lower():
+            matches.append(g)
+
+    if not matches:
+        console.print(f"[yellow]No installed games found matching '{query}'.[/yellow]")
+        return 0
+
+    table = Table(
+        title=f"[bold white]Local Library Games matching '{query}'[/bold white]" if query else "[bold white]Installed Steam Games[/bold white]",
+        header_style="bold magenta",
+        border_style="bright_black",
+        show_header=True,
+    )
+    table.add_column("AppID", style="green", width=12)
+    table.add_column("Game Name", style="white", min_width=25)
+    table.add_column("Build ID", style="yellow", justify="center", width=14)
+    table.add_column("Mode", justify="center", width=12)
+    table.add_column("Library Path", style="dim", min_width=30)
+
+    for g in matches:
+        aid = str(g.get("appid", "-"))
+        name = str(g.get("game_name") or g.get("name") or g.get("install_dir") or "Unknown")
+        build = str(g.get("buildid") or "-")
+        if is_atom_managed(g):
+            mode = "[cyan]AT0-M[/cyan]"
+        elif g.get("is_dlc_only"):
+            mode = "[magenta]DLC-Only[/magenta]"
+        elif is_accela_managed(g):
+            mode = "[blue]ACCELA[/blue]"
+        else:
+            mode = "[dim]Steam[/dim]"
+        lib_path = str(g.get("library_path") or "-")
+        table.add_row(aid, name, build, mode, lib_path)
+
+    console.print()
+    console.print(table)
+    console.print(f"[dim]Found {len(matches)} matching installed game(s).[/dim]")
+    return 0
+
+
+def run_cli_manifest_search(query: str, logger: logging.Logger, console: Optional[Console] = None) -> int:
+    """Search online Hubcap manifest repository for games matching query."""
+    if console is None:
+        console = Console()
+
+    from core import morrenus_api
+    from utils.search_ranking import filter_and_rank_results
+
+    with console.status(f"[bold cyan]Searching Hubcap manifests for '{query}'...[/bold cyan]"):
+        res = morrenus_api.search_games(query)
+
+    if not isinstance(res, dict) or ("results" not in res and "games" not in res):
+        err = res.get("error") if isinstance(res, dict) else "Unknown API error"
+        console.print(f"[bold red]Search failed: {err}[/bold red]")
+        return 1
+
+    raw_results = res.get("results") or res.get("games") or []
+    ranked_dict = filter_and_rank_results(raw_results, query, filter_blacklist=True)
+    results = ranked_dict.get("results", [])
+
+    if not results:
+        console.print(f"[yellow]No games found on Hubcap matching '{query}'.[/yellow]")
+        return 0
+
+    table = Table(
+        title=f"[bold white]Hubcap Manifest Search: '{query}'[/bold white]",
+        header_style="bold magenta",
+        border_style="bright_black",
+        show_header=True,
+    )
+    table.add_column("#", style="bold cyan", justify="right", width=4)
+    table.add_column("AppID", style="green", width=12)
+    table.add_column("Game Title", style="white", min_width=30)
+    table.add_column("Uploaded Date", style="dim", justify="center", width=15)
+    table.add_column("Manifest Status", justify="center", width=18)
+
+    for idx, item in enumerate(results[:25], start=1):
+        aid = str(item.get("game_id") or item.get("appid") or "-")
+        title = str(item.get("game_name") or item.get("name") or "Unknown")
+        uploaded = str(item.get("uploaded_date") or "-")
+        manifest_avail = item.get("manifest_available", True)
+        status = "[green]Available[/green]" if manifest_avail else "[red]Missing[/red]"
+        table.add_row(str(idx), aid, title, uploaded, status)
+
+    console.print()
+    console.print(table)
+    console.print(
+        f"[dim]Showing {min(len(results), 25)} of {len(results)} match(es). "
+        f"To download: [bold cyan]assella -cli download <AppID>[/bold cyan][/dim]"
+    )
+    return 0
+
+
+def run_cli_download_flow(
+    query_or_appid: str,
+    branch: Optional[str] = None,
+    auto_depots: bool = False,
+    all_depots: bool = False,
+    dest_path: Optional[str] = None,
+    logger: Optional[logging.Logger] = None,
+    console: Optional[Console] = None,
+) -> int:
+    """Full download flow: search -> smart branch -> manifest fetch -> smart depot auto-selection -> DepotDownloader -> post processing."""
+    if console is None:
+        console = Console()
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    # Fix GreenLuma offline mode
+    fix_greenluma_offline_mode()
+
+    # 1. Resolve AppID and Game Name
+    appid: Optional[int] = None
+    game_title = ""
+
+    if query_or_appid.strip().isdigit():
+        appid = int(query_or_appid.strip())
+    else:
+        from core import morrenus_api
+        from utils.search_ranking import filter_and_rank_results
+
+        with console.status(f"[bold cyan]Searching Hubcap for '{query_or_appid}'...[/bold cyan]"):
+            res = morrenus_api.search_games(query_or_appid)
+        raw = res.get("results") or res.get("games") or [] if isinstance(res, dict) else []
+        ranked = filter_and_rank_results(raw, query_or_appid, filter_blacklist=True).get("results", [])
+
+        if not ranked:
+            console.print(f"[bold red]No games found on Hubcap matching '{query_or_appid}'.[/bold red]")
+            return 1
+
+        if len(ranked) == 1:
+            item = ranked[0]
+            appid = int(item.get("game_id") or item.get("appid"))
+            game_title = str(item.get("game_name") or "")
+            console.print(f"[green]Found game:[/] [bold white]{game_title}[/] (AppID: {appid})")
+        else:
+            table = Table(
+                title=f"[bold white]Search Results for '{query_or_appid}'[/bold white]",
+                header_style="bold magenta",
+                border_style="bright_black",
+                show_header=True,
+            )
+            table.add_column("#", style="bold cyan", justify="right", width=4)
+            table.add_column("AppID", style="green", width=12)
+            table.add_column("Game Title", style="white", min_width=30)
+            for idx, item in enumerate(ranked[:15], start=1):
+                aid = str(item.get("game_id") or item.get("appid") or "-")
+                title = str(item.get("game_name") or "Unknown")
+                table.add_row(str(idx), aid, title)
+            console.print(table)
+
+            if not sys.stdin.isatty():
+                item = ranked[0]
+                appid = int(item.get("game_id") or item.get("appid"))
+                game_title = str(item.get("game_name") or "")
+            else:
+                try:
+                    choice = Prompt.ask(
+                        f"[bold magenta]Select game to download [1-{min(len(ranked), 15)}][/bold magenta]",
+                        default="1",
+                        console=console,
+                    )
+                except (EOFError, KeyboardInterrupt):
+                    console.print("\n[yellow]Cancelled.[/yellow]")
+                    return 0
+
+                val = choice.strip()
+                if val.lower() in ("q", "quit", "cancel"):
+                    return 0
+                if val.isdigit() and 1 <= int(val) <= min(len(ranked), 15):
+                    item = ranked[int(val) - 1]
+                    appid = int(item.get("game_id") or item.get("appid"))
+                    game_title = str(item.get("game_name") or "")
+                else:
+                    console.print("[bold red]Invalid selection.[/bold red]")
+                    return 1
+
+    if not appid:
+        console.print("[bold red]Could not determine valid AppID.[/bold red]")
+        return 1
+
+    # 2. Smart Branch Choose
+    from core.morrenus_api import get_selected_branch, download_manifest
+    from core.steam_api import get_app_branches
+    from ui.text_menus import select_branch
+
+    target_branch = branch
+    if not target_branch:
+        if auto_depots or not sys.stdin.isatty():
+            target_branch = get_selected_branch(appid)
+        else:
+            with console.status(f"[bold cyan]Checking Steam branches for AppID {appid}...[/bold cyan]"):
+                branches = get_app_branches(str(appid))
+            if branches and len(branches) > 1:
+                chosen = select_branch(str(appid), branches, console=console)
+                if not chosen:
+                    console.print("[yellow]Branch selection cancelled. Aborting.[/yellow]")
+                    return 0
+                target_branch = chosen
+            else:
+                target_branch = get_selected_branch(appid)
+
+    console.print(f"[bold cyan]Branch:[/] [white]{target_branch}[/white]")
+
+    # 3. Download Manifest
+    with console.status(f"[bold green]Fetching manifest for AppID {appid} (branch: {target_branch})...[/bold green]"):
+        zip_path, err = download_manifest(str(appid), branch=target_branch)
+
+    if err or not zip_path:
+        console.print(f"[bold red]Failed to download manifest bundle: {err or 'Unknown error'}[/bold red]")
+        return 1
+
+    console.print(f"[green]✓ Manifest downloaded:[/] [dim]{os.path.basename(zip_path)}[/dim]")
+
+    # 4. Parse ZIP via ProcessZipTask
+    from core.tasks.process_zip_task import ProcessZipTask
+    game_data_holder = [None]
+
+    def on_zip_done(res):
+        game_data_holder[0] = res
+        loop.quit()
+
+    with console.status("[bold green]Parsing manifest package and depot keys...[/bold green]"):
+        loop = QEventLoop()
+        runner = TaskRunner()
+        runner.cleanup_complete.connect(loop.quit)
+        zip_task = ProcessZipTask()
+        runner.run(zip_task.run, zip_path).finished.connect(on_zip_done)
+        loop.exec()
+
+    game_data = game_data_holder[0]
+    if not game_data or not game_data.get("depots"):
+        console.print("[bold red]Error: No downloadable depots found in manifest bundle.[/bold red]")
+        return 1
+
+    game_name = game_data.get("game_name") or game_title or f"AppID {appid}"
+    depots = game_data.get("depots", {})
+
+    # 5. Smart Depot Auto-Selection
+    from ui.dialogs.depot_selection.selection_policy import recommended_depots
+
+    platform = "linux" if sys.platform == "linux" else "windows"
+    rec_depots = recommended_depots(str(appid), depots, platform=platform)
+
+    if all_depots:
+        selected_depots = list(depots.keys())
+        console.print(f"[yellow]Selected all {len(selected_depots)} depot(s).[/yellow]")
+    elif auto_depots:
+        selected_depots = rec_depots or list(depots.keys())
+        console.print(f"[green]Smart-selected {len(selected_depots)} recommended depot(s) for {platform}.[/green]")
+    else:
+        # Interactive selection menu via Rich with smart recommendations
+        selected_depots = select_depots(str(appid), game_name, depots, console=console, recommended=rec_depots)
+        if not selected_depots:
+            console.print("[yellow]Depot selection cancelled. Aborting download.[/yellow]")
+            return 0
+
+    # 6. Destination Path Selection
+    target_dest = dest_path
+    if not target_dest:
+        libs = get_steam_libraries()
+        if libs:
+            target_dest = select_steam_library(libs, console=console)
+        else:
+            target_dest = select_destination_path(console=console)
+
+    if not target_dest:
+        console.print("[yellow]Destination folder not selected. Aborting download.[/yellow]")
+        return 0
+
+    console.print(f"[bold cyan]Install target:[/] [green]{target_dest}[/green]")
+
+    # 7. Start Download using DepotDownloader with Rich Live Progress
+    game_data["selected_depots_list"] = selected_depots
+    download_task = DownloadDepotsTask()
+    success = run_download_with_rich_progress(
+        download_task, game_data, selected_depots, target_dest, console, logger
+    )
+    if not success:
+        return 1
+
+    # 8. Post-Processing
+    console.print("[bold cyan]Running post-processing (SLSsteam, manifests, emulator)...[/bold cyan]")
+    settings = get_settings()
+    cli_task_mgr = CLITaskManager(settings, logger)
+    cli_task_mgr.run_post_processing(game_data, download_task, target_dest)
+
+    panel = Panel(
+        f"[bold green]Successfully installed {game_name}![/bold green]\n\n"
+        f"• [bold white]AppID:[/bold white] {appid}\n"
+        f"• [bold white]Path:[/bold white] {target_dest}\n"
+        f"• [bold white]Depots:[/bold white] {len(selected_depots)} downloaded\n"
+        f"• [bold white]Branch:[/bold white] {target_branch}",
+        title="[bold magenta]ASSella Installation Complete[/bold magenta]",
+        border_style="green",
+    )
+    console.print()
+    console.print(panel)
+    return 0
+
+
+def run_cli_dispatcher(
+    app: QApplication,
+    raw_args: list[str],
+    logger: logging.Logger,
+    command_line_appid: Optional[int] = None,
+    command_line_zips: Optional[list[str]] = None,
+) -> int:
+    """Main CLI dispatcher for ASSella."""
+    console = Console()
+    cli_args = [a for a in raw_args if a not in ("-cli", "--cli", "-v", "--verbose", "-debug", "--debug")]
+
+    if not cli_args and not command_line_appid and not command_line_zips:
+        _print_cli_help(console)
+        _clean_shutdown(app)
+        return 0
+
+    first = cli_args[0].lower() if cli_args else ""
+
+    if first in ("-h", "--help", "help"):
+        _print_cli_help(console)
+        _clean_shutdown(app)
+        return 0
+
+    if first in ("update-all", "check-updates", "update_all", "check_updates"):
+        code = run_cli_update_check(logger, console)
+        _clean_shutdown(app)
+        return code
+
+    if first in ("library", "local"):
+        sub_args = cli_args[1:]
+        if sub_args and sub_args[0].lower() in ("search", "find"):
+            query = " ".join(sub_args[1:])
+        else:
+            query = " ".join(sub_args)
+        code = run_cli_library_search(query, logger, console)
+        _clean_shutdown(app)
+        return code
+
+    if first in ("list", "ls"):
+        query = " ".join(cli_args[1:])
+        code = run_cli_library_search(query, logger, console)
+        _clean_shutdown(app)
+        return code
+
+    if first in ("search", "find"):
+        if len(cli_args) < 2:
+            console.print("[bold red]Error: 'search' requires a search term (e.g. assella -cli search Elden)[/bold red]")
+            _clean_shutdown(app)
+            return 1
+        query = " ".join(cli_args[1:])
+        code = run_cli_manifest_search(query, logger, console)
+        _clean_shutdown(app)
+        return code
+
+    if first in ("download", "get", "install"):
+        sub_args = cli_args[1:]
+        if not sub_args or any(a in ("-h", "--help", "help") for a in sub_args):
+            console.print(
+                Panel(
+                    "[bold white]ASSella CLI — Download Command[/bold white]\n\n"
+                    "[bold cyan]Usage:[/bold cyan] assella -cli download <title|appid> [options]\n\n"
+                    "[bold yellow]Options:[/bold yellow]\n"
+                    "  [green]--auto, --smart[/green]    Auto-select recommended depots for current OS\n"
+                    "  [green]--all[/green]              Select all available depots\n"
+                    "  [green]--branch <name>[/green]    Specify target Steam branch (e.g. public, beta)\n"
+                    "  [green]--dest <path>[/green]      Custom destination folder\n\n"
+                    "[bold yellow]Examples:[/bold yellow]\n"
+                    "  assella -cli download 1091500 --smart\n"
+                    "  assella -cli download \"Hollow Knight\" --branch beta\n"
+                    "  assella -cli download 2868840 --dest /mnt/games",
+                    title="[bold magenta]Download Options[/bold magenta]",
+                    border_style="magenta",
+                )
+            )
+            _clean_shutdown(app)
+            return 0
+
+        branch: Optional[str] = None
+        auto_depots = False
+        all_depots = False
+        dest_path: Optional[str] = None
+        target_tokens: list[str] = []
+
+        idx = 0
+        while idx < len(sub_args):
+            arg = sub_args[idx]
+            if arg in ("--branch", "-b") and idx + 1 < len(sub_args):
+                branch = sub_args[idx + 1]
+                idx += 1
+            elif arg in ("--auto", "-auto", "--smart", "-smart"):
+                auto_depots = True
+            elif arg in ("--all", "-all"):
+                all_depots = True
+            elif arg in ("--dest", "--path", "-d") and idx + 1 < len(sub_args):
+                dest_path = sub_args[idx + 1]
+                idx += 1
+            else:
+                target_tokens.append(arg)
+            idx += 1
+
+        target_query = " ".join(target_tokens).strip()
+        if not target_query:
+            console.print("[bold red]Error: No game name or AppID provided to download.[/bold red]")
+            _clean_shutdown(app)
+            return 1
+
+        code = run_cli_download_flow(
+            target_query,
+            branch=branch,
+            auto_depots=auto_depots,
+            all_depots=all_depots,
+            dest_path=dest_path,
+            logger=logger,
+            console=console,
+        )
+        _clean_shutdown(app)
+        return code
+
+    # Direct AppID flag: --appid <id>
+    if command_line_appid:
+        code = run_cli_download_flow(str(command_line_appid), logger=logger, console=console)
+        _clean_shutdown(app)
+        return code
+
+    # Legacy fallback: ZIP file(s)
+    zips_to_process = command_line_zips or [a for a in cli_args if a.lower().endswith(".zip")]
+    if zips_to_process:
+        return run_cli_mode(app, zips_to_process, logger)
+
+    # If first argument looks like an AppID directly (e.g. assella -cli 1245620)
+    if first.isdigit():
+        code = run_cli_download_flow(first, logger=logger, console=console)
+        _clean_shutdown(app)
+        return code
+
+    # If first argument is unquoted title, default to search & download
+    console.print(f"[dim]Interpreting command as: download '{' '.join(cli_args)}'[/dim]")
+    code = run_cli_download_flow(" ".join(cli_args), logger=logger, console=console)
+    _clean_shutdown(app)
+    return code
+
+
 def run_cli_mode(
     app: QApplication,
     command_line_zips: list[str],
     logger: logging.Logger,
     appid: Optional[int] = None,
 ):
-    """Run ACCELA in CLI mode - show only DepotSelectionDialog for ZIP files.
-
-    Args:
-        app: QApplication instance
-        command_line_zips: List of ZIP file paths to process
-        logger: Logger instance
-        appid: Optional AppID to download manifest from Morrenus API
-    """
-    # Load settings for CLI mode
+    """Run ACCELA in CLI mode for ZIP files or AppID."""
     settings = get_settings()
+    console = Console()
 
     logger.info("=" * 50)
     logger.info("ACCELA CLI Mode")
     logger.info("=" * 50)
 
-    # Fix GreenLuma offline mode
     fix_greenluma_offline_mode()
 
-    # Apply ACCELA theme
-    from main import update_appearance
-
-    accent_color = settings.value("accent_color", "#C06C84")
-    bg_color = settings.value("background_color", "#000000")
-
-    font = create_font_from_settings(settings)
-
-    font_ok, font_info = update_appearance(app, accent_color, bg_color, font)
-    if font_ok:
-        logger.info(f"CLI mode: theme applied, font '{font_info}' loaded")
-    else:
-        logger.warning("CLI mode: failed to load custom font")
-
-    # If appid is provided, download manifest from Morrenus API
     if appid:
-        logger.info(f"Downloading manifest for AppID {appid} from Morrenus API")
-        zip_path, error = download_morrenus_manifest(str(appid))
-        if error:
-            logger.error(f"Failed to download manifest: {error}")
-            logger.info("Exiting CLI mode.")
-            return
-        command_line_zips = [zip_path]
-        logger.info(
-            f"Manifest downloaded: {os.path.basename(zip_path) if zip_path else 'Unknown'}"
-        )
+        code = run_cli_download_flow(str(appid), logger=logger, console=console)
+        _clean_shutdown(app)
+        sys.exit(code)
 
     def get_destination_path_cli() -> Optional[str]:
-        """Get destination path based on settings (same logic as TaskManager)"""
         slssteam_mode_local = is_slssteam_mode_enabled()
         library_mode = settings.value("library_mode", False, type=bool)
 
         if slssteam_mode_local or library_mode:
             libraries = get_steam_libraries()
             if libraries:
-                path = select_steam_library(libraries)
+                path = select_steam_library(libraries, console=console)
                 if path:
                     return path
                 return None
 
-        # Use text-based destination path selection
         default_path = os.path.expanduser("~")
-        path = select_destination_path(default_path)
+        path = select_destination_path(default_path, console=console)
         return path
 
     total_zips = len(command_line_zips)
@@ -197,17 +869,13 @@ def run_cli_mode(
             f"\n[{current_job}/{total_zips}] Processing: {os.path.basename(zip_path) if zip_path else 'Unknown'}"
         )
 
-        # Step 1: Process ZIP file
-        logger.info("Parsing ZIP file...")
         zip_task = ProcessZipTask()
-
         game_data_holder: list[Optional[Dict[str, Any]]] = [None]
 
         def on_zip_processed(result: Optional[Dict[str, Any]]):
             game_data_holder[0] = result
             loop.quit()
 
-        # Create a local event loop to wait for ZIP processing
         loop = QEventLoop()
         zip_task_runner = TaskRunner()
         zip_task_runner.cleanup_complete.connect(loop.quit)
@@ -215,119 +883,61 @@ def run_cli_mode(
         loop.exec()
 
         game_data = game_data_holder[0]
-
         if not game_data or not game_data.get("depots"):
             logger.warning(
                 f"No depots found in {os.path.basename(zip_path) if zip_path else 'Unknown'}"
             )
             continue
 
-        # Step 2: Show depot selection menu
-        logger.info(
-            f"Showing depot selection for: {game_data.get('game_name', 'Unknown')}"
-        )
-
         selected_depots = select_depots(
             game_data["appid"],
             game_data["game_name"],
             game_data["depots"],
             game_data.get("header_url"),
+            console=console,
         )
 
         if not selected_depots:
-            logger.info(
-                "Depot selection cancelled or no depots selected, skipping this ZIP"
-            )
+            logger.info("Depot selection cancelled or no depots selected, skipping this ZIP")
             continue
 
-        logger.info(f"Selected {len(selected_depots)} depots")
-
-        # Step 2.5: DLC selection (Windows + GreenLuma wrapper only)
         if (
             sys.platform == "win32"
             and is_greenluma_wrapper_mode_enabled()
             and game_data.get("dlcs")
         ):
-            logger.info(
-                "Windows + GreenLuma wrapper detected, showing DLC selection..."
-            )
-            selected_dlcs = select_dlcs(game_data["dlcs"])
+            selected_dlcs = select_dlcs(game_data["dlcs"], console=console)
             if selected_dlcs:
                 game_data["selected_dlcs"] = selected_dlcs
-                logger.info(f"Selected {len(selected_dlcs)} DLCs")
 
-        # Step 3: Get destination path (respects Steam integration settings)
         dest_path = get_destination_path_cli()
-
         if not dest_path:
             logger.info("Destination folder not selected, skipping this ZIP")
             continue
 
-        logger.info(f"Destination: {dest_path}")
-
-        # Step 4: Start download
-        logger.info("\n" + "=" * 40)
-        logger.info("Starting download...")
-        logger.info("=" * 40)
-
         game_data["selected_depots_list"] = selected_depots
 
         download_task = DownloadDepotsTask()
-        download_task.progress.connect(logger.info)
-
-        # TaskRunner.run() returns the worker, store it
-        download_task_runner = TaskRunner()
-        download_worker = download_task_runner.run(
-            download_task.run, game_data, selected_depots, dest_path
+        success = run_download_with_rich_progress(
+            download_task, game_data, selected_depots, dest_path, console, logger
         )
+        if not success:
+            logger.error(f"Download failed for {game_data.get('game_name')}")
+            continue
 
-        # Wait for download to complete
-        download_loop = QEventLoop()
-
-        def on_download_complete():
-            download_loop.quit()
-
-        download_worker.finished.connect(on_download_complete)
-        download_loop.exec()
-
-        # Step 5: Run all post-processing steps
-        logger.info("\n" + "=" * 40)
-        logger.info("Running post-processing...")
-        logger.info("=" * 40)
-
-        # Create a CLI task manager to handle all post-processing
         cli_task_manager = CLITaskManager(settings, logger)
         cli_task_manager.run_post_processing(game_data, download_task, dest_path)
 
-        logger.info("\n" + "=" * 40)
         if game_data:
             logger.info(f"Download complete: {game_data.get('game_name', 'Unknown')}")
-        logger.info("=" * 40)
 
     logger.info(f"\n{'=' * 50}")
     logger.info(f"All {total_zips} ZIP(s) processed")
     logger.info(f"{'=' * 50}")
 
-    # Stop all active TaskRunners to prevent QThread errors on exit
-    TaskRunner.stop_all_active()
-
-    # Process pending events to ensure clean Qt shutdown
-    app.processEvents()
-
-    # Remove Qt log handler and shutdown logging before exit to prevent atexit callback errors
-    # (the Qt C++ object may be deleted before Python's logging shutdown)
-    from utils.logger import qt_log_handler
-
-    root_logger = logging.getLogger()
-    try:
-        root_logger.removeHandler(qt_log_handler)
-    except (RuntimeError, TypeError):
-        pass  # Handler may already be deleted
-
-    # Manually shutdown logging to prevent atexit from trying to access deleted Qt objects
-    logging.shutdown()
-
+    _clean_shutdown(app)
     sys.exit(0)
+
 
 
 class CLITaskManager:
