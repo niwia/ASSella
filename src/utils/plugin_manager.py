@@ -16,7 +16,7 @@ import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from utils.helpers import get_base_path
 from utils.paths import Paths
@@ -46,6 +46,13 @@ FALLBACK_REQUIRED_PLUGINS = [
     "lobster.lua",
     "hubcap.lua",
 ]
+
+# Baseline companion plugins (non-interceptors) when manifest is unreachable
+FALLBACK_COMPANION_PLUGINS = {
+    "spliced-tickets.lua",
+    "lobster.lua",
+    "hubcap.lua",
+}
 
 
 def calculate_sha256(file_path: Path) -> Optional[str]:
@@ -193,6 +200,10 @@ def fetch_plugins_manifest(force_refresh: bool = False) -> Optional[Dict[str, An
         logger.debug(f"[PluginManager] Error reading bundled manifest: {b_err}")
 
     return None
+
+
+# Alias for convenience
+get_plugins_manifest = fetch_plugins_manifest
 
 
 def get_manifest_plugin_info(filename: str) -> Optional[Dict[str, Any]]:
@@ -416,7 +427,11 @@ def is_plugin_installed_and_valid(filename: str, expected_sha256: Optional[str] 
         return False
 
     primary_file = target_dirs[0] / filename
-    if not primary_file.is_file():
+    try:
+        if not primary_file.is_file() or primary_file.stat().st_size == 0:
+            return False
+    except OSError as err:
+        logger.debug(f"[PluginManager] Could not stat primary plugin {primary_file}: {err}")
         return False
 
     if expected_sha256 is None:
@@ -483,10 +498,48 @@ def archive_redundant_legacy_plugins(auto_deploy_replacement: bool = True) -> Li
     return archived
 
 
+def get_companion_plugin_filenames() -> Set[str]:
+    """Return set of filenames for plugins categorized as companions (non-interceptors).
+
+    Derives dynamically from the plugins manifest if available, falling back
+    to FALLBACK_COMPANION_PLUGINS.
+    """
+    companions = set(FALLBACK_COMPANION_PLUGINS)
+    try:
+        manifest = fetch_plugins_manifest()
+        if manifest and "plugins" in manifest:
+            for fname, pdata in manifest["plugins"].items():
+                if isinstance(pdata, dict) and pdata.get("category") == "companion":
+                    companions.add(fname)
+    except Exception as e:
+        logger.debug(f"[PluginManager] Error deriving companion plugins from manifest: {e}")
+    return companions
+
+
+def is_interceptor_plugin(filename: str) -> bool:
+    """Check if a plugin acts as a download interceptor (enforcing single active plugin)."""
+    if filename in get_companion_plugin_filenames():
+        return False
+    try:
+        meta = get_manifest_plugin_info(filename)
+        if meta and isinstance(meta, dict) and "category" in meta:
+            return meta.get("category") == "interceptor"
+    except Exception as e:
+        logger.debug(f"[PluginManager] Error checking interceptor category for {filename}: {e}")
+    # Any custom or unlisted .lua (excluding .bak and redundant legacy aliases) is treated as an interceptor
+    return (
+        filename.endswith(".lua")
+        and not filename.endswith(".bak")
+        and not filename.startswith(".")
+        and filename not in REDUNDANT_LEGACY_PLUGINS
+    )
+
+
 def get_active_interceptor_filename() -> Optional[str]:
     """Find the active download interceptor plugin filename in SLSsteam plugins directory."""
     try:
         archive_redundant_legacy_plugins(auto_deploy_replacement=False)
+        companion_plugins = get_companion_plugin_filenames()
         target_dirs = get_sls_plugins_dirs()
         for tdir in target_dirs:
             if tdir.is_dir():
@@ -495,7 +548,7 @@ def get_active_interceptor_filename() -> Optional[str]:
                         p.is_file()
                         and not p.name.endswith(".bak")
                         and not p.name.startswith(".")
-                        and p.name not in ("spliced-tickets.lua", "lobster.lua", "hubcap.lua")
+                        and p.name not in companion_plugins
                         and p.name not in REDUNDANT_LEGACY_PLUGINS
                     ):
                         return p.name
@@ -541,6 +594,7 @@ def are_plugins_present(ignore_bypass: bool = False) -> bool:
 
     has_interceptor = False
     has_spliced = False
+    companion_plugins = get_companion_plugin_filenames()
     for tdir in target_dirs:
         if not tdir.is_dir():
             continue
@@ -548,7 +602,7 @@ def are_plugins_present(ignore_bypass: bool = False) -> bool:
             if not p.name.endswith(".bak") and not p.name.startswith("."):
                 if p.name == "spliced-tickets.lua":
                     has_spliced = True
-                elif p.name not in ("lobster.lua", "hubcap.lua"):
+                elif p.name not in companion_plugins:
                     has_interceptor = True
 
     return has_interceptor and has_spliced
@@ -570,6 +624,13 @@ def get_plugin_status(filename: str) -> str:
     for tdir in target_dirs:
         candidate = tdir / filename
         if candidate.is_file():
+            # Treat 0-byte stub files as missing rather than valid installations
+            try:
+                if candidate.stat().st_size == 0:
+                    continue
+            except OSError as e:
+                logger.debug(f"[PluginManager] Could not stat candidate {candidate}: {e}")
+                continue
             found_file = candidate
             break
 
@@ -681,10 +742,11 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
     if not target_dirs:
         return False, False, "No valid SLSsteam plugin directories found."
 
-    is_interceptor = (filename not in ("spliced-tickets.lua", "lobster.lua", "hubcap.lua"))
+    is_interceptor = is_interceptor_plugin(filename)
     all_matched = True
     any_deployed = False
     errors = []
+    companion_plugins = get_companion_plugin_filenames()
 
     for tdir in target_dirs:
         try:
@@ -707,7 +769,7 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
                         existing.is_file()
                         and not existing.name.endswith(".bak")
                         and not existing.name.startswith(".")
-                        and existing.name not in ("spliced-tickets.lua", "lobster.lua", "hubcap.lua")
+                        and existing.name not in companion_plugins
                         and existing.name != filename
                     ):
                         try:
@@ -723,22 +785,25 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
 
             dst_file = tdir / filename
             if dst_file.is_file():
-                dst_hash = calculate_sha256(dst_file)
-                if dst_hash == src_hash:
-                    logger.debug(f"[PluginManager] {filename} at {dst_file} matches hash {src_hash[:8]}, skipping.")
-                    continue
+                if dst_file.stat().st_size > 0:
+                    dst_hash = calculate_sha256(dst_file)
+                    if dst_hash == src_hash:
+                        logger.debug(f"[PluginManager] {filename} at {dst_file} matches hash {src_hash[:8]}, skipping.")
+                        continue
 
-                # Hash mismatch: back up old plugin as .bak
-                bak_file = tdir / f"{filename}.bak"
-                try:
-                    if bak_file.is_file():
-                        bak_file.unlink()
-                    shutil.copy2(dst_file, bak_file)
-                    logger.info(
-                        f"[PluginManager] Backed up old {filename} ({dst_hash[:8]} -> {bak_file})"
-                    )
-                except Exception as bak_err:
-                    logger.warning(f"[PluginManager] Failed creating backup {bak_file}: {bak_err}")
+                    # Hash mismatch: back up old plugin as .bak
+                    bak_file = tdir / f"{filename}.bak"
+                    try:
+                        if bak_file.is_file():
+                            bak_file.unlink()
+                        shutil.copy2(dst_file, bak_file)
+                        logger.info(
+                            f"[PluginManager] Backed up old {filename} ({dst_hash[:8]} -> {bak_file})"
+                        )
+                    except Exception as bak_err:
+                        logger.warning(f"[PluginManager] Failed creating backup {bak_file}: {bak_err}")
+                else:
+                    logger.info(f"[PluginManager] Overwriting 0-byte stub for {filename} at {dst_file}")
 
             all_matched = False
             shutil.copy2(cache_path, dst_file)

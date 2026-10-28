@@ -341,6 +341,67 @@ class TestSlsLuaConfigAndDialogs(unittest.TestCase):
                 self.assertTrue(bak_lua.exists())
                 self.assertEqual(bak_lua.read_text(encoding="utf-8"), "-- backup code")
 
+    def test_companion_plugins_manifest_filtering(self):
+        """Companion plugins are derived from manifest and never treated as interceptors."""
+        from utils.plugin_manager import (
+            get_companion_plugin_filenames,
+            is_interceptor_plugin,
+            get_active_interceptor_filename,
+        )
+        from unittest.mock import patch
+
+        companions = get_companion_plugin_filenames()
+        self.assertIn("lobster.lua", companions)
+        self.assertIn("hubcap.lua", companions)
+        self.assertIn("spliced-tickets.lua", companions)
+
+        self.assertFalse(is_interceptor_plugin("lobster.lua"))
+        self.assertFalse(is_interceptor_plugin("hubcap.lua"))
+        self.assertFalse(is_interceptor_plugin("spliced-tickets.lua"))
+        self.assertTrue(is_interceptor_plugin("spacebunny.lua"))
+        self.assertTrue(is_interceptor_plugin("download.lua"))
+        # Custom unknown .lua defaults to interceptor
+        self.assertTrue(is_interceptor_plugin("my_custom_interceptor.lua"))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p_dir = Path(tmpdir)
+            (p_dir / "lobster.lua").write_text("code", encoding="utf-8")
+            (p_dir / "spliced-tickets.lua").write_text("code", encoding="utf-8")
+            (p_dir / "spacebunny.lua").write_text("code", encoding="utf-8")
+
+            with patch("utils.plugin_manager.get_sls_plugins_dirs", return_value=[p_dir]):
+                active = get_active_interceptor_filename()
+                self.assertEqual(active, "spacebunny.lua")
+
+    def test_0byte_plugin_handling(self):
+        """0-byte files are treated as missing and overwritten rather than preserved."""
+        from utils.plugin_manager import (
+            get_plugin_status,
+            is_plugin_installed_and_valid,
+            deploy_plugin,
+        )
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p_dir = Path(tmpdir)
+            zero_byte_file = p_dir / "spacebunny.lua"
+            zero_byte_file.touch()
+            self.assertEqual(zero_byte_file.stat().st_size, 0)
+
+            with patch("utils.plugin_manager.get_sls_plugins_dirs", return_value=[p_dir]):
+                # Status treats 0-byte file as missing
+                self.assertEqual(get_plugin_status("spacebunny.lua"), "missing")
+                self.assertFalse(is_plugin_installed_and_valid("spacebunny.lua"))
+
+                # deploy with only_if_missing does not preserve 0-byte stub
+                ok, skipped, msg = deploy_plugin("spacebunny.lua", only_if_missing=True)
+                self.assertTrue(ok)
+                # Did not skip as already present
+                self.assertFalse(skipped)
+                self.assertGreater(zero_byte_file.stat().st_size, 0)
+                # 0-byte file was not backed up to .bak
+                self.assertFalse((p_dir / "spacebunny.lua.bak").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
