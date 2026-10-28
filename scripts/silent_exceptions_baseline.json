@@ -260,7 +260,7 @@
     "narrow": 0
   },
   "ui/dialogs/settings.py": {
-    "broad": 5,
+    "broad": 4,
     "narrow": 6
   },
   "ui/dialogs/settings_sls.py": {
