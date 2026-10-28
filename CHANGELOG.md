@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.6] - 2026-10-28
+
+### Added
+- Native PassThrough high-DPI scaling policy for docked Steam Deck and Wayland displays.
+- Modernized CLI: replaced legacy Urwid menus with Python Rich for depot/DLC selection, colorized status tables, and multi-column progress tracking.
+
+### Fixed
+- Fixed appimageupdatetool delta updates with -O in-place overwrite and explicit target paths.
+- Fixed QByteArray decode error in image_fetcher for Last-Modified header validation.
+- Dual-routed CLI messages in assfixer to persistent loggers while preserving terminal output.
+- Manifest-driven companion plugin filtering and 0-byte corrupt stub protection.
+- Guarded QThread lifecycle assertions in TaskRunner and single depot dialog on Qt 6.11.
+
+### Changed
+- Upgraded Python standalone AppImage runtime to 3.13.18.
+- Upgraded PyQt6 to 6.11.0 / Qt 6.11.2 with fractional scaling protocol support.
+- Updated dependencies: cryptography 50.0.2, psutil 7.2.2, wsproto 1.3.2, beautifulsoup4 4.15.0, capstone 5.0.9.
+
 ## [3.0.5] - 2026-10-27
 
 ### Added
