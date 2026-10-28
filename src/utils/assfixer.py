@@ -139,10 +139,42 @@ CYAN   = "\033[96m"
 BOLD   = "\033[1m"
 RESET  = "\033[0m"
 
-def info(msg):  print(f"{CYAN}[INFO]{RESET}  {msg}")
-def ok(msg):    print(f"{GREEN}[OK]{RESET}    {msg}")
-def warn(msg):  print(f"{YELLOW}[WARN]{RESET}  {msg}")
-def error(msg): print(f"{RED}[ERROR]{RESET} {msg}", file=sys.stderr)
+def _is_tty(stream) -> bool:
+    if stream is None or not hasattr(stream, "isatty"):
+        return False
+    try:
+        return bool(stream.isatty())
+    except (ValueError, OSError) as e:
+        logger.debug(f"Stream isatty check failed: {e}")
+        return False
+
+def info(msg: str) -> None:
+    logger.info(msg)
+    if _is_tty(sys.stdout):
+        print(f"{CYAN}[INFO]{RESET}  {msg}")
+    else:
+        print(f"[INFO]  {msg}")
+
+def ok(msg: str) -> None:
+    logger.info(f"[OK] {msg}")
+    if _is_tty(sys.stdout):
+        print(f"{GREEN}[OK]{RESET}    {msg}")
+    else:
+        print(f"[OK]    {msg}")
+
+def warn(msg: str) -> None:
+    logger.warning(msg)
+    if _is_tty(sys.stderr):
+        print(f"{YELLOW}[WARN]{RESET}  {msg}")
+    else:
+        print(f"[WARN]  {msg}")
+
+def error(msg: str) -> None:
+    logger.error(msg)
+    if _is_tty(sys.stderr):
+        print(f"{RED}[ERROR]{RESET} {msg}", file=sys.stderr)
+    else:
+        print(f"[ERROR] {msg}", file=sys.stderr)
 
 # ──────────────────────────────────────────────────────────────
 # Formatting / sanitization helpers
