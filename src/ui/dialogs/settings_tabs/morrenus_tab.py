@@ -45,7 +45,8 @@ def benchmark_mrc_provider(provider: str) -> Tuple[bool, int, str]:
                 err = f"HTTP {r.status_code}"
         elif prov == "hubcap":
             url = "https://hubcapmanifest.com/api/v1/health"
-            r = requests.get(url, timeout=4.0)
+            from utils.isp_bypass import execute_hubcap_request
+            r = execute_hubcap_request(requests.Session(), "GET", url, timeout=4)
             ok = r.status_code == 200
             if not ok:
                 err = f"HTTP {r.status_code}"
