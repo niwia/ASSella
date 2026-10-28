@@ -185,13 +185,23 @@ class AppUpdateManager(QObject):
                     else:
                         QMetaObject.invokeMethod(progress, "setLabelText",
                             Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Delta update via AppImageUpdate..."))
-                        # appimageupdatetool rewrites its target in place and creates
-                        # a .zs-old backup; work on a copy so a failed run cannot
-                        # damage the working install.
+                        # appimageupdatetool with -O overwrites its target in place;
+                        # work on a copy so a failed run cannot damage the working
+                        # install. Without -O it creates a new file and leaves the
+                        # original untouched, so -O is required for the success
+                        # check below to see the updated content.
+                        # Pass -u with the resolved release tag so the updater
+                        # targets the intended release even if the AppImage's
+                        # embedded update string has an unresolvable wildcard tag.
                         target = dest_dir / "ASSella.AppImage.autoupdate"
                         shutil.copy2(appimage_path, target)
+                        cmd = [updater, "-O"]
+                        target_tag = release_data.get("tag_name") or (tag if tag != "latest" else "")
+                        if target_tag:
+                            cmd.extend(["-u", f"gh-releases-zsync|niwia|ASSella|{target_tag}|ASSella.AppImage.zsync"])
+                        cmd.append(str(target))
                         proc = subprocess.run(
-                            [updater, "--self-update", str(target)],
+                            cmd,
                             capture_output=True, text=True, timeout=3600,
                         )
                         out = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -204,6 +214,7 @@ class AppUpdateManager(QObject):
                             logger.info(
                                 f"Delta update complete ({target.stat().st_size} bytes) via appimageupdatetool."
                             )
+                            Path(str(target) + ".zs-old").unlink(missing_ok=True)
                         else:
                             logger.warning(
                                 f"appimageupdatetool returned rc={proc.returncode}; falling back."

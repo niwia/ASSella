@@ -298,19 +298,15 @@ jobs:
 
           # Embed GitHub Releases zsync update info for delta update capabilities.
           #
-          # The 4th field is the release tag appimageupdatetool resolves. It MUST
-          # be channel-scoped, otherwise a canary user's updater follows the tag
-          # of whatever shipped most recently and silently crosses channels.
-          #
-          # It is deliberately NOT "latest": every release in this repo is marked
-          # prerelease=true, and GitHub's /releases/latest endpoint excludes
-          # prereleases, so "latest" resolves to HTTP 404. The in-app updater and
-          # any AppImageUpdate-based tool would then fail every update check.
-          # A wildcard tag makes each channel track only its own releases.
+          # The 4th field is the release tag appimageupdatetool resolves.
+          # appimageupdatetool natively supports "latest" (queries /releases/latest
+          # for official stable releases) and "latest-all" / "latest-pre" (queries
+          # /releases for the latest release including pre-releases).
+          # Wildcards (*tag*) are not supported by the GitHub Releases API and
+          # result in HTTP 404.
           case "$CHANNEL" in
-            canary) UPDATE_TAG="*testing*" ;;
-            beta)   UPDATE_TAG="*beta*" ;;
-            *)      UPDATE_TAG="*" ;;
+            stable) UPDATE_TAG="latest" ;;
+            *)      UPDATE_TAG="latest-all" ;;
           esac
 
           UPDATE_INFO="gh-releases-zsync|niwia|ASSella|${UPDATE_TAG}|ASSella.AppImage.zsync"
@@ -323,13 +319,13 @@ jobs:
           # one appimagetool emitted mid-build. appimagetool writes its .zsync
           # before the runtime/pip payload is fully materialised, so the emitted
           # file can describe a smaller/earlier image than the one we ship.
-          # That mismatch is what shipped in v2.7.0beta: the .zsync claimed
-          # Length 161573368 / SHA-1 910061bb... while the published AppImage was
-          # 301302976 bytes / c52815c1... A delta sync against that file produces
-          # a corrupt binary.
+          #
+          # NOTE: zsyncmake's -u flag specifies the URL of the target binary to
+          # download (or its relative filename), NOT the AppImage update string.
+          # Using UPDATE_INFO here would corrupt the control file with an invalid URL.
           echo "Regenerating zsync index from final AppImage..."
           rm -f ASSella.AppImage.zsync
-          zsyncmake -u "$UPDATE_INFO" -o ASSella.AppImage.zsync ASSella.AppImage
+          zsyncmake -u ASSella.AppImage -o ASSella.AppImage.zsync ASSella.AppImage
 
           # Generate SHA256 checksums last, so they always describe the shipped bytes.
           sha256sum ASSella.AppImage > ASSella.AppImage.sha256
@@ -395,6 +391,13 @@ jobs:
             fail=1
           else
             echo "OK  zsync Filename header"
+          fi
+
+          if ! grep -a -qi '^URL:[[:space:]]*ASSella\.AppImage[[:space:]]*$' ASSella.AppImage.zsync; then
+            echo "::error::zsync URL header does not match published asset name"
+            fail=1
+          else
+            echo "OK  zsync URL header"
           fi
 
           if [ "$fail" -ne 0 ]; then

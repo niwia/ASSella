@@ -126,6 +126,89 @@ class AppUpdateProgressBridgeTests(unittest.TestCase):
             self.assertIsNone(parent.error)
             self.assertEqual(appimage.read_bytes(), payload)
 
+    def test_appimageupdatetool_invoked_with_overwrite_and_target(self):
+        class Parent(QWidget):
+            def __init__(self):
+                super().__init__()
+                self._latest_remote_version = "3.0.4"
+                self.finished = threading.Event()
+                self.error = None
+
+            @pyqtSlot()
+            def _on_update_success(self):
+                self.finished.set()
+
+            @pyqtSlot(str)
+            def _on_update_failed(self, error):
+                self.error = error
+                self.finished.set()
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+                self.headers = {"Content-Length": str(len(payload))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, size=-1):
+                return self.payload
+
+        def fake_urlopen(request, timeout=None):
+            release = {
+                "tag_name": "v3.0.4",
+                "assets": [{
+                    "name": "ASSella.AppImage",
+                    "browser_download_url": "https://release.test/ASSella.AppImage",
+                }]
+            }
+            return Response(json.dumps(release).encode())
+
+        parent = Parent()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            appimage = Path(temp_dir) / "ASSella.AppImage"
+            appimage.write_bytes(b"old AppImage")
+            fake_updater = Path(temp_dir) / "fake_appimageupdatetool"
+            fake_updater.write_text("#!/bin/sh\nexit 0\n")
+            fake_updater.chmod(0o755)
+
+            invoked_cmds = []
+
+            def fake_subprocess_run(cmd, *args, **kwargs):
+                invoked_cmds.append(cmd)
+                target_path = Path(cmd[-1])
+                target_path.write_bytes(b"new updated AppImage")
+                import subprocess
+                return subprocess.CompletedProcess(cmd, 0, stdout="success", stderr="")
+
+            with (
+                patch.dict(os.environ, {"APPIMAGE": str(appimage)}),
+                patch(
+                    "managers.app_update_manager.ThemedMessageBox.question",
+                    return_value=ThemedMessageBox.StandardButton.Yes,
+                ),
+                patch("managers.app_update_manager.urllib.request.urlopen", side_effect=fake_urlopen),
+                patch("managers.app_update_manager.shutil.which", return_value=str(fake_updater)),
+                patch("managers.app_update_manager.subprocess.run", side_effect=fake_subprocess_run),
+            ):
+                AppUpdateManager(parent).run_self_update()
+                deadline = time.monotonic() + 5
+                while not parent.finished.is_set() and time.monotonic() < deadline:
+                    self.app.processEvents()
+                    time.sleep(0.01)
+
+            self.assertTrue(parent.finished.is_set())
+            self.assertIsNone(parent.error)
+            self.assertEqual(appimage.read_bytes(), b"new updated AppImage")
+            self.assertTrue(len(invoked_cmds) > 0)
+            self.assertIn("-O", invoked_cmds[0])
+            self.assertIn("-u", invoked_cmds[0])
+            self.assertIn("gh-releases-zsync|niwia|ASSella|v3.0.4|ASSella.AppImage.zsync", invoked_cmds[0])
+            self.assertNotIn("--self-update", invoked_cmds[0])
+
 
 if __name__ == "__main__":
     unittest.main()
