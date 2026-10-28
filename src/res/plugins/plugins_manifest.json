@@ -27,21 +27,22 @@
     "lobster.lua": {
       "name": "Lobster",
       "filename": "lobster.lua",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "category": "companion",
       "description": "SLSsteam config recovery plugin: restores AdditionalDepots and DecryptionKeys if stripped by Headcrab updates.",
-      "sha256": "a11629057839f211d6562d540c0cbffa189f93d59c80b73a7692b50a44355d7f",
-      "size_bytes": 13196,
-      "required": true
+      "sha256": "4d9832ebb1b178b20a7eb5a25ebc980df68236cc15189a203f50ab5e23cbc066",
+      "size_bytes": 20418,
+      "required": true,
+      "is_default": false
     },
     "spacebunny.lua": {
       "name": "SpaceBunny",
       "filename": "spacebunny.lua",
-      "version": "1.8.2",
+      "version": "1.8.3",
       "category": "interceptor",
       "description": "Standardized SLSsteam download interceptor with multi-provider MRC authority & circuit breakers.",
-      "sha256": "b70300b375d619ba385fb01809002574703e88e9dc67487d3a27916c0c4347e6",
-      "size_bytes": 49841,
+      "sha256": "c3ce0db5a9633095c0b60405f00f35cd6a76689e98c022084ae05348e088654c",
+      "size_bytes": 59730,
       "required": true,
       "is_default": true
     },
@@ -65,6 +66,39 @@
       "sha256": "62f377e39368d94612371ca62791ac90fad258a360482e6be380069ca1d94eda",
       "size_bytes": 2187,
       "required": true
+    },
+    "katamari.lua": {
+      "name": "Katamari",
+      "filename": "katamari.lua",
+      "version": "0.2",
+      "category": "companion",
+      "description": "Family coordinator and mother config registry for SLSsteam Lua plugins.",
+      "sha256": "69b0a96ca738891a8532f54e177acf107dfcdb4090a09a1101698222cce5c083",
+      "size_bytes": 5199,
+      "required": true,
+      "is_default": false
+    },
+    "bakeneko.lua": {
+      "name": "Bakeneko",
+      "filename": "bakeneko.lua",
+      "version": "0.1",
+      "category": "companion",
+      "description": "Pre-seeds Steam depotcache with manifests directly to bypass runtime MRC authorization.",
+      "sha256": "366a860b14b8fe1d6e479b0283f5b2ffcb13359d3d12d1319be57631eef831b6",
+      "size_bytes": 20691,
+      "required": true,
+      "is_default": false
+    },
+    "styx.lua": {
+      "name": "Styx",
+      "filename": "styx.lua",
+      "version": "2.1",
+      "category": "companion",
+      "description": "App and depot ownership ticket splicing handler for SLSsteam.",
+      "sha256": "7ed72fd9821b0c30de341fe2ce3d610a81f5120088876e3bc1a876fefe4b72a9",
+      "size_bytes": 26902,
+      "required": true,
+      "is_default": false
     }
   }
 }

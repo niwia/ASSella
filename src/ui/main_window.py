@@ -351,6 +351,17 @@ class MainWindow(QMainWindow):
         from utils.settings import is_canary_welcome_needed
         if is_canary_welcome_needed():
             QTimer.singleShot(1000, self._show_canary_welcome)
+            QTimer.singleShot(4000, self._check_legacy_plugins_startup)
+        else:
+            QTimer.singleShot(1500, self._check_legacy_plugins_startup)
+
+    def _check_legacy_plugins_startup(self) -> None:
+        """Check for legacy or foreign plugins on startup and prompt user if needed."""
+        try:
+            from utils.plugin_manager import check_and_prompt_legacy_plugins
+            check_and_prompt_legacy_plugins(parent_window=self)
+        except Exception as e:
+            logger.debug(f"[MainWindow] Error checking legacy plugins on startup: {e}")
 
     def _show_canary_welcome(self) -> None:
         """Display the Canary Welcome Slideshow onboarding dialog."""

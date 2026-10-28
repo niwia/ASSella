@@ -440,6 +440,23 @@ class SettingsDialog(QDialog):
                     if i != index
                 }
 
+            def setTabVisible(self, index: int, visible: bool) -> None:
+                """Show or hide a tab by index in the navigation list."""
+                item = self._nav.item(index)
+                if item:
+                    item.setHidden(not visible)
+                    if not visible and self._nav.currentRow() == index:
+                        for i in range(self._nav.count()):
+                            cand = self._nav.item(i)
+                            if cand and not cand.isHidden():
+                                self.setCurrentIndex(i)
+                                break
+
+            def isTabVisible(self, index: int) -> bool:
+                """Return whether the tab at index is visible."""
+                item = self._nav.item(index)
+                return not item.isHidden() if item else False
+
         self.tab_widget = _TabShim(self._nav_list, self._page_stack)
 
         # Wire navigation clicks
@@ -486,9 +503,13 @@ class SettingsDialog(QDialog):
         tabs.create_morrenus_tab(self)
         create_sls_tab(self)
         tabs.create_at0m_tab(self)
+        tabs.create_plugins_tab(self)
         tabs.create_health_tab(self)
         tabs.create_tools_tab(self)
         tabs.create_style_tab(self)
+
+        # Update initial visibility of Plugins tab (only visible when AT0-M is enabled)
+        self.update_plugins_tab_visibility()
 
         # Modular Settings tab unlocked via Konami cheat code
         if self.settings.value("konami_settings_unlocked", False, type=bool):
@@ -540,6 +561,16 @@ class SettingsDialog(QDialog):
                 self._on_experimental_acf_toggled(True)
         except Exception:
             pass
+
+    def update_plugins_tab_visibility(self) -> None:
+        """Dynamically show or hide the Plugins tab based on AT0-M mode."""
+        is_atom = self.settings.value("enable_at0m", self.settings.value("enable_vapor", True, type=bool), type=bool)
+        if hasattr(self, "enable_at0m_checkbox") and self.enable_at0m_checkbox is not None:
+            is_atom = self.enable_at0m_checkbox.isChecked()
+        for i in range(self.tab_widget.count()):
+            if self.tab_widget.tabText(i).lower() == "plugins":
+                self.tab_widget.setTabVisible(i, is_atom)
+                break
 
     def _on_tab_changed(self, index: int) -> None:
         """Handle tab change events."""

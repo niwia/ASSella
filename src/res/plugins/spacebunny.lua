@@ -1,4 +1,4 @@
--- spacebunny.lua (1.8.2)
+-- spacebunny.lua (1.8.3)
 --
 -- SLSsteam download interceptor: rewrites package 0 depot lists, injects
 -- configured AES decryption keys, and resolves manifest request codes.
@@ -18,6 +18,23 @@
 --      locals, so GetMRC saw nil globals and returned no MRC at all.
 --  40. Canonical filename is spacebunny.lua. Hubcap is an optional
 --      resolver companion; SpaceBunny runs without it.
+--
+-- ======================= 1.8.3 changes from 1.8.2 =====================
+--  41. mrc_config.lua is reloadable. The provider list and tuning are
+--      re-read on SLSsteam::luaReload (caches and breaker state reset), so
+--      editing the file no longer needs a Steam restart. A broken config
+--      keeps the previous providers instead of half-applying itself, and
+--      parse errors / invalid provider entries / unknown tuning keys are
+--      now logged by name.
+--  42. Fixed budget starvation in the provider chain. With the shipped
+--      four-provider mrc_config.lua a stalled primary plus its proxy used
+--      the whole 8s budget, so opensteamtool and the trailing proxy were
+--      always reported "no-budget" and never actually tried. Each provider
+--      still ahead in the list now reserves MIN_ATTEMPT_SEC (default 1s),
+--      and the proxy variant respects that reservation too.
+--  43. Dropped the hard-coded "dead proxy" URL blacklist: the worker's
+--      /manifest route now answers 200 with an MRC, so blacklisting it
+--      silently removed a working proxy from the config.
 --
 -- Everything from 1.8.0 is kept: multi-provider MRC with classified
 -- circuit breakers, total budget, provisional/trusted caching, URL
@@ -43,9 +60,17 @@ SpaceBunny = SpaceBunny or {
 	-- GetMRC vars
 }
 
-SpaceBunny.VERSION = "1.8.2"
+SpaceBunny.VERSION = "1.8.3"
 
 SpaceBunny.DEBUG = false
+
+-- SLSsteam re-runs every plugin file on any change in plugins/.  Hooks are
+-- already installed after the first successful load; re-running would patch
+-- the same functions again and stack callbacks.  Config reloads still go
+-- through the luaReload callback registered below.
+if SpaceBunny.setup then
+	return
+end
 
 -- =========================================================================
 -- Hubcap bridge
@@ -133,19 +158,21 @@ SpaceBunny.MRC_PROVIDERS = {
 		max_transient_skips = 3,
 		transient_skip_duration = 30,
 	},
-	{
-		name = "opensteamtool",
-		url = "https://manifest.opensteamtool.com/manifest/",
-		proxy_url = nil,
-		headers = { "User-Agent: OpenSteamTool/1.0" },
-		is_proxy = false,
-		provisional = true,
-		timeout = 4,
-		max_junk_skips = 2,
-		junk_skip_duration = 300,
-		max_transient_skips = 3,
-		transient_skip_duration = 30,
-	},
+	-- OpenSteamTool is disabled for now. Restore this entry when its
+	-- Cloudflare challenge is no longer blocking MRC requests:
+	-- {
+	--	name = "opensteamtool",
+	--	url = "https://manifest.opensteamtool.com/manifest/",
+	--	proxy_url = nil,
+	--	headers = { "User-Agent: OpenSteamTool/1.0" },
+	--	is_proxy = false,
+	--	provisional = true,
+	--	timeout = 4,
+	--	max_junk_skips = 2,
+	--	junk_skip_duration = 300,
+	--	max_transient_skips = 3,
+	--	transient_skip_duration = 30,
+	-- },
 }
 
 local DEFAULT_PROVIDERS = SpaceBunny.MRC_PROVIDERS
@@ -165,11 +192,6 @@ local GENERIC_PROVIDER_DEFAULTS = {
 local KNOWN_BAD_URLS = {
 	["https://manifest.manifestdex.com/manifest"] = "https://manifest.manifestdex.com/",
 	["http://manifest.manifestdex.com/manifest"] = "https://manifest.manifestdex.com/",
-}
-
-local KNOWN_DEAD_PROXY_URLS = {
-	["https://rapid-thunder-fba1wirecutter.7ucking.workers.dev/manifest"] = true,
-	["http://rapid-thunder-fba1wirecutter.7ucking.workers.dev/manifest"] = true,
 }
 
 local function trimTrailingSlash(url)
@@ -255,12 +277,11 @@ SpaceBunny.resolveProvider = function(cfg)
 		out.url = fixedUrl
 	end
 
-	if out.proxy_url ~= nil
-			and KNOWN_DEAD_PROXY_URLS[trimTrailingSlash(out.proxy_url)] then
-		print("[SpaceBunny] Dropped dead proxy URL for " .. out.name
-			.. ": " .. out.proxy_url)
-		out.proxy_url = nil
-	end
+	-- Proxy URLs are no longer blacklisted here. The one entry this table
+	-- used to hold (the worker's /manifest route) started answering 200 with
+	-- an MRC on 2026-10-27, so a hard-coded list only produced false
+	-- negatives. A proxy that is down is classified at request time like any
+	-- other provider.
 
 	if out.name == "wudrm" and out.url:match("^http://") then
 		out.url = out.url:gsub("^http://", "https://", 1)
@@ -279,6 +300,11 @@ SpaceBunny.MRC_TUNING = {
 	PROBE_TIMEOUTS_TO_MARK_DOWN = 2,
 	DOWN_TTL_MS = 15000,
 	TOTAL_BUDGET_SEC = 8,
+	-- Floor (and per-provider reservation) for the chain. A provider list is
+	-- only useful if every entry is actually reachable: without this, one
+	-- slow primary consumes the whole budget and the tail of the list is
+	-- always reported as "no-budget".
+	MIN_ATTEMPT_SEC = 1,
 	RECOVER_AFTER = 2,
 	HEALTHY_MS = 800,
 	PROVISIONAL_TTL = 300,
@@ -288,6 +314,20 @@ SpaceBunny.MRC_TUNING = {
 	MRCCACHE_MAX = 5000,
 	MRCFAILCACHE_MAX = 2000,
 }
+
+-- Snapshot of the built-in tuning so a reload starts from a clean slate
+-- instead of inheriting keys from a config file that was just removed.
+local BASE_MRC_TUNING = {}
+
+for k, v in pairs(SpaceBunny.MRC_TUNING) do
+	BASE_MRC_TUNING[k] = v
+end
+
+SpaceBunny.resetMrcTuning = function()
+	for k, v in pairs(BASE_MRC_TUNING) do
+		SpaceBunny.MRC_TUNING[k] = v
+	end
+end
 
 local function sanitizeMrcTuning(t)
 	if type(t) ~= "table" then
@@ -328,6 +368,7 @@ local function sanitizeMrcTuning(t)
 	num("PROBE_TIMEOUTS_TO_MARK_DOWN", 1, 20)
 	num("DOWN_TTL_MS", 1000, 600000)
 	num("TOTAL_BUDGET_SEC", 2, 30)
+	num("MIN_ATTEMPT_SEC", 0.2, 5)
 	num("RECOVER_AFTER", 1, 20)
 	num("HEALTHY_MS", 100, 5000)
 	num("PROVISIONAL_TTL", 10, 86400)
@@ -358,6 +399,12 @@ SpaceBunny.applyMrcTuning = function(user)
 	end
 
 	sanitizeMrcTuning(candidate)
+
+	for k in pairs(candidate) do
+		if SpaceBunny.MRC_TUNING[k] == nil then
+			print("[SpaceBunny] Ignoring unknown MRC tuning key '" .. tostring(k) .. "'")
+		end
+	end
 
 	for k, v in pairs(candidate) do
 		if SpaceBunny.MRC_TUNING[k] ~= nil then
@@ -390,52 +437,7 @@ SpaceBunny.logProviderSummary = function()
 	end
 end
 
-pcall(function()
-	local function migrateOldConfig(mrc_cfg)
-		if type(mrc_cfg.authority) ~= "table" or not mrc_cfg.authority.name then
-			return mrc_cfg
-		end
-
-		if mrc_cfg.providers then
-			return mrc_cfg
-		end
-
-		local providers = {}
-
-		if mrc_cfg.authority.name ~= "none" then
-			local auth = SpaceBunny.resolveProvider(mrc_cfg.authority)
-
-			if auth then
-				table.insert(providers, auth)
-			end
-		end
-
-		if mrc_cfg.rescue and mrc_cfg.rescue.name ~= "none" then
-			local rescue = SpaceBunny.resolveProvider(mrc_cfg.rescue)
-
-			if rescue then
-				table.insert(providers, rescue)
-			end
-		end
-
-		local hasOpenSteamTool = false
-
-		for _, p in ipairs(providers) do
-			if p.name == "opensteamtool" then
-				hasOpenSteamTool = true
-			end
-		end
-
-		if not hasOpenSteamTool then
-			table.insert(providers, SpaceBunny.resolveProvider(DEFAULT_PROVIDERS[3]) or DEFAULT_PROVIDERS[3])
-		end
-
-		mrc_cfg.providers = providers
-		print("[SpaceBunny] Migrated legacy MRC config to multi-provider format")
-
-		return mrc_cfg
-	end
-
+local function mrcConfigPath()
 	local home = os.getenv("HOME") or ""
 	local configHome = os.getenv("XDG_CONFIG_HOME")
 
@@ -443,42 +445,181 @@ pcall(function()
 		configHome = home .. "/.config"
 	end
 
-	local cfg_path = configHome .. "/SLSsteam/mrc_config.lua"
-	local ok, mrc_cfg = pcall(dofile, cfg_path)
+	return configHome .. "/SLSsteam/mrc_config.lua"
+end
 
-	if ok and type(mrc_cfg) == "table" then
-		mrc_cfg = migrateOldConfig(mrc_cfg)
+local function migrateOldConfig(mrc_cfg)
+	if type(mrc_cfg.authority) ~= "table" or not mrc_cfg.authority.name then
+		return mrc_cfg
+	end
 
-		SpaceBunny.applyMrcTuning(mrc_cfg.tuning)
+	if mrc_cfg.providers then
+		return mrc_cfg
+	end
 
-		if type(mrc_cfg.providers) == "table" and #mrc_cfg.providers > 0 then
-			local new_providers = {}
+	local providers = {}
 
-			for _, cfg in ipairs(mrc_cfg.providers) do
-				local merged = SpaceBunny.resolveProvider(cfg)
+	if mrc_cfg.authority.name ~= "none" then
+		local auth = SpaceBunny.resolveProvider(mrc_cfg.authority)
 
-				if merged ~= nil then
-					table.insert(new_providers, merged)
-				end
-			end
+		if auth then
+			table.insert(providers, auth)
+		end
+	end
 
-			if #new_providers > 0 then
-				SpaceBunny.MRC_PROVIDERS = new_providers
-				SpaceBunny.MRC_AUTHORITY = new_providers[1]
-				SpaceBunny.MRC_RESCUE = new_providers[2]
-			else
-				print("[SpaceBunny] No valid MRC providers configured, using defaults")
-			end
+	if mrc_cfg.rescue and mrc_cfg.rescue.name ~= "none" then
+		local rescue = SpaceBunny.resolveProvider(mrc_cfg.rescue)
+
+		if rescue then
+			table.insert(providers, rescue)
+		end
+	end
+
+	mrc_cfg.providers = providers
+	print("[SpaceBunny] Migrated legacy MRC config to multi-provider format")
+
+	return mrc_cfg
+end
+
+local function resetMRCState()
+	SpaceBunny.MRCCache = {}
+	SpaceBunny.MRCFailCache = {}
+	SpaceBunny.MRCJunkCache = {}
+	SpaceBunny.MRCAuthorityHealth = {
+		provider = nil,
+		ewma = nil,
+		consecutiveFailures = 0,
+		consecutiveProbeTimeouts = 0,
+		consecutiveHealthy = 0,
+		markedDownUntil = 0,
+	}
+end
+
+-- Applies an already-parsed config table. Returns true when the provider
+-- list was replaced. Invalid entries are reported instead of silently
+-- disappearing, because a typo in mrc_config.lua otherwise looks exactly
+-- like "the provider is down".
+SpaceBunny.applyMRCConfig = function(mrc_cfg)
+	if type(mrc_cfg) ~= "table" then
+		print("[SpaceBunny] mrc_config.lua must return a table, using defaults")
+		return false
+	end
+
+	mrc_cfg = migrateOldConfig(mrc_cfg)
+
+	if type(mrc_cfg.providers) ~= "table" or #mrc_cfg.providers == 0 then
+		print("[SpaceBunny] mrc_config.lua has no providers list, using defaults")
+		return false
+	end
+
+	local providers = {}
+
+	for i, cfg in ipairs(mrc_cfg.providers) do
+		local merged = SpaceBunny.resolveProvider(cfg)
+
+		if merged ~= nil then
+			providers[#providers + 1] = merged
 		else
-			print("[SpaceBunny] No MRC config found, using defaults")
+			local name = (type(cfg) == "table" and tostring(cfg.name)) or "?"
+
+			print("[SpaceBunny] Ignoring MRC provider #" .. i .. " ('" .. name
+				.. "'): needs a name and a http(s) url")
+		end
+	end
+
+	if #providers == 0 then
+		print("[SpaceBunny] No valid MRC providers configured, using defaults")
+		return false
+	end
+
+	-- Tuning is only applied once the provider list is known to be usable,
+	-- so a broken config cannot leave half of its settings behind.
+	SpaceBunny.resetMrcTuning()
+	SpaceBunny.applyMrcTuning(mrc_cfg.tuning)
+
+	SpaceBunny.MRC_PROVIDERS = providers
+	SpaceBunny.MRC_AUTHORITY = providers[1]
+	SpaceBunny.MRC_RESCUE = providers[2]
+
+	return true
+end
+
+-- Reads mrc_config.lua. `initial` is true for the first load, where the
+-- built-in defaults are already in place and a missing file is normal;
+-- a reload keeps the previous providers if the file is broken.
+SpaceBunny.loadMRCConfig = function(initial)
+	local path = mrcConfigPath()
+	local ok, cfg = pcall(dofile, path)
+	local loaded = false
+	local missing = (not ok) and tostring(cfg):find("No such file") ~= nil
+
+	-- If there is no mrc_config.lua, use the mother config's spacebunny.mrc.
+	-- A present mrc_config.lua always wins, so per-machine provider tests do
+	-- not require editing the big family file.
+	if missing then
+		local home = os.getenv("HOME") or ""
+		local configHome = os.getenv("XDG_CONFIG_HOME")
+		if configHome == nil or configHome == "" then
+			configHome = home .. "/.config"
 		end
 
-		SpaceBunny.logProviderSummary()
-	else
-		print("[SpaceBunny] No MRC config found, using defaults")
-		SpaceBunny.logProviderSummary()
+		local mother_ok, mother = pcall(dofile,
+			configHome .. "/SLSsteam/katamari.conf.lua")
+		if mother_ok and type(mother) == "table"
+				and type(mother.spacebunny) == "table"
+				and type(mother.spacebunny.mrc) == "table" then
+			ok = true
+			cfg = mother.spacebunny.mrc
+			missing = false
+		end
 	end
-end)
+
+	if ok then
+		loaded = SpaceBunny.applyMRCConfig(cfg)
+	elseif not missing then
+		if initial then
+			print("[SpaceBunny] mrc_config.lua failed to parse: " .. tostring(cfg))
+			print("[SpaceBunny] ... using the built-in MRC defaults instead")
+		else
+			print("[SpaceBunny] mrc_config.lua could not be reloaded ("
+				.. tostring(cfg) .. "), keeping the previous providers")
+		end
+	end
+
+	if not loaded and missing then
+		SpaceBunny.MRC_PROVIDERS = DEFAULT_PROVIDERS
+		SpaceBunny.MRC_AUTHORITY = DEFAULT_PROVIDERS[1]
+		SpaceBunny.MRC_RESCUE = DEFAULT_PROVIDERS[2]
+		SpaceBunny.resetMrcTuning()
+		print("[SpaceBunny] No MRC config found, using defaults")
+	elseif not loaded and initial then
+		SpaceBunny.MRC_PROVIDERS = DEFAULT_PROVIDERS
+		SpaceBunny.MRC_AUTHORITY = DEFAULT_PROVIDERS[1]
+		SpaceBunny.MRC_RESCUE = DEFAULT_PROVIDERS[2]
+		SpaceBunny.resetMrcTuning()
+	end
+
+	SpaceBunny.logProviderSummary()
+
+	return loaded
+end
+
+SpaceBunny.reloadMRCConfig = function()
+	resetMRCState()
+
+	local loaded = SpaceBunny.loadMRCConfig(false)
+
+	if loaded then
+		print("[SpaceBunny] Reloaded MRC configuration ("
+			.. #SpaceBunny.MRC_PROVIDERS .. " providers)")
+	end
+
+	return loaded
+end
+
+-- A broken config must never stop the plugin from loading; the loader
+-- already reports what it could not use.
+pcall(SpaceBunny.loadMRCConfig, true)
 
 -- =========================================================================
 -- Clock and formatting
@@ -520,9 +661,9 @@ end
 SpaceBunny.safeLog = function(level, msg)
 	pcall(function()
 		if type(msg) == "string" then
-			log[level](msg)
+			log[level]("[SpaceBunny] " .. msg)
 		else
-			log[level](tostring(msg))
+			log[level]("[SpaceBunny] " .. tostring(msg))
 		end
 	end)
 end
@@ -980,7 +1121,11 @@ SpaceBunny.fetchMRCFrom = function(provider, manifestIdStr, timeoutSec, urlOverr
 	return codeStr, "ok", elapsed
 end
 
-SpaceBunny.fetchMRCWithProxy = function(provider, manifestIdStr, timeoutSec, deadlineMs)
+-- `reserveSec` is the time the caller has already set aside for providers
+-- further down the list. The proxy variant must respect it too, otherwise a
+-- stalled direct attempt plus its proxy still starves the tail.
+SpaceBunny.fetchMRCWithProxy = function(provider, manifestIdStr, timeoutSec, deadlineMs,
+		reserveSec)
 	local codeStr, reason, elapsed =
 		SpaceBunny.fetchMRCFrom(provider, manifestIdStr, timeoutSec)
 
@@ -1000,6 +1145,10 @@ SpaceBunny.fetchMRCWithProxy = function(provider, manifestIdStr, timeoutSec, dea
 
 	if deadlineMs ~= nil then
 		remainingMs = deadlineMs - monoMs()
+
+		if reserveSec ~= nil and reserveSec > 0 then
+			remainingMs = remainingMs - reserveSec * 1000
+		end
 	end
 
 	if remainingMs ~= nil and remainingMs < 1000 then
@@ -1142,11 +1291,14 @@ SpaceBunny.getManifestRequestCode = function(manifestId)
 		end
 	end
 
-	for _, provider in ipairs(directProviders) do
+	local minAttempt = t.MIN_ATTEMPT_SEC or 1
+
+	for i, provider in ipairs(directProviders) do
 		local isAuthority = providerKey(provider) == providerKey(SpaceBunny.MRC_AUTHORITY)
 		local remaining = remainingSec()
+		local floor = math.min(minAttempt, math.max(remaining, 0))
 
-		if remaining < 1 then
+		if remaining < minAttempt then
 			report[#report + 1] = provider.name .. "=no-budget"
 		else
 			local budget = provider.timeout or t.FULL_SEC or 5
@@ -1159,10 +1311,21 @@ SpaceBunny.getManifestRequestCode = function(manifestId)
 				end
 			end
 
-			budget = math.max(1, math.min(budget, remaining))
+			-- Every provider still ahead of this one keeps its own floor, so a
+			-- slow primary can spend the rest of the budget but never the
+			-- whole list's. The last direct provider also leaves room for a
+			-- trailing proxy-only entry.
+			local stillAhead = (#directProviders - i)
+				+ (proxyProvider ~= nil and 1 or 0)
+			local reserveAfter = stillAhead * floor
+			local fairShare = remaining - reserveAfter
+
+			budget = math.max(floor, math.min(budget, fairShare))
+			budget = math.min(budget, remaining)
 
 			local codeStr, reason, elapsed, usedProxy =
-				SpaceBunny.fetchMRCWithProxy(provider, manifestIdStr, budget, deadline)
+				SpaceBunny.fetchMRCWithProxy(provider, manifestIdStr, budget,
+					deadline, reserveAfter)
 
 			note(provider, reason, elapsed)
 
@@ -1188,13 +1351,13 @@ SpaceBunny.getManifestRequestCode = function(manifestId)
 	if proxyProvider ~= nil then
 		local remaining = remainingSec()
 
-		if remaining < 1 then
+		if remaining < minAttempt then
 			report[#report + 1] = proxyProvider.name .. "=no-budget"
 		else
-			local budget = math.max(1,
+			local budget = math.max(math.min(minAttempt, remaining),
 				math.min(proxyProvider.timeout or 3, remaining))
 			local proxyCode, proxyReason, proxyElapsed =
-				SpaceBunny.fetchMRCWithProxy(proxyProvider, manifestIdStr, budget, deadline)
+				SpaceBunny.fetchMRCWithProxy(proxyProvider, manifestIdStr, budget, deadline, 0)
 
 			note(proxyProvider, proxyReason, proxyElapsed)
 
@@ -1305,16 +1468,16 @@ end
 -- =========================================================================
 
 local function resolvePattern(label, pattern, module)
-	local scan = memhlp.patternScan(pattern, module)
+	local ok, scan = pcall(memhlp.patternScan, pattern, module)
 
-	if scan == nil then
+	if not ok or scan == nil then
 		log.notifyError("Pattern scan failed for " .. label .. " - SLSsteam update?")
 		return nil
 	end
 
-	local target = memhlp.getJmpTarget(scan)
+	local resolved, target = pcall(memhlp.getJmpTarget, scan)
 
-	if target == nil then
+	if not resolved or target == nil then
 		log.notifyError("getJmpTarget failed for " .. label .. " - SLSsteam update?")
 		return nil
 	end
@@ -1710,6 +1873,18 @@ SpaceBunny.hkGetMRC = ffi.cast("SB_GetMRC_t", function(a1, appId, depotId, manif
 	local trampResult = false
 
 	return SpaceBunny.runInHook("hkGetMRC", function() return trampResult end, function()
+		-- Katamari mode: Bakeneko-only deliberately disables MRC provider calls.
+		if not SpaceBunny.MRC_ENABLED then
+			SpaceBunny.safeLog("warn", "MRC providers disabled by spacebunny.conf (mrc_enabled=false)")
+			return
+		end
+
+		if type(KATAMARI) == "table" and type(KATAMARI.manifestMode) == "function"
+				and KATAMARI.manifestMode() == "bakeneko-only" then
+			SpaceBunny.safeLog("warn", "Katamari is in bakeneko-only mode; skipping MRC providers")
+			return
+		end
+
 		-- Teach Hubcap which game owns this depot
 		if appId ~= nil and appId ~= 0 and depotId ~= nil and depotId ~= 0 then
 			hubcapLearnDepotApp(depotId, appId)
@@ -1756,6 +1931,8 @@ end)
 -- =========================================================================
 
 SpaceBunny.STANDALONE = false
+SpaceBunny.MRC_ENABLED = true
+SpaceBunny.PRIORITY = 20
 
 pcall(function()
 	local home = os.getenv("HOME") or ""
@@ -1763,10 +1940,34 @@ pcall(function()
 	if configHome == nil or configHome == "" then
 		configHome = home .. "/.config"
 	end
+	local mother_ok, mother = pcall(dofile,
+		configHome .. "/SLSsteam/katamari.conf.lua")
+	if mother_ok and type(mother) == "table"
+			and type(mother.spacebunny) == "table" then
+		local section = mother.spacebunny
+		if type(section.standalone) == "boolean" then
+			SpaceBunny.STANDALONE = section.standalone
+		end
+		if type(section.mrc_enabled) == "boolean" then
+			SpaceBunny.MRC_ENABLED = section.mrc_enabled
+		end
+		if tonumber(section.priority) ~= nil then
+			SpaceBunny.PRIORITY = tonumber(section.priority)
+		end
+	end
+
 	local cfg_path = configHome .. "/SLSsteam/spacebunny.conf.lua"
 	local ok, cfg = pcall(dofile, cfg_path)
-	if ok and type(cfg) == "table" and type(cfg.standalone) == "boolean" then
-		SpaceBunny.STANDALONE = cfg.standalone
+	if ok and type(cfg) == "table" then
+		if type(cfg.standalone) == "boolean" then
+			SpaceBunny.STANDALONE = cfg.standalone
+		end
+		if type(cfg.mrc_enabled) == "boolean" then
+			SpaceBunny.MRC_ENABLED = cfg.mrc_enabled
+		end
+		if tonumber(cfg.priority) ~= nil then
+			SpaceBunny.PRIORITY = tonumber(cfg.priority)
+		end
 	end
 end)
 
@@ -1869,9 +2070,31 @@ SpaceBunny.configLoaded = function()
 	end
 
 	local keys = keyNode:asPairList()
+	local skippedKeys = 0
 
-	for _, v in pairs(keys) do
-		SpaceBunny.DecryptionKeys[v[1]:asInt()] = v[2]:asString()
+	for _, v in ipairs(keys) do
+		local parsed, depotId, key = pcall(function()
+			return v[1]:asInt(), v[2]:asString()
+		end)
+
+		if parsed and type(depotId) == "number" and type(key) == "string" then
+			SpaceBunny.DecryptionKeys[depotId] = key
+		else
+			skippedKeys = skippedKeys + 1
+
+			local label = "?"
+			pcall(function()
+				label = v[1]:asString()
+			end)
+
+			SpaceBunny.safeLog("warn",
+				"Skipping malformed DecryptionKeys entry: " .. tostring(label))
+		end
+	end
+
+	if skippedKeys > 0 then
+		log.notifyWarn("[SpaceBunny] Skipped " .. skippedKeys
+			.. " malformed DecryptionKeys entr" .. (skippedKeys == 1 and "y" or "ies"))
 	end
 
 	SpaceBunny.safeLog("debug", "Loaded " .. countKeys(SpaceBunny.DecryptionKeys) .. " decryption keys")
@@ -1889,10 +2112,57 @@ SpaceBunny.configLoaded = function()
 	end
 end
 
+
+SpaceBunny.reloadFamilySettings = function()
+	local home = os.getenv("HOME") or ""
+	local configHome = os.getenv("XDG_CONFIG_HOME")
+	if configHome == nil or configHome == "" then
+		configHome = home .. "/.config"
+	end
+
+	local mother_ok, mother = pcall(dofile,
+		configHome .. "/SLSsteam/katamari.conf.lua")
+	if mother_ok and type(mother) == "table"
+			and type(mother.spacebunny) == "table" then
+		local section = mother.spacebunny
+		if type(section.mrc_enabled) == "boolean" then
+			SpaceBunny.MRC_ENABLED = section.mrc_enabled
+		end
+		if tonumber(section.priority) ~= nil then
+			SpaceBunny.PRIORITY = tonumber(section.priority)
+		end
+	end
+
+	local cfg_ok, cfg = pcall(dofile,
+		configHome .. "/SLSsteam/spacebunny.conf.lua")
+	if cfg_ok and type(cfg) == "table" then
+		if type(cfg.mrc_enabled) == "boolean" then
+			SpaceBunny.MRC_ENABLED = cfg.mrc_enabled
+		end
+		if tonumber(cfg.priority) ~= nil then
+			SpaceBunny.PRIORITY = tonumber(cfg.priority)
+		end
+	end
+
+	if type(KATAMARI) == "table" and type(KATAMARI.plugins) == "table" then
+		local meta = KATAMARI.plugins.spacebunny
+		if meta ~= nil then
+			meta.mrc_enabled = SpaceBunny.MRC_ENABLED ~= false
+			meta.priority = SpaceBunny.PRIORITY or meta.priority
+		end
+	end
+end
+
 SpaceBunny.luaReload = function()
 	local ok, err = pcall(function()
 	SpaceBunny.restoreDepotIds()
 	SpaceBunny.resetSettings()
+
+	-- Re-read mrc_config.lua so an edited provider list (or tuning) takes
+	-- effect on reload instead of requiring a Steam restart. Cache and
+	-- breaker state from the previous providers is dropped.
+	SpaceBunny.reloadFamilySettings()
+	SpaceBunny.reloadMRCConfig()
 	end)
 
 	if not ok then
@@ -1903,6 +2173,14 @@ SpaceBunny.luaReload = function()
 		end
 	end
 end
+
+KATAMARI = KATAMARI or { plugins = {} }
+KATAMARI.plugins.spacebunny = {
+	version = SpaceBunny.VERSION,
+	role = "mrc-provider",
+	priority = SpaceBunny.PRIORITY or 20,
+	mrc_enabled = SpaceBunny.MRC_ENABLED ~= false,
+}
 
 SLS.registerCallback("SLSsteam::configLoaded", SpaceBunny.configLoaded)
 SLS.registerCallback("SLSsteam::luaReload", SpaceBunny.luaReload)

@@ -41,17 +41,33 @@ HTTP_USER_AGENT = "ASSella-PluginManager/1.0"
 
 # Known fallback plugin definitions in case network is offline and no cache exists
 FALLBACK_REQUIRED_PLUGINS = [
+    "katamari.lua",
     "spacebunny.lua",
-    "spliced-tickets.lua",
+    "bakeneko.lua",
+    "styx.lua",
     "lobster.lua",
-    "hubcap.lua",
 ]
 
 # Baseline companion plugins (non-interceptors) when manifest is unreachable
 FALLBACK_COMPANION_PLUGINS = {
-    "spliced-tickets.lua",
+    "katamari.lua",
+    "bakeneko.lua",
+    "styx.lua",
     "lobster.lua",
     "hubcap.lua",
+    "bypass.lua",
+    "spliced-tickets.lua",
+}
+
+# The Katamari family plugin suite
+KATAMARI_FAMILY_PLUGINS = {
+    "katamari.lua",
+    "spacebunny.lua",
+    "bakeneko.lua",
+    "styx.lua",
+    "lobster.lua",
+    "hubcap.lua",
+    "bypass.lua",
 }
 
 
@@ -562,7 +578,7 @@ get_active_download_plugin = get_active_interceptor_filename
 
 
 def are_all_plugins_installed(ignore_bypass: bool = False) -> bool:
-    """Check if the active interceptor and spliced-tickets plugins are installed and up to date."""
+    """Check if the active interceptor and ticket splicer (styx or spliced-tickets) are installed and up to date."""
     if not ignore_bypass and is_plugin_check_bypassed():
         return True
 
@@ -574,7 +590,11 @@ def are_all_plugins_installed(ignore_bypass: bool = False) -> bool:
     if not is_plugin_installed_and_valid(active_interceptor):
         return False
 
-    if not is_plugin_installed_and_valid("spliced-tickets.lua"):
+    has_ticket_splicer = (
+        is_plugin_installed_and_valid("styx.lua")
+        or is_plugin_installed_and_valid("spliced-tickets.lua")
+    )
+    if not has_ticket_splicer:
         return False
 
     return True
@@ -582,7 +602,7 @@ def are_all_plugins_installed(ignore_bypass: bool = False) -> bool:
 
 def are_plugins_present(ignore_bypass: bool = False) -> bool:
     """Check if required SLSsteam plugins exist locally in the primary plugins directory.
-    Requires at least one download interceptor (.lua) and spliced-tickets.lua.
+    Requires at least one download interceptor (.lua) and a ticket splicer (styx.lua or spliced-tickets.lua).
     If 'custom_plugins_advanced' setting is enabled and ignore_bypass is False, returns True.
     """
     if not ignore_bypass and is_plugin_check_bypassed():
@@ -600,7 +620,7 @@ def are_plugins_present(ignore_bypass: bool = False) -> bool:
             continue
         for p in tdir.glob("*.lua"):
             if not p.name.endswith(".bak") and not p.name.startswith("."):
-                if p.name == "spliced-tickets.lua":
+                if p.name in ("styx.lua", "spliced-tickets.lua"):
                     has_spliced = True
                 elif p.name not in companion_plugins:
                     has_interceptor = True
@@ -666,8 +686,8 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
     """
     ensure_sls_plugin_config_sections()
 
-    # spliced-tickets.lua requires SmartTickets: 0x1 (SteamDRM) in SLS config
-    if filename == "spliced-tickets.lua":
+    # spliced-tickets.lua or styx.lua requires SmartTickets: 0x1 (SteamDRM) in SLS config
+    if filename in ("spliced-tickets.lua", "styx.lua"):
         ensure_smart_tickets_enabled()
 
     set_plugin_user_disabled(filename, False)
@@ -751,6 +771,18 @@ def deploy_plugin(filename: str, force_download: bool = False, only_if_missing: 
     for tdir in target_dirs:
         try:
             tdir.mkdir(parents=True, exist_ok=True)
+
+            if filename == "styx.lua":
+                legacy_spliced = tdir / "spliced-tickets.lua"
+                if legacy_spliced.is_file():
+                    spliced_bak = tdir / "spliced-tickets.lua.bak"
+                    try:
+                        if spliced_bak.is_file():
+                            spliced_bak.unlink()
+                        legacy_spliced.replace(spliced_bak)
+                        logger.info(f"[PluginManager] Archived legacy spliced-tickets.lua -> {spliced_bak.name}")
+                    except Exception as e:
+                        logger.warning(f"[PluginManager] Could not archive legacy spliced-tickets.lua: {e}")
 
             if is_interceptor:
                 # 1. Clean up old .bak of the incoming plugin if it exists
@@ -993,5 +1025,193 @@ def sync_plugins_if_enabled() -> bool:
     """Startup auto-sync disabled to prevent destructive overwriting of custom plugins."""
     logger.debug("[PluginManager] Startup plugin auto-sync is disabled to preserve custom user plugins.")
     return True
+
+
+def detect_non_katamari_plugins() -> List[Path]:
+    """Return active .lua files in SLSsteam plugin directories that are outside the Katamari family."""
+    if is_plugin_check_bypassed():
+        return []
+
+    target_dirs = get_sls_plugins_dirs()
+    if not target_dirs:
+        return []
+
+    active_interceptor = get_active_interceptor_filename() or ""
+    foreign: List[Path] = []
+    for tdir in target_dirs:
+        if not tdir.is_dir():
+            continue
+        for p in tdir.glob("*.lua"):
+            if not p.is_file() or p.name.endswith(".bak") or p.name.startswith("."):
+                continue
+            # If standard download.lua is active intentionally, don't flag download.lua
+            if p.name == "download.lua" and active_interceptor == "download.lua":
+                continue
+            if p.name not in KATAMARI_FAMILY_PLUGINS:
+                foreign.append(p)
+    return foreign
+
+
+def archive_non_katamari_plugins() -> List[str]:
+    """Archive any non-Katamari plugins and legacy configs/tickets to .bak."""
+    archived = []
+    target_dirs = get_sls_plugins_dirs()
+
+    # 1. Archive foreign .lua files
+    for tdir in target_dirs:
+        if not tdir.is_dir():
+            continue
+        for p in tdir.glob("*.lua"):
+            if not p.is_file() or p.name.endswith(".bak") or p.name.startswith("."):
+                continue
+            if p.name not in KATAMARI_FAMILY_PLUGINS:
+                bak_p = tdir / f"{p.name}.bak"
+                try:
+                    if bak_p.is_file():
+                        bak_p.unlink()
+                    p.replace(bak_p)
+                    archived.append(str(bak_p))
+                    logger.info(f"[PluginManager] Archived foreign plugin {p.name} -> {bak_p.name}")
+                except Exception as e:
+                    logger.warning(f"[PluginManager] Could not archive {p}: {e}")
+
+        # If styx.lua is present, archive spliced-tickets.lua to .bak
+        styx_file = tdir / "styx.lua"
+        spliced_file = tdir / "spliced-tickets.lua"
+        if styx_file.is_file() and spliced_file.is_file():
+            spliced_bak = tdir / "spliced-tickets.lua.bak"
+            try:
+                if spliced_bak.is_file():
+                    spliced_bak.unlink()
+                spliced_file.replace(spliced_bak)
+                archived.append(str(spliced_bak))
+                logger.info(f"[PluginManager] Archived legacy spliced-tickets.lua -> {spliced_bak.name}")
+            except Exception as e:
+                logger.warning(f"[PluginManager] Could not archive spliced-tickets.lua: {e}")
+
+    # 2. Archive legacy mrc_config.lua
+    try:
+        from managers.katamari_config_manager import KatamariConfigManager
+        if KatamariConfigManager.archive_legacy_mrc_config():
+            archived.append("mrc_config.lua.bak")
+    except Exception as e:
+        logger.debug(f"[PluginManager] Error archiving mrc_config.lua: {e}")
+
+    return archived
+
+
+def check_and_prompt_legacy_plugins(parent_window=None) -> bool:
+    """Prompt user once per ASSella version if unrecognized/legacy plugins exist."""
+    if is_plugin_check_bypassed():
+        return False
+
+    settings = get_settings()
+    is_atom = settings.value("enable_at0m", settings.value("enable_vapor", True, type=bool), type=bool)
+    if not is_atom:
+        return False
+
+    foreign_files = detect_non_katamari_plugins()
+    if not foreign_files:
+        return False
+
+    from utils.version import app_version, extract_semver
+    clean_ver = extract_semver(app_version) or "current"
+    flag_key = f"legacy_plugins_prompted_{clean_ver}"
+    if settings.value(flag_key, False, type=bool):
+        return False
+
+    try:
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        from PyQt6.QtCore import Qt
+
+        dlg = QDialog(parent_window)
+        dlg.setWindowTitle("SLSsteam Plugins — Katamari Suite")
+        dlg.setFixedWidth(520)
+        dlg.setStyleSheet("background-color: #1A1D24; color: #FFFFFF;")
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+
+        title_lbl = QLabel("Legacy or Foreign Plugins Detected")
+        title_lbl.setStyleSheet("font-size: 11pt; font-weight: bold; color: #64B5F6;")
+        layout.addWidget(title_lbl)
+
+        names_list = "\n".join(f"  • {p.name}" for p in foreign_files[:8])
+        if len(foreign_files) > 8:
+            names_list += f"\n  • ...and {len(foreign_files) - 8} more"
+
+        body_lbl = QLabel(
+            "ASSella detected plugins in your SLSsteam plugins directory that are outside the Katamari family:\n\n"
+            f"{names_list}\n\n"
+            "The Katamari family (SpaceBunny, Bakeneko, Styx, Lobster) is the unified suite for manifest "
+            "resolution and ticket splicing.\n\n"
+            "Choose 'Fix' to safely deactivate foreign plugins (.lua.bak), or 'Use Custom' to preserve them without interference."
+        )
+        body_lbl.setWordWrap(True)
+        body_lbl.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.85); line-height: 1.4;")
+        layout.addWidget(body_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        fix_btn = QPushButton("Fix (Deactivate to .bak)")
+        fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        fix_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2E7D32;
+                color: #FFFFFF;
+                border: 1px solid #4CAF50;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 9pt;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #388E3C;
+            }
+        """)
+
+        custom_btn = QPushButton("Use Custom Plugins")
+        custom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        custom_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.08);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.25);
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-size: 9pt;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.16);
+            }
+        """)
+
+        def _on_fix():
+            archive_non_katamari_plugins()
+            settings.setValue(flag_key, True)
+            settings.sync()
+            dlg.accept()
+
+        def _on_custom():
+            settings.setValue("custom_plugins_advanced", True)
+            settings.setValue(flag_key, True)
+            settings.sync()
+            dlg.reject()
+
+        fix_btn.clicked.connect(_on_fix)
+        custom_btn.clicked.connect(_on_custom)
+
+        btn_row.addStretch()
+        btn_row.addWidget(custom_btn)
+        btn_row.addWidget(fix_btn)
+        layout.addLayout(btn_row)
+
+        dlg.exec()
+        return True
+    except Exception as exc:
+        logger.warning(f"[PluginManager] Error showing legacy plugins prompt: {exc}")
+        return False
 
 
