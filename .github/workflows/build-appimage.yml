@@ -260,7 +260,7 @@ jobs:
 
           # 9. Bundle Relocatable Standalone Python 3.13 Runtime
           echo "Downloading relocatable python-build-standalone runtime (Python 3.13)..."
-          curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.13.0+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz"
+          curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18+20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
           tar -xzf /tmp/cpython-standalone.tar.gz -C AppDir/bin/
           mv AppDir/bin/python AppDir/bin/.venv
 
@@ -271,7 +271,7 @@ jobs:
 
           # 11. Sanity check: Verify all required imports inside bundled AppDir runtime
           echo "Verifying AppDir runtime imports..."
-          QT_QPA_PLATFORM=offscreen AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, urwid, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
+          QT_QPA_PLATFORM=offscreen AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, rich, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
           test -x AppDir/bin/appimageupdatetool || { echo "::error::appimageupdatetool missing from AppDir"; exit 1; }
           echo "appimageupdatetool present and executable."
           # zsync is optional — we bundle it when available so delta updates work
@@ -449,7 +449,7 @@ jobs:
           QT_QPA_PLATFORM=offscreen AppDir_extract/bin/.venv/bin/python3 - <<'PY'
           import importlib, sys
           mods = ["PyQt6.QtCore","PyQt6.QtWidgets","PyQt6.QtGui","requests","yaml",
-                  "cryptography","configobj","urwid","vdf","steam","steam.client",
+                  "cryptography","configobj","rich","vdf","steam","steam.client",
                   "zstandard","curl_cffi","psutil","bs4","gevent","capstone"]
           bad = []
           for m in mods:
