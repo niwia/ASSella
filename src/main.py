@@ -7,7 +7,7 @@ import ctypes
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import QApplication
 from utils.paths import Paths
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
 from ui.main_window import MainWindow
 from ui.theme import update_appearance
 from managers.cli_manager import run_cli_mode, open_cli_terminal
@@ -101,6 +101,14 @@ def main():
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
     # People only have substance within the memories of other people.
+
+    # Configure fractional high-DPI scaling policy before QApplication is constructed.
+    # On Wayland (KDE Plasma 6 / SteamOS 3.5+ Desktop Mode), PassThrough prevents
+    # font blur and window geometry distortion at 125%/150% fractional display scaling.
+    if hasattr(QApplication, "setHighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
 
     app = QApplication(sys.argv)
     app.setApplicationName("ASSella")

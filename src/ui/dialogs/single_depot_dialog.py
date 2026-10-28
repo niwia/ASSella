@@ -1139,6 +1139,11 @@ class SingleDepotSelectionDialog(QDialog):
         self.update()
 
     def closeEvent(self, a0):
+        if hasattr(self, "_enrich_runner") and self._enrich_runner:
+            try:
+                self._enrich_runner.stop(wait_ms=500, terminate_on_timeout=True)
+            except Exception as e:
+                logger.debug(f"[SingleDepot] Error stopping enrich runner: {e}")
         if hasattr(self, "fetcher") and self.fetcher is not None:
             try:
                 self.fetcher.stop()

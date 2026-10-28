@@ -219,7 +219,7 @@ class TaskRunner(QObject):
 
     def _on_destroyed(self, _obj=None):
         try:
-            self.stop(wait_ms=0, terminate_on_timeout=False)
+            self.stop(wait_ms=500, terminate_on_timeout=True)
         except RuntimeError:
             pass
 
@@ -228,7 +228,7 @@ class TaskRunner(QObject):
         runners = list(cls._active_runners)
         for runner in runners:
             try:
-                runner.stop(wait_ms=0, terminate_on_timeout=False)
+                runner.stop(wait_ms=500, terminate_on_timeout=True)
             except RuntimeError as e:
                 logger.debug(f"Failed to stop TaskRunner during shutdown: {e}")
 

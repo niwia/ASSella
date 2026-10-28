@@ -88,6 +88,7 @@ def test_single_depot_dialog_dynamic_theme():
     assert dialog._ambient_color == theme_color, "_ambient_color updated"
     assert "#33aaff" in dialog.title_bar.title_label.styleSheet().lower(), "Single depot dialog titlebar text color updated"
     print("  [ok] SingleDepotSelectionDialog titlebar text and icons updated to thumbnail color")
+    dialog.close()
 
 if __name__ == "__main__":
     test_dialog_titlebar_update_accent()
