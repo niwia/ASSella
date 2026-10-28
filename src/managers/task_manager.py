@@ -181,8 +181,9 @@ class TaskManager(
             st.reset_stages()
 
             # Check Steamless status
-            steamless_enabled = self.settings.value("use_steamless", False, type=bool)
-            steamless_aio_enabled = self.settings.value("use_steamless_aio", False, type=bool)
+            auto_run_steamless = self.settings.value("auto_run_steamless_post_install", True, type=bool)
+            steamless_enabled = auto_run_steamless and self.settings.value("use_steamless", False, type=bool)
+            steamless_aio_enabled = auto_run_steamless and self.settings.value("use_steamless_aio", False, type=bool)
             
             depots_to_check = selected_depots or (self.game_data.get("selected_depots_list") if self.game_data else None)
             
@@ -1485,9 +1486,17 @@ class TaskManager(
         except Exception as e:
             logger.debug(f"Error disconnecting shared client after job: {e}")
 
-        # Refresh stats immediately after a job finishes to keep API limits in sync
-        if self.main_window and hasattr(self.main_window, "refresh_hubcap_stats"):
-            self.main_window.refresh_hubcap_stats()
+        # Refresh stats after a job finishes, but ONLY if the job actually invoked
+        # Hubcap manifest generation/download endpoints to avoid hitting the 3/3/s rate limit.
+        try:
+            from core.morrenus_api import pop_hubcap_manifest_used
+            if pop_hubcap_manifest_used():
+                if self.main_window and hasattr(self.main_window, "refresh_hubcap_stats"):
+                    self.main_window.refresh_hubcap_stats()
+            else:
+                logger.debug("[Hubcap] Skipping post-job stats refresh (no Hubcap manifest quota was consumed)")
+        except Exception as e:
+            logger.debug(f"[Hubcap] Error checking manifest usage flag: {e}")
 
         self._update_status_button_color()
         self.current_job = None

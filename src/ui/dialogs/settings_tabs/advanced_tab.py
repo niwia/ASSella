@@ -236,11 +236,96 @@ def create_advanced_tab(dialog) -> QWidget:
     )
     pp_layout.addWidget(dialog.auto_apply_goldberg_checkbox)
 
+    dialog.auto_run_steamless_checkbox = create_checkbox_setting(
+        "Auto-run Steamless on Install/Update",
+        "auto_run_steamless_post_install",
+        True,
+        dialog,
+        "Automatically unpack SteamStub DRM with Steamless after game installation or update finishes.",
+        show_description=False,
+    )
+    pp_layout.addWidget(dialog.auto_run_steamless_checkbox)
+
+    dialog.auto_run_steamless_checkbox.toggled.connect(
+        lambda _checked: steamless_unchecked_warning(dialog)
+    )
+
     layout.addWidget(pp_card)
     layout.addStretch()
 
     dialog.tab_widget.addTab(tab, "Advanced")
     return tab
+
+
+def steamless_unchecked_warning(dialog) -> None:
+    """Run humorous 4-stage confirmation gauntlet when user unchecks Auto-run Steamless."""
+    checkbox = getattr(dialog, "auto_run_steamless_checkbox", None)
+    if not checkbox:
+        return
+    if checkbox.isChecked():
+        dialog.settings.setValue("auto_run_steamless_post_install", True)
+        dialog.settings.sync()
+        return
+
+    # User is attempting to turn it OFF.
+    def _cancel():
+        checkbox.blockSignals(True)
+        checkbox.setChecked(True)
+        checkbox.blockSignals(False)
+        dialog.settings.setValue("auto_run_steamless_post_install", True)
+        dialog.settings.sync()
+
+    # Stage 1: Are you sure?
+    r1 = ThemedMessageBox.warning(
+        dialog,
+        "Disable Steamless",
+        "Are you sure? This is an advanced feature and not recommended to turn off.",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes,
+    )
+    if r1 != ThemedMessageBox.StandardButton.No:
+        _cancel()
+        return
+
+    # Stage 2: Are you really really sure?
+    r2 = ThemedMessageBox.warning(
+        dialog,
+        "Disable Steamless",
+        "Are you really really sure?",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes,
+    )
+    if r2 != ThemedMessageBox.StandardButton.No:
+        _cancel()
+        return
+
+    # Stage 3: Are you sure?
+    r3 = ThemedMessageBox.warning(
+        dialog,
+        "Disable Steamless",
+        "Are you sure?",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes,
+    )
+    if r3 != ThemedMessageBox.StandardButton.No:
+        _cancel()
+        return
+
+    # Stage 4: For the last time, are you really sure?
+    r4 = ThemedMessageBox.warning(
+        dialog,
+        "Disable Steamless",
+        "For the last time, are you really sure?",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.Yes,
+    )
+    if r4 != ThemedMessageBox.StandardButton.No:
+        _cancel()
+        return
+
+    # Survived all 4 "No" prompts: safely deactivate
+    dialog.settings.setValue("auto_run_steamless_post_install", False)
+    dialog.settings.sync()
 
 
 def goldberg_checked_warning(dialog) -> None:

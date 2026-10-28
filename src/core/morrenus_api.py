@@ -22,6 +22,20 @@ BASE_URL = "https://hubcapmanifest.com/api/v1"
 DEFAULT_SEARCH_LIMIT = 100
 MAX_SEARCH_LIMIT = 100
 
+_hubcap_manifest_used_flag = False
+
+def mark_hubcap_manifest_used() -> None:
+    """Flag that a Hubcap manifest generation/download endpoint was actively invoked."""
+    global _hubcap_manifest_used_flag
+    _hubcap_manifest_used_flag = True
+
+def pop_hubcap_manifest_used() -> bool:
+    """Return and reset whether a Hubcap manifest endpoint was invoked."""
+    global _hubcap_manifest_used_flag
+    used = _hubcap_manifest_used_flag
+    _hubcap_manifest_used_flag = False
+    return used
+
 # Error messages for specific HTTP status codes
 API_ERROR_MESSAGES = {
     400: "Bad Request. The request parameters were invalid.",
@@ -483,8 +497,9 @@ def get_generate_usage(force: bool = False) -> Dict:
 
 
 def get_all_hubcap_stats(force: bool = False) -> Dict:
-    """Fetches both user stats and generation usage limits."""
+    """Fetches both user stats and generation usage limits with rate-limit pacing."""
     user_stats = get_user_stats(force=force)
+    time.sleep(0.35)  # Pace queries to respect Hubcap 3/3/s rate ceiling
     gen_usage = get_generate_usage(force=force)
     return {
         "user_stats": user_stats,
@@ -530,6 +545,7 @@ def generate_single_manifest(
             get_session(), "GET", url, headers=headers, stream=True, timeout=60
         )
         response.raise_for_status()
+        mark_hubcap_manifest_used()
         return response.content, None
     except Exception as e:
         err = _handle_request_exception(e, f"Single manifest generate (depot {depot_id}, gid {manifest_id})")
@@ -682,6 +698,7 @@ def download_manifest(
             get_session(), "GET", url, headers=headers, stream=True, timeout=60
         )
         r.raise_for_status()
+        mark_hubcap_manifest_used()
         with open(temp_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)

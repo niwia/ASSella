@@ -277,8 +277,9 @@ class PostInstallMixin:
         if self._should_prompt_for_steam_restart():
             self.main_window.job_queue.steam_restart_prompt_pending = True
 
-        steamless_enabled = self.settings.value("use_steamless", False, type=bool)
-        steamless_aio_enabled = self.settings.value("use_steamless_aio", False, type=bool)
+        auto_run_steamless = self.settings.value("auto_run_steamless_post_install", True, type=bool)
+        steamless_enabled = auto_run_steamless and self.settings.value("use_steamless", False, type=bool)
+        steamless_aio_enabled = auto_run_steamless and self.settings.value("use_steamless_aio", False, type=bool)
         
         # Skip Steamless entirely if this is a DLC Only installation
         appid = self.game_data.get("appid") if self.game_data else None

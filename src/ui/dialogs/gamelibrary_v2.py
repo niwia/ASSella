@@ -279,40 +279,29 @@ class GameDetailsDialogV2(QDialog):
         self._has_depots = has_depots
 
         self._tab_buttons = []
-        if has_depots:
-            self._pages_info = [
-                ("Info", 0),
-                ("Depots", 1),
-                ("Builds", 2),
-                ("Tools", 3),
-                ("Achievements", 4),
-                ("Workshop", 5),
-                ("Tickets", 6),
-            ]
-            self.depots_page_index = 1
-            self.builds_page_index = 2
-            self.achievements_page_index = 4
-            self.ws_page_index = 5
-            self._tickets_tab_index = 6
-        else:
-            self._pages_info = [
-                ("Info", 0),
-                ("Builds", 1),
-                ("Tools", 2),
-                ("Achievements", 3),
-                ("Workshop", 4),
-                ("Tickets", 5),
-            ]
-            self.depots_page_index = None
-            self.builds_page_index = 1
-            self.achievements_page_index = 3
-            self.ws_page_index = 4
-            self._tickets_tab_index = 5
+        has_cheevos = self.settings.value("enable_slsah_cheevos", False, type=bool)
 
+        pages = [("Info", "info")]
+        if has_depots:
+            pages.append(("Depots", "depots"))
+        pages.append(("Builds", "builds"))
+        pages.append(("Tools", "tools"))
+        if has_cheevos:
+            pages.append(("Achievements", "achievements"))
+        pages.append(("Workshop", "workshop"))
+        pages.append(("Tickets", "tickets"))
         if self._is_luatools_available():
-            idx = len(self._pages_info)
-            self._pages_info.append(("LuaFix", idx))
-            self.luafix_page_index = idx
+            pages.append(("LuaFix", "luafix"))
+
+        self._pages_info = [(label, idx) for idx, (label, _key) in enumerate(pages)]
+        page_dict = {key: idx for idx, (_label, key) in enumerate(pages)}
+
+        self.depots_page_index = page_dict.get("depots")
+        self.builds_page_index = page_dict.get("builds")
+        self.achievements_page_index = page_dict.get("achievements")
+        self.ws_page_index = page_dict.get("workshop")
+        self._tickets_tab_index = page_dict.get("tickets")
+        self.luafix_page_index = page_dict.get("luafix")
 
         for label, idx in self._pages_info:
             btn = QPushButton(label)
@@ -358,7 +347,8 @@ class GameDetailsDialogV2(QDialog):
             self._init_depots_tab()
         self._init_builds_tab()
         self._init_tools_tab()
-        self._init_achievements_tab()
+        if has_cheevos:
+            self._init_achievements_tab()
         self._init_workshop_tab()
         self._init_tickets_tab()
         if self._is_luatools_available():
@@ -691,6 +681,8 @@ class GameDetailsDialogV2(QDialog):
         init_achievements_tab(self)
 
     def _ensure_achievements_loaded(self):
+        if not self.settings.value("enable_slsah_cheevos", False, type=bool):
+            return
         ensure_achievements_loaded(self)
 
     # ──────────────────────────────────────────

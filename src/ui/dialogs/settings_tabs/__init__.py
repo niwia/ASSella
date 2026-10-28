@@ -3,7 +3,14 @@ from ui.dialogs.settings_tabs.windows_depot_warning import WindowsDepotWarningDi
 from ui.dialogs.settings_tabs.morrenus_tab import create_morrenus_tab, create_api_key_setting, toggle_api_key_visibility
 from ui.dialogs.settings_tabs.assela_tab import create_assela_tab, uninstall_assela, test_single_gateway, handle_gateway_test_done, on_isp_gateway_changed
 from ui.dialogs.settings_tabs.downloads_tab import create_downloads_tab
-from ui.dialogs.settings_tabs.advanced_tab import create_advanced_tab, goldberg_checked_warning, goldberg_checked_warning_from_mode, goldberg_warning_box, on_experimental_acf_toggled
+from ui.dialogs.settings_tabs.advanced_tab import (
+    create_advanced_tab,
+    goldberg_checked_warning,
+    goldberg_checked_warning_from_mode,
+    goldberg_warning_box,
+    on_experimental_acf_toggled,
+    steamless_unchecked_warning,
+)
 from ui.dialogs.settings_tabs.health_tab import (
     HealthStatusTile,
     create_health_tab,

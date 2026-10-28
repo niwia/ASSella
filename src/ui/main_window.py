@@ -597,7 +597,6 @@ class MainWindow(QMainWindow):
         self.game_manager.all_updates_checked.connect(
             lambda: self.simplified_terminal._on_update_check_finished() if hasattr(self, "simplified_terminal") and self.simplified_terminal else None
         )
-        self.game_manager.all_updates_checked.connect(self.refresh_hubcap_stats)
 
         # Initial stats fetch
         self.refresh_hubcap_stats()

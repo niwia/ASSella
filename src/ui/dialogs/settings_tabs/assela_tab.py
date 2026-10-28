@@ -381,35 +381,20 @@ def create_assela_tab(dialog) -> QWidget:
     provider_layout.addWidget(dialog.update_provider_combo)
     assella_lay.addLayout(provider_layout)
 
+    # SLSah manual cheevos (Beta)
+    dialog.slsah_cheevos_checkbox = create_checkbox_setting(
+        "SLSah manual cheevos (Beta)",
+        "enable_slsah_cheevos",
+        False,
+        dialog,
+        "Enables viewing and manually managing achievements in the Game Details dialog.\n"
+        "When disabled, the achievements tab is hidden and background cache checks are skipped.",
+        show_description=False,
+    )
+    assella_lay.addWidget(dialog.slsah_cheevos_checkbox)
+
     layout.addWidget(assella_card)
     layout.addStretch()
-
-    # ── Uninstall (Linux only) ────────────────────────────────────────
-    if sys.platform != "win32":
-        uninstall_btn = QPushButton("Uninstall ASSella")
-        uninstall_btn.setToolTip("Remove ASSella and optionally restore the original ACCELA.")
-
-        accent_color = dialog.settings.value("accent_color", "#C06C84")
-        from utils.color_utils import get_semantic_colors
-        sem_colors = get_semantic_colors(accent_color)
-        err_color = sem_colors["error"]
-
-        uninstall_btn.setStyleSheet(f"""
-            QPushButton {{
-                color: {err_color} !important;
-                background: transparent;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 8px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: rgba(235, 87, 87, 0.12);
-                border-color: {err_color};
-            }}
-        """)
-        uninstall_btn.clicked.connect(lambda: uninstall_assela(dialog))
-        layout.addWidget(uninstall_btn)
 
     scroll.setWidget(container)
     outer_layout.addWidget(scroll)

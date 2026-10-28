@@ -18,7 +18,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple, Union
+from typing import Optional, Dict, Any, Tuple, Union, List
 
 import requests
 from utils.settings import get_settings
@@ -198,6 +198,9 @@ atexit.register(TorManager.stop_tor)
 _WIRECUTTER_SECRET = "DJLftA68CqIusHL1zjsD3?2m*0df#fR{%CTApj2<6)P<VOjHyTG%FVuPXrt-9als`Z#Om*"
 _WIRECUTTER_SALT = b"ASSella_Hubcap_Bypass_v261"
 
+_ASSELLA_TOKEN_SECRET = "ARr(B00000JXS3Y2NP~11{nYiDkl{Q1^@zGT~sd&VO3sQ"
+_ASSELLA_TOKEN_SALT = b"ASSella_Worker_Token_Salt_v261"
+
 
 def get_default_wirecutter_endpoint() -> str:
     """Returns the default embedded Wirecutter Cloudflare Worker endpoint."""
@@ -207,6 +210,45 @@ def get_default_wirecutter_endpoint() -> str:
         return bytes(b ^ _WIRECUTTER_SALT[i % len(_WIRECUTTER_SALT)] for i, b in enumerate(raw)).decode("utf-8")
     except Exception:
         return "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev"
+
+
+def get_assella_proxy_token() -> str:
+    """Returns the internal ASSella authorization token for Wirecutter Worker."""
+    try:
+        from utils.settings import get_settings
+        custom_tok = get_settings().value("assella_proxy_token", "", type=str)
+        if custom_tok and custom_tok.strip():
+            return custom_tok.strip()
+    except Exception:
+        pass
+    try:
+        import base64
+        raw = base64.b85decode(_ASSELLA_TOKEN_SECRET.encode("ascii"))
+        return bytes(b ^ _ASSELLA_TOKEN_SALT[i % len(_ASSELLA_TOKEN_SALT)] for i, b in enumerate(raw)).decode("utf-8")
+    except Exception:
+        return "assella_k9_fba1wirecutter_token_2026"
+
+
+_hubcap_request_timestamps: List[float] = []
+_hubcap_rate_lock = threading.Lock()
+
+
+def _enforce_hubcap_rate_limit(max_requests: int = 3, per_seconds: float = 1.05) -> None:
+    """Ensure outgoing requests to Hubcap never exceed 3 req/sec."""
+    with _hubcap_rate_lock:
+        now = time.time()
+        while _hubcap_request_timestamps and _hubcap_request_timestamps[0] <= now - per_seconds:
+            _hubcap_request_timestamps.pop(0)
+
+        if len(_hubcap_request_timestamps) >= max_requests:
+            sleep_needed = per_seconds - (now - _hubcap_request_timestamps[0])
+            if sleep_needed > 0:
+                time.sleep(sleep_needed)
+            now = time.time()
+            while _hubcap_request_timestamps and _hubcap_request_timestamps[0] <= now - per_seconds:
+                _hubcap_request_timestamps.pop(0)
+
+        _hubcap_request_timestamps.append(time.time())
 
 
 def get_wirecutter_endpoint() -> str:
@@ -401,17 +443,22 @@ def test_gateway_wirecutter(custom_url: Optional[str] = None) -> Tuple[bool, str
             worker_base = "https://" + worker_base
 
         health_url = f"{worker_base}/health"
+        wc_test_headers = {"User-Agent": "Mozilla/5.0"}
+        wc_token = get_assella_proxy_token()
+        if wc_token:
+            wc_test_headers["X-Assella-Token"] = wc_token
+
         try:
-            resp = requests.get(health_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+            resp = requests.get(health_url, headers=wc_test_headers, timeout=8)
             resp.raise_for_status()
         except requests.exceptions.HTTPError:
             # Fallback to root endpoint if /health isn't mapped
-            resp = requests.get(worker_base, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+            resp = requests.get(worker_base, headers=wc_test_headers, timeout=8)
             resp.raise_for_status()
         except requests.exceptions.RequestException:
             # Check if user specified a forward HTTP proxy (e.g. http://127.0.0.1:7890)
             proxies = {"http": worker_base, "https": worker_base}
-            resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=8)
+            resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers=wc_test_headers, proxies=proxies, timeout=8)
             resp.raise_for_status()
 
         latency = int((time.time() - t0) * 1000)
@@ -505,6 +552,9 @@ def execute_hubcap_request(
     """
     global connection_status, _direct_connection_failed, _last_direct_check_time
 
+    # Enforce Hubcap 3 req/sec rate limit ceiling across all execution threads
+    _enforce_hubcap_rate_limit(max_requests=3, per_seconds=1.05)
+
     settings = get_settings()
     mode = "auto"
     if settings:
@@ -554,7 +604,11 @@ def execute_hubcap_request(
 
     if mode == "wirecutter":
         worker_url = rewrite_url_for_wirecutter(url)
-        resp = session.request(method, worker_url, headers=headers, params=params,
+        wc_headers = dict(headers or {})
+        tok = get_assella_proxy_token()
+        if tok:
+            wc_headers["X-Assella-Token"] = tok
+        resp = session.request(method, worker_url, headers=wc_headers, params=params,
                                timeout=timeout + 3, stream=stream, verify=False)
         resp.raise_for_status()
         if not stream and is_html_or_blocked_payload(resp):
@@ -667,8 +721,12 @@ def execute_hubcap_request(
     try:
         worker_url = rewrite_url_for_wirecutter(url)
         logger.info(f"[ISPBypass] Attempting request via Wirecutter/Worker proxy: {worker_url}...")
+        wc_headers = dict(headers or {})
+        tok = get_assella_proxy_token()
+        if tok:
+            wc_headers["X-Assella-Token"] = tok
         resp = session.request(
-            method, worker_url, headers=headers, params=params,
+            method, worker_url, headers=wc_headers, params=params,
             timeout=timeout + 3, stream=stream, **bypass_kwargs
         )
         resp.raise_for_status()
