@@ -219,7 +219,13 @@ def add_tool_button(layout: QVBoxLayout, text: str, tooltip: str, slot) -> QPush
 
 
 def run_schema_grabber_manually(dialog) -> None:
-    helper_path = Paths.deps("schema-grabber/login_helper.py")
+    from ui.dialogs.settings_tabs.components_card import require_component
+    if not require_component(dialog, "slscheevo"):
+        return
+
+    helper_path = Paths.deps("SLScheevo/login_helper.py")
+    if not helper_path.exists():
+        helper_path = Paths.deps("schema-grabber/login_helper.py")
     if not helper_path.exists():
         ThemedMessageBox.critical(dialog, "Error", f"Achievements helper missing at: {helper_path}")
         return
@@ -228,6 +234,7 @@ def run_schema_grabber_manually(dialog) -> None:
     py = get_venv_python()
     cmd.append(py if py else ("python" if sys.platform == "win32" else "python3"))
     cmd.append(str(helper_path))
+    os.environ["ASSELLA_SRC"] = str(Paths.BASE_DIR)
     launch_terminal_command(cmd, str(helper_path.parent))
 
 

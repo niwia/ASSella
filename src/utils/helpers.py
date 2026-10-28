@@ -714,11 +714,15 @@ def get_slscheevo_path() -> Path:
 
 
 def get_schema_grabber_path() -> Path:
-    binary_path = Paths.deps("schema-grabber/schema-grabber")
-    if not binary_path.exists():
-        fallback_path = Path.home() / ".local/share/ACCELA/schema-grabber/bin/Release/net9.0/linux-x64/publish/schema-grabber"
-        if fallback_path.exists():
-            return fallback_path
+    binary_path = Paths.deps("SLScheevo/schema-grabber")
+    if binary_path.exists():
+        return binary_path
+    legacy_path = Paths.deps("schema-grabber/schema-grabber")
+    if legacy_path.exists():
+        return legacy_path
+    fallback_path = Path.home() / ".local/share/ACCELA/schema-grabber/bin/Release/net9.0/linux-x64/publish/schema-grabber"
+    if fallback_path.exists():
+        return fallback_path
     return binary_path
 
 
