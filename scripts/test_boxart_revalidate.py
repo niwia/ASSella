@@ -174,6 +174,21 @@ def main() -> int:
         check(srv.bytes_served == len(BODY_V2), "new image was downloaded")
         check(cache_file.read_bytes() == BODY_V2,
               "cache replaced with the redesigned box art")
+        d2 = image_revalidate._load(tmp)
+        check(d2.get("730", {}).get("last_modified") == srv.last_modified,
+              "new Last-Modified recorded in sidecar on update")
+
+        print("\n=== initial fetch records Last-Modified without QByteArray error ===")
+        url731 = f"http://127.0.0.1:{port}/apps/731/header.jpg"
+        fetcher = ImageFetcher(url731)
+        received = []
+        fetcher.finished.connect(lambda d: received.append(d))
+        fetcher.start()
+        pump()
+        check(len(received) > 0, "initial fetch received image data")
+        d_initial = image_revalidate._load(tmp)
+        check(d_initial.get("731", {}).get("last_modified") == srv.last_modified,
+              "initial fetch recorded Last-Modified into sidecar")
 
         print("\n=== why not ETag: Steam's CDN ignores If-None-Match ===")
         print("    (pinned above - this server returns 200 + full body for an")

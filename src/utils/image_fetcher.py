@@ -174,7 +174,7 @@ class ImageFetcher(QObject):
                 image_revalidate.record(
                     app_id,
                     cache_dir,
-                    new_lm.decode(errors="ignore") if new_lm else None,
+                    bytes(new_lm).decode(errors="ignore") if new_lm else None,
                     url,
                 )
                 logger.info(
@@ -339,7 +339,7 @@ class ImageFetcher(QObject):
                         image_revalidate.record(
                             self.app_id,
                             ImageFetcher.get_cache_dir(),
-                            raw_lm.decode(errors="ignore") if raw_lm else None,
+                            bytes(raw_lm).decode(errors="ignore") if raw_lm else None,
                             reply.url().toString(),
                         )
                     except Exception as e:
