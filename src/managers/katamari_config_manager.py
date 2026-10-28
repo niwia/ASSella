@@ -664,3 +664,4 @@ return {{
         except Exception as exc:
             logger.warning(f"[KatamariConfigManager] Error archiving legacy mrc_config.lua: {exc}")
         return False
+

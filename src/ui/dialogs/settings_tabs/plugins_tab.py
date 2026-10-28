@@ -674,3 +674,4 @@ def create_plugins_tab(dialog) -> QWidget:
 
     dialog.tab_widget.addTab(tab, "Plugins")
     return tab
+
