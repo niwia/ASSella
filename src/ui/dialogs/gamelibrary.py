@@ -90,10 +90,10 @@ class GameLibraryDialog(
             self.background_color = self.settings.value("background_color", "#111318")
         self.applist_2_0_enabled = True
 
-        # Search debounce timer
+        # Search debounce timer (triggers fast in-place filtering)
         self.search_timer = QTimer(self)
         self.search_timer.setSingleShot(True)
-        self.search_timer.timeout.connect(self._refresh_game_list)
+        self.search_timer.timeout.connect(self._apply_search_filter)
 
         # State tracking
         self._active_fetchers = {}
@@ -577,6 +577,7 @@ class GameLibraryDialog(
     def closeEvent(self, event) -> None:
         """Cleanup resources on close."""
         self._closing = True
+        self._load_generation = getattr(self, "_load_generation", 0) + 1
         for fetcher in list(self._active_fetchers.values()):
             try:
                 fetcher.stop()

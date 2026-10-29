@@ -11,6 +11,7 @@ from ui.dialogs.library.widgets import (
     GameCompactWidget,
     format_size,
 )
+from ui.dialogs.library.tab_bar import TAB_ACCELA, TAB_ATOM, TAB_STEAM
 
 try:
     from managers.db_manager import DatabaseManager
@@ -18,6 +19,9 @@ except ImportError:
     DatabaseManager = None
 
 logger = logging.getLogger(__name__)
+
+INITIAL_CHUNK_SIZE = 25
+SUBSEQUENT_CHUNK_SIZE = 25
 
 
 def game_is_dlc_only(game: dict) -> bool:
@@ -136,7 +140,78 @@ class LibraryFilterSortMixin:
                 s.setValue("luatools_unlocked", True)
                 s.sync()
                 logger.info("[GameLibrary] Search secret code unlocked LuaTools feature.")
-        self.search_timer.start(300)
+        self.search_timer.start(50)
+
+    def _apply_search_filter(self) -> None:
+        """Fast in-place item filtering by toggling visibility without rebuilding widgets."""
+        if self._closing or not hasattr(self, "games_list"):
+            return
+
+        # If list is not populated yet or currently refreshing, run full refresh instead
+        if getattr(self, "_refreshing", False) or (self.games_list.count() == 0 and not getattr(self, "_is_chunking", False)):
+            if not getattr(self, "_refreshing", False):
+                self._refresh_game_list()
+            return
+
+        active_tab = getattr(self, "_active_tab", "")
+        if active_tab == TAB_STEAM:
+            tab_label = "Steam (Beta)"
+        elif active_tab == TAB_ATOM:
+            tab_label = "AT0-M"
+        else:
+            tab_label = "ASSella"
+
+        loaded_count = self.games_list.count()
+        total_count = getattr(self, "_tab_total_games_count", loaded_count)
+        if total_count == 0:
+            if hasattr(self, "info_label") and self.info_label:
+                if active_tab == TAB_STEAM and getattr(self, "_steam_scan_in_progress", False):
+                    self.info_label.setText("Scanning Steam libraries for installed games... Please wait.")
+                else:
+                    self.info_label.setText(f"Found 0 {tab_label} game(s) - Total Size: 0 B")
+            return
+
+        query = self.search_input.text().strip().lower() if hasattr(self, "search_input") else ""
+
+        self.games_list.setUpdatesEnabled(False)
+        visible_count = 0
+        visible_size = 0
+        try:
+            for i in range(loaded_count):
+                item = self.games_list.item(i)
+                if not item:
+                    continue
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(data, dict):
+                    continue
+
+                if not query:
+                    item.setHidden(False)
+                    visible_count += 1
+                    visible_size += int(data.get("size_on_disk") or 0)
+                else:
+                    name = str(data.get("game_name", "")).lower()
+                    appid = str(data.get("appid", "")).lower()
+                    matches = (query in name) or (query in appid)
+                    item.setHidden(not matches)
+                    if matches:
+                        visible_count += 1
+                        visible_size += int(data.get("size_on_disk") or 0)
+        finally:
+            self.games_list.setUpdatesEnabled(True)
+
+        if hasattr(self, "info_label") and self.info_label:
+            if query:
+                self.info_label.setText(
+                    f"Showing {visible_count} of {total_count} {tab_label} game(s) - "
+                    f"Total Size: {format_size(visible_size)}"
+                )
+            else:
+                display_size = getattr(self, "_tab_total_games_size", visible_size)
+                self.info_label.setText(
+                    f"Found {total_count} {tab_label} game(s) - "
+                    f"Total Size: {format_size(display_size)}"
+                )
 
     def _refresh_game_list(self) -> None:
         if self._closing:
@@ -189,8 +264,6 @@ class LibraryFilterSortMixin:
                                     pass
         except Exception as e:
             logger.warning(f"Failed to pre-scan hubcap_manifests: {e}")
-
-        from ui.dialogs.library.tab_bar import TAB_ACCELA, TAB_ATOM, TAB_STEAM
 
         active_tab = getattr(self, "_active_tab", TAB_ACCELA)
         all_manager_games = self.game_manager.get_all_games() if self.game_manager else []
@@ -282,60 +355,94 @@ class LibraryFilterSortMixin:
                 and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
             ]
         
-        # Filter games by search term (case-insensitive)
-        has_filter = False
-        if hasattr(self, "search_input"):
-            query = self.search_input.text().strip().lower()
-            if query:
-                games = [g for g in games if query in g.get("game_name", "").lower()]
-                has_filter = True
-
         games = self._sort_games(games)
-        
-        # Limit displayed games count when filtering to prevent heavy UI layout lag
-        truncated = False
-        if has_filter and len(games) > 150:
-            showing_games = games[:150]
-            truncated = True
-        else:
-            showing_games = games
 
-        # Optimize: freeze widget repaints during batch insertion
+        # Store tab totals for instantaneous info_label display
+        self._tab_total_games_count = len(games)
+        self._tab_total_games_size = sum(int(g.get("size_on_disk") or 0) for g in games)
+
+        # Increment generation counter to discard obsolete chunking timers from earlier refreshes
+        self._load_generation = getattr(self, "_load_generation", 0) + 1
+        current_gen = self._load_generation
+
+        initial_chunk = games[:INITIAL_CHUNK_SIZE]
+        remaining_games = games[INITIAL_CHUNK_SIZE:]
+        self._is_chunking = bool(remaining_games)
+
+        # Optimize: freeze widget repaints during batch insertion of initial viewport slice
         self.games_list.setUpdatesEnabled(False)
-        total_size = 0
         try:
-            for game in showing_games:
-                total_size += self._add_game_to_list(game)
+            for game in initial_chunk:
+                self._add_game_to_list(game)
         finally:
             self.games_list.setUpdatesEnabled(True)
 
-        if active_tab == TAB_STEAM:
-            tab_label = "Steam (Beta)"
-        elif active_tab == TAB_ATOM:
-            tab_label = "AT0-M"
-        else:
-            tab_label = "ASSella"
-
-        if active_tab == TAB_STEAM and getattr(self, "_steam_scan_in_progress", False) and len(games) == 0:
-            self.info_label.setText("Scanning Steam libraries for installed games... Please wait.")
-        elif truncated:
-            self.info_label.setText(
-                f"Showing top 150 of {len(games)} {tab_label} game(s) - "
-                f"Please refine your search query."
-            )
-        else:
-            self.info_label.setText(
-                f"Found {len(games)} {tab_label} game(s) - "
-                f"Total Size: {format_size(total_size)}"
-            )
         self._refreshing = False
 
-        # Defer image downloads; skip ratings badges entirely for Steam tab
-        if active_tab != TAB_STEAM:
-            QTimer.singleShot(100, self._start_pending_image_fetches)
-            QTimer.singleShot(300, self._populate_ratings_badges)
+        if active_tab == TAB_STEAM and getattr(self, "_steam_scan_in_progress", False) and len(games) == 0:
+            if hasattr(self, "info_label") and self.info_label:
+                self.info_label.setText("Scanning Steam libraries for installed games... Please wait.")
         else:
-            QTimer.singleShot(50, self._start_pending_image_fetches)
+            self._apply_search_filter()
+
+        # Start loading images for visible items immediately
+        QTimer.singleShot(40, self._start_pending_image_fetches)
+
+        if remaining_games:
+            QTimer.singleShot(
+                0,
+                lambda: self._process_next_game_chunk(remaining_games, current_gen, active_tab),
+            )
+        else:
+            if active_tab != TAB_STEAM:
+                QTimer.singleShot(250, self._populate_ratings_badges)
+
+    def _process_next_game_chunk(
+        self,
+        remaining_games: list,
+        gen: int,
+        active_tab: str,
+    ) -> None:
+        """Cooperatively stream subsequent game cards into the list via the Qt event loop."""
+        if getattr(self, "_closing", False) or getattr(self, "_load_generation", 0) != gen:
+            return
+
+        chunk = remaining_games[:SUBSEQUENT_CHUNK_SIZE]
+        rest = remaining_games[SUBSEQUENT_CHUNK_SIZE:]
+
+        query = self.search_input.text().strip().lower() if hasattr(self, "search_input") else ""
+
+        self.games_list.setUpdatesEnabled(False)
+        try:
+            for game in chunk:
+                self._add_game_to_list(game)
+                if query:
+                    name = str(game.get("game_name", "")).lower()
+                    aid = str(game.get("appid", "")).lower()
+                    matches = (query in name) or (query in aid)
+                    appid = str(game.get("appid", "0"))
+                    item = self._items_by_appid.get(appid)
+                    if item:
+                        item.setHidden(not matches)
+        finally:
+            self.games_list.setUpdatesEnabled(True)
+
+        # Trigger batch image loader for newly added items
+        if getattr(self, "_pending_image_fetches", None):
+            QTimer.singleShot(40, self._start_pending_image_fetches)
+
+        if rest:
+            if query:
+                self._apply_search_filter()
+            QTimer.singleShot(
+                0,
+                lambda: self._process_next_game_chunk(rest, gen, active_tab),
+            )
+        else:
+            self._is_chunking = False
+            self._apply_search_filter()
+            if active_tab != TAB_STEAM:
+                QTimer.singleShot(150, self._populate_ratings_badges)
 
     def _add_game_to_list(self, game: dict) -> int:
         """Creates and adds a single game widget to the list. Returns size."""

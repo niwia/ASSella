@@ -177,8 +177,8 @@ class KatamariConfigManager:
         if m:
             try:
                 return int(m.group(1))
-            except ValueError:
-                pass
+            except ValueError as e:
+                logger.debug(f"[KatamariConfigManager] Failed to parse int from '{m.group(1)}': {e}")
         return None
 
     @classmethod

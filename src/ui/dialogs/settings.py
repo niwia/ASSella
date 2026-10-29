@@ -752,18 +752,6 @@ class SettingsDialog(QDialog):
         return tabs.launch_terminal_command(cmd, cwd, needs_env)
 
     @staticmethod
-    def _manage_registry(filename: str, success_msg: str) -> None:
-        tabs.manage_registry(filename, success_msg)
-
-    @staticmethod
-    def register_registry_entries() -> None:
-        tabs.register_registry_entries()
-
-    @staticmethod
-    def remove_registry_entries() -> None:
-        tabs.remove_registry_entries()
-
-    @staticmethod
     def _toggle_api_key_visibility(input_field, toggle_btn) -> None:
         tabs.toggle_api_key_visibility(input_field, toggle_btn)
 

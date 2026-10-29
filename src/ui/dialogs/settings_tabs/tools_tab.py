@@ -92,26 +92,6 @@ def create_tools_tab(dialog) -> QWidget:
     tools_layout.addLayout(tools_btn_row)
     layout.addWidget(tools_card)
 
-    # Windows Registry Card
-    if sys.platform == "win32":
-        reg_card, reg_layout = dialog._create_card_frame("Windows Registry")
-
-        add_tool_button(
-            reg_layout,
-            "Register Registry Entries",
-            "Register accela:// URL protocol and .zip context menu entries.",
-            register_registry_entries,
-        )
-
-        add_tool_button(
-            reg_layout,
-            "Remove Registry Entries",
-            "Remove accela:// URL protocol and .zip context menu entries.",
-            remove_registry_entries,
-        )
-
-        layout.addWidget(reg_card)
-
     # Logging Configuration Card
     log_card, log_layout = dialog._create_card_frame("Logging Configuration")
 
@@ -219,8 +199,8 @@ def export_diagnostic_logs(dialog) -> None:
     for handler in logging.getLogger().handlers:
         try:
             handler.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Diagnostics] Error flushing log handler: {e}")
 
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     default_name = f"assella_diagnostics_{timestamp_str}.zip"
@@ -444,45 +424,6 @@ def browse_aio_script(dialog) -> None:
     if path and current:
         current.setText(path)
         get_settings().setValue("steamless_aio_path", path)
-
-
-def register_registry_entries() -> None:
-    manage_registry("ACCELA.reg", "Registered successfully")
-
-
-def remove_registry_entries() -> None:
-    manage_registry("ACCELA_uninstall.reg", "Removed successfully")
-
-
-def manage_registry(filename: str, success_msg: str) -> None:
-    if sys.platform != "win32":
-        return
-
-    base = (
-        os.path.join(getattr(sys, "_MEIPASS"), "deps")
-        if getattr(sys, "frozen", False)
-        else os.path.join(os.path.dirname(__file__), "..", "..", "..", "deps")
-    )
-    reg_path = os.path.join(base, filename)
-
-    if not os.path.exists(reg_path):
-        ThemedMessageBox.critical(None, "Error", f"Missing {filename}")
-        return
-
-    try:
-        with open(reg_path, "r", encoding="utf-8-sig") as f:
-            content = f.read().replace("[INSTALL_PATH]", sys.executable.replace("\\", "\\\\"))
-
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".reg", delete=False) as tmp:
-            tmp.write(content)
-            tmp_name = tmp.name
-
-        subprocess.run(["regedit", "/s", str(tmp_name)], check=True, shell=True)
-        os.unlink(tmp_name)
-        ThemedMessageBox.information(None, "Success", success_msg)
-    except (IOError, OSError, subprocess.SubprocessError) as e:
-        ThemedMessageBox.critical(None, "Error", f"Registry error: {e}")
 
 
 def update_achievements_button_state(dialog) -> None:

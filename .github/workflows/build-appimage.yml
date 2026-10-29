@@ -147,7 +147,6 @@ jobs:
           # Must match QApplication::applicationName() in src/main.py, which is
           # what the window manager matches against to pick the taskbar icon.
           StartupWMClass=ASSella
-          MimeType=x-scheme-handler/accela;
           EOF
           # Legacy alias: earlier builds shipped this name, and some launchers
           # and .desktop entries still reference it.

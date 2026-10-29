@@ -132,7 +132,7 @@
     "narrow": 1
   },
   "managers/task_manager.py": {
-    "broad": 4,
+    "broad": 3,
     "narrow": 3
   },
   "ui/dialogs/build_selection_dialog.py": {

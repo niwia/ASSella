@@ -13,7 +13,7 @@ import urllib.request
 import urllib.error
 
 # QObject and pyqtSlot for robust threading
-from PyQt6.QtCore import QTimer, Qt, QObject, pyqtSlot, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt, QObject, pyqtSlot, pyqtSignal, QFileSystemWatcher
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -1125,74 +1125,129 @@ class TaskManager(
 
     def _start_vapor_install_watcher(self, appid: str):
         """
-        Spawn a background thread watching for Steam to complete downloading a Vapor game.
+        Watch for Steam to complete downloading a Vapor game using QFileSystemWatcher.
         When Steam marks the game StateFlags=4 (Fully Installed) in appmanifest_<appid>.acf,
         automatically trigger an async library scan so the game appears in the Library tab.
         """
-        def _watch():
-            try:
-                from core.steam_helpers import get_steam_env
-                env = get_steam_env()
-                steamapps_dirs = [Path(p) for p in env.steamapps_paths if os.path.exists(p)]
-                # Poll every 3 seconds for up to 30 minutes (600 iterations)
-                for _ in range(600):
-                    time.sleep(3)
-                    for s_dir in steamapps_dirs:
-                        acf_path = s_dir / f"appmanifest_{appid}.acf"
-                        if acf_path.exists():
+        try:
+            from core.steam_helpers import get_steam_env
+            env = get_steam_env()
+            steamapps_dirs = [Path(p) for p in env.steamapps_paths if os.path.exists(p)]
+            if not steamapps_dirs:
+                logger.debug(f"[VaporWatcher] No steamapps directories found for AppID {appid}")
+                return
+
+            watcher = QFileSystemWatcher(self)
+            paths_to_watch = []
+            for s_dir in steamapps_dirs:
+                paths_to_watch.append(str(s_dir))
+                acf_path = s_dir / f"appmanifest_{appid}.acf"
+                if acf_path.exists():
+                    paths_to_watch.append(str(acf_path))
+
+            watcher.addPaths(paths_to_watch)
+
+            # 30-minute safety timeout
+            timeout_timer = QTimer(self)
+            timeout_timer.setSingleShot(True)
+            timeout_timer.setInterval(1800 * 1000)
+
+            # Periodic 15-second heartbeat for non-inotify mounts (e.g. exFAT/NFS)
+            poll_timer = QTimer(self)
+            poll_timer.setInterval(15 * 1000)
+
+            def _cleanup():
+                try:
+                    if timeout_timer.isActive():
+                        timeout_timer.stop()
+                    if poll_timer.isActive():
+                        poll_timer.stop()
+                    watcher.directoryChanged.disconnect()
+                    watcher.fileChanged.disconnect()
+                except Exception as ex:
+                    logger.debug(f"[VaporWatcher] Cleanup error for {appid}: {ex}")
+                watcher.deleteLater()
+                timeout_timer.deleteLater()
+                poll_timer.deleteLater()
+
+            def _check_acf():
+                for s_dir in steamapps_dirs:
+                    acf_path = s_dir / f"appmanifest_{appid}.acf"
+                    if not acf_path.exists():
+                        continue
+
+                    # If file newly appeared, make sure it is directly watched too
+                    str_acf = str(acf_path)
+                    if str_acf not in watcher.files():
+                        try:
+                            watcher.addPath(str_acf)
+                        except Exception as add_err:
+                            logger.debug(f"[VaporWatcher] Could not add path {str_acf}: {add_err}")
+
+                    try:
+                        text = acf_path.read_text(encoding="utf-8", errors="ignore")
+                        m = re.search(r'"StateFlags"\s+"(\d+)"', text)
+                        if m and m.group(1) == "4":
+                            # Validate against 0-byte ghost installs
+                            m_size = re.search(r'"SizeOnDisk"\s+"(\d+)"', text)
+                            size_on_disk = int(m_size.group(1)) if m_size else 0
+                            m_depots = re.search(r'"InstalledDepots"\s*\{([^}]*)\}', text, re.DOTALL)
+                            depot_matches = re.findall(r'"(\d+)"\s*\{', m_depots.group(1)) if m_depots else []
+
+                            if size_on_disk == 0 or not depot_matches:
+                                logger.warning(
+                                    f"[VaporWatcher] AppID {appid} reached StateFlags=4 but SizeOnDisk={size_on_disk} "
+                                    f"and InstalledDepots={depot_matches}. Ghost/empty download detected. "
+                                    "Aborting watcher without marking up_to_date."
+                                )
+                                _cleanup()
+                                return
+
+                            logger.info(
+                                f"[VaporWatcher] Steam download completed for AppID {appid} (StateFlags=4, SizeOnDisk={size_on_disk}). "
+                                "Marking up_to_date and refreshing library..."
+                            )
                             try:
-                                text = acf_path.read_text(encoding="utf-8", errors="ignore")
-                                m = re.search(r'"StateFlags"\s+"(\d+)"', text)
-                                if m and m.group(1) == "4":
-                                    # Validate against 0-byte ghost installs
-                                    m_size = re.search(r'"SizeOnDisk"\s+"(\d+)"', text)
-                                    size_on_disk = int(m_size.group(1)) if m_size else 0
-                                    m_depots = re.search(r'"InstalledDepots"\s*\{([^}]*)\}', text, re.DOTALL)
-                                    depot_matches = re.findall(r'"(\d+)"\s*\{', m_depots.group(1)) if m_depots else []
+                                from utils.update_status_cache import get_update_cache
+                                cache = get_update_cache()
+                                cache.set_status(appid, "up_to_date")
+                                cache.save_async()
+                                logger.info(f"[VaporWatcher] Set up_to_date for appid={appid} after confirmed Steam download")
+                            except Exception as _cache_err:
+                                logger.debug(f"[VaporWatcher] Error updating status cache for {appid}: {_cache_err}")
 
-                                    if size_on_disk == 0 or not depot_matches:
-                                        logger.warning(
-                                            f"[VaporWatcher] AppID {appid} reached StateFlags=4 but SizeOnDisk={size_on_disk} "
-                                            f"and InstalledDepots={depot_matches}. Ghost/empty download detected. "
-                                            "Aborting watcher without marking up_to_date."
-                                        )
-                                        return
+                            if (
+                                self.main_window
+                                and hasattr(self.main_window, "game_manager")
+                                and self.main_window.game_manager
+                            ):
+                                self.main_window.game_manager.scan_steam_libraries_async()
 
-                                    logger.info(
-                                        f"[VaporWatcher] Steam download completed for AppID {appid} (StateFlags=4, SizeOnDisk={size_on_disk}). "
-                                        "Marking up_to_date and refreshing library..."
-                                    )
-                                    # Now that Steam confirmed the download, set the status.
-                                    # This is deferred from job_finished() so that wudrm/MRC
-                                    # failures during download don't produce a false up_to_date.
-                                    try:
-                                        from utils.update_status_cache import get_update_cache
-                                        cache = get_update_cache()
-                                        cache.set_status(appid, "up_to_date")
-                                        cache.save_async()
-                                        logger.info(f"[VaporWatcher] Set up_to_date for appid={appid} after confirmed Steam download")
-                                    except Exception as _cache_err:
-                                        logger.debug(f"[VaporWatcher] Error updating status cache for {appid}: {_cache_err}")
-                                    if (
-                                        self.main_window
-                                        and hasattr(self.main_window, "game_manager")
-                                        and self.main_window.game_manager
-                                    ):
-                                        self.main_window.game_manager.scan_steam_libraries_async()
-                                    return
-                            except Exception:
-                                pass
-                # Watcher timed out — Steam never reached StateFlags=4 within 30 minutes.
-                # The download likely failed (e.g. wudrm/MRC unavailable). Do NOT mark up_to_date.
+                            _cleanup()
+                            return
+                    except Exception as read_err:
+                        logger.debug(f"[VaporWatcher] Error reading {acf_path}: {read_err}")
+
+            def _on_timeout():
                 logger.warning(
                     f"[VaporWatcher] Timed out waiting for Steam to complete AppID {appid} download. "
                     "Update status will remain as-is (not marked up_to_date)."
                 )
-            except Exception as e:
-                logger.debug(f"[VaporWatcher] Error in watcher thread for AppID {appid}: {e}")
+                _cleanup()
 
-        t = threading.Thread(target=_watch, daemon=True)
-        t.start()
+            watcher.directoryChanged.connect(lambda _path: _check_acf())
+            watcher.fileChanged.connect(lambda _path: _check_acf())
+            timeout_timer.timeout.connect(_on_timeout)
+            poll_timer.timeout.connect(_check_acf)
+
+            timeout_timer.start()
+            poll_timer.start()
+
+            # Immediate initial check in case Steam already finished before watcher started
+            _check_acf()
+
+        except Exception as e:
+            logger.debug(f"[VaporWatcher] Error setting up watcher for AppID {appid}: {e}")
 
     @pyqtSlot(str)
     def _on_handoff_status_updated(self, msg: str):

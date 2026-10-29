@@ -219,8 +219,8 @@ def get_assella_proxy_token() -> str:
         custom_tok = get_settings().value("assella_proxy_token", "", type=str)
         if custom_tok and custom_tok.strip():
             return custom_tok.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[ISPBypass] Could not read custom proxy token from settings: {e}")
     try:
         import base64
         raw = base64.b85decode(_ASSELLA_TOKEN_SECRET.encode("ascii"))
@@ -253,8 +253,8 @@ def _process_429_response(resp: requests.Response) -> Tuple[float, str]:
     if hdr_retry:
         try:
             retry_after = max(1.0, float(hdr_retry))
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as e:
+            logger.debug(f"[ISPBypass] Failed to parse Retry-After header '{hdr_retry}': {e}")
 
     # 2. Check JSON payload
     try:
@@ -264,10 +264,10 @@ def _process_429_response(resp: requests.Response) -> Tuple[float, str]:
             if "retry_after" in body:
                 try:
                     retry_after = max(retry_after, float(body["retry_after"]))
-                except (ValueError, TypeError):
-                    pass
-    except Exception:
-        pass
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"[ISPBypass] Failed to parse retry_after payload: {e}")
+    except Exception as e:
+        logger.debug(f"[ISPBypass] Failed to parse 429 response body: {e}")
 
     with _hubcap_rate_lock:
         _hubcap_backoff_until = max(_hubcap_backoff_until, time.time() + retry_after)

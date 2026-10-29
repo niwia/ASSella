@@ -2,7 +2,6 @@ import multiprocessing
 import os
 import sys
 import threading
-from urllib.parse import unquote
 import ctypes
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import QApplication
@@ -90,11 +89,6 @@ def main():
 
     # Pre-scan for headless/helper mode to set environment variable before QApplication is created
     headless_mode = "--headless" in sys.argv or "--helper" in sys.argv or "-helper" in sys.argv or "--check-updates" in sys.argv or "-cli" in sys.argv or "--cli" in sys.argv
-    if not headless_mode:
-        for arg in sys.argv:
-            if arg.startswith("accela://") and ("download/" in arg or "helper/" in arg or "cli/" in arg):
-                headless_mode = True
-                break
 
     if headless_mode:
         logger.info("Headless/Helper mode requested. Setting QT_QPA_PLATFORM=offscreen")
@@ -132,50 +126,6 @@ def main():
     command_line_zips = []
     command_line_appid = None
 
-    def _add_zip_from_url(zip_url: str, found_suffix: str = "") -> bool:
-        if not zip_url:
-            return False
-        if os.path.exists(zip_url):
-            command_line_zips.append(zip_url)
-            suffix = f" {found_suffix}" if found_suffix else ""
-            logger.info(f"Found ZIP file from URL: {zip_url}{suffix}")
-            return True
-        logger.warning(f"ZIP file not found from URL: {zip_url}")
-        return False
-
-    def _parse_url_action(url: str):
-        nonlocal cli_mode, command_line_appid, helper_mode
-        try:
-            url_content = url[9:]  # Remove 'accela://'
-            if url_content.startswith("cli/"):
-                cli_mode = True
-                rest = url_content[4:]
-            elif url_content.startswith("helper/"):
-                helper_mode = True
-                rest = url_content[7:]
-            else:
-                rest = url_content
-
-            if "/" in rest:
-                action, param_val = rest.split("/", 1)
-                param_val = unquote(param_val)
-            else:
-                action = rest
-                param_val = None
-
-            if action == "download" and param_val and param_val.isdigit():
-                command_line_appid = int(param_val)
-                helper_mode = True
-                logger.info(
-                    f"Found accela://{action} URL for AppID: {param_val} (Helper mode)"
-                )
-            elif action == "zip" and param_val:
-                _add_zip_from_url(param_val, "(Helper mode)" if helper_mode else "(GUI mode)")
-            else:
-                logger.warning(f"Invalid accela:// URL format: {url}")
-        except ValueError as ve:
-            logger.error(f"Failed to parse URL {url}: {ve}")
-
     settings = get_settings()
     server_port = int(settings.value("web_ui_port", 8765, type=int))
     args = sys.argv[1:]
@@ -204,8 +154,6 @@ def main():
             else:
                 logger.error(f"Invalid AppID: {appid_str} (must be a number)")
             i += 1
-        elif arg.startswith("accela://"):
-            _parse_url_action(arg)
         elif arg.lower().endswith(".zip"):
             zip_file_path = os.path.abspath(arg)
             if os.path.exists(zip_file_path):
@@ -249,6 +197,17 @@ def main():
     # -------------------------------------------------------------------------
     # GUI Mode Initialization
     # -------------------------------------------------------------------------
+
+    if not headless_mode:
+        from utils.single_instance import SingleInstanceIPC
+
+        launch_payload = {
+            "appid": command_line_appid,
+            "zips": command_line_zips,
+        }
+        if SingleInstanceIPC.send_and_exit_if_running(launch_payload):
+            logger.info("Forwarded request to running ASSella instance. Exiting.")
+            sys.exit(0)
 
     config_path = get_user_config_path()
     try:
@@ -354,35 +313,62 @@ def main():
             logger.info("Main window displayed successfully.")
 
         # ---------------------------------------------------------------------
-        # Post-Launch Processing
+        # Post-Launch Processing & Single-Instance IPC Bridge
         # ---------------------------------------------------------------------
-        if command_line_zips or command_line_appid:
+        def add_manifest_to_queue(path):
+            """Run on the Qt main thread; queues a downloaded manifest ZIP."""
+            logger.info(f"Adding to queue: {os.path.basename(path)}")
+            main_win.job_queue.add_job(path)
 
-            def add_manifest_to_queue(path):
-                """Run on the Qt main thread; queues a downloaded manifest ZIP."""
-                logger.info(f"Adding to queue: {os.path.basename(path)}")
-                main_win.job_queue.add_job(path)
+        def threaded_manifest_download(appid):
+            """Background thread to handle network I/O."""
+            try:
+                branch = get_selected_branch(appid)
+                logger.info(
+                    f"Downloading manifest for AppID {appid} on branch '{branch}' (Background Thread)"
+                )
+                zip_file, error = download_manifest(appid, branch=branch)
+                if error:
+                    logger.error(f"Failed to download manifest: {error}")
+                    return
 
-            def threaded_manifest_download(appid):
-                """Background thread to handle network I/O."""
-                try:
-                    branch = get_selected_branch(appid)
-                    logger.info(
-                        f"Downloading manifest for AppID {appid} on branch '{branch}' (Background Thread)"
+                # Hand the ZIP to the Qt main thread through the app's bridge.
+                post_to_main_thread(add_manifest_to_queue, zip_file)
+            except Exception as ex:
+                logger.error(f"Threaded download failed: {ex}")
+
+        if not headless_mode:
+            from utils.single_instance import SingleInstanceIPC
+
+            def _handle_ipc_command(payload: dict):
+                p_appid = payload.get("appid")
+                p_zips = payload.get("zips", [])
+                if p_appid:
+                    logger.info(f"[IPC] Received AppID {p_appid} from secondary launch; queueing download...")
+                    t = threading.Thread(
+                        target=threaded_manifest_download,
+                        args=(p_appid,),
+                        daemon=True,
                     )
-                    zip_file, error = download_manifest(appid, branch=branch)
-                    if error:
-                        logger.error(f"Failed to download manifest: {error}")
-                        return
+                    t.start()
+                if p_zips:
+                    logger.info(f"[IPC] Received {len(p_zips)} ZIP file(s) from secondary launch; adding to queue...")
+                    for zf in p_zips:
+                        post_to_main_thread(add_manifest_to_queue, zf)
 
-                    # Hand the ZIP to the Qt main thread through the app's bridge.
-                    # QMetaObject.invokeMethod only resolves Qt slots, so it could
-                    # not reach a plain Python method (it raised and the ZIP was
-                    # silently dropped); post_to_main_thread is the supported path.
-                    post_to_main_thread(add_manifest_to_queue, zip_file)
-                except Exception as ex:
-                    logger.error(f"Threaded download failed: {ex}")
+                # Bring window to front
+                main_win.setWindowState(
+                    main_win.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive
+                )
+                main_win.show()
+                main_win.raise_()
+                main_win.activateWindow()
 
+            ipc_server = SingleInstanceIPC(_handle_ipc_command, parent=app)
+            ipc_server.start_server()
+            app.aboutToQuit.connect(ipc_server.close)
+
+        if command_line_zips or command_line_appid:
             def process_command_line_args():
                 """Dispatcher for command line args."""
                 if command_line_appid:
