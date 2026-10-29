@@ -46,6 +46,7 @@ FALLBACK_REQUIRED_PLUGINS = [
     "bakeneko.lua",
     "styx.lua",
     "lobster.lua",
+    "hubcap.lua",
 ]
 
 # Baseline companion plugins (non-interceptors) when manifest is unreachable

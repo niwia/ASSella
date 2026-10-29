@@ -281,9 +281,9 @@ def steamless_unchecked_warning(dialog) -> None:
         "Disable Steamless",
         "Are you sure? This is an advanced feature and not recommended to turn off.",
         ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-        ThemedMessageBox.StandardButton.Yes,
+        ThemedMessageBox.StandardButton.No,
     )
-    if r1 != ThemedMessageBox.StandardButton.No:
+    if r1 != ThemedMessageBox.StandardButton.Yes:
         _cancel()
         return
 
@@ -293,9 +293,9 @@ def steamless_unchecked_warning(dialog) -> None:
         "Disable Steamless",
         "Are you really really sure?",
         ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-        ThemedMessageBox.StandardButton.Yes,
+        ThemedMessageBox.StandardButton.No,
     )
-    if r2 != ThemedMessageBox.StandardButton.No:
+    if r2 != ThemedMessageBox.StandardButton.Yes:
         _cancel()
         return
 
@@ -305,9 +305,9 @@ def steamless_unchecked_warning(dialog) -> None:
         "Disable Steamless",
         "Are you sure?",
         ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-        ThemedMessageBox.StandardButton.Yes,
+        ThemedMessageBox.StandardButton.No,
     )
-    if r3 != ThemedMessageBox.StandardButton.No:
+    if r3 != ThemedMessageBox.StandardButton.Yes:
         _cancel()
         return
 
@@ -317,13 +317,13 @@ def steamless_unchecked_warning(dialog) -> None:
         "Disable Steamless",
         "For the last time, are you really sure?",
         ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-        ThemedMessageBox.StandardButton.Yes,
+        ThemedMessageBox.StandardButton.No,
     )
-    if r4 != ThemedMessageBox.StandardButton.No:
+    if r4 != ThemedMessageBox.StandardButton.Yes:
         _cancel()
         return
 
-    # Survived all 4 "No" prompts: safely deactivate
+    # Survived all 4 "Yes" prompts: safely deactivate
     dialog.settings.setValue("auto_run_steamless_post_install", False)
     dialog.settings.sync()
 

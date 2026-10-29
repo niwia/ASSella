@@ -19,6 +19,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QMenu,
     QFileDialog,
+    QTabWidget,
+    QScrollArea,
 )
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -190,12 +192,54 @@ def is_plugin_detected(filename: str) -> bool:
 
 def create_at0m_tab(dialog) -> QWidget:
     """
-    Create the dedicated at0-m settings tab for native Steam and SLSsteam integration.
+    Create the dedicated at0-m settings tab with General and Advanced (Plugins) sub-tabs.
     """
     tab = QWidget()
-    layout = QVBoxLayout(tab)
-    layout.setContentsMargins(12, 10, 12, 10)
+    main_layout = QVBoxLayout(tab)
+    main_layout.setContentsMargins(12, 10, 12, 10)
+    main_layout.setSpacing(8)
+
+    atom_subtabs = QTabWidget()
+    atom_subtabs.setUsesScrollButtons(True)
+    dialog.atom_subtabs = atom_subtabs
+    bg_color = dialog.settings.value("background_color", "#141416")
+    atom_subtabs.setStyleSheet(f"""
+        QTabWidget::pane {{
+            border: none;
+        }}
+        QTabBar::tab {{
+            background: {bg_color};
+            color: rgba(255, 255, 255, 0.6);
+            padding: 6px 16px;
+            border: none;
+            font-weight: bold;
+            font-size: 9.5pt;
+        }}
+        QTabBar::tab:selected {{
+            color: {dialog.accent_color};
+            border-bottom: 2px solid {dialog.accent_color};
+        }}
+        QTabBar::tab:hover {{
+            color: #FFFFFF;
+        }}
+    """)
+
+    # ── Subtab 1: General ──
+    general_tab = QWidget()
+    gen_scroll = QScrollArea()
+    gen_scroll.setWidgetResizable(True)
+    gen_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    gen_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+    gen_container = QWidget()
+    layout = QVBoxLayout(gen_container)
+    layout.setContentsMargins(0, 4, 0, 10)
     layout.setSpacing(8)
+    gen_scroll.setWidget(gen_container)
+
+    gen_tab_layout = QVBoxLayout(general_tab)
+    gen_tab_layout.setContentsMargins(0, 0, 0, 0)
+    gen_tab_layout.addWidget(gen_scroll)
 
     cfg_path = get_user_config_path()
 
@@ -381,42 +425,240 @@ def create_at0m_tab(dialog) -> QWidget:
 
     layout.addWidget(cfg_card)
 
-    # -- 2. Katamari Plugins Navigation Guidance Card --
-    p_card, p_layout = dialog._create_card_frame("Lua Plugins (Katamari Suite)")
-    p_desc = QLabel(
-        "SLSsteam Lua plugin suite deployment, manifest mode arbitration, MRC provider hierarchies, "
-        "and ownership ticket splicing are managed under the <b>Plugins</b> tab."
-    )
-    p_desc.setStyleSheet("color: rgba(255, 255, 255, 0.75); font-size: 8.5pt;")
-    p_desc.setWordWrap(True)
-    p_layout.addWidget(p_desc)
+    # -- 2. Katamari Plugins Status & Updaters Card --
+    deploy_card, deploy_layout = dialog._create_card_frame("Lua Plugins (Katamari Suite)")
+    deploy_layout.setSpacing(8)
 
-    goto_plugins_btn = QPushButton("Open Plugins Settings")
-    goto_plugins_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    goto_plugins_btn.setStyleSheet("""
+    deploy_desc = QLabel(
+        "Status and updaters for Katamari Lua plugins. Click an active plugin to verify against the "
+        "manifest, or click an outdated plugin to install the update inline."
+    )
+    deploy_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    deploy_desc.setWordWrap(True)
+    deploy_layout.addWidget(deploy_desc)
+
+    STYLE_ACTIVE_GREEN = """
         QPushButton {
-            background-color: rgba(33, 150, 243, 0.15);
-            color: #64B5F6;
-            border: 1px solid rgba(100, 181, 246, 0.45);
+            background-color: rgba(76, 175, 80, 0.2);
+            color: #81C784;
+            border: 1px solid rgba(129, 199, 132, 0.5);
             border-radius: 6px;
-            padding: 6px 14px;
+            padding: 7px 10px;
             font-size: 8.5pt;
             font-weight: 600;
         }
         QPushButton:hover {
-            background-color: rgba(33, 150, 243, 0.28);
+            background-color: rgba(76, 175, 80, 0.32);
+            border-color: rgba(129, 199, 132, 0.85);
         }
-    """)
+    """
+    STYLE_ATTENTION_ORANGE = """
+        QPushButton {
+            background-color: rgba(255, 171, 0, 0.18);
+            color: #FFD54F;
+            border: 1px solid rgba(255, 171, 0, 0.55);
+            border-radius: 6px;
+            padding: 7px 10px;
+            font-size: 8.5pt;
+            font-weight: 600;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 171, 0, 0.32);
+            border-color: rgba(255, 171, 0, 0.85);
+            color: #FFFFFF;
+        }
+    """
+    STYLE_DISABLED = """
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.03);
+            color: rgba(255, 255, 255, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 6px;
+            padding: 7px 10px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+    """
 
-    def _go_to_plugins():
-        for i in range(dialog.tab_widget.count()):
-            if dialog.tab_widget.tabText(i).lower() == "plugins":
-                dialog.tab_widget.setCurrentIndex(i)
-                break
+    # Top Row: 3 buttons in a single line (SpaceBunny, Bakeneko, Styx)
+    primary_row = QHBoxLayout()
+    primary_row.setContentsMargins(0, 4, 0, 4)
+    primary_row.setSpacing(8)
 
-    goto_plugins_btn.clicked.connect(_go_to_plugins)
-    p_layout.addWidget(goto_plugins_btn)
-    layout.addWidget(p_card)
+    dialog.btn_spacebunny_plugin = QPushButton("SpaceBunny")
+    dialog.btn_spacebunny_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
+    primary_row.addWidget(dialog.btn_spacebunny_plugin, 1)
+
+    dialog.btn_bakeneko_plugin = QPushButton("Bakeneko (Planned)")
+    dialog.btn_bakeneko_plugin.setEnabled(False)
+    dialog.btn_bakeneko_plugin.setStyleSheet(STYLE_DISABLED)
+    dialog.btn_bakeneko_plugin.setToolTip("Bakeneko manifest pre-seeding is currently in testing and will be enabled in a future release.")
+    primary_row.addWidget(dialog.btn_bakeneko_plugin, 1)
+
+    dialog.btn_styx_plugin = QPushButton("Styx")
+    dialog.btn_styx_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
+    primary_row.addWidget(dialog.btn_styx_plugin, 1)
+
+    deploy_layout.addLayout(primary_row)
+
+    # Extras section (Lobster, Katamari, Hubcap)
+    extras_lbl = QLabel("Extras")
+    extras_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.9); font-size: 9pt; font-weight: 700; margin-top: 6px;")
+    deploy_layout.addWidget(extras_lbl)
+
+    extras_row = QHBoxLayout()
+    extras_row.setContentsMargins(0, 2, 0, 4)
+    extras_row.setSpacing(8)
+
+    dialog.btn_lobster_plugin = QPushButton("Lobster")
+    dialog.btn_lobster_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
+    extras_row.addWidget(dialog.btn_lobster_plugin, 1)
+
+    dialog.btn_katamari_plugin = QPushButton("Katamari")
+    dialog.btn_katamari_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
+    extras_row.addWidget(dialog.btn_katamari_plugin, 1)
+
+    dialog.btn_hubcap_plugin = QPushButton("Hubcap")
+    dialog.btn_hubcap_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
+    extras_row.addWidget(dialog.btn_hubcap_plugin, 1)
+
+    deploy_layout.addLayout(extras_row)
+
+    # Separator
+    deploy_sep = QFrame()
+    deploy_sep.setFrameShape(QFrame.Shape.HLine)
+    deploy_sep.setStyleSheet("color: rgba(255,255,255,0.06); border: none; background: rgba(255,255,255,0.06); max-height: 1px;")
+    deploy_layout.addWidget(deploy_sep)
+
+    # Advanced custom plugins toggle
+    dialog.custom_plugins_checkbox = create_checkbox_setting(
+        "I'm using custom plugins (Advanced)",
+        "custom_plugins_advanced",
+        False,
+        dialog,
+        "Bypasses plugin missing checks for game transfers and native downloads. Disables non-family archiving.",
+        show_description=False,
+    )
+    deploy_layout.addWidget(dialog.custom_plugins_checkbox)
+
+    layout.addWidget(deploy_card)
+
+    def _refresh_plugin_btn(btn: QPushButton, filename: str, display_name: str):
+        from utils.plugin_manager import (
+            get_plugin_status,
+            get_plugin_version,
+            is_plugin_check_bypassed,
+            get_manifest_plugin_info,
+        )
+        is_custom = is_plugin_check_bypassed()
+        meta = get_manifest_plugin_info(filename) or {}
+        is_req = meta.get("required", False)
+        is_def = meta.get("is_default", False) or meta.get("default", False)
+
+        tag = ""
+        if is_def:
+            tag = " (Default)"
+        elif is_req:
+            tag = " (Required)"
+
+        if is_custom:
+            btn.setEnabled(False)
+            btn.setText(f"{display_name}{tag}")
+            btn.setToolTip("Custom plugins option is enabled. Verification is bypassed.")
+            btn.setStyleSheet(STYLE_DISABLED)
+            btn.setProperty("plugin_state", "custom")
+            return
+
+        status = get_plugin_status(filename)
+        ver = get_plugin_version(filename) or meta.get("version", "")
+        ver_str = f" v{ver}" if ver else ""
+
+        if status == "up_to_date":
+            btn.setEnabled(True)
+            btn.setText(f"{display_name}{ver_str} (Up to date)")
+            btn.setToolTip(f"{filename} is installed and verified against manifest. Click to re-check.")
+            btn.setStyleSheet(STYLE_ACTIVE_GREEN)
+            btn.setProperty("plugin_state", "up_to_date")
+        elif status == "missing":
+            btn.setEnabled(True)
+            btn.setText(f"{display_name}{tag} (Missing)")
+            btn.setToolTip(f"{filename} is not installed. Click to download and install.")
+            btn.setStyleSheet(STYLE_ATTENTION_ORANGE)
+            btn.setProperty("plugin_state", "missing")
+        else:  # outdated
+            btn.setEnabled(True)
+            btn.setText(f"{display_name} (Update Available)")
+            btn.setToolTip(f"{filename} is outdated. Click to download and install the update.")
+            btn.setStyleSheet(STYLE_ATTENTION_ORANGE)
+            btn.setProperty("plugin_state", "outdated")
+
+    def _handle_plugin_click(btn: QPushButton, filename: str, display_name: str):
+        from PyQt6.QtWidgets import QApplication
+        from utils.plugin_manager import deploy_plugin, fetch_plugins_manifest
+
+        curr_state = btn.property("plugin_state")
+        if curr_state in ("missing", "outdated"):
+            # Update/install action
+            btn.setEnabled(False)
+            btn.setText(f"Updating {display_name}...")
+            btn.setStyleSheet(STYLE_DISABLED)
+            QApplication.processEvents()
+
+            ok, skipped, msg = deploy_plugin(filename, force_download=True)
+            _refresh_plugin_btn(btn, filename, display_name)
+        else:
+            # Check for update action
+            btn.setEnabled(False)
+            btn.setText("Checking...")
+            btn.setStyleSheet(STYLE_DISABLED)
+            QApplication.processEvents()
+
+            try:
+                fetch_plugins_manifest(force_refresh=True)
+            except Exception as e:
+                logger.debug(f"[at0mTab] Manifest refresh failed during check: {e}")
+
+            _refresh_plugin_btn(btn, filename, display_name)
+
+    def _refresh_all_buttons():
+        _refresh_plugin_btn(dialog.btn_spacebunny_plugin, "spacebunny.lua", "SpaceBunny")
+        _refresh_plugin_btn(dialog.btn_styx_plugin, "styx.lua", "Styx")
+        _refresh_plugin_btn(dialog.btn_lobster_plugin, "lobster.lua", "Lobster")
+        _refresh_plugin_btn(dialog.btn_katamari_plugin, "katamari.lua", "Katamari")
+        _refresh_plugin_btn(dialog.btn_hubcap_plugin, "hubcap.lua", "Hubcap")
+
+    dialog.btn_spacebunny_plugin.clicked.connect(
+        lambda: _handle_plugin_click(dialog.btn_spacebunny_plugin, "spacebunny.lua", "SpaceBunny")
+    )
+    dialog.btn_styx_plugin.clicked.connect(
+        lambda: _handle_plugin_click(dialog.btn_styx_plugin, "styx.lua", "Styx")
+    )
+    dialog.btn_lobster_plugin.clicked.connect(
+        lambda: _handle_plugin_click(dialog.btn_lobster_plugin, "lobster.lua", "Lobster")
+    )
+    dialog.btn_katamari_plugin.clicked.connect(
+        lambda: _handle_plugin_click(dialog.btn_katamari_plugin, "katamari.lua", "Katamari")
+    )
+    dialog.btn_hubcap_plugin.clicked.connect(
+        lambda: _handle_plugin_click(dialog.btn_hubcap_plugin, "hubcap.lua", "Hubcap")
+    )
+
+    def _on_custom_plugins_toggled(checked: bool):
+        dialog.settings.setValue("custom_plugins_advanced", checked)
+        dialog.settings.sync()
+        if checked:
+            ThemedMessageBox.warning(
+                dialog,
+                "Custom Plugins (Advanced)",
+                "Bypassing plugin presence verification enables native downloads and game transfers with custom or third-party Lua plugins.\n\n"
+                "Please note: ASSella cannot guarantee compatibility, functionality, or stability with third-party plugins!"
+            )
+        _refresh_all_buttons()
+
+    dialog.custom_plugins_checkbox.checkbox.toggled.connect(_on_custom_plugins_toggled)
+
+    # Initial populate
+    _refresh_all_buttons()
 
     def _update_subwidget_states(enabled: bool):
         if getattr(dialog, "at0m_disable_updates_checkbox", None):
@@ -424,7 +666,8 @@ def create_at0m_tab(dialog) -> QWidget:
         dialog.at0m_download_action_combo.setEnabled(enabled)
         dialog.at0m_start_mode_combo.setEnabled(enabled)
         dialog.at0m_dlc_action_combo.setEnabled(enabled)
-        p_card.setEnabled(enabled)
+        deploy_card.setEnabled(enabled)
+        atom_subtabs.setTabEnabled(1, enabled)
 
     def _on_enable_at0m_toggled(checked: bool):
         dialog.settings.setValue("enable_at0m", checked)
@@ -438,15 +681,21 @@ def create_at0m_tab(dialog) -> QWidget:
             from utils.yaml_config_manager import ensure_sls_plugin_config_sections
             ensure_sls_plugin_config_sections(cfg_path)
 
-        if hasattr(dialog, "update_plugins_tab_visibility"):
-            dialog.update_plugins_tab_visibility()
-
         _update_subwidget_states(checked)
 
     dialog.enable_at0m_checkbox.toggled.connect(_on_enable_at0m_toggled)
     _update_subwidget_states(dialog.enable_at0m_checkbox.isChecked())
 
     layout.addStretch()
+
+    # ── Subtab 2: Advanced (Plugins configuration) ──
+    from ui.dialogs.settings_tabs.plugins_tab import create_plugins_tab
+    advanced_tab = create_plugins_tab(dialog, add_to_dialog=False)
+
+    atom_subtabs.addTab(general_tab, "General")
+    atom_subtabs.addTab(advanced_tab, "Advanced")
+    main_layout.addWidget(atom_subtabs)
+
     dialog.tab_widget.addTab(tab, "at0-m")
     return tab
 

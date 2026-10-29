@@ -937,12 +937,11 @@ def refresh_steam_updates_control(dialog) -> None:
 
     if blocked:
         btn.setText("Enable Steam Updates")
-        if lbl is not None:
-            lbl.setText(f"Steam updates are blocked - {path} exists. Steam reads it at startup, so this applies on the next Steam start.")
     else:
         btn.setText("Disable Steam Updates")
-        if lbl is not None:
-            lbl.setText("Steam updates are allowed - no steam.cfg found. Steam reads it at startup, so this applies on the next Steam start.")
+
+    if lbl is not None:
+        lbl.setText("Steam need restart after changes.")
 
     btn.setToolTip(
         f"Toggles {path}\n"

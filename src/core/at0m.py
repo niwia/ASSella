@@ -397,7 +397,7 @@ class WudrmMRCFetcher:
         def _do_dex():
             return "manifestdex", self.fetch_manifestdex(manifest_id_str)
 
-        logger.info(f"[MRC/Race] Racing Wudrm vs ManifestDeX for manifest {manifest_id_str} (timeout={timeout}s)...")
+        logger.info(f"[MRC/Race] Racing ManifestDeX vs Wudrm for manifest {manifest_id_str} (timeout={timeout}s)...")
 
         # Deliberately NOT a `with` block. The old code returned from inside
         # one, and __exit__ runs shutdown(wait=True), which blocks until the
@@ -412,8 +412,8 @@ class WudrmMRCFetcher:
             max_workers=2, thread_name_prefix="mrc-race"
         )
         future_to_name = {
-            executor.submit(_do_wudrm): "wudrm",
             executor.submit(_do_dex): "manifestdex",
+            executor.submit(_do_wudrm): "wudrm",
         }
 
         def _release() -> None:

@@ -7,8 +7,10 @@ tab does not grow further; it is attached to it by ``create_components_card``.
 
 import logging
 import os
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -17,6 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from ui.dialogs.themed_message_box import ThemedMessageBox
+from utils.paths import Paths
 
 from utils.component_manager import (
     download_component,
@@ -103,6 +106,46 @@ def _accent(dialog) -> str:
         return "#a1c9fd"
 
 
+def _colored_svg_icon(path: Path, color: str, size: int = 15) -> QIcon:
+    """Render an SVG with currentColor replaced by the given color string."""
+    try:
+        from PyQt6.QtSvg import QSvgRenderer
+        from PyQt6.QtGui import QPainter, QPixmap
+        if not path.exists():
+            return QIcon()
+        svg_str = path.read_text(encoding="utf-8")
+        recolored = svg_str.replace("currentColor", color)
+        renderer = QSvgRenderer(recolored.encode("utf-8"))
+        if not renderer.isValid():
+            return QIcon()
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pixmap)
+        renderer.render(p)
+        p.end()
+        return QIcon(pixmap)
+    except Exception:
+        return QIcon()
+
+
+STYLE_DELETE_BTN = """
+    QPushButton {
+        background-color: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 6px;
+        padding: 4px;
+    }
+    QPushButton:hover {
+        background-color: rgba(255, 255, 255, 0.16);
+        border-color: rgba(255, 255, 255, 0.35);
+    }
+    QPushButton:disabled {
+        background-color: rgba(255, 255, 255, 0.03);
+        border-color: rgba(255, 255, 255, 0.08);
+    }
+"""
+
+
 def create_components_card(dialog) -> QWidget:
     """Build the 'Optional Components' card and attach it to ``dialog``."""
     ac = _accent(dialog)
@@ -144,28 +187,29 @@ def create_components_card(dialog) -> QWidget:
         row_layout.addWidget(bar)
 
         btn = QPushButton("Download")
-        btn.setFixedWidth(120)
+        btn.setFixedWidth(96)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(_btn_style(ac))
         btn.clicked.connect(lambda _c, k=key: _on_component_button(dialog, k))
         row_layout.addWidget(btn)
+
+        del_btn = QPushButton()
+        del_btn.setFixedSize(30, 28)
+        del_btn.setStyleSheet(STYLE_DELETE_BTN)
+        del_btn.clicked.connect(lambda _c, k=key: _on_delete_component(dialog, k))
+        row_layout.addWidget(del_btn)
 
         card_layout.addWidget(row)
         dialog._component_rows[key] = {
             "row": row,
             "status": status_label,
             "button": btn,
+            "delete_button": del_btn,
             "progress": bar,
         }
 
     # Paint initial local state immediately (no remote manifest fetch on dialog startup)
     _refresh_components(dialog, force=False, fetch_remote=False)
-
-    refresh_btn = QPushButton("Refresh")
-    refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    refresh_btn.setStyleSheet(_btn_style(ac, subtle=True))
-    refresh_btn.clicked.connect(lambda: _refresh_components(dialog, force=True, fetch_remote=True))
-    card_layout.addWidget(refresh_btn, 0, Qt.AlignmentFlag.AlignLeft)
 
     return card
 
@@ -214,6 +258,8 @@ def _describe(dialog, key: str) -> tuple:
     mb = (st.get("size_bytes") or 0) / 1048576
     size_txt = f"{mb:.1f} MB" if mb else "unknown size"
 
+    if not st.get("installed"):
+        return f"Not installed ({size_txt}).", "Download", True
     if st.get("current") is True:
         return f"Installed and up to date ({size_txt}).", "Update", False
     if st.get("current") is None:
@@ -221,9 +267,7 @@ def _describe(dialog, key: str) -> tuple:
             "Bundled with an older ASSella build; download to get the current version.",
             "Download", True,
         )
-    if st.get("installed"):
-        return f"Update available ({size_txt}).", "Update", True
-    return f"Not installed ({size_txt}).", "Download", True
+    return f"Update available ({size_txt}).", "Update", True
 
 
 def on_tools_tab_opened(dialog) -> None:
@@ -232,14 +276,32 @@ def on_tools_tab_opened(dialog) -> None:
         _refresh_components(dialog, force=False, fetch_remote=True)
 
 
+def _update_row_widgets(dialog, key: str, widgets: dict) -> None:
+    text, label, enabled = _describe(dialog, key)
+    widgets["status"].setText(text)
+    widgets["button"].setText(label)
+    widgets["button"].setEnabled(enabled and not _busy(dialog, key))
+    is_inst = is_component_available(key)
+    del_btn = widgets.get("delete_button")
+    if del_btn:
+        del_btn.setEnabled(is_inst and not _busy(dialog, key))
+        bin_path = Paths.icon("bin.svg")
+        label_name = COMPONENT_LABELS.get(key, key.capitalize())
+        if is_inst:
+            del_btn.setIcon(_colored_svg_icon(bin_path, "#EDEDED", 15))
+            del_btn.setToolTip(f"Delete {label_name} component")
+            del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            del_btn.setIcon(_colored_svg_icon(bin_path, "rgba(255, 255, 255, 0.25)", 15))
+            del_btn.setToolTip(f"{label_name} is not installed")
+            del_btn.setCursor(Qt.CursorShape.ArrowCursor)
+
+
 def _refresh_components(dialog, force: bool = False, fetch_remote: bool = True) -> None:
     """Re-read status for every row and update labels/buttons."""
     # Instantly paint current known state without blocking
     for key, widgets in dialog._component_rows.items():
-        text, label, enabled = _describe(dialog, key)
-        widgets["status"].setText(text)
-        widgets["button"].setText(label)
-        widgets["button"].setEnabled(enabled and not _busy(dialog, key))
+        _update_row_widgets(dialog, key, widgets)
 
     if fetch_remote and (force or getattr(dialog, "_component_manifest", None) is None):
         worker = getattr(dialog, "_manifest_worker", None)
@@ -252,10 +314,7 @@ def _refresh_components(dialog, force: bool = False, fetch_remote: bool = True) 
             try:
                 dialog._component_manifest = m
                 for k, w in dialog._component_rows.items():
-                    t, l, en = _describe(dialog, k)
-                    w["status"].setText(t)
-                    w["button"].setText(l)
-                    w["button"].setEnabled(en and not _busy(dialog, k))
+                    _update_row_widgets(dialog, k, w)
             except RuntimeError:
                 logger.debug("[Components] Manifest arrived after dialog closed")
 
@@ -266,6 +325,33 @@ def _refresh_components(dialog, force: bool = False, fetch_remote: bool = True) 
 def _busy(dialog, key: str) -> bool:
     worker = dialog._component_workers.get(key)
     return bool(worker and worker.isRunning())
+
+
+def _on_delete_component(dialog, key: str) -> None:
+    """Prompt user and cleanly remove an optional component from disk."""
+    if _busy(dialog, key):
+        return
+
+    label = COMPONENT_LABELS.get(key, key.capitalize())
+    reply = ThemedMessageBox.question(
+        dialog,
+        f"Delete {label}",
+        f"Are you sure you want to delete {label}?\n\n"
+        "This will cleanly remove the component files from disk. You can download it again at any time.",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.No,
+    )
+    if reply != ThemedMessageBox.StandardButton.Yes:
+        return
+
+    ok, msg = remove_component(key)
+    widgets = dialog._component_rows.get(key)
+    if widgets:
+        if ok:
+            widgets["status"].setText("Removed.")
+        else:
+            widgets["status"].setText(f"Failed to remove: {msg}")
+    _refresh_components(dialog, force=False, fetch_remote=False)
 
 
 def _on_component_button(dialog, key: str) -> None:

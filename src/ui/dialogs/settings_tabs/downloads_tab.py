@@ -270,9 +270,9 @@ def create_downloads_tab(dialog) -> QWidget:
     dialog.manifest_provider_combo = QComboBox()
     dialog.manifest_provider_combo.setMinimumWidth(260)
     dialog.manifest_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-    dialog.manifest_provider_combo.addItem("Auto (Race Wudrm & ManifestDeX)", "auto")
-    dialog.manifest_provider_combo.addItem("Wudrm (Primary)", "wudrm")
-    dialog.manifest_provider_combo.addItem("ManifestDeX", "manifestdex")
+    dialog.manifest_provider_combo.addItem("Auto (Race ManifestDeX & Wudrm)", "auto")
+    dialog.manifest_provider_combo.addItem("ManifestDeX (Primary)", "manifestdex")
+    dialog.manifest_provider_combo.addItem("Wudrm", "wudrm")
     dialog.manifest_provider_combo.addItem("SteamRun (Testing)", "steamrun")
     dialog.manifest_provider_combo.addItem("OpenSteamTool (Testing)", "opensteamtool")
     dialog.manifest_provider_combo.addItem("Hubcap Manifest (Direct API)", "hubcap")
@@ -290,12 +290,6 @@ def create_downloads_tab(dialog) -> QWidget:
 
     dialog.manifest_provider_combo.currentIndexChanged.connect(_on_provider_changed)
     mrc_row.addWidget(dialog.manifest_provider_combo)
-    mrc_row.addStretch()
-    mrc_layout.addLayout(mrc_row)
-
-    # Row 2: Dedicated testing row with ample room for status text
-    test_row = QHBoxLayout()
-    test_row.setSpacing(10)
 
     test_btn = QPushButton("Test Provider")
     test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -319,12 +313,14 @@ def create_downloads_tab(dialog) -> QWidget:
             border-color: rgba(255, 255, 255, 0.08);
         }}
     """)
-    test_row.addWidget(test_btn)
+    mrc_row.addWidget(test_btn)
 
     test_status_lbl = QLabel("")
     test_status_lbl.setStyleSheet("font-size: 8.5pt; font-weight: 500;")
-    test_row.addWidget(test_status_lbl)
-    test_row.addStretch()
+    mrc_row.addWidget(test_status_lbl)
+
+    mrc_row.addStretch()
+    mrc_layout.addLayout(mrc_row)
 
     def _on_test_clicked():
         provider = dialog.manifest_provider_combo.currentData() or "auto"
@@ -361,7 +357,6 @@ def create_downloads_tab(dialog) -> QWidget:
         worker.error.connect(_on_test_error)
 
     test_btn.clicked.connect(_on_test_clicked)
-    mrc_layout.addLayout(test_row)
 
     gen_layout.addWidget(mrc_card)
     gen_layout.addSpacing(38)

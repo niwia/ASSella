@@ -427,12 +427,21 @@ def is_html_or_blocked_payload(resp: Optional[requests.Response]) -> bool:
 # Gateway Health Check API (for UI Buttons)
 # --------------------------
 
+def _health_test_headers() -> Dict[str, str]:
+    """Return standard headers for health probes, ensuring X-Assella-Token is attached."""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    tok = get_assella_proxy_token()
+    if tok:
+        headers["X-Assella-Token"] = tok
+    return headers
+
+
 def test_gateway_direct() -> Tuple[bool, str, int]:
     """Tests Direct HTTPS gateway. Returns (success, display_status, latency_ms)."""
     t0 = time.time()
     try:
         url = "https://hubcapmanifest.com/api/v1/health"
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+        resp = requests.get(url, headers=_health_test_headers(), timeout=6)
         resp.raise_for_status()
         if is_html_or_blocked_payload(resp):
             return False, "ERR: Blocked", int((time.time() - t0) * 1000)
@@ -459,7 +468,7 @@ def test_gateway_doh() -> Tuple[bool, str, int]:
         socket.getaddrinfo = doh_getaddrinfo
         try:
             url = "https://hubcapmanifest.com/api/v1/health"
-            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+            resp = requests.get(url, headers=_health_test_headers(), timeout=6)
             resp.raise_for_status()
             latency = int((time.time() - t0) * 1000)
             return True, f"OK ({latency}ms)", latency
@@ -479,7 +488,7 @@ def test_gateway_tor() -> Tuple[bool, str, int]:
     try:
         proxies = TorManager.get_tor_proxies()
         url = "https://hubcapmanifest.com/api/v1/health"
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=15)
+        resp = requests.get(url, headers=_health_test_headers(), proxies=proxies, timeout=15)
         resp.raise_for_status()
         latency = int((time.time() - t0) * 1000)
         return True, f"OK ({latency}ms)", latency
@@ -493,10 +502,7 @@ def test_gateway_wirecutter(custom_url: Optional[str] = None) -> Tuple[bool, str
     t0 = time.time()
     try:
         worker_base = (custom_url.strip().rstrip("/") if custom_url and custom_url.strip() else get_wirecutter_endpoint())
-        wc_test_headers = {"User-Agent": "Mozilla/5.0"}
-        wc_token = get_assella_proxy_token()
-        if wc_token:
-            wc_test_headers["X-Assella-Token"] = wc_token
+        wc_test_headers = _health_test_headers()
 
         if worker_base.startswith("socks5://") or worker_base.startswith("socks4://"):
             proxies = {"http": worker_base, "https": worker_base}
@@ -538,7 +544,7 @@ def test_gateway_proxy(proxy_url: Optional[str] = None) -> Tuple[bool, str, int]
     t0 = time.time()
     try:
         proxies = {"http": p, "https": p}
-        resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=8)
+        resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers=_health_test_headers(), proxies=proxies, timeout=8)
         resp.raise_for_status()
         latency = int((time.time() - t0) * 1000)
         return True, f"OK ({latency}ms)", latency

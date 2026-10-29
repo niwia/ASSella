@@ -3,7 +3,7 @@ import os
 import sys
 from typing import Any, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QSize
 from PyQt6.QtGui import QColor, QFont, QMovie
 from PyQt6.QtWidgets import (
     QDialog,
@@ -327,7 +327,6 @@ class SettingsDialog(QDialog):
 
         self._create_nav_layout()
         self._setup_tabs()
-        self._create_dialog_buttons()
 
     def _create_nav_layout(self) -> None:
         """Build the left-sidebar + stacked-page layout."""
@@ -340,13 +339,13 @@ class SettingsDialog(QDialog):
 
         # Left nav sidebar
         self._nav_list = QListWidget()
-        self._nav_list.setFixedWidth(148)
+        self._nav_list.setFixedWidth(160)
         self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._nav_font = QFont()
-        self._nav_font.setPointSize(12)
+        self._nav_font.setPointSize(13)
         self._nav_font.setWeight(QFont.Weight.DemiBold)
         self._nav_list.setFont(self._nav_font)
 
@@ -355,14 +354,15 @@ class SettingsDialog(QDialog):
                 background-color: rgba(0, 0, 0, 0.28);
                 border: none;
                 border-right: 1px solid rgba(255, 255, 255, 0.08);
-                padding: 6px 0px;
+                padding: 0px;
                 outline: none;
             }}
             QListWidget::item {{
                 color: #EDEDED;
-                padding: 8px 14px;
+                padding-left: 14px;
+                padding-right: 14px;
                 border: none;
-                font-size: 12pt;
+                font-size: 13pt;
                 font-weight: 600;
                 letter-spacing: 0.2px;
                 border-radius: 0px;
@@ -372,9 +372,9 @@ class SettingsDialog(QDialog):
                 color: #FFFFFF;
             }}
             QListWidget::item:selected {{
-                background-color: rgba(255, 255, 255, 0.05);
+                background-color: rgba(255, 255, 255, 0.06);
                 color: {ac};
-                border-left: 3.5px solid {ac};
+                border-left: 4px solid {ac};
                 padding-left: 12px;
                 font-weight: 700;
             }}
@@ -388,9 +388,10 @@ class SettingsDialog(QDialog):
         content_row.addWidget(self._page_stack)
 
         class _TabShim:
-            def __init__(self, nav_list, stack):
+            def __init__(self, nav_list, stack, dialog):
                 self._nav = nav_list
                 self._stack = stack
+                self._dialog = dialog
                 self._tabs: dict[str, int] = {}
                 self.currentChanged = nav_list.currentRowChanged
 
@@ -401,6 +402,7 @@ class SettingsDialog(QDialog):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                 self._nav.addItem(item)
                 self._tabs[label] = idx
+                self._dialog._update_nav_item_sizes()
                 return idx
 
             def count(self):
@@ -439,6 +441,7 @@ class SettingsDialog(QDialog):
                     for label, i in self._tabs.items()
                     if i != index
                 }
+                self._dialog._update_nav_item_sizes()
 
             def setTabVisible(self, index: int, visible: bool) -> None:
                 """Show or hide a tab by index in the navigation list."""
@@ -451,17 +454,17 @@ class SettingsDialog(QDialog):
                             if cand and not cand.isHidden():
                                 self.setCurrentIndex(i)
                                 break
+                    self._dialog._update_nav_item_sizes()
 
             def isTabVisible(self, index: int) -> bool:
                 """Return whether the tab at index is visible."""
                 item = self._nav.item(index)
                 return not item.isHidden() if item else False
 
-        self.tab_widget = _TabShim(self._nav_list, self._page_stack)
+        self.tab_widget = _TabShim(self._nav_list, self._page_stack, self)
 
         # Wire navigation clicks
         self._nav_list.currentRowChanged.connect(self._page_stack.setCurrentIndex)
-        self._nav_list.currentRowChanged.connect(lambda _idx: self._position_floating_buttons())
 
         content_widget = QWidget()
         content_widget.setLayout(content_row)
@@ -503,13 +506,9 @@ class SettingsDialog(QDialog):
         tabs.create_morrenus_tab(self)
         create_sls_tab(self)
         tabs.create_at0m_tab(self)
-        tabs.create_plugins_tab(self)
         tabs.create_health_tab(self)
         tabs.create_tools_tab(self)
         tabs.create_style_tab(self)
-
-        # Update initial visibility of Plugins tab (only visible when AT0-M is enabled)
-        self.update_plugins_tab_visibility()
 
         # Modular Settings tab unlocked via Konami cheat code
         if self.settings.value("konami_settings_unlocked", False, type=bool):
@@ -563,14 +562,8 @@ class SettingsDialog(QDialog):
             pass
 
     def update_plugins_tab_visibility(self) -> None:
-        """Dynamically show or hide the Plugins tab based on AT0-M mode."""
-        is_atom = self.settings.value("enable_at0m", self.settings.value("enable_vapor", True, type=bool), type=bool)
-        if hasattr(self, "enable_at0m_checkbox") and self.enable_at0m_checkbox is not None:
-            is_atom = self.enable_at0m_checkbox.isChecked()
-        for i in range(self.tab_widget.count()):
-            if self.tab_widget.tabText(i).lower() == "plugins":
-                self.tab_widget.setTabVisible(i, is_atom)
-                break
+        """Retained for backward compatibility; plugins are now inside at0-m."""
+        pass
 
     def _on_tab_changed(self, index: int) -> None:
         """Handle tab change events."""
@@ -589,97 +582,42 @@ class SettingsDialog(QDialog):
 
         elif tab_name == "LuaTools":
             if hasattr(self, "update_luatools_ui_status"):
-                # The page is on screen now, so it is the right moment to spend
-                # one network refresh proving the stored token still works.
                 self.update_luatools_ui_status(validate=True)
 
-    def _create_dialog_buttons(self) -> None:
-        """Create floating Ok/Cancel buttons with shadow in bottom right."""
-        self.button_container = QWidget(self)
-        self.button_container.setObjectName("FloatingSettingsButtons")
-        self.button_container.setStyleSheet("background: transparent;")
-        btn_layout = QHBoxLayout(self.button_container)
-        btn_layout.setContentsMargins(0, 0, 0, 0)
-        btn_layout.setSpacing(8)
+    def _update_nav_item_sizes(self) -> None:
+        """Dynamically distribute height across visible navigation items to fill sidebar cleanly."""
+        if not hasattr(self, "_nav_list") or not self._nav_list:
+            return
+        visible_items = [
+            self._nav_list.item(i)
+            for i in range(self._nav_list.count())
+            if not self._nav_list.item(i).isHidden()
+        ]
+        if not visible_items:
+            return
+        total_height = self._nav_list.viewport().height()
+        if total_height <= 0:
+            total_height = self._nav_list.height()
+        if total_height <= 0:
+            return
 
-        self.btn_ok = QPushButton("✓  OK", self.button_container)
-        self.btn_ok.setObjectName("SettingsOkButton")
-        self.btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_ok.setFixedSize(88, 32)
-        self.btn_ok.setStyleSheet(f"""
-            QPushButton#SettingsOkButton {{
-                background-color: {self.accent_color};
-                color: #000000;
-                font-weight: bold;
-                font-size: 9.5pt;
-                border-radius: 14px;
-                border: none;
-            }}
-            QPushButton#SettingsOkButton:hover {{
-                background-color: #FFFFFF;
-                color: #000000;
-            }}
-            QPushButton#SettingsOkButton:pressed {{
-                background-color: rgba(255, 255, 255, 0.85);
-            }}
-        """)
-        shadow_ok = QGraphicsDropShadowEffect(self.btn_ok)
-        shadow_ok.setBlurRadius(16)
-        shadow_ok.setColor(QColor(0, 0, 0, 190))
-        shadow_ok.setOffset(0, 3)
-        self.btn_ok.setGraphicsEffect(shadow_ok)
-        self.btn_ok.clicked.connect(self.accept)
+        count = len(visible_items)
+        base_h = max(42, total_height // count)
+        remainder = total_height - (base_h * count) if base_h * count < total_height else 0
 
-        self.btn_cancel = QPushButton("✕  Cancel", self.button_container)
-        self.btn_cancel.setObjectName("SettingsCancelButton")
-        self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_cancel.setFixedSize(88, 32)
-        self.btn_cancel.setStyleSheet(f"""
-            QPushButton#SettingsCancelButton {{
-                background-color: {self.accent_color};
-                color: #000000;
-                font-weight: bold;
-                font-size: 9.5pt;
-                border-radius: 14px;
-                border: none;
-            }}
-            QPushButton#SettingsCancelButton:hover {{
-                background-color: #FFFFFF;
-                color: #000000;
-            }}
-            QPushButton#SettingsCancelButton:pressed {{
-                background-color: rgba(255, 255, 255, 0.85);
-            }}
-        """)
-        shadow_cancel = QGraphicsDropShadowEffect(self.btn_cancel)
-        shadow_cancel.setBlurRadius(16)
-        shadow_cancel.setColor(QColor(0, 0, 0, 190))
-        shadow_cancel.setOffset(0, 3)
-        self.btn_cancel.setGraphicsEffect(shadow_cancel)
-        self.btn_cancel.clicked.connect(self.reject)
-
-        btn_layout.addWidget(self.btn_ok)
-        btn_layout.addWidget(self.btn_cancel)
-
-        self.button_container.adjustSize()
-        self._position_floating_buttons()
-
-    def _position_floating_buttons(self) -> None:
-        """Position floating buttons over the bottom right corner of the dialog."""
-        if hasattr(self, "button_container") and self.button_container:
-            self.button_container.adjustSize()
-            x = self.width() - self.button_container.width() - 16
-            y = self.height() - self.button_container.height() - 12
-            self.button_container.move(x, y)
-            self.button_container.raise_()
+        w = self._nav_list.width()
+        for i, item in enumerate(visible_items):
+            extra = 1 if i < remainder else 0
+            item.setSizeHint(QSize(w, base_h + extra))
+            item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._position_floating_buttons()
+        self._update_nav_item_sizes()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self._position_floating_buttons()
+        QTimer.singleShot(0, self._update_nav_item_sizes)
 
     # ── Signal Handlers & Delegation Slots ────────────────────────────────
     @pyqtSlot(object)
@@ -867,25 +805,17 @@ class SettingsDialog(QDialog):
             except RuntimeError:
                 pass
 
-    def closeEvent(self, event) -> None:
-        """Ensure no worker thread outlives this dialog."""
-        self._stop_background_workers()
-        super().closeEvent(event)
-
-    def accept(self) -> None:
-        """Save all settings and close."""
+    def _save_all_settings(self) -> None:
+        """Save all dialog settings to QSettings and disk."""
         try:
             if hasattr(self, "service_poll_timer") and self.service_poll_timer:
                 self.service_poll_timer.stop()
-            self._stop_background_workers()
             self._save_general_settings()
             self._save_download_settings()
             self._save_vapor_settings()
-            if not self._save_style_settings():
-                return
+            self._save_style_settings()
             self.settings.sync()
-            logger.info("All settings saved.")
-            super().accept()
+            logger.info("All settings saved on close.")
         except Exception as e:
             import traceback
             logger.error(f"Error saving settings: {e}\n{traceback.format_exc()}")
@@ -894,6 +824,18 @@ class SettingsDialog(QDialog):
                 "Error Saving Settings",
                 f"An error occurred while saving settings:\n{e}\n\nSee log file for details."
             )
+
+    def closeEvent(self, event) -> None:
+        """Save settings and ensure no worker thread outlives this dialog."""
+        self._save_all_settings()
+        self._stop_background_workers()
+        super().closeEvent(event)
+
+    def accept(self) -> None:
+        """Save all settings and close."""
+        self._save_all_settings()
+        self._stop_background_workers()
+        super().accept()
 
     def reject(self) -> None:
         """Revert settings on cancel."""

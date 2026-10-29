@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -7,7 +8,7 @@ import threading
 import webbrowser
 
 from PyQt6.QtCore import Qt, QUrl, QMetaObject
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -157,10 +158,43 @@ def create_tools_tab(dialog) -> QWidget:
     log_row.addStretch()
     log_layout.addLayout(log_row)
 
-    _log_note = QLabel("Changes take effect immediately when you click OK.")
-    _log_note.setStyleSheet("color: #888888; font-size: 11px;")
-    _log_note.setWordWrap(True)
-    log_layout.addWidget(_log_note)
+    btn_row = QHBoxLayout()
+    btn_row.setContentsMargins(0, 4, 0, 0)
+    btn_row.setSpacing(10)
+
+    btn_style = f"""
+        QPushButton {{
+            background-color: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 6px;
+            color: #FFFFFF;
+            padding: 6px 14px;
+            font-size: 9pt;
+            font-weight: 600;
+        }}
+        QPushButton:hover {{
+            background-color: rgba(255, 255, 255, 0.16);
+            border-color: {dialog.accent_color};
+        }}
+    """
+
+    open_log_btn = QPushButton("Open Log Folder")
+    open_log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    open_log_btn.setStyleSheet(btn_style)
+    from utils.logger import open_log_directory
+    open_log_btn.clicked.connect(lambda: open_log_directory())
+    open_log_btn.setToolTip("Open the ASSella log directory in your file manager.")
+    btn_row.addWidget(open_log_btn)
+
+    export_logs_btn = QPushButton("Export Diagnostic Logs")
+    export_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    export_logs_btn.setStyleSheet(btn_style)
+    export_logs_btn.clicked.connect(lambda: export_diagnostic_logs(dialog))
+    export_logs_btn.setToolTip("Bundle recent ASSella logs, SLSsteam logs, config.yaml, and plugin details into a ZIP archive.")
+    btn_row.addWidget(export_logs_btn)
+
+    btn_row.addStretch()
+    log_layout.addLayout(btn_row)
     layout.addWidget(log_card)
 
     # Optional components (Goldberg / Steamless / SLScheevo) are no longer
@@ -170,6 +204,101 @@ def create_tools_tab(dialog) -> QWidget:
     layout.addStretch()
     dialog.tab_widget.addTab(tab, "Tools")
     return tab
+
+
+def export_diagnostic_logs(dialog) -> None:
+    """Bundle latest 2 ASSella logs, SLSsteam log, config.yaml, and plugins info into a ZIP archive."""
+    import zipfile
+    from datetime import datetime
+    from utils.logger import get_base_path
+    from utils.slssteam_integration import _get_sls_log_path
+    from utils.yaml_config_manager import get_user_config_path
+    from managers.katamari_config_manager import get_sls_config_dir, get_katamari_conf_path
+
+    # Flush current log handlers so in-memory logs are committed to disk
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    default_name = f"assella_diagnostics_{timestamp_str}.zip"
+    default_dest = str(Path.home() / default_name)
+
+    save_path, _ = ThemedFileDialog.getSaveFileName(
+        dialog,
+        "Export Diagnostic Logs",
+        default_dest,
+        "Zip Archives (*.zip)",
+    )
+    if not save_path:
+        return
+
+    collected = []
+    try:
+        with zipfile.ZipFile(save_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            # 1. Latest 2 ASSella logs
+            log_dir = get_base_path() / "logs"
+            if log_dir.is_dir():
+                log_files = sorted(
+                    log_dir.glob("assella_*.log"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                for log_file in log_files[:2]:
+                    zf.write(log_file, arcname=f"logs/{log_file.name}")
+                    collected.append(f"ASSella Log: {log_file.name}")
+
+            # 2. SLSsteam log from user home
+            try:
+                sls_log = _get_sls_log_path()
+                if sls_log.exists():
+                    zf.write(sls_log, arcname=f"slssteam/{sls_log.name}")
+                    collected.append(f"SLSsteam Log: {sls_log.name}")
+            except Exception as e:
+                logger.debug(f"[ExportDiag] Error collecting SLS log: {e}")
+
+            # 3. SLSsteam config.yaml
+            try:
+                cfg_path = get_user_config_path()
+                if cfg_path.exists():
+                    zf.write(cfg_path, arcname="slssteam/config.yaml")
+                    collected.append("SLSsteam Config: config.yaml")
+            except Exception as e:
+                logger.debug(f"[ExportDiag] Error collecting config.yaml: {e}")
+
+            # 4. Plugins directory listing & katamari.conf.lua
+            try:
+                sls_cfg_dir = get_sls_config_dir()
+                plugins_dir = sls_cfg_dir / "plugins"
+                plugin_names = []
+                if plugins_dir.is_dir():
+                    plugin_names = sorted([p.name for p in plugins_dir.iterdir() if not p.name.startswith(".")])
+                plugins_listing = "SLSsteam Installed Plugins:\n" + ("\n".join(plugin_names) if plugin_names else "(none)") + "\n"
+                zf.writestr("slssteam/plugins_list.txt", plugins_listing)
+                collected.append(f"Plugins List ({len(plugin_names)} items)")
+
+                kat_conf = get_katamari_conf_path()
+                if kat_conf.exists():
+                    zf.write(kat_conf, arcname="slssteam/katamari.conf.lua")
+                    collected.append("Katamari Config: katamari.conf.lua")
+            except Exception as e:
+                logger.debug(f"[ExportDiag] Error collecting plugins list: {e}")
+
+        summary = "\n• " + "\n• ".join(collected) if collected else "No files collected."
+        ThemedMessageBox.information(
+            dialog,
+            "Diagnostics Exported",
+            f"Diagnostic log archive successfully saved to:\n{save_path}\n\nContents:{summary}",
+        )
+    except Exception as e:
+        logger.error(f"Failed to export diagnostic archive: {e}", exc_info=True)
+        ThemedMessageBox.critical(
+            dialog,
+            "Export Failed",
+            f"Failed to create diagnostic archive:\n{e}",
+        )
 
 
 def add_tool_button(layout: QVBoxLayout, text: str, tooltip: str, slot) -> QPushButton:
