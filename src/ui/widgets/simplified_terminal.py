@@ -323,8 +323,11 @@ class SimplifiedTerminalWidget(QWidget):
 
         download_games = []
         at0m_key_ready = []
+        has_key_pending = False
         for g in games:
             status = g.get("update_status")
+            if status == "key_pending":
+                has_key_pending = True
             if status != "update_available":
                 continue
             appid = str(g.get("appid", ""))
@@ -463,7 +466,8 @@ class SimplifiedTerminalWidget(QWidget):
             self.panel_mid.update()
 
         if total_downloads + total_key_syncs == 0:
-            lbl = QLabel("All games up-to-date")
+            msg = "No actionable updates (keys pending on Hubcap)" if has_key_pending else "All games up-to-date"
+            lbl = QLabel(msg)
             lbl.setStyleSheet("color: #888888; font-style: italic; font-size: 9pt;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.updates_scroll_layout.addWidget(lbl)
