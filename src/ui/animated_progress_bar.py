@@ -206,13 +206,13 @@ class AnimatedProgressBar(QProgressBar):
         val = self.value()
 
         if min_v == max_v:
-            # Indeterminate wave
-            wave_w = max(40.0, w * 0.25)
-            cycle = (self._phase * 3.0) % (w + wave_w * 2)
-            prog_x = cycle - wave_w
-            fill_rect = QRectF(max(0.0, prog_x), 0, min(w, wave_w), h)
+            # Indeterminate sliding capsule
+            seg = max(w * 0.3, h * 3)
+            phase = (self._phase * 0.015) % 1.0
+            eased = (1.0 - math.cos(phase * math.pi * 2.0)) / 2.0
+            x = -seg + (w + seg) * eased
             fill_path = QPainterPath()
-            fill_path.addRoundedRect(fill_rect, r, r)
+            fill_path.addRoundedRect(QRectF(x, 0, seg, h), r, r)
             painter.fillPath(fill_path, accent_color)
             return
 
@@ -298,9 +298,19 @@ class AnimatedProgressBar(QProgressBar):
             painter.fillPath(clip_path, pumpkin_grad)
         else:
             grad = QLinearGradient(0, 0, prog_w, 0)
-            grad.setColorAt(0.0, accent_color.darker(115))
-            grad.setColorAt(1.0, accent_color)
+            grad.setColorAt(0.0, accent_color)
+            grad.setColorAt(1.0, accent_color.lighter(118))
             painter.fillPath(clip_path, grad)
+
+            # Soft shimmer sweep across fill
+            shimmer_phase = (self._phase * 0.02) % 1.0
+            band = max(40.0, prog_w * 0.35)
+            sx = -band + (prog_w + band) * shimmer_phase
+            shimmer = QLinearGradient(sx, 0, sx + band, 0)
+            shimmer.setColorAt(0.0, QColor(255, 255, 255, 0))
+            shimmer.setColorAt(0.5, QColor(255, 255, 255, 55))
+            shimmer.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.fillRect(QRectF(sx, 0, band, h), shimmer)
 
         painter.restore()
 

@@ -44,7 +44,15 @@ class PixelGridWidget(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(33)  # ~30 FPS
         self._timer.timeout.connect(self.update)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.start_time = time.time()
         self._timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._timer.stop()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -93,7 +101,14 @@ class SpinnerRingWidget(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(16)  # ~60 FPS
         self._timer.timeout.connect(self._rotate)
+
+    def showEvent(self, event):
+        super().showEvent(event)
         self._timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._timer.stop()
 
     def set_color(self, hex_color: str):
         self.accent_color = QColor(hex_color)
@@ -199,7 +214,15 @@ class PixelLoadingOverlay(QWidget):
         self._clock_timer = QTimer(self)
         self._clock_timer.setInterval(100)
         self._clock_timer.timeout.connect(self._update_clock)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._start_time = time.time()
         self._clock_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._clock_timer.stop()
 
     def set_label(self, text: str):
         self.status_lbl.setText(text)
@@ -220,7 +243,6 @@ class PixelLoadingOverlay(QWidget):
         self._center_on_parent()
         self.show()
         self.raise_()
-        QApplication.processEvents()
 
     def _center_on_parent(self):
         parent = self.parentWidget()

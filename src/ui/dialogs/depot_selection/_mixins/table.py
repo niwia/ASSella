@@ -94,8 +94,10 @@ class DepotTableMixin:
 
         if not d_data.get("osarch"):
             try:
-                from managers.db_manager import DatabaseManager
-                e_map = DatabaseManager().get_depot_enrichments(str(self.app_id))
+                e_map = getattr(self, "_enrichment_cache", None)
+                if e_map is None:
+                    from managers.db_manager import DatabaseManager
+                    e_map = DatabaseManager().get_depot_enrichments(str(self.app_id))
                 if str(d_id) in e_map and e_map[str(d_id)].get("osarch"):
                     d_data["osarch"] = e_map[str(d_id)]["osarch"]
             except Exception:
@@ -114,6 +116,13 @@ class DepotTableMixin:
         return cfg_text
 
     def _populate_table(self):
+        self.table_widget.setUpdatesEnabled(False)
+        try:
+            self._do_populate_table()
+        finally:
+            self.table_widget.setUpdatesEnabled(True)
+
+    def _do_populate_table(self):
         self.table_widget.setSortingEnabled(False)
         self.table_widget.clearContents()
 

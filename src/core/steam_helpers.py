@@ -301,16 +301,27 @@ def get_installed_steam_client_version(force_refresh: bool = False) -> Optional[
     return None
 
 
+_cached_steam_install = None
+
+
 def find_steam_install():
+    global _cached_steam_install
+    if _cached_steam_install and os.path.isdir(_cached_steam_install):
+        return _cached_steam_install
+
     if sys.platform == "win32":
-        return _find_steam_windows()
+        path = _find_steam_windows()
     elif sys.platform == "linux":
-        return _find_steam_linux()
+        path = _find_steam_linux()
     else:
         logger.warning(
             f"Automatic Steam path detection is not supported on this OS: {sys.platform}."
         )
         return None
+
+    if path:
+        _cached_steam_install = path
+    return path
 
 
 def _find_steam_windows():
@@ -403,20 +414,40 @@ def parse_library_folders(vdf_path):
     return library_paths
 
 
+_cached_steam_libraries = None
+_cached_libraries_vdf_mtime = None
+
+
 def get_steam_libraries():
+    global _cached_steam_libraries, _cached_libraries_vdf_mtime
     steam_path = find_steam_install()
     if not steam_path:
         return []
 
-    all_libraries = {os.path.realpath(steam_path)}
     vdf_path = os.path.join(steam_path, "steamapps", "libraryfolders.vdf")
-
+    vdf_mtime = None
     if os.path.exists(vdf_path):
+        try:
+            vdf_mtime = os.path.getmtime(vdf_path)
+        except OSError:
+            pass
+
+    if (
+        _cached_steam_libraries is not None
+        and vdf_mtime is not None
+        and vdf_mtime == _cached_libraries_vdf_mtime
+    ):
+        return list(_cached_steam_libraries)
+
+    all_libraries = {os.path.realpath(steam_path)}
+    if vdf_path and os.path.exists(vdf_path):
         additional_libraries = parse_library_folders(vdf_path)
         for lib_path in additional_libraries:
             all_libraries.add(os.path.realpath(lib_path))
 
-    return list(all_libraries)
+    _cached_steam_libraries = list(all_libraries)
+    _cached_libraries_vdf_mtime = vdf_mtime
+    return list(_cached_steam_libraries)
 
 
 def is_steam_running():

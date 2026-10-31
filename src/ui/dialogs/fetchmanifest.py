@@ -1763,6 +1763,8 @@ class FetchManifestDialog(QDialog):
                 except Exception as _rec_err:
                     logger.warning(f"[FetchManifest] Error checking voices recommendation: {_rec_err}")
 
+                from PyQt6.QtWidgets import QApplication
+                QApplication.processEvents()
                 depot_res = depot_dialog.exec()
                 if not depot_res:
                     logger.info("User cancelled depot selection.")

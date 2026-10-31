@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, Union, List
+from typing import Optional, Dict, Any, Union, List, Tuple
 
 # Handle optional compression dependency
 try:
@@ -125,6 +125,8 @@ class DatabaseManager:
         self.conn = self._connect_db()
         self.cctx = zstd.ZstdCompressor(level=3) if zstd else None
         self.dctx = zstd.ZstdDecompressor() if zstd else None
+        self._app_info_cache: Dict[Tuple[str, bool], Dict[str, Any]] = {}
+        self._depot_enrichments_cache: Dict[str, Dict[str, dict]] = {}
 
         self.is_initialized = True
         logger.info(f"DatabaseManager initialized at: {self.db_path}")
@@ -188,6 +190,11 @@ class DatabaseManager:
         if not self.conn or not self.dctx:
             return None
 
+        cache_key = (str(appid), bool(bypass_expiration))
+        with self._conn_lock:
+            if cache_key in self._app_info_cache:
+                return self._app_info_cache[cache_key]
+
         try:
             with self._conn_lock:
                 cur = self.conn.cursor()
@@ -226,7 +233,7 @@ class DatabaseManager:
 
                 full_header_url = _construct_full_url(row["header_path"])
 
-                return {
+                result = {
                     "appid": appid,
                     "name": row["name"],
                     "installdir": row["installdir"],
@@ -240,6 +247,8 @@ class DatabaseManager:
                     "dlcs_expanded": dlcs_expanded,
                     "source": "database",
                 }
+                self._app_info_cache[cache_key] = result
+                return result
 
         except Exception as e:
             logger.error(f"DB Read Error {appid}: {e}")
@@ -263,6 +272,8 @@ class DatabaseManager:
 
         try:
             with self._conn_lock:
+                self._app_info_cache.pop((str(appid), True), None)
+                self._app_info_cache.pop((str(appid), False), None)
                 header_raw = data.get("header_url")
                 header_path = (
                     _normalize_header_path(appid, header_raw) if header_raw else None
@@ -472,6 +483,7 @@ class DatabaseManager:
             return
         try:
             with self._conn_lock:
+                self._depot_enrichments_cache.pop(str(appid), None)
                 cur = self.conn.cursor()
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS depot_enrichments (
@@ -534,6 +546,10 @@ class DatabaseManager:
         """Returns cached depot enrichments for an appid, or empty dict if none."""
         if not self.conn:
             return {}
+        aid = str(appid)
+        with self._conn_lock:
+            if aid in self._depot_enrichments_cache:
+                return self._depot_enrichments_cache[aid]
         try:
             with self._conn_lock:
                 cur = self.conn.cursor()
@@ -564,7 +580,7 @@ class DatabaseManager:
                     SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate
                     FROM depot_enrichments
                     WHERE appid = ?
-                """, (str(appid),))
+                """, (aid,))
                 rows = cur.fetchall()
                 results = {}
                 for r in rows:
@@ -579,6 +595,7 @@ class DatabaseManager:
                         "osarch": r[7] if len(r) > 7 else None,
                         "releasestate": r[8] if len(r) > 8 and r[8] else "released",
                     }
+                self._depot_enrichments_cache[aid] = results
                 return results
         except Exception as e:
             logger.debug(f"[DBManager] Failed to read depot enrichments for {appid}: {e}")

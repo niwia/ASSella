@@ -95,21 +95,10 @@ class ThemedProgressDialog(QDialog):
         self.label.setStyleSheet("color: rgba(255, 255, 255, 0.90); font-size: 9pt;")
         body_lay.addWidget(self.label)
 
-        self.progress_bar = QProgressBar(self)
+        from ui.widgets.accent_progress_bar import AccentProgressBar
+        self.progress_bar = AccentProgressBar(self, accent=self.accent_color)
         self.progress_bar.setRange(minimum, maximum)
         self.progress_bar.setFixedHeight(8)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: rgba(255, 255, 255, 0.08);
-                border: none;
-                border-radius: 4px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {self.accent_color};
-                border-radius: 4px;
-            }}
-        """)
         body_lay.addWidget(self.progress_bar)
 
         # Button layout
