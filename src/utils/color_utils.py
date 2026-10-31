@@ -70,7 +70,6 @@ def flush_color_cache() -> None:
     global _DIRTY
     if not _DIRTY:
         return
-    _DIRTY = False
     try:
         cache_path = _get_color_cache_file()
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +90,7 @@ def flush_color_cache() -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp_file, cache_path)
+        _DIRTY = False
     except Exception as e:
         logger.debug(f"Could not flush thumbnail color cache to disk: {e}")
 
