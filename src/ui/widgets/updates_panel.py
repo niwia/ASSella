@@ -122,6 +122,7 @@ class UpdateItemWidget(QFrame):
         self.name = name
         self.accent_color = accent_color
         self.pixmap = None
+        self._scaled_pixmap = None
         self.badge = None
         self.action_btn = None
 
@@ -132,6 +133,18 @@ class UpdateItemWidget(QFrame):
         if cache_path.exists():
             from PyQt6.QtGui import QPixmap
             self.pixmap = QPixmap(str(cache_path))
+        elif appid and appid not in ("0", "N/A", "unknown"):
+            def _on_img_fetched(data):
+                if data:
+                    from PyQt6.QtGui import QPixmap
+                    pm = QPixmap()
+                    if pm.loadFromData(data) and not pm.isNull():
+                        self.pixmap = pm
+                        self._scaled_pixmap = None
+                        self.update()
+            self._img_fetcher = ImageFetcher(appid)
+            self._img_fetcher.finished.connect(_on_img_fetched)
+            self._img_fetcher.start()
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 2, 12, 2)
@@ -229,7 +242,7 @@ class UpdateItemWidget(QFrame):
             self.update()
 
     def paintEvent(self, event):
-        from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen
+        from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen, QPixmap
         from PyQt6.QtCore import QRect
         
         painter = QPainter(self)
@@ -247,22 +260,32 @@ class UpdateItemWidget(QFrame):
         painter.drawRect(rect)
         
         if self.pixmap and not self.pixmap.isNull():
-            # Calculate aspect ratio scaling to fill the right section
             img_h = rect.height()
-            img_w = int(img_h * (self.pixmap.width() / self.pixmap.height()))
+            img_w = int(img_h * (self.pixmap.width() / max(self.pixmap.height(), 1)))
             target_rect = QRect(rect.width() - img_w, 0, img_w, rect.height())
-            
-            # Draw the image
-            painter.drawPixmap(target_rect, self.pixmap)
-            
-            # Smooth transition from solid background color to transparent specifically over the image's left side
-            fade_w = min(img_w, 80)
-            gradient = QLinearGradient(rect.width() - img_w, 0, rect.width() - img_w + fade_w, 0)
-            gradient.setColorAt(0.0, bg_color)
-            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 0))
-            
-            painter.setBrush(QBrush(gradient))
-            painter.drawRect(rect)
+
+            if self._scaled_pixmap is None or self._scaled_pixmap.size() != target_rect.size():
+                scaled = self.pixmap.scaled(
+                    target_rect.size(),
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                faded = QPixmap(scaled.size())
+                faded.fill(Qt.GlobalColor.transparent)
+                p = QPainter(faded)
+                p.drawPixmap(0, 0, scaled)
+                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+
+                fade_w = min(int(scaled.width() * 0.5), 70)
+                alpha_grad = QLinearGradient(0.0, 0.0, float(fade_w), 0.0)
+                alpha_grad.setColorAt(0.0, QColor(0, 0, 0, 0))
+                alpha_grad.setColorAt(0.3, QColor(0, 0, 0, 80))
+                alpha_grad.setColorAt(1.0, QColor(0, 0, 0, 255))
+                p.fillRect(0, 0, fade_w, scaled.height(), alpha_grad)
+                p.end()
+                self._scaled_pixmap = faded
+
+            painter.drawPixmap(target_rect, self._scaled_pixmap)
             
         painter.setClipping(False)
         if self.underMouse():

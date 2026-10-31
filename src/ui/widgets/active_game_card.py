@@ -198,7 +198,7 @@ class ActiveGameCard(QFrame):
                 )
 
     def paintEvent(self, event):
-        from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen
+        from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen, QPixmap
         from PyQt6.QtCore import QRect
 
         painter = QPainter(self)
@@ -227,22 +227,34 @@ class ActiveGameCard(QFrame):
             target_rect = QRect(rect.width() - img_w, 0, img_w, rect.height())
 
             if self._scaled_pixmap is None or self._scaled_pixmap.size() != target_rect.size():
-                self._scaled_pixmap = self.pixmap.scaled(
+                scaled = self.pixmap.scaled(
                     target_rect.size(),
                     Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                     Qt.TransformationMode.SmoothTransformation,
                 )
+                faded = QPixmap(scaled.size())
+                faded.fill(Qt.GlobalColor.transparent)
+                p = QPainter(faded)
+                p.drawPixmap(0, 0, scaled)
+                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+
+                fade_w = min(int(scaled.width() * 0.45), 140)
+                alpha_grad = QLinearGradient(0, 0, fade_w, 0)
+                alpha_grad.setColorAt(0.0, QColor(0, 0, 0, 0))
+                alpha_grad.setColorAt(0.25, QColor(0, 0, 0, 90))
+                alpha_grad.setColorAt(1.0, QColor(0, 0, 0, 255))
+                p.fillRect(0, 0, fade_w, scaled.height(), alpha_grad)
+                p.end()
+                self._scaled_pixmap = faded
 
             painter.drawPixmap(target_rect, self._scaled_pixmap)
 
-            # Gradient scrim overlay across the image
-            gradient = QLinearGradient(rect.width() - img_w, 0, rect.width(), 0)
-            gradient.setColorAt(0.0, bg_color)
-            gradient.setColorAt(0.45, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 215))
-            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 50))
-
-            painter.setBrush(QBrush(gradient))
-            painter.drawRect(rect)
+            # Subtle darkening scrim strictly within the image section
+            scrim = QLinearGradient(float(target_rect.left()), 0.0, float(target_rect.right()), 0.0)
+            scrim.setColorAt(0.0, QColor(0, 0, 0, 0))
+            scrim.setColorAt(0.5, QColor(0, 0, 0, 60))
+            scrim.setColorAt(1.0, QColor(0, 0, 0, 140))
+            painter.fillRect(target_rect, scrim)
 
         painter.setClipping(False)
         border_col = QColor(255, 255, 255, 15) if bg_color.lightness() < 128 else QColor(0, 0, 0, 20)
