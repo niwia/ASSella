@@ -269,6 +269,16 @@ def create_style_tab(dialog) -> QWidget:
     )
     disp_layout.addWidget(dialog.simplify_denuvo_status_checkbox)
 
+    dialog.adaptive_theming_checkbox = create_checkbox_setting(
+        "Adapt Dialog Theme to Game Artwork",
+        "enable_adaptive_game_theming",
+        False,
+        dialog,
+        "Dynamically tints depot selection and game details screens using the game's thumbnail color.",
+        show_description=False,
+    )
+    disp_layout.addWidget(dialog.adaptive_theming_checkbox)
+
     layout.addWidget(disp_card)
     layout.addStretch(1)
 
@@ -477,6 +487,9 @@ def save_style_settings(dialog) -> bool:
 
     origins = dialog.remember_origins_checkbox.isChecked()
     dialog.settings.setValue("remember_origins", origins)
+
+    if hasattr(dialog, "adaptive_theming_checkbox") and dialog.adaptive_theming_checkbox is not None:
+        dialog.settings.setValue("enable_adaptive_game_theming", dialog.adaptive_theming_checkbox.isChecked())
 
     if hasattr(dialog, "simplify_denuvo_status_checkbox") and dialog.simplify_denuvo_status_checkbox is not None:
         simplify = dialog.simplify_denuvo_status_checkbox.isChecked()

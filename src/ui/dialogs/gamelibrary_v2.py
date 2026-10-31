@@ -176,10 +176,13 @@ class GameDetailsDialogV2(QDialog):
         self._user_theme_accent = getattr(parent, "accent_color", "#a1c9fd")
         self.background_color = getattr(parent, "background_color", "#111318")
 
-        from utils.color_utils import get_cached_thumbnail_color
-        cached_col = get_cached_thumbnail_color(str(self.appid))
-        if cached_col and cached_col.isValid():
-            self.accent_color = cached_col.name()
+        if self.settings.value("enable_adaptive_game_theming", False, type=bool):
+            from utils.color_utils import get_cached_thumbnail_color
+            cached_col = get_cached_thumbnail_color(str(self.appid))
+            if cached_col and cached_col.isValid():
+                self.accent_color = cached_col.name()
+            else:
+                self.accent_color = self._user_theme_accent
         else:
             self.accent_color = self._user_theme_accent
 
@@ -250,6 +253,8 @@ class GameDetailsDialogV2(QDialog):
         )
 
     def _apply_dynamic_accent(self, color: QColor) -> None:
+        if not self.settings.value("enable_adaptive_game_theming", False, type=bool):
+            return
         if not color or not isinstance(color, QColor) or not color.isValid():
             return
         new_hex = color.name()

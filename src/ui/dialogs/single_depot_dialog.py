@@ -102,6 +102,10 @@ class SingleDepotSelectionDialog(QDialog):
 
         # Check for cached thumbnail color to apply on first paint immediately
         try:
+            from utils.settings import get_settings
+            s = getattr(self, "_settings", None) or get_settings()
+            if not s.value("enable_adaptive_game_theming", False, type=bool):
+                raise ValueError("Adaptive game theming disabled")
             from utils.color_utils import get_cached_thumbnail_color
             cached_col = get_cached_thumbnail_color(str(self.app_id))
             if cached_col and cached_col.isValid():
@@ -247,9 +251,10 @@ class SingleDepotSelectionDialog(QDialog):
 
             def _copy_appid_single():
                 from PyQt6.QtWidgets import QApplication, QToolTip
+                from PyQt6.QtCore import QRect
                 QApplication.clipboard().setText(aid_str)
                 pos = self.appid_btn.mapToGlobal(self.appid_btn.rect().bottomLeft())
-                QToolTip.showText(pos, f"✓ Copied AppID: {aid_str}", self.appid_btn, msecDisplayTime=2000)
+                QToolTip.showText(pos, f"✓ Copied AppID: {aid_str}", self.appid_btn, QRect(), 2000)
 
             self.appid_btn.clicked.connect(_copy_appid_single)
             title_hlayout.addWidget(self.appid_btn)
@@ -1142,6 +1147,10 @@ class SingleDepotSelectionDialog(QDialog):
 
     def _apply_dynamic_theme(self, color: QColor) -> None:
         """Dynamically adapt ambient color, titlebar, checkbox and action button styling."""
+        from utils.settings import get_settings
+        s = getattr(self, "_settings", None) or get_settings()
+        if not s.value("enable_adaptive_game_theming", False, type=bool):
+            return
         if not color or not isinstance(color, QColor) or not color.isValid():
             return
         self._ambient_color = color

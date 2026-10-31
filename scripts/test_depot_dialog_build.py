@@ -357,6 +357,8 @@ def main() -> int:
     check(initial_accent in dlg.table_widget.styleSheet().lower(),
           "Table widget retains initial accent color")
 
+    from utils.settings import get_settings
+    get_settings().setValue("enable_adaptive_game_theming", True)
     test_color = QColor(60, 120, 240)
     dlg._apply_dynamic_theme(test_color)
     check(dlg._ambient_color == test_color,

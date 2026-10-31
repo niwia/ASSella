@@ -66,6 +66,9 @@ class BuildUIMixin:
             self.accent_color = "#C06C84"
 
         try:
+            s = getattr(self, "_settings", None) or get_settings()
+            if not s.value("enable_adaptive_game_theming", False, type=bool):
+                raise ValueError("Adaptive game theming disabled")
             from utils.color_utils import get_cached_thumbnail_color
             app_id = getattr(self, "app_id", None) or getattr(self, "_current_app_id", None)
             cached_col = get_cached_thumbnail_color(str(app_id)) if app_id else None
@@ -702,6 +705,10 @@ class BuildUIMixin:
 
     def _apply_dynamic_theme(self, color: QColor) -> None:
         """Dynamically adapt ambient color, titlebar, table indicators and action buttons."""
+        from utils.settings import get_settings
+        s = getattr(self, "_settings", None) or get_settings()
+        if not s.value("enable_adaptive_game_theming", False, type=bool):
+            return
         if not color or not isinstance(color, QColor) or not color.isValid():
             return
         self._ambient_color = color
