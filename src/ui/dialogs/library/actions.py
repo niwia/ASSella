@@ -2205,6 +2205,7 @@ class LibraryActionsMixin:
 
     def _show_depot_selection_dialog(self, filepath: str, game_data: dict) -> None:
         from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+        from utils.main_thread import post_to_main_thread
         name = game_data.get("game_name", "Game")
         progress = ThemedProgressDialog(f"Loading depots for {name}...", None, 0, 0, self._dialog_parent())
         progress.show()
@@ -2224,7 +2225,7 @@ class LibraryActionsMixin:
             except Exception as e:
                 logger.error(f"[Library] Worker failed parsing zip: {e}", exc_info=True)
                 parsed_data = None
-            QTimer.singleShot(0, lambda: self._open_depot_dialog_after_parse(parsed_data, game_data, progress))
+            post_to_main_thread(self._open_depot_dialog_after_parse, parsed_data, game_data, progress)
 
         future = self.executor.submit(_parse_worker)
         future.add_done_callback(_on_parse_done)
