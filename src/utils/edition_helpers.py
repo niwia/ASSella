@@ -360,21 +360,6 @@ def resolve_edition_depots(
             except Exception as _e:
                 logger.debug(f"[EditionHelpers] Package contents batch query failed: {_e}")
 
-    # Complete depots = base depots + DLC depots for target platform
-    complete_depots = base_depots | dlc_depots
-    editions: List[Dict[str, Any]] = []
-
-    # Fetch store packages from Steam Store API via GetItems.
-    store_pkgs = fetch_store_packages(aid_str, timeout=6.0) if include_store else []
-    pkg_contents = {}
-    if store_pkgs:
-        pids = [int(p["packageid"]) for p in store_pkgs if p.get("packageid") and str(p.get("packageid")).isdigit()]
-        if pids:
-            try:
-                pkg_contents = fetch_package_contents_batch(pids, timeout=4.0)
-            except Exception as _e:
-                logger.debug(f"[EditionHelpers] Package contents batch query failed: {_e}")
-
     # A. Real store packages with exact depot mapping
     game_name = edition_catalog.get_app_name(aid_str) if store_pkgs else ""
     for pkg in store_pkgs:
