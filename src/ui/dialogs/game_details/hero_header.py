@@ -29,6 +29,10 @@ def load_hero_image(dialog) -> None:
         px.loadFromData(cached)
         if not px.isNull() and hasattr(dialog, "hero") and dialog.hero:
             dialog.hero.set_pixmap(px)
+            from utils.color_utils import extract_dominant_color
+            dom_col = extract_dominant_color(px, app_id=str(dialog.appid))
+            if dom_col and dom_col.isValid() and hasattr(dialog, "_apply_dynamic_accent"):
+                dialog._apply_dynamic_accent(dom_col)
         return
     if dialog.appid not in ("0", "N/A", "unknown") and ImageFetcher:
         url = ImageFetcher.get_header_image_url(dialog.appid)
@@ -40,6 +44,10 @@ def load_hero_image(dialog) -> None:
                 px.loadFromData(data)
                 if not px.isNull() and hasattr(dialog, "hero") and dialog.hero:
                     dialog.hero.set_pixmap(px)
+                    from utils.color_utils import extract_dominant_color
+                    dom_col = extract_dominant_color(px, app_id=str(dialog.appid))
+                    if dom_col and dom_col.isValid() and hasattr(dialog, "_apply_dynamic_accent"):
+                        dialog._apply_dynamic_accent(dom_col)
 
         fetcher.finished.connect(_done)
         fetcher.finished.connect(
@@ -118,10 +126,11 @@ def init_hero_v2(dialog, root) -> None:
         item_widget = QVBoxLayout()
         item_widget.setSpacing(2)
         lbl = QLabel(label_text)
-        lbl.setStyleSheet(f"color: {dialog.accent_color}; font-size: 8.5pt; background: transparent; font-weight: bold;")
+        theme_acc = getattr(dialog, "_user_theme_accent", dialog.accent_color)
+        lbl.setStyleSheet(f"color: {theme_acc}; font-size: 8.5pt; background: transparent; font-weight: bold;")
         val = QLabel(value_text)
         val.setStyleSheet(
-            f"color: {value_color or dialog.accent_color}; font-size: 9.5pt; font-weight: bold; background: transparent;"
+            f"color: {value_color or theme_acc}; font-size: 9.5pt; font-weight: bold; background: transparent;"
         )
         item_widget.addWidget(lbl)
         item_widget.addWidget(val)

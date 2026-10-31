@@ -107,8 +107,6 @@ class SingleDepotSelectionDialog(QDialog):
             if cached_col and cached_col.isValid():
                 self._ambient_color = cached_col
                 self.accent_color = cached_col.name()
-                if hasattr(self, "title_bar") and self.title_bar:
-                    self.title_bar.update_accent_color(cached_col)
         except Exception:
             pass
 
@@ -187,8 +185,6 @@ class SingleDepotSelectionDialog(QDialog):
             can_maximize=False,
             use_power_close=True,
         )
-        if getattr(self, "_ambient_color", None):
-            self.title_bar.update_accent_color(self._ambient_color)
         root_layout.addWidget(self.title_bar)
 
         content_widget = QWidget()
@@ -1150,8 +1146,6 @@ class SingleDepotSelectionDialog(QDialog):
             return
         self._ambient_color = color
         self.accent_color = color.name()
-        if hasattr(self, "title_bar") and self.title_bar:
-            self.title_bar.update_accent_color(color)
 
         if hasattr(self, "depot_checkbox") and self.depot_checkbox:
             self.depot_checkbox.setStyleSheet(f"""

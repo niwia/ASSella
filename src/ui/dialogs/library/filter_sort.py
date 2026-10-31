@@ -148,7 +148,7 @@ class LibraryFilterSortMixin:
             return
 
         # If list is not populated yet or currently refreshing, run full refresh instead
-        if getattr(self, "_refreshing", False) or (self.games_list.count() == 0 and not getattr(self, "_is_chunking", False)):
+        if getattr(self, "_refreshing", False) or (self.games_list.count() == 0 and not getattr(self, "_initial_refresh_done", False) and not getattr(self, "_is_chunking", False)):
             if not getattr(self, "_refreshing", False):
                 self._refresh_game_list()
             return
@@ -377,6 +377,7 @@ class LibraryFilterSortMixin:
         finally:
             self.games_list.setUpdatesEnabled(True)
 
+        self._initial_refresh_done = True
         self._refreshing = False
 
         if active_tab == TAB_STEAM and getattr(self, "_steam_scan_in_progress", False) and len(games) == 0:

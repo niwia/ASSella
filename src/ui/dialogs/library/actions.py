@@ -2204,11 +2204,43 @@ class LibraryActionsMixin:
             self.executor.submit(self._download_manifest_async, appid, game_data, branch)
 
     def _show_depot_selection_dialog(self, filepath: str, game_data: dict) -> None:
+        from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+        name = game_data.get("game_name", "Game")
+        progress = ThemedProgressDialog(f"Loading depots for {name}...", None, 0, 0, self._dialog_parent())
+        progress.show()
+
+        def _parse_worker():
+            try:
+                from core.tasks.process_zip_task import ProcessZipTask
+                zip_task = ProcessZipTask()
+                return zip_task.run(filepath)
+            except Exception as e:
+                logger.error(f"[Library] Error parsing zip {filepath}: {e}", exc_info=True)
+                return None
+
+        def _on_parse_done(future):
+            try:
+                parsed_data = future.result()
+            except Exception as e:
+                logger.error(f"[Library] Worker failed parsing zip: {e}", exc_info=True)
+                parsed_data = None
+            QTimer.singleShot(0, lambda: self._open_depot_dialog_after_parse(parsed_data, game_data, progress))
+
+        future = self.executor.submit(_parse_worker)
+        future.add_done_callback(_on_parse_done)
+
+    def _open_depot_dialog_after_parse(self, parsed_data: dict, game_data: dict, progress=None) -> None:
         try:
-            from core.tasks.process_zip_task import ProcessZipTask
-            zip_task = ProcessZipTask()
-            parsed_data = zip_task.run(filepath)
-            
+            if progress:
+                progress.close()
+        except Exception:
+            pass
+
+        if not parsed_data or not parsed_data.get("depots"):
+            ThemedMessageBox.warning(self, "No Depots Found", "Could not parse depots for this game.")
+            return
+
+        try:
             if parsed_data and parsed_data.get("depots"):
                 from ui.dialogs.depotselection import DepotSelectionDialog
                 depots = parsed_data.get("depots")

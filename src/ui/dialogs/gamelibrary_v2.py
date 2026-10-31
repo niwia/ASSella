@@ -9,6 +9,7 @@ from typing import List
 
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -172,8 +173,15 @@ class GameDetailsDialogV2(QDialog):
         self.luafix_check_finished.connect(self._on_luafix_check_finished)
         self.manifest_fetch_completed.connect(self._on_manifest_fetch_completed)
 
-        self.accent_color = getattr(parent, "accent_color", "#a1c9fd")
+        self._user_theme_accent = getattr(parent, "accent_color", "#a1c9fd")
         self.background_color = getattr(parent, "background_color", "#111318")
+
+        from utils.color_utils import get_cached_thumbnail_color
+        cached_col = get_cached_thumbnail_color(str(self.appid))
+        if cached_col and cached_col.isValid():
+            self.accent_color = cached_col.name()
+        else:
+            self.accent_color = self._user_theme_accent
 
         self.setWindowTitle(f"{game_data.get('game_name', 'Game')} — Details")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
@@ -240,6 +248,32 @@ class GameDetailsDialogV2(QDialog):
         self.setStyleSheet(
             build_stylesheet(self.background_color, self.accent_color)
         )
+
+    def _apply_dynamic_accent(self, color: QColor) -> None:
+        if not color or not isinstance(color, QColor) or not color.isValid():
+            return
+        new_hex = color.name()
+        if new_hex.lower() == (self.accent_color or "").lower():
+            return
+        self.accent_color = new_hex
+        self._apply_stylesheet()
+        if hasattr(self, "stacked"):
+            self._switch_tab(self.stacked.currentIndex())
+        if hasattr(self, "_tab_close_btn") and self._tab_close_btn:
+            self._tab_close_btn.setStyleSheet(f"""
+                QPushButton {{
+                    border: none; border-radius: 0;
+                    padding: 0 8px; font-size: 9pt;
+                    color: {ink_on(self.background_color, 0.6)};
+                }}
+                QPushButton:hover {{ color: {self.accent_color}; }}
+            """)
+        if hasattr(self, "folder_tile") and self.folder_tile:
+            self.folder_tile.update_state(False, self.accent_color, inactive_sub="Open directory")
+        if hasattr(self, "dlc_tile") and self.dlc_tile:
+            self.dlc_tile.update_state(self.dlc_tile.isChecked(), self.accent_color)
+        if hasattr(self, "pin_tile") and self.pin_tile:
+            self.pin_tile.update_state(self.pin_tile.isChecked(), self.accent_color)
 
     def _setup_ui(self):
         root = QVBoxLayout(self)
@@ -331,6 +365,7 @@ class GameDetailsDialogV2(QDialog):
         tab_bar_layout.addStretch()
 
         close_btn = QPushButton("✕ Close")
+        self._tab_close_btn = close_btn
         close_btn.setFlat(True)
         close_btn.setFixedHeight(30)
         close_btn.setStyleSheet(f"""

@@ -72,8 +72,6 @@ class BuildUIMixin:
             if cached_col and cached_col.isValid():
                 self._ambient_color = cached_col
                 self.accent_color = cached_col.name()
-                if hasattr(self, "title_bar") and self.title_bar:
-                    self.title_bar.update_accent_color(cached_col)
         except Exception:
             pass
 
@@ -708,8 +706,6 @@ class BuildUIMixin:
             return
         self._ambient_color = color
         self.accent_color = color.name()
-        if hasattr(self, "title_bar") and self.title_bar:
-            self.title_bar.update_accent_color(color)
 
         accent_r, accent_g, accent_b = self._resolve_accent_colors()
         if hasattr(self, "table_widget") and self.table_widget:
