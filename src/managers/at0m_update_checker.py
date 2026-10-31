@@ -522,6 +522,20 @@ class At0mUpdateChecker(QObject):
         if error or not ready:
             return None
 
+        # Verify against Hubcap manifest contents endpoint
+        try:
+            from core.morrenus_api import get_manifest_contents
+            contents = get_manifest_contents(appid_str)
+            if isinstance(contents, dict) and not contents.get("error"):
+                hubcap_depots = contents.get("depot_ids") or set()
+                if hubcap_depots:
+                    ready = [d for d in ready if d in hubcap_depots]
+        except Exception as e:
+            logger.debug(f"[At0mChecker] Could not verify Hubcap manifest contents during promote for {appid_str}: {e}")
+
+        if not ready:
+            return None
+
         app_name = cached.get("game_title") or f"App {appid_str}"
         depots_info = [
             {"id": str(d["id"]), "name": d.get("name") or f"Depot {d['id']}", "has_key": True}
@@ -685,6 +699,27 @@ class At0mUpdateChecker(QObject):
             }
             logger.info(f"[At0mChecker] {appid_str} cannot be determined ({index_error}).")
             return status, details
+
+        if ready_depots:
+            # Verify against Hubcap /contents: if Hubcap has a manifest bundle for this app,
+            # ensure the ready depots are actually included in the bundle contents.
+            try:
+                from core.morrenus_api import get_manifest_contents
+                contents = get_manifest_contents(appid_str)
+                if isinstance(contents, dict) and not contents.get("error"):
+                    hubcap_depots = contents.get("depot_ids") or set()
+                    if hubcap_depots:
+                        verified = [d for d in ready_depots if d in hubcap_depots]
+                        unverified = [d for d in ready_depots if d not in hubcap_depots]
+                        if unverified:
+                            logger.info(
+                                f"[At0mChecker] App {appid_str}: Depot(s) {unverified} have keys in index "
+                                f"but are missing from Hubcap manifest contents. Marking as awaiting."
+                            )
+                            awaiting_depots.extend(unverified)
+                            ready_depots = verified
+            except Exception as e:
+                logger.debug(f"[At0mChecker] Could not verify Hubcap manifest contents for {appid_str}: {e}")
 
         depots_info = self._depot_info(ready_depots, depots_dict, has_key=True)
         pending_info = self._depot_info(awaiting_depots, depots_dict, has_key=False)
