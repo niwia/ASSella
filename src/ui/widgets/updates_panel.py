@@ -135,6 +135,9 @@ class UpdateItemWidget(QFrame):
             self.pixmap = QPixmap(str(cache_path))
         elif appid and appid not in ("0", "N/A", "unknown"):
             def _on_img_fetched(data):
+                from PyQt6 import sip
+                if sip.isdeleted(self):
+                    return
                 if data:
                     from PyQt6.QtGui import QPixmap
                     pm = QPixmap()
@@ -142,7 +145,8 @@ class UpdateItemWidget(QFrame):
                         self.pixmap = pm
                         self._scaled_pixmap = None
                         self.update()
-            self._img_fetcher = ImageFetcher(appid)
+            url = ImageFetcher.get_header_image_url(appid)
+            self._img_fetcher = ImageFetcher(url, parent=self)
             self._img_fetcher.finished.connect(_on_img_fetched)
             self._img_fetcher.start()
 
