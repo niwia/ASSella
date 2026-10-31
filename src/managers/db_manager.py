@@ -444,6 +444,9 @@ class DatabaseManager:
             return
         try:
             with self._conn_lock:
+                self._app_info_cache.pop((str(appid), True), None)
+                self._app_info_cache.pop((str(appid), False), None)
+                self._depot_enrichments_cache.pop(str(appid), None)
                 cur = self.conn.cursor()
                 cur.execute("DELETE FROM apps WHERE appid = ?", (str(appid),))
                 self.conn.commit()
@@ -456,6 +459,8 @@ class DatabaseManager:
             return
         try:
             with self._conn_lock:
+                self._app_info_cache.clear()
+                self._depot_enrichments_cache.clear()
                 cur = self.conn.cursor()
                 cur.execute("UPDATE apps SET depots_json = NULL")
                 self.conn.commit()
