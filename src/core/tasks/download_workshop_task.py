@@ -263,6 +263,7 @@ class DownloadWorkshopTask(QObject):
                 best_key=_best_key,
                 default_start=_cap,
                 default_cap=_cap,
+                dest_path=dest_path,
             )
             # Keep the queued cap if the stored best predates it.
             current_n = min(_cap, max(current_n, 1))
@@ -372,7 +373,7 @@ class DownloadWorkshopTask(QObject):
                     if _auto_on:
                         try:
                             current_n = _auto_tune.record_result(
-                                get_settings(), _best_key, current_n, 0.0, _cap, _errors
+                                get_settings(), _best_key, current_n, 0.0, _cap, _errors, dest_path=dest_path
                             )
                             self.log(f"  → Auto-tune: trouble seen, next: {current_n} (cap {_cap}).")
                         except Exception as _at_err:
@@ -383,7 +384,7 @@ class DownloadWorkshopTask(QObject):
                 if _auto_on:
                     try:
                         current_n = _auto_tune.record_result(
-                            get_settings(), _best_key, current_n, 0.0, _cap, 1
+                            get_settings(), _best_key, current_n, 0.0, _cap, 1, dest_path=dest_path
                         )
                     except Exception as _at_err:
                         logger.debug(f"Auto-tune step failed: {_at_err}")
@@ -402,7 +403,7 @@ class DownloadWorkshopTask(QObject):
                     else:
                         _mbps = _delta / _elapsed
                         current_n = _auto_tune.record_result(
-                            get_settings(), _best_key, current_n, float(_mbps), _cap, _errors
+                            get_settings(), _best_key, current_n, float(_mbps), _cap, _errors, dest_path=dest_path
                         )
                         self.log(
                             f"  → Auto-tune: {_auto_tune.format_speed(_mbps)} "

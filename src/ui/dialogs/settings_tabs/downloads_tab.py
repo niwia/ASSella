@@ -259,23 +259,18 @@ def create_downloads_tab(dialog) -> QWidget:
     mrc_desc.setWordWrap(True)
     mrc_layout.addWidget(mrc_desc)
 
-    # Row 1: Provider selection with full text width
+    # Row 1: Provider selection with test button & latency
     mrc_row = QHBoxLayout()
     mrc_row.setSpacing(10)
 
-    mrc_lbl = QLabel("Provider:")
-    mrc_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500;")
-    mrc_row.addWidget(mrc_lbl)
-
     dialog.manifest_provider_combo = QComboBox()
-    dialog.manifest_provider_combo.setMinimumWidth(260)
     dialog.manifest_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
     dialog.manifest_provider_combo.addItem("Auto (Race ManifestDeX & Wudrm)", "auto")
-    dialog.manifest_provider_combo.addItem("ManifestDeX (Primary)", "manifestdex")
+    dialog.manifest_provider_combo.addItem("ManifestDeX", "manifestdex")
     dialog.manifest_provider_combo.addItem("Wudrm", "wudrm")
-    dialog.manifest_provider_combo.addItem("SteamRun (Testing)", "steamrun")
-    dialog.manifest_provider_combo.addItem("OpenSteamTool (Testing)", "opensteamtool")
-    dialog.manifest_provider_combo.addItem("Hubcap Manifest (Direct API)", "hubcap")
+    dialog.manifest_provider_combo.addItem("SteamRun", "steamrun")
+    dialog.manifest_provider_combo.addItem("OpenSteamTool*", "opensteamtool")
+    dialog.manifest_provider_combo.addItem("Hubcap Manifest", "hubcap")
 
     current_provider = dialog.settings.value("manifest_provider", "auto", type=str).lower()
     idx = dialog.manifest_provider_combo.findData(current_provider)
@@ -337,18 +332,18 @@ def create_downloads_tab(dialog) -> QWidget:
             if isinstance(result, tuple) and len(result) == 3:
                 ok, elapsed_ms, err_msg = result
                 if ok:
-                    test_status_lbl.setText(f"✓ Operational ({elapsed_ms} ms)")
+                    test_status_lbl.setText(f"{elapsed_ms} ms")
                     test_status_lbl.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: bold;")
                 else:
-                    test_status_lbl.setText(f"⚠ Failed ({err_msg or 'Error'})")
+                    test_status_lbl.setText(f"{err_msg or 'Failed'}")
                     test_status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt; font-weight: bold;")
             else:
-                test_status_lbl.setText("⚠ Failed (Error)")
+                test_status_lbl.setText("Failed")
                 test_status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt; font-weight: bold;")
 
         def _on_test_error(err_tuple):
             test_btn.setEnabled(True)
-            test_status_lbl.setText("⚠ Failed (Error)")
+            test_status_lbl.setText("Failed")
             test_status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt; font-weight: bold;")
 
         from ui.dialogs.settings_tabs.morrenus_tab import benchmark_mrc_provider

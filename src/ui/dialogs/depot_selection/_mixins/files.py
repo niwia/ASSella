@@ -23,7 +23,7 @@ class FileCustomisationMixin:
             if id_item is None or id_item.checkState() != Qt.CheckState.Checked:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander"):
+            if role in ("missing", "expander", "unreleased"):
                 continue
             return str(id_item.data(Qt.ItemDataRole.UserRole))
         return None

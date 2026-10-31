@@ -1555,7 +1555,7 @@ class FetchManifestDialog(QDialog):
             from utils.settings import get_settings
             from utils.paths import is_valid_download_directory
             settings = get_settings()
-            auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+            auto_skip = settings.value("auto_skip_single_choice", True, type=bool)
             default_dl = settings.value("default_download_directory", "", type=str)
             has_default_dl = bool(default_dl and is_valid_download_directory(default_dl))
             depots = parsed_data.get("depots")
@@ -1817,7 +1817,7 @@ class FetchManifestDialog(QDialog):
         if steam_integration:
             libraries = steam_helpers.get_steam_libraries()
             if libraries:
-                auto_skip_single_choice = self.settings.value("auto_skip_single_choice", False, type=bool) if self.settings else False
+                auto_skip_single_choice = self.settings.value("auto_skip_single_choice", True, type=bool) if self.settings else True
                 if auto_skip_single_choice and len(libraries) == 1:
                     dest_path = libraries[0]
                 else:

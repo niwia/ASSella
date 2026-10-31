@@ -287,7 +287,6 @@ class MainWindow(QMainWindow):
         # Trigger SLSsteam boot updates and config checks sequentially in a background thread
         import threading
         from utils.assfixer import run_boot_config_check
-        from ui.dialogs.settings_sls import run_boot_update_check
 
         # Warm up Byparr and verify SteamDB Cloudflare bypass in the background.
         # Deferred on purpose: Byparr spawns a headless Chromium, which costs
@@ -302,7 +301,6 @@ class MainWindow(QMainWindow):
                 check_slssteam_binary_is_latest()
             except Exception as e:
                 logger.debug(f"SLS binary boot version check skipped/failed: {e}")
-            run_boot_update_check()
             run_boot_config_check()
 
             # Non-blocking autodeploy for lobster.lua if AT0-M is enabled and archiving of redundant plugins
@@ -1508,10 +1506,10 @@ class MainWindow(QMainWindow):
         self.ui_state.fetch_dialog = None
 
 
-    def open_game_library(self) -> None:
+    def open_game_library(self, show_details_for_appid: Optional[str] = None) -> None:
         from ui.dialogs.gamelibrary import GameLibraryDialog
 
-        dialog = GameLibraryDialog(self)
+        dialog = GameLibraryDialog(self, show_details_for_appid=show_details_for_appid)
         dialog.exec()
 
     def open_status_dialog(self) -> None:
@@ -1625,7 +1623,6 @@ class MainWindow(QMainWindow):
         sls_paths = get_sls_paths()
         sls_detected = sls_paths.get("detected", False)
         version_file_exists = os.path.exists(sls_paths.get("version_file", "")) if sls_detected else False
-        ignore_updater = self.settings.value("ignore_slssteam_updater", False, type=bool) if self.settings else False
 
         # --- SLS Detection & API Integration ---
         from utils.slssteam_integration import (
@@ -2345,7 +2342,7 @@ class MainWindow(QMainWindow):
                                 pass
 
                         if should_prompt:
-                            auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+                            auto_skip = settings.value("auto_skip_single_choice", True, type=bool)
                             if auto_skip and len(depots) == 1:
                                 selected_depots = list(depots.keys())
                             else:

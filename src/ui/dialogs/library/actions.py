@@ -1308,7 +1308,7 @@ class LibraryActionsMixin:
 
         settings = get_settings()
         smart_active = settings.value("smart_depot_selection", True, type=bool)
-        auto_skip_setting = settings.value("auto_skip_single_choice", False, type=bool)
+        auto_skip_setting = settings.value("auto_skip_single_choice", True, type=bool)
         val = settings.value(f"depot_selection/{appid}", "", type=str)
 
         selected_depots: Optional[List[str]] = None
@@ -2323,22 +2323,37 @@ class LibraryActionsMixin:
         local_path_override: str = None, branch: str = None, is_verify: bool = False
     ) -> None:
         """Trigger background manifest download and show progress."""
+        def _reset_btn():
+            target_dlg = dialog or getattr(self, "_details_dialog", None)
+            if target_dlg and hasattr(target_dlg, "validate_btn"):
+                try:
+                    target_dlg.validate_btn.set_loading(False)
+                    target_dlg.validate_btn.setEnabled(True)
+                    from ui.dialogs.game_details.info_tab import update_validate_button
+                    update_validate_button(target_dlg)
+                except Exception as _e:
+                    logger.debug(f"Could not reset dialog button: {_e}")
+
         api_key = self.settings.value("morrenus_api_key", "", type=str).strip()
         if not api_key:
+            _reset_btn()
             ThemedMessageBox.critical(self, "API Key Missing", "Please configure your Hubcap API key in Settings before downloading updates/manifests.")
             return
         if not morrenus_api:
+            _reset_btn()
             ThemedMessageBox.critical(self, "Error", "API module missing.")
             return
 
         app_id = str(game_data.get("appid"))
         if app_id in ("0", "N/A", "unknown"):
+            _reset_btn()
             ThemedMessageBox.critical(self, "Error", f"Invalid AppID: {app_id}")
             return
 
         if not hasattr(self, "_active_fetches"):
             self._active_fetches = set()
         if app_id in self._active_fetches:
+            _reset_btn()
             logger.warning(f"Fetch/update already in progress for AppID {app_id}, ignoring duplicate request.")
             return
         self._active_fetches.add(app_id)
@@ -2412,12 +2427,14 @@ class LibraryActionsMixin:
                             else:
                                 if hasattr(self, "_active_fetches"):
                                     self._active_fetches.discard(app_id)
+                                _reset_btn()
                                 return
                         elif action == ACTION_LATEST:
                             logger.info(f"[LibraryActions] User chose latest manifest build for {name} ({app_id})")
                         else:
                             if hasattr(self, "_active_fetches"):
                                 self._active_fetches.discard(app_id)
+                            _reset_btn()
                             return
             except Exception as _rec_err:
                 logger.warning(f"[LibraryActions] Error checking voices recommendation: {_rec_err}")

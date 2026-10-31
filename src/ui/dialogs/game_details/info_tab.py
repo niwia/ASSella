@@ -977,27 +977,44 @@ def on_validate_btn_clicked(dialog) -> None:
         dialog.validate_btn.setText("Verifying...")
 
     is_verify_action = "Verify" in btn_text
-    if btn_text == "Refetch":
-        dialog.parent_window._fetch_game_manifest(
-            dialog.game_data, dialog, branch=sel_branch, download_only=True
-        )
-    else:
-        pinned = dialog.settings.value(f"pin_build/{dialog.appid}", False, type=bool) if dialog.settings else False
-        installed_bid = dialog.settings.value(f"installed_buildid/{dialog.appid}", "") if dialog.settings else ""
-        manifests_dir = get_base_path() / "hubcap_manifests"
-        specific_zip = manifests_dir / f"accela_fetch_{dialog.appid}_build_{installed_bid}.zip" if installed_bid else None
+    try:
+        if btn_text == "Refetch":
+            dialog.parent_window._fetch_game_manifest(
+                dialog.game_data, dialog, branch=sel_branch, download_only=True
+            )
+        else:
+            pinned = dialog.settings.value(f"pin_build/{dialog.appid}", False, type=bool) if dialog.settings else False
+            installed_bid = dialog.settings.value(f"installed_buildid/{dialog.appid}", "") if dialog.settings else ""
+            manifests_dir = get_base_path() / "hubcap_manifests"
+            specific_zip = manifests_dir / f"accela_fetch_{dialog.appid}_build_{installed_bid}.zip" if installed_bid else None
 
-        local_path_override = None
-        if pinned and specific_zip and specific_zip.exists():
-            local_path_override = str(specific_zip)
+            local_path_override = None
+            if pinned and specific_zip and specific_zip.exists():
+                local_path_override = str(specific_zip)
 
-        g_data = dict(dialog.game_data)
-        if is_verify_action:
-            g_data["_is_verify"] = True
+            g_data = dict(dialog.game_data)
+            if is_verify_action:
+                g_data["_is_verify"] = True
 
-        dialog.parent_window._fetch_game_manifest(
-            g_data, dialog, branch=sel_branch, download_only=False, local_path_override=local_path_override,
-            is_verify=is_verify_action
+            dialog.parent_window._fetch_game_manifest(
+                g_data, dialog, branch=sel_branch, download_only=False, local_path_override=local_path_override,
+                is_verify=is_verify_action
+            )
+    except Exception as e:
+        logger.error(f"Failed to start manifest fetch/action for AppID {dialog.appid}: {e}", exc_info=True)
+        dialog.validate_btn.set_loading(False)
+        dialog.validate_btn.setEnabled(True)
+        dialog.validate_btn.setText(btn_text)
+        dialog.validate_btn.setToolTip("")
+        try:
+            update_validate_button(dialog)
+        except Exception as update_err:
+            logger.debug(f"Could not refresh validate button state after fetch error: {update_err}")
+        from ui.dialogs.themed_message_box import ThemedMessageBox
+        ThemedMessageBox.critical(
+            dialog,
+            "Operation Failed",
+            f"Failed to start task: {e}"
         )
 
 

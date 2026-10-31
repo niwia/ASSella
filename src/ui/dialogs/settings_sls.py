@@ -2,13 +2,10 @@ import logging
 import os
 import sys
 import subprocess
-import urllib.request
 import json
-import tempfile
-import shutil
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -18,6 +15,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QComboBox,
     QPushButton,
+    QTabWidget,
 )
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
@@ -32,12 +30,6 @@ SLS_DIR = os.path.expanduser("~/.local/share/SLSsteam")
 SLS_VERSION_FILE = os.path.join(SLS_DIR, "version")
 SLS_SO_PATH = os.path.join(SLS_DIR, "SLSsteam.so")
 SLS_INJECT_PATH = os.path.join(SLS_DIR, "library-inject.so")
-
-# Global variables for caching boot check results
-latest_online_version: Optional[str] = None
-latest_download_url: Optional[str] = None
-update_checked: bool = False
-update_error: Optional[str] = None
 
 
 def get_sls_paths() -> dict:
@@ -129,93 +121,6 @@ def get_local_sls_version() -> str:
     return "Installed"
 
 
-def run_boot_update_check() -> None:
-    """Query GitHub releases API once during startup in a background thread."""
-    logger.info("SLSsteam updater is disabled, skipping boot update check.")
-    return
-
-
-class SlsUpdaterWorker(QThread):
-    """Background worker for update checking and downloading SLSsteam."""
-    check_completed = pyqtSignal(str, str)  # latest_tag, download_url
-    update_completed = pyqtSignal(str)     # latest_tag
-    error_occurred = pyqtSignal(str)        # error_msg
-
-    def __init__(self, action: str):
-        super().__init__()
-        self.action = action  # 'check' or 'update'
-
-    def run(self):
-        global latest_online_version, latest_download_url, update_checked, update_error
-        try:
-            # Query GitHub API
-            req = urllib.request.Request(
-                "https://api.github.com/repos/AceSLS/SLSsteam/releases/latest",
-                headers={"User-Agent": "ASSella-SLS-Updater"}
-            )
-            with urllib.request.urlopen(req, timeout=10) as response:
-                data = json.loads(response.read().decode("utf-8"))
-                latest_tag = data.get("tag_name")
-                
-                # Find SLSsteam-Any.7z
-                download_url = None
-                for asset in data.get("assets", []):
-                    if asset.get("name") == "SLSsteam-Any.7z":
-                        download_url = asset.get("browser_download_url")
-                        break
-
-            if not download_url:
-                raise ValueError("Could not find SLSsteam-Any.7z in the latest release assets.")
-
-            # Update cache
-            latest_online_version = latest_tag
-            latest_download_url = download_url
-            update_checked = True
-            update_error = None
-
-            if self.action == "check":
-                self.check_completed.emit(latest_tag, download_url)
-                return
-
-            if self.action == "update":
-                # Download the 7z archive
-                temp_dir = tempfile.mkdtemp()
-                archive_path = os.path.join(temp_dir, "SLSsteam-Any.7z")
-                
-                req_dl = urllib.request.Request(
-                    download_url,
-                    headers={"User-Agent": "ASSella-SLS-Updater"}
-                )
-                with urllib.request.urlopen(req_dl, timeout=30) as dl_resp, open(archive_path, "wb") as f_out:
-                    f_out.write(dl_resp.read())
-
-                # Extract the 7z archive
-                paths = get_sls_paths()
-                target_dir = paths["dir"]
-                os.makedirs(target_dir, exist_ok=True)
-                
-                # We know 7z is present on SteamOS.
-                # Extract directly to the target directory and overwrite (-y)
-                cmd = ["7z", "x", archive_path, f"-o{target_dir}", "-y"]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                # Clean up temp archive
-                shutil.rmtree(temp_dir, ignore_errors=True)
-
-                if result.returncode != 0:
-                    raise RuntimeError(f"7z extraction failed: {result.stderr or result.stdout}")
-
-                # Write version tag file
-                with open(paths["version_file"], "w", encoding="utf-8") as f_ver:
-                    f_ver.write(latest_tag)
-
-                self.update_completed.emit(latest_tag)
-
-        except Exception as e:
-            logger.error(f"SLSsteam updater worker failed: {e}", exc_info=True)
-            self.error_occurred.emit(str(e))
-
-
 def is_headcrab_installed() -> bool:
     """Detect whether Headcrab is installed using binaries and desktop shortcut."""
     dgsc_path = os.path.expanduser("~/.headcrab/dgsc")
@@ -262,6 +167,36 @@ def create_sls_tab(dialog) -> QWidget:
     layout = QVBoxLayout(tab)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)
+
+    sls_subtabs = QTabWidget()
+    sls_subtabs.setUsesScrollButtons(True)
+    bg_color = dialog.settings.value("background_color", "#141416")
+    sls_subtabs.setStyleSheet(f"""
+        QTabWidget::pane {{
+            border: none;
+        }}
+        QTabBar::tab {{
+            background: {bg_color};
+            color: rgba(255, 255, 255, 0.6);
+            padding: 6px 14px;
+            border: none;
+            font-weight: bold;
+            font-size: 9pt;
+        }}
+        QTabBar::tab:selected {{
+            color: {dialog.accent_color};
+            border-bottom: 2px solid {dialog.accent_color};
+        }}
+        QTabBar::tab:hover {{
+            color: #FFFFFF;
+        }}
+    """)
+
+    # ── Subtab 1: Settings ──
+    settings_widget = QWidget()
+    settings_layout = QVBoxLayout(settings_widget)
+    settings_layout.setContentsMargins(0, 8, 0, 0)
+    settings_layout.setSpacing(12)
 
     # 1. Integration Card
     int_card, int_layout = dialog._create_card_frame("SLS Settings")
@@ -362,6 +297,16 @@ def create_sls_tab(dialog) -> QWidget:
     dialog.all_games_online_checkbox.stateChanged.connect(_on_all_games_online_toggled)
     int_layout.addWidget(dialog.all_games_online_checkbox)
 
+    # Enable EOSProxy by default
+    dialog.enable_eosproxy_default_checkbox = create_checkbox_setting(
+        "Enable EOSProxy by default",
+        "enable_eosproxy_default",
+        False,
+        dialog,
+        "Automatically detect and apply the EOS proxy DLL to newly downloaded games that use Epic Online Services.",
+    )
+    int_layout.addWidget(dialog.enable_eosproxy_default_checkbox)
+
     # Cleaned up: only single SLSsteam API toggle is shown.
     # Steam restart is disabled by default / forced off.
     # SLS config management is ON by default and toggles in lockstep with SLSsteam API.
@@ -374,173 +319,17 @@ def create_sls_tab(dialog) -> QWidget:
 
     dialog.ignore_slssteam_updater_checkbox = None
 
-    layout.addWidget(int_card)
+    settings_layout.addWidget(int_card)
+    settings_layout.addStretch()
+    sls_subtabs.addTab(settings_widget, "Settings")
 
-    # 2. SLSsteam Updater Card (Linux only)
-    if sys.platform == "linux":
-        updater_card, updater_layout = dialog._create_card_frame("SLSsteam Updater")
+    # ── Subtab 2: Tickets ──
+    tickets_widget = QWidget()
+    tickets_layout = QVBoxLayout(tickets_widget)
+    tickets_layout.setContentsMargins(0, 8, 0, 0)
+    tickets_layout.setSpacing(12)
 
-        local_ver = get_local_sls_version()
-        local_ver_label = QLabel(f"Local Version: {local_ver}")
-        local_ver_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt;")
-        updater_layout.addWidget(local_ver_label)
-
-        online_ver_label = QLabel("Latest Online: Not Checked")
-        online_ver_label.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 9.5pt;")
-        updater_layout.addWidget(online_ver_label)
-
-        btn_layout = QHBoxLayout()
-        check_btn = QPushButton("Check for Updates")
-        update_btn = QPushButton("Update / Reinstall SLSsteam")
-        update_btn.setEnabled(False)
-
-        # Helper variables to reference inside slots
-        download_url_holder = [latest_download_url]
-
-        def on_check_success(latest_tag, download_url):
-            online_ver_label.setText(f"Latest Online: {latest_tag}")
-            download_url_holder[0] = download_url
-            
-            local_clean = local_ver_label.text().split("Local Version: ")[1].strip()
-            if local_clean in ("Not Installed", "Installed (Version Unknown)") or local_clean != latest_tag:
-                online_ver_label.setStyleSheet("color: #ffaa00;")
-                update_btn.setEnabled(True)
-                check_btn.setText("Update Available")
-            else:
-                online_ver_label.setStyleSheet("color: #44bb44;")
-                update_btn.setEnabled(True)  # Still allow reinstall
-                check_btn.setText("Up to Date")
-            check_btn.setEnabled(True)
-
-            # Refresh Main Window status label when manual check finishes
-            if dialog.main_window and hasattr(dialog.main_window, "refresh_system_status"):
-                dialog.main_window.refresh_system_status()
-
-        def on_update_success(latest_tag):
-            local_ver_label.setText(f"Local Version: {latest_tag}")
-            online_ver_label.setText(f"Latest Online: {latest_tag}")
-            online_ver_label.setStyleSheet("color: #44bb44;")
-            check_btn.setText("Up to Date")
-            check_btn.setEnabled(True)
-            update_btn.setEnabled(True)
-            update_btn.setText("Update / Reinstall SLSsteam")
-            
-            # Refresh main window display if active
-            if dialog.main_window and hasattr(dialog.main_window, "refresh_system_status"):
-                dialog.main_window.refresh_system_status()
-
-            ThemedMessageBox.information(
-                dialog,
-                "SLSsteam Updated",
-                f"Successfully installed and configured SLSsteam version {latest_tag}!"
-            )
-
-        def on_worker_error(error_msg):
-            check_btn.setEnabled(True)
-            check_btn.setText("Check for Updates")
-            update_btn.setEnabled(True)
-            update_btn.setText("Update / Reinstall SLSsteam")
-            ThemedMessageBox.critical(
-                dialog,
-                "SLSsteam Update Error",
-                f"Action failed:\n{error_msg}"
-            )
-
-        def trigger_check():
-            check_btn.setEnabled(False)
-            check_btn.setText("Checking...")
-            dialog.updater_worker = SlsUpdaterWorker("check")
-            dialog.updater_worker.check_completed.connect(on_check_success)
-            dialog.updater_worker.error_occurred.connect(on_worker_error)
-            dialog.updater_worker.start()
-
-        def trigger_update():
-            # If we don't have internet or no version checked online, let updater do check & update
-            check_btn.setEnabled(False)
-            update_btn.setEnabled(False)
-            update_btn.setText("Updating...")
-            dialog.updater_worker = SlsUpdaterWorker("update")
-            dialog.updater_worker.update_completed.connect(on_update_success)
-            dialog.updater_worker.error_occurred.connect(on_worker_error)
-            dialog.updater_worker.start()
-
-        def on_check_btn_clicked():
-            if "Update Available" in check_btn.text():
-                reply = ThemedMessageBox.question(
-                    dialog,
-                    "SLSsteam Update Available",
-                    "A newer SLSsteam build is available.\n\n"
-                    "Would you like to run the Headcrab setup script to update SLSsteam now?\n"
-                    "  curl -fsSL headcrab.pages.dev | bash\n\n"
-                    "ASSella will close while Headcrab runs in the terminal.",
-                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-                    ThemedMessageBox.StandardButton.Yes
-                )
-                if reply == ThemedMessageBox.StandardButton.Yes:
-                    run_headcrab_and_quit(dialog)
-                    return
-            trigger_check()
-
-        check_btn.clicked.connect(on_check_btn_clicked)
-        update_btn.clicked.connect(trigger_update)
-
-        btn_layout.addWidget(check_btn)
-        btn_layout.addWidget(update_btn)
-        
-        # ── Headcrab Button Placement ────────────────────────────────────
-        headcrab_btn = QPushButton()
-        def update_headcrab_btn_text():
-            if is_headcrab_installed():
-                headcrab_btn.setText("Rerun Headcrab Setup")
-                headcrab_btn.setToolTip("Re-run the Headcrab setup script (curl -fsSL headcrab.pages.dev | bash)")
-            else:
-                headcrab_btn.setText("Install Headcrab")
-                headcrab_btn.setToolTip("Run the Headcrab setup script (curl -fsSL headcrab.pages.dev | bash)")
-
-        update_headcrab_btn_text()
-        headcrab_btn.clicked.connect(lambda: run_headcrab(dialog, update_headcrab_btn_text))
-        btn_layout.addWidget(headcrab_btn)
-
-        updater_layout.addLayout(btn_layout)
-
-        # Smart version prompt: if the local installation is missing a version tracking file
-        # but exists on the system, suggest installing to create the register file.
-        if local_ver == "Installed (Version Unknown)":
-            hint_label = QLabel(
-                "A local SLSsteam installation was detected, but its version is unknown. "
-                "You can click 'Update / Reinstall SLSsteam' to install the latest build and register it."
-            )
-            hint_label.setWordWrap(True)
-            hint_label.setStyleSheet("color: #ffaa00; font-size: 11px;")
-            updater_layout.addWidget(hint_label)
-            update_btn.setEnabled(True)
-        elif local_ver == "Not Installed":
-            hint_label = QLabel(
-                "SLSsteam is not detected in your user directories. "
-                "Click 'Update / Reinstall' to download and configure SLSsteam automatically."
-            )
-            hint_label.setWordWrap(True)
-            hint_label.setStyleSheet("color: #cc4444; font-size: 11px;")
-            updater_layout.addWidget(hint_label)
-            update_btn.setEnabled(True)
-
-        # Use pre-checked boot version if available
-        if update_checked and latest_online_version:
-            online_ver_label.setText(f"Latest Online: {latest_online_version}")
-            local_clean = local_ver.strip()
-            if local_clean in ("Not Installed", "Installed (Version Unknown)") or local_clean != latest_online_version:
-                online_ver_label.setStyleSheet("color: #ffaa00;")
-                update_btn.setEnabled(True)
-                check_btn.setText("Update Available")
-            else:
-                online_ver_label.setStyleSheet("color: #44bb44;")
-                update_btn.setEnabled(True)
-                check_btn.setText("Up to Date")
-        elif update_error:
-            online_ver_label.setText(f"Latest Online: Error ({update_error[:30]}...)")
-            online_ver_label.setStyleSheet("color: #cc4444;")
-
-    # 4. Generate & Share Tickets Card
+    # 2. Generate & Share Tickets Card
     ticket_card, ticket_layout = dialog._create_card_frame("Generate & Share Tickets")
     ticket_layout.setSpacing(8)
 
@@ -657,8 +446,10 @@ def create_sls_tab(dialog) -> QWidget:
     batch_btn.clicked.connect(lambda _c=False: _do_export_all())
     ticket_layout.addWidget(batch_btn)
 
-    layout.addWidget(ticket_card)
+    tickets_layout.addWidget(ticket_card)
+    tickets_layout.addStretch()
+    sls_subtabs.addTab(tickets_widget, "Tickets")
 
-    layout.addStretch()
+    layout.addWidget(sls_subtabs)
     dialog.tab_widget.addTab(tab, "SLS")
     return tab

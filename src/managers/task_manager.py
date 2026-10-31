@@ -377,7 +377,7 @@ class TaskManager(
 
         from utils.paths import is_valid_download_directory
         auto_skip_single_choice = self.settings.value(
-            "auto_skip_single_choice", False, type=bool
+            "auto_skip_single_choice", True, type=bool
         )
         default_dl = self.settings.value("default_download_directory", "", type=str)
         has_default_dl = bool(default_dl and is_valid_download_directory(default_dl))
@@ -584,7 +584,7 @@ class TaskManager(
         libraries = steam_helpers.get_steam_libraries()
         if libraries:
             auto_skip_single_choice = self.settings.value(
-                "auto_skip_single_choice", False, type=bool
+                "auto_skip_single_choice", True, type=bool
             )
             if auto_skip_single_choice and len(libraries) == 1:
                 return libraries[0]

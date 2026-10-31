@@ -1,7 +1,15 @@
 from ui.dialogs.settings_tabs.morrenus_stats_widget import MorrenusStatsWidget
 from ui.dialogs.settings_tabs.windows_depot_warning import WindowsDepotWarningDialog
-from ui.dialogs.settings_tabs.morrenus_tab import create_morrenus_tab, create_api_key_setting, toggle_api_key_visibility
-from ui.dialogs.settings_tabs.assela_tab import create_assela_tab, uninstall_assela, test_single_gateway, handle_gateway_test_done, on_isp_gateway_changed
+from ui.dialogs.settings_tabs.morrenus_tab import (
+    create_morrenus_tab,
+    create_api_key_setting,
+    toggle_api_key_visibility,
+    test_single_gateway,
+    handle_gateway_test_done,
+    on_isp_gateway_changed,
+    create_isp_gateway_card,
+)
+from ui.dialogs.settings_tabs.assela_tab import create_assela_tab, uninstall_assela
 from ui.dialogs.settings_tabs.downloads_tab import create_downloads_tab
 from ui.dialogs.settings_tabs.advanced_tab import (
     create_advanced_tab,

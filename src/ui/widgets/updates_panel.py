@@ -1,8 +1,11 @@
+import logging
 import os
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -197,14 +200,15 @@ class UpdateItemWidget(QFrame):
                             if hasattr(w, "game_manager"):
                                 main_win = w
                                 break
-                    if main_win and hasattr(main_win, "game_manager"):
-                        game = main_win.game_manager.get_game(appid)
-                        if game:
-                            from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
-                            dlg = GameDetailsDialogV2(main_win, game)
+                    if main_win:
+                        if hasattr(main_win, "open_game_library"):
+                            main_win.open_game_library(show_details_for_appid=str(appid))
+                        else:
+                            from ui.dialogs.gamelibrary import GameLibraryDialog
+                            dlg = GameLibraryDialog(main_win, show_details_for_appid=str(appid))
                             dlg.exec()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Failed to open game library/details for update item {appid}: {e}")
 
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, _open)

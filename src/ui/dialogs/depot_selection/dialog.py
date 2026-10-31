@@ -97,7 +97,8 @@ class DepotSelectionDialog(
         # the greyed out missing depots and their statuses.
         from ui.dialogs.depot_selection.rules import is_effectively_single_depot
         effective_single = is_single or (isinstance(depots, dict) and is_effectively_single_depot(depots, missing))
-        if not is_dlc and not missing and effective_single:
+        has_dlc_catalog = bool(kwargs.get("dlc_catalog"))
+        if not is_dlc and not missing and not has_dlc_catalog and effective_single:
             from ui.dialogs.single_depot_dialog import SingleDepotSelectionDialog
             return SingleDepotSelectionDialog(*args, **kwargs)
 
@@ -278,10 +279,13 @@ class DepotSelectionDialog(
             from utils.dlc_helpers import get_owned_dlcs_from_steam, get_injected_dlcs_from_config
             self._steam_owned_dlcs = get_owned_dlcs_from_steam(self.app_id)
             self._injected_dlcs = get_injected_dlcs_from_config(self.app_id)
+            from core.steam_helpers import get_owned_steam_appids
+            self._is_base_owned = str(self.app_id) in get_owned_steam_appids()
         except Exception as _dlc_init_err:
             logger.debug(f"[DepotSelectionDialog] Could not load owned/injected DLCs: {_dlc_init_err}")
             self._steam_owned_dlcs = set()
             self._injected_dlcs = set()
+            self._is_base_owned = False
 
         self._injection_only = False
         self._config_written = False
@@ -325,7 +329,7 @@ class DepotSelectionDialog(
             if id_item is None:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander"):
+            if role in ("missing", "expander", "unreleased"):
                 continue
             # Strictly exclude depotless DlcData items and Steam-owned depots from download queue
             is_depotless = bool(id_item.data(Qt.ItemDataRole.UserRole + 21))
@@ -347,6 +351,9 @@ class DepotSelectionDialog(
             if not id_item:
                 continue
             if id_item.checkState() != Qt.CheckState.Checked:
+                continue
+            role = id_item.data(Qt.ItemDataRole.UserRole + 2)
+            if role in ("missing", "expander", "unreleased"):
                 continue
             if id_item.data(Qt.ItemDataRole.UserRole + 25):
                 # Owned legitimately on Steam

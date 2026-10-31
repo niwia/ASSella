@@ -424,6 +424,7 @@ class DownloadDepotsTask(QObject):
                                     float(speed_bps),
                                     self._auto_cap,
                                     self._current_depot_errors,
+                                    dest_path=getattr(self, "download_dir", ""),
                                 )
                                 for _later_cmd in commands[i + 1:]:
                                     _auto_tune.set_cmd_concurrency(_later_cmd, next_n)
@@ -961,6 +962,7 @@ class DownloadDepotsTask(QObject):
                 best_key=self._auto_best_key,
                 default_start=8,
                 default_cap=8,
+                dest_path=download_dir,
             )
             self.progress.emit(
                 f"Auto-tune ON: starting at {max_downloads} concurrent chunks "

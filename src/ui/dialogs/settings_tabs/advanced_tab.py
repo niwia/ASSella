@@ -29,23 +29,12 @@ def create_advanced_tab(dialog) -> QWidget:
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)
 
-    # Advanced Downloads Card
-    adv_card, adv_layout = dialog._create_card_frame("Advanced Download Settings")
-
-    dialog.auto_skip_single_choice_checkbox = create_checkbox_setting(
-        "Skip single-choice selection",
-        "auto_skip_single_choice",
-        False,
-        dialog,
-        "Automatically skip selection when only one option exists.",
-        show_description=False,
-    )
-    adv_layout.addWidget(dialog.auto_skip_single_choice_checkbox)
+    dialog.auto_skip_single_choice_checkbox = None
     dialog.probe_cdn_checkbox = None
     if dialog.settings.value("probe_cdn") is None:
         dialog.settings.setValue("probe_cdn", True)
-
-    layout.addWidget(adv_card)
+    if dialog.settings.value("auto_skip_single_choice") is None:
+        dialog.settings.setValue("auto_skip_single_choice", True)
 
     # Workshop Downloader Settings Card
     ws_card, ws_layout = dialog._create_card_frame("Workshop settings (deprecated)")

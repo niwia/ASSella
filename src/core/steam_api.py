@@ -314,6 +314,7 @@ def fetch_steamcmd_info(app_id: str, include_header: bool = True) -> dict:
                             "name": app_name,
                             "type": app_data.get("common", {}).get("type"),
                             "parent": app_data.get("common", {}).get("parent"),
+                            "releasestate": app_data.get("common", {}).get("releasestate", "released"),
                             "hasdepotsindlc": has_depots_in_dlc,
                             "listofdlc": listofdlc,
                         }
@@ -440,6 +441,7 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
         if not isinstance(dlc_data, dict):
             continue
         dlc_name = dlc_data.get("name")
+        dlc_rel = dlc_data.get("releasestate", "released")
 
         # 1. Enrich existing base depots referencing this DLC
         for d_id, d_info in base_depots.items():
@@ -448,6 +450,7 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
             if str(d_info.get("dlcappid") or "") == str(dlc_id_str):
                 d_info["is_dlc"] = True
                 d_info["dlcappid"] = str(dlc_id_str)
+                d_info["releasestate"] = dlc_rel
                 curr_name = d_info.get("name")
                 if not curr_name or re.match(r"^Depot \d+$", str(curr_name), re.IGNORECASE):
                     if dlc_name:
@@ -470,6 +473,7 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
                     merged_info = dict(d_info)
                     merged_info["is_dlc"] = True
                     merged_info["dlcappid"] = dlc_id_str
+                    merged_info["releasestate"] = dlc_rel
                     if not merged_info.get("name") and dlc_name:
                         merged_info["name"] = f"[DLC {dlc_id_str}] {dlc_name}"
 
@@ -519,7 +523,24 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
                         "size_bytes": int(raw_sz) if raw_sz and str(raw_sz).isdigit() else 0,
                         "is_dlc": bool(dinfo.get("is_dlc")),
                         "dlcappid": dinfo.get("dlcappid"),
+                        "releasestate": dinfo.get("releasestate", "released"),
                     }
+
+            # Also persist child DLC metadata for depotless or unreleased DLCs
+            for dlc_id_str, dlc_data in dlc_results.items():
+                if str(dlc_id_str) not in enrichments_to_save and isinstance(dlc_data, dict):
+                    enrichments_to_save[str(dlc_id_str)] = {
+                        "depot_id": str(dlc_id_str),
+                        "name": dlc_data.get("name") or f"DLC {dlc_id_str}",
+                        "oslist": dlc_data.get("oslist"),
+                        "osarch": dlc_data.get("osarch"),
+                        "size_str": "0 B",
+                        "size_bytes": 0,
+                        "is_dlc": True,
+                        "dlcappid": str(dlc_id_str),
+                        "releasestate": dlc_data.get("releasestate", "released"),
+                    }
+
             if enrichments_to_save:
                 db.save_depot_enrichments(app_id_val, enrichments_to_save)
     except Exception as e:
@@ -831,6 +852,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
             "branches": open_branches,
             "type": common_data.get("type"),
             "parent": common_data.get("parent"),
+            "releasestate": common_data.get("releasestate", "released"),
             "baselanguages": baselanguages,
             "hasdepotsindlc": has_depots_in_dlc,
             "listofdlc": listofdlc,

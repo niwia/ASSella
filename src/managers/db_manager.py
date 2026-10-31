@@ -491,12 +491,16 @@ class DatabaseManager:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN osarch TEXT")
                 except Exception:
                     pass
+                try:
+                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
+                except Exception:
+                    pass
 
                 now = int(time.time())
                 for dep_id, info in enrichments.items():
                     cur.execute("""
-                        INSERT INTO depot_enrichments (depot_id, appid, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO depot_enrichments (depot_id, appid, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(depot_id) DO UPDATE SET
                             appid = excluded.appid,
                             name = excluded.name,
@@ -506,6 +510,7 @@ class DatabaseManager:
                             is_dlc = excluded.is_dlc,
                             oslist = excluded.oslist,
                             osarch = excluded.osarch,
+                            releasestate = excluded.releasestate,
                             updated_at = excluded.updated_at
                     """, (
                         str(dep_id),
@@ -517,6 +522,7 @@ class DatabaseManager:
                         1 if info.get("is_dlc") else 0,
                         info.get("oslist"),
                         info.get("osarch"),
+                        info.get("releasestate", "released"),
                         now
                     ))
                 self.conn.commit()
@@ -549,9 +555,13 @@ class DatabaseManager:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN osarch TEXT")
                 except Exception:
                     pass
+                try:
+                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
+                except Exception:
+                    pass
 
                 cur.execute("""
-                    SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch
+                    SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate
                     FROM depot_enrichments
                     WHERE appid = ?
                 """, (str(appid),))
@@ -566,7 +576,8 @@ class DatabaseManager:
                         "dl_str": r[4],
                         "is_dlc": bool(r[5]),
                         "oslist": r[6],
-                        "osarch": r[7] if len(r) > 7 else None
+                        "osarch": r[7] if len(r) > 7 else None,
+                        "releasestate": r[8] if len(r) > 8 and r[8] else "released",
                     }
                 return results
         except Exception as e:

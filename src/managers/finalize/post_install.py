@@ -499,7 +499,18 @@ class PostInstallMixin:
                         except Exception as _reg_err:
                             logger.warning(f"[TaskManager] Could not synchronize AT0-M registration: {_reg_err}")
 
-            self.main_window.game_manager.scan_steam_libraries_async()
+            # Defer library rescan if more jobs are queued to prevent severe disk/I/O thrashing
+            has_queued_jobs = False
+            queue_mgr = getattr(self.main_window, "job_queue_manager", None)
+            if queue_mgr and getattr(queue_mgr, "job_queue", None):
+                has_queued_jobs = len(queue_mgr.job_queue) > 0
+
+            if has_queued_jobs:
+                logger.info(
+                    f"[PostInstall] Deferring library scan: {len(queue_mgr.job_queue)} job(s) remaining in queue."
+                )
+            else:
+                self.main_window.game_manager.scan_steam_libraries_async()
 
             # Refresh title in the open game-details dialog immediately so the
             # branch suffix (e.g. "(beta)") updates live without a close/reopen.

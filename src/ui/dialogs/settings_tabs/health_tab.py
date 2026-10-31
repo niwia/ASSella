@@ -181,7 +181,7 @@ def create_health_tab(dialog) -> QWidget:
     path_row.setContentsMargins(2, 6, 2, 2)
     path_row.setSpacing(10)
 
-    dialog.health_sls_path_lbl = QLabel("Binary Path: Checking...")
+    dialog.health_sls_path_lbl = QLabel("Checking...")
     dialog.health_sls_path_lbl.setWordWrap(True)
     dialog.health_sls_path_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.5); font-size: 8.5pt; font-family: monospace; border: none; background: transparent;")
     dialog.health_sls_path_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -480,11 +480,11 @@ def refresh_health_tab_status(dialog) -> None:
     if installed:
         dialog.health_sls_bin_btn.set_state("ok", "Detected")
         if hasattr(dialog, "health_sls_path_lbl") and dialog.health_sls_path_lbl:
-            dialog.health_sls_path_lbl.setText(f"Binary Path: {so_path}")
+            dialog.health_sls_path_lbl.setText(so_path)
     else:
         dialog.health_sls_bin_btn.set_state("error", "Not Detected")
         if hasattr(dialog, "health_sls_path_lbl") and dialog.health_sls_path_lbl:
-            dialog.health_sls_path_lbl.setText("Binary Path: Not detected")
+            dialog.health_sls_path_lbl.setText("Not detected")
 
     # 2. SLS Process
     if not steam_running:

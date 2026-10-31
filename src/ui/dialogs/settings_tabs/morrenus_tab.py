@@ -1,9 +1,10 @@
 import time
 import logging
+import threading
 from typing import Optional, Tuple
 
 import requests
-from PyQt6.QtCore import Qt, QUrl, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl, QTimer, QThread, pyqtSignal, QMetaObject, Q_ARG
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget,
@@ -16,9 +17,13 @@ from PyQt6.QtWidgets import (
     QApplication,
     QScrollArea,
     QCheckBox,
+    QTabWidget,
+    QSizePolicy,
+    QFrame,
 )
 
 from ui.dialogs.settings_tabs.morrenus_stats_widget import MorrenusStatsWidget
+from ui.widgets.switch_toggle import SwitchToggle
 
 logger = logging.getLogger(__name__)
 
@@ -137,23 +142,6 @@ def create_api_key_setting(
     paste_btn = QPushButton("Paste")
     paste_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    atom_sync_cb = QCheckBox("AT0-M Sync")
-    atom_sync_cb.setCursor(Qt.CursorShape.PointingHandCursor)
-    atom_sync_cb.setToolTip(
-        "Automatically synchronize Hubcap API key between ASSella and spacebunny.conf.lua based on the newest timestamp."
-    )
-    atom_sync_cb.setStyleSheet("""
-        QCheckBox {
-            color: rgba(255, 255, 255, 0.85);
-            font-size: 8.5pt;
-            font-weight: 500;
-            margin-left: 6px;
-        }
-        QCheckBox:disabled {
-            color: rgba(255, 255, 255, 0.35);
-        }
-    """)
-
     from utils.plugin_manager import get_plugin_status
     from utils.sls_lua_config import (
         generate_hubcap_timestamp,
@@ -162,17 +150,30 @@ def create_api_key_setting(
     )
 
     is_sync_on = dialog.settings.value("atom_hubcap_sync_enabled", False, type=bool)
-    atom_sync_cb.setChecked(is_sync_on)
+    atom_sync_toggle = SwitchToggle(
+        checked=is_sync_on,
+        active_color=dialog.accent_color,
+        width=38,
+        height=20,
+    )
+
+    sync_lbl = QLabel("AT0-M Sync")
+    sync_lbl.setToolTip(
+        "Automatically synchronize Hubcap API key between ASSella and spacebunny.conf.lua based on the newest timestamp."
+    )
 
     sb_exists = get_spacebunny_conf_path().is_file()
     hub_active = (get_plugin_status("hubcap.lua") != "missing")
     if not hub_active or not sb_exists:
-        atom_sync_cb.setEnabled(False)
-        atom_sync_cb.setToolTip(
+        atom_sync_toggle.setEnabled(False)
+        atom_sync_toggle.setReadOnly(True)
+        sync_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.35); font-size: 8.5pt; font-weight: 500; margin-left: 6px;")
+        atom_sync_toggle.setToolTip(
             "AT0-M Sync is disabled. Activate Hubcap plugin and generate spacebunny.conf.lua in Settings -> AT0-M first."
         )
     else:
-        atom_sync_cb.setEnabled(True)
+        atom_sync_toggle.setEnabled(True)
+        sync_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.85); font-size: 8.5pt; font-weight: 500; margin-left: 6px;")
 
     def _on_sync_toggled(checked: bool):
         dialog.settings.setValue("atom_hubcap_sync_enabled", checked)
@@ -182,7 +183,7 @@ def create_api_key_setting(
                 new_key = dialog.settings.value(setting_key, "", type=str)
                 api_key_input.setText(new_key)
 
-    atom_sync_cb.toggled.connect(_on_sync_toggled)
+    atom_sync_toggle.toggled.connect(_on_sync_toggled)
 
     def _on_paste():
         clip_text = QApplication.clipboard().text()
@@ -191,12 +192,14 @@ def create_api_key_setting(
             api_key_input.setText(cleaned)
             dialog.settings.setValue(setting_key, cleaned)
             dialog.settings.setValue("morrenus_api_key_timestamp", str(generate_hubcap_timestamp()))
-            if atom_sync_cb.isChecked() and atom_sync_cb.isEnabled():
+            if atom_sync_toggle.isChecked() and atom_sync_toggle.isEnabled():
                 sync_hubcap_api_key(dialog.settings)
 
     paste_btn.clicked.connect(_on_paste)
     btn_row.addWidget(paste_btn)
-    btn_row.addWidget(atom_sync_cb)
+    btn_row.addSpacing(6)
+    btn_row.addWidget(sync_lbl)
+    btn_row.addWidget(atom_sync_toggle)
 
     # Initial sync check on tab creation
     if is_sync_on and hub_active and sb_exists:
@@ -209,7 +212,7 @@ def create_api_key_setting(
         cleaned = text.strip()
         dialog.settings.setValue(setting_key, cleaned)
         dialog.settings.setValue("morrenus_api_key_timestamp", str(generate_hubcap_timestamp()))
-        if atom_sync_cb.isChecked() and atom_sync_cb.isEnabled():
+        if atom_sync_toggle.isChecked() and atom_sync_toggle.isEnabled():
             sync_hubcap_api_key(dialog.settings)
 
     api_key_input.textChanged.connect(_on_key_changed)
@@ -230,21 +233,252 @@ def toggle_api_key_visibility(input_field: QLineEdit, toggle_btn: QPushButton) -
         toggle_btn.setText("Show")
 
 
+def on_isp_gateway_changed(dialog, index: int) -> None:
+    """Saves selected mode immediately and triggers Tor warm boot if needed."""
+    if not hasattr(dialog, "isp_gateway_combo") or not dialog.isp_gateway_combo:
+        return
+    mode = dialog.isp_gateway_combo.currentData() or "auto"
+    dialog.settings.setValue("isp_bypass_mode", mode)
+    dialog.settings.setValue("isp_bypass_hubcap", True)
+
+    if mode == "tor":
+        from utils.isp_bypass import TorManager
+        threading.Thread(target=TorManager.start_tor_if_needed, daemon=True).start()
+
+
+def test_single_gateway(dialog, gateway_key: str, btn: QPushButton, label: str) -> None:
+    """Runs an individual gateway health check in a background thread and updates button."""
+    btn.setEnabled(False)
+    btn.setText("Testing...")
+    btn.setStyleSheet("""
+        QPushButton {
+            background: #3b4261;
+            border: 1px solid #e0af68;
+            border-radius: 6px;
+            padding: 5px 8px;
+            color: #e0af68;
+            font-size: 8.5pt;
+            font-weight: bold;
+            min-height: 26px;
+        }
+    """)
+
+    def _target():
+        import utils.isp_bypass as isp
+        if gateway_key == "direct":
+            ok, status, lat = isp.test_gateway_direct()
+        elif gateway_key == "doh":
+            ok, status, lat = isp.test_gateway_doh()
+        elif gateway_key == "tor":
+            ok, status, lat = isp.test_gateway_tor()
+        elif gateway_key == "wirecutter":
+            ok, status, lat = isp.test_gateway_wirecutter()
+        else:
+            ok, status, lat = False, "Unknown", 0
+
+        QMetaObject.invokeMethod(
+            dialog,
+            "_handle_gateway_test_done",
+            Qt.ConnectionType.QueuedConnection,
+            Q_ARG(object, (btn, label, ok, status, lat)),
+        )
+
+    threading.Thread(target=_target, daemon=True).start()
+
+
+def handle_gateway_test_done(dialog, data) -> None:
+    btn, label, ok, status, lat = data
+    btn.setEnabled(True)
+    if ok:
+        btn.setText(f"{label}: OK")
+        btn.setToolTip(f"{label} Gateway: {status}")
+        btn.setStyleSheet("""
+            QPushButton {
+                background: #1b5e20;
+                border: 1px solid #4caf50;
+                border-radius: 6px;
+                padding: 5px 8px;
+                color: #a5d6a7;
+                font-size: 8.5pt;
+                font-weight: bold;
+                min-height: 26px;
+            }
+            QPushButton:hover {
+                background: #2e7d32;
+            }
+        """)
+    else:
+        btn.setText(f"{label}: Fail")
+        btn.setToolTip(f"{label} Gateway: {status}")
+        btn.setStyleSheet("""
+            QPushButton {
+                background: #5c1d1d;
+                border: 1px solid #e53935;
+                border-radius: 6px;
+                padding: 5px 8px;
+                color: #ef9a9a;
+                font-size: 8.5pt;
+                font-weight: bold;
+                min-height: 26px;
+            }
+            QPushButton:hover {
+                background: #7a2626;
+            }
+        """)
+
+
+def create_isp_gateway_card(dialog) -> Tuple[QFrame, QVBoxLayout]:
+    """Create the Hubcap Gateway configuration and health tester card."""
+    gateway_card, gateway_layout = dialog._create_card_frame("Hubcap Gateway")
+    gateway_layout.setSpacing(8)
+
+    isp_row = QHBoxLayout()
+    isp_row.setContentsMargins(0, 0, 0, 0)
+    isp_lbl = QLabel("Hubcap Gateway Mode:")
+    isp_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+    isp_lbl.setToolTip("Select how ASSella routes requests to Hubcap API (Auto Smart Fallback, Direct, DoH, Tor, or Wire).")
+    isp_row.addWidget(isp_lbl)
+    isp_row.addStretch()
+
+    dialog.isp_gateway_combo = QComboBox()
+    dialog.isp_gateway_combo.addItem("Auto", "auto")
+    dialog.isp_gateway_combo.addItem("Direct", "direct")
+    dialog.isp_gateway_combo.addItem("DoH", "doh")
+    dialog.isp_gateway_combo.addItem("Tor", "tor")
+    dialog.isp_gateway_combo.addItem("Wire", "wirecutter")
+    dialog.isp_gateway_combo.setFixedWidth(115)
+
+    saved_mode = dialog.settings.value("isp_bypass_mode", "auto", type=str)
+    if not saved_mode:
+        saved_mode = "auto"
+
+    idx = dialog.isp_gateway_combo.findData(saved_mode)
+    if idx >= 0:
+        dialog.isp_gateway_combo.setCurrentIndex(idx)
+    else:
+        dialog.isp_gateway_combo.setCurrentIndex(0)
+
+    dialog.isp_gateway_combo.currentIndexChanged.connect(
+        lambda idx: on_isp_gateway_changed(dialog, idx)
+    )
+    isp_row.addWidget(dialog.isp_gateway_combo)
+    gateway_layout.addLayout(isp_row)
+
+    # 4-Button Gateway Health Tester Row
+    test_bar_box = QVBoxLayout()
+    test_bar_box.setSpacing(4)
+    test_bar_box.setContentsMargins(0, 2, 0, 0)
+
+    test_bar_lbl = QLabel("Gateway Health Check:")
+    test_bar_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; border: none; background: transparent;")
+    test_bar_box.addWidget(test_bar_lbl)
+
+    dialog.gateway_btn_row = QHBoxLayout()
+    dialog.gateway_btn_row.setSpacing(8)
+
+    base_btn_css = """
+        QPushButton {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            padding: 5px 8px;
+            color: #e0e0e0;
+            font-size: 8.5pt;
+            font-weight: 500;
+            min-height: 26px;
+        }
+        QPushButton:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+        }
+        QPushButton:disabled {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.25);
+        }
+    """
+
+    dialog.test_direct_btn = QPushButton("Direct")
+    dialog.test_direct_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.test_direct_btn.setStyleSheet(base_btn_css)
+    dialog.test_direct_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    dialog.test_direct_btn.clicked.connect(lambda: test_single_gateway(dialog, "direct", dialog.test_direct_btn, "Direct"))
+    dialog.gateway_btn_row.addWidget(dialog.test_direct_btn, 1)
+
+    dialog.test_doh_btn = QPushButton("DoH")
+    dialog.test_doh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.test_doh_btn.setStyleSheet(base_btn_css)
+    dialog.test_doh_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    dialog.test_doh_btn.clicked.connect(lambda: test_single_gateway(dialog, "doh", dialog.test_doh_btn, "DoH"))
+    dialog.gateway_btn_row.addWidget(dialog.test_doh_btn, 1)
+
+    dialog.test_tor_btn = QPushButton("Tor")
+    dialog.test_tor_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.test_tor_btn.setStyleSheet(base_btn_css)
+    dialog.test_tor_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    dialog.test_tor_btn.clicked.connect(lambda: test_single_gateway(dialog, "tor", dialog.test_tor_btn, "Tor"))
+    dialog.gateway_btn_row.addWidget(dialog.test_tor_btn, 1)
+
+    dialog.test_wirecutter_btn = QPushButton("Wirecutter")
+    dialog.test_wirecutter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.test_wirecutter_btn.setStyleSheet(base_btn_css)
+    dialog.test_wirecutter_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    dialog.test_wirecutter_btn.clicked.connect(lambda: test_single_gateway(dialog, "wirecutter", dialog.test_wirecutter_btn, "Wirecutter"))
+    dialog.gateway_btn_row.addWidget(dialog.test_wirecutter_btn, 1)
+
+    test_bar_box.addLayout(dialog.gateway_btn_row)
+    gateway_layout.addLayout(test_bar_box)
+
+    if saved_mode == "disabled":
+        dialog.test_direct_btn.setEnabled(False)
+        dialog.test_doh_btn.setEnabled(False)
+        dialog.test_tor_btn.setEnabled(False)
+        dialog.test_wirecutter_btn.setEnabled(False)
+
+    return gateway_card, gateway_layout
+
+
 def create_morrenus_tab(dialog) -> QWidget:
-    """Create the Morrenus / Hubcap Integrations settings tab with scrollable container."""
+    """Create the Morrenus / Hubcap Integrations settings tab with Hubcap and SteamDB sub-tabs."""
     tab = QWidget()
     outer_layout = QVBoxLayout(tab)
-    outer_layout.setContentsMargins(0, 0, 0, 0)
+    outer_layout.setContentsMargins(12, 10, 12, 10)
+    outer_layout.setSpacing(8)
 
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+    integ_subtabs = QTabWidget()
+    integ_subtabs.setUsesScrollButtons(True)
+    bg_color = dialog.settings.value("background_color", "#141416")
+    integ_subtabs.setStyleSheet(f"""
+        QTabWidget::pane {{
+            border: none;
+        }}
+        QTabBar::tab {{
+            background: {bg_color};
+            color: rgba(255, 255, 255, 0.6);
+            padding: 6px 14px;
+            border: none;
+            font-weight: bold;
+            font-size: 9pt;
+        }}
+        QTabBar::tab:selected {{
+            color: {dialog.accent_color};
+            border-bottom: 2px solid {dialog.accent_color};
+        }}
+        QTabBar::tab:hover {{
+            color: #FFFFFF;
+        }}
+    """)
 
-    container = QWidget()
-    layout = QVBoxLayout(container)
-    layout.setContentsMargins(12, 10, 12, 10)
-    layout.setSpacing(8)
+    # ── Subtab 1: Hubcap ──
+    hubcap_scroll = QScrollArea()
+    hubcap_scroll.setWidgetResizable(True)
+    hubcap_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    hubcap_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+    hubcap_container = QWidget()
+    hubcap_layout = QVBoxLayout(hubcap_container)
+    hubcap_layout.setContentsMargins(0, 8, 0, 0)
+    hubcap_layout.setSpacing(12)
 
     # 1. API Keys Card
     key_card, key_layout = dialog._create_card_frame("API Keys")
@@ -258,18 +492,36 @@ def create_morrenus_tab(dialog) -> QWidget:
         help_url="https://hubcapmanifest.com/",
     )
     key_layout.addLayout(morrenus_layout)
-    layout.addWidget(key_card)
+    hubcap_layout.addWidget(key_card)
 
-    # 2. Stats Card
+    # 2. Hubcap Gateway & Health Check Card (moved from ASSella tab)
+    gateway_card, _ = create_isp_gateway_card(dialog)
+    hubcap_layout.addWidget(gateway_card)
+
+    # 3. Stats Card
     stats_card, stats_layout = dialog._create_card_frame("Hubcap Stats")
     stats_layout.setContentsMargins(10, 8, 10, 8)
 
     dialog.morrenus_stats_widget = MorrenusStatsWidget()
     stats_layout.addWidget(dialog.morrenus_stats_widget)
-    layout.addWidget(stats_card)
+    hubcap_layout.addWidget(stats_card)
 
-    # 3. Byparr Cloudflare Solver Card
-    from PyQt6.QtWidgets import QCheckBox
+    hubcap_layout.addStretch()
+    hubcap_scroll.setWidget(hubcap_container)
+    integ_subtabs.addTab(hubcap_scroll, "Hubcap")
+
+    # ── Subtab 2: SteamDB ──
+    steamdb_scroll = QScrollArea()
+    steamdb_scroll.setWidgetResizable(True)
+    steamdb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    steamdb_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+    steamdb_container = QWidget()
+    steamdb_layout = QVBoxLayout(steamdb_container)
+    steamdb_layout.setContentsMargins(0, 8, 0, 0)
+    steamdb_layout.setSpacing(12)
+
+    # Byparr Cloudflare Solver Card
     from core.steamdb_scraper import ByparrManager
 
     byparr_card, byparr_layout = dialog._create_card_frame("Cloudflare Solver (Byparr)")
@@ -410,12 +662,12 @@ def create_morrenus_tab(dialog) -> QWidget:
     byparr_layout.addLayout(byparr_btn_row)
 
     _update_byparr_ui()
-    layout.addWidget(byparr_card)
+    steamdb_layout.addWidget(byparr_card)
+    steamdb_layout.addStretch()
+    steamdb_scroll.setWidget(steamdb_container)
+    integ_subtabs.addTab(steamdb_scroll, "SteamDB")
 
-    layout.addStretch()
-
-    scroll.setWidget(container)
-    outer_layout.addWidget(scroll)
+    outer_layout.addWidget(integ_subtabs)
 
     # Connect tab change for lazy loading stats
     dialog.morrenus_tab_initialized = False

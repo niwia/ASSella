@@ -3,8 +3,8 @@ Hero banner, title, badges, and layout helpers for GameDetailsDialogV2.
 """
 
 import time
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QSize, QUrl
+from PyQt6.QtGui import QPixmap, QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget,
     QLabel,
@@ -95,8 +95,13 @@ def init_hero_v2(dialog, root) -> None:
     right_badge_col = QVBoxLayout()
     right_badge_col.setContentsMargins(0, 2, 0, 0)
     right_badge_col.setSpacing(0)
-    dialog._proton_badge_lbl = QLabel()
+    dialog._proton_badge_lbl = QPushButton()
+    dialog._proton_badge_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog._proton_badge_lbl.hide()
+    dialog._proton_badge_lbl.clicked.connect(
+        lambda: QDesktopServices.openUrl(QUrl(f"https://www.protondb.com/app/{dialog.appid}"))
+    )
+    dialog._proton_badge_btn = dialog._proton_badge_lbl
     right_badge_col.addWidget(dialog._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
     right_badge_col.addStretch()
     top_row.addLayout(right_badge_col, 0)
@@ -211,8 +216,13 @@ def init_hero_legacy(dialog, root) -> None:
     name_col.addStretch()
     banner_layout.addLayout(name_col, 1)
 
-    dialog._proton_badge_lbl = QLabel()
+    dialog._proton_badge_lbl = QPushButton()
+    dialog._proton_badge_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog._proton_badge_lbl.hide()
+    dialog._proton_badge_lbl.clicked.connect(
+        lambda: QDesktopServices.openUrl(QUrl(f"https://www.protondb.com/app/{dialog.appid}"))
+    )
+    dialog._proton_badge_btn = dialog._proton_badge_lbl
     banner_layout.addWidget(dialog._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
 
     update_title(dialog)
@@ -273,30 +283,56 @@ def update_title(dialog) -> None:
         from core.ratings import get_protondb_tier
         tier = get_protondb_tier(dialog.appid)
         _tier_map = {
-            "platinum": ("PLATINUM", "#90CAF9", "rgba(33, 150, 243, 0.15)", "rgba(144, 202, 249, 0.30)"),
-            "gold":     ("GOLD",     "#FFE082", "rgba(255, 193, 7, 0.15)",   "rgba(255, 224, 130, 0.30)"),
-            "silver":   ("SILVER",   "#CFD8DC", "rgba(144, 164, 174, 0.15)", "rgba(207, 216, 220, 0.30)"),
-            "bronze":   ("BRONZE",   "#FFAB91", "rgba(255, 112, 67, 0.15)",  "rgba(255, 171, 145, 0.30)"),
-            "borked":   ("BORKED",   "#EF9A9A", "rgba(239, 83, 80, 0.18)",   "rgba(239, 154, 154, 0.35)"),
-            "native":   ("NATIVE",   "#A5D6A7", "rgba(76, 175, 80, 0.15)",   "rgba(165, 214, 167, 0.30)"),
+            "platinum": ("PLATINUM", "#FFFFFF", "#1976D2", "#42A5F5", "#1E88E5"),
+            "gold":     ("GOLD",     "#111111", "#F59E0B", "#FBBF24", "#D97706"),
+            "silver":   ("SILVER",   "#FFFFFF", "#546E7A", "#78909C", "#607D8B"),
+            "bronze":   ("BRONZE",   "#FFFFFF", "#C2410C", "#FB923C", "#EA580C"),
+            "borked":   ("BORKED",   "#FFFFFF", "#DC2626", "#F87171", "#EF4444"),
+            "native":   ("NATIVE",   "#FFFFFF", "#16A34A", "#4ADE80", "#22C55E"),
         }
         if tier and tier in _tier_map:
-            p_text, p_color, p_bg, p_border = _tier_map[tier]
+            p_text, p_color, p_bg, p_border, p_hover = _tier_map[tier]
             dialog._proton_badge_lbl.setText(p_text)
-            dialog._proton_badge_lbl.setStyleSheet(
-                f"color: {p_color}; background-color: {p_bg}; border: 1px solid {p_border}; "
-                f"border-radius: 4px; padding: 1px 6px; "
-                f"font-size: 8pt; font-weight: bold; letter-spacing: 0.5px;"
-            )
+            dialog._proton_badge_lbl.setStyleSheet(f"""
+                QPushButton {{
+                    color: {p_color};
+                    background-color: {p_bg};
+                    border: 1px solid {p_border};
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-size: 8pt;
+                    font-weight: bold;
+                    letter-spacing: 0.5px;
+                    outline: none;
+                }}
+                QPushButton:hover {{
+                    background-color: {p_hover};
+                }}
+                QPushButton:pressed {{
+                    background-color: {p_bg};
+                }}
+            """)
+            dialog._proton_badge_lbl.setToolTip(f"Open {p_text} rating on ProtonDB (https://www.protondb.com/app/{dialog.appid})")
             dialog._proton_badge_lbl.show()
         elif tier is None:
             dialog._proton_badge_lbl.setText("FETCHING...")
-            dialog._proton_badge_lbl.setStyleSheet(
-                "color: #B0BEC5; background-color: rgba(255, 255, 255, 0.08); "
-                "border: 1px solid rgba(255, 255, 255, 0.20); "
-                "border-radius: 4px; padding: 1px 6px; "
-                "font-size: 8pt; font-weight: bold; letter-spacing: 0.5px;"
-            )
+            dialog._proton_badge_lbl.setStyleSheet("""
+                QPushButton {
+                    color: #D1D5DB;
+                    background-color: #374151;
+                    border: 1px solid #4B5563;
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-size: 8pt;
+                    font-weight: bold;
+                    letter-spacing: 0.5px;
+                    outline: none;
+                }
+                QPushButton:hover {
+                    background-color: #4B5563;
+                }
+            """)
+            dialog._proton_badge_lbl.setToolTip(f"Checking ProtonDB rating for AppID {dialog.appid}...")
             dialog._proton_badge_lbl.show()
         else:
             dialog._proton_badge_lbl.hide()

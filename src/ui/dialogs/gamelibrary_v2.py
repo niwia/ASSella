@@ -147,6 +147,13 @@ class GameDetailsDialogV2(QDialog):
     def __init__(self, parent, game_data):
         super().__init__(parent)
         self.parent_window = parent
+        if parent is None or not hasattr(parent, "_fetch_game_manifest"):
+            from ui.dialogs.gamelibrary import GameLibraryDialog
+            self._library_delegate = GameLibraryDialog(parent)
+            self.parent_window = self._library_delegate
+            self._library_delegate._details_dialog = self
+        else:
+            self._library_delegate = None
         self.game_data = game_data
         self.appid = str(game_data.get("appid") or game_data.get("app_id") or "0")
         self.settings = get_settings()
@@ -805,3 +812,20 @@ class GameDetailsDialogV2(QDialog):
             self._cached_luafix_res = res_data
             if hasattr(self, "_luafix_bridge"):
                 self._luafix_bridge.loaded.emit(res_data)
+
+    def _cleanup_delegate(self):
+        if getattr(self, "_library_delegate", None):
+            try:
+                self._library_delegate.close()
+                self._library_delegate.deleteLater()
+            except Exception as e:
+                logger.debug(f"Error during library delegate cleanup: {e}")
+            self._library_delegate = None
+
+    def closeEvent(self, event):
+        self._cleanup_delegate()
+        super().closeEvent(event)
+
+    def done(self, r):
+        self._cleanup_delegate()
+        super().done(r)

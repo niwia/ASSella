@@ -84,7 +84,6 @@ class SettingsDialog(QDialog):
         self.sls_mode_checkbox = None
         self.sls_config_management_checkbox = None
         self.prompt_steam_restart_checkbox = None
-        self.ignore_slssteam_updater_checkbox = None
         self.block_steam_updates_checkbox = None
         self.download_slssteam_button = None
         self.slssteam_status_label = None
@@ -339,13 +338,13 @@ class SettingsDialog(QDialog):
 
         # Left nav sidebar
         self._nav_list = QListWidget()
-        self._nav_list.setFixedWidth(160)
+        self._nav_list.setFixedWidth(130)
         self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._nav_font = QFont()
-        self._nav_font.setPointSize(13)
+        self._nav_font.setPointSize(12)
         self._nav_font.setWeight(QFont.Weight.DemiBold)
         self._nav_list.setFont(self._nav_font)
 
@@ -354,29 +353,33 @@ class SettingsDialog(QDialog):
                 background-color: rgba(0, 0, 0, 0.28);
                 border: none;
                 border-right: 1px solid rgba(255, 255, 255, 0.08);
-                padding: 0px;
+                padding: 4px 0px;
                 outline: none;
             }}
             QListWidget::item {{
                 color: #EDEDED;
-                padding-left: 14px;
-                padding-right: 14px;
+                padding-left: 10px;
+                padding-right: 8px;
                 border: none;
-                font-size: 13pt;
+                font-size: 12pt;
                 font-weight: 600;
                 letter-spacing: 0.2px;
-                border-radius: 0px;
+                border-radius: 6px;
+                margin: 2px 6px;
             }}
             QListWidget::item:hover {{
                 background-color: rgba(255, 255, 255, 0.08);
                 color: #FFFFFF;
             }}
             QListWidget::item:selected {{
-                background-color: rgba(255, 255, 255, 0.06);
-                color: {ac};
-                border-left: 4px solid {ac};
-                padding-left: 12px;
+                background-color: {ac};
+                color: #121212;
+                border: none;
                 font-weight: 700;
+            }}
+            QListWidget::item:selected:hover {{
+                background-color: {ac};
+                color: #121212;
             }}
         """)
 
@@ -608,7 +611,7 @@ class SettingsDialog(QDialog):
         w = self._nav_list.width()
         for i, item in enumerate(visible_items):
             extra = 1 if i < remainder else 0
-            item.setSizeHint(QSize(w, base_h + extra))
+            item.setSizeHint(QSize(w - 12, base_h + extra))
             item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
     def resizeEvent(self, event) -> None:
@@ -954,11 +957,6 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "prompt_steam_restart",
                 self.prompt_steam_restart_checkbox.isChecked(),
-            )
-        if self.ignore_slssteam_updater_checkbox is not None:
-            self.settings.setValue(
-                "ignore_slssteam_updater",
-                self.ignore_slssteam_updater_checkbox.isChecked(),
             )
         if hasattr(self, "achievements_checkbox") and self.achievements_checkbox is not None:
             self.settings.setValue(

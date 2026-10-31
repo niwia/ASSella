@@ -23,6 +23,7 @@ down); `decide_next` also treats near-zero samples as "no data" and holds.
 """
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -142,14 +143,28 @@ def _network_fingerprint() -> str:
         return "nonet"
 
 
-def get_connection_id(settings) -> str:
-    """Tuning scope id: lan/wan flag + network fingerprint.
+def get_storage_tag(dest_path: str = "") -> str:
+    """Classify destination storage into 'sdcard' (removable/external) vs 'internal'."""
+    if not dest_path:
+        return "internal"
+    try:
+        norm = os.path.abspath(dest_path)
+        if norm.startswith(("/run/media/", "/media/", "/mnt/")):
+            return "sdcard"
+    except Exception:
+        pass
+    return "internal"
 
-    Each physical connection learns its own best concurrency, so a fast
-    home link never inherits the baseline of a throttled hotspot.
+
+def get_connection_id(settings, dest_path: str = "") -> str:
+    """Tuning scope id: lan/wan flag + network fingerprint + storage tag.
+
+    Each physical connection and storage medium learns its own best concurrency,
+    so a slow microSD card does not poison the baseline of an internal NVMe SSD.
     """
     lan = read_bool(settings, "use_lancache", True) if settings is not None else False
-    return f"{'lan' if lan else 'wan'}-{_network_fingerprint()}"
+    storage_tag = get_storage_tag(dest_path)
+    return f"{'lan' if lan else 'wan'}-{_network_fingerprint()}_{storage_tag}"
 
 
 def _purge_legacy_keys(settings) -> None:
@@ -166,10 +181,10 @@ def _purge_legacy_keys(settings) -> None:
         pass
 
 
-def _best_keys(base_best_key: str, settings, lancache_key: str = "use_lancache"):
-    """Best concurrency tracked per connection (see get_connection_id)."""
+def _best_keys(base_best_key: str, settings, dest_path: str = "", lancache_key: str = "use_lancache"):
+    """Best concurrency tracked per connection and storage medium."""
     _purge_legacy_keys(settings)
-    conn = get_connection_id(settings)
+    conn = get_connection_id(settings, dest_path=dest_path)
     return base_best_key + "_" + conn, base_best_key + "_mbps_" + conn
 
 
@@ -180,6 +195,7 @@ def get_start_concurrency(
     best_key: str = "auto_tune_best",
     default_start: int = DEFAULT_START,
     default_cap: int = 8,
+    dest_path: str = "",
 ) -> int:
     """Pick the concurrency for the first depot/item of a job.
 
@@ -189,7 +205,7 @@ def get_start_concurrency(
     cap = get_cap(settings, cap_key, default_cap)
     if not is_auto_enabled(settings, auto_key):
         return cap
-    best_n_key, _ = _best_keys(best_key, settings)
+    best_n_key, _ = _best_keys(best_key, settings, dest_path=dest_path)
     best = read_int(settings, best_n_key, default_start)
     start = max(1, min(cap, best))
     if cap >= MIN_CONCURRENCY:
@@ -197,11 +213,11 @@ def get_start_concurrency(
     return start
 
 
-def get_learned_display(settings, best_key: str = "auto_tune_best") -> str:
+def get_learned_display(settings, best_key: str = "auto_tune_best", dest_path: str = "") -> str:
     """Return learned concurrency (e.g. '8') or 'learning...' if not trained yet."""
     if settings is None:
         return "learning..."
-    best_n_key, best_m_key = _best_keys(best_key, settings)
+    best_n_key, best_m_key = _best_keys(best_key, settings, dest_path=dest_path)
     best_mbps = read_float(settings, best_m_key, 0.0)
     if best_mbps > 0.0:
         val = clamp(read_int(settings, best_n_key, DEFAULT_START), 1, MAX_CONCURRENCY)
@@ -241,12 +257,12 @@ def decide_next(prev_n: int, prev_mbps: float, best_n: int, best_mbps: float,
 
 
 def record_result(settings, best_key: str, prev_n: int, prev_mbps: float,
-                  cap: int, errors: int = 0) -> int:
+                  cap: int, errors: int = 0, dest_path: str = "") -> int:
     """Persist the outcome of one depot/item and return the next concurrency."""
     if settings is None:
         next_n, _, _ = decide_next(prev_n, prev_mbps, prev_n, 0.0, cap, errors)
         return next_n
-    best_n_key, best_m_key = _best_keys(best_key, settings)
+    best_n_key, best_m_key = _best_keys(best_key, settings, dest_path=dest_path)
     best_n = clamp(read_int(settings, best_n_key, prev_n), 1, MAX_CONCURRENCY)
     best_mbps = read_float(settings, best_m_key, 0.0)
     next_n, new_best_n, new_best_mbps = decide_next(

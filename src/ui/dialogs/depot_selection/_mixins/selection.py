@@ -94,7 +94,7 @@ class SelectionMixin:
             if not id_item:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander"):
+            if role in ("missing", "expander", "unreleased"):
                 continue
             depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
             data = selection_policy.depot_data(self.depots, depot_id)
@@ -120,7 +120,7 @@ class SelectionMixin:
             if id_item is None:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander"):
+            if role in ("missing", "expander", "unreleased"):
                 continue
             if id_item.data(Qt.ItemDataRole.UserRole + 25):
                 # Owned legitimately on Steam: remains checked & disabled
@@ -143,7 +143,7 @@ class SelectionMixin:
             return
 
         role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-        if role == "missing":
+        if role in ("missing", "unreleased"):
             return
 
         is_owned = bool(id_item.data(Qt.ItemDataRole.UserRole + 25))
@@ -239,7 +239,7 @@ class SelectionMixin:
             if id_item is None:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander"):
+            if role in ("missing", "expander", "unreleased"):
                 continue
             if id_item.data(Qt.ItemDataRole.UserRole + 25):
                 continue
