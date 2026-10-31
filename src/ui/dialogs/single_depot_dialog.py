@@ -106,6 +106,9 @@ class SingleDepotSelectionDialog(QDialog):
             cached_col = get_cached_thumbnail_color(str(self.app_id))
             if cached_col and cached_col.isValid():
                 self._ambient_color = cached_col
+                self.accent_color = cached_col.name()
+                if hasattr(self, "title_bar") and self.title_bar:
+                    self.title_bar.update_accent_color(cached_col)
         except Exception:
             pass
 
@@ -1130,12 +1133,49 @@ class SingleDepotSelectionDialog(QDialog):
                 self._apply_build_selection(selected_bid, patch_depots)
 
     def _apply_dynamic_theme(self, color: QColor) -> None:
-        """Dynamically adapt ambient color and titlebar without touching button styling."""
+        """Dynamically adapt ambient color, titlebar, checkbox and action button styling."""
         if not color or not isinstance(color, QColor) or not color.isValid():
             return
         self._ambient_color = color
+        self.accent_color = color.name()
         if hasattr(self, "title_bar") and self.title_bar:
             self.title_bar.update_accent_color(color)
+
+        if hasattr(self, "depot_checkbox") and self.depot_checkbox:
+            self.depot_checkbox.setStyleSheet(f"""
+                QCheckBox::indicator {{
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 4px;
+                    border: 1px solid rgba(255, 255, 255, 0.3);
+                    background-color: rgba(255, 255, 255, 0.05);
+                }}
+                QCheckBox::indicator:hover {{
+                    border-color: {self.accent_color};
+                }}
+                QCheckBox::indicator:checked {{
+                    background-color: {self.accent_color};
+                    border-color: {self.accent_color};
+                }}
+            """)
+
+        if hasattr(self, "ok_btn") and self.ok_btn:
+            from utils.color_utils import get_best_foreground_color
+            btn_text_color = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")
+            self.ok_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.accent_color};
+                    color: {btn_text_color};
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    padding: 4px 14px;
+                }}
+                QPushButton:hover {{
+                    background-color: #FFFFFF;
+                    color: #111318;
+                }}
+            """)
         self.update()
 
     def closeEvent(self, a0):

@@ -138,6 +138,13 @@ class ModernDepotSelectionDialog(QDialog):
         self._settings = get_settings()
         self.accent_color = self._settings.value("theme_accent", "#C06C84", type=str)
         try:
+            from utils.color_utils import get_cached_thumbnail_color
+            cached_col = get_cached_thumbnail_color(str(self.app_id))
+            if cached_col and cached_col.isValid():
+                self.accent_color = cached_col.name()
+        except Exception:
+            pass
+        try:
             c = QColor(self.accent_color)
             self.accent_r, self.accent_g, self.accent_b = c.red(), c.green(), c.blue()
         except Exception:
