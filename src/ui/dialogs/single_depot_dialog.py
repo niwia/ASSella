@@ -106,6 +106,7 @@ class SingleDepotSelectionDialog(QDialog):
             cached_col = get_cached_thumbnail_color(str(self.app_id))
             if cached_col and cached_col.isValid():
                 self._ambient_color = cached_col
+                self.accent_color = cached_col.name()
                 if hasattr(self, "title_bar") and self.title_bar:
                     self.title_bar.update_accent_color(cached_col)
         except Exception:
@@ -1144,12 +1145,167 @@ class SingleDepotSelectionDialog(QDialog):
                 self._apply_build_selection(selected_bid, patch_depots)
 
     def _apply_dynamic_theme(self, color: QColor) -> None:
-        """Dynamically adapt ambient color and titlebar without touching button styling."""
+        """Dynamically adapt ambient color, titlebar, checkbox and action button styling."""
         if not color or not isinstance(color, QColor) or not color.isValid():
             return
         self._ambient_color = color
+        self.accent_color = color.name()
         if hasattr(self, "title_bar") and self.title_bar:
             self.title_bar.update_accent_color(color)
+
+        if hasattr(self, "depot_checkbox") and self.depot_checkbox:
+            self.depot_checkbox.setStyleSheet(f"""
+                QCheckBox::indicator {{
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 4px;
+                    border: 1px solid rgba(255, 255, 255, 0.3);
+                    background-color: rgba(255, 255, 255, 0.05);
+                }}
+                QCheckBox::indicator:hover {{
+                    border-color: {self.accent_color};
+                }}
+                QCheckBox::indicator:checked {{
+                    background-color: {self.accent_color};
+                    border-color: {self.accent_color};
+                }}
+            """)
+
+        if hasattr(self, "ok_btn") and self.ok_btn:
+            from utils.color_utils import get_best_foreground_color
+            btn_text_color = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")
+            self.ok_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.accent_color};
+                    color: {btn_text_color};
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    padding: 4px 14px;
+                }}
+                QPushButton:hover {{
+                    background-color: #FFFFFF;
+                    color: #111318;
+                }}
+            """)
+
+        if hasattr(self, "_update_build_btn_style"):
+            self._update_build_btn_style()
+
+        hex_c = self.accent_color.lstrip('#')
+        try:
+            ar, ag, ab = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
+        except Exception:
+            ar, ag, ab = 192, 108, 132
+
+        if hasattr(self, "select_files_button") and self.select_files_button:
+            self.select_files_button.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: rgba(255, 255, 255, 0.04);
+                    color: rgba(255, 255, 255, 0.85);
+                    border: 1px solid rgba({ar}, {ag}, {ab}, 0.30);
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                    font-size: 8.5pt;
+                    font-weight: 500;
+                }}
+                QPushButton:hover {{
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+            """)
+
+        if hasattr(self, "branch_btn") and self.branch_btn:
+            self.branch_btn.setStyleSheet(f"""
+                QPushButton, QPushButton:disabled {{
+                    background-color: rgba(255, 255, 255, 0.03);
+                    border: 1px solid rgba({ar}, {ag}, {ab}, 0.35);
+                    border-radius: 6px;
+                    color: rgba(255, 255, 255, 0.85);
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                    padding: 2px 12px;
+                }}
+            """)
+        if hasattr(self, "branch_combo") and self.branch_combo:
+            self.branch_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: rgba(255, 255, 255, 0.06);
+                    border: 1px solid rgba({ar}, {ag}, {ab}, 0.35);
+                    border-radius: 6px;
+                    color: #FFFFFF;
+                    padding: 2px 10px;
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                }}
+                QComboBox:hover {{
+                    border-color: {self.accent_color};
+                    background-color: rgba(255, 255, 255, 0.10);
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                    width: 18px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: #1a1c23;
+                    color: #FFFFFF;
+                    selection-background-color: {self.accent_color};
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                }}
+            """)
+
+        if hasattr(self, "_locked_storage_btn") and self._locked_storage_btn:
+            from ui.dialogs.storage_lock import style_locked_storage_button
+            style_locked_storage_button(self._locked_storage_btn, self.accent_color)
+        elif hasattr(self, "_storage_btn_group") and self._storage_btn_group:
+            from utils.color_utils import get_best_foreground_color
+            text_hex = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")
+            btn_style = f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: rgba(255, 255, 255, 0.7);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 8.5pt;
+                    font-weight: 500;
+                }}
+                QPushButton:hover {{
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+                QPushButton:checked {{
+                    background-color: {self.accent_color} !important;
+                    color: {text_hex} !important;
+                    border: 1px solid {self.accent_color} !important;
+                    font-weight: bold;
+                }}
+            """
+            for btn in self._storage_btn_group.buttons():
+                btn.setStyleSheet(btn_style)
+
+        if hasattr(self, "_storage_overflow_combo") and self._storage_overflow_combo:
+            self._storage_overflow_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: transparent;
+                    color: rgba(255, 255, 255, 0.7);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-size: 8.5pt;
+                }}
+                QComboBox:hover {{
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: #1a1a24;
+                    color: #FFFFFF;
+                    selection-background-color: {self.accent_color};
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                }}
+            """)
         self.update()
 
     def closeEvent(self, a0):
