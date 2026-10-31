@@ -106,7 +106,6 @@ class SingleDepotSelectionDialog(QDialog):
             cached_col = get_cached_thumbnail_color(str(self.app_id))
             if cached_col and cached_col.isValid():
                 self._ambient_color = cached_col
-                self.accent_color = cached_col.name()
                 if hasattr(self, "title_bar") and self.title_bar:
                     self.title_bar.update_accent_color(cached_col)
         except Exception:
@@ -329,16 +328,21 @@ class SingleDepotSelectionDialog(QDialog):
             self.branch_btn.setMinimumWidth(110)
             self.branch_btn.setEnabled(False)
             self.branch_btn.setToolTip("No alternative branches available")
-            self.branch_btn.setStyleSheet("""
-                QPushButton, QPushButton:disabled {
+            hex_c = self.accent_color.lstrip('#')
+            try:
+                ar, ag, ab = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
+            except Exception:
+                ar, ag, ab = 192, 108, 132
+            self.branch_btn.setStyleSheet(f"""
+                QPushButton, QPushButton:disabled {{
                     background-color: rgba(255, 255, 255, 0.03);
-                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba({ar}, {ag}, {ab}, 0.35);
                     border-radius: 6px;
-                    color: rgba(255, 255, 255, 0.40);
+                    color: rgba(255, 255, 255, 0.85);
                     font-size: 8.5pt;
                     font-weight: 600;
                     padding: 2px 12px;
-                }
+                }}
             """)
             controls_row.addWidget(self.branch_btn)
 
@@ -609,8 +613,9 @@ class SingleDepotSelectionDialog(QDialog):
         if _locked_target:
             target = storage_targets.describe(_locked_target)
             btn = create_locked_storage_button(
-                _locked_target, target.label, target.free, height=28, radius=4
+                _locked_target, target.label, target.free, height=28, radius=4, accent_color=self.accent_color
             )
+            self._locked_storage_btn = btn
             layout.addWidget(btn, 1)
             self.selected_storage_path = _locked_target
             return
@@ -1061,10 +1066,15 @@ class SingleDepotSelectionDialog(QDialog):
                 }}
             """)
         else:
-            self.builds_btn.setStyleSheet("""
+            hex_c = self.accent_color.lstrip('#')
+            try:
+                ar, ag, ab = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
+            except Exception:
+                ar, ag, ab = 192, 108, 132
+            self.builds_btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba(255, 255, 255, 0.16);
+                    border: 1px solid rgba({ar}, {ag}, {ab}, 0.35);
                     border-radius: 6px;
                     color: #FFFFFF;
                     font-size: 8.5pt;
@@ -1073,7 +1083,8 @@ class SingleDepotSelectionDialog(QDialog):
                 }}
                 QPushButton:hover {{
                     background-color: rgba(255, 255, 255, 0.12);
-                    border-color: rgba(255, 255, 255, 0.3);
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
                 }}
             """)
 
@@ -1133,49 +1144,12 @@ class SingleDepotSelectionDialog(QDialog):
                 self._apply_build_selection(selected_bid, patch_depots)
 
     def _apply_dynamic_theme(self, color: QColor) -> None:
-        """Dynamically adapt ambient color, titlebar, checkbox and action button styling."""
+        """Dynamically adapt ambient color and titlebar without touching button styling."""
         if not color or not isinstance(color, QColor) or not color.isValid():
             return
         self._ambient_color = color
-        self.accent_color = color.name()
         if hasattr(self, "title_bar") and self.title_bar:
             self.title_bar.update_accent_color(color)
-
-        if hasattr(self, "depot_checkbox") and self.depot_checkbox:
-            self.depot_checkbox.setStyleSheet(f"""
-                QCheckBox::indicator {{
-                    width: 18px;
-                    height: 18px;
-                    border-radius: 4px;
-                    border: 1px solid rgba(255, 255, 255, 0.3);
-                    background-color: rgba(255, 255, 255, 0.05);
-                }}
-                QCheckBox::indicator:hover {{
-                    border-color: {self.accent_color};
-                }}
-                QCheckBox::indicator:checked {{
-                    background-color: {self.accent_color};
-                    border-color: {self.accent_color};
-                }}
-            """)
-
-        if hasattr(self, "ok_btn") and self.ok_btn:
-            from utils.color_utils import get_best_foreground_color
-            btn_text_color = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")
-            self.ok_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {self.accent_color};
-                    color: {btn_text_color};
-                    border: none;
-                    border-radius: 4px;
-                    font-weight: bold;
-                    padding: 4px 14px;
-                }}
-                QPushButton:hover {{
-                    background-color: #FFFFFF;
-                    color: #111318;
-                }}
-            """)
         self.update()
 
     def closeEvent(self, a0):

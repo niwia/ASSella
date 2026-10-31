@@ -138,10 +138,11 @@ class BranchBuildMixin:
                 }}
             """)
         else:
-            self.builds_btn.setStyleSheet("""
+            accent_r, accent_g, accent_b = self._resolve_accent_colors() if hasattr(self, "_resolve_accent_colors") else (192, 108, 132)
+            self.builds_btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba(255, 255, 255, 0.16);
+                    border: 1px solid rgba({accent_r}, {accent_g}, {accent_b}, 0.35);
                     border-radius: 6px;
                     color: #FFFFFF;
                     font-size: 8.5pt;
@@ -150,7 +151,8 @@ class BranchBuildMixin:
                 }}
                 QPushButton:hover {{
                     background-color: rgba(255, 255, 255, 0.12);
-                    border-color: rgba(255, 255, 255, 0.35);
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
                 }}
             """)
         if hasattr(self, "builds_btn") and self.builds_btn is not None:

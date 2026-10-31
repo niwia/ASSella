@@ -141,7 +141,7 @@ class ModernDepotSelectionDialog(QDialog):
             from utils.color_utils import get_cached_thumbnail_color
             cached_col = get_cached_thumbnail_color(str(self.app_id))
             if cached_col and cached_col.isValid():
-                self.accent_color = cached_col.name()
+                self._ambient_color = cached_col
         except Exception:
             pass
         try:

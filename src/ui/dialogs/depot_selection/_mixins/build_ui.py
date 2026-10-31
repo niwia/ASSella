@@ -71,7 +71,6 @@ class BuildUIMixin:
             cached_col = get_cached_thumbnail_color(str(app_id)) if app_id else None
             if cached_col and cached_col.isValid():
                 self._ambient_color = cached_col
-                self.accent_color = cached_col.name()
                 if hasattr(self, "title_bar") and self.title_bar:
                     self.title_bar.update_accent_color(cached_col)
         except Exception:
@@ -264,6 +263,7 @@ class BuildUIMixin:
             branch_list.append(self.branch)
 
         has_other_branches = any(b.lower() != "public" for b in branch_list)
+        accent_r, accent_g, accent_b = self._resolve_accent_colors() if hasattr(self, "_resolve_accent_colors") else (192, 108, 132)
 
         if has_other_branches:
             branch_lbl = QLabel("Branch:")
@@ -276,7 +276,7 @@ class BuildUIMixin:
             self.branch_combo.setStyleSheet(f"""
                 QComboBox {{
                     background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba(255, 255, 255, 0.16);
+                    border: 1px solid rgba({accent_r}, {accent_g}, {accent_b}, 0.35);
                     border-radius: 6px;
                     color: #FFFFFF;
                     padding: 1px 10px;
@@ -284,7 +284,7 @@ class BuildUIMixin:
                     font-weight: 600;
                 }}
                 QComboBox:hover {{
-                    border-color: rgba(255, 255, 255, 0.35);
+                    border-color: {self.accent_color};
                     background-color: rgba(255, 255, 255, 0.12);
                 }}
                 QComboBox::drop-down {{
@@ -294,7 +294,7 @@ class BuildUIMixin:
                 QComboBox QAbstractItemView {{
                     background-color: #1a1c23;
                     color: #FFFFFF;
-                    selection-background-color: transparent;
+                    selection-background-color: {self.accent_color};
                     selection-color: #FFFFFF;
                     border: 1px solid rgba(255, 255, 255, 0.15);
                 }}
@@ -312,16 +312,16 @@ class BuildUIMixin:
             self.branch_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
             self.branch_btn.setEnabled(False)
             self.branch_btn.setToolTip("No alternative branches available")
-            self.branch_btn.setStyleSheet("""
-                QPushButton, QPushButton:disabled {
+            self.branch_btn.setStyleSheet(f"""
+                QPushButton, QPushButton:disabled {{
                     background-color: rgba(255, 255, 255, 0.03);
-                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba({accent_r}, {accent_g}, {accent_b}, 0.35);
                     border-radius: 6px;
-                    color: rgba(255, 255, 255, 0.40);
+                    color: rgba(255, 255, 255, 0.85);
                     font-size: 8.5pt;
                     font-weight: 600;
                     padding: 2px 12px;
-                }
+                }}
             """)
             badges_row.addWidget(self.branch_btn)
 
@@ -702,39 +702,10 @@ class BuildUIMixin:
             )
 
     def _apply_dynamic_theme(self, color: QColor) -> None:
-        """Dynamically adapt ambient color, titlebar, table indicators and action buttons."""
+        """Dynamically adapt ambient color and titlebar without touching table or buttons."""
         if not color or not isinstance(color, QColor) or not color.isValid():
             return
         self._ambient_color = color
-        self.accent_color = color.name()
         if hasattr(self, "title_bar") and self.title_bar:
             self.title_bar.update_accent_color(color)
-
-        accent_r, accent_g, accent_b = self._resolve_accent_colors()
-        if hasattr(self, "table_widget") and self.table_widget:
-            self.table_widget.setStyleSheet(self._get_table_stylesheet(self.accent_color, accent_r, accent_g, accent_b))
-
-        if hasattr(self, "download_btn") and self.download_btn:
-            from utils.color_utils import get_best_foreground_color
-            text_hex = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")
-            self.download_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {self.accent_color};
-                    color: {text_hex};
-                    border: none;
-                    border-radius: 5px;
-                    font-weight: bold;
-                    font-size: 8.5pt;
-                    padding: 0 14px;
-                }}
-                QPushButton:hover {{
-                    background-color: #FFFFFF;
-                    color: #111318;
-                }}
-                QPushButton:disabled {{
-                    background-color: rgba(255, 255, 255, 0.04) !important;
-                    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-                    color: rgba(255, 255, 255, 0.28) !important;
-                }}
-            """)
         self.update()

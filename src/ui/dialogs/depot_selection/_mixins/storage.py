@@ -59,8 +59,9 @@ class StorageMixin:
         if locked_target:
             target = storage_targets.describe(locked_target)
             btn = create_locked_storage_button(
-                locked_target, target.label, target.free, height=28, radius=4
+                locked_target, target.label, target.free, height=28, radius=4, accent_color=self.accent_color
             )
+            self._locked_storage_btn = btn
             layout.addWidget(btn, 1)
             self.selected_storage_path = locked_target
             return
