@@ -51,14 +51,20 @@ def make_short_edition_name(full_name: str, fallback: str = "Edition", max_len: 
         return "Complete"
     if "deluxe" in name_lower:
         return "Deluxe"
-    if "standard" in name_lower or "base game" in name_lower:
-        return "Standard"
+    if "vault" in name_lower:
+        return "Vault"
+    if "premium" in name_lower:
+        return "Premium"
     if "ultimate" in name_lower:
         return "Ultimate"
     if "gold" in name_lower:
         return "Gold"
+    if "standard" in name_lower or "base game" in name_lower:
+        return "Standard"
     if "goty" in name_lower or "game of the year" in name_lower:
         return "GOTY"
+    if "collection" in name_lower:
+        return "Collection"
     if "dark arisen" in name_lower:
         return "Dark Arisen"
 
@@ -354,32 +360,29 @@ def resolve_edition_depots(
             except Exception as _e:
                 logger.debug(f"[EditionHelpers] Package contents batch query failed: {_e}")
 
-    # Complete Edition Name
-    complete_edition_name = "Complete Edition"
-    if dlc_depots:
-        complete_edition_name = "Complete Edition (All DLCs)"
+    # Complete depots = base depots + DLC depots for target platform
+    complete_depots = base_depots | dlc_depots
+    editions: List[Dict[str, Any]] = []
 
-    # A. Highest: Complete Edition (contains all depots for platform)
-    editions.append({
-        "id": f"{target_platform}_complete",
-        "name": complete_edition_name,
-        "short_name": "Complete",
-        "platform": target_platform,
-        "depot_ids": complete_depots,
-        "is_highest": True,
-    })
+    # Fetch store packages from Steam Store API via GetItems.
+    store_pkgs = fetch_store_packages(aid_str, timeout=6.0) if include_store else []
+    pkg_contents = {}
+    if store_pkgs:
+        pids = [int(p["packageid"]) for p in store_pkgs if p.get("packageid") and str(p.get("packageid")).isdigit()]
+        if pids:
+            try:
+                pkg_contents = fetch_package_contents_batch(pids, timeout=4.0)
+            except Exception as _e:
+                logger.debug(f"[EditionHelpers] Package contents batch query failed: {_e}")
 
-    # B. Additional Store packages with exact depot mapping
+    # A. Real store packages with exact depot mapping
     game_name = edition_catalog.get_app_name(aid_str) if store_pkgs else ""
     for pkg in store_pkgs:
         pkg_id = pkg.get("packageid")
         pkg_name = pkg.get("name", "")
         if not pkg_name:
             continue
-        # The base game's own sub carries the same depots as Complete under the
-        # game's own name; it is not an edition, so it would only be noise.
-        if game_name and _is_same_game_name(pkg_name, game_name):
-            continue
+
         short_name = make_short_edition_name(pkg_name, fallback=pkg_name)
 
         pinfo = pkg_contents.get(str(pkg_id)) or {}
@@ -394,7 +397,7 @@ def resolve_edition_depots(
                 matching_depots |= base_depots
 
             for did in complete_depots:
-                d_data = depots.get(did) or depots.get(int(did) if did.isdigit() else 0) or {}
+                d_data = depots.get(did) or depots.get(int(did) if str(did).isdigit() else 0) or {}
                 dlc_cand = str(d_data.get("dlcappid") or "").strip()
                 if did in pkg_depots_direct or did in pkg_apps:
                     matching_depots.add(str(did))
@@ -403,14 +406,17 @@ def resolve_edition_depots(
 
             pkg_depots = matching_depots if matching_depots else complete_depots
         else:
-            # Fallback heuristic if offline
+            # Fallback heuristic if offline / PICS unpopulated
             pkg_lower = pkg_name.lower()
-            if "standard" in pkg_lower or "base" in pkg_lower:
-                pkg_depots = base_depots
+            if _is_same_game_name(pkg_name, game_name) or "standard" in pkg_lower or "base" in pkg_lower:
+                pkg_depots = base_depots if base_depots else complete_depots
             else:
                 pkg_depots = complete_depots
 
-        # Only add if not identical to complete edition with the same name
+        # Deduplicate pure currency add-on bundles (e.g. Shark Card) if identical to base package
+        if any(e.get("depot_ids") == pkg_depots and re.search(r"(?:shark|card|points|coins)", pkg_name, re.I) for e in editions):
+            continue
+
         if not any(e["name"] == pkg_name for e in editions):
             editions.append({
                 "id": f"{target_platform}_pkg_{pkg_id}",
@@ -421,23 +427,25 @@ def resolve_edition_depots(
                 "is_highest": False,
             })
 
-    # B2. Store bundles — the named editions (Premium, Ancestral, ...) that
-    # SteamDB lists. The app page links them, each bundle page lists the apps it
-    # carries, and any app the base game does not list as DLC disqualifies it.
+    # B. Store bundles (the named editions, collections, etc. from Steam store)
     if include_store:
         try:
             dlc_appids = edition_catalog.get_dlc_appids(aid_str, allow_network=True)
+            dlc_set = {str(d).strip() for d in (dlc_appids or []) if str(d).strip()}
             for bundle in edition_catalog.bundle_editions(aid_str, dlc_appids):
                 bundle_apps = {str(a).strip() for a in bundle.get("app_ids", []) if str(a).strip()}
-                if aid_str not in bundle_apps:
+                family_apps = bundle_apps & dlc_set
+                if aid_str not in bundle_apps and not family_apps:
                     continue
                 bundle_depots = set(base_depots)
                 for did in complete_depots:
-                    d_data = depots.get(did) or {}
+                    d_data = depots.get(did) or depots.get(int(did) if str(did).isdigit() else 0) or {}
                     dlc_cand = str((d_data or {}).get("dlcappid") or "").strip()
-                    if dlc_cand and dlc_cand != aid_str and dlc_cand in bundle_apps:
+                    if dlc_cand and dlc_cand in bundle_apps:
                         bundle_depots.add(str(did))
-                if not bundle_depots:
+                    elif str(did) in bundle_apps:
+                        bundle_depots.add(str(did))
+                if not bundle_depots and not base_depots:
                     continue
                 name = str(bundle.get("name") or "").strip()
                 if not name or any(e["name"] == name for e in editions):
@@ -454,16 +462,23 @@ def resolve_edition_depots(
         except Exception as exc:
             logger.debug(f"[EditionHelpers] Bundle editions unavailable for {aid_str}: {exc}")
 
-    # C. Lowest: Standard Edition (Base Game Only)
-    if dlc_depots:
+    # C. Fallback only if no real store packages/bundles exist (offline / indie title without store API data)
+    if not editions:
+        clean_title = game_name or "Game"
         editions.append({
-            "id": f"{target_platform}_standard",
-            "name": "Standard Edition (Base Game Only)",
-            "short_name": "Standard",
+            "id": f"{target_platform}_default",
+            "name": clean_title,
+            "short_name": make_short_edition_name(clean_title, fallback="Game"),
             "platform": target_platform,
-            "depot_ids": base_depots,
-            "is_highest": False,
+            "depot_ids": complete_depots if complete_depots else base_depots,
+            "is_highest": True,
         })
+
+    # Mark is_highest on the edition carrying the largest content depot set
+    if editions:
+        max_d_count = max(len(e.get("depot_ids", set())) for e in editions)
+        for e in editions:
+            e["is_highest"] = (len(e.get("depot_ids", set())) == max_d_count)
 
     return editions
 

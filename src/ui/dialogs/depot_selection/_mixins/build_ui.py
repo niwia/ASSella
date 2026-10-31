@@ -501,12 +501,12 @@ class BuildUIMixin:
                 }}
             """
 
-            self.edition_button = QPushButton("Complete ▾")
+            self.edition_button = QPushButton("Edition ▾")
             self.edition_button.setFixedHeight(28)
             self.edition_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self.edition_button.setCursor(Qt.CursorShape.PointingHandCursor)
             self.edition_button.setStyleSheet(btn_style)
-            self.edition_button.setToolTip("Select game edition and platform (Complete, Deluxe, Standard)")
+            self.edition_button.setToolTip("Select game edition / package")
             self.edition_button.clicked.connect(self._show_edition_menu)
             button_layout.addWidget(self.edition_button, 1)
 

@@ -1264,6 +1264,9 @@ class TaskManager(
         game_name: str = "",
         auto_install: bool = True,
         library_path: str = "",
+        pin_build: bool = False,
+        manifest_overrides: Optional[Dict[str, str]] = None,
+        build_id: str = "",
     ):
         """
         Direct asynchronous handoff to Steam client without manifest zip preprocessing
@@ -1338,12 +1341,21 @@ class TaskManager(
                     logger.info("[TaskManager] User cancelled Steam library selection")
                     return
 
+        # Check settings for pinned build if not passed explicitly
+        if not pin_build:
+            pin_build = self.settings.value(f"pin_build/{app_id_str}", False, type=bool)
+            if pin_build and not build_id:
+                build_id = self.settings.value(f"pinned_build_id/{app_id_str}", "", type=str)
+
         self.is_processing = True
         self._is_handoff_job = True
         self.game_data = {
             "appid": app_id_str,
             "game_name": name,
             "library_path": library_path,
+            "pin_build": pin_build,
+            "manifest_overrides": manifest_overrides or {},
+            "buildid": build_id,
         }
         self.current_job = f"steam_handoff_{app_id_str}"
         self.current_job_metadata = {"appid": app_id_str, "game_name": name, "auto_install": auto_install}

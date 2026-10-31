@@ -243,7 +243,7 @@ class DepotTableMixin:
                     else:
                         pre_selected_set = set(highest_ed["depot_ids"])
                     if hasattr(self, "edition_button"):
-                        short = highest_ed.get("short_name", "Complete")
+                        short = highest_ed.get("short_name", "Edition")
                         if len(self._available_platforms) > 1:
                             plat_prefix = "Linux: " if self._default_platform == "linux" else "Win: "
                             self.edition_button.setText(f"{plat_prefix}{short} ▾")

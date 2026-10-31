@@ -1370,6 +1370,81 @@ class FetchManifestDialog(QDialog):
         except Exception as e:
             logger.debug(f"[FetchManifest] Error during platform mismatch check: {e}")
 
+        # Check voices.json for recommended / curated build in AT0-M mode
+        pin_build = False
+        pinned_bid = ""
+        manifest_overrides = {}
+        try:
+            from managers.voices_manager import VoicesManager
+            rec = VoicesManager.get_instance().get_recommendation(aid_str, name)
+            if rec and rec.get("recommended_build_id"):
+                rec_bid = str(rec["recommended_build_id"]).strip()
+                is_already_pinned = self.settings.value(f"pin_build/{aid_str}", False, type=bool)
+                if not is_already_pinned:
+                    from ui.dialogs.recommended_build_dialog import (
+                        RecommendedBuildPromptDialog,
+                        ACTION_RECOMMENDED,
+                        ACTION_LATEST,
+                        ACTION_BROWSE,
+                    )
+                    prompt = RecommendedBuildPromptDialog(
+                        parent=self,
+                        app_id=aid_str,
+                        game_name=name,
+                        recommended_build_id=rec_bid,
+                        current_build_id="",
+                        reason=rec.get("reason", ""),
+                        accent_color=self.accent_color,
+                    )
+                    prompt.exec()
+                    action = prompt.get_action()
+                    if action == ACTION_RECOMMENDED:
+                        rec_overrides = rec.get("manifest_overrides", {})
+                        if not rec_overrides:
+                            try:
+                                from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
+                                cache = SteamDBBuildsCache()
+                                c_depots = cache.get_build_depots(rec_bid)
+                                if c_depots:
+                                    rec_overrides = {str(d): str(info.get("manifest_id") or info.get("gid", "")) for d, info in c_depots.items()}
+                                else:
+                                    s_depots = SteamDBScraper().get_patch_depots(rec_bid) or {}
+                                    rec_overrides = {str(d): str(info.get("manifest_id") or info.get("gid", "")) for d, info in s_depots.items()}
+                            except Exception as _e:
+                                logger.warning(f"Failed to resolve SteamDB depots for {rec_bid}: {_e}")
+                        pin_build = True
+                        pinned_bid = rec_bid
+                        manifest_overrides = {str(d): str(m) for d, m in rec_overrides.items() if m}
+                        self.settings.setValue(f"pin_build/{aid_str}", True)
+                        self.settings.setValue(f"pinned_build_id/{aid_str}", rec_bid)
+                        logger.info(f"[FetchManifest] AT0-M pinned recommended build {rec_bid} with {len(manifest_overrides)} overrides")
+                    elif action == ACTION_BROWSE:
+                        from ui.dialogs.build_selection_dialog import BuildSelectionDialog
+                        b_dlg = BuildSelectionDialog(
+                            parent=self,
+                            app_id=aid_str,
+                            current_build_id="",
+                            accent_color=self.accent_color,
+                        )
+                        if b_dlg.exec():
+                            chosen_bid = b_dlg.get_selected_build_id()
+                            chosen_overrides = b_dlg.get_patch_depots() or {}
+                            if chosen_bid:
+                                pin_build = True
+                                pinned_bid = str(chosen_bid).strip()
+                                manifest_overrides = {str(d): str(info.get("manifest_id") or info.get("gid", "")) for d, info in chosen_overrides.items() if info}
+                                self.settings.setValue(f"pin_build/{aid_str}", True)
+                                self.settings.setValue(f"pinned_build_id/{aid_str}", pinned_bid)
+                                logger.info(f"[FetchManifest] AT0-M user pinned browse build {pinned_bid}")
+                    elif action == ACTION_LATEST:
+                        logger.info(f"[FetchManifest] AT0-M user chose latest build for {aid_str}")
+                    else:
+                        logger.info(f"[FetchManifest] AT0-M cancelled at recommended build prompt for {aid_str}")
+                        self.status_label.setText("Download cancelled.")
+                        return
+        except Exception as _rec_err:
+            logger.warning(f"[FetchManifest] Error checking voices recommendation in AT0-M flow: {_rec_err}")
+
         start_mode = self.settings.value(
             "at0m_start_download_action",
             self.settings.value("vapor_start_download_action", "", type=str),
@@ -1449,6 +1524,9 @@ class FetchManifestDialog(QDialog):
                 game_name=name,
                 auto_install=auto_install,
                 library_path=selected_library_path,
+                pin_build=pin_build,
+                manifest_overrides=manifest_overrides,
+                build_id=pinned_bid,
             )
 
     def _start_assella_flow(self, app_id: str):

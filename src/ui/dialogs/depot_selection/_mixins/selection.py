@@ -278,7 +278,6 @@ class SelectionMixin:
 
     def _show_edition_menu(self):
         """Displays drop-up/down menu of available editions grouped by OS if multiple exist."""
-        from PyQt6.QtWidgets import QMenu
         from utils.edition_helpers import (
             get_available_platforms,
             resolve_multi_platform_editions,
@@ -294,59 +293,32 @@ class SelectionMixin:
             )
         self._start_edition_prefetch()
 
-        menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #1e1e24;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 6px;
-                padding: 4px;
-                color: #ffffff;
-            }
-            QMenu::item {
-                padding: 6px 20px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background-color: rgba(255, 255, 255, 0.12);
-            }
-        """)
-
         groups = selection_policy.edition_menu(
             self._available_platforms,
             self._multi_platform_editions,
             self.get_selected_depots(),
         )
-        for group in groups:
-            sub_menu = menu.addMenu(group.label) if group.label else menu
-            if group.label:
-                sub_menu.setStyleSheet(menu.styleSheet())
-            for choice in group.choices:
-                action = sub_menu.addAction(choice.name)
-                action.setCheckable(True)
-                if choice.checked:
-                    action.setChecked(True)
-                action.triggered.connect(lambda checked, target_ed=choice.edition: self._apply_edition_selection(target_ed))
 
-        if not getattr(self, "_editions_store_ready", False):
-            loading = menu.addAction("Loading store editions…")
-            loading.setEnabled(False)
+        from ui.dialogs.depot_selection.edition_popup import EditionPopup
+        accent_color = getattr(self, "accent_color", "#6c5ce7")
+        popup = EditionPopup(
+            self,
+            groups=groups,
+            accent_color=accent_color,
+            on_selected=self._apply_edition_selection,
+        )
 
-        menu.adjustSize()
-        menu_height = menu.sizeHint().height()
-        pos = self.edition_button.mapToGlobal(QPoint(0, -menu_height - 2))
-        if pos.y() < 0:
-            pos = self.edition_button.mapToGlobal(QPoint(0, self.edition_button.height() + 2))
-        self._edition_menu = menu
-        self._edition_menu_open = True
-        try:
-            menu.exec(pos)
-        finally:
+        def _on_closed():
             self._edition_menu_open = False
             self._edition_menu = None
-        if getattr(self, "_reopen_edition_menu", False):
-            self._reopen_edition_menu = False
-            QTimer.singleShot(0, self._show_edition_menu)
+            if getattr(self, "_reopen_edition_menu", False):
+                self._reopen_edition_menu = False
+                QTimer.singleShot(0, self._show_edition_menu)
+
+        popup.destroyed.connect(_on_closed)
+        self._edition_menu = popup
+        self._edition_menu_open = True
+        popup.show_at(self.edition_button)
 
     def _start_edition_prefetch(self) -> None:
         """Ask the store for its edition tiers once, off the UI thread."""

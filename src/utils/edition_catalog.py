@@ -257,7 +257,20 @@ def _fetch_app_store_items(
             pid = opt.get("packageid")
             if pid is not None:
                 package_id = int(pid)
+                group = str(opt.get("package_group") or "").lower()
+                is_sub = opt.get("is_recurring_subscription")
                 option_text = (opt.get("purchase_option_name") or "").strip()
+
+                # Filter out recurring subscriptions
+                if group == "subscriptions" or is_sub:
+                    continue
+                # Filter out virtual currency / microtransaction groups
+                if re.search(r"(?:points?|coins?|atoms?|vc|currency|tokens?|credits?|gems?|minecoins?|v-?bucks?|shark|plat(?:inum)?)\b", group, re.I):
+                    continue
+                # Filter out consumable currency / points package names
+                if re.search(r"^\s*[\d,.\s\+\(\)]*(?:CP|COD Points|Points|Coins?|Credits?|Gems?|Tokens?|Plat(?:inum)?|Silver|Diamonds?|Minecoins?|V-?Bucks?|Atoms?|Auric Cells?|Shark Cash|Bloodpoints?)\b", option_text, re.I):
+                    continue
+
                 name = clean_package_name(option_text) or f"Package {package_id}"
                 price_cents = opt.get("final_price_in_cents")
                 try:
@@ -268,6 +281,7 @@ def _fetch_app_store_items(
                     "packageid": package_id,
                     "name": name,
                     "price": int(price_cents),
+                    "package_group": opt.get("package_group", ""),
                     "apps": [],
                 })
 
@@ -442,17 +456,27 @@ def bundle_editions(
         if not bundle:
             continue
         apps = {str(a) for a in bundle["app_ids"]}
-        if base not in apps:
-            continue
+        base_in_bundle = base in apps
         if dlc_set is not None:
             family = (apps - {base}) & dlc_set
             others = apps - {base} - family
-            if not family or len(family) < len(others):
-                logger.debug(
-                    "Bundle %s skipped for %s: it carries %d DLC app(s) and %d outsider(s)",
-                    bundle["id"], base, len(family), len(others),
-                )
-                continue
+            if not base_in_bundle:
+                # Free-to-play / expansion bundle: must contain family DLCs
+                if not family or len(family) < len(others):
+                    logger.debug(
+                        "Bundle %s skipped for %s: outsider bundle with %d DLCs and %d outsiders",
+                        bundle["id"], base, len(family), len(others),
+                    )
+                    continue
+            else:
+                if dlc_set and (not family or len(family) < len(others)):
+                    logger.debug(
+                        "Bundle %s skipped for %s: it carries %d DLC app(s) and %d outsider(s)",
+                        bundle["id"], base, len(family), len(others),
+                    )
+                    continue
+        elif not base_in_bundle:
+            continue
         editions.append({
             "id": f"bundle:{bundle['id']}",
             "name": bundle["name"],
