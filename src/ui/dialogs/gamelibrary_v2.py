@@ -444,7 +444,6 @@ class GameDetailsDialogV2(QDialog):
         if getattr(self, "_builds_fetch_requested", False):
             return
         self._builds_fetch_requested = True
-        CACHE_FRESH_SECONDS = 3600
         try:
             from core.steamdb_scraper import ByparrManager, cffi_requests
             has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or (cffi_requests is not None)
@@ -460,11 +459,31 @@ class GameDetailsDialogV2(QDialog):
         if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
             self.builds_bottom_bar.setVisible(True)
 
+        # SteamDB is only asked automatically when there is nothing cached or the
+        # game has a newer build than the cache knows about. Everything else is
+        # served from cache; the Refresh button always fetches.
         if not getattr(self, "_cached_builds", None):
             self.builds_center_stack.setCurrentIndex(0)
             self._fetch_steamdb_builds_async()
-        elif self._cache_age < 0 or self._cache_age >= CACHE_FRESH_SECONDS:
+        elif self._builds_update_detected():
+            logger.info(f"[BuildsTab] Update detected for {self.appid}; refreshing build history.")
             self._fetch_steamdb_builds_async()
+
+    def _builds_update_detected(self) -> bool:
+        """True when Game Details saw an update the cached build list does not include."""
+        gd = self.game_data or {}
+        cached_ids = {str(b.get("buildid") or "") for b in (getattr(self, "_cached_builds", None) or [])}
+        latest = str(gd.get("latest_buildid") or "").strip()
+        if not latest:
+            try:
+                from managers.db_manager import DatabaseManager
+                info = DatabaseManager().get_app_info(str(self.appid), bypass_expiration=True) or {}
+                latest = str(info.get("buildid") or "").strip()
+            except Exception:
+                latest = ""
+        if latest and latest not in cached_ids:
+            return True
+        return gd.get("update_status") == "update_available" and not (latest and latest in cached_ids)
 
     def _ensure_workshop_loaded(self):
         is_vapor = bool(
@@ -652,8 +671,8 @@ class GameDetailsDialogV2(QDialog):
     def _init_builds_tab(self):
         init_builds_tab(self)
 
-    def _fetch_steamdb_builds_async(self):
-        fetch_steamdb_builds_async(self)
+    def _fetch_steamdb_builds_async(self, manual: bool = False):
+        fetch_steamdb_builds_async(self, manual=manual)
 
     def _populate_builds_cards(self, data: list):
         if sip.isdeleted(self):

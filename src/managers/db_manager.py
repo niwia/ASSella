@@ -527,12 +527,16 @@ class DatabaseManager:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
                 except Exception:
                     pass
+                try:
+                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN release_src TEXT")
+                except Exception:
+                    pass
 
                 now = int(time.time())
                 for dep_id, info in enrichments.items():
                     cur.execute("""
-                        INSERT INTO depot_enrichments (depot_id, appid, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO depot_enrichments (depot_id, appid, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, release_src, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(depot_id) DO UPDATE SET
                             appid = excluded.appid,
                             name = excluded.name,
@@ -543,6 +547,7 @@ class DatabaseManager:
                             oslist = excluded.oslist,
                             osarch = excluded.osarch,
                             releasestate = excluded.releasestate,
+                            release_src = COALESCE(excluded.release_src, depot_enrichments.release_src),
                             updated_at = excluded.updated_at
                     """, (
                         str(dep_id),
@@ -555,12 +560,56 @@ class DatabaseManager:
                         info.get("oslist"),
                         info.get("osarch"),
                         info.get("releasestate", "released"),
+                        info.get("release_src"),
                         now
                     ))
                 self.conn.commit()
                 logger.info(f"[DBManager] Saved {len(enrichments)} depot enrichments for App {appid}")
         except Exception as e:
             logger.error(f"[DBManager] Failed to save depot enrichments for {appid}: {e}")
+
+    def update_release_states(self, appid: str, states: Dict[str, Tuple[str, str]], names: Optional[Dict[str, str]] = None) -> None:
+        """Set verified release states ``{dlc_or_depot_id: (state, source)}`` for one base app.
+
+        Only the release columns change on existing rows; ids without a row get a
+        minimal DLC row so the state survives (e.g. DLCs Steam does not publish).
+        """
+        if not self.conn or not states:
+            return
+        aid = str(appid)
+        try:
+            with self._conn_lock:
+                self._depot_enrichments_cache.pop(aid, None)
+                cur = self.conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS depot_enrichments (
+                        depot_id TEXT PRIMARY KEY, appid TEXT, name TEXT, size_str TEXT,
+                        size_bytes INTEGER, dl_str TEXT, is_dlc INTEGER, oslist TEXT,
+                        osarch TEXT, updated_at INTEGER
+                    )
+                """)
+                for col in ("releasestate", "release_src"):
+                    try:
+                        cur.execute(f"ALTER TABLE depot_enrichments ADD COLUMN {col} TEXT")
+                    except Exception:
+                        pass
+                now = int(time.time())
+                for did, (state, src) in states.items():
+                    did = str(did)
+                    cur.execute(
+                        "UPDATE depot_enrichments SET releasestate = ?, release_src = ?, updated_at = ? WHERE depot_id = ?",
+                        (state, src, now, did),
+                    )
+                    if cur.rowcount == 0:
+                        nm = (names or {}).get(did) or f"DLC {did}"
+                        cur.execute(
+                            "INSERT OR IGNORE INTO depot_enrichments (depot_id, appid, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, release_src, updated_at) "
+                            "VALUES (?, ?, ?, '0 B', 0, '', 1, NULL, NULL, ?, ?, ?)",
+                            (did, aid, nm, state, src, now),
+                        )
+                self.conn.commit()
+        except Exception as e:
+            logger.debug(f"[DBManager] Failed to update release states for {appid}: {e}")
 
     def get_depot_enrichments(self, appid: str) -> Dict[str, dict]:
         """Returns cached depot enrichments for an appid, or empty dict if none."""
@@ -595,9 +644,13 @@ class DatabaseManager:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
                 except Exception:
                     pass
+                try:
+                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN release_src TEXT")
+                except Exception:
+                    pass
 
                 cur.execute("""
-                    SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate
+                    SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, release_src
                     FROM depot_enrichments
                     WHERE appid = ?
                 """, (aid,))
@@ -614,6 +667,9 @@ class DatabaseManager:
                         "oslist": r[6],
                         "osarch": r[7] if len(r) > 7 else None,
                         "releasestate": r[8] if len(r) > 8 and r[8] else "released",
+                        # Where the release state came from: "pics", "store", "none"
+                        # (not on Steam at all) or None (legacy row, never verified).
+                        "release_src": r[9] if len(r) > 9 else None,
                     }
                 self._depot_enrichments_cache[aid] = results
                 return copy.deepcopy(results)

@@ -25,6 +25,8 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 PRERELEASE = "prerelease"
+UNPUBLISHED = "unpublished"  # listed by the game (listofdlc) but Steam does not publish the app
+UNRELEASED_STATES = frozenset({PRERELEASE, UNPUBLISHED})
 
 STATUS_UNRELEASED = "unreleased"
 STATUS_READY = "ready_on_hubcap"
@@ -37,7 +39,7 @@ UNRELEASED_TAG = "[Unreleased]"
 def unreleased_tooltip(item_id: str, is_dlc_app: bool = False) -> str:
     what = "DLC" if is_dlc_app else "Depot"
     return (
-        f"{what} {item_id} is unreleased on Steam (prerelease).\n"
+        f"{what} {item_id} is not released on Steam (upcoming or unpublished).\n"
         "Valve has not published its files or decryption keys, so it cannot be enabled yet."
     )
 
@@ -107,13 +109,31 @@ class ReleaseGate:
         if item_id == self.base_appid:
             return False
         if is_dlc_app:
-            return self.dlc_release_state(item_id) == PRERELEASE
-        if self._own_state(item_id) == PRERELEASE:
+            return self.dlc_release_state(item_id) in UNRELEASED_STATES
+        if self._own_state(item_id) in UNRELEASED_STATES:
             return True
         owner = self.owner_dlc(item_id)
         if owner:
-            return self.dlc_release_state(owner) == PRERELEASE
+            return self.dlc_release_state(owner) in UNRELEASED_STATES
         return False
+
+    def needs_verification(self, dlc_id: Any) -> bool:
+        """True when a DLC's release state was never verified against Steam.
+
+        Legacy rows defaulted to "released" without asking PICS, which is how
+        unpublished DLC slipped through; those (and DLCs with no row at all)
+        are re-checked in the background via core.steam_api.resolve_dlc_release_states.
+        """
+        enr = self.enrichments.get(str(dlc_id))
+        return not (isinstance(enr, dict) and enr.get("release_src"))
+
+    def apply_verified(self, states: Dict[str, Tuple[str, str]]) -> None:
+        """Fold freshly verified ``{id: (state, source)}`` into this gate."""
+        for did, (state, src) in (states or {}).items():
+            row = dict(self.enrichments.get(str(did)) or {})
+            row["releasestate"], row["release_src"] = state, src
+            self.enrichments[str(did)] = row
+            self._dlc_state[str(did)] = state
 
     # ------------------------------------------------------------- gate 2
     def _index(self):
@@ -184,6 +204,8 @@ class ReleaseGate:
 __all__ = [
     "PRERELEASE",
     "ReleaseGate",
+    "UNPUBLISHED",
+    "UNRELEASED_STATES",
     "STATUS_MISSING",
     "STATUS_PENDING",
     "STATUS_READY",

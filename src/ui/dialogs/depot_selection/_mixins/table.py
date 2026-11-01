@@ -122,6 +122,46 @@ class DepotTableMixin:
         finally:
             self.table_widget.setUpdatesEnabled(True)
 
+    def _schedule_release_state_check(self, catalog_ids, enrichments) -> None:
+        """Verify never-checked DLC release states once per dialog, then repopulate.
+
+        Older caches defaulted DLCs Steam does not publish to "released"; this
+        asks PICS (and the Store, capped) off the UI thread.
+        """
+        if getattr(self, "_release_check_started", False):
+            return
+        unverified = [
+            d for d in catalog_ids
+            if d.isdigit() and d != str(self.app_id) and not (enrichments.get(d) or {}).get("release_src")
+        ]
+        if not unverified:
+            return
+        self._release_check_started = True
+        names = {str(k): str(v) for k, v in (getattr(self, "dlc_catalog", {}) or {}).items()}
+        app_id = str(self.app_id)
+
+        def _worker():
+            try:
+                from core.steam_api import resolve_dlc_release_states
+                from managers.db_manager import DatabaseManager
+                from utils.main_thread import post_to_main_thread
+                states = resolve_dlc_release_states(unverified)
+                if not states:
+                    return
+                DatabaseManager().update_release_states(app_id, states, names)
+                if any(st in ("prerelease", "unpublished") for st, _src in states.values()):
+                    def _repopulate():
+                        try:
+                            self._populate_table()
+                        except RuntimeError:
+                            pass  # dialog already closed
+                    post_to_main_thread(_repopulate)
+            except Exception as e:
+                logger.debug(f"[DepotSelection] Release state verification failed: {e}")
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _do_populate_table(self):
         self.table_widget.setSortingEnabled(False)
         self.table_widget.clearContents()
@@ -298,6 +338,10 @@ class DepotTableMixin:
             str(self.app_id), enrichments=cached_enrichments, app_depots=app_depots,
             db=db_mgr, key_index=key_index,
         )
+
+        self._schedule_release_state_check(catalog_ids=[
+            str(k).strip() for k in (getattr(self, "dlc_catalog", {}) or {}).keys()
+        ], enrichments=cached_enrichments)
 
         depotless_dlcs = []
         unreleased_dlcs = []

@@ -2379,6 +2379,36 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
         _seed_dlc_setup_defaults()
     _refresh_ui()
 
+    # Gate 1 safety net: DLC release states that were never verified against
+    # Steam (legacy rows defaulted to "released", or no row at all) are checked
+    # in the background, then the tables refresh with the real state.
+    def _verify_release_states(dlc_ids: List[str], names: Dict[str, str]) -> None:
+        try:
+            from core.steam_api import resolve_dlc_release_states
+            from managers.db_manager import DatabaseManager
+            states = resolve_dlc_release_states(dlc_ids)
+            if states:
+                DatabaseManager().update_release_states(appid_str, states, names)
+                enrichment_bridge.enriched.emit()
+        except Exception as e:
+            logger.debug(f"[DepotsTab] Release state verification failed: {e}")
+
+    try:
+        from managers.db_manager import DatabaseManager
+        _enr = DatabaseManager().get_depot_enrichments(appid_str) or {}
+        _state0 = _collect_state()
+        _dlc_names = {a["id"]: a["desc"] for a in _state0["apps"] if not a.get("is_base")}
+        _unverified = [d for d in _dlc_names if not (_enr.get(d) or {}).get("release_src")]
+        if _unverified:
+            if is_dlc_setup:
+                status_lbl.setText(f"Checking Steam release state for {len(_unverified)} DLC(s)...")
+                enrichment_bridge.enriched.connect(lambda: status_lbl.setText(
+                    "Pick the DLCs to add. Steam-owned and unreleased items are greyed out and left untouched."
+                ))
+            threading.Thread(target=_verify_release_states, args=(_unverified, _dlc_names), daemon=True).start()
+    except Exception as e:
+        logger.debug(f"[DepotsTab] Could not schedule release state verification: {e}")
+
     # Check if any depots are still generic and trigger async enrichment if needed
     initial_state = _collect_state()
     needs_enrichment = any(
