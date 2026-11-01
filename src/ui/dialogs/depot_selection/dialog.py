@@ -102,6 +102,20 @@ class DepotSelectionDialog(
             from ui.dialogs.single_depot_dialog import SingleDepotSelectionDialog
             return SingleDepotSelectionDialog(*args, **kwargs)
 
+        # Normal installs use the content-grouped layout unless the user asked
+        # for the classic list (Settings -> Downloads -> Depot selection).
+        # DLC-only and AT0-M configuration keep the classic window for now.
+        is_atom = bool(kwargs.get("is_atom_mode"))
+        if not is_dlc and not is_atom:
+            try:
+                from utils.settings import get_settings
+                classic = get_settings().value("classic_depot_selector", False, type=bool)
+            except Exception:
+                classic = False
+            if not classic:
+                from ui.dialogs.depot_selection.content_dialog import ContentDepotSelectionDialog
+                return super().__new__(ContentDepotSelectionDialog)
+
         return super().__new__(cls)
 
     def __init__(
