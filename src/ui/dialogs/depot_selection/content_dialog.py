@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QColor, QIcon
+from PyQt6.QtGui import QColor, QIcon, QPainter
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSizePolicy,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -60,6 +61,13 @@ CAT_HEADERS = {CAT_GAME: "Content", CAT_DLC: "DLC", CAT_MUSIC: "Soundtracks", CA
 _MUSIC_RE = re.compile(r"\b(?:soundtrack|o\.?s\.?t\.?|music|score)\b", re.I)
 _EXTRAS_RE = re.compile(r"\b(?:art\s*-?\s*book|artbook|digital\s+(?:art|book)|wallpapers?|comic|guide|manual|making\s+of)\b", re.I)
 _TAG_PREFIX_RE = re.compile(r"^(?:\s*\[[^\]]*\]\s*)+")
+# Status prefixes the classic table puts in front of its label. Here they are
+# pills, so only these are lifted out; OS / arch / DLC / language tags stay.
+_STATUS_PREFIX_RE = re.compile(
+    r"^(?:\s*\[(?:Steam Owned|Unreleased|No Key|Key Ready|Awaiting Key|Missing|Checking|Recovered|"
+    r"Unavailable|Missing from Hubcap|Unavailable on Hubcap \(404\))\]\s*)+",
+    re.I,
+)
 _SIZE_RE = re.compile(r"([\d.,]+)\s*([KMGT]?i?B)", re.I)
 _UNIT = {"b": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12, "kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3, "tib": 1024 ** 4}
 _SHARED_REDIST_IDS = {"228980", "228981", "228982", "228983", "228984", "228985", "228986", "228987", "228988", "228989", "228990", "229000", "229001", "229002", "229003", "229004", "229005", "229006", "229007", "229010", "229011", "229012", "229020", "229030", "229031", "229032", "229033"}
@@ -119,6 +127,16 @@ class _ElideLabel(QLabel):
 
     def _apply(self):
         self.setText(self.fontMetrics().elidedText(self._full, self._mode, max(10, self.width() - 2)))
+
+
+class _HighlightDelegate(QStyledItemDelegate):
+    """Paints BackgroundRole under the cell (the app stylesheet would hide it)."""
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        bg = index.data(Qt.ItemDataRole.BackgroundRole)
+        if bg is not None:
+            painter.fillRect(option.rect, bg)
+        super().paint(painter, option, index)
 
 
 def _tag(text: str) -> QLabel:
@@ -187,6 +205,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         self._current_group: Optional[str] = None
         self._group_filter = ""
         self._refreshing = False
+        self._scroll_to_highlight = False
 
         self._cs_build_shell()
         self.setMinimumHeight(self.MIN_H)  # parent sets 480; small games may be shorter
@@ -232,6 +251,8 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             "QPushButton { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.16);"
             f" border-radius: 6px; color: {TEXT}; font-size: 8.5pt; font-weight: 500; padding: 3px 10px; }}"
             f"QPushButton:hover {{ border-color: {ac}; background: rgba(255,255,255,0.10); }}"
+            "QPushButton:disabled { background: rgba(255,255,255,0.02); border-color: rgba(255,255,255,0.07);"
+            f" color: {DIM}; }}"
         )
 
     def _cs_build_shell(self) -> None:
@@ -273,9 +294,10 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         sub.setSpacing(4)
         appid_btn = getattr(self, "appid_btn", None)
         if appid_btn is not None:
-            appid_btn.setText(f"App {self.app_id}")
+            appid_btn.setText(str(self.app_id))
             appid_btn.setStyleSheet(
-                f"QPushButton {{ background: transparent; border: none; color: {MUTED}; font-size: 8pt; padding: 0; text-align: left; }}"
+                f"QPushButton {{ background: transparent; border: none; color: {MUTED}; font-size: 8pt; font-style: italic;"
+                " padding: 0; text-align: left; }}"
                 f"QPushButton:hover {{ color: {getattr(self, 'accent_color', '#a1c9fd')}; text-decoration: underline; }}"
             )
             appid_btn.setToolTip("Copy AppID")
@@ -283,6 +305,16 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         sub.addStretch(1)
         title_col.addLayout(sub)
         bar.addLayout(title_col, 1)
+
+        builds = getattr(self, "builds_btn", None)
+        if builds is not None:
+            _set = builds.setText
+            builds.setText = lambda text, _set=_set: _set(str(text).replace("Build: ", "", 1).strip())
+            builds.setText(builds.text())
+            builds.setToolTip(builds.toolTip() or "Build ID")
+        combo = getattr(self, "branch_combo", None)
+        if combo is not None and combo.count() <= 1:
+            combo.setEnabled(False)  # one branch: nothing to pick (painted greyed)
 
         pill = self._pill_style()
         for attr in ("edition_button", "branch_combo", "branch_btn", "builds_btn"):
@@ -323,8 +355,12 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         left = QWidget()
         left.setFixedWidth(250)
         ll = QVBoxLayout(left)
-        ll.setContentsMargins(4, 6, 4, 6)
+        ll.setContentsMargins(4, 8, 4, 6)   # same top margin as the right pane
         ll.setSpacing(4)
+        content_hdr = QLabel("Content")
+        content_hdr.setFixedHeight(self.HEAD_H)
+        content_hdr.setStyleSheet(f"color: {TEXT}; font-size: 9.5pt; font-weight: 600; padding-left: 6px;")
+        ll.addWidget(content_hdr)
         self._filter_edit = QLineEdit()
         self._filter_edit.setObjectName("csFilter")
         self._filter_edit.setPlaceholderText("Filter content...")
@@ -335,7 +371,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         self._group_list = QListWidget()
         self._group_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self._group_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._group_list.currentItemChanged.connect(self._on_group_selected)
+        self._group_list.itemClicked.connect(self._on_group_clicked)
         ll.addWidget(self._group_list, 1)
         h.addWidget(left)
 
@@ -343,6 +379,8 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         div.setFixedWidth(1)
         div.setStyleSheet("background: rgba(255,255,255,0.09);")
         h.addWidget(div)
+        self._left_pane, self._left_div = left, div
+        self._body = body
 
         right = QWidget()
         rl = QVBoxLayout(right)
@@ -350,7 +388,8 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         rl.setSpacing(4)
         head = QHBoxLayout()
         head.setSpacing(8)
-        self._detail_title = _ElideLabel("")
+        self._detail_title = _ElideLabel("Depots")
+        self._detail_title.setFixedHeight(self.HEAD_H)
         self._detail_title.setStyleSheet(f"color: {TEXT}; font-size: 9.5pt; font-weight: 600;")
         self._detail_sub = QLabel("")
         self._detail_sub.setStyleSheet(f"color: {MUTED}; font-size: 8pt;")
@@ -373,8 +412,9 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        t.setColumnWidth(0, 104)
-        t.setColumnWidth(2, 86)
+        t.setColumnWidth(0, 100)
+        t.setColumnWidth(2, 90)
+        t.setItemDelegate(_HighlightDelegate(t))
         t.verticalHeader().setDefaultSectionSize(30)
         t.cellClicked.connect(self._on_depot_clicked)
         self._depot_table = t
@@ -389,8 +429,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         from ui.widgets.modern_dropdown import ModernComboBox
         self._drive_combo = ModernComboBox()
         self._drive_combo.setFixedHeight(30)
-        self._drive_combo.setMinimumWidth(150)
-        self._drive_combo.setMaximumWidth(230)
+        self._drive_combo.setFixedWidth(150)
         self._fill_drive_combo()
         self._drive_combo.currentIndexChanged.connect(self._on_drive_changed)
         bar.addWidget(self._drive_combo)
@@ -430,10 +469,12 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         for p in paths:
             try:
                 t = storage_targets.describe(p)
-                label = f"{t.label} · {t.free} free" if getattr(t, "free", "") else t.label
+                label = t.label or str(p)
+                sub = f"{t.free} free · {p}" if getattr(t, "free", "") else str(p)
             except Exception:
-                label = str(p)
-            combo.add_item(label, p, subtitle=str(p))
+                label, sub = str(p), str(p)
+            combo.add_item(label, p, subtitle=sub)
+            combo.setItemData(combo.count() - 1, sub, Qt.ItemDataRole.ToolTipRole)
         if not paths:
             combo.add_item("Default location", None)
         idx = combo.findData(current) if current else 0
@@ -507,6 +548,9 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
                 or did in catalog
                 or "[DLC" in cfg[:48].upper()
             )
+            # Depot rows read exactly like the classic table (OS / arch / DLC /
+            # language tags kept); only status prefixes become pills.
+            label = _STATUS_PREFIX_RE.sub("", cfg).strip() or f"Depot {did}"
             clean = self._short_name(_TAG_PREFIX_RE.sub("", cfg).strip()) or f"Depot {did}"
             if not is_dlc:
                 key = app_id
@@ -544,7 +588,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
                         gname = clean
                 g = groups[key] = _Group(key, gname, self._category_for(gname, key == app_id))
             g.depots.append(_Depot(
-                row=row, depot_id=did, name=clean, icon=cfg_item.icon() if cfg_item else QIcon(),
+                row=row, depot_id=did, name=label, icon=cfg_item.icon() if cfg_item else QIcon(),
                 size_text="" if tag == "license" else size_text, size=_parse_size(size_text),
                 checked=it.checkState() == Qt.CheckState.Checked, selectable=selectable, tag=tag,
                 tooltip=(cfg_item.toolTip() if cfg_item else "") or it.toolTip(),
@@ -560,6 +604,12 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         self._refreshing = True
         try:
             self._groups = self._collect_groups()
+            if self._current_group not in self._groups:
+                self._current_group = None
+            # Base depots only: the content list would just repeat "Depots".
+            only_base = all(k == str(self.app_id) for k, g in self._groups.items() if g.depots)
+            self._left_pane.setVisible(not only_base)
+            self._left_div.setVisible(not only_base)
             self._filter_edit.setVisible(len(self._groups) > 12)
             self._fill_group_list()
             self._fill_depot_table()
@@ -569,24 +619,29 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         QTimer.singleShot(0, self._fit_height)
 
     MAX_H = 540   # classic window height stays the maximum
-    MIN_H = 330
+    MIN_H = 220
+    HEAD_H = 22   # "Content" / "Depots" header rows share this height
+    ROW_H = 30
 
     def _fit_height(self) -> None:
-        """Shrink the window to fit its content, up to the classic 540 px.
+        """Size the window to its content (every depot row), up to the classic 540 px.
 
         Stops adapting once the user resizes the window themselves.
         """
-        if getattr(self, "_user_resized", False) or self.isMaximized() or not hasattr(self, "_group_list"):
+        if getattr(self, "_user_resized", False) or self.isMaximized() or not hasattr(self, "_body"):
             return
-        lst, tbl = self._group_list, self._depot_table
-        left = sum(max(lst.sizeHintForRow(i), 22) for i in range(lst.count()))
-        if self._filter_edit.isVisible():
-            left += self._filter_edit.height() + 4
-        right = max(tbl.rowCount(), 1) * tbl.verticalHeader().defaultSectionSize() + 30
-        body = self._group_list.parentWidget().parentWidget()
-        chrome = self.height() - body.height()
-        target = max(self.MIN_H, min(self.MAX_H, chrome + max(left, right) + 18))
-        if abs(target - self.height()) > 4:
+        # Right pane: margins 8+6, header row, spacing, every depot row.
+        right = 8 + self.HEAD_H + 4 + max(self._depot_table.rowCount(), 1) * self.ROW_H + 6 + 2
+        left = 0
+        if self._left_pane.isVisible():
+            lst = self._group_list
+            rows = sum(max(lst.sizeHintForRow(i), 22) for i in range(lst.count()))
+            left = 8 + self.HEAD_H + 4 + rows + 2 * lst.frameWidth() + 2 * lst.spacing() * lst.count() + 6 + 8
+            if self._filter_edit.isVisible():
+                left += self._filter_edit.height() + 4
+        chrome = self.height() - self._body.height()
+        target = max(self.MIN_H, min(self.MAX_H, chrome + max(left, right) + 2))
+        if abs(target - self.height()) > 2:
             self._fitting = True
             self.resize(self.width(), target)
             self._fitting = False
@@ -605,23 +660,21 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
 
     def _ordered_groups(self) -> List[_Group]:
         flt = self._group_filter.lower()
-        order = {"ready": 0, "owned": 1, "no key": 2, "unreleased": 3}
         out = [g for g in self._groups.values() if not flt or flt in g.name.lower() or flt in g.key]
-        out.sort(key=lambda g: (CAT_ORDER.index(g.category), g.key != str(self.app_id), order.get(g.status, 9), g.name.lower()))
+        out.sort(key=self._group_sort_key)
         return out
+
+    def _group_sort_key(self, g: _Group):
+        order = {"ready": 0, "owned": 1, "no key": 2, "unreleased": 3}
+        return (CAT_ORDER.index(g.category), g.key != str(self.app_id), order.get(g.status, 9), g.name.lower())
 
     def _fill_group_list(self) -> None:
         lst = self._group_list
         scroll = lst.verticalScrollBar().value()
         lst.blockSignals(True)
         lst.clear()
-        groups = self._ordered_groups()
-        keys = [g.key for g in groups]
-        if self._current_group not in keys:
-            self._current_group = keys[0] if keys else None
-        last_cat = None
-        for g in groups:
-            # Section headers: "Content" over base game + DLC, then Soundtracks / Extras.
+        last_cat = CAT_GAME  # the fixed "Content" header covers base game + DLC
+        for g in self._ordered_groups():
             section = CAT_GAME if g.category in (CAT_GAME, CAT_DLC) else g.category
             if section != last_cat:
                 hdr = QListWidgetItem(CAT_HEADERS[section])
@@ -641,6 +694,9 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             lst.setItemWidget(item, self._make_group_row(g))
             if g.key == self._current_group:
                 lst.setCurrentItem(item)
+        if self._current_group is None:
+            lst.setCurrentRow(-1)
+            lst.clearSelection()
         lst.blockSignals(False)
         lst.verticalScrollBar().setValue(scroll)
 
@@ -654,7 +710,11 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         cb.setFixedSize(18, 18)
         sel = g.selectable
         if g.key == str(self.app_id):
-            cb.setVisible(False)  # base depots are picked individually on the right
+            # Base depots are picked individually on the right; keep the slot so names line up.
+            sp = cb.sizePolicy()
+            sp.setRetainSizeWhenHidden(True)
+            cb.setSizePolicy(sp)
+            cb.setVisible(False)
         elif sel:
             n = g.checked_count
             cb.setTristate(True)
@@ -681,27 +741,35 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             lay.addWidget(_tag(g.status), 0, Qt.AlignmentFlag.AlignVCenter)
         return w
 
+    def _ordered_depots(self) -> List[tuple]:
+        """Every depot, grouped in content-list order: [(group_key, depot), ...]."""
+        out = []
+        for g in sorted(self._groups.values(), key=self._group_sort_key):
+            out.extend((g.key, d) for d in g.depots)
+        return out
+
     def _fill_depot_table(self) -> None:
         tbl = self._depot_table
-        g = self._groups.get(self._current_group or "")
-        tbl.setRowCount(0)
-        if g is None:
-            self._detail_title.setFullText("")
-            self._detail_sub.setText("")
-            return
-        self._detail_title.setFullText(g.name)
-        sel = g.selectable
-        if sel:
-            n = g.checked_count
-            size = _fmt_size(g.picked_size)
-            self._detail_sub.setText(f"{n} of {len(sel)} depot{'s' if len(sel) != 1 else ''} · {size}")
-        else:
-            self._detail_sub.setText({
-                "owned": "Owned on Steam", "unreleased": "Not released yet", "no key": "No key on Hubcap",
-            }.get(g.status, ""))
+        scroll = tbl.verticalScrollBar().value()
+        rows = self._ordered_depots()
+        hl_key = self._current_group
+        ac = QColor(getattr(self, "accent_color", "#a1c9fd"))
+        hl_bg = QColor(ac.red(), ac.green(), ac.blue(), 46)
 
-        tbl.setRowCount(len(g.depots))
-        for r, d in enumerate(g.depots):
+        sel = [d for _k, d in rows if d.selectable]
+        picked = [d for d in sel if d.checked and d.tag != "license"]
+        self._detail_title.setFullText("Depots")
+        self._detail_sub.setText(
+            f"{len(picked)} of {len(sel)} depot{'s' if len(sel) != 1 else ''} · {_fmt_size(sum(d.size for d in picked))}"
+        )
+
+        tbl.setRowCount(0)
+        tbl.setRowCount(len(rows))
+        first_hl = -1
+        for r, (key, d) in enumerate(rows):
+            lit = hl_key is not None and key == hl_key
+            if lit and first_hl < 0:
+                first_hl = r
             id_item = QTableWidgetItem(d.depot_id)
             id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | (Qt.ItemFlag.ItemIsUserCheckable if d.selectable else Qt.ItemFlag.NoItemFlags))
             id_item.setCheckState(Qt.CheckState.Checked if d.checked else Qt.CheckState.Unchecked)
@@ -719,6 +787,8 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             tip = d.tooltip or d.name
             for itm in (id_item, name_item, size_item):
                 itm.setToolTip(tip)
+                if lit:
+                    itm.setBackground(hl_bg)
             tbl.setItem(r, 0, id_item)
             tbl.setItem(r, 1, name_item)
             tbl.setItem(r, 2, size_item)
@@ -744,26 +814,41 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
                 name_item.setText("")
                 name_item.setIcon(QIcon())
                 tbl.setCellWidget(r, 1, holder)
+        tbl.verticalScrollBar().setValue(scroll)
+        if self._scroll_to_highlight and first_hl >= 0:
+            self._scroll_to_highlight = False
+            QTimer.singleShot(0, lambda r=first_hl: self._depot_table.scrollToItem(
+                self._depot_table.item(r, 0), QAbstractItemView.ScrollHint.PositionAtTop))
 
     def _update_summary(self) -> None:
         picked_groups = [g for g in self._groups.values() if g.checked_count]
         picked = [d for g in picked_groups for d in g.depots if d.checked and d.selectable and d.tag != "license"]
         total = sum(d.size for d in picked)
-        self._summary.setText(
-            f"{len(picked_groups)} group{'s' if len(picked_groups) != 1 else ''} · "
-            f"{len(picked)} depot{'s' if len(picked) != 1 else ''} · {_fmt_size(total)}"
-        )
+        if self._left_pane.isVisible():
+            lead = f"{len(picked_groups)} group{'s' if len(picked_groups) != 1 else ''} · "
+        else:
+            lead = ""
+        self._summary.setText(f"{lead}{len(picked)} depot{'s' if len(picked) != 1 else ''} · {_fmt_size(total)}")
 
     # -------------------------------------------------------- interactions
     def _on_filter(self, text: str) -> None:
         self._group_filter = text.strip()
         self._fill_group_list()
-        self._fill_depot_table()
 
-    def _on_group_selected(self, current: Optional[QListWidgetItem], _prev=None) -> None:
-        if current is None or current.data(R_HEADER):
+    def _on_group_clicked(self, item: Optional[QListWidgetItem]) -> None:
+        """Highlight the depots a content group controls; clicking it again clears it."""
+        if item is None or item.data(R_HEADER):
             return
-        self._current_group = str(current.data(ROLE))
+        key = str(item.data(ROLE))
+        if key == self._current_group:
+            self._current_group = None
+            self._group_list.blockSignals(True)
+            self._group_list.setCurrentRow(-1)
+            self._group_list.clearSelection()
+            self._group_list.blockSignals(False)
+        else:
+            self._current_group = key
+            self._scroll_to_highlight = True
         self._fill_depot_table()
 
     def _click_source_row(self, row: int) -> None:
@@ -787,7 +872,9 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         for d in sel:
             if d.checked != target:
                 self._click_source_row(d.row)
-        self._current_group = key
+        if self._current_group != key:
+            self._current_group = key
+            self._scroll_to_highlight = True
         self._schedule_refresh()
 
 
