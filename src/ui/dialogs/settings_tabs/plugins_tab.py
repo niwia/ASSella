@@ -86,16 +86,6 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
             background-color: rgba(255, 255, 255, 0.08);
         }
     """
-    STYLE_COMBO = """
-        QComboBox {
-            background-color: rgba(255, 255, 255, 0.06);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 6px;
-            padding: 4px 8px;
-            color: #FFFFFF;
-            font-size: 8.5pt;
-        }
-    """
     STYLE_INACTIVE = """
         QPushButton {
             background-color: rgba(255, 255, 255, 0.08);
@@ -140,7 +130,6 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
     auth_lbl = QLabel("Primary Authority:")
     auth_lbl.setStyleSheet(STYLE_LABEL)
     mrc_auth_combo = ModernComboBox()
-    mrc_auth_combo.setStyleSheet(STYLE_COMBO)
     mrc_auth_combo.setFixedWidth(200)
     mrc_auth_combo.addItem("ManifestDeX (Primary)", "manifestdex")
     mrc_auth_combo.addItem("Wudrm", "wudrm")
@@ -154,7 +143,6 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
     rescue_lbl = QLabel("Secondary Rescue:")
     rescue_lbl.setStyleSheet(STYLE_LABEL)
     mrc_rescue_combo = ModernComboBox()
-    mrc_rescue_combo.setStyleSheet(STYLE_COMBO)
     mrc_rescue_combo.setFixedWidth(200)
     mrc_rescue_combo.addItem("Wudrm (Default)", "wudrm")
     mrc_rescue_combo.addItem("ManifestDeX", "manifestdex")
@@ -218,7 +206,6 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
     sm_lbl = QLabel("Splice Mode:")
     sm_lbl.setStyleSheet(STYLE_LABEL)
     styx_mode_combo = ModernComboBox()
-    styx_mode_combo.setStyleSheet(STYLE_COMBO)
     styx_mode_combo.setFixedWidth(200)
     styx_mode_combo.addItem("Insert (Recommended)", "insert")
     styx_mode_combo.addItem("Overwrite", "overwrite")
@@ -321,7 +308,6 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
     pmode_lbl = QLabel("Proxy Mode:")
     pmode_lbl.setStyleSheet(STYLE_LABEL)
     proxy_mode_combo = ModernComboBox()
-    proxy_mode_combo.setStyleSheet(STYLE_COMBO)
     proxy_mode_combo.setFixedWidth(200)
     proxy_mode_combo.addItem("Fallback (Direct first)", "fallback")
     proxy_mode_combo.addItem("Always (Worker first)", "always")

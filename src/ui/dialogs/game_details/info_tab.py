@@ -116,19 +116,6 @@ def init_info_tab(dialog) -> None:
     if is_vapor_mode:
         dialog.branch_combo.setEnabled(False)
         dialog.branch_combo.setToolTip("Branch selection is disabled for AT0-M games.")
-        dialog.branch_combo.setStyleSheet("""
-            QComboBox, CenteredComboBox {
-                background-color: rgba(255, 255, 255, 0.04);
-                color: rgba(255, 255, 255, 0.3);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 4px;
-            }
-            QComboBox:disabled, CenteredComboBox:disabled {
-                background-color: rgba(255, 255, 255, 0.03);
-                color: rgba(255, 255, 255, 0.3);
-                border: 1px solid rgba(255, 255, 255, 0.06);
-            }
-        """)
     actions_row.addWidget(dialog.branch_combo, 0)
 
     dialog.validate_btn = ProgressButton("Verify Build" if is_vapor_mode else "Verify Files", dialog)
@@ -701,19 +688,6 @@ def on_branches_loaded(dialog, branches_dict: dict) -> None:
         if is_vm:
             dialog.branch_combo.setEnabled(False)
             dialog.branch_combo.setToolTip("Branch selection is disabled for AT0-M games.")
-            dialog.branch_combo.setStyleSheet("""
-                QComboBox, CenteredComboBox {
-                    background-color: rgba(255, 255, 255, 0.04);
-                    color: rgba(255, 255, 255, 0.3);
-                    border: 1px solid rgba(255, 255, 255, 0.08);
-                    border-radius: 4px;
-                }
-                QComboBox:disabled, CenteredComboBox:disabled {
-                    background-color: rgba(255, 255, 255, 0.03);
-                    color: rgba(255, 255, 255, 0.3);
-                    border: 1px solid rgba(255, 255, 255, 0.06);
-                }
-            """)
     except Exception as e:
         logger.error(f"Error in _on_branches_loaded: {e}", exc_info=True)
         dialog.branch_combo.clear()

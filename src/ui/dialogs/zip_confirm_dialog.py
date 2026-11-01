@@ -691,26 +691,6 @@ class ZipImportConfirmationDialog(QDialog):
 
         self.dest_combo = ModernComboBox()
         self.dest_combo.setFixedHeight(28)
-        self.dest_combo.setStyleSheet("""
-            QComboBox {
-                background-color: rgba(255, 255, 255, 0.07);
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 6px;
-                padding: 2px 10px;
-                font-size: 8.4pt;
-                font-weight: 500;
-            }
-            QComboBox:hover {
-                border-color: rgba(255, 255, 255, 0.3);
-            }
-            QComboBox QAbstractItemView {
-                background-color: #1a1a24;
-                color: #FFFFFF;
-                selection-background-color: #4C8DF5;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-            }
-        """)
         dest_layout.addWidget(self.dest_combo, 1)
         self.confirm_layout.addWidget(self.dest_frame)
 

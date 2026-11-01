@@ -1524,14 +1524,6 @@ class FontSelectionDialog(QDialog):
                 color: #FFFFFF;
                 font-size: 9.5pt;
             }
-            QComboBox, QFontComboBox {
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                border-radius: 6px;
-                color: #FFFFFF;
-                padding: 5px 8px;
-                font-size: 9.5pt;
-            }
             QSpinBox {
                 background-color: rgba(255, 255, 255, 0.08);
                 border: 1px solid rgba(255, 255, 255, 0.2);

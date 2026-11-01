@@ -569,21 +569,6 @@ class ModernDepotSelectionDialog(QDialog):
             self.branch_combo.addItems(branch_list)
             if self.branch in branch_list:
                 self.branch_combo.setCurrentText(self.branch)
-            self.branch_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba(255, 255, 255, 0.16);
-                    border-radius: 6px;
-                    color: #FFFFFF;
-                    padding: 2px 10px;
-                    font-size: 8.5pt;
-                    font-weight: 600;
-                }}
-                QComboBox:hover {{
-                    border-color: rgba(255, 255, 255, 0.35);
-                    background-color: rgba(255, 255, 255, 0.12);
-                }}
-            """)
             self.branch_combo.currentTextChanged.connect(self._on_branch_changed)
             top_row.addWidget(self.branch_combo)
 
@@ -952,24 +937,6 @@ class ModernDepotSelectionDialog(QDialog):
             combo = ModernComboBox()
             combo.setFixedHeight(34)
             combo.setPlaceholderText("More Drives")
-            combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.04);
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 6px;
-                    color: rgba(255, 255, 255, 0.85);
-                    padding: 2px 8px;
-                    font-size: 8pt;
-                }}
-                QComboBox:hover {{
-                    border-color: {acc};
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1c23;
-                    color: #FFFFFF;
-                    selection-background-color: {acc};
-                }}
-            """)
             for i in range(max_direct_buttons, total_storages):
                 spath = storage_paths[i]
                 lbl_text, free_str, _ = _format_storage_info(spath)

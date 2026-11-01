@@ -2343,7 +2343,8 @@ class MainWindow(QMainWindow):
 
                         if should_prompt:
                             auto_skip = settings.value("auto_skip_single_choice", True, type=bool)
-                            if auto_skip and len(depots) == 1:
+                            from utils.dlc_helpers import is_dlc_only_context
+                            if auto_skip and len(depots) == 1 and not is_dlc_only_context(appid):
                                 selected_depots = list(depots.keys())
                             else:
                                 # Depot dialog must run on the main thread

@@ -467,6 +467,23 @@ def is_dlc_only_mode(appid: str) -> bool:
         return False
 
 
+def is_dlc_only_context(appid: str, *sources) -> bool:
+    """True when a job/dialog is working on a DLC-only game.
+
+    Checks the per-game DLC-only setting plus the transient flags that the
+    library, task manager and details dialog put on ``game_data`` / job
+    metadata (any number of dicts may be passed). DLC-only games must always
+    show the depot selector (AGENTS.md: DLC-Only Depot Selection Guard), so
+    single-depot auto-skip and countdowns are bypassed for them.
+    """
+    for src in sources:
+        if isinstance(src, dict) and any(
+            src.get(k) for k in ("_dlc_only", "_lock_dlc_only", "is_dlc_only", "dlc_only")
+        ):
+            return True
+    return is_dlc_only_mode(str(appid or ""))
+
+
 # Mirrors the limits used for the depot selector's smart presets
 # (src/ui/dialogs/depot_selection/selection_policy.py). They are repeated here
 # so this Qt-free module never imports the dialog package.

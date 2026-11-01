@@ -340,15 +340,6 @@ def create_sls_tab(dialog) -> QWidget:
     combo_row.setSpacing(6)
 
     game_combo = ModernComboBox()
-    game_combo.setStyleSheet("""
-        QComboBox {
-            background: rgba(255, 255, 255, 0.08);
-            color: #FFFFFF;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 4px;
-            padding: 4px 8px;
-        }
-    """)
 
     available_games = get_available_ticket_games()
     if available_games:

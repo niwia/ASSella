@@ -221,27 +221,6 @@ def create_assela_tab(dialog) -> QWidget:
 
     dialog.update_provider_combo = ModernComboBox()
     dialog.update_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-    dialog.update_provider_combo.setStyleSheet("""
-        QComboBox {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 6px;
-            padding: 4px 12px;
-            color: #FFFFFF;
-            font-size: 9pt;
-            min-width: 130px;
-        }
-        QComboBox:hover {
-            background: rgba(255, 255, 255, 0.08);
-            border-color: rgba(255, 255, 255, 0.25);
-        }
-        QComboBox QAbstractItemView {
-            background: #1e1e24;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            color: #FFFFFF;
-            selection-background-color: %s;
-        }
-    """ % dialog.accent_color)
     dialog.update_provider_combo.addItem("Auto (Hybrid)", "auto")
     dialog.update_provider_combo.addItem("SteamPICS", "steampics")
     dialog.update_provider_combo.addItem("SteamcmdAPI", "steamcmd")

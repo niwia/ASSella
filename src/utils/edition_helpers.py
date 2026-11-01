@@ -245,6 +245,61 @@ def fetch_package_contents_batch(package_ids: List[int], timeout: float = 6.0) -
     return result
 
 
+def _is_exact_game_name(name: str, game_name: str) -> bool:
+    """Strict: the package is sold under the game's own title (no edition suffix)."""
+    def norm(v: str) -> str:
+        v = re.sub(r"[\u2122\u00ae\u00a9]", "", str(v or "")).lower()
+        return re.sub(r"[^a-z0-9]+", "", v)
+    return bool(game_name) and norm(name) == norm(game_name)
+
+
+def _merge_identical_editions(editions: List[Dict[str, Any]], game_name: str = "") -> List[Dict[str, Any]]:
+    """Collapse editions that select exactly the same depots into one entry.
+
+    Selecting identical depot sets twice is pointless, and this is what makes
+    add-on packs (e.g. "Standard + Shark Card") disappear without name rules:
+    they grant the same depots as the plain game. The kept entry is the one a
+    user would recognise: the game's own name, then a non-currency name, then
+    the shortest; the others are listed as ``aliases``.
+    """
+    groups: Dict[Tuple[frozenset, frozenset], List[Dict[str, Any]]] = {}
+    order: List[Tuple[frozenset, frozenset]] = []
+    for ed in editions:
+        # Same selectable depots AND same unavailable DLC content: an edition that
+        # adds DLC Hubcap does not have stays separate so the user can see it.
+        key = (
+            frozenset(str(d) for d in ed.get("depot_ids") or ()),
+            frozenset(str(d) for d in ed.get("unavailable_depots") or ()),
+        )
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(ed)
+
+    def _rank(ed: Dict[str, Any]):
+        name = str(ed.get("name") or "")
+        return (
+            0 if _is_exact_game_name(name, game_name) else 1,
+            1 if edition_catalog.is_currency_option("", name) else 0,
+            1 if ed.get("source") == "bundle" else 0,
+            len(name),
+        )
+
+    merged: List[Dict[str, Any]] = []
+    for key in order:
+        group = sorted(groups[key], key=_rank)
+        keep = dict(group[0])
+        aliases = [str(e.get("name") or "") for e in group[1:] if e.get("name") and e.get("name") != keep.get("name")]
+        if aliases:
+            keep["aliases"] = aliases
+        missing: Set[str] = set()
+        for e in group:
+            missing |= set(e.get("unavailable_depots") or ())
+        keep["unavailable_depots"] = missing
+        merged.append(keep)
+    return merged
+
+
 def resolve_edition_depots(
     app_id: str,
     depots: Dict[Any, Any],
@@ -360,77 +415,132 @@ def resolve_edition_depots(
             except Exception as _e:
                 logger.debug(f"[EditionHelpers] Package contents batch query failed: {_e}")
 
-    # A. Real store packages with exact depot mapping
+    # Context for data-driven matching:
+    #  - dlc_set: the game's own DLC apps (anything else in a package is an outsider)
+    #  - pics_depots: every depot Steam lists for the game, so an edition can say
+    #    how many of its depots are NOT available here (not on Hubcap / no key)
+    dlc_set: Set[str] = set()
+    pics_depots: Dict[str, Any] = {}
+    if include_store:
+        try:
+            dlc_set = {str(d).strip() for d in (edition_catalog.get_dlc_appids(aid_str, allow_network=True) or []) if str(d).strip()}
+        except Exception as _e:
+            logger.debug(f"[EditionHelpers] DLC list unavailable for {aid_str}: {_e}")
+        try:
+            from managers.db_manager import DatabaseManager
+            pics_depots = (DatabaseManager().get_app_info(aid_str, bypass_expiration=True) or {}).get("depots") or {}
+        except Exception as _e:
+            logger.debug(f"[EditionHelpers] Cached PICS depots unavailable for {aid_str}: {_e}")
+    for _did, _d in depots.items():
+        if isinstance(_d, dict):
+            _cand = str(_d.get("dlcappid") or "").strip()
+            if _cand and _cand != aid_str:
+                dlc_set.add(_cand)
+    known_depot_ids = {str(d) for d in depots.keys()}
+
+    def _depot_owner(did: str) -> str:
+        d_data = depots.get(did) or depots.get(int(did) if str(did).isdigit() else 0) or pics_depots.get(did) or {}
+        return str((d_data or {}).get("dlcappid") or "").strip() if isinstance(d_data, dict) else ""
+
+    def _map_apps_to_depots(apps: Set[str], direct_depots: Set[str]) -> Set[str]:
+        """Selectable depots (for this platform) granted by a set of apps / depot ids."""
+        out: Set[str] = set(base_depots) if aid_str in apps else set()
+        for did in complete_depots:
+            owner = _depot_owner(did)
+            if did in direct_depots or did in apps or (owner and owner in apps):
+                out.add(str(did))
+        return out
+
+    def _unavailable_for(apps: Set[str], direct_depots: Set[str]) -> Set[str]:
+        """Depots the edition grants on this platform that are not in this manifest."""
+        missing: Set[str] = set()
+        for did, d_data in pics_depots.items():
+            did = str(did)
+            if not did.isdigit() or did in known_depot_ids or not isinstance(d_data, dict):
+                continue
+            if not _depot_matches_platform(d_data, target_platform):
+                continue
+            # Only DLC content counts: base-game language depots a manifest leaves
+            # out are normal and would just be noise here.
+            owner = str(d_data.get("dlcappid") or "").strip()
+            if not owner or owner == aid_str or owner not in apps:
+                continue
+            lang = str((d_data.get("config") or {}).get("language") or d_data.get("language") or "").lower() if isinstance(d_data.get("config"), dict) or d_data.get("language") else ""
+            if lang and lang != language.lower():
+                continue
+            if str(d_data.get("size") or "1") != "0":
+                missing.add(did)
+        return missing
+
+    # A. Real store packages: contents from Steam PICS packageinfo (exact depot
+    # ids), else from the store's included_appids. Name guessing is only used
+    # when neither source answered for ANY package (fully offline).
     game_name = edition_catalog.get_app_name(aid_str) if store_pkgs else ""
+    unresolved = [p.get("packageid") for p in store_pkgs if not pkg_contents.get(str(p.get("packageid")))]
+    store_apps: Dict[str, Set[str]] = {}
+    if unresolved and include_store:
+        try:
+            store_apps = edition_catalog.fetch_package_apps_batch(unresolved)
+        except Exception as _e:
+            logger.debug(f"[EditionHelpers] Store package contents unavailable: {_e}")
+    any_data = bool(pkg_contents or store_apps)
+
     for pkg in store_pkgs:
         pkg_id = pkg.get("packageid")
         pkg_name = pkg.get("name", "")
         if not pkg_name:
             continue
 
-        short_name = make_short_edition_name(pkg_name, fallback=pkg_name)
-
         pinfo = pkg_contents.get(str(pkg_id)) or {}
-        pkg_apps = pinfo.get("appids", set())
-        pkg_depots_direct = pinfo.get("depotids", set())
+        pkg_apps = {str(a) for a in (pinfo.get("appids") or set())} or set(store_apps.get(str(pkg_id), set()))
+        pkg_depots_direct = {str(d) for d in (pinfo.get("depotids") or set())}
 
-        # If package details were resolved from PICS:
         if pkg_apps or pkg_depots_direct:
-            matching_depots = set()
-            # If base appid is inside package, include base depots
-            if aid_str in pkg_apps:
-                matching_depots |= base_depots
-
-            for did in complete_depots:
-                d_data = depots.get(did) or depots.get(int(did) if str(did).isdigit() else 0) or {}
-                dlc_cand = str(d_data.get("dlcappid") or "").strip()
-                if did in pkg_depots_direct or did in pkg_apps:
-                    matching_depots.add(str(did))
-                elif dlc_cand and dlc_cand in pkg_apps:
-                    matching_depots.add(str(did))
-
-            pkg_depots = matching_depots if matching_depots else complete_depots
-        else:
-            # Fallback heuristic if offline / PICS unpopulated
+            # Outsiders: apps that are neither this game nor one of its DLCs
+            # (crossover bundles with other games). Soundtracks etc. are DLCs.
+            outsiders = pkg_apps - {aid_str} - dlc_set
+            family = pkg_apps & dlc_set
+            if outsiders and (aid_str not in pkg_apps or len(outsiders) > len(family)):
+                logger.debug(f"[EditionHelpers] Package {pkg_id} skipped: {len(outsiders)} outsider app(s)")
+                continue
+            pkg_depots = _map_apps_to_depots(pkg_apps, pkg_depots_direct)
+            if not pkg_depots:
+                continue  # grants nothing selectable here (e.g. soundtrack-only)
+            unavailable = _unavailable_for(pkg_apps, pkg_depots_direct)
+            source = "store"
+        elif not any_data:
             pkg_lower = pkg_name.lower()
             if _is_same_game_name(pkg_name, game_name) or "standard" in pkg_lower or "base" in pkg_lower:
                 pkg_depots = base_depots if base_depots else complete_depots
             else:
                 pkg_depots = complete_depots
+            unavailable = set()
+            source = "store (unverified)"
+        else:
+            continue  # contents unknown while others resolved: do not guess
 
-        # Deduplicate pure currency add-on bundles (e.g. Shark Card) if identical to base package
-        if any(e.get("depot_ids") == pkg_depots and re.search(r"(?:shark|card|points|coins)", pkg_name, re.I) for e in editions):
-            continue
-
-        if not any(e["name"] == pkg_name for e in editions):
-            editions.append({
-                "id": f"{target_platform}_pkg_{pkg_id}",
-                "name": pkg_name,
-                "short_name": short_name,
-                "platform": target_platform,
-                "depot_ids": pkg_depots,
-                "is_highest": False,
-            })
+        editions.append({
+            "id": f"{target_platform}_pkg_{pkg_id}",
+            "name": pkg_name,
+            "short_name": "Standard" if _is_exact_game_name(pkg_name, game_name) else make_short_edition_name(pkg_name, fallback=pkg_name),
+            "platform": target_platform,
+            "depot_ids": pkg_depots,
+            "unavailable_depots": unavailable,
+            "source": source,
+            "is_highest": False,
+        })
 
     # B. Store bundles (the named editions, collections, etc. from Steam store)
     if include_store:
         try:
-            dlc_appids = edition_catalog.get_dlc_appids(aid_str, allow_network=True)
-            dlc_set = {str(d).strip() for d in (dlc_appids or []) if str(d).strip()}
-            for bundle in edition_catalog.bundle_editions(aid_str, dlc_appids):
+            for bundle in edition_catalog.bundle_editions(aid_str, sorted(dlc_set)):
                 bundle_apps = {str(a).strip() for a in bundle.get("app_ids", []) if str(a).strip()}
                 family_apps = bundle_apps & dlc_set
                 if aid_str not in bundle_apps and not family_apps:
                     continue
-                bundle_depots = set(base_depots)
-                for did in complete_depots:
-                    d_data = depots.get(did) or depots.get(int(did) if str(did).isdigit() else 0) or {}
-                    dlc_cand = str((d_data or {}).get("dlcappid") or "").strip()
-                    if dlc_cand and dlc_cand in bundle_apps:
-                        bundle_depots.add(str(did))
-                    elif str(did) in bundle_apps:
-                        bundle_depots.add(str(did))
-                if not bundle_depots and not base_depots:
+                # A bundle without the base game still needs it to play.
+                bundle_depots = _map_apps_to_depots(bundle_apps | {aid_str}, set())
+                if not bundle_depots:
                     continue
                 name = str(bundle.get("name") or "").strip()
                 if not name or any(e["name"] == name for e in editions):
@@ -442,10 +552,14 @@ def resolve_edition_depots(
                     "short_name": make_short_edition_name(name, fallback=name),
                     "platform": target_platform,
                     "depot_ids": bundle_depots,
+                    "unavailable_depots": _unavailable_for(bundle_apps | {aid_str}, set()),
+                    "source": "bundle",
                     "is_highest": False,
                 })
         except Exception as exc:
             logger.debug(f"[EditionHelpers] Bundle editions unavailable for {aid_str}: {exc}")
+
+    editions = _merge_identical_editions(editions, game_name)
 
     # C. Fallback only if no real store packages/bundles exist (offline / indie title without store API data)
     if not editions:

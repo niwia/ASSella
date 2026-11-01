@@ -1645,7 +1645,10 @@ class FetchManifestDialog(QDialog):
             selected_depots = None
             is_single = is_effectively_single_depot(depots, missing_depots)
 
-            show_timer = (is_single and auto_skip and has_default_dl)
+            # DLC-only games must always get the depot selector (never the countdown).
+            from utils.dlc_helpers import is_dlc_only_context
+            is_dlc_only = is_dlc_only_context(appid, parsed_data, metadata)
+            show_timer = (is_single and auto_skip and has_default_dl and not is_dlc_only)
             open_dialog = False
 
             if show_timer:

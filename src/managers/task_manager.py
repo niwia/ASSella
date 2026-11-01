@@ -409,7 +409,10 @@ class TaskManager(
 
         # Show 3-second countdown timer ONLY if single depot AND auto_skip is enabled AND a default download directory is set!
         # If user chose "Ask Every Time" (has_default_dl is False), always open minimal depot selection directly so they can choose their drive.
-        show_timer = (is_single and auto_skip_single_choice and has_default_dl)
+        # DLC-only games must always get the depot selector (never the countdown).
+        from utils.dlc_helpers import is_dlc_only_context
+        is_dlc_only = is_dlc_only_context(appid, self.game_data, self.current_job_metadata)
+        show_timer = (is_single and auto_skip_single_choice and has_default_dl and not is_dlc_only)
 
         if show_timer:
             from ui.dialogs.single_depot_timer_dialog import SingleDepotTimerDialog

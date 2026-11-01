@@ -241,24 +241,6 @@ class CanaryWelcomeDialog(QDialog):
                 border-bottom: 1px solid {self.accent_color};
                 background-color: rgba(255, 255, 255, 0.07);
             }}
-            QComboBox {{
-                background-color: rgba(255, 255, 255, 0.06);
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 6px;
-                padding: 4px 10px;
-                color: #FFFFFF;
-                font-size: 9pt;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 20px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #1a1c23;
-                color: #FFFFFF;
-                selection-background-color: {self.accent_color};
-                selection-color: #000000;
-            }}
             QCheckBox {{
                 color: #FFFFFF;
                 font-size: 9.5pt;

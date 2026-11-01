@@ -192,67 +192,12 @@ class SettingsDialog(QDialog):
 
     def _setup_ui(self) -> None:
         """Initialize the UI layout."""
-        ac = self.accent_color
-        from utils.color_utils import get_dark_container_color
-        sel_bg_hex = get_dark_container_color(ac)
-
         bg_col = self.settings.value("background_color", "#141416")
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: {bg_col};
                 color: #FFFFFF;
                 border: 1px solid rgba(255, 255, 255, 0.15);
-            }}
-            QComboBox {{
-                background-color: rgba(255, 255, 255, 0.08) !important;
-                border: 1px solid rgba(255, 255, 255, 0.22) !important;
-                border-radius: 7px !important;
-                color: #FFFFFF !important;
-                padding: 4px 26px 4px 10px !important;
-                font-size: 9pt !important;
-                font-weight: 500 !important;
-                min-height: 20px !important;
-            }}
-            QComboBox:hover {{
-                background-color: rgba(255, 255, 255, 0.14) !important;
-                border-color: rgba(255, 255, 255, 0.38) !important;
-            }}
-            QComboBox:focus {{
-                border: 2px solid {self.accent_color} !important;
-            }}
-            QComboBox::drop-down {{
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 22px;
-                border: none;
-                background: transparent;
-            }}
-            QComboBox::down-arrow {{
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid rgba(255, 255, 255, 0.85);
-                width: 0;
-                height: 0;
-                margin-right: 8px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #1b1b1f;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                border-radius: 8px;
-                selection-background-color: {sel_bg_hex};
-                selection-color: #FFFFFF;
-                outline: 0px;
-                padding: 4px;
-            }}
-            QComboBox QAbstractItemView::item {{
-                min-height: 28px;
-                padding: 4px 12px;
-                color: #E0E0E0;
-            }}
-            QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
-                background-color: {sel_bg_hex} !important;
-                color: #FFFFFF !important;
             }}
             QLineEdit {{
                 background-color: rgba(255, 255, 255, 0.07) !important;

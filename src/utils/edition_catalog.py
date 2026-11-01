@@ -47,13 +47,13 @@ def _read_cache() -> Dict[str, Any]:
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
     except FileNotFoundError:
-        return {"apps": {}, "bundles": {}, "bundle_data": {}, "packages": {}}
+        return {"apps": {}, "bundles": {}, "bundle_data": {}, "packages": {}, "package_data": {}}
     except (OSError, ValueError) as exc:
         logger.debug("Edition cache unreadable, starting fresh: %s", exc)
-        return {"apps": {}, "bundles": {}, "bundle_data": {}, "packages": {}}
+        return {"apps": {}, "bundles": {}, "bundle_data": {}, "packages": {}, "package_data": {}}
     if not isinstance(data, dict):
-        return {"apps": {}, "bundles": {}, "bundle_data": {}, "packages": {}}
-    for bucket in ("apps", "bundles", "bundle_data", "packages"):
+        return {"apps": {}, "bundles": {}, "bundle_data": {}, "packages": {}, "package_data": {}}
+    for bucket in ("apps", "bundles", "bundle_data", "packages", "package_data"):
         data.setdefault(bucket, {})
         if not isinstance(data[bucket], dict):
             data[bucket] = {}
@@ -544,3 +544,56 @@ def fetch_store_packages(
 
     packages, _ = _fetch_app_store_items(key, timeout=timeout)
     return packages
+
+
+def fetch_package_apps_batch(
+    package_ids: Iterable[Any], *, allow_network: bool = True
+) -> Dict[str, Set[str]]:
+    """App ids each store package (sub) grants, from the store's ``included_appids``.
+
+    This is the no-login fallback for when Steam PICS ``packageinfo`` is not
+    reachable: it gives the package's apps (base game, DLCs, soundtrack, ...)
+    but not depot ids, which the resolver maps through each depot's
+    ``dlcappid``. Batched (100 per call) and cached like bundles.
+    """
+    wanted: List[int] = []
+    for raw in package_ids:
+        try:
+            wanted.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not wanted:
+        return {}
+
+    cache = _read_cache()
+    result: Dict[str, Set[str]] = {}
+    missing: List[int] = []
+    for pid in wanted:
+        entry = cache["package_data"].get(str(pid))
+        if _fresh(entry):
+            apps = {str(a) for a in entry.get("app_ids") or []}
+            if apps:
+                result[str(pid)] = apps
+        elif allow_network:
+            missing.append(pid)
+
+    now = int(time.time())
+    for i in range(0, len(missing), 100):
+        chunk = missing[i:i + 100]
+        data = _store_api("GetItems", {
+            "ids": [{"packageid": int(p)} for p in chunk],
+            "context": _STORE_CONTEXT,
+            "data_request": {"include_basic_info": True},
+        })
+        items = ((data or {}).get("response") or {}).get("store_items") or []
+        for item in items:
+            try:
+                pid = int(item.get("id"))
+            except (TypeError, ValueError):
+                continue
+            included = item.get("included_appids") or []
+            apps = sorted({str(a) for a in included if str(a).strip() and str(a) != "0"}) if isinstance(included, list) else []
+            _update_cache("package_data", str(pid), {"ts": now, "app_ids": apps})
+            if apps:
+                result[str(pid)] = set(apps)
+    return result

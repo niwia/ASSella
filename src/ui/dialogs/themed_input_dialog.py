@@ -76,19 +76,13 @@ class ThemedInputDialog(QDialog):
                 color: #e5e7eb;
                 font-size: 9.5pt;
             }}
-            QLineEdit, QComboBox {{
+            QLineEdit {{
                 background-color: rgba(255, 255, 255, 0.06);
                 border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 5px;
                 color: #e5e7eb;
                 padding: 5px 8px;
                 min-height: 24px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: {self.background_color};
-                color: #e5e7eb;
-                selection-background-color: {self.accent_color};
-                selection-color: #0b0d12;
             }}
         """)
 

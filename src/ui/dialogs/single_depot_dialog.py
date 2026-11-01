@@ -293,31 +293,6 @@ class SingleDepotSelectionDialog(QDialog):
             self.branch_combo = ModernComboBox()
             self.branch_combo.setFixedHeight(28)
             self.branch_combo.setMinimumWidth(110)
-            self.branch_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba(255, 255, 255, 0.16);
-                    border-radius: 6px;
-                    color: #FFFFFF;
-                    padding: 2px 10px;
-                    font-size: 8.5pt;
-                    font-weight: 600;
-                }}
-                QComboBox:hover {{
-                    border-color: rgba(255, 255, 255, 0.3);
-                    background-color: rgba(255, 255, 255, 0.10);
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 18px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1c23;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }}
-            """)
             self.branch_combo.addItems(branch_list)
             self.branch_combo.currentTextChanged.connect(self._on_branch_changed)
             if self.branch in branch_list:
@@ -684,43 +659,9 @@ class SingleDepotSelectionDialog(QDialog):
 
         # Dropdown combo box for 4+ storages
         if overflow_paths:
-            combo_style = f"""
-                QComboBox {{
-                    background-color: transparent;
-                    color: rgba(255, 255, 255, 0.7);
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 4px;
-                    padding: 2px 8px;
-                    font-size: 8.5pt;
-                    font-weight: 500;
-                }}
-                QComboBox:hover {{
-                    border-color: {self.accent_color};
-                    color: {self.accent_color};
-                }}
-                QComboBox[active="true"] {{
-                    background-color: {self.accent_color} !important;
-                    color: {text_hex} !important;
-                    border: 1px solid {self.accent_color} !important;
-                    font-weight: bold;
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 14px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1c23;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    selection-color: {text_hex};
-                    border: 1px solid rgba(255, 255, 255, 0.18);
-                    border-radius: 4px;
-                }}
-            """
             combo = ModernComboBox()
             combo.setFixedHeight(28)
             combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            combo.setStyleSheet(combo_style)
             combo.setCursor(Qt.CursorShape.PointingHandCursor)
             combo.addItem("More...", None)
 
@@ -1231,33 +1172,6 @@ class SingleDepotSelectionDialog(QDialog):
                     padding: 2px 12px;
                 }}
             """)
-        if hasattr(self, "branch_combo") and self.branch_combo:
-            self.branch_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba({ar}, {ag}, {ab}, 0.35);
-                    border-radius: 6px;
-                    color: #FFFFFF;
-                    padding: 2px 10px;
-                    font-size: 8.5pt;
-                    font-weight: 600;
-                }}
-                QComboBox:hover {{
-                    border-color: {self.accent_color};
-                    background-color: rgba(255, 255, 255, 0.10);
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 18px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1c23;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }}
-            """)
-
         if hasattr(self, "_locked_storage_btn") and self._locked_storage_btn:
             from ui.dialogs.storage_lock import style_locked_storage_button
             style_locked_storage_button(self._locked_storage_btn, self.accent_color)
@@ -1288,27 +1202,6 @@ class SingleDepotSelectionDialog(QDialog):
             for btn in self._storage_btn_group.buttons():
                 btn.setStyleSheet(btn_style)
 
-        if hasattr(self, "_storage_overflow_combo") and self._storage_overflow_combo:
-            self._storage_overflow_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: transparent;
-                    color: rgba(255, 255, 255, 0.7);
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 4px;
-                    padding: 2px 8px;
-                    font-size: 8.5pt;
-                }}
-                QComboBox:hover {{
-                    border-color: {self.accent_color};
-                    color: {self.accent_color};
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1a24;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }}
-            """)
         self.update()
 
     def closeEvent(self, a0):

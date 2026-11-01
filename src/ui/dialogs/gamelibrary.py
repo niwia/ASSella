@@ -198,20 +198,6 @@ class GameLibraryDialog(
                 border-radius: 4px; 
             }}
             
-            QComboBox {{ 
-                background-color: #1e1e1e; 
-                color: #FFFFFF; 
-                border: 1px solid #333333; 
-                padding: 5px; 
-                border-radius: 4px; 
-            }}
-            QComboBox::drop-down {{ border: none; }}
-            QComboBox QAbstractItemView {{
-                background-color: #1e1e1e;
-                color: #FFFFFF;
-                selection-background-color: #222;
-                border: none;
-            }}
         """
         )
 

@@ -1504,7 +1504,7 @@ def init_depots_tab(dialog) -> None:
 
             if is_missing:
                 # Unreleased depots already in config show their live state, but stay locked.
-                toggle = MiniSwitchToggle(checked=(is_unrel and is_live), read_only=True)
+                toggle = MiniSwitchToggle(checked=False, read_only=True)
                 toggle.setEnabled(False)
                 toggle.setToolTip(item.get("missing_tooltip") or "Depot key is not available — cannot enable in AdditionalDepots.")
                 depot_toggles[did] = toggle
@@ -1750,8 +1750,15 @@ def init_depots_tab(dialog) -> None:
                 # 2. Depots (add if desired and missing, remove if unchecked and present)
                 for item in state["depots"]:
                     did = item["id"]
-                    if did == appid_str or item.get("is_missing") or item.get("is_unreleased"):
-                        continue  # Safeguard: AppIDs, missing and unreleased depots are never changed here
+                    if item.get("is_unreleased"):
+                        # Gate 1: unreleased depots have no published files; never keep them
+                        # in AdditionalDepots. Their keys are left untouched (see keys below).
+                        if did in state["live_depots"] and did != appid_str:
+                            editor.remove_depot(did, check_shared=True, excluding_appid=appid_str)
+                            removed_count += 1
+                        continue
+                    if did == appid_str or item.get("is_missing"):
+                        continue  # Safeguard: AppIDs and missing depots are never changed here
                     desired = desired_depots.get(did, did in state["live_depots"])
                     if desired and did not in state["live_depots"]:
                         comment = build_depot_comment(game_name, did, "", appid_str)
@@ -1807,8 +1814,14 @@ def init_depots_tab(dialog) -> None:
                 )
                 for item in state["depots"]:
                     did = item["id"]
-                    if did == appid_str or item.get("is_unreleased"):
-                        continue  # Safeguard: AppIDs never in AdditionalDepots; unreleased never auto-added
+                    if item.get("is_unreleased"):
+                        # Gate 1: prune unreleased depots from AdditionalDepots (keys untouched)
+                        if did in state["live_depots"] and did != appid_str:
+                            editor.remove_depot(did, check_shared=True, excluding_appid=appid_str)
+                            removed_count += 1
+                        continue
+                    if did == appid_str:
+                        continue  # Safeguard: AppIDs must never be in AdditionalDepots
                     if did not in state["live_depots"] and did in valid_keys:
                         comment = build_depot_comment(game_name, did, "", appid_str)
                         editor.add_depot(did, comment=comment, app_id=appid_str)

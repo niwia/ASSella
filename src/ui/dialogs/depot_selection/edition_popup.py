@@ -21,9 +21,16 @@ def _edition_subtitle(edition: dict) -> str:
     depot_count = len(edition.get("depot_ids") or ())
     if depot_count > 0:
         parts.append(f"{depot_count} depot{'s' if depot_count != 1 else ''}")
+    missing = len(edition.get("unavailable_depots") or ())
+    if missing:
+        parts.append(f"{missing} not on Hubcap")
     source = str(edition.get("source") or "")
     if source:
         parts.append(source.capitalize())
+    aliases = [a for a in (edition.get("aliases") or []) if a]
+    if aliases:
+        extra = f" +{len(aliases) - 1}" if len(aliases) > 1 else ""
+        parts.append(f"also: {aliases[0]}{extra}")
     return " • ".join(parts)
 
 

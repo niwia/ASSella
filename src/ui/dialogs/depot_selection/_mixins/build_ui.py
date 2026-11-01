@@ -275,32 +275,6 @@ class BuildUIMixin:
             self.branch_combo = ModernComboBox()
             self.branch_combo.setFixedHeight(24)
             self.branch_combo.setMinimumWidth(110)
-            self.branch_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba({accent_r}, {accent_g}, {accent_b}, 0.35);
-                    border-radius: 6px;
-                    color: #FFFFFF;
-                    padding: 1px 10px;
-                    font-size: 8.5pt;
-                    font-weight: 600;
-                }}
-                QComboBox:hover {{
-                    border-color: {self.accent_color};
-                    background-color: rgba(255, 255, 255, 0.12);
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 16px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1c23;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    selection-color: #FFFFFF;
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }}
-            """)
             self.branch_combo.addItems(branch_list)
             self.branch_combo.currentTextChanged.connect(self._on_branch_changed)
             if self.branch in branch_list:
@@ -757,34 +731,6 @@ class BuildUIMixin:
                     padding: 2px 12px;
                 }}
             """)
-        if hasattr(self, "branch_combo") and self.branch_combo:
-            self.branch_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba({accent_r}, {accent_g}, {accent_b}, 0.35);
-                    border-radius: 6px;
-                    color: #FFFFFF;
-                    padding: 1px 10px;
-                    font-size: 8.5pt;
-                    font-weight: 600;
-                }}
-                QComboBox:hover {{
-                    border-color: {self.accent_color};
-                    background-color: rgba(255, 255, 255, 0.12);
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 16px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1c23;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    selection-color: #FFFFFF;
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }}
-            """)
-
         if hasattr(self, "_locked_storage_btn") and self._locked_storage_btn:
             from ui.dialogs.storage_lock import style_locked_storage_button
             style_locked_storage_button(self._locked_storage_btn, self.accent_color)
@@ -815,25 +761,4 @@ class BuildUIMixin:
             for btn in self._storage_btn_group.buttons():
                 btn.setStyleSheet(btn_style)
 
-        if hasattr(self, "_more_storage_combo") and self._more_storage_combo:
-            self._more_storage_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: transparent;
-                    color: rgba(255, 255, 255, 0.7);
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 4px;
-                    padding: 2px 8px;
-                    font-size: 8.5pt;
-                }}
-                QComboBox:hover {{
-                    border-color: {self.accent_color};
-                    color: {self.accent_color};
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1a24;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }}
-            """)
         self.update()

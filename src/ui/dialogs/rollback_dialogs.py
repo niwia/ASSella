@@ -116,21 +116,6 @@ class ManualRollbackDialog(QDialog):
                 border: 1px solid {self.accent_color};
                 background-color: rgba(255, 255, 255, 0.08);
             }}
-            QComboBox {{
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 6px;
-                color: #FFFFFF;
-                padding: 6px 10px;
-                font-size: 9.5pt;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #1b1b1f;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                selection-background-color: {self.accent_color};
-                selection-color: #000000;
-                padding: 4px;
-            }}
             QCheckBox {{
                 color: rgba(255, 255, 255, 0.85);
                 font-size: 9pt;

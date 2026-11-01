@@ -132,26 +132,6 @@ class StorageMixin:
             self._more_storage_combo.setFixedHeight(28)
             self._more_storage_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self._more_storage_combo.setPlaceholderText("More Drives")
-            self._more_storage_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: transparent;
-                    color: rgba(255, 255, 255, 0.7);
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 4px;
-                    padding: 2px 8px;
-                    font-size: 8.5pt;
-                }}
-                QComboBox:hover {{
-                    border-color: {self.accent_color};
-                    color: {self.accent_color};
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1a24;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }}
-            """)
             for i in range(max_direct_buttons, len(storage_paths)):
                 spath = storage_paths[i]
                 target = storage_targets.describe(spath)
