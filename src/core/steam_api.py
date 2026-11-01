@@ -373,25 +373,37 @@ def batched_fetch_steamcmd_info(
     return results
 
 
+class _StoreUnreachable(Exception):
+    """The Store could not be asked (offline, proxy, 5xx, rate limit): no verdict."""
+
+
 def _store_release_state(appid: str) -> Tuple[Optional[str], str]:
-    """(state, name) from the Store: "prerelease" if coming soon, "released" if out, None if unknown."""
+    """(state, name) from the Store: "prerelease" if coming soon, "released" if out,
+    None if the Store answered but does not know the app.
+
+    Raises _StoreUnreachable when the Store could not be asked at all, so callers
+    never mistake "offline" for "not on Steam".
+    """
     try:
         resp = requests.get(
             f"https://store.steampowered.com/api/appdetails?appids={appid}",
             timeout=5,
             headers={"User-Agent": "Mozilla/5.0"},
         )
-        if resp.status_code != 200:
-            return None, ""
+    except Exception as e:
+        raise _StoreUnreachable(str(e)) from e
+    if resp.status_code != 200:
+        raise _StoreUnreachable(f"HTTP {resp.status_code}")
+    try:
         node = (resp.json() or {}).get(str(appid)) or {}
-        if not node.get("success"):
-            return None, ""
-        data = node.get("data") or {}
-        coming = (data.get("release_date") or {}).get("coming_soon")
-        state = "prerelease" if coming else "released"
-        return state, str(data.get("name") or "")
-    except Exception:
+    except ValueError as e:
+        raise _StoreUnreachable("bad JSON") from e
+    if not node.get("success"):
         return None, ""
+    data = node.get("data") or {}
+    coming = (data.get("release_date") or {}).get("coming_soon")
+    state = "prerelease" if coming else "released"
+    return state, str(data.get("name") or "")
 
 
 def resolve_dlc_release_states(dlc_ids, store_limit: int = 25) -> Dict[str, Tuple[str, str]]:
@@ -405,6 +417,9 @@ def resolve_dlc_release_states(dlc_ids, store_limit: int = 25) -> Dict[str, Tupl
     if not ids:
         return {}
     results = batched_fetch_steamcmd_info(ids, include_header=False) or {}
+    # PICS only counts as having answered if it returned at least one app; an
+    # empty result is "unreachable", not "none of these exist".
+    pics_answered = any((v or {}).get("name") for v in results.values())
     out: Dict[str, Tuple[str, str]] = {}
     store_calls = 0
     for did in ids:
@@ -415,7 +430,13 @@ def resolve_dlc_release_states(dlc_ids, store_limit: int = 25) -> Dict[str, Tupl
         if store_calls >= store_limit:
             continue  # left unverified; checked again next time (keeps the Store API happy)
         store_calls += 1
-        state, _ = _store_release_state(did)
+        try:
+            state, _ = _store_release_state(did)
+        except _StoreUnreachable:
+            if pics_answered:
+                out[did] = ("unpublished", "none")  # PICS is up and does not have it
+            # else: nothing reachable -> no verdict, stays unverified
+            continue
         out[did] = (state or "unpublished", "store" if state else "none")
     return out
 
@@ -473,7 +494,14 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
             entry["releasestate"] = str(entry.get("releasestate") or "released").lower()
             entry["release_src"] = "pics"
             continue
-        store_state, store_name = _store_release_state(did)
+        try:
+            store_state, store_name = _store_release_state(did)
+        except _StoreUnreachable:
+            if pics_ok:
+                entry["releasestate"] = "unpublished"   # PICS answered, just not for this app
+                entry["release_src"] = "none"
+            # else: offline -> leave unverified (re-checked later), never "unpublished"
+            continue
         if store_name and not entry.get("name"):
             entry["name"] = store_name
         entry["releasestate"] = store_state or "unpublished"

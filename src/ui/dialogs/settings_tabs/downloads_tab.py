@@ -501,15 +501,15 @@ def create_downloads_tab(dialog) -> QWidget:
         "When enabled, the '▾ Hidden Depots' dropdown expander and filtered depots are visible by default in the depot selection window.",
     )
     sel_card_lay.addWidget(dialog.show_hidden_depots_selector_checkbox)
-    dialog.classic_depot_selector_checkbox = create_checkbox_setting(
-        "Use classic depot list",
-        "classic_depot_selector",
+    dialog.new_depot_selector_checkbox = create_checkbox_setting(
+        "Use new depot selector (preview)",
+        "use_new_depot_selector",
         False,
         dialog,
-        "Show the old single-table depot selector instead of the content view "
-        "(game, DLC, soundtracks and extras on the left, their depots on the right).",
+        "Content view for normal installs: base game, DLC, soundtracks and extras on the left, "
+        "their depots on the right. Still being polished; turn off to use the classic list.",
     )
-    sel_card_lay.addWidget(dialog.classic_depot_selector_checkbox)
+    sel_card_lay.addWidget(dialog.new_depot_selector_checkbox)
     hide_layout.addWidget(sel_card)
 
     hide_layout.addStretch()

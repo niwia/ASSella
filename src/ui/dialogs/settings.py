@@ -79,7 +79,7 @@ class SettingsDialog(QDialog):
         self.hide_macos_depots_checkbox = None
         self.hide_android_depots_checkbox = None
         self.show_hidden_depots_selector_checkbox = None
-        self.classic_depot_selector_checkbox = None
+        self.new_depot_selector_checkbox = None
         self.achievements_checkbox = None
         self.auto_apply_goldberg_checkbox = None
         self.sls_mode_checkbox = None
@@ -1057,9 +1057,9 @@ class SettingsDialog(QDialog):
                 self.settings.setValue("show_hidden_depots_in_selector", self.show_hidden_depots_selector_checkbox.isChecked())
             except RuntimeError:
                 pass
-        if getattr(self, "classic_depot_selector_checkbox", None) is not None:
+        if getattr(self, "new_depot_selector_checkbox", None) is not None:
             try:
-                self.settings.setValue("classic_depot_selector", self.classic_depot_selector_checkbox.isChecked())
+                self.settings.setValue("use_new_depot_selector", self.new_depot_selector_checkbox.isChecked())
             except RuntimeError:
                 pass
         if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo is not None:
