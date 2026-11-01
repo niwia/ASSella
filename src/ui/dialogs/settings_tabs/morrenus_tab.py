@@ -142,10 +142,9 @@ def create_api_key_setting(
     paste_btn = QPushButton("Paste")
     paste_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    from utils.plugin_manager import get_plugin_status
     from utils.sls_lua_config import (
         generate_hubcap_timestamp,
-        get_spacebunny_conf_path,
+        get_hubcap_key_conf_path,
         sync_hubcap_api_key,
     )
 
@@ -159,17 +158,17 @@ def create_api_key_setting(
 
     sync_lbl = QLabel("AT0-M Sync")
     sync_lbl.setToolTip(
-        "Automatically synchronize Hubcap API key between ASSella and spacebunny.conf.lua based on the newest timestamp."
+        "Keep the Hubcap API key in ASSella and in katamari.conf.lua (used by the AT0-M plugins) the same; "
+        "the newer one wins."
     )
 
-    sb_exists = get_spacebunny_conf_path().is_file()
-    hub_active = (get_plugin_status("hubcap.lua") != "missing")
-    if not hub_active or not sb_exists:
+    conf_exists = get_hubcap_key_conf_path().is_file()
+    if not conf_exists:
         atom_sync_toggle.setEnabled(False)
         atom_sync_toggle.setReadOnly(True)
         sync_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.35); font-size: 8.5pt; font-weight: 500; margin-left: 6px;")
         atom_sync_toggle.setToolTip(
-            "AT0-M Sync is disabled. Activate Hubcap plugin and generate spacebunny.conf.lua in Settings -> AT0-M first."
+            "AT0-M Sync needs katamari.conf.lua. Save the plugin settings in Settings -> AT0-M -> Advanced first."
         )
     else:
         atom_sync_toggle.setEnabled(True)
@@ -202,7 +201,7 @@ def create_api_key_setting(
     btn_row.addWidget(atom_sync_toggle)
 
     # Initial sync check on tab creation
-    if is_sync_on and hub_active and sb_exists:
+    if is_sync_on and conf_exists:
         synced, msg = sync_hubcap_api_key(dialog.settings)
         if synced:
             current_key = dialog.settings.value(setting_key, "", type=str)

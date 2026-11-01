@@ -108,23 +108,20 @@ class TestAtomDlcAndByparr(unittest.TestCase):
         self.assertEqual(headers2.get("X-Api-Key"), "custom-api-key-999")
         print("  [PASS] Byparr custom service and headers verified")
 
-    def test_02_plugins_manifest_hubcap_registered(self):
-        """Verify hubcap.lua is in manifest, on disk, and registered in plugin_manager."""
+    def test_02_hubcap_retired_lettuce_registered(self):
+        """hubcap.lua is retired (never deployed, archived on sight); lettuce.lua replaces bypass.lua."""
         manifest_path = SRC_DIR / "res" / "plugins" / "plugins_manifest.json"
-        self.assertTrue(manifest_path.exists())
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertNotIn("hubcap.lua", manifest["plugins"])
+        self.assertFalse((SRC_DIR / "res" / "plugins" / "hubcap.lua").exists())
 
-        self.assertIn("hubcap.lua", manifest["plugins"])
-        self.assertEqual(manifest["plugins"]["hubcap.lua"]["version"], "1.0.0")
-
-        hubcap_lua = SRC_DIR / "res" / "plugins" / "hubcap.lua"
-        self.assertTrue(hubcap_lua.exists())
-        self.assertGreater(hubcap_lua.stat().st_size, 20000)
-
-        # Check plugin_manager lists
-        from utils.plugin_manager import FALLBACK_REQUIRED_PLUGINS
-        self.assertIn("hubcap.lua", FALLBACK_REQUIRED_PLUGINS)
-        print("  [PASS] Hubcap plugin manifest and registration verified")
+        from utils.plugin_manager import BUILTIN_RETIRED_PLUGINS, FALLBACK_REQUIRED_PLUGINS, KATAMARI_FAMILY_PLUGINS
+        self.assertNotIn("hubcap.lua", FALLBACK_REQUIRED_PLUGINS)
+        self.assertIn("hubcap.lua", BUILTIN_RETIRED_PLUGINS)
+        self.assertEqual(BUILTIN_RETIRED_PLUGINS["bypass.lua"], "lettuce.lua")
+        self.assertIn("lettuce.lua", KATAMARI_FAMILY_PLUGINS)
+        self.assertNotIn("bypass.lua", KATAMARI_FAMILY_PLUGINS)
+        print("  [PASS] Hubcap retired, Lettuce registered")
 
     def test_03_atom_dlc_dialog_structure_and_filters(self):
         """Verify AtomDlcSelectionDialog sets up tables, filters owned items, and hides bulk bars < 5."""

@@ -154,7 +154,11 @@ def get_available_download_plugins() -> list[tuple[str, str]]:
     try:
         from utils.helpers import get_base_path
         from utils.yaml_config_manager import get_sls_plugins_dirs
-        known_filenames = {opt[1] for opt in options}
+        from utils.plugin_manager import INTERCEPTOR_ROLES, get_retired_plugins, read_plugin_meta
+
+        # Only real download interceptors belong in this list: the role a
+        # plugin registers (or the Steam functions it hooks) decides.
+        known_filenames = {opt[1] for opt in options} | set(get_retired_plugins())
         search_dirs = [
             get_base_path() / "plugins",
             Path.home() / ".local" / "share" / "ACCELA" / "plugins",
@@ -165,8 +169,8 @@ def get_available_download_plugins() -> list[tuple[str, str]]:
                     if (
                         not f.name.endswith(".bak")
                         and not f.name.startswith(".")
-                        and f.name not in ("spliced-tickets.lua", "lobster.lua", "hubcap.lua")
                         and f.name not in known_filenames
+                        and read_plugin_meta(f).get("role") in INTERCEPTOR_ROLES
                     ):
                         options.append((f"{f.name}", f.name))
                         known_filenames.add(f.name)
@@ -430,8 +434,8 @@ def create_at0m_tab(dialog) -> QWidget:
     deploy_layout.setSpacing(8)
 
     deploy_desc = QLabel(
-        "Status and updaters for Katamari Lua plugins. Click an active plugin to verify against the "
-        "manifest, or click an outdated plugin to install the update inline."
+        "Katamari Lua plugins. Click a plugin to install it or bring it up to date; "
+        "an older copy is always kept as .bak."
     )
     deploy_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
     deploy_desc.setWordWrap(True)
@@ -480,49 +484,35 @@ def create_at0m_tab(dialog) -> QWidget:
         }
     """
 
-    # Top Row: 3 buttons in a single line (SpaceBunny, Bakeneko, Styx)
-    primary_row = QHBoxLayout()
-    primary_row.setContentsMargins(0, 4, 0, 4)
-    primary_row.setSpacing(8)
+    # Plugin buttons. One click fetches the manifest and installs or updates
+    # that plugin; nothing else to do. The manifest decides which plugins can
+    # be installed at all (Bakeneko stays greyed out until it allows it).
+    PLUGIN_BUTTONS = [
+        # (attribute, filename, display name, row)
+        ("btn_spacebunny_plugin", "spacebunny.lua", "SpaceBunny", 0),
+        ("btn_styx_plugin", "styx.lua", "Styx", 0),
+        ("btn_katamari_plugin", "katamari.lua", "Katamari", 0),
+        ("btn_lobster_plugin", "lobster.lua", "Lobster", 1),
+        ("btn_lettuce_plugin", "lettuce.lua", "Lettuce", 1),
+        ("btn_bakeneko_plugin", "bakeneko.lua", "Bakeneko", 1),
+    ]
+    rows = []
+    for _ in range(2):
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 2, 0, 4)
+        row.setSpacing(8)
+        rows.append(row)
+    for attr, _fname, label, row_idx in PLUGIN_BUTTONS:
+        btn = QPushButton(label)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        setattr(dialog, attr, btn)
+        rows[row_idx].addWidget(btn, 1)
 
-    dialog.btn_spacebunny_plugin = QPushButton("SpaceBunny")
-    dialog.btn_spacebunny_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
-    primary_row.addWidget(dialog.btn_spacebunny_plugin, 1)
-
-    dialog.btn_bakeneko_plugin = QPushButton("Bakeneko (Planned)")
-    dialog.btn_bakeneko_plugin.setEnabled(False)
-    dialog.btn_bakeneko_plugin.setStyleSheet(STYLE_DISABLED)
-    dialog.btn_bakeneko_plugin.setToolTip("Bakeneko manifest pre-seeding is currently in testing and will be enabled in a future release.")
-    primary_row.addWidget(dialog.btn_bakeneko_plugin, 1)
-
-    dialog.btn_styx_plugin = QPushButton("Styx")
-    dialog.btn_styx_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
-    primary_row.addWidget(dialog.btn_styx_plugin, 1)
-
-    deploy_layout.addLayout(primary_row)
-
-    # Extras section (Lobster, Katamari, Hubcap)
+    deploy_layout.addLayout(rows[0])
     extras_lbl = QLabel("Extras")
     extras_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.9); font-size: 9pt; font-weight: 700; margin-top: 6px;")
     deploy_layout.addWidget(extras_lbl)
-
-    extras_row = QHBoxLayout()
-    extras_row.setContentsMargins(0, 2, 0, 4)
-    extras_row.setSpacing(8)
-
-    dialog.btn_lobster_plugin = QPushButton("Lobster")
-    dialog.btn_lobster_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
-    extras_row.addWidget(dialog.btn_lobster_plugin, 1)
-
-    dialog.btn_katamari_plugin = QPushButton("Katamari")
-    dialog.btn_katamari_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
-    extras_row.addWidget(dialog.btn_katamari_plugin, 1)
-
-    dialog.btn_hubcap_plugin = QPushButton("Hubcap")
-    dialog.btn_hubcap_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
-    extras_row.addWidget(dialog.btn_hubcap_plugin, 1)
-
-    deploy_layout.addLayout(extras_row)
+    deploy_layout.addLayout(rows[1])
 
     # Separator
     deploy_sep = QFrame()
@@ -545,103 +535,96 @@ def create_at0m_tab(dialog) -> QWidget:
 
     def _refresh_plugin_btn(btn: QPushButton, filename: str, display_name: str):
         from utils.plugin_manager import (
+            get_manifest_plugin_info,
             get_plugin_status,
             get_plugin_version,
             is_plugin_check_bypassed,
-            get_manifest_plugin_info,
+            is_plugin_deployable,
         )
-        is_custom = is_plugin_check_bypassed()
-        meta = get_manifest_plugin_info(filename) or {}
-        is_req = meta.get("required", False)
-        is_def = meta.get("is_default", False) or meta.get("default", False)
 
-        tag = ""
-        if is_def:
-            tag = " (Default)"
-        elif is_req:
-            tag = " (Required)"
-
-        if is_custom:
+        btn.setProperty("plugin_busy", False)
+        if is_plugin_check_bypassed():
             btn.setEnabled(False)
-            btn.setText(f"{display_name}{tag}")
-            btn.setToolTip("Custom plugins option is enabled. Verification is bypassed.")
+            btn.setText(display_name)
+            btn.setToolTip("Custom plugins option is enabled. Plugins are managed by you.")
             btn.setStyleSheet(STYLE_DISABLED)
-            btn.setProperty("plugin_state", "custom")
+            return
+
+        meta = get_manifest_plugin_info(filename) or {}
+        deployable, why = is_plugin_deployable(filename)
+        if not deployable:
+            btn.setEnabled(False)
+            btn.setText(f"{display_name} (Unavailable)")
+            btn.setToolTip(why)
+            btn.setStyleSheet(STYLE_DISABLED)
             return
 
         status = get_plugin_status(filename)
-        ver = get_plugin_version(filename) or meta.get("version", "")
-        ver_str = f" v{ver}" if ver else ""
-
+        desc = str(meta.get("description") or "")
         if status == "up_to_date":
-            btn.setEnabled(True)
-            btn.setText(f"{display_name}{ver_str} (Up to date)")
-            btn.setToolTip(f"{filename} is installed and verified against manifest. Click to re-check.")
+            ver = get_plugin_version(filename) or meta.get("version", "")
+            btn.setText(f"{display_name} v{ver}" if ver else display_name)
+            btn.setToolTip((desc + "\n\n" if desc else "") + "Installed and up to date. Click to check for updates.")
             btn.setStyleSheet(STYLE_ACTIVE_GREEN)
-            btn.setProperty("plugin_state", "up_to_date")
         elif status == "missing":
-            btn.setEnabled(True)
-            btn.setText(f"{display_name}{tag} (Missing)")
-            btn.setToolTip(f"{filename} is not installed. Click to download and install.")
+            btn.setText(f"{display_name} (Install)")
+            btn.setToolTip((desc + "\n\n" if desc else "") + "Not installed. Click to install.")
             btn.setStyleSheet(STYLE_ATTENTION_ORANGE)
-            btn.setProperty("plugin_state", "missing")
-        else:  # outdated
-            btn.setEnabled(True)
-            btn.setText(f"{display_name} (Update Available)")
-            btn.setToolTip(f"{filename} is outdated. Click to download and install the update.")
+        else:
+            btn.setText(f"{display_name} (Update)")
+            btn.setToolTip(
+                (desc + "\n\n" if desc else "")
+                + "A different version is installed. Click to install the published one "
+                "(the current file is kept as .bak)."
+            )
             btn.setStyleSheet(STYLE_ATTENTION_ORANGE)
-            btn.setProperty("plugin_state", "outdated")
+        btn.setEnabled(True)
+
+    class _PluginJob(QThread):
+        done = pyqtSignal(bool, str)
+
+        def __init__(self, filename: str, parent=None):
+            super().__init__(parent)
+            self.filename = filename
+
+        def run(self):
+            try:
+                from utils.plugin_manager import deploy_plugin, fetch_plugins_manifest
+
+                fetch_plugins_manifest(force_refresh=True)
+                ok, _skipped, msg = deploy_plugin(self.filename)
+                self.done.emit(ok, msg)
+            except Exception as e:  # never leave the button stuck
+                self.done.emit(False, str(e))
 
     def _handle_plugin_click(btn: QPushButton, filename: str, display_name: str):
-        from PyQt6.QtWidgets import QApplication
-        from utils.plugin_manager import deploy_plugin, fetch_plugins_manifest
+        """Click and forget: refresh the manifest, then install or update."""
+        if btn.property("plugin_busy"):
+            return
+        btn.setProperty("plugin_busy", True)
+        btn.setEnabled(False)
+        btn.setText(f"Updating {display_name}...")
+        btn.setStyleSheet(STYLE_DISABLED)
 
-        curr_state = btn.property("plugin_state")
-        if curr_state in ("missing", "outdated"):
-            # Update/install action
-            btn.setEnabled(False)
-            btn.setText(f"Updating {display_name}...")
-            btn.setStyleSheet(STYLE_DISABLED)
-            QApplication.processEvents()
+        job = _PluginJob(filename, dialog)
 
-            ok, skipped, msg = deploy_plugin(filename, force_download=True)
-            _refresh_plugin_btn(btn, filename, display_name)
-        else:
-            # Check for update action
-            btn.setEnabled(False)
-            btn.setText("Checking...")
-            btn.setStyleSheet(STYLE_DISABLED)
-            QApplication.processEvents()
+        def _finished(ok: bool, msg: str):
+            _refresh_all_buttons()
+            if not ok:
+                logger.warning(f"[at0mTab] {display_name}: {msg}")
+                btn.setToolTip(msg)
+            job.deleteLater()
 
-            try:
-                fetch_plugins_manifest(force_refresh=True)
-            except Exception as e:
-                logger.debug(f"[at0mTab] Manifest refresh failed during check: {e}")
-
-            _refresh_plugin_btn(btn, filename, display_name)
+        job.done.connect(_finished)
+        job.start()
 
     def _refresh_all_buttons():
-        _refresh_plugin_btn(dialog.btn_spacebunny_plugin, "spacebunny.lua", "SpaceBunny")
-        _refresh_plugin_btn(dialog.btn_styx_plugin, "styx.lua", "Styx")
-        _refresh_plugin_btn(dialog.btn_lobster_plugin, "lobster.lua", "Lobster")
-        _refresh_plugin_btn(dialog.btn_katamari_plugin, "katamari.lua", "Katamari")
-        _refresh_plugin_btn(dialog.btn_hubcap_plugin, "hubcap.lua", "Hubcap")
+        for attr, fname, label, _row in PLUGIN_BUTTONS:
+            _refresh_plugin_btn(getattr(dialog, attr), fname, label)
 
-    dialog.btn_spacebunny_plugin.clicked.connect(
-        lambda: _handle_plugin_click(dialog.btn_spacebunny_plugin, "spacebunny.lua", "SpaceBunny")
-    )
-    dialog.btn_styx_plugin.clicked.connect(
-        lambda: _handle_plugin_click(dialog.btn_styx_plugin, "styx.lua", "Styx")
-    )
-    dialog.btn_lobster_plugin.clicked.connect(
-        lambda: _handle_plugin_click(dialog.btn_lobster_plugin, "lobster.lua", "Lobster")
-    )
-    dialog.btn_katamari_plugin.clicked.connect(
-        lambda: _handle_plugin_click(dialog.btn_katamari_plugin, "katamari.lua", "Katamari")
-    )
-    dialog.btn_hubcap_plugin.clicked.connect(
-        lambda: _handle_plugin_click(dialog.btn_hubcap_plugin, "hubcap.lua", "Hubcap")
-    )
+    for attr, fname, label, _row in PLUGIN_BUTTONS:
+        b = getattr(dialog, attr)
+        b.clicked.connect(lambda _c=False, b=b, f=fname, n=label: _handle_plugin_click(b, f, n))
 
     def _on_custom_plugins_toggled(checked: bool):
         dialog.settings.setValue("custom_plugins_advanced", checked)

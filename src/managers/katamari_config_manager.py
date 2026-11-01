@@ -3,8 +3,8 @@
 Manages the Katamari 'mother config' (~/.config/SLSsteam/katamari.conf.lua).
 Acts as the single source of truth for the Katamari family:
   - family: manifest delivery mode ('auto', 'bakeneko-first', 'spacebunny-only', 'bakeneko-only')
-  - hubcap: shared credentials and resolver settings
-  - proxy: Cloudflare worker fallback for Bakeneko and bypass transport
+  - hubcap: shared Hubcap credentials (Bakeneko reads api_key / base_url)
+  - proxy: Cloudflare worker fallback for Bakeneko and the Lettuce transport
   - bakeneko: manifest pre-seeder settings
   - spacebunny: MRC provider racing and authority hierarchy
   - styx: ownership ticket splicing
@@ -41,6 +41,11 @@ def get_katamari_conf_path() -> Path:
     return get_sls_config_dir() / "katamari.conf.lua"
 
 
+def _lua_str(value: Any) -> str:
+    """Escape a value for a double-quoted Lua string."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def get_mrc_legacy_path() -> Path:
     """Return path to legacy mrc_config.lua."""
     return get_sls_config_dir() / "mrc_config.lua"
@@ -48,7 +53,7 @@ def get_mrc_legacy_path() -> Path:
 
 DEFAULT_KATAMARI_CONFIG: Dict[str, Any] = {
     "family": {
-        "order": ["bakeneko", "spacebunny", "hubcap", "styx", "lobster", "bypass"],
+        "order": ["spacebunny", "lettuce", "bakeneko", "styx", "lobster"],
         "manifest_mode": "auto",
         "allow_unknown": True,
     },
@@ -233,6 +238,11 @@ class KatamariConfigManager:
                     parsed_b = cls._parse_bool(m_en.group(1))
                     if parsed_b is not None:
                         cfg["hubcap"]["enabled"] = parsed_b
+                m_ts = re.search(r'\bapi_key_timestamp\s*=\s*([^,\n\r]+)', hub_block)
+                if m_ts:
+                    parsed_i = cls._parse_int(m_ts.group(1))
+                    if parsed_i is not None:
+                        cfg["hubcap"]["api_key_timestamp"] = parsed_i
 
             # 3. Proxy section
             prx_block = cls._extract_section_block(content, "proxy")
@@ -380,7 +390,8 @@ class KatamariConfigManager:
         block = text[start_brace:end_brace]
         pattern = r'(\b' + re.escape(key) + r'\s*=\s*)([^,\n\r]+)(,?)'
         if re.search(pattern, block):
-            new_block = re.sub(pattern, r'\g<1>' + new_val_str + r'\g<3>', block, count=1)
+            # A function, not a template: values may contain backslashes.
+            new_block = re.sub(pattern, lambda m: m.group(1) + new_val_str + m.group(3), block, count=1)
         else:
             # Insert before final closing brace
             last_brace_idx = block.rfind('}')
@@ -428,6 +439,7 @@ class KatamariConfigManager:
 
         hub_key = hub.get("api_key", "")
         hub_url = hub.get("base_url", "https://hubcapmanifest.com/api/v1")
+        hub_ts = int(hub.get("api_key_timestamp", 0) or 0)
 
         template = f"""-- katamari.conf.lua (0.2)
 --
@@ -437,23 +449,23 @@ class KatamariConfigManager:
 return {{
 	family = {{
 		order = {{
-			"bakeneko",
 			"spacebunny",
-			"hubcap",
+			"lettuce",
+			"bakeneko",
 			"styx",
 			"lobster",
-			"bypass",
 		}},
 		manifest_mode = "{manifest_mode}",
 		allow_unknown = true,
 	}},
 
+	-- Shared Hubcap credentials. Bakeneko reads api_key and base_url.
 	hubcap = {{
 		api_key = "{hub_key}",
 		base_url = "{hub_url}",
 		timeout = 30,
 		enabled = false,
-		api_key_timestamp = 0,
+		api_key_timestamp = {hub_ts},
 		timeout_sec = 5,
 		write_config = true,
 		notify = false,
@@ -565,7 +577,9 @@ return {{
 		run_on_reload = false,
 	}},
 
-	bypass = {{}},
+	-- Lettuce (proxy / ISP-block transport, formerly bypass). Keys omitted
+	-- here fall back to proxy.* above.
+	lettuce = {{}},
 }}
 """
         return template
@@ -590,6 +604,12 @@ return {{
             fam = cfg.get("family", {})
             if "manifest_mode" in fam:
                 content = cls._update_key_in_section(content, "family", "manifest_mode", f'"{fam["manifest_mode"]}"')
+
+            hub = cfg.get("hubcap", {})
+            if "api_key" in hub:
+                content = cls._update_key_in_section(content, "hubcap", "api_key", f'"{_lua_str(hub["api_key"])}"')
+            if "api_key_timestamp" in hub:
+                content = cls._update_key_in_section(content, "hubcap", "api_key_timestamp", str(int(hub["api_key_timestamp"] or 0)))
 
             prx = cfg.get("proxy", {})
             if "worker_url" in prx:
@@ -647,6 +667,23 @@ return {{
             return True
         except Exception as exc:
             logger.error(f"[KatamariConfigManager] Failed saving {path}: {exc}")
+            return False
+
+    @classmethod
+    def set_hubcap_api_key(cls, api_key: str, timestamp: int, conf_path: Optional[Path] = None) -> bool:
+        """Write only hubcap.api_key / api_key_timestamp into an existing file."""
+        path = conf_path or get_katamari_conf_path()
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            if not re.search(r"\bhubcap\s*=\s*\{", content):
+                return False
+            content = cls._update_key_in_section(content, "hubcap", "api_key", f'"{_lua_str(api_key)}"')
+            content = cls._update_key_in_section(content, "hubcap", "api_key_timestamp", str(int(timestamp or 0)))
+            with open(path, "w", encoding="utf-8") as f:  # in place: keeps the inode
+                f.write(content)
+            return True
+        except Exception as exc:
+            logger.error(f"[KatamariConfigManager] Failed writing Hubcap key to {path}: {exc}")
             return False
 
     @classmethod

@@ -13,7 +13,7 @@ Features:
      fresh Steam library warning, binary detection, "Run Headcrab" terminal
      launcher, and automatic API: yes config toggle.
   4. at0-m Native Downloads: Toggle to enable at0-m native Steam client downloads,
-     immediate distro-aware plugin deployment (download.lua, spliced-tickets.lua),
+     immediate distro-aware plugin deployment (the Katamari family),
      and Plugins: yes in config.yaml.
   5. Preferences & Maintenance: Config fixer with live check and conditional Fix
      button (only shown when issues detected), LAN Cache toggle, default download
@@ -1026,7 +1026,7 @@ class CanaryWelcomeDialog(QDialog):
         c_layout.addWidget(self.lbl_at0m_feedback)
 
         lbl_desc = QLabel(
-            "When enabled, download.lua and spliced-tickets.lua plugins are deployed to your SLSsteam plugins "
+            "When enabled, the Katamari plugins (SpaceBunny, Styx, Katamari, Lobster, Lettuce) are deployed to your SLSsteam plugins "
             "directory and Plugins: yes is set in config.yaml. You can also configure this later in Settings → at0-m."
         )
         lbl_desc.setWordWrap(True)

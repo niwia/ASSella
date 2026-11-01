@@ -303,10 +303,14 @@ class MainWindow(QMainWindow):
                 logger.debug(f"SLS binary boot version check skipped/failed: {e}")
             run_boot_config_check()
 
-            # Non-blocking autodeploy for lobster.lua if AT0-M is enabled and archiving of redundant plugins
+            # Plugin check (background thread): retired / remotely disabled
+            # plugins go to .bak; at most every 6 hours the signed manifest is
+            # refreshed and unmodified family plugins are updated.
             try:
-                from utils.plugin_manager import archive_redundant_legacy_plugins, autodeploy_lobster_if_needed
-                archive_redundant_legacy_plugins()
+                from utils.plugin_manager import autodeploy_lobster_if_needed, run_plugin_maintenance
+                report = run_plugin_maintenance()
+                if report.get("updated") or report.get("archived"):
+                    logger.info(f"Plugin check: updated {report.get('updated')}, archived {report.get('archived')}")
                 autodeploy_lobster_if_needed()
             except Exception as e:
                 logger.debug(f"Plugin boot check skipped/failed: {e}")

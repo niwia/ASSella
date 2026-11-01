@@ -117,7 +117,7 @@ def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
     return deploy_plugin(plugin_filename)
 
 def deploy_all_sls_plugins() -> Tuple[bool, List[str]]:
-    """Deploy required plugins (download.lua, spliced-tickets.lua) from Cloud on demand."""
+    """Deploy the Katamari plugin family on demand."""
     from utils.plugin_manager import deploy_all_plugins
     return deploy_all_plugins()
 

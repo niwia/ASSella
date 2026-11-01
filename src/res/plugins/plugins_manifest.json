@@ -14,16 +14,6 @@
       "required": false,
       "is_default": false
     },
-    "hubcap.lua": {
-      "name": "Hubcap Auto-Fetch",
-      "filename": "hubcap.lua",
-      "version": "1.0.0",
-      "category": "companion",
-      "description": "Standalone Hubcap key resolver. Automatically fetches missing AES decryption keys from Hubcap API.",
-      "sha256": "4819e209a401a8312a8a5f6dd71fb316ae7b51440a3963c92cd3744626e38105",
-      "size_bytes": 29651,
-      "required": false
-    },
     "lobster.lua": {
       "name": "Lobster",
       "filename": "lobster.lua",

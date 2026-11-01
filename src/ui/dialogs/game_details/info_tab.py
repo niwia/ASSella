@@ -2385,7 +2385,7 @@ def on_move_to_vapor_clicked(dialog) -> None:
         action = ThemedMessageBox.choices(
             dialog,
             "AT0-M Plugins Required",
-            "AT0-M mode requires SLSsteam plugins (download interceptor and spliced-tickets.lua).\n\n"
+            "AT0-M mode requires SLSsteam plugins (download interceptor and Styx).\n\n"
             "The plugins were not found in your SLSsteam plugins directory.",
             [("Open AT0-M Settings", "settings"), ("Cancel", "cancel")],
             default="cancel",
