@@ -189,6 +189,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         self._refreshing = False
 
         self._cs_build_shell()
+        self.setMinimumHeight(self.MIN_H)  # parent sets 480; small games may be shorter
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
@@ -304,7 +305,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         body.setStyleSheet(f"""
             QFrame#csBody {{ background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.09); border-radius: 8px; }}
             QListWidget, QTableWidget {{ background: transparent; border: none; outline: none; color: {TEXT}; }}
-            QListWidget::item {{ border-radius: 6px; margin: 0 4px; }}
+            QListWidget::item {{ border-radius: 6px; margin: 0 4px; padding: 0; }}
             QListWidget::item:selected {{ background: rgba(255,255,255,0.07); border: 1px solid {ac}; }}
             QListWidget::item:hover:!selected {{ background: rgba(255,255,255,0.04); }}
             QTableWidget::item {{ border-bottom: 1px solid rgba(255,255,255,0.05); padding: 0 4px; color: {TEXT}; }}
@@ -536,7 +537,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             g = groups.get(key)
             if g is None:
                 if key == app_id:
-                    gname = "Base game"
+                    gname = "Depots"
                 else:
                     gname = self._short_name(_TAG_PREFIX_RE.sub("", catalog.get(key) or clean).strip())
                     if key.startswith("name:"):
@@ -549,7 +550,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
                 tooltip=(cfg_item.toolTip() if cfg_item else "") or it.toolTip(),
             ))
         if app_id not in groups:
-            groups[app_id] = _Group(app_id, "Base game", CAT_GAME)
+            groups[app_id] = _Group(app_id, "Depots", CAT_GAME)
         return groups
 
     # -------------------------------------------------------------- refresh
@@ -565,6 +566,42 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             self._update_summary()
         finally:
             self._refreshing = False
+        QTimer.singleShot(0, self._fit_height)
+
+    MAX_H = 540   # classic window height stays the maximum
+    MIN_H = 330
+
+    def _fit_height(self) -> None:
+        """Shrink the window to fit its content, up to the classic 540 px.
+
+        Stops adapting once the user resizes the window themselves.
+        """
+        if getattr(self, "_user_resized", False) or self.isMaximized() or not hasattr(self, "_group_list"):
+            return
+        lst, tbl = self._group_list, self._depot_table
+        left = sum(max(lst.sizeHintForRow(i), 22) for i in range(lst.count()))
+        if self._filter_edit.isVisible():
+            left += self._filter_edit.height() + 4
+        right = max(tbl.rowCount(), 1) * tbl.verticalHeader().defaultSectionSize() + 30
+        body = self._group_list.parentWidget().parentWidget()
+        chrome = self.height() - body.height()
+        target = max(self.MIN_H, min(self.MAX_H, chrome + max(left, right) + 18))
+        if abs(target - self.height()) > 4:
+            self._fitting = True
+            self.resize(self.width(), target)
+            self._fitting = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if (getattr(self, "_shown_once", False) and not getattr(self, "_fitting", False)
+                and event.oldSize().height() > 0 and event.size().height() != event.oldSize().height()):
+            self._user_resized = True
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not getattr(self, "_shown_once", False):
+            self._shown_once = True
+            QTimer.singleShot(0, self._fit_height)
 
     def _ordered_groups(self) -> List[_Group]:
         flt = self._group_filter.lower()
@@ -616,7 +653,9 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         cb = QCheckBox()
         cb.setFixedSize(18, 18)
         sel = g.selectable
-        if sel:
+        if g.key == str(self.app_id):
+            cb.setVisible(False)  # base depots are picked individually on the right
+        elif sel:
             n = g.checked_count
             cb.setTristate(True)
             cb.setCheckState(
@@ -630,7 +669,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         name = _ElideLabel(g.name, Qt.TextElideMode.ElideMiddle)
         name.setToolTip(g.name if g.key.startswith("name:") else f"{g.name}\nApp {g.key}")
         name.setStyleSheet(f"color: {TEXT if sel else DIM}; font-size: 9pt; background: transparent;")
-        name.setFixedHeight(20)
+        name.setMinimumHeight(24)
         lay.addWidget(name, 1, Qt.AlignmentFlag.AlignVCenter)
         if sel:
             total = g.picked_size or g.total_size
