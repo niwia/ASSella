@@ -311,7 +311,8 @@ Lobster = {
             pdir = Path(tmpdir)
             sb15 = pdir / "spacebunny1.5.lua"
             sb15.write_text("-- legacy spacebunny 1.5")
-            with patch("utils.plugin_manager.get_sls_plugins_dirs", return_value=[pdir]):
+            with patch("utils.plugin_manager.get_sls_plugins_dirs", return_value=[pdir]), \
+                 patch("utils.plugin_manager.is_plugin_check_bypassed", return_value=False):
                 archived = archive_redundant_legacy_plugins(auto_deploy_replacement=False)
                 self.assertEqual(len(archived), 1)
                 self.assertFalse(sb15.exists())
