@@ -325,10 +325,43 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
                 w.setStyleSheet(pill)
             w.setFixedHeight(28)
             if attr == "edition_button":
-                w.setMaximumWidth(170)
-                w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+                w.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                self._fit_edition_button(w)
             bar.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        branch = getattr(self, "branch_btn", None)
+        if branch is not None:
+            # "Branch: public" -> "Public"
+            _bset = branch.setText
+            branch.setText = lambda text, _s=_bset: _s(
+                (str(text).split(":", 1)[-1].strip() or "public")[:1].upper()
+                + (str(text).split(":", 1)[-1].strip() or "public")[1:]
+            )
+            branch.setText(branch.text())
+            branch.setMinimumWidth(0)
         return bar
+
+    EDITION_MAX_W = 220
+
+    def _fit_edition_button(self, btn: QPushButton) -> None:
+        """Size the edition button to its text, up to EDITION_MAX_W; past that the
+        name is cut at the end ("Digimon Battle: Deluxe Editi... ▾"), never the start."""
+        _set = btn.setText
+
+        def set_text(text, _set=_set, btn=btn):
+            full = str(text)
+            name, arrow = (full[:-2], " ▾") if full.endswith(" ▾") else (full, "")
+            btn.ensurePolished()
+            fm = btn.fontMetrics()
+            pad = 24  # pill padding + border
+            room = self.EDITION_MAX_W - pad - fm.horizontalAdvance(arrow)
+            shown = fm.elidedText(name, Qt.TextElideMode.ElideRight, room) + arrow
+            _set(shown)
+            btn.setFixedWidth(max(72, min(self.EDITION_MAX_W, fm.horizontalAdvance(shown) + pad)))
+            btn.setToolTip(name if shown != full else "Select game edition / package")
+
+        btn.setText = set_text
+        btn.setText(btn.text())
 
     def _cs_build_body(self) -> QFrame:
         ac = getattr(self, "accent_color", "#a1c9fd")
@@ -438,9 +471,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         if browse is not None:
             browse.setText("Browse files")
             browse.setStyleSheet(self._pill_style())
-            browse.setFixedHeight(30)
-            browse.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            browse.setMinimumWidth(96)
+            browse.setFixedSize(self._drive_combo.width(), self._drive_combo.height())  # twin of the storage box
             bar.addWidget(browse)
 
         bar.addStretch(1)
@@ -635,7 +666,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         left = 0
         if self._left_pane.isVisible():
             lst = self._group_list
-            rows = sum(max(lst.sizeHintForRow(i), 22) for i in range(lst.count()))
+            rows = sum(max(lst.sizeHintForRow(i), 1) for i in range(lst.count()))
             left = 8 + self.HEAD_H + 4 + rows + 2 * lst.frameWidth() + 2 * lst.spacing() * lst.count() + 6 + 8
             if self._filter_edit.isVisible():
                 left += self._filter_edit.height() + 4
@@ -668,25 +699,65 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         order = {"ready": 0, "owned": 1, "no key": 2, "unreleased": 3}
         return (CAT_ORDER.index(g.category), g.key != str(self.app_id), order.get(g.status, 9), g.name.lower())
 
+    ALL_KEY = "__all__"
+
+    def _add_separator(self) -> None:
+        sep = QListWidgetItem()
+        sep.setFlags(Qt.ItemFlag.NoItemFlags)
+        sep.setData(R_HEADER, True)
+        sep.setSizeHint(QSize(0, 11))
+        self._group_list.addItem(sep)
+        line = QFrame()
+        line.setStyleSheet("background: transparent;")
+        ll = QVBoxLayout(line)
+        ll.setContentsMargins(10, 5, 10, 5)
+        bar = QFrame()
+        bar.setFixedHeight(1)
+        bar.setStyleSheet("background: rgba(255,255,255,0.12);")
+        ll.addWidget(bar)
+        self._group_list.setItemWidget(sep, line)
+
+    def _add_section_header(self, text: str) -> None:
+        hdr = QListWidgetItem(text)
+        hdr.setFlags(Qt.ItemFlag.NoItemFlags)
+        hdr.setData(R_HEADER, True)
+        hdr.setForeground(QColor(255, 255, 255, 110))
+        f = hdr.font()
+        f.setPointSizeF(8)
+        hdr.setFont(f)
+        hdr.setSizeHint(QSize(0, 22))
+        self._group_list.addItem(hdr)
+
     def _fill_group_list(self) -> None:
+        """All | DLC | Soundtracks | Extras, each section split by a rule.
+
+        "All" is every depot (and clears the highlight); the other rows are the
+        content groups, which highlight the depots they control.
+        """
         lst = self._group_list
         scroll = lst.verticalScrollBar().value()
         lst.blockSignals(True)
         lst.clear()
-        last_cat = CAT_GAME  # the fixed "Content" header covers base game + DLC
+
+        everything = _Group(self.ALL_KEY, "All", CAT_GAME,
+                            [d for g in self._groups.values() for d in g.depots])
+        all_item = QListWidgetItem()
+        all_item.setData(ROLE, self.ALL_KEY)
+        all_item.setSizeHint(QSize(0, 32))
+        lst.addItem(all_item)
+        lst.setItemWidget(all_item, self._make_group_row(everything))
+        if self._current_group is None:
+            lst.setCurrentItem(all_item)
+
+        base = str(self.app_id)
+        last_cat = None
         for g in self._ordered_groups():
-            section = CAT_GAME if g.category in (CAT_GAME, CAT_DLC) else g.category
-            if section != last_cat:
-                hdr = QListWidgetItem(CAT_HEADERS[section])
-                hdr.setFlags(Qt.ItemFlag.NoItemFlags)
-                hdr.setData(R_HEADER, True)
-                hdr.setForeground(QColor(255, 255, 255, 110))
-                f = hdr.font()
-                f.setPointSizeF(8)
-                hdr.setFont(f)
-                hdr.setSizeHint(QSize(0, 22))
-                lst.addItem(hdr)
-                last_cat = section
+            if g.key == base:
+                continue  # base depots are part of "All"
+            if g.category != last_cat:
+                self._add_separator()
+                self._add_section_header(CAT_HEADERS[g.category])
+                last_cat = g.category
             item = QListWidgetItem()
             item.setData(ROLE, g.key)
             item.setSizeHint(QSize(0, 32))
@@ -694,9 +765,6 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             lst.setItemWidget(item, self._make_group_row(g))
             if g.key == self._current_group:
                 lst.setCurrentItem(item)
-        if self._current_group is None:
-            lst.setCurrentRow(-1)
-            lst.clearSelection()
         lst.blockSignals(False)
         lst.verticalScrollBar().setValue(scroll)
 
@@ -709,7 +777,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         cb = QCheckBox()
         cb.setFixedSize(18, 18)
         sel = g.selectable
-        if g.key == str(self.app_id):
+        if g.key in (str(self.app_id), self.ALL_KEY):
             # Base depots are picked individually on the right; keep the slot so names line up.
             sp = cb.sizePolicy()
             sp.setRetainSizeWhenHidden(True)
@@ -727,7 +795,10 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             cb.setEnabled(False)
         lay.addWidget(cb, 0, Qt.AlignmentFlag.AlignVCenter)
         name = _ElideLabel(g.name, Qt.TextElideMode.ElideMiddle)
-        name.setToolTip(g.name if g.key.startswith("name:") else f"{g.name}\nApp {g.key}")
+        if g.key == self.ALL_KEY:
+            name.setToolTip("Every depot of this game")
+        else:
+            name.setToolTip(g.name if g.key.startswith("name:") else f"{g.name}\nApp {g.key}")
         name.setStyleSheet(f"color: {TEXT if sel else DIM}; font-size: 9pt; background: transparent;")
         name.setMinimumHeight(24)
         lay.addWidget(name, 1, Qt.AlignmentFlag.AlignVCenter)
@@ -840,11 +911,10 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         if item is None or item.data(R_HEADER):
             return
         key = str(item.data(ROLE))
-        if key == self._current_group:
+        if key == self.ALL_KEY or key == self._current_group:
             self._current_group = None
             self._group_list.blockSignals(True)
-            self._group_list.setCurrentRow(-1)
-            self._group_list.clearSelection()
+            self._group_list.setCurrentRow(0)  # "All"
             self._group_list.blockSignals(False)
         else:
             self._current_group = key

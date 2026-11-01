@@ -5,10 +5,12 @@ import logging
 from pathlib import Path
 from typing import Optional, List
 
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QUrl
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QIcon, QDesktopServices
+from PyQt6.QtCore import QMimeDatabase, QSize, QSortFilterProxyModel, Qt, pyqtSignal, QThread, QUrl
+from PyQt6.QtGui import QColor, QStandardItemModel, QStandardItem, QIcon, QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog,
+    QFileIconProvider,
+    QFrame,
     QVBoxLayout,
     QHBoxLayout,
     QTreeView,
@@ -76,6 +78,54 @@ class DirectDownloadThread(QThread):
                 pass
 
 
+_DIR_ROLE = Qt.ItemDataRole.UserRole + 2
+_SIZE_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+class _FileTreeProxy(QSortFilterProxyModel):
+    """Folders first, names case-insensitive, sizes numeric; filtering keeps
+    the parents of every match so results stay in their folders."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setRecursiveFilteringEnabled(True)
+        self.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.setFilterKeyColumn(0)
+
+    def lessThan(self, left, right):  # noqa: N802
+        src = self.sourceModel()
+        l0, r0 = left.siblingAtColumn(0), right.siblingAtColumn(0)
+        l_dir, r_dir = bool(src.data(l0, _DIR_ROLE)), bool(src.data(r0, _DIR_ROLE))
+        if l_dir != r_dir:
+            # Folders above files whichever way the column is sorted.
+            return l_dir if self.sortOrder() == Qt.SortOrder.AscendingOrder else r_dir
+        if left.column() == 1:
+            return (src.data(l0, _SIZE_ROLE) or 0) < (src.data(r0, _SIZE_ROLE) or 0)
+        return str(src.data(l0) or "").lower() < str(src.data(r0) or "").lower()
+
+
+class _FileIcons:
+    """Theme icons by file type (falls back to Qt's generic file / folder icons)."""
+
+    def __init__(self):
+        self._db = QMimeDatabase()
+        self._provider = QFileIconProvider()
+        self._cache = {}
+        self.folder = QIcon.fromTheme("folder", self._provider.icon(QFileIconProvider.IconType.Folder))
+        self._file = self._provider.icon(QFileIconProvider.IconType.File)
+
+    def for_file(self, name: str) -> QIcon:
+        ext = os.path.splitext(name)[1].lower()
+        icon = self._cache.get(ext)
+        if icon is None:
+            mime = self._db.mimeTypeForFile(name, QMimeDatabase.MatchMode.MatchExtension)
+            icon = QIcon.fromTheme(mime.iconName())
+            if icon.isNull():
+                icon = QIcon.fromTheme(mime.genericIconName(), self._file)
+            self._cache[ext] = icon
+        return icon
+
+
 class FileSelectionDialog(QDialog):
     def __init__(
         self,
@@ -94,10 +144,12 @@ class FileSelectionDialog(QDialog):
         self.manifest_file = manifest_file
         self.keys_path = keys_path
         self.manifest_id = manifest_id
-        self.setWindowTitle(f"Select Files to Download - Depot {depot_id}")
-        self.resize(700, 560)
+        self.setWindowTitle(f"Browse Files - Depot {depot_id}")
+        self.resize(760, 580)
+        self.setMinimumSize(560, 420)
         self.selected_files = []
         self.all_files = []
+        self._icons = _FileIcons()
 
         # Theme styling (inherit from parent)
         self.accent_color = "#a1c9fd"
@@ -107,156 +159,161 @@ class FileSelectionDialog(QDialog):
                 self.accent_color = parent.accent_color
             if hasattr(parent, "background_color"):
                 self.background_color = parent.background_color
+        ac = self.accent_color
 
-        self.setStyleSheet(
-            f"""
-            QLabel {{
-                color: #FFFFFF;
-                font-size: 9.5pt;
-            }}
+        self.setStyleSheet(f"""
+            QLabel {{ color: #E8E8EE; font-size: 9pt; background: transparent; }}
+            QLabel#fsTitle {{ font-size: 10.5pt; font-weight: 600; }}
+            QLabel#fsMuted {{ color: rgba(255,255,255,0.5); font-size: 8.5pt; }}
             QLineEdit {{
-                background-color: rgba(255, 255, 255, 0.039);
-                border: 1px solid rgba(255, 255, 255, 0.078);
-                border-radius: 4px;
-                padding: 4px 8px;
-                color: #FFFFFF;
-                font-size: 9pt;
+                background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 6px; padding: 4px 10px; color: #FFFFFF; font-size: 9pt;
             }}
-            QLineEdit:focus {{
-                border-color: {self.accent_color};
+            QLineEdit:focus {{ border-color: {ac}; }}
+            QFrame#fsPane {{
+                background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.09); border-radius: 8px;
             }}
             QTreeView {{
-                background-color: rgba(255, 255, 255, 5);
-                border: 1px solid rgba(255, 255, 255, 0.059);
-                border-radius: 6px;
-                color: #FFFFFF;
-                selection-background-color: transparent;
-                selection-color: #FFFFFF;
+                background: transparent; border: none; outline: none; color: #E8E8EE; font-size: 9pt;
+                selection-background-color: transparent; selection-color: #FFFFFF;
             }}
-            QTreeView::item {{
-                border: 1.5px solid transparent;
-                border-radius: 4px;
-            }}
-            QTreeView::item:hover {{
-                background-color: rgba(255, 255, 255, 0.039);
-                border: 1.5px solid rgba(255, 255, 255, 0.10);
-            }}
-            QTreeView::item:selected {{
-                background-color: rgba(255, 255, 255, 0.059);
-                border: 1.5px solid {self.accent_color};
-                color: #FFFFFF;
+            QTreeView::item {{ border: 1px solid transparent; border-radius: 5px; padding: 0 2px; }}
+            QTreeView::item:hover {{ background: rgba(255,255,255,0.04); }}
+            QTreeView::item:selected {{ background: rgba(255,255,255,0.07); border-color: {ac}; color: #FFFFFF; }}
+            QHeaderView {{ background: transparent; }}
+            QHeaderView::section {{
+                background: transparent; color: rgba(255,255,255,0.45); border: none;
+                border-bottom: 1px solid rgba(255,255,255,0.08); padding: 6px 8px; font-size: 8pt; font-weight: 600;
             }}
             QPushButton {{
-                background-color: rgba(255, 255, 255, 0.039);
-                border: 1px solid rgba(255, 255, 255, 0.078);
-                border-radius: 4px;
-                padding: 5px 12px;
-                color: #FFFFFF;
-                font-size: 9pt;
+                background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.16); border-radius: 6px;
+                padding: 4px 12px; color: #E8E8EE; font-size: 8.5pt;
             }}
-            QPushButton:hover {{
-                background-color: rgba(255, 255, 255, 0.059);
-                border-color: {self.accent_color};
-            }}
-            QPushButton:pressed {{
-                background-color: rgba(255, 255, 255, 5);
-            }}
-            QHeaderView::section {{
-                background-color: #1a1a1a;
-                color: #888888;
-                padding: 4px;
-                border: none;
-                font-size: 8.5pt;
-                font-weight: bold;
-            }}
-            """
-        )
+            QPushButton:hover {{ background: rgba(255,255,255,0.10); border-color: {ac}; }}
+            QPushButton#fsChip {{ padding: 2px 10px; font-size: 8pt; }}
+            QPushButton#fsPrimary {{ background: {ac}; color: #000000; font-weight: 600; border: none; }}
+            QPushButton#fsPrimary:hover {{ background: {ac}; border: 1px solid #FFFFFF; }}
+            QScrollBar:vertical {{ background: transparent; width: 6px; }}
+            QScrollBar::handle:vertical {{ background: rgba(255,255,255,0.18); border-radius: 3px; min-height: 24px; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        """)
 
-        layout = install_themed_frame(self, margins=(12, 12, 12, 12), spacing=10)
+        layout = install_themed_frame(self, margins=(14, 10, 14, 12), spacing=10)
 
-        # Header info
-        info_label = QLabel(
-            "Expand folders to customize your download. Unchecked files and folders will be skipped."
-        )
-        info_label.setWordWrap(True)
-        layout.addWidget(info_label)
-
-        # Search / Filter Row
-        search_layout = QHBoxLayout()
-        search_layout.setSpacing(6)
+        # ---- header: depot + totals, search on the right
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        title_col = QVBoxLayout()
+        title_col.setSpacing(0)
+        title = QLabel(f"Depot {self.depot_id}")
+        title.setObjectName("fsTitle")
+        title_col.addWidget(title)
+        self.summary_label = QLabel(f"App {self.app_id}")
+        self.summary_label.setObjectName("fsMuted")
+        title_col.addWidget(self.summary_label)
+        head.addLayout(title_col, 1)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Filter files/folders by name...")
+        self.search_input.setPlaceholderText("Search files and folders")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setFixedWidth(260)
+        self.search_input.setFixedHeight(30)
         self.search_input.textChanged.connect(self._filter_tree)
-        search_layout.addWidget(self.search_input)
-        layout.addLayout(search_layout)
+        head.addWidget(self.search_input, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(head)
 
-        # Tree View
+        # ---- tree pane with a small toolbar
+        pane = QFrame()
+        pane.setObjectName("fsPane")
+        pl = QVBoxLayout(pane)
+        pl.setContentsMargins(6, 6, 6, 6)
+        pl.setSpacing(4)
+        tools = QHBoxLayout()
+        tools.setSpacing(6)
+        for text, slot in (
+            ("Select all", lambda: self._set_all_checkstate(Qt.CheckState.Checked)),
+            ("Select none", lambda: self._set_all_checkstate(Qt.CheckState.Unchecked)),
+            ("Expand all", lambda: self.tree_view.expandAll()),
+            ("Collapse all", lambda: self.tree_view.collapseAll()),
+        ):
+            b = QPushButton(text)
+            b.setObjectName("fsChip")
+            b.setFixedHeight(24)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(slot)
+            tools.addWidget(b)
+        # Old attribute names, kept for anything that looks them up.
+        self.select_all_btn, self.deselect_all_btn = tools.itemAt(0).widget(), tools.itemAt(1).widget()
+        tools.addStretch(1)
+        self.stats_label = QLabel("Loading file structure...")
+        self.stats_label.setObjectName("fsMuted")
+        tools.addWidget(self.stats_label)
+        pl.addLayout(tools)
+
         self.tree_view = QTreeView()
-        self.tree_view.setHeaderHidden(False)
-        self.tree_view.setAlternatingRowColors(True)
         self.tree_view.setAnimated(True)
+        self.tree_view.setUniformRowHeights(True)
+        self.tree_view.setIndentation(18)
+        self.tree_view.setIconSize(QSize(16, 16))
+        self.tree_view.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
+        self.tree_view.setVerticalScrollMode(QTreeView.ScrollMode.ScrollPerPixel)
 
         self.model = QStandardItemModel(0, 2, self.tree_view)
-        self.model.setHeaderData(0, Qt.Orientation.Horizontal, "File/Folder Path")
+        self.model.setHeaderData(0, Qt.Orientation.Horizontal, "Name")
         self.model.setHeaderData(1, Qt.Orientation.Horizontal, "Size")
-        self.tree_view.setModel(self.model)
+        self.proxy = _FileTreeProxy(self.tree_view)
+        self.proxy.setSourceModel(self.model)
+        self.tree_view.setModel(self.proxy)
+        self.tree_view.setSortingEnabled(True)
+        self.tree_view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
 
-        self.tree_view.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree_view.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header = self.tree_view.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(1, 96)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        pl.addWidget(self.tree_view, 1)
+        layout.addWidget(pane, 1)
 
-        layout.addWidget(self.tree_view)
-
-        # Bottom stats
-        self.stats_label = QLabel("Loading file structure...")
-        layout.addWidget(self.stats_label)
-
-        # Destination Folder Row
+        # ---- destination + actions
         dest_layout = QHBoxLayout()
-        dest_layout.setSpacing(6)
-        dest_lbl = QLabel("Download To:")
-        dest_lbl.setStyleSheet("font-weight: bold; color: rgba(255, 255, 255, 0.9);")
+        dest_layout.setSpacing(8)
+        dest_lbl = QLabel("Save to")
+        dest_lbl.setObjectName("fsMuted")
         dest_layout.addWidget(dest_lbl)
-
         self.dest_edit = QLineEdit()
-        default_dir = os.path.expanduser("~/Downloads")
-        self.dest_edit.setText(default_dir)
-        self.dest_edit.setPlaceholderText("Select folder to download chosen file(s)...")
+        self.dest_edit.setText(os.path.expanduser("~/Downloads"))
+        self.dest_edit.setPlaceholderText("Folder for \"Download now\"")
+        self.dest_edit.setFixedHeight(30)
         dest_layout.addWidget(self.dest_edit, 1)
-
-        self.browse_btn = QPushButton("Browse...")
+        self.browse_btn = QPushButton("Change...")
+        self.browse_btn.setFixedHeight(30)
         self.browse_btn.clicked.connect(self._browse_destination)
         dest_layout.addWidget(self.browse_btn)
-
         layout.addLayout(dest_layout)
 
-        # Actions Row
         actions_layout = QHBoxLayout()
-        
-        self.select_all_btn = QPushButton("Select All")
-        self.select_all_btn.clicked.connect(lambda: self._set_all_checkstate(Qt.CheckState.Checked))
-        actions_layout.addWidget(self.select_all_btn)
-
-        self.deselect_all_btn = QPushButton("Deselect All")
-        self.deselect_all_btn.clicked.connect(lambda: self._set_all_checkstate(Qt.CheckState.Unchecked))
-        actions_layout.addWidget(self.deselect_all_btn)
-
-        actions_layout.addStretch()
-
-        self.direct_download_btn = QPushButton("Download Selected")
-        self.direct_download_btn.setToolTip("Directly download the selected files into the chosen folder without queuing other depots.")
-        self.direct_download_btn.setStyleSheet(f"background-color: {self.accent_color}; color: #000000; font-weight: bold; border: none; padding: 5px 14px;")
-        self.direct_download_btn.clicked.connect(self._on_direct_download_clicked)
-        actions_layout.addWidget(self.direct_download_btn)
-
-        self.ok_btn = QPushButton("Confirm Selection")
-        self.ok_btn.setToolTip("Save this selection to download during the regular game installation queue.")
-        self.ok_btn.clicked.connect(self._on_confirm)
-        actions_layout.addWidget(self.ok_btn)
+        actions_layout.setSpacing(8)
+        hint = QLabel("Unticked files and folders are skipped.")
+        hint.setObjectName("fsMuted")
+        actions_layout.addWidget(hint)
+        actions_layout.addStretch(1)
 
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.reject)
-        actions_layout.addWidget(self.cancel_btn)
-
+        self.direct_download_btn = QPushButton("Download now")
+        self.direct_download_btn.setToolTip(
+            "Download just the ticked files into the folder above, without installing the game."
+        )
+        self.direct_download_btn.clicked.connect(self._on_direct_download_clicked)
+        self.ok_btn = QPushButton("Use selection")
+        self.ok_btn.setObjectName("fsPrimary")
+        self.ok_btn.setToolTip("Install only the ticked files when the game is downloaded.")
+        self.ok_btn.clicked.connect(self._on_confirm)
+        for b in (self.cancel_btn, self.direct_download_btn, self.ok_btn):
+            b.setFixedHeight(32)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            actions_layout.addWidget(b)
         layout.addLayout(actions_layout)
 
         # Load data
@@ -325,15 +382,49 @@ class FileSelectionDialog(QDialog):
                 name_item.setData(full_path, Qt.ItemDataRole.UserRole)
                 name_item.setData(size, Qt.ItemDataRole.UserRole + 1)
                 name_item.setData(False, Qt.ItemDataRole.UserRole + 2) # is_dir = False
+                name_item.setIcon(self._icons.for_file(file_name))
+                name_item.setToolTip(full_path)
 
                 size_item = QStandardItem(self._format_size(size))
                 size_item.setEditable(False)
+                size_item.setData(size, _SIZE_ROLE)
+                size_item.setForeground(QColor(255, 255, 255, 140))
+                size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
                 parent_item.appendRow([name_item, size_item])
 
+        self._fill_folder_sizes(root)
         self.model.blockSignals(False)
         self.model.itemChanged.connect(self._on_item_changed)
+        self.proxy.invalidate()
+        # Open the top level so the first view is not a single collapsed folder.
+        if self.proxy.rowCount() == 1:
+            self.tree_view.expand(self.proxy.index(0, 0))
+        files = [f for f in self.all_files if not f["is_dir"]]
+        total = sum(f["size"] for f in files)
+        self.summary_label.setText(f"App {self.app_id} · {len(files):,} files · {self._format_size(total)}")
         self._update_stats()
+
+    def _fill_folder_sizes(self, item) -> int:
+        """Folder rows show the total size of everything under them."""
+        total = 0
+        for row in range(item.rowCount()):
+            child = item.child(row, 0)
+            if child is None:
+                continue
+            if child.data(_DIR_ROLE):
+                size = self._fill_folder_sizes(child)
+                child.setData(size, _SIZE_ROLE)
+                size_item = item.child(row, 1)
+                if size_item is not None:
+                    size_item.setText(self._format_size(size))
+                    size_item.setData(size, _SIZE_ROLE)
+                    size_item.setForeground(QColor(255, 255, 255, 110))
+                    size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                total += size
+            else:
+                total += child.data(_SIZE_ROLE) or 0
+        return total
 
     def _get_or_create_dir_item(self, path, dirs_dict):
         # Normalize slashes
@@ -359,6 +450,7 @@ class FileSelectionDialog(QDialog):
         name_item.setData(path, Qt.ItemDataRole.UserRole)
         name_item.setData(0, Qt.ItemDataRole.UserRole + 1) # Size 0 for folders
         name_item.setData(True, Qt.ItemDataRole.UserRole + 2) # is_dir = True
+        name_item.setIcon(self._icons.folder)
 
         size_item = QStandardItem("")
         size_item.setEditable(False)
@@ -455,16 +547,17 @@ class FileSelectionDialog(QDialog):
 
         _traverse(root)
 
-        tot_gb = tot_sz / (1024**3)
-        sel_gb = sel_sz / (1024**3)
         self.stats_label.setText(
-            f"Selected: <b>{sel}</b> of <b>{tot}</b> files "
-            f"({sel_gb:.2f} GB chosen / {tot_gb:.2f} GB total)"
+            f"{sel:,} of {tot:,} files · {self._format_size(sel_sz)} of {self._format_size(tot_sz)}"
         )
+        if hasattr(self, "ok_btn"):
+            self.ok_btn.setEnabled(sel > 0)
+            self.direct_download_btn.setEnabled(sel > 0)
 
     def _filter_tree(self, text):
-        # Very basic filtering
-        self.tree_view.keyboardSearch(text)
+        self.proxy.setFilterFixedString(text.strip())
+        if text.strip():
+            self.tree_view.expandAll()  # show every match in place
 
     def _browse_destination(self):
         cur = self.dest_edit.text() or os.path.expanduser("~/Downloads")
