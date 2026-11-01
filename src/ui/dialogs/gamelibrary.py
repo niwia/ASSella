@@ -6,7 +6,6 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QSize
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QComboBox,
     QDialog,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -17,6 +16,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from utils.paths import Paths
 
@@ -233,45 +233,25 @@ class GameLibraryDialog(
         self._setup_style()
 
     def _show_sort_menu(self) -> None:
-        """Show minimal dropdown menu for sorting options."""
-        from PyQt6.QtWidgets import QMenu
-        from PyQt6.QtGui import QAction
-        menu = QMenu(self)
-        menu.setStyleSheet(
-            f"""
-            QMenu {{
-                background-color: #1a1a20;
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 8px;
-                padding: 4px;
-            }}
-            QMenu::item {{
-                padding: 6px 18px;
-                border-radius: 4px;
-                font-size: 12px;
-                color: #FFFFFF;
-            }}
-            QMenu::item:selected {{
-                background-color: rgba(255, 255, 255, 0.12);
-                color: {self.accent_color};
-            }}
-            """
+        """Show the sort options in the shared dropdown popup."""
+        from ui.widgets.modern_dropdown import ModernPopup, PopupEntry
+
+        button = getattr(self, "sort_button", None)
+        if not button or not hasattr(self, "sort_combo"):
+            return
+        current = self.sort_combo.currentIndex()
+        entries = [
+            PopupEntry(text=self.sort_combo.itemText(i), checked=(i == current), payload=i)
+            for i in range(self.sort_combo.count())
+        ]
+        popup = ModernPopup(
+            self,
+            entries,
+            accent_color=self.accent_color,
+            on_selected=lambda idx: self._on_sort_menu_item_selected(idx, self.sort_combo.itemText(idx)),
+            filter_threshold=0,
         )
-
-        current_data = self.sort_combo.currentData() if hasattr(self, "sort_combo") else "pinned_first"
-        for i in range(self.sort_combo.count()):
-            label = self.sort_combo.itemText(i)
-            data = self.sort_combo.itemData(i)
-            action = QAction(label, menu)
-            action.setCheckable(True)
-            if data == current_data:
-                action.setChecked(True)
-            action.triggered.connect(lambda checked, idx=i, l=label: self._on_sort_menu_item_selected(idx, l))
-            menu.addAction(action)
-
-        if hasattr(self, "sort_button") and self.sort_button:
-            menu.exec(self.sort_button.mapToGlobal(self.sort_button.rect().bottomLeft()))
+        popup.show_at(button, min_width=200)
 
     def _on_sort_menu_item_selected(self, index: int, label: str) -> None:
         if hasattr(self, "sort_combo"):
@@ -305,7 +285,7 @@ class GameLibraryDialog(
         self.select_mode_button.setCheckable(True)
         self.select_mode_button.clicked.connect(self._toggle_select_mode)
 
-        self.sort_combo = QComboBox()
+        self.sort_combo = ModernComboBox()
         self.sort_combo.addItem("Pinned First", "pinned_first")
         self.sort_combo.addItem("Recently Installed", "recently_installed")
         self.sort_combo.addItem("Has Update First", "update_first")

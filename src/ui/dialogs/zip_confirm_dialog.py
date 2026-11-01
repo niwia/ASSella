@@ -40,10 +40,10 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QFrame,
     QCheckBox,
-    QComboBox,
     QRadioButton,
     QButtonGroup,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from utils.color_utils import get_best_foreground_color
 from utils.settings import get_settings
@@ -689,7 +689,7 @@ class ZipImportConfirmationDialog(QDialog):
         dest_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.85); font-size: 8.6pt; font-weight: 600; border: none; background: transparent;")
         dest_layout.addWidget(dest_lbl)
 
-        self.dest_combo = QComboBox()
+        self.dest_combo = ModernComboBox()
         self.dest_combo.setFixedHeight(28)
         self.dest_combo.setStyleSheet("""
             QComboBox {

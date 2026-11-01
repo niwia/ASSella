@@ -16,9 +16,9 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QHeaderView,
     QAbstractItemView,
-    QComboBox,
     QSizePolicy,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from utils.settings import get_settings
 
@@ -272,7 +272,7 @@ class BuildUIMixin:
             branch_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.6);")
             badges_row.addWidget(branch_lbl)
 
-            self.branch_combo = QComboBox()
+            self.branch_combo = ModernComboBox()
             self.branch_combo.setFixedHeight(24)
             self.branch_combo.setMinimumWidth(110)
             self.branch_combo.setStyleSheet(f"""

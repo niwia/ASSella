@@ -13,10 +13,10 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QLabel,
     QLineEdit,
-    QComboBox,
     QPushButton,
     QTabWidget,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -339,7 +339,7 @@ def create_sls_tab(dialog) -> QWidget:
     combo_row = QHBoxLayout()
     combo_row.setSpacing(6)
 
-    game_combo = QComboBox()
+    game_combo = ModernComboBox()
     game_combo.setStyleSheet("""
         QComboBox {
             background: rgba(255, 255, 255, 0.08);

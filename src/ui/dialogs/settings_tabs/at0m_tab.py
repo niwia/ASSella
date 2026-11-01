@@ -15,13 +15,13 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QFrame,
     QLabel,
-    QComboBox,
     QPushButton,
     QMenu,
     QFileDialog,
     QTabWidget,
     QScrollArea,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.helpers import create_checkbox_setting
@@ -286,7 +286,7 @@ def create_at0m_tab(dialog) -> QWidget:
     act_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9pt;")
     act_row.addWidget(act_title, stretch=1)
 
-    dialog.at0m_download_action_combo = QComboBox()
+    dialog.at0m_download_action_combo = ModernComboBox()
     dialog.at0m_download_action_combo.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.at0m_download_action_combo.setFixedWidth(155)
     dialog.at0m_download_action_combo.addItem("Always ask", "ask")
@@ -331,7 +331,7 @@ def create_at0m_tab(dialog) -> QWidget:
     start_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9pt;")
     start_row.addWidget(start_title, stretch=1)
 
-    dialog.at0m_start_mode_combo = QComboBox()
+    dialog.at0m_start_mode_combo = ModernComboBox()
     dialog.at0m_start_mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.at0m_start_mode_combo.setFixedWidth(155)
     dialog.at0m_start_mode_combo.addItem("Start auto", "immediate")
@@ -395,7 +395,7 @@ def create_at0m_tab(dialog) -> QWidget:
     dlc_act_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9pt;")
     dlc_act_row.addWidget(dlc_act_title, stretch=1)
 
-    dialog.at0m_dlc_action_combo = QComboBox()
+    dialog.at0m_dlc_action_combo = ModernComboBox()
     dialog.at0m_dlc_action_combo.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.at0m_dlc_action_combo.setFixedWidth(155)
     dialog.at0m_dlc_action_combo.addItem("Always ask", "ask")

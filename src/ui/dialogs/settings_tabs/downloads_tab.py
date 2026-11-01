@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QDialog,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -99,7 +100,7 @@ def create_downloads_tab(dialog) -> QWidget:
     dl_dir_label.setToolTip("Direct downloads to this folder/library instead of prompting for every game. Defaults to Ask Every Time.")
     loc_row.addWidget(dl_dir_label, 1)
 
-    dialog.dl_location_combo = QComboBox()
+    dialog.dl_location_combo = ModernComboBox()
     dialog.dl_location_combo.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.dl_location_combo.addItem("Ask Every Time", "")
 
@@ -263,7 +264,7 @@ def create_downloads_tab(dialog) -> QWidget:
     mrc_row = QHBoxLayout()
     mrc_row.setSpacing(10)
 
-    dialog.manifest_provider_combo = QComboBox()
+    dialog.manifest_provider_combo = ModernComboBox()
     dialog.manifest_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
     dialog.manifest_provider_combo.addItem("Auto (Race ManifestDeX & Wudrm)", "auto")
     dialog.manifest_provider_combo.addItem("ManifestDeX", "manifestdex")

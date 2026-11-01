@@ -22,8 +22,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QDialog,
-    QFontComboBox,
-    QComboBox,
     QSpinBox,
     QDialogButtonBox,
     QFormLayout,
@@ -1551,7 +1549,8 @@ class FontSelectionDialog(QDialog):
 
         lbl_f = QLabel("Font:", self)
         lbl_f.setProperty("form_label", True)
-        self.font_combo = QFontComboBox(self)
+        from ui.widgets.modern_dropdown import ModernComboBox, ModernFontComboBox
+        self.font_combo = ModernFontComboBox(self)
         if initial_font and initial_font.family():
             if initial_font.family().lower() in ("trixiecyrg-plain", "trixiecyrg-plain regular", "trixie"):
                 initial_font = QFont("Open Sans", initial_font.pointSize())
@@ -1560,7 +1559,7 @@ class FontSelectionDialog(QDialog):
 
         lbl_s = QLabel("Style:", self)
         lbl_s.setProperty("form_label", True)
-        self.style_combo = QComboBox(self)
+        self.style_combo = ModernComboBox(self)
         self.style_combo.addItems(["Normal", "Bold", "Italic", "Bold Italic"])
         
         if initial_font.bold() and initial_font.italic():

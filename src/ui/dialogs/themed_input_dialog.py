@@ -15,7 +15,6 @@ from typing import List, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -25,6 +24,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from ui.dialog_titlebar import DialogTitleBar
 from utils.settings import get_settings
@@ -115,7 +115,7 @@ class ThemedInputDialog(QDialog):
         body.addWidget(self.label)
 
         if self._combo_mode:
-            self.field = QComboBox(self)
+            self.field = ModernComboBox(self)
             self.field.addItems(list(items or []))
             self.field.setEditable(editable)
             if text:

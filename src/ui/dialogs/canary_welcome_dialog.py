@@ -44,9 +44,9 @@ from PyQt6.QtWidgets import (
     QFrame,
     QWidget,
     QCheckBox,
-    QComboBox,
     QSizePolicy,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from ui.widgets.switch_toggle import SwitchToggle
 
@@ -1191,7 +1191,7 @@ class CanaryWelcomeDialog(QDialog):
         c1.addLayout(cfg_btn_row)
 
         c1.addWidget(QLabel("Interface Font:"))
-        self.combo_font = QComboBox()
+        self.combo_font = ModernComboBox()
         self.combo_font.setFixedHeight(30)
         self.combo_font.addItem("Open Sans (Default)", "Open Sans")
         self.combo_font.addItem("Google Sans", "Google Sans")
@@ -1231,7 +1231,7 @@ class CanaryWelcomeDialog(QDialog):
         c2.addWidget(lbl_lan_desc)
 
         c2.addWidget(QLabel("Default Download Behavior:"))
-        self.combo_behavior = QComboBox()
+        self.combo_behavior = ModernComboBox()
         self.combo_behavior.setFixedHeight(30)
         self.combo_behavior.addItem("Ask every time (Default)", "ask")
         self.combo_behavior.addItem("Always Native Steam (at0-m)", "native")
@@ -1248,7 +1248,7 @@ class CanaryWelcomeDialog(QDialog):
         c2.addWidget(self.combo_behavior)
 
         c2.addWidget(QLabel("Default Download Location:"))
-        self.combo_location = QComboBox()
+        self.combo_location = ModernComboBox()
         self.combo_location.setFixedHeight(30)
         self.combo_location.addItem("Ask Every Time (Default)", "")
 

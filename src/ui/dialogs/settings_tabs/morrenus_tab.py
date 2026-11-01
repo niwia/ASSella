@@ -13,7 +13,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QComboBox,
     QApplication,
     QScrollArea,
     QCheckBox,
@@ -21,6 +20,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QFrame,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from ui.dialogs.settings_tabs.morrenus_stats_widget import MorrenusStatsWidget
 from ui.widgets.switch_toggle import SwitchToggle
@@ -340,7 +340,7 @@ def create_isp_gateway_card(dialog) -> Tuple[QFrame, QVBoxLayout]:
     isp_row.addWidget(isp_lbl)
     isp_row.addStretch()
 
-    dialog.isp_gateway_combo = QComboBox()
+    dialog.isp_gateway_combo = ModernComboBox()
     dialog.isp_gateway_combo.addItem("Auto", "auto")
     dialog.isp_gateway_combo.addItem("Direct", "direct")
     dialog.isp_gateway_combo.addItem("DoH", "doh")

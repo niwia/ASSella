@@ -14,13 +14,13 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QCheckBox,
-    QComboBox,
     QFrame,
     QButtonGroup,
     QApplication,
     QSizePolicy,
     QWidget,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.depotselection import format_size
@@ -290,7 +290,7 @@ class SingleDepotSelectionDialog(QDialog):
             branch_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.7);")
             controls_row.addWidget(branch_lbl)
 
-            self.branch_combo = QComboBox()
+            self.branch_combo = ModernComboBox()
             self.branch_combo.setFixedHeight(28)
             self.branch_combo.setMinimumWidth(110)
             self.branch_combo.setStyleSheet(f"""
@@ -717,7 +717,7 @@ class SingleDepotSelectionDialog(QDialog):
                     border-radius: 4px;
                 }}
             """
-            combo = QComboBox()
+            combo = ModernComboBox()
             combo.setFixedHeight(28)
             combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             combo.setStyleSheet(combo_style)

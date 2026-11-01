@@ -8,9 +8,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QButtonGroup,
-    QComboBox,
     QSizePolicy,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from ui.dialogs.depot_selection import storage_targets
 
@@ -122,16 +122,16 @@ class StorageMixin:
                 logger.info(f"Storage library selected via button [{btn_id}]: {target_path}")
                 if self._more_storage_combo:
                     self._more_storage_combo.blockSignals(True)
-                    self._more_storage_combo.setCurrentIndex(0)
+                    self._more_storage_combo.setCurrentIndex(-1)
                     self._more_storage_combo.blockSignals(False)
 
         self._storage_btn_group.idClicked.connect(_on_storage_btn_clicked)
 
         if len(storage_paths) > max_direct_buttons:
-            self._more_storage_combo = QComboBox()
+            self._more_storage_combo = ModernComboBox()
             self._more_storage_combo.setFixedHeight(28)
             self._more_storage_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            self._more_storage_combo.addItem("More Drives ▾", None)
+            self._more_storage_combo.setPlaceholderText("More Drives")
             self._more_storage_combo.setStyleSheet(f"""
                 QComboBox {{
                     background-color: transparent;
@@ -157,9 +157,10 @@ class StorageMixin:
                 target = storage_targets.describe(spath)
                 item_text = f"{target.label} ({target.free})" if target.free else target.label
                 self._more_storage_combo.addItem(item_text, spath)
+            self._more_storage_combo.setCurrentIndex(-1)
 
             def _on_combo_changed(index):
-                if index > 0:
+                if index >= 0:
                     chosen_path = self._more_storage_combo.itemData(index)
                     if chosen_path:
                         self.selected_storage_path = chosen_path
@@ -200,7 +201,7 @@ class StorageMixin:
         if default_target in self._storage_buttons:
             self._storage_buttons[default_target].setChecked(True)
         elif self._more_storage_combo:
-            for idx in range(1, self._more_storage_combo.count()):
+            for idx in range(self._more_storage_combo.count()):
                 if self._more_storage_combo.itemData(idx) == default_target:
                     self._more_storage_combo.setCurrentIndex(idx)
                     break

@@ -20,7 +20,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QComboBox,
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
@@ -29,6 +28,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QAbstractItemView,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.themed_dialog import install_themed_frame
 
@@ -159,7 +159,7 @@ class ManualRollbackDialog(QDialog):
         depot_lbl.setStyleSheet("font-weight: bold; color: rgba(255, 255, 255, 0.9);")
         depot_row.addWidget(depot_lbl)
 
-        self.depot_combo = QComboBox()
+        self.depot_combo = ModernComboBox()
         self.depot_combo.setFixedHeight(32)
         self.depot_combo.setEditable(True)
         if self.depots_dict:

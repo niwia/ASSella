@@ -21,7 +21,6 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QCheckBox,
-    QComboBox,
     QDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -36,6 +35,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
 
@@ -563,7 +563,7 @@ class ModernDepotSelectionDialog(QDialog):
             lbl_b.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.7);")
             top_row.addWidget(lbl_b)
 
-            self.branch_combo = QComboBox()
+            self.branch_combo = ModernComboBox()
             self.branch_combo.setFixedHeight(28)
             self.branch_combo.setMinimumWidth(110)
             self.branch_combo.addItems(branch_list)
@@ -949,9 +949,9 @@ class ModernDepotSelectionDialog(QDialog):
         self._storage_btn_group.idClicked.connect(_on_storage_btn_clicked)
 
         if total_storages > max_direct_buttons:
-            combo = QComboBox()
+            combo = ModernComboBox()
             combo.setFixedHeight(34)
-            combo.addItem("More Drives ▾", None)
+            combo.setPlaceholderText("More Drives")
             combo.setStyleSheet(f"""
                 QComboBox {{
                     background-color: rgba(255, 255, 255, 0.04);
@@ -974,9 +974,10 @@ class ModernDepotSelectionDialog(QDialog):
                 spath = storage_paths[i]
                 lbl_text, free_str, _ = _format_storage_info(spath)
                 combo.addItem(f"{lbl_text} ({free_str})", spath)
+            combo.setCurrentIndex(-1)
 
             def _on_combo_changed(idx: int):
-                if idx > 0:
+                if idx >= 0:
                     chosen = combo.itemData(idx)
                     if chosen:
                         self.selected_storage_path = chosen

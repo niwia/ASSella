@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QScrollArea,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.helpers import create_checkbox_setting
@@ -64,7 +65,7 @@ def create_assela_tab(dialog) -> QWidget:
     channel_row.addWidget(channel_lbl)
     channel_row.addStretch()
 
-    dialog.update_channel_combo = QComboBox()
+    dialog.update_channel_combo = ModernComboBox()
     dialog.update_channel_combo.addItem("Stable", "stable")
     dialog.update_channel_combo.addItem("Beta", "beta")
     dialog.update_channel_combo.addItem("Canary", "canary")
@@ -121,7 +122,7 @@ def create_assela_tab(dialog) -> QWidget:
     anim_row.addWidget(anim_lbl)
     anim_row.addStretch()
 
-    dialog.download_animation_combo = QComboBox()
+    dialog.download_animation_combo = ModernComboBox()
     dialog.download_animation_combo.addItem("Standard", "standard")
     dialog.download_animation_combo.addItem("Retro Ghost & Fog", "ghost")
     dialog.download_animation_combo.addItem("Pac-Man & Dots", "pacman")
@@ -218,7 +219,7 @@ def create_assela_tab(dialog) -> QWidget:
         "• SteamcmdAPI: Fast parallel scan via CDN mirror."
     )
 
-    dialog.update_provider_combo = QComboBox()
+    dialog.update_provider_combo = ModernComboBox()
     dialog.update_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
     dialog.update_provider_combo.setStyleSheet("""
         QComboBox {

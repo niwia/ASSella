@@ -9,11 +9,11 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QGridLayout,
     QLabel,
-    QComboBox,
     QPushButton,
     QApplication,
     QSlider,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_color_dialog import ThemedColorDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -210,7 +210,7 @@ def create_style_tab(dialog) -> QWidget:
     lbl_preset.setFixedWidth(120)
     preset_row.addWidget(lbl_preset)
 
-    dialog.preset_combo = QComboBox()
+    dialog.preset_combo = ModernComboBox()
     dialog.preset_combo.addItem("Custom (Select Color)", "custom")
 
     from utils.theme_manager import load_all_themes

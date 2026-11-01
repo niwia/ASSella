@@ -9,15 +9,11 @@ from PyQt6.QtGui import QColor, QPainter, QLinearGradient, QPalette
 from PyQt6.QtWidgets import (
     QWidget,
     QPushButton,
-    QComboBox,
     QLabel,
     QHBoxLayout,
     QVBoxLayout,
-    QStylePainter,
-    QStyleOptionComboBox,
-    QStyle,
-    QStyledItemDelegate,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 logger = logging.getLogger(__name__)
 
@@ -75,75 +71,11 @@ class SwitchToggle(QWidget):
         p.drawEllipse(self._circle_pos, 2, 12, 12)
 
 
-class CenteredComboBox(QComboBox):
+class CenteredComboBox(ModernComboBox):
+    """Shared ModernComboBox with centred text (Game Details branch picker)."""
+
     def __init__(self, parent=None):
-        super().__init__(parent)
-
-        class CenterDelegate(QStyledItemDelegate):
-            def initStyleOption(self, option, index):
-                super().initStyleOption(option, index)
-                option.displayAlignment = Qt.AlignmentFlag.AlignCenter
-
-        self.setItemDelegate(CenterDelegate(self))
-
-        ac = getattr(parent, "accent_color", "#a1c9fd") if parent else "#a1c9fd"
-        from utils.color_utils import get_dark_container_color
-        sel_bg_hex = get_dark_container_color(ac)
-
-        self.setStyleSheet(f"""
-            QComboBox {{
-                background-color: rgba(255, 255, 255, 0.04);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 6px;
-                color: #FFFFFF;
-                padding: 3px 24px 3px 10px;
-                font-size: 9.5pt;
-            }}
-            QComboBox:hover {{
-                background-color: rgba(255, 255, 255, 0.08);
-                border-color: rgba(255, 255, 255, 0.15);
-            }}
-            QComboBox::drop-down {{
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 20px;
-                border-left: none;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #1b1b1f;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 8px;
-                selection-background-color: {sel_bg_hex};
-                selection-color: #FFFFFF;
-                outline: 0px;
-                padding: 4px;
-            }}
-            QComboBox QAbstractItemView::item {{
-                min-height: 28px;
-                padding: 4px 12px;
-                color: #E0E0E0;
-            }}
-            QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
-                background-color: {sel_bg_hex} !important;
-                color: #FFFFFF !important;
-            }}
-        """)
-
-    def paintEvent(self, event):
-        p = QStylePainter(self)
-        opt = QStyleOptionComboBox()
-        self.initStyleOption(opt)
-        p.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, opt)
-        rect = self.style().subControlRect(
-            QStyle.ComplexControl.CC_ComboBox, opt,
-            QStyle.SubControl.SC_ComboBoxEditField, self)
-        pal = self.palette()
-        color = self.itemData(self.currentIndex(), Qt.ItemDataRole.ForegroundRole)
-        if isinstance(color, QColor):
-            pal.setColor(QPalette.ColorRole.Text, color)
-
-        p.drawItemText(rect, Qt.AlignmentFlag.AlignCenter, pal,
-                       self.isEnabled(), self.currentText(), QPalette.ColorRole.Text)
+        super().__init__(parent, centered=True)
 
 
 class HeroBanner(QWidget):

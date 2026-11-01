@@ -14,9 +14,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
-    QComboBox,
     QPushButton,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -107,7 +107,7 @@ def create_tools_tab(dialog) -> QWidget:
         "Minimum severity of messages to log.\n"
         "Select NONE to disable all logging (improves performance)."
     )
-    dialog.log_level_combo = QComboBox()
+    dialog.log_level_combo = ModernComboBox()
     dialog.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "NONE"])
     _current_level = dialog.settings.value("log_filter_level", "DEBUG") or "DEBUG"
     idx = dialog.log_level_combo.findText(_current_level)
@@ -121,7 +121,7 @@ def create_tools_tab(dialog) -> QWidget:
     cat_label = QLabel("Log Filter:")
     cat_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500;")
     cat_label.setToolTip("Restrict logs to a specific module group.")
-    dialog.log_category_combo = QComboBox()
+    dialog.log_category_combo = ModernComboBox()
     dialog.log_category_combo.addItems([
         "All Modules",
         "Only Steam Client & API",

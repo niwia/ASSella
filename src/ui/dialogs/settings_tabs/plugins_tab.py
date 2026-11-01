@@ -21,7 +21,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QGridLayout,
     QLabel,
-    QComboBox,
     QSpinBox,
     QLineEdit,
     QPushButton,
@@ -29,6 +28,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QCheckBox,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from managers.katamari_config_manager import (
     KatamariConfigManager,
@@ -139,7 +139,7 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
 
     auth_lbl = QLabel("Primary Authority:")
     auth_lbl.setStyleSheet(STYLE_LABEL)
-    mrc_auth_combo = QComboBox()
+    mrc_auth_combo = ModernComboBox()
     mrc_auth_combo.setStyleSheet(STYLE_COMBO)
     mrc_auth_combo.setFixedWidth(200)
     mrc_auth_combo.addItem("ManifestDeX (Primary)", "manifestdex")
@@ -153,7 +153,7 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
 
     rescue_lbl = QLabel("Secondary Rescue:")
     rescue_lbl.setStyleSheet(STYLE_LABEL)
-    mrc_rescue_combo = QComboBox()
+    mrc_rescue_combo = ModernComboBox()
     mrc_rescue_combo.setStyleSheet(STYLE_COMBO)
     mrc_rescue_combo.setFixedWidth(200)
     mrc_rescue_combo.addItem("Wudrm (Default)", "wudrm")
@@ -217,7 +217,7 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
 
     sm_lbl = QLabel("Splice Mode:")
     sm_lbl.setStyleSheet(STYLE_LABEL)
-    styx_mode_combo = QComboBox()
+    styx_mode_combo = ModernComboBox()
     styx_mode_combo.setStyleSheet(STYLE_COMBO)
     styx_mode_combo.setFixedWidth(200)
     styx_mode_combo.addItem("Insert (Recommended)", "insert")
@@ -320,7 +320,7 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
 
     pmode_lbl = QLabel("Proxy Mode:")
     pmode_lbl.setStyleSheet(STYLE_LABEL)
-    proxy_mode_combo = QComboBox()
+    proxy_mode_combo = ModernComboBox()
     proxy_mode_combo.setStyleSheet(STYLE_COMBO)
     proxy_mode_combo.setFixedWidth(200)
     proxy_mode_combo.addItem("Fallback (Direct first)", "fallback")
