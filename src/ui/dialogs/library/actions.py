@@ -519,6 +519,19 @@ class LibraryActionsMixin:
         elif dlc_action in ("native", "assella"):
             mode_choice = dlc_action
         else:
+            mode_choice = "ask"
+
+        # AT0-M is only offered when the same readiness guards standard games
+        # pass are met. A remembered/default "native" that fails them falls
+        # back to the chooser with AT0-M disabled and the reason shown.
+        if mode_choice == "native":
+            from utils.plugin_games import can_use_atom_mode
+            atom_ok, atom_reason = can_use_atom_mode()
+            if not atom_ok:
+                logger.info(f"AT0-M DLC mode unavailable for {name} ({appid}): {atom_reason}")
+                mode_choice = "ask"
+
+        if mode_choice == "ask":
             from ui.dialogs.download_backend_dialog import (
                 DownloadBackendDialog,
                 BACKEND_CANCEL,
@@ -533,6 +546,7 @@ class LibraryActionsMixin:
                 game_name=name,
                 accent_color=accent_color,
                 mode="dlc",
+                atom_guard=True,
             )
             dlg.exec()
             choice = dlg.get_choice()
@@ -3283,9 +3297,10 @@ class LibraryActionsMixin:
 
                 is_atom_dlc = bool(game_data.get("_is_atom_dlc"))
                 if is_atom_dlc:
-                    from ui.dialogs.atom_dlc_selection_dialog import AtomDlcSelectionDialog
+                    # Config-only setup in the same panel as Game Details > Depots
+                    from ui.dialogs.atom_dlc_setup_dialog import AtomDlcSetupDialog
                     accent_color = getattr(self, "accent_color", "#6c5ce7")
-                    atom_dlg = AtomDlcSelectionDialog(
+                    atom_dlg = AtomDlcSetupDialog(
                         parent=parent_widget,
                         app_id=parsed_data["appid"],
                         game_name=parsed_data.get("game_name") or game_data.get("name") or game_info.get("name") or f"App {parsed_data['appid']}",

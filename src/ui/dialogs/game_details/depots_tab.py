@@ -355,6 +355,22 @@ def _make_bulk_toggle_bar(category_name: str, on_toggle_cb) -> Tuple[QFrame, Min
 
 def init_depots_tab(dialog) -> None:
     """Initialize the modular Depots tab for AT0-M mode games."""
+    dialog.stacked.addWidget(build_depots_panel(dialog))
+
+
+def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWidget:
+    """The AdditionalApps / AdditionalDepots / DecryptionKeys editor.
+
+    ``mode="details"``: the Game Details Depots tab (locked until Unlock).
+    ``mode="dlc_setup"``: AT0-M DLC setup for a Steam-owned game. Opens
+    unlocked with released, unowned DLCs (and their depots/keys) preselected;
+    Steam-owned and unreleased items are greyed and locked. The button
+    registers the selection (config + plugin library) and calls
+    ``on_registered(summary)``.
+
+    ``dialog`` only needs ``appid``, ``game_data`` and ``accent_color``.
+    """
+    is_dlc_setup = (mode == "dlc_setup")
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
@@ -368,8 +384,8 @@ def init_depots_tab(dialog) -> None:
     ac = dialog.accent_color
     appid_str = str(dialog.appid).strip()
 
-    # Advanced unlock and desired states tracking
-    is_unlocked = False
+    # Advanced unlock and desired states tracking (DLC setup starts unlocked)
+    is_unlocked = is_dlc_setup
     desired_apps: Dict[str, bool] = {}
     desired_depots: Dict[str, bool] = {}
     desired_keys: Dict[str, bool] = {}
@@ -597,7 +613,6 @@ def init_depots_tab(dialog) -> None:
     footer_lay.addWidget(btn_bar)
 
     tab_layout.addWidget(footer_bar, 0)
-    dialog.stacked.addWidget(tab_container)
 
     def _build_app_to_depots_map(
         state_apps: List[Dict[str, Any]],
@@ -789,6 +804,12 @@ def init_depots_tab(dialog) -> None:
         gate = ReleaseGate(appid_str, enrichments=cached_enrichments, app_depots=cached_app_depots, db=db_mgr)
 
         is_steam_owned_base = (appid_str in get_owned_steam_appids())
+        try:
+            from utils.dlc_helpers import get_owned_dlcs_from_steam
+            steam_owned_dlcs = {str(x) for x in (get_owned_dlcs_from_steam(appid_str) or set())}
+        except Exception as e:
+            logger.debug(f"[DepotsTab] Could not read Steam DLC ownership: {e}")
+            steam_owned_dlcs = set()
         is_dlc_only = bool(dialog.game_data.get("is_dlc_only") or dialog.game_data.get("_dlc_only") or is_dlc_only_mode(appid_str))
         is_base_owned = bool(is_steam_owned_base or is_dlc_only)
 
@@ -809,11 +830,15 @@ def init_depots_tab(dialog) -> None:
             desc = lua_dlcs.get(dlc_id) or gd_dlcs.get(dlc_id) or tagged_apps_from_config.get(dlc_id) or f"DLC {dlc_id}"
             is_unrel = gate.is_unreleased(dlc_id, is_dlc_app=True)
             prefix = f"{UNRELEASED_TAG} [DLC]" if is_unrel else "[DLC]"
+            is_owned_dlc = dlc_id in steam_owned_dlcs
+            if is_owned_dlc:
+                prefix = "[Steam Owned] [DLC]"
             apps_list.append({
                 "id": dlc_id,
                 "desc": f"{prefix} {desc}",
                 "is_base": False,
                 "is_owned_base": False,
+                "is_owned": is_owned_dlc,
                 "is_unreleased": is_unrel,
             })
 
@@ -844,6 +869,10 @@ def init_depots_tab(dialog) -> None:
             | tagged_depots_from_config
             | set(gd_depots.keys())
         ) - ALL_SHARED_REDISTS - {appid_str} - pure_license_dlcs
+        # Depots the caller reports as missing from Hubcap (and that have no key
+        # anywhere) are listed through the missing/status path, never as normal rows.
+        reported_missing = {str(x) for x in (gd.get("missing_depots_from_hubcap") or [])} - set(game_keys.keys())
+        game_depots_set -= reported_missing
 
         # Gate 1 cascade: an unreleased DLC takes its mapped content depots (and
         # therefore their keys) down with it, plus anything Steam itself marks prerelease.
@@ -854,6 +883,36 @@ def init_depots_tab(dialog) -> None:
             mapped = _build_app_to_depots_map(apps_list, [{"id": str(c)} for c in candidate_ids])
             for dlc_id in unreleased_dlc_ids:
                 unreleased_ids |= {str(x) for x in mapped.get(dlc_id, set())}
+
+        # Steam-owned content: owned DLC apps and the depots mapped to them, and,
+        # when the base game is owned (or DLC-only), the base game's own depots.
+        owned_dlc_ids = {a["id"] for a in apps_list if a.get("is_owned")}
+        owned_ids: Set[str] = set(owned_dlc_ids)
+        _candidates = sorted(game_depots_set | set(cached_app_depots.keys()))
+        _owner_map = _build_app_to_depots_map(apps_list, [{"id": str(c)} for c in _candidates])
+        _depot_owner: Dict[str, str] = {}
+        for _aid, _dset in _owner_map.items():
+            if _aid != appid_str:
+                for _d in _dset:
+                    _depot_owner.setdefault(str(_d), _aid)
+        for _d, _info in gd_depots.items():
+            _o = str((_info or {}).get("dlcappid") or "").strip()
+            if _o and _o != appid_str:
+                _depot_owner[_d] = _o
+        for _d in _candidates:
+            _o = gate.owner_dlc(_d)
+            if _o:
+                _depot_owner.setdefault(str(_d), _o)
+        for _d, _o in _depot_owner.items():
+            if _o in owned_dlc_ids:
+                owned_ids.add(_d)
+        if is_base_owned:
+            for _d in game_depots_set:
+                if _d not in _depot_owner and _d not in dlc_content_depots:
+                    owned_ids.add(_d)
+
+        def _is_owned(did: str) -> bool:
+            return did in owned_ids
 
         def _is_unreleased(did: str) -> bool:
             if did in unreleased_ids:
@@ -923,6 +982,8 @@ def init_depots_tab(dialog) -> None:
                 "size_str": size_str,
                 "is_missing": False,
                 "is_unreleased": _is_unreleased(d),
+                "is_owned": _is_owned(d),
+                "dlc_owner": _depot_owner.get(d, ""),
             })
 
         # Collect missing / pending depots from:
@@ -956,6 +1017,14 @@ def init_depots_tab(dialog) -> None:
                                 "tag": "[Awaiting Key]",
                                 "tooltip": f"Depot {nid} is registered on Steam, but its AES decryption key is pending on Hubcap (cooldown active).\nIt cannot be downloaded or injected into SLSsteam until the key is published.",
                             }
+
+        for mid in [str(x) for x in (gd.get("missing_depots_from_hubcap") or [])]:
+            if mid and mid not in valid_key_depots and mid not in missing_depots_map and mid != appid_str and mid not in ALL_SHARED_REDISTS:
+                if _is_unreleased(mid):
+                    m_stat, m_tag, m_tip = STATUS_UNRELEASED, UNRELEASED_TAG, unreleased_tooltip(mid)
+                else:
+                    m_stat, m_tag, m_tip = gate.classify_missing(mid, reported_missing=True)
+                missing_depots_map[mid] = {"status": m_stat, "tag": m_tag, "tooltip": m_tip}
 
         for row in db_mgr.get_missing_hubcap_depots(appid_str):
             mid = str(row.get("depot_id") or "")
@@ -1057,6 +1126,8 @@ def init_depots_tab(dialog) -> None:
                 "size_str": size_str,
                 "is_missing": True,
                 "is_unreleased": m_info["status"] == STATUS_UNRELEASED,
+                "is_owned": _is_owned(d),
+                "dlc_owner": _depot_owner.get(d, ""),
                 "missing_status": m_info["status"],
                 "missing_tag": m_info["tag"],
                 "missing_tooltip": m_info["tooltip"],
@@ -1091,6 +1162,7 @@ def init_depots_tab(dialog) -> None:
                 "is_base_owned": False,
                 "is_pure_license": (d in pure_license_dlcs),
                 "is_unreleased": _is_unreleased(d),
+                "is_owned": _is_owned(d),
             })
 
         # Append missing / pending keys to keys_list
@@ -1125,6 +1197,9 @@ def init_depots_tab(dialog) -> None:
             "game_keys": game_keys,
             "game_shared_depots": game_shared_depots,
             "unreleased_ids": unreleased_ids,
+            "owned_ids": owned_ids,
+            "locked_ids": set(unreleased_ids) | set(owned_ids),
+            "dlc_content_ids": set(dlc_content_depots) | set(_depot_owner.keys()),
         }
 
     def _update_sync_button_label(state: Dict[str, Any]) -> None:
@@ -1148,7 +1223,15 @@ def init_depots_tab(dialog) -> None:
                     is_dirty = True
                     break
 
-        if is_dirty:
+        if is_dlc_setup:
+            n_sel = sum(
+                1 for a in state["apps"]
+                if not a.get("is_base") and not a.get("is_owned") and not a.get("is_unreleased")
+                and desired_apps.get(a["id"], False)
+            )
+            sync_btn.setText(f"Register {n_sel} DLC{'s' if n_sel != 1 else ''}")
+            sync_btn.setEnabled(n_sel > 0 or is_dirty)
+        elif is_dirty:
             sync_btn.setText("Sync Changes")
         else:
             sync_btn.setText("Sync")
@@ -1159,13 +1242,13 @@ def init_depots_tab(dialog) -> None:
         _internal_bulk_update = True
         try:
             apps = state["apps"]
-            valid_apps = [a for a in apps if not a.get("is_unreleased") and not a.get("is_owned_base")]
+            valid_apps = [a for a in apps if not a.get("is_unreleased") and not a.get("is_owned_base") and not a.get("is_owned")]
             if len(apps) >= 5:
                 all_apps_on = bool(valid_apps) and all(desired_apps.get(item["id"], False) for item in valid_apps)
                 apps_bulk_toggle.setChecked(all_apps_on, animate=False)
 
             depots = state["depots"]
-            valid_depots = [d for d in depots if not d.get("is_missing") and not d.get("is_unreleased")]
+            valid_depots = [d for d in depots if not d.get("is_missing") and not d.get("is_unreleased") and not d.get("is_owned")]
             if len(depots) >= 5:
                 all_depots_on = bool(valid_depots) and all(desired_depots.get(item["id"], False) for item in valid_depots)
                 depots_bulk_toggle.setChecked(all_depots_on, animate=False)
@@ -1174,7 +1257,7 @@ def init_depots_tab(dialog) -> None:
             valid_keys = [
                 k for k in keys
                 if k.get("key") and not k.get("is_missing") and not k.get("is_base_owned")
-                and not k.get("is_pure_license") and not k.get("is_unreleased")
+                and not k.get("is_pure_license") and not k.get("is_unreleased") and not k.get("is_owned")
             ]
             if len(keys) >= 5:
                 all_keys_on = bool(valid_keys) and all(desired_keys.get(item["id"], False) for item in valid_keys)
@@ -1189,8 +1272,8 @@ def init_depots_tab(dialog) -> None:
         app_to_depots = _build_app_to_depots_map(state["apps"], state.get("depots"))
         for item in state["apps"]:
             aid = item["id"]
-            if item.get("is_unreleased") or item.get("is_owned_base"):
-                continue  # Never bulk-toggle unreleased DLCs or owned base app!
+            if item.get("is_unreleased") or item.get("is_owned_base") or item.get("is_owned"):
+                continue  # Never bulk-toggle unreleased or Steam-owned entries
             desired_apps[aid] = checked
             if aid in app_toggles:
                 app_toggles[aid].setChecked(checked, animate=True)
@@ -1206,7 +1289,7 @@ def init_depots_tab(dialog) -> None:
 
                 # Auto-enable associated DLC depots and their keys
                 for did in assoc_depots:
-                    if did in state.get("unreleased_ids", set()):
+                    if did in state.get("locked_ids", set()):
                         continue
                     d_meta = next((d for d in state["depots"] if d["id"] == did), None)
                     if did in depot_toggles and not desired_depots.get(did, False):
@@ -1239,8 +1322,8 @@ def init_depots_tab(dialog) -> None:
             return
         state = _collect_state()
         for item in state["depots"]:
-            if item.get("is_unreleased") or (checked and item.get("is_missing")):
-                continue  # Unreleased depots are locked; missing depots cannot be enabled
+            if item.get("is_unreleased") or item.get("is_owned") or (checked and item.get("is_missing")):
+                continue  # Unreleased / Steam-owned are locked; missing depots cannot be enabled
             did = item["id"]
             desired_depots[did] = checked
             if did in depot_toggles:
@@ -1257,8 +1340,8 @@ def init_depots_tab(dialog) -> None:
         state = _collect_state()
         for item in state["keys"]:
             kid = item["id"]
-            if item.get("is_unreleased") or (checked and (not item.get("key") or item.get("is_missing"))):
-                continue  # Unreleased keys are locked; missing keys cannot be enabled
+            if item.get("is_unreleased") or item.get("is_owned") or (checked and (not item.get("key") or item.get("is_missing"))):
+                continue  # Unreleased / Steam-owned are locked; missing keys cannot be enabled
             desired_keys[kid] = checked
             if kid in key_toggles:
                 key_toggles[kid].setChecked(checked, animate=True)
@@ -1275,7 +1358,7 @@ def init_depots_tab(dialog) -> None:
         # 1. Apps
         for item in state["apps"]:
             aid = item["id"]
-            if item.get("is_unreleased") or item.get("is_owned_base"):
+            if item.get("is_unreleased") or item.get("is_owned_base") or item.get("is_owned"):
                 continue
             desired_apps[aid] = checked
             if aid in app_toggles:
@@ -1283,8 +1366,8 @@ def init_depots_tab(dialog) -> None:
 
         # 2. Depots
         for item in state["depots"]:
-            if item.get("is_unreleased") or (checked and item.get("is_missing")):
-                continue  # Unreleased locked; missing cannot be enabled
+            if item.get("is_unreleased") or item.get("is_owned") or (checked and item.get("is_missing")):
+                continue  # Unreleased / owned locked; missing cannot be enabled
             did = item["id"]
             desired_depots[did] = checked
             if did in depot_toggles:
@@ -1293,8 +1376,8 @@ def init_depots_tab(dialog) -> None:
         # 3. Keys
         for item in state["keys"]:
             kid = item["id"]
-            if item.get("is_unreleased") or (checked and (not item.get("key") or item.get("is_missing"))):
-                continue  # Unreleased locked; missing cannot be enabled
+            if item.get("is_unreleased") or item.get("is_owned") or (checked and (not item.get("key") or item.get("is_missing"))):
+                continue  # Unreleased / owned locked; missing cannot be enabled
             desired_keys[kid] = checked
             if kid in key_toggles:
                 key_toggles[kid].setChecked(checked, animate=True)
@@ -1355,12 +1438,26 @@ def init_depots_tab(dialog) -> None:
                 desc_item.setToolTip("Base game is owned on Steam. Cannot be added to AdditionalApps.")
                 apps_table.setItem(row, 0, id_item)
                 apps_table.setItem(row, 1, desc_item)
-                toggle = MiniSwitchToggle(checked=False, read_only=True)
+                toggle = MiniSwitchToggle(checked=False, read_only=True, greyscaled=True)
                 toggle.setEnabled(False)
                 toggle.setToolTip("Base game is owned on Steam. Cannot be added to AdditionalApps.")
                 app_toggles[aid] = toggle
                 apps_table.setCellWidget(row, 2, _ToggleContainer(toggle))
                 desired_apps[aid] = False
+                continue
+
+            if item.get("is_owned"):
+                id_item.setForeground(QColor("#777777"))
+                desc_item.setForeground(QColor("#777777"))
+                desc_item.setToolTip("DLC is owned on Steam. Nothing to add; existing config entries are left as they are.")
+                apps_table.setItem(row, 0, id_item)
+                apps_table.setItem(row, 1, desc_item)
+                toggle = MiniSwitchToggle(checked=is_live, read_only=True, greyscaled=True)
+                toggle.setEnabled(False)
+                toggle.setToolTip("DLC is owned on Steam.")
+                app_toggles[aid] = toggle
+                apps_table.setCellWidget(row, 2, _ToggleContainer(toggle))
+                desired_apps[aid] = is_live
                 continue
 
             if item.get("is_unreleased"):
@@ -1372,7 +1469,7 @@ def init_depots_tab(dialog) -> None:
                 desc_item.setToolTip("DLC is unreleased on Steam (prerelease). Cannot be enabled.")
                 apps_table.setItem(row, 0, id_item)
                 apps_table.setItem(row, 1, desc_item)
-                toggle = MiniSwitchToggle(checked=False, read_only=True)
+                toggle = MiniSwitchToggle(checked=False, read_only=True, greyscaled=True)
                 toggle.setEnabled(False)
                 toggle.setToolTip("DLC is unreleased on Steam (prerelease). Cannot be enabled.")
                 app_toggles[aid] = toggle
@@ -1406,8 +1503,8 @@ def init_depots_tab(dialog) -> None:
 
                         # 2. Enable associated DLC depots in AdditionalDepots and their keys in DecryptionKeys
                         for did in assoc_depots:
-                            if did in state.get("unreleased_ids", set()):
-                                continue  # Gate 1: unreleased content stays locked
+                            if did in state.get("locked_ids", set()):
+                                continue  # Unreleased / Steam-owned content stays locked
                             if did in depot_toggles and not desired_depots.get(did, False):
                                 desired_depots[did] = True
                                 depot_toggles[did].setChecked(True, animate=True)
@@ -1454,11 +1551,15 @@ def init_depots_tab(dialog) -> None:
             did = item["id"]
             is_live = did in live_depots
             is_unrel = bool(item.get("is_unreleased"))
-            # Unreleased rows render like missing ones: greyed, tagged, locked toggle.
-            is_missing = item.get("is_missing", False) or is_unrel
+            is_owned_row = bool(item.get("is_owned")) and not is_unrel
+            # Unreleased / Steam-owned rows render like missing ones: greyed, tagged, locked toggle.
+            is_missing = item.get("is_missing", False) or is_unrel or is_owned_row
             if is_unrel and not item.get("missing_tag"):
                 item = dict(item, missing_status=STATUS_UNRELEASED, missing_tag=UNRELEASED_TAG,
                             missing_tooltip=unreleased_tooltip(did))
+            elif is_owned_row:
+                item = dict(item, missing_status="owned", missing_tag="[Steam Owned]",
+                            missing_tooltip=f"Depot {did} belongs to content you own on Steam. Steam provides it; nothing to add.")
 
             id_item = QTableWidgetItem(did)
             id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
@@ -1504,7 +1605,7 @@ def init_depots_tab(dialog) -> None:
 
             if is_missing:
                 # Unreleased depots already in config show their live state, but stay locked.
-                toggle = MiniSwitchToggle(checked=False, read_only=True)
+                toggle = MiniSwitchToggle(checked=(is_owned_row and is_live), read_only=True, greyscaled=True)
                 toggle.setEnabled(False)
                 toggle.setToolTip(item.get("missing_tooltip") or "Depot key is not available — cannot enable in AdditionalDepots.")
                 depot_toggles[did] = toggle
@@ -1579,7 +1680,7 @@ def init_depots_tab(dialog) -> None:
                 key_item.setToolTip(item.get("missing_tooltip") or "No AES decryption key available.")
                 keys_table.setItem(row, 1, key_item)
 
-                toggle = MiniSwitchToggle(checked=False, read_only=True)
+                toggle = MiniSwitchToggle(checked=False, read_only=True, greyscaled=True)
                 toggle.setEnabled(False)
                 toggle.setToolTip(item.get("missing_tooltip") or "Decryption key not available — cannot enable.")
                 key_toggles[kid] = toggle
@@ -1587,22 +1688,26 @@ def init_depots_tab(dialog) -> None:
 
                 loc_ind = _make_local_indicator(in_local=False, is_missing=True)
                 keys_table.setCellWidget(row, 3, loc_ind)
-            elif item.get("is_unreleased"):
+            elif item.get("is_unreleased") or item.get("is_owned"):
                 raw_key = item.get("key") or ""
                 short_key = f"{raw_key[:15]}..." if len(raw_key) > 15 else raw_key
-                key_item = QTableWidgetItem(f"{UNRELEASED_TAG}  {short_key}".strip())
+                lock_tag = UNRELEASED_TAG if item.get("is_unreleased") else "[Steam Owned]"
+                key_item = QTableWidgetItem(f"{lock_tag}  {short_key}".strip())
                 key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 key_item.setForeground(QColor(130, 130, 130))
                 f_u = key_item.font()
                 f_u.setItalic(True)
                 key_item.setFont(f_u)
-                key_item.setToolTip(unreleased_tooltip(kid))
+                lock_tip = unreleased_tooltip(kid) if item.get("is_unreleased") else (
+                    f"{kid} belongs to content you own on Steam; its key is not needed."
+                )
+                key_item.setToolTip(lock_tip)
                 keys_table.setItem(row, 1, key_item)
 
                 # Locked: shows whether it is already in config, never changes it.
-                toggle = MiniSwitchToggle(checked=bool(item.get("in_config")), read_only=True)
+                toggle = MiniSwitchToggle(checked=bool(item.get("in_config")), read_only=True, greyscaled=True)
                 toggle.setEnabled(False)
-                toggle.setToolTip(unreleased_tooltip(kid))
+                toggle.setToolTip(lock_tip)
                 key_toggles[kid] = toggle
                 keys_table.setCellWidget(row, 2, _ToggleContainer(toggle))
 
@@ -1615,7 +1720,7 @@ def init_depots_tab(dialog) -> None:
                 key_item.setToolTip("Base game is owned legitimately on Steam. Base AppKey is not injected.")
                 keys_table.setItem(row, 1, key_item)
 
-                toggle = MiniSwitchToggle(checked=False, read_only=True)
+                toggle = MiniSwitchToggle(checked=False, read_only=True, greyscaled=True)
                 toggle.setEnabled(False)
                 toggle.setToolTip("Base game is owned legitimately on Steam. Base AppKey is not injected.")
                 key_toggles[kid] = toggle
@@ -1633,7 +1738,7 @@ def init_depots_tab(dialog) -> None:
                 key_item.setToolTip("Entitlement is granted via AdditionalApps / DlcData. No depot files or AES key required.")
                 keys_table.setItem(row, 1, key_item)
 
-                toggle = MiniSwitchToggle(checked=False, read_only=True)
+                toggle = MiniSwitchToggle(checked=False, read_only=True, greyscaled=True)
                 toggle.setEnabled(False)
                 toggle.setToolTip("Entitlement is granted via AdditionalApps / DlcData. No depot files or AES key required.")
                 key_toggles[kid] = toggle
@@ -1722,17 +1827,31 @@ def init_depots_tab(dialog) -> None:
         added_count = 0
         removed_count = 0
 
+        # AT0-M DLC setup: 64+ DLC licenses go to DlcData instead of AdditionalApps.
+        selected_dlc_apps = {
+            a["id"]: a["desc"] for a in state["apps"]
+            if is_dlc_setup and not a.get("is_base") and not a.get("is_owned") and not a.get("is_unreleased")
+            and desired_apps.get(a["id"], False)
+        }
+        use_dlc_data = is_dlc_setup and len(selected_dlc_apps) >= 64
+        dlc_data_pending: Dict[str, str] = {}
+
         with batch_config_edit(cfg_path) as editor:
             if is_unlocked:
                 # Custom unlocked sync: strictly follow user's toggle desired states
                 # 1. Apps (add if desired and missing, remove if unchecked and present)
                 for item in state["apps"]:
                     aid = item["id"]
+                    if item.get("is_owned") and not item.get("is_base"):
+                        continue  # Steam-owned DLC: leave config exactly as it is
                     if item.get("is_owned_base") or item.get("is_unreleased"):
                         desired = False
                     else:
                         desired = desired_apps.get(aid, aid in state["live_apps"])
                     if desired and aid not in state["live_apps"]:
+                        if use_dlc_data and not item.get("is_base"):
+                            dlc_data_pending[aid] = re.sub(r"^(?:\[[^\]]*\]\s*)+", "", item["desc"]).strip()
+                            continue
                         editor.add_app(aid, comment=item["desc"])
                         added_count += 1
                     elif not desired and aid in state["live_apps"]:
@@ -1757,8 +1876,8 @@ def init_depots_tab(dialog) -> None:
                             editor.remove_depot(did, check_shared=True, excluding_appid=appid_str)
                             removed_count += 1
                         continue
-                    if did == appid_str or item.get("is_missing"):
-                        continue  # Safeguard: AppIDs and missing depots are never changed here
+                    if did == appid_str or item.get("is_missing") or item.get("is_owned"):
+                        continue  # Safeguard: AppIDs, missing and Steam-owned depots are never changed here
                     desired = desired_depots.get(did, did in state["live_depots"])
                     if desired and did not in state["live_depots"]:
                         comment = build_depot_comment(game_name, did, "", appid_str)
@@ -1773,7 +1892,7 @@ def init_depots_tab(dialog) -> None:
                     kid = item["id"]
                     if (
                         item.get("is_missing") or not item.get("key") or item.get("is_base_owned")
-                        or item.get("is_pure_license") or item.get("is_unreleased")
+                        or item.get("is_pure_license") or item.get("is_unreleased") or item.get("is_owned")
                     ):
                         # Missing / base-owned / license-only never go in DecryptionKeys; unreleased
                         # keys are left exactly as they are (never added, never sanitised away).
@@ -1810,7 +1929,7 @@ def init_depots_tab(dialog) -> None:
                 valid_keys = set(
                     item["id"] for item in state["keys"]
                     if item["key"] and not item.get("is_base_owned") and not item.get("is_pure_license")
-                    and not item.get("is_unreleased")
+                    and not item.get("is_unreleased") and not item.get("is_owned")
                 )
                 for item in state["depots"]:
                     did = item["id"]
@@ -1820,8 +1939,8 @@ def init_depots_tab(dialog) -> None:
                             editor.remove_depot(did, check_shared=True, excluding_appid=appid_str)
                             removed_count += 1
                         continue
-                    if did == appid_str:
-                        continue  # Safeguard: AppIDs must never be in AdditionalDepots
+                    if did == appid_str or item.get("is_owned"):
+                        continue  # Safeguard: AppIDs never in AdditionalDepots; Steam-owned not needed
                     if did not in state["live_depots"] and did in valid_keys:
                         comment = build_depot_comment(game_name, did, "", appid_str)
                         editor.add_depot(did, comment=comment, app_id=appid_str)
@@ -1830,7 +1949,7 @@ def init_depots_tab(dialog) -> None:
                 # 3. Keys: add missing keys
                 for item in state["keys"]:
                     kid = item["id"]
-                    if item.get("is_base_owned") or item.get("is_pure_license") or item.get("is_unreleased"):
+                    if item.get("is_base_owned") or item.get("is_pure_license") or item.get("is_unreleased") or item.get("is_owned"):
                         continue
                     kval = item["key"]
                     if kval and not item["in_config"]:
@@ -1851,6 +1970,14 @@ def init_depots_tab(dialog) -> None:
                 if s_key and s_did not in state["live_keys"]:
                     editor.add_key(s_did, s_key, comment="Steamworks Shared")
                     added_count += 1
+
+        if dlc_data_pending:
+            try:
+                from utils.yaml_config_manager import add_dlc_data_batch
+                add_dlc_data_batch(cfg_path, appid_str, dlc_data_pending)
+                added_count += len(dlc_data_pending)
+            except Exception as e:
+                logger.error(f"[DepotsTab] DlcData registration failed: {e}", exc_info=True)
 
         # Always persist all valid keys from state/config to DepotKeyManager (local DB)
         try:
@@ -1905,8 +2032,88 @@ def init_depots_tab(dialog) -> None:
         else:
             status_lbl.setText("Configuration is already up to date.")
 
+        if is_dlc_setup:
+            _register_dlc_setup(state, cfg_path, selected_dlc_apps, added_count, removed_count, bool(dlc_data_pending))
+            return
+
         sync_btn.setText("Sync")
         _refresh_ui()
+
+    def _register_dlc_setup(state, cfg_path, selected_dlc_apps, added_count, removed_count, used_dlc_data) -> None:
+        """Record an AT0-M DLC-only setup (plugin library + DLC-only flag) and hand back."""
+        game_name = dialog.game_data.get("game_name") or f"App {appid_str}"
+        live_depots_now = set(get_additional_depots(cfg_path))
+        live_keys_now = get_decryption_keys(cfg_path)
+        reg_depots = {
+            d["id"]: (d.get("raw_desc") or d["desc"]) for d in state["depots"]
+            if d["id"] in live_depots_now and not d.get("is_owned")
+        }
+        reg_keys = {
+            k["id"]: str(live_keys_now.get(k["id"]) or k.get("key") or "").lower()
+            for k in state["keys"] if k["id"] in live_keys_now and not k.get("is_owned")
+        }
+        try:
+            from utils.plugin_games import load_plugin_library, save_plugin_library
+            plib = load_plugin_library()
+            rec = plib.get(appid_str, {})
+            dlcs = set(rec.get("dlc_appids", [])) | set(selected_dlc_apps.keys())
+            names = dict(rec.get("depot_names", {}))
+            names.update(reg_depots)
+            keys = dict(rec.get("keys", {}))
+            keys.update({k: v for k, v in reg_keys.items() if v})
+            plib[appid_str] = {
+                **rec,
+                "name": game_name,
+                "appid": appid_str,
+                "is_atom": True,
+                "is_dlc_only": True,
+                "dlc_appids": sorted(dlcs, key=lambda x: int(x) if x.isdigit() else 0),
+                "depots": sorted(set(rec.get("depots", [])) | set(reg_depots), key=lambda x: int(x) if x.isdigit() else 0),
+                "keys": keys,
+                "depot_names": names,
+            }
+            save_plugin_library(plib)
+            from utils.settings import get_settings
+            get_settings().setValue(f"dlc_only_mode/{appid_str}", True)
+        except Exception as e:
+            logger.error(f"[DepotsTab] Could not record AT0-M DLC setup for {appid_str}: {e}", exc_info=True)
+
+        SLSBridge.notify_reload()
+        summary = {
+            "dlcs": len(selected_dlc_apps),
+            "depots": len(reg_depots),
+            "keys": len(reg_keys),
+            "added": added_count,
+            "removed": removed_count,
+            "dlc_data": used_dlc_data,
+        }
+        if callable(on_registered):
+            on_registered(summary)
+        else:
+            status_lbl.setText(f"Registered {summary['dlcs']} DLC(s), {summary['depots']} depot(s).")
+            _refresh_ui()
+
+    def _seed_dlc_setup_defaults() -> None:
+        """DLC setup: preselect released, unowned DLCs plus their depots and keys."""
+        state = _collect_state()
+        dlc_content = state.get("dlc_content_ids", set())
+        locked = state.get("locked_ids", set())
+        for a in state["apps"]:
+            if a.get("is_base") or a.get("is_owned") or a.get("is_unreleased"):
+                continue
+            desired_apps[a["id"]] = True
+        for d in state["depots"]:
+            if d.get("is_missing") or d["id"] in locked:
+                continue
+            # Only keyed depots go into AdditionalDepots (unkeyed content cannot decrypt).
+            desired_depots[d["id"]] = (d["id"] in dlc_content and bool(d.get("has_key"))) or d["id"] in state["live_depots"]
+        for k in state["keys"]:
+            if (
+                k.get("is_missing") or not k.get("key") or k.get("is_base_owned")
+                or k.get("is_pure_license") or k["id"] in locked
+            ):
+                continue
+            desired_keys[k["id"]] = k["id"] in dlc_content or bool(k.get("in_config"))
 
     def _on_refetch():
         """Refetch fresh Lua metadata and keys from Hubcap API."""
@@ -2106,6 +2313,15 @@ def init_depots_tab(dialog) -> None:
     unlock_btn.clicked.connect(_on_unlock)
     sync_btn.clicked.connect(_on_sync)
 
+    if is_dlc_setup:
+        # Setup flow: no unlock gate, and the manifest was just fetched.
+        unlock_btn.setVisible(False)
+        refetch_btn.setVisible(False)
+        status_lbl.setText(
+            "Pick the DLCs to add. Steam-owned and unreleased items are greyed out and left untouched."
+        )
+        status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+
     enrichment_bridge = _EnrichmentBridge()
     enrichment_bridge.enriched.connect(_refresh_ui)
 
@@ -2159,6 +2375,8 @@ def init_depots_tab(dialog) -> None:
             logger.debug(f"[DepotsTab] Background depot enrichment error: {e}")
 
     # Initial load
+    if is_dlc_setup:
+        _seed_dlc_setup_defaults()
     _refresh_ui()
 
     # Check if any depots are still generic and trigger async enrichment if needed
@@ -2169,3 +2387,5 @@ def init_depots_tab(dialog) -> None:
     )
     if needs_enrichment:
         threading.Thread(target=_run_background_enrichment, daemon=True).start()
+
+    return tab_container
