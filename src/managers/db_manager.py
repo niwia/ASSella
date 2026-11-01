@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import shutil
@@ -125,7 +126,9 @@ class DatabaseManager:
         self.conn = self._connect_db()
         self.cctx = zstd.ZstdCompressor(level=3) if zstd else None
         self.dctx = zstd.ZstdDecompressor() if zstd else None
-        self._app_info_cache: Dict[Tuple[str, bool], Dict[str, Any]] = {}
+        # (appid, bypass_expiration) -> (last_updated, result). Callers always get a
+        # deep copy so mutating a returned dict can never corrupt the cache.
+        self._app_info_cache: Dict[Tuple[str, bool], Tuple[int, Dict[str, Any]]] = {}
         self._depot_enrichments_cache: Dict[str, Dict[str, dict]] = {}
 
         self.is_initialized = True
@@ -192,8 +195,13 @@ class DatabaseManager:
 
         cache_key = (str(appid), bool(bypass_expiration))
         with self._conn_lock:
-            if cache_key in self._app_info_cache:
-                return self._app_info_cache[cache_key]
+            hit = self._app_info_cache.get(cache_key)
+            if hit is not None:
+                cached_at, cached_result = hit
+                if bypass_expiration or (int(time.time()) - cached_at) <= EXPIRATION_SECONDS:
+                    return copy.deepcopy(cached_result)
+                self._app_info_cache.pop(cache_key, None)
+                return None
 
         try:
             with self._conn_lock:
@@ -230,6 +238,7 @@ class DatabaseManager:
                 # language depots as missing, and a DB hit returns early
                 # without ever touching the network.
                 baselanguages = depots_data.pop("baselanguages", None)
+                releasestate = depots_data.pop("releasestate", None)
 
                 full_header_url = _construct_full_url(row["header_path"])
 
@@ -245,10 +254,11 @@ class DatabaseManager:
                     "hasdepotsindlc": hasdepotsindlc,
                     "listofdlc": listofdlc,
                     "dlcs_expanded": dlcs_expanded,
+                    "releasestate": releasestate,
                     "source": "database",
                 }
-                self._app_info_cache[cache_key] = result
-                return result
+                self._app_info_cache[cache_key] = (last_updated, result)
+                return copy.deepcopy(result)
 
         except Exception as e:
             logger.error(f"DB Read Error {appid}: {e}")
@@ -356,6 +366,11 @@ class DatabaseManager:
             depots_to_save["listofdlc"] = data["listofdlc"]
         elif existing_listofdlc is not None:
             depots_to_save["listofdlc"] = existing_listofdlc
+
+        # Steam release state (released / prerelease); existing value is kept
+        # in depots_to_save (non-digit keys survive the merge above).
+        if data.get("releasestate"):
+            depots_to_save["releasestate"] = str(data["releasestate"])
 
         if "dlcs_expanded" in data:
             depots_to_save["dlcs_expanded"] = data["dlcs_expanded"]
@@ -554,7 +569,7 @@ class DatabaseManager:
         aid = str(appid)
         with self._conn_lock:
             if aid in self._depot_enrichments_cache:
-                return self._depot_enrichments_cache[aid]
+                return copy.deepcopy(self._depot_enrichments_cache[aid])
         try:
             with self._conn_lock:
                 cur = self.conn.cursor()
@@ -601,7 +616,7 @@ class DatabaseManager:
                         "releasestate": r[8] if len(r) > 8 and r[8] else "released",
                     }
                 self._depot_enrichments_cache[aid] = results
-                return results
+                return copy.deepcopy(results)
         except Exception as e:
             logger.debug(f"[DBManager] Failed to read depot enrichments for {appid}: {e}")
             return {}

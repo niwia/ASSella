@@ -49,6 +49,7 @@ from utils.plugin_games import (
     load_plugin_library,
 )
 from utils.lua_parsing import iter_live_matches
+from utils.release_gate import ReleaseGate, STATUS_UNRELEASED, UNRELEASED_TAG, unreleased_tooltip
 from ui.assets import DEPOT_BLACKLIST
 
 logger = logging.getLogger(__name__)
@@ -784,6 +785,9 @@ def init_depots_tab(dialog) -> None:
         cached_app_info = db_mgr.get_app_info(appid_str) or {}
         cached_app_depots = (cached_app_info.get("depots") or {}) if isinstance(cached_app_info, dict) else {}
 
+        # Gate 1 (Steam release state) and gate 2 (Hubcap availability) live in one place.
+        gate = ReleaseGate(appid_str, enrichments=cached_enrichments, app_depots=cached_app_depots, db=db_mgr)
+
         is_steam_owned_base = (appid_str in get_owned_steam_appids())
         is_dlc_only = bool(dialog.game_data.get("is_dlc_only") or dialog.game_data.get("_dlc_only") or is_dlc_only_mode(appid_str))
         is_base_owned = bool(is_steam_owned_base or is_dlc_only)
@@ -803,16 +807,8 @@ def init_depots_tab(dialog) -> None:
         }]
         for dlc_id in sorted(dlc_id_set, key=lambda x: int(x) if x.isdigit() else 0):
             desc = lua_dlcs.get(dlc_id) or gd_dlcs.get(dlc_id) or tagged_apps_from_config.get(dlc_id) or f"DLC {dlc_id}"
-            dlc_rel = (
-                cached_enrichments.get(dlc_id, {}).get("releasestate")
-                or (cached_app_depots.get(dlc_id, {}).get("releasestate") if isinstance(cached_app_depots.get(dlc_id), dict) else None)
-            )
-            if not dlc_rel:
-                child_app = db_mgr.get_app_info(dlc_id)
-                if child_app and child_app.get("releasestate"):
-                    dlc_rel = child_app.get("releasestate")
-            is_unrel = (dlc_rel == "prerelease")
-            prefix = "[Unreleased] [DLC]" if is_unrel else "[DLC]"
+            is_unrel = gate.is_unreleased(dlc_id, is_dlc_app=True)
+            prefix = f"{UNRELEASED_TAG} [DLC]" if is_unrel else "[DLC]"
             apps_list.append({
                 "id": dlc_id,
                 "desc": f"{prefix} {desc}",
@@ -848,6 +844,28 @@ def init_depots_tab(dialog) -> None:
             | tagged_depots_from_config
             | set(gd_depots.keys())
         ) - ALL_SHARED_REDISTS - {appid_str} - pure_license_dlcs
+
+        # Gate 1 cascade: an unreleased DLC takes its mapped content depots (and
+        # therefore their keys) down with it, plus anything Steam itself marks prerelease.
+        unreleased_dlc_ids = {a["id"] for a in apps_list if a.get("is_unreleased")}
+        unreleased_ids: Set[str] = set(unreleased_dlc_ids)
+        if unreleased_dlc_ids:
+            candidate_ids = sorted(game_depots_set | set(cached_app_depots.keys()))
+            mapped = _build_app_to_depots_map(apps_list, [{"id": str(c)} for c in candidate_ids])
+            for dlc_id in unreleased_dlc_ids:
+                unreleased_ids |= {str(x) for x in mapped.get(dlc_id, set())}
+
+        def _is_unreleased(did: str) -> bool:
+            if did in unreleased_ids:
+                return True
+            gd_owner = str((gd_depots.get(did) or {}).get("dlcappid") or "").strip()
+            if gd_owner and gd_owner in unreleased_dlc_ids:
+                unreleased_ids.add(did)
+                return True
+            if gate.is_unreleased(did):
+                unreleased_ids.add(did)
+                return True
+            return False
 
         valid_key_depots = set(game_keys.keys())
         depots_list = []
@@ -904,6 +922,7 @@ def init_depots_tab(dialog) -> None:
                 "is_shared": is_shared,
                 "size_str": size_str,
                 "is_missing": False,
+                "is_unreleased": _is_unreleased(d),
             })
 
         # Collect missing / pending depots from:
@@ -919,7 +938,13 @@ def init_depots_tab(dialog) -> None:
                     nid = str(nd["id"])
                     if nid not in valid_key_depots and nid != appid_str and nid not in ALL_SHARED_REDISTS:
                         has_key = bool(nd.get("has_key"))
-                        if has_key:
+                        if _is_unreleased(nid):
+                            missing_depots_map[nid] = {
+                                "status": STATUS_UNRELEASED,
+                                "tag": UNRELEASED_TAG,
+                                "tooltip": unreleased_tooltip(nid),
+                            }
+                        elif has_key:
                             missing_depots_map[nid] = {
                                 "status": "ready_on_hubcap",
                                 "tag": "[Key Ready]",
@@ -935,14 +960,11 @@ def init_depots_tab(dialog) -> None:
         for row in db_mgr.get_missing_hubcap_depots(appid_str):
             mid = str(row.get("depot_id") or "")
             if mid and mid not in valid_key_depots and mid not in missing_depots_map and mid != appid_str and mid not in ALL_SHARED_REDISTS:
-                rel_st = cached_enrichments.get(mid, {}).get("releasestate")
-                if rel_st == "prerelease":
-                    continue
-                missing_depots_map[mid] = {
-                    "status": "missing_hubcap",
-                    "tag": "[No Key]",
-                    "tooltip": f"Depot {mid} was reported missing from Hubcap servers.\nNo AES decryption key or manifest is available.",
-                }
+                if _is_unreleased(mid):
+                    m_stat, m_tag, m_tip = STATUS_UNRELEASED, UNRELEASED_TAG, unreleased_tooltip(mid)
+                else:
+                    m_stat, m_tag, m_tip = gate.classify_missing(mid, reported_missing=True)
+                missing_depots_map[mid] = {"status": m_stat, "tag": m_tag, "tooltip": m_tip}
 
         try:
             from managers.at0m_update_checker import At0mUpdateChecker
@@ -969,20 +991,13 @@ def init_depots_tab(dialog) -> None:
                     pub = manifests.get("public") if isinstance(manifests, dict) else {}
                     if not pub or (isinstance(pub, dict) and pub.get("download") in ("0", 0, None)):
                         continue
-                rel_st = ddata.get("releasestate") or cached_enrichments.get(did_str, {}).get("releasestate")
-                if rel_st == "prerelease":
-                    continue  # Guard: Never display unreleased DLC as awaiting key!
-                if ddata.get("manifest_id") or ddata.get("manifests") or ddata.get("size") or ddata.get("is_dlc"):
-                    from core.hubcap_key_index import get_index, STATE_AVAILABLE
-                    index = get_index(allow_network=False)
-                    if index.loaded and index.state(did_str) == STATE_AVAILABLE:
-                        m_stat = "ready_on_hubcap"
-                        m_tag = "[Key Ready]"
-                        m_tip = f"Depot {did_str} has an AES decryption key available on Hubcap.\nClick 'API Refetch' to download keys and manifest."
+                if _is_unreleased(did_str) or ddata.get("manifest_id") or ddata.get("manifests") or ddata.get("size") or ddata.get("is_dlc"):
+                    # Gate 1: unreleased is shown as such, never as "awaiting key".
+                    # Gate 2: released depots are classified by Hubcap availability.
+                    if _is_unreleased(did_str):
+                        m_stat, m_tag, m_tip = STATUS_UNRELEASED, UNRELEASED_TAG, unreleased_tooltip(did_str)
                     else:
-                        m_stat = "key_pending"
-                        m_tag = "[Awaiting Key]"
-                        m_tip = f"Depot {did_str} is registered on Steam, but its AES decryption key is pending on Hubcap.\nIt cannot be enabled in SLSsteam until the key is published."
+                        m_stat, m_tag, m_tip = gate.classify_missing(did_str)
                     missing_depots_map[did_str] = {
                         "status": m_stat,
                         "tag": m_tag,
@@ -1041,6 +1056,7 @@ def init_depots_tab(dialog) -> None:
                 "is_shared": False,
                 "size_str": size_str,
                 "is_missing": True,
+                "is_unreleased": m_info["status"] == STATUS_UNRELEASED,
                 "missing_status": m_info["status"],
                 "missing_tag": m_info["tag"],
                 "missing_tooltip": m_info["tooltip"],
@@ -1062,9 +1078,6 @@ def init_depots_tab(dialog) -> None:
 
         all_target_key_ids = (set(game_depots_set) | set(game_keys.keys()) | set(tagged_keys_from_config.keys())) - {appid_str} - ALL_SHARED_REDISTS
         for d in sorted(all_target_key_ids, key=lambda x: int(x) if x.isdigit() else 0):
-            d_rel = cached_enrichments.get(d, {}).get("releasestate") or cached_app_depots.get(d, {}).get("releasestate")
-            if d_rel == "prerelease":
-                continue  # Skip unreleased DLCs from keys_list!
             key_val = game_keys.get(d) or (live_keys.get(d) if d in tagged_keys_from_config else "")
             if not key_val and d not in game_keys and d not in live_keys:
                 continue
@@ -1077,14 +1090,12 @@ def init_depots_tab(dialog) -> None:
                 "is_missing": False,
                 "is_base_owned": False,
                 "is_pure_license": (d in pure_license_dlcs),
+                "is_unreleased": _is_unreleased(d),
             })
 
         # Append missing / pending keys to keys_list
         existing_key_ids = {k["id"] for k in keys_list}
         for d in sorted(missing_depots_map.keys() - existing_key_ids, key=lambda x: int(x) if x.isdigit() else 0):
-            d_rel = cached_enrichments.get(d, {}).get("releasestate") or cached_app_depots.get(d, {}).get("releasestate")
-            if d_rel == "prerelease":
-                continue  # Skip unreleased DLCs from missing keys table!
             m_info = missing_depots_map[d]
             keys_list.append({
                 "id": d,
@@ -1098,6 +1109,7 @@ def init_depots_tab(dialog) -> None:
                 "missing_tooltip": m_info["tooltip"],
                 "is_base_owned": False,
                 "is_pure_license": (d in pure_license_dlcs),
+                "is_unreleased": m_info["status"] == STATUS_UNRELEASED,
             })
 
         return {
@@ -1112,6 +1124,7 @@ def init_depots_tab(dialog) -> None:
             "lua_keys": lua_keys,
             "game_keys": game_keys,
             "game_shared_depots": game_shared_depots,
+            "unreleased_ids": unreleased_ids,
         }
 
     def _update_sync_button_label(state: Dict[str, Any]) -> None:
@@ -1152,13 +1165,17 @@ def init_depots_tab(dialog) -> None:
                 apps_bulk_toggle.setChecked(all_apps_on, animate=False)
 
             depots = state["depots"]
-            valid_depots = [d for d in depots if not d.get("is_missing")]
+            valid_depots = [d for d in depots if not d.get("is_missing") and not d.get("is_unreleased")]
             if len(depots) >= 5:
                 all_depots_on = bool(valid_depots) and all(desired_depots.get(item["id"], False) for item in valid_depots)
                 depots_bulk_toggle.setChecked(all_depots_on, animate=False)
 
             keys = state["keys"]
-            valid_keys = [k for k in keys if k.get("key") and not k.get("is_missing") and not k.get("is_base_owned") and not k.get("is_pure_license")]
+            valid_keys = [
+                k for k in keys
+                if k.get("key") and not k.get("is_missing") and not k.get("is_base_owned")
+                and not k.get("is_pure_license") and not k.get("is_unreleased")
+            ]
             if len(keys) >= 5:
                 all_keys_on = bool(valid_keys) and all(desired_keys.get(item["id"], False) for item in valid_keys)
                 keys_bulk_toggle.setChecked(all_keys_on, animate=False)
@@ -1189,6 +1206,8 @@ def init_depots_tab(dialog) -> None:
 
                 # Auto-enable associated DLC depots and their keys
                 for did in assoc_depots:
+                    if did in state.get("unreleased_ids", set()):
+                        continue
                     d_meta = next((d for d in state["depots"] if d["id"] == did), None)
                     if did in depot_toggles and not desired_depots.get(did, False):
                         if not d_meta or not d_meta.get("is_missing"):
@@ -1220,8 +1239,8 @@ def init_depots_tab(dialog) -> None:
             return
         state = _collect_state()
         for item in state["depots"]:
-            if checked and item.get("is_missing"):
-                continue  # Cannot enable missing depots
+            if item.get("is_unreleased") or (checked and item.get("is_missing")):
+                continue  # Unreleased depots are locked; missing depots cannot be enabled
             did = item["id"]
             desired_depots[did] = checked
             if did in depot_toggles:
@@ -1238,8 +1257,8 @@ def init_depots_tab(dialog) -> None:
         state = _collect_state()
         for item in state["keys"]:
             kid = item["id"]
-            if checked and (not item.get("key") or item.get("is_missing")):
-                continue  # Cannot enable missing keys
+            if item.get("is_unreleased") or (checked and (not item.get("key") or item.get("is_missing"))):
+                continue  # Unreleased keys are locked; missing keys cannot be enabled
             desired_keys[kid] = checked
             if kid in key_toggles:
                 key_toggles[kid].setChecked(checked, animate=True)
@@ -1256,14 +1275,16 @@ def init_depots_tab(dialog) -> None:
         # 1. Apps
         for item in state["apps"]:
             aid = item["id"]
+            if item.get("is_unreleased") or item.get("is_owned_base"):
+                continue
             desired_apps[aid] = checked
             if aid in app_toggles:
                 app_toggles[aid].setChecked(checked, animate=True)
 
         # 2. Depots
         for item in state["depots"]:
-            if checked and item.get("is_missing"):
-                continue  # Cannot enable missing depots
+            if item.get("is_unreleased") or (checked and item.get("is_missing")):
+                continue  # Unreleased locked; missing cannot be enabled
             did = item["id"]
             desired_depots[did] = checked
             if did in depot_toggles:
@@ -1272,8 +1293,8 @@ def init_depots_tab(dialog) -> None:
         # 3. Keys
         for item in state["keys"]:
             kid = item["id"]
-            if checked and (not item.get("key") or item.get("is_missing")):
-                continue  # Cannot enable missing keys
+            if item.get("is_unreleased") or (checked and (not item.get("key") or item.get("is_missing"))):
+                continue  # Unreleased locked; missing cannot be enabled
             desired_keys[kid] = checked
             if kid in key_toggles:
                 key_toggles[kid].setChecked(checked, animate=True)
@@ -1385,6 +1406,8 @@ def init_depots_tab(dialog) -> None:
 
                         # 2. Enable associated DLC depots in AdditionalDepots and their keys in DecryptionKeys
                         for did in assoc_depots:
+                            if did in state.get("unreleased_ids", set()):
+                                continue  # Gate 1: unreleased content stays locked
                             if did in depot_toggles and not desired_depots.get(did, False):
                                 desired_depots[did] = True
                                 depot_toggles[did].setChecked(True, animate=True)
@@ -1430,7 +1453,12 @@ def init_depots_tab(dialog) -> None:
         for row, item in enumerate(depots):
             did = item["id"]
             is_live = did in live_depots
-            is_missing = item.get("is_missing", False)
+            is_unrel = bool(item.get("is_unreleased"))
+            # Unreleased rows render like missing ones: greyed, tagged, locked toggle.
+            is_missing = item.get("is_missing", False) or is_unrel
+            if is_unrel and not item.get("missing_tag"):
+                item = dict(item, missing_status=STATUS_UNRELEASED, missing_tag=UNRELEASED_TAG,
+                            missing_tooltip=unreleased_tooltip(did))
 
             id_item = QTableWidgetItem(did)
             id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
@@ -1475,7 +1503,8 @@ def init_depots_tab(dialog) -> None:
             depots_table.setItem(row, 1, desc_item)
 
             if is_missing:
-                toggle = MiniSwitchToggle(checked=False, read_only=True)
+                # Unreleased depots already in config show their live state, but stay locked.
+                toggle = MiniSwitchToggle(checked=(is_unrel and is_live), read_only=True)
                 toggle.setEnabled(False)
                 toggle.setToolTip(item.get("missing_tooltip") or "Depot key is not available — cannot enable in AdditionalDepots.")
                 depot_toggles[did] = toggle
@@ -1557,6 +1586,27 @@ def init_depots_tab(dialog) -> None:
                 keys_table.setCellWidget(row, 2, _ToggleContainer(toggle))
 
                 loc_ind = _make_local_indicator(in_local=False, is_missing=True)
+                keys_table.setCellWidget(row, 3, loc_ind)
+            elif item.get("is_unreleased"):
+                raw_key = item.get("key") or ""
+                short_key = f"{raw_key[:15]}..." if len(raw_key) > 15 else raw_key
+                key_item = QTableWidgetItem(f"{UNRELEASED_TAG}  {short_key}".strip())
+                key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                key_item.setForeground(QColor(130, 130, 130))
+                f_u = key_item.font()
+                f_u.setItalic(True)
+                key_item.setFont(f_u)
+                key_item.setToolTip(unreleased_tooltip(kid))
+                keys_table.setItem(row, 1, key_item)
+
+                # Locked: shows whether it is already in config, never changes it.
+                toggle = MiniSwitchToggle(checked=bool(item.get("in_config")), read_only=True)
+                toggle.setEnabled(False)
+                toggle.setToolTip(unreleased_tooltip(kid))
+                key_toggles[kid] = toggle
+                keys_table.setCellWidget(row, 2, _ToggleContainer(toggle))
+
+                loc_ind = _make_local_indicator(in_local=bool(item.get("in_local")), is_missing=False)
                 keys_table.setCellWidget(row, 3, loc_ind)
             elif item.get("is_base_owned"):
                 key_item = QTableWidgetItem("[Steam Owned]")
@@ -1700,8 +1750,8 @@ def init_depots_tab(dialog) -> None:
                 # 2. Depots (add if desired and missing, remove if unchecked and present)
                 for item in state["depots"]:
                     did = item["id"]
-                    if did == appid_str or item.get("is_missing"):
-                        continue  # Safeguard: AppIDs and missing depots must never be in AdditionalDepots
+                    if did == appid_str or item.get("is_missing") or item.get("is_unreleased"):
+                        continue  # Safeguard: AppIDs, missing and unreleased depots are never changed here
                     desired = desired_depots.get(did, did in state["live_depots"])
                     if desired and did not in state["live_depots"]:
                         comment = build_depot_comment(game_name, did, "", appid_str)
@@ -1714,8 +1764,13 @@ def init_depots_tab(dialog) -> None:
                 # 3. Keys (add if desired and missing, remove if unchecked and present)
                 for item in state["keys"]:
                     kid = item["id"]
-                    if item.get("is_missing") or not item.get("key") or item.get("is_base_owned") or item.get("is_pure_license"):
-                        continue  # Safeguard: missing, base-owned, or license-only entries must never be in DecryptionKeys
+                    if (
+                        item.get("is_missing") or not item.get("key") or item.get("is_base_owned")
+                        or item.get("is_pure_license") or item.get("is_unreleased")
+                    ):
+                        # Missing / base-owned / license-only never go in DecryptionKeys; unreleased
+                        # keys are left exactly as they are (never added, never sanitised away).
+                        continue
                     desired = desired_keys.get(kid, kid in state["live_keys"])
                     kval = item["key"]
                     if desired and not item["in_config"]:
@@ -1745,11 +1800,15 @@ def init_depots_tab(dialog) -> None:
                     added_count += 1
 
                 # 2. Depots: add missing depots that have valid keys
-                valid_keys = set(item["id"] for item in state["keys"] if item["key"] and not item.get("is_base_owned") and not item.get("is_pure_license"))
+                valid_keys = set(
+                    item["id"] for item in state["keys"]
+                    if item["key"] and not item.get("is_base_owned") and not item.get("is_pure_license")
+                    and not item.get("is_unreleased")
+                )
                 for item in state["depots"]:
                     did = item["id"]
-                    if did == appid_str:
-                        continue  # Safeguard: AppIDs must never be in AdditionalDepots
+                    if did == appid_str or item.get("is_unreleased"):
+                        continue  # Safeguard: AppIDs never in AdditionalDepots; unreleased never auto-added
                     if did not in state["live_depots"] and did in valid_keys:
                         comment = build_depot_comment(game_name, did, "", appid_str)
                         editor.add_depot(did, comment=comment, app_id=appid_str)
@@ -1758,7 +1817,7 @@ def init_depots_tab(dialog) -> None:
                 # 3. Keys: add missing keys
                 for item in state["keys"]:
                     kid = item["id"]
-                    if item.get("is_base_owned") or item.get("is_pure_license"):
+                    if item.get("is_base_owned") or item.get("is_pure_license") or item.get("is_unreleased"):
                         continue
                     kval = item["key"]
                     if kval and not item["in_config"]:

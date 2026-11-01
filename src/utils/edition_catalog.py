@@ -224,6 +224,36 @@ def get_dlc_appids(
     return set(facts.get("dlc_appids") or []) if facts else set()
 
 
+# Virtual-currency detection for store purchase options.
+#
+# Branded currencies are unambiguous wherever they appear. Generic words
+# (Points, Coins, Platinum, Silver, ...) only count as currency when a number
+# sits right next to them ("1,000 Points", "Pack of 500 Coins"), so real
+# editions like "Platinum Edition" or "Silver Edition" are kept.
+_BRANDED_CURRENCY_RE = re.compile(
+    r"\b(?:COD\s*Points|V-?Bucks|Minecoins?|Shark\s*Cash|Bloodpoints?|Auric\s*Cells?|Apex\s*Coins?)\b",
+    re.I,
+)
+_GENERIC_CURRENCY = r"(?:CP|Points?|Coins?|Credits?|Gems?|Tokens?|Plat(?:inum)?|Silver|Gold|Diamonds?|Atoms?|Crystals?|Cash)"
+_NUMBERED_CURRENCY_RE = re.compile(
+    r"(?:^|\b)\d[\d,. ]*\+?\s*(?:bonus\s+)?" + _GENERIC_CURRENCY + r"\b"
+    r"|\b" + _GENERIC_CURRENCY + r"\s*[x×]?\s*\d[\d,.]*\s*$",
+    re.I,
+)
+_CURRENCY_GROUP_RE = re.compile(
+    r"\b(?:points?|coins?|currency|virtual[\s_-]*currency|vc|tokens?|credits?|gems?|v-?bucks?|minecoins?)\b",
+    re.I,
+)
+
+
+def is_currency_option(package_group: str, option_text: str) -> bool:
+    """True for store options that sell in-game currency rather than the game."""
+    if package_group and _CURRENCY_GROUP_RE.search(package_group):
+        return True
+    text = option_text or ""
+    return bool(_BRANDED_CURRENCY_RE.search(text) or _NUMBERED_CURRENCY_RE.search(text))
+
+
 def _fetch_app_store_items(
     appid: str, timeout: float = 6.0
 ) -> Tuple[List[Dict[str, Any]], List[int]]:
@@ -264,11 +294,8 @@ def _fetch_app_store_items(
                 # Filter out recurring subscriptions
                 if group == "subscriptions" or is_sub:
                     continue
-                # Filter out virtual currency / microtransaction groups
-                if re.search(r"(?:points?|coins?|atoms?|vc|currency|tokens?|credits?|gems?|minecoins?|v-?bucks?|shark|plat(?:inum)?)\b", group, re.I):
-                    continue
-                # Filter out consumable currency / points package names
-                if re.search(r"^\s*[\d,.\s\+\(\)]*(?:CP|COD Points|Points|Coins?|Credits?|Gems?|Tokens?|Plat(?:inum)?|Silver|Diamonds?|Minecoins?|V-?Bucks?|Atoms?|Auric Cells?|Shark Cash|Bloodpoints?)\b", option_text, re.I):
+                # Filter out virtual currency / microtransaction packs
+                if is_currency_option(group, option_text):
                     continue
 
                 name = clean_package_name(option_text) or f"Package {package_id}"

@@ -291,6 +291,14 @@ class DepotTableMixin:
         cached_app_info = db_mgr.get_app_info(str(self.app_id)) or {}
         app_depots = (cached_app_info.get("depots") or {}) if isinstance(cached_app_info, dict) else {}
 
+        from utils.release_gate import ReleaseGate, UNRELEASED_TAG, unreleased_tooltip
+        from core.hubcap_key_index import STATE_PENDING
+        # Gate 1 = Steam release state, gate 2 = Hubcap availability (see utils.release_gate)
+        gate = ReleaseGate(
+            str(self.app_id), enrichments=cached_enrichments, app_depots=app_depots,
+            db=db_mgr, key_index=key_index,
+        )
+
         depotless_dlcs = []
         unreleased_dlcs = []
         catalog = getattr(self, "dlc_catalog", {}) or {}
@@ -309,17 +317,9 @@ class DepotTableMixin:
             if not dlc_id_str.isdigit() or dlc_id_str == str(self.app_id):
                 continue
 
-            # Check 1: Unreleased DLC (prerelease)
-            dlc_rel = (
-                cached_enrichments.get(dlc_id_str, {}).get("releasestate")
-                or (app_depots.get(dlc_id_str, {}).get("releasestate") if isinstance(app_depots.get(dlc_id_str), dict) else None)
-            )
-            if not dlc_rel:
-                child_app = db_mgr.get_app_info(dlc_id_str)
-                if child_app and child_app.get("releasestate"):
-                    dlc_rel = child_app.get("releasestate")
-
-            if dlc_rel == "prerelease":
+            # Gate 1: Unreleased DLC (prerelease). Listed, but locked; its content
+            # depots are shown as unreleased too (see the active / missing tiers).
+            if gate.is_unreleased(dlc_id_str, is_dlc_app=True):
                 unreleased_dlcs.append((dlc_id_str, str(dlc_name or f"DLC {dlc_id_str}")))
                 continue
 
@@ -415,12 +415,11 @@ class DepotTableMixin:
                 or (str(depot_id) in injected_dlcs)
             )
 
-            d_releasestate = (
-                depot_data.get("releasestate")
-                or cached_enrichments.get(str(depot_id), {}).get("releasestate")
-                or (cached_enrichments.get(dlc_cand, {}).get("releasestate") if dlc_cand else None)
+            is_depot_unreleased = (
+                str(depot_data.get("releasestate") or "").lower() == "prerelease"
+                or gate.is_unreleased(str(depot_id))
+                or bool(dlc_cand and gate.is_unreleased(dlc_cand, is_dlc_app=True))
             )
-            is_depot_unreleased = (d_releasestate == "prerelease")
 
             id_val = int(depot_id) if str(depot_id).isdigit() else 0
             id_item = NumericTableWidgetItem(str(depot_id), id_val, tier=0)
@@ -444,7 +443,7 @@ class DepotTableMixin:
                 id_item.setCheckState(Qt.CheckState.Unchecked)
                 id_item.setFlags(Qt.ItemFlag.NoItemFlags)
                 id_item.setForeground(darker_grey)
-                id_item.setToolTip(f"Depot {depot_id} is unreleased on Steam (prerelease). Files and decryption keys are not published by Valve.")
+                id_item.setToolTip(unreleased_tooltip(str(depot_id)))
             elif is_steam_owned:
                 id_item.setData(Qt.ItemDataRole.UserRole + 25, True)
                 id_item.setCheckState(Qt.CheckState.Checked)
@@ -476,7 +475,7 @@ class DepotTableMixin:
                 u_cfg_font = config_item.font()
                 u_cfg_font.setItalic(True)
                 config_item.setFont(u_cfg_font)
-                config_item.setToolTip(f"Depot {depot_id} is unreleased on Steam (prerelease). Files and decryption keys are not published by Valve.")
+                config_item.setToolTip(unreleased_tooltip(str(depot_id)))
             elif is_steam_owned:
                 config_item.setFlags(Qt.ItemFlag.NoItemFlags)
                 config_item.setForeground(darker_grey)
@@ -583,7 +582,7 @@ class DepotTableMixin:
             u_id_item.setCheckState(Qt.CheckState.Unchecked)
             u_id_item.setFlags(Qt.ItemFlag.NoItemFlags)
             u_id_item.setForeground(darker_grey)
-            u_tip = f"DLC {dlc_app_id} is unreleased on Steam (prerelease). Files and decryption keys are not published by Valve."
+            u_tip = unreleased_tooltip(dlc_app_id, is_dlc_app=True)
             u_id_item.setToolTip(u_tip)
 
             u_cfg_item = ConfigTableWidgetItem(cfg_text, tier=1)
@@ -614,12 +613,30 @@ class DepotTableMixin:
             mraw_size = depot_metadata.manifest_size(minfo, self.branch)
             msize_str = format_size(mraw_size) if mraw_size > 0 else "0 B"
             hubcap_status = minfo.get("hubcap_status")
-            if getattr(self, "_is_checking_missing_contents", False):
+            m_owner = str(minfo.get("dlcappid") or "").strip()
+            # Gate 1 first: unreleased content is never reported as a Hubcap problem.
+            m_unreleased = gate.is_unreleased(str(did)) or bool(
+                m_owner and m_owner != str(self.app_id) and gate.is_unreleased(m_owner, is_dlc_app=True)
+            )
+            # Gate 2: what Hubcap has for this depot.
+            h_state = None if m_unreleased else gate.hubcap_state(did)
+            if m_unreleased:
+                tag = UNRELEASED_TAG
+                tip = unreleased_tooltip(str(did))
+            elif getattr(self, "_is_checking_missing_contents", False):
                 tag = "[Checking]"
+                tip = f"Checking Hubcap for depot {did}..."
+            elif hubcap_status == "missing_key" and h_state == STATE_PENDING:
+                tag = "[Awaiting Key]"
+                tip = f"Depot {did} is released on Steam, but its AES key is still pending on Hubcap."
             elif hubcap_status == "missing_key":
                 tag = "[No Key]"
+                tip = f"Depot {did} has no AES decryption key on Hubcap. It cannot be downloaded or injected."
             else:
                 tag = "[Missing]"
+                tip = (
+                    f"Depot {did} has a key on Hubcap, but its manifest is not in the Hubcap bundle yet."
+                )
 
             base_mcfg = self._build_config_text(did, minfo)
             mconfig_text = f"{tag}  {base_mcfg}"
@@ -628,8 +645,9 @@ class DepotTableMixin:
             mid_item = NumericTableWidgetItem(str(did), mid_val, tier=1)
             mid_item.setData(Qt.ItemDataRole.UserRole, str(did))
             mid_item.setData(Qt.ItemDataRole.UserRole + 1, str(did))
-            mid_item.setData(Qt.ItemDataRole.UserRole + 2, "missing")
-            mid_item.setData(Qt.ItemDataRole.UserRole + 20, "missing")
+            m_role = "unreleased" if m_unreleased else "missing"
+            mid_item.setData(Qt.ItemDataRole.UserRole + 2, m_role)
+            mid_item.setData(Qt.ItemDataRole.UserRole + 20, m_role)
             mid_item.setCheckState(Qt.CheckState.Unchecked)
             mid_item.setFlags(Qt.ItemFlag.NoItemFlags)
             mid_item.setForeground(darker_grey)
@@ -645,10 +663,8 @@ class DepotTableMixin:
             cfg_font.setItalic(True)
             mconfig_item.setFont(cfg_font)
 
-            if hubcap_status == "missing_key":
-                tip = f"Depot {did} has a manifest but no AES decryption key available. It cannot be downloaded or injected."
-                mid_item.setToolTip(tip)
-                mconfig_item.setToolTip(tip)
+            mid_item.setToolTip(tip)
+            mconfig_item.setToolTip(tip)
 
             msize_item = NumericTableWidgetItem(msize_str, mraw_size, tier=1)
             msize_item.setFlags(Qt.ItemFlag.NoItemFlags)
