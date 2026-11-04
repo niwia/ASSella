@@ -1172,7 +1172,9 @@ class FetchManifestDialog(QDialog):
         selected_branch = "public"
         if branches and len(branches) > 1:
             from ui.dialogs.branch_selection_dialog import BranchSelectionDialog
-            branch_choice, ok = BranchSelectionDialog.select_branch(self, app_id=app_id, branches=branches)
+            branch_choice, ok = BranchSelectionDialog.select_branch(
+                self, app_id=app_id, branches=branches, game_name=getattr(self, "_selected_game_name", "")
+            )
             if ok and branch_choice:
                 selected_branch = branch_choice
             else:
@@ -1277,6 +1279,7 @@ class FetchManifestDialog(QDialog):
         name = game_name or f"App {aid_str}"
         if not self._begin_selection(aid_str):
             return
+        self._selected_game_name = game_name if game_name and not game_name.startswith("App ") else ""
         try:
             self._route_game_selection(aid_str, name)
         except Exception:

@@ -246,9 +246,14 @@ class GameDetailsDialogV2(QDialog):
         if not getattr(self, "_fitted_once", False):
             self._fitted_once = True
             self._full_height = max(self.height(), self.FULL_HEIGHT)
+            # showEvent runs before the window is mapped: fitting here means
+            # the window first appears at the fitted size, not the full one.
+            if self.layout() is not None:
+                self.layout().activate()
+            self._fit_height_for_tab(self.stacked.currentIndex(), animate=False)
             # Fit now, and again once late content (branches, EOS, badges) has
             # settled; the window manager may also resize the window on map.
-            for delay in (0, 300, 1200):
+            for delay in (300, 1200):
                 QTimer.singleShot(delay, lambda: self._fit_height_for_tab(self.stacked.currentIndex(), animate=False))
 
     def resizeEvent(self, event):

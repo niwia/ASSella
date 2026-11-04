@@ -185,6 +185,9 @@ class SelectionMixin:
             else Qt.CheckState.Checked
         )
 
+        if new_state == Qt.CheckState.Checked and not self._confirm_dlcdata_unlock(id_item):
+            return
+
         id_item.setCheckState(new_state)
 
         if modifiers == Qt.KeyboardModifier.ShiftModifier:
@@ -247,7 +250,37 @@ class SelectionMixin:
                 continue
             yield i, id_item
 
+    def _confirm_dlcdata_unlock(self, id_item) -> bool:
+        """DLC-only (ASSella) mode: warn once before unlocking a DLC that has no depot."""
+        if not getattr(self, "_dlc_only_mode", False) or getattr(self, "_is_atom_mode", False):
+            return True
+        if not bool(id_item.data(Qt.ItemDataRole.UserRole + 21)):  # not a DlcData row
+            return True
+        if getattr(self, "_dlcdata_warning_ok", False):
+            return True
+        from ui.dialogs.themed_message_box import ThemedMessageBox
+
+        reply = ThemedMessageBox.warning(
+            self,
+            "Unlock DLC",
+            "SLSsteam auto unlocks all the DLCs for all the games you own. "
+            "You only need to enable this if the DLC is not showing up, there are more than 64 DLCs, "
+            "or if you are sure about this.",
+            ThemedMessageBox.StandardButton.Ok | ThemedMessageBox.StandardButton.Cancel,
+            ThemedMessageBox.StandardButton.Cancel,
+        )
+        if reply == ThemedMessageBox.StandardButton.Ok:
+            self._dlcdata_warning_ok = True
+            return True
+        return False
+
     def _toggle_all_checkboxes(self, check=True):
+        if check:
+            for _i, it in self._selectable_rows():
+                if it.data(Qt.ItemDataRole.UserRole + 21) and it.checkState() != Qt.CheckState.Checked:
+                    if not self._confirm_dlcdata_unlock(it):
+                        return
+                    break
         self._user_interacted = True
         self._has_saved_selection = True
         state = Qt.CheckState.Checked if check else Qt.CheckState.Unchecked

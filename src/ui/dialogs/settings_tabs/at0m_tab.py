@@ -281,50 +281,7 @@ def create_at0m_tab(dialog) -> QWidget:
     dialog.at0m_disable_updates_checkbox = None
     dialog.vapor_disable_updates_checkbox = None
 
-    # Option 2: Default Download Behavior
-    act_row = QHBoxLayout()
-    act_row.setContentsMargins(2, 2, 2, 2)
-    act_row.setSpacing(10)
-
-    act_title = QLabel("Default Download Behavior")
-    act_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9pt;")
-    act_row.addWidget(act_title, stretch=1)
-
-    dialog.at0m_download_action_combo = ModernComboBox()
-    dialog.at0m_download_action_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.at0m_download_action_combo.setFixedWidth(155)
-    dialog.at0m_download_action_combo.addItem("Always ask", "ask")
-    dialog.at0m_download_action_combo.addItem("Start Native (at0-m)", "native")
-    dialog.at0m_download_action_combo.addItem("Start ASSella", "assella")
-    dialog.vapor_download_action_combo = dialog.at0m_download_action_combo
-
-    saved_behavior = dialog.settings.value(
-        "at0m_default_download_action",
-        dialog.settings.value("vapor_default_download_action", "ask", type=str),
-        type=str,
-    )
-    cur_idx = dialog.at0m_download_action_combo.findData(saved_behavior)
-    if cur_idx >= 0:
-        dialog.at0m_download_action_combo.setCurrentIndex(cur_idx)
-
-    dialog.at0m_download_action_combo.currentIndexChanged.connect(
-        lambda _i: (
-            dialog.settings.setValue(
-                "at0m_default_download_action",
-                dialog.at0m_download_action_combo.currentData(),
-            ),
-            dialog.settings.setValue(
-                "vapor_default_download_action",
-                dialog.at0m_download_action_combo.currentData(),
-            ),
-            dialog.settings.setValue(
-                "native_steam_default_action",
-                dialog.at0m_download_action_combo.currentData(),
-            ),
-        )
-    )
-    act_row.addWidget(dialog.at0m_download_action_combo)
-    cfg_layout.addLayout(act_row)
+    # Default download behavior lives on the Downloads tab (dialog.at0m_download_action_combo).
 
     # Option 3: Start download with Steam
     start_row = QHBoxLayout()
@@ -665,6 +622,10 @@ def create_at0m_tab(dialog) -> QWidget:
             ensure_sls_plugin_config_sections(cfg_path)
 
         _update_subwidget_states(checked)
+        combo = dialog.at0m_download_action_combo
+        idx = combo.findData("ask" if checked else "assella")
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
 
     dialog.enable_at0m_checkbox.toggled.connect(_on_enable_at0m_toggled)
     _update_subwidget_states(dialog.enable_at0m_checkbox.isChecked())

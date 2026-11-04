@@ -168,6 +168,7 @@ class _Group:
     name: str
     category: str
     depots: List[_Depot] = field(default_factory=list)
+    full_name: str = ""
 
     @property
     def selectable(self) -> List[_Depot]:
@@ -626,7 +627,47 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             ))
         if app_id not in groups:
             groups[app_id] = _Group(app_id, "Depots", CAT_GAME)
+        self._strip_shared_prefix(groups, app_id)
         return groups
+
+    _PREFIX_SEP_RE = re.compile(r"(?:\s[-\u2013\u2014:]\s|:\s)")
+
+    def _strip_shared_prefix(self, groups: Dict[str, _Group], app_id: str) -> None:
+        """Drop the title most DLCs share ("The Witcher 3: Wild Hunt - X" -> "X").
+
+        Store titles often differ from the game's own name, so _short_name alone
+        misses them. The full name stays in the tooltip.
+        """
+        dlcs = [g for k, g in groups.items() if k != app_id]
+        if len(dlcs) < 2:
+            return
+
+        def _norm(t: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", t.lower())
+
+        def _heads(name: str):
+            # (normalised title, cut position) at every " - " / ": " in the name
+            return [(_norm(name[:m.start()]), m.end()) for m in self._PREFIX_SEP_RE.finditer(name)
+                    if m.start() >= 6 and len(name[m.end():].strip()) >= 3]
+
+        counts: Dict[str, int] = {}
+        for g in dlcs:
+            for h in {h for h, _ in _heads(g.name)}:
+                counts[h] = counts.get(h, 0) + 1
+        shared = [h for h, n in counts.items() if n >= 2 and n >= 0.6 * len(dlcs)]
+        if not shared:
+            return
+        head = max(shared, key=len)  # the longest title most DLCs start with
+        for g in dlcs:
+            cut = next((c for h, c in _heads(g.name) if h == head), 0)
+            if not cut:
+                continue
+            title = g.name[:cut]
+            g.full_name = g.name
+            g.name = g.name[cut:].strip()
+            for d in g.depots:
+                if title in d.name:
+                    d.name = d.name.replace(title, "", 1).strip()
 
     # -------------------------------------------------------------- refresh
     def _refresh_view(self) -> None:
@@ -679,6 +720,9 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # The content list widens with the window so long DLC names fit when maximised.
+        if hasattr(self, "_left_pane"):
+            self._left_pane.setFixedWidth(max(250, min(480, int(self.width() * 0.3))))
         if (getattr(self, "_shown_once", False) and not getattr(self, "_fitting", False)
                 and event.oldSize().height() > 0 and event.size().height() != event.oldSize().height()):
             self._user_resized = True
@@ -794,11 +838,12 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             cb.setChecked(g.status == "owned")
             cb.setEnabled(False)
         lay.addWidget(cb, 0, Qt.AlignmentFlag.AlignVCenter)
-        name = _ElideLabel(g.name, Qt.TextElideMode.ElideMiddle)
+        name = _ElideLabel(g.name, Qt.TextElideMode.ElideRight)
+        full = g.full_name or g.name
         if g.key == self.ALL_KEY:
             name.setToolTip("Every depot of this game")
         else:
-            name.setToolTip(g.name if g.key.startswith("name:") else f"{g.name}\nApp {g.key}")
+            name.setToolTip(full if g.key.startswith("name:") else f"{full}\nApp {g.key}")
         name.setStyleSheet(f"color: {TEXT if sel else DIM}; font-size: 9pt; background: transparent;")
         name.setMinimumHeight(24)
         lay.addWidget(name, 1, Qt.AlignmentFlag.AlignVCenter)

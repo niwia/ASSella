@@ -561,7 +561,39 @@ def resolve_edition_depots(
 
     editions = _merge_identical_editions(editions, game_name)
 
-    # C. Fallback only if no real store packages/bundles exist (offline / indie title without store API data)
+    # C. Depot-derived editions. The store often sells only the base game as a
+    # package (DLC bought separately, e.g. The Witcher 3), so "everything" and
+    # "base game only" are always offered when the manifest has DLC content
+    # and no store edition already covers them.
+    def _covered(depot_set: Set[str]) -> bool:
+        return any(set(e.get("depot_ids") or set()) == depot_set for e in editions)
+
+    if dlc_depots and complete_depots and not any(
+        set(e.get("depot_ids") or set()) >= complete_depots for e in editions
+    ):
+        editions.insert(0, {
+            "id": f"{target_platform}_complete",
+            "name": "Complete (game + all DLC)",
+            "short_name": "Complete",
+            "platform": target_platform,
+            "depot_ids": set(complete_depots),
+            "unavailable_depots": set(),
+            "source": "depots",
+            "is_highest": True,
+        })
+    if dlc_depots and base_depots and not _covered(base_depots):
+        editions.append({
+            "id": f"{target_platform}_base",
+            "name": "Base game only",
+            "short_name": "Base game",
+            "platform": target_platform,
+            "depot_ids": set(base_depots),
+            "unavailable_depots": set(),
+            "source": "depots",
+            "is_highest": False,
+        })
+
+    # D. Nothing at all (no DLC, offline / indie title without store data)
     if not editions:
         clean_title = game_name or "Game"
         editions.append({

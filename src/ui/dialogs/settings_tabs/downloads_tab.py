@@ -90,6 +90,45 @@ def create_downloads_tab(dialog) -> QWidget:
 
     dl_layout.addSpacing(8)
 
+    # Default download behavior (only meaningful with AT0-M on; otherwise ASSella).
+    act_row = QHBoxLayout()
+    act_row.setContentsMargins(2, 2, 2, 2)
+    act_row.setSpacing(10)
+    act_title = QLabel("Default Download Behavior:")
+    act_title.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+    act_title.setToolTip("What happens when you start a download. Needs AT0-M; without it ASSella downloads the game.")
+    act_row.addWidget(act_title, 1)
+    combo = ModernComboBox()
+    combo.setCursor(Qt.CursorShape.PointingHandCursor)
+    combo.setFixedWidth(155)
+    combo.addItem("Always ask", "ask")
+    combo.addItem("Start Native (at0-m)", "native")
+    combo.addItem("Start ASSella", "assella")
+    dialog.at0m_download_action_combo = combo
+    dialog.vapor_download_action_combo = combo
+    at0m_on = dialog.settings.value("enable_at0m", dialog.settings.value("enable_vapor", False, type=bool), type=bool)
+    saved = dialog.settings.value(
+        "at0m_default_download_action",
+        dialog.settings.value("vapor_default_download_action", "ask", type=str),
+        type=str,
+    )
+    if not at0m_on:
+        saved = "assella"
+    idx = combo.findData(saved)
+    combo.setCurrentIndex(idx if idx >= 0 else 0)
+    combo.setEnabled(bool(at0m_on))
+
+    def _save_action(_i):
+        val = combo.currentData()
+        for k in ("at0m_default_download_action", "vapor_default_download_action", "native_steam_default_action"):
+            dialog.settings.setValue(k, val)
+
+    combo.currentIndexChanged.connect(_save_action)
+    if not at0m_on:
+        _save_action(0)
+    act_row.addWidget(combo)
+    dl_layout.addLayout(act_row)
+
     # Inputs Grid for Download Settings (Download Location, Max Downloads)
     loc_row = QHBoxLayout()
     loc_row.setContentsMargins(2, 2, 2, 2)

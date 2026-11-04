@@ -120,7 +120,7 @@ def get_installed_date(dialog) -> str:
             ts = 0
     if not ts:
         return ""
-    return datetime.fromtimestamp(ts).strftime("%d %b %Y")
+    return datetime.fromtimestamp(ts).strftime("%d/%m/%y")
 
 
 SNIPPET_BASE = (
@@ -193,8 +193,7 @@ def init_hero_v2(dialog, root) -> None:
     )
     name_row.addWidget(dialog.mode_logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
     dialog._denuvo_badge_lbl = QLabel()
-    dialog._denuvo_badge_lbl.hide()
-    name_row.addWidget(dialog._denuvo_badge_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+    dialog._denuvo_badge_lbl.hide()  # placed in the snippet row below
     name_row.addStretch(1)
     dialog._ratings_row = name_row
     left_col.addLayout(name_row)
@@ -271,10 +270,12 @@ def init_hero_v2(dialog, root) -> None:
     snip_row.addWidget(dialog.build_val_lbl)
 
     date_str = get_installed_date(dialog)
-    dialog.date_val_lbl = _snippet(f"Installed {date_str}" if date_str else "Install date unknown",
-                                   "When the installed build was installed")
+    dialog.date_val_lbl = _snippet(date_str or "--/--/--",
+                                   f"Installed build installed on {date_str}" if date_str else "Install date unknown")
     dialog.date_val_lbl.setEnabled(False)
+    dialog.date_val_lbl.setVisible(bool(date_str))
     snip_row.addWidget(dialog.date_val_lbl)
+    snip_row.addWidget(dialog._denuvo_badge_lbl)
     snip_row.addWidget(dialog._proton_badge_lbl)  # ProtonDB tier, as a snippet
     snip_row.addStretch(1)
     for w in (dialog.size_val_lbl, dialog.date_val_lbl):
@@ -368,20 +369,20 @@ def update_title(dialog) -> None:
         from core.ratings import get_denuvo_status
         denuvo = get_denuvo_status(dialog.appid)
         if denuvo == "cracked":
-            d_text, d_color, d_bg = "Denuvo Cracked",    "#81C784", "rgba(129,199,132,0.20)"
-        elif denuvo == "hypervisor":
-            d_text, d_color, d_bg = "Denuvo Hypervisor", "#FFA726", "rgba(255,167,38,0.18)"
+            d_color, d_tip = "#81C784", "Denuvo: cracked"
         elif denuvo == "uncracked":
-            d_text, d_color, d_bg = "Denuvo Uncracked",  "#E57373", "rgba(229,115,115,0.20)"
+            d_color, d_tip = "#E57373", "Denuvo: not cracked"
+        elif denuvo:
+            d_color, d_tip = "#FFB74D", f"Denuvo: {denuvo}"
         else:
-            d_text = None
+            d_color = None
 
-        if d_text:
-            dialog._denuvo_badge_lbl.setText(d_text)
+        if d_color:
+            dialog._denuvo_badge_lbl.setText("Denuvo")
+            dialog._denuvo_badge_lbl.setToolTip(d_tip)
             dialog._denuvo_badge_lbl.setStyleSheet(
-                f"color: {d_color}; background-color: {d_bg}; "
-                f"border-radius: 4px; padding: 2px 8px; "
-                f"font-size: 9pt; font-weight: bold; border: none;"
+                f"color: {d_color}; background: rgba(0,0,0,0.35); border: 1px solid {d_color};"
+                " border-radius: 5px; padding: 2px 8px; font-size: 8.5pt; font-weight: 600;"
             )
             dialog._denuvo_badge_lbl.show()
         else:
