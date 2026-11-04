@@ -598,9 +598,18 @@ def convert_plugin_game_to_accela(appid: Union[str, int]) -> bool:
     return unregister_plugin_game(appid, keep_in_additional_apps=True)
 
 
-def sync_all_plugin_games_to_config() -> None:
+def sync_plugin_game_to_config(appid: Union[str, int]) -> bool:
+    """Write one registered game's AppID(s), depots and keys back into config.yaml."""
+    appid_str = str(appid).strip()
+    rec = load_plugin_library().get(appid_str)
+    if not rec:
+        return False
+    return sync_all_plugin_games_to_config(only={appid_str: rec}) is not False
+
+
+def sync_all_plugin_games_to_config(only: Optional[Dict[str, Any]] = None) -> None:
     """Ensure all registered plugin games have their AppID, depots, and keys in config.yaml with comments."""
-    lib = load_plugin_library()
+    lib = only if only is not None else load_plugin_library()
     if not lib:
         return
 

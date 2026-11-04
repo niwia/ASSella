@@ -185,6 +185,33 @@ class GameItemWidget(QWidget):
         self.parent_dialog = parent_dialog
         self.appid = str(game_data.get("appid", "") or "")
         self._init_ui(size_str)
+        if game_data.get("atom_pending"):
+            self._apply_pending()
+
+    def _apply_pending(self) -> None:
+        """AT0-M game that is registered but not downloaded: say so instead of a status."""
+        from utils.atom_pending import pending_label
+
+        text, color = pending_label(self.game_data)
+        lbl = getattr(self, "status_label", None)
+        if lbl is not None:
+            lbl.setText(text)
+            lbl.setVisible(True)
+            lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            lbl.setStyleSheet(
+                f"color: {color}; background-color: rgba(255,255,255,0.06); border: 1px solid {color};"
+                " border-radius: 10px; padding: 3px 10px; font-size: 11px; font-weight: bold;"
+            )
+            issues = self.game_data.get("pending_issues") or []
+            lbl.setToolTip("\n".join(issues) if issues else "Registered with SLSsteam; no game files yet.")
+        ml = getattr(self, "manifest_label", None)
+        if ml is not None:
+            ml.setText("Not downloaded yet")
+            ml.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
+        for attr in ("pinned_build_label",):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setVisible(False)
 
     def _init_ui(self, size_str: str) -> None:
         """Initialize the UI components."""
@@ -404,6 +431,8 @@ class GameItemWidget(QWidget):
         """Update the manifest status label in-place."""
         if not hasattr(self, "manifest_label") or not self.manifest_label:
             return
+        if self.game_data.get("atom_pending"):
+            return
 
         appid = self.game_data.get("appid", "0")
 
@@ -494,6 +523,9 @@ class GameItemWidget(QWidget):
 
     def update_status(self, update_status: str) -> None:
         """Update update and manifest status labels in-place."""
+        if self.game_data.get("atom_pending"):
+            self._apply_pending()
+            return
         is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
         is_at0m_game = not is_accela and bool(
             self.game_data.get("is_atom")

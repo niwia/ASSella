@@ -316,6 +316,13 @@ class LibraryActionsMixin:
         if not game_data:
             return
 
+        # Registered-but-not-downloaded AT0-M game: its own small dialog
+        # (and kept out of batch selections, which act on installed files).
+        if game_data.get("atom_pending"):
+            if not self._select_mode and not self._dialog_open:
+                self._show_pending_atom_dialog(game_data)
+            return
+
         # In select mode: toggle selection, don't open dialog
         if self._select_mode:
             appid = str(game_data.get("appid", "0"))
@@ -342,6 +349,18 @@ class LibraryActionsMixin:
         QTimer.singleShot(500, lambda: setattr(self, "_dialog_open", False))
 
         self._show_game_details_dialog(game_data)
+
+    def _show_pending_atom_dialog(self, game_data: dict) -> None:
+        from ui.dialogs.atom_pending_dialog import AtomPendingDialog
+
+        self._dialog_open = True
+        try:
+            dlg = AtomPendingDialog(game_data, self, getattr(self, "accent_color", "#a1c9fd"))
+            dlg.exec()
+            if dlg.removed:
+                self._refresh_game_list()
+        finally:
+            self._dialog_open = False
 
     def _on_item_double_clicked(self, item: QListWidgetItem) -> None:
         """Handle double-click on game item:
@@ -1505,6 +1524,9 @@ class LibraryActionsMixin:
 
         game_data = item.data(Qt.ItemDataRole.UserRole)
         if not game_data:
+            return
+        if game_data.get("atom_pending"):
+            self._show_pending_atom_dialog(game_data)
             return
 
         # For Steam tab games, offer DLC download and open folder options

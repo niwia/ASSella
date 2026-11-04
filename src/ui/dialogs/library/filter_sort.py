@@ -325,11 +325,20 @@ class LibraryFilterSortMixin:
             and not game_is_dlc_only(g)
             and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
         )
+        # AT0-M games that are registered but not on disk yet (added / queued in Steam).
+        try:
+            from utils.atom_pending import get_pending_atom_games
+            installed_aids = {str(g.get("appid", "")).strip() for g in all_manager_games}
+            pending_atom = get_pending_atom_games(installed_aids)
+        except Exception as e:
+            logger.debug(f"[Library] Pending AT0-M games unavailable: {e}")
+            pending_atom = []
+        self._pending_atom_games = pending_atom
         atom_total = sum(
             1
             for g in all_manager_games
             if g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game")
-        )
+        ) + len(pending_atom)
         steam_total = len(steam_unmanaged)
 
         if hasattr(self, "tab_bar"):
@@ -345,7 +354,7 @@ class LibraryFilterSortMixin:
                 g
                 for g in all_manager_games
                 if g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game")
-            ]
+            ] + list(pending_atom)
         else:
             games = [
                 g
@@ -453,7 +462,7 @@ class LibraryFilterSortMixin:
 
         widget = GameItemWidget(
             game,
-            format_size(size),
+            "—" if game.get("atom_pending") else format_size(size),
             self.accent_color,
             self.background_color,
             select_mode=self._select_mode,
