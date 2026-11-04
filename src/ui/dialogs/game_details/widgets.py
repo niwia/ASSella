@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QHBoxLayout,
     QVBoxLayout,
+    QSizePolicy,
 )
 from ui.widgets.modern_dropdown import ModernComboBox
 
@@ -243,3 +244,79 @@ class MaterialTile(QPushButton):
                 else:
                     self.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {tokens['ink']}; background: transparent;")
                     self.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {tokens['ink_muted']}; background: transparent;")
+
+
+class _Knob(QWidget):
+    """The little switch drawn inside a SwitchTile."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(28, 16)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.on = False
+        self.color = QColor("#a1c9fd")
+        self.dim = False
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        track = QColor(self.color) if self.on else QColor(255, 255, 255, 46)
+        if self.dim:
+            track.setAlpha(70)
+        p.setBrush(track)
+        p.drawRoundedRect(0, 0, 28, 16, 8, 8)
+        p.setBrush(QColor("#121214") if self.on else QColor(230, 230, 235, 120 if self.dim else 255))
+        p.drawEllipse(14 if self.on else 2, 2, 12, 12)
+
+
+class SwitchTile(MaterialTile):
+    """Compact on/off pill: a switch and a label. Same API as MaterialTile
+    (setChecked / update_state / clicked / title_lbl / sub_lbl), so the
+    existing SLSonline / Netsock / EOS logic drives it unchanged."""
+
+    def __init__(self, title, subtext="", parent=None, is_toggle=True):
+        super().__init__(title, subtext, parent, is_toggle=is_toggle)
+        self.setFixedHeight(34)
+        lay = self.layout()
+        lay.setContentsMargins(10, 0, 12, 0)
+        lay.setSpacing(8)
+        self.knob = _Knob(self)
+        lay.insertWidget(0, self.knob, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.sub_lbl.setVisible(False)
+        self.title_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self):
+        return QSize(self.title_lbl.sizeHint().width() + 70, 34)
+
+    def update_state(self, checked, accent_color, active_sub="Active", inactive_sub="Inactive", custom_color=None):
+        tokens = self._surface_tokens()
+        self._is_active = checked
+        self._current_text_color = tokens["ink"]
+        self.setChecked(bool(checked))
+        self.sub_lbl.setText(active_sub if checked else inactive_sub)
+        self.knob.on = bool(checked)
+        self.knob.color = QColor(custom_color or accent_color)
+        self.knob.dim = not self.isEnabled()
+        self.knob.update()
+        self.setStyleSheet(f"""
+            QPushButton {{ background-color: {tokens['tint']}; border: 1px solid {tokens['border']}; border-radius: 8px; }}
+            QPushButton:hover {{ background-color: {tokens['tint_hover']}; border-color: {tokens['border_hover']}; }}
+            QPushButton:disabled {{ background-color: {tokens['tint_disabled']}; border: 1px solid {tokens['border_disabled']}; }}
+        """)
+        self.title_lbl.setStyleSheet(f"font-weight: 600; font-size: 8.5pt; color: {tokens['ink']}; background: transparent;")
+        if not self.isEnabled():
+            self._apply_disabled_ink(tokens)
+
+    def setChecked(self, checked):  # noqa: N802 - keep the knob in step with plain setChecked calls too
+        super().setChecked(checked)
+        if hasattr(self, "knob"):
+            self.knob.on = bool(checked)
+            self.knob.update()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if hasattr(self, "knob") and event.type() == QEvent.Type.EnabledChange:
+            self.knob.dim = not self.isEnabled()
+            self.knob.update()

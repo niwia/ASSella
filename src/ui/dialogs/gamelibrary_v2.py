@@ -189,7 +189,7 @@ class GameDetailsDialogV2(QDialog):
         self.setWindowTitle(f"{game_data.get('game_name', 'Game')} — Details")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setMinimumSize(560, 440)
-        self.resize(620, 500)
+        self.resize(680, 540)
         self.setModal(True)
 
         # Workshop tab is shown only if game has workshop AND has downloaded content
@@ -382,6 +382,7 @@ class GameDetailsDialogV2(QDialog):
             QPushButton:hover {{ color: {self.accent_color}; }}
         """)
         close_btn.clicked.connect(self.accept)
+        close_btn.setVisible(False)  # the title bar already closes the window
         tab_bar_layout.addWidget(close_btn)
 
         root.addWidget(tab_bar_frame)

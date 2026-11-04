@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
 )
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
-from ui.dialogs.game_details.widgets import CenteredComboBox, MaterialTile
+from ui.dialogs.game_details.widgets import CenteredComboBox, MaterialTile, SwitchTile
 from ui.dialogs.game_details.hero_header import thin_line, get_last_checked
 from ui.progress_button import ProgressButton
 from utils.helpers import get_base_path
@@ -50,6 +50,51 @@ from utils.yaml_config_manager import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _install_drive_label(dialog) -> str:
+    """Which drive the game is on ("Primary", "SD Card", ...)."""
+    path = dialog.game_data.get("library_path") or dialog.game_data.get("install_path") or ""
+    if not path:
+        return "Not found"
+    try:
+        from ui.dialogs.depot_selection.storage_targets import drive_label
+
+        return drive_label(str(path)) or "Open"
+    except Exception:
+        return "Open"
+
+
+def _build_uninstall_tile(dialog, is_vapor_mode: bool) -> MaterialTile:
+    """Uninstall tile with a menu: Standard, or Advanced (opens a window)."""
+    from PyQt6.QtWidgets import QMenu
+    from utils.dlc_helpers import is_dlc_only_mode
+
+    tile = MaterialTile("Uninstall", "Standard / Advanced", dialog, is_toggle=False)
+    tile.update_state(False, dialog.accent_color, inactive_sub="Standard / Advanced")
+    tile.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #E57373; background: transparent;")
+    is_vapor_dlc = is_vapor_mode and (
+        is_dlc_only_mode(dialog.appid)
+        or bool(dialog.game_data.get("dlc_only"))
+        or bool(dialog.game_data.get("is_dlc_only"))
+    )
+    if is_vapor_dlc:
+        tile.setEnabled(False)
+        tile.setToolTip("Uninstall DLC-only AT0-M games from Steam.")
+        return tile
+
+    menu = QMenu(tile)
+    menu.setStyleSheet(f"""
+        QMenu {{ background: #1b1c20; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 4px; }}
+        QMenu::item {{ padding: 6px 18px; border-radius: 5px; color: #E8E8EE; }}
+        QMenu::item:selected {{ background: rgba(229,115,115,0.18); color: #FFFFFF; }}
+    """)
+    menu.addAction("Uninstall", lambda: do_standard_uninstall(dialog)).setToolTip(
+        "Remove the game files and its SLSsteam entries."
+    )
+    menu.addAction("Advanced...", lambda: open_advanced_uninstall(dialog))
+    tile.clicked.connect(lambda: menu.exec(tile.mapToGlobal(tile.rect().bottomLeft())))
+    return tile
 
 
 def init_info_tab(dialog) -> None:
@@ -137,23 +182,40 @@ def init_info_tab(dialog) -> None:
         dialog.validate_btn.setStyleSheet("font-weight: bold; background: rgba(255, 255, 255, 0.047); color: rgba(255, 255, 255, 0.294); border: none;")
     actions_row.addWidget(dialog.validate_btn, 1)
 
+    if is_vapor_mode:
+        # Steam owns branch, updates and verification for AT0-M games.
+        dialog.branch_combo.setVisible(False)
+        dialog.validate_btn.setVisible(False)
+        note = QLabel("Steam downloads, updates and verifies this game. Change branch or verify it from the "
+                      "game's Properties in Steam.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 9pt; border: 1px dashed rgba(255,255,255,0.14);"
+                           " border-radius: 8px; padding: 8px 12px; background: transparent;")
+        actions_row.addWidget(note, 1)
+    else:
+        dialog.validate_btn.setFixedHeight(32)
+        dialog.branch_combo.setFixedHeight(32)
     lay.addLayout(actions_row)
-    lay.addSpacing(10)
-    lay.addWidget(thin_line())
-    lay.addSpacing(10)
+    lay.addSpacing(14)
 
-    # ── Material You Quick Settings (Top Section Single Row) ───
+    # ── Tiles: Open folder · Pin build · Uninstall ▾ (left-aligned) ───
+    # The status, DLC-mode and Update-All tiles still exist (their logic and
+    # settings are unchanged) but are not shown: status lives in the header's
+    # build snippet, DLC mode is chosen elsewhere now.
     top_tiles_widget = QWidget()
     top_tiles_layout = QHBoxLayout(top_tiles_widget)
     top_tiles_layout.setContentsMargins(0, 0, 0, 0)
-    top_tiles_layout.setSpacing(6)
+    top_tiles_layout.setSpacing(8)
+    hidden_tiles = QWidget()
+    hidden_tiles.setVisible(False)
+    hidden_layout = QHBoxLayout(hidden_tiles)
 
     dialog.status_tile = MaterialTile("STATUS UNKNOWN", "Click to check", dialog, is_toggle=False)
     dialog.status_tile.clicked.connect(lambda: on_status_btn_clicked(dialog))
-    top_tiles_layout.addWidget(dialog.status_tile, 1)
+    hidden_layout.addWidget(dialog.status_tile)
 
-    dialog.folder_tile = MaterialTile("Open Folder", "Open directory", dialog, is_toggle=False)
-    dialog.folder_tile.update_state(False, dialog.accent_color, inactive_sub="Open directory")
+    dialog.folder_tile = MaterialTile("Open folder", "", dialog, is_toggle=False)
+    dialog.folder_tile.update_state(False, dialog.accent_color, inactive_sub=_install_drive_label(dialog))
 
     def _open_game_folder():
         p = dialog.game_data.get("install_path")
@@ -169,12 +231,13 @@ def init_info_tab(dialog) -> None:
 
     dialog.folder_tile.clicked.connect(_open_game_folder)
     top_tiles_layout.addWidget(dialog.folder_tile, 1)
+    dialog.folder_tile.setToolTip(str(dialog.game_data.get("install_path") or ""))
 
     dialog.dlc_tile = MaterialTile("DLC Mode", "Inactive", dialog, is_toggle=True)
     is_dlc = dialog.settings.value(f"dlc_only_mode/{dialog.appid}", False, type=bool) if dialog.settings else False
     dialog.dlc_tile.update_state(is_dlc, dialog.accent_color)
     dialog.dlc_tile.clicked.connect(lambda: on_dlc_only_toggled(dialog, dialog.dlc_tile.isChecked()))
-    top_tiles_layout.addWidget(dialog.dlc_tile, 1)
+    hidden_layout.addWidget(dialog.dlc_tile)
 
     dialog.pin_tile = MaterialTile("Pin Build", "Inactive", dialog, is_toggle=True)
     is_pinned = dialog.settings.value(f"pin_build/{dialog.appid}", False, type=bool) if dialog.settings else False
@@ -218,15 +281,92 @@ def init_info_tab(dialog) -> None:
             dialog.settings.setValue(f"exclude_from_update_all/{dialog.appid}", is_exc)
 
     dialog.update_all_tile.clicked.connect(lambda: _update_all_toggled(dialog.update_all_tile.isChecked()))
-    top_tiles_layout.addWidget(dialog.update_all_tile, 1)
+    hidden_layout.addWidget(dialog.update_all_tile)
+
+    dialog.uninstall_tile = _build_uninstall_tile(dialog, is_vapor_mode)
+    top_tiles_layout.addWidget(dialog.uninstall_tile, 1)
+    top_tiles_layout.addStretch(1)  # three tiles, left-aligned in a four-tile grid
 
     lay.addWidget(top_tiles_widget)
-    lay.addSpacing(8)
+    lay.addWidget(hidden_tiles)
+    lay.addSpacing(14)
 
+
+    # ── Online: SLSonline · Id · Netsock · EOS Proxy · EOS Experimental ───
+    online_lbl = QLabel("ONLINE")
+    online_lbl.setStyleSheet("color: rgba(255,255,255,0.45); font-size: 7.5pt; font-weight: 700; letter-spacing: 1px; background: transparent;")
+    lay.addWidget(online_lbl)
+    lay.addSpacing(6)
+    bottom_tiles_widget = QWidget()
+    dialog.bottom_tiles_widget = bottom_tiles_widget
+    online_col = QVBoxLayout(bottom_tiles_widget)
+    online_col.setContentsMargins(0, 0, 0, 0)
+    online_col.setSpacing(8)
+    dialog.bottom_tiles_layout = QHBoxLayout()
+    dialog.bottom_tiles_layout.setSpacing(8)
+    eos_row = QHBoxLayout()
+    eos_row.setSpacing(8)
+    online_col.addLayout(dialog.bottom_tiles_layout)
+    online_col.addLayout(eos_row)
+
+    dialog.sls_container = QFrame()  # kept for older callers
+    dialog.sls_tile = SwitchTile("SLSonline", "Inactive", dialog, is_toggle=True)
+    dialog.bottom_tiles_layout.addWidget(dialog.sls_tile)
+
+    dialog.sls_input_container = QFrame()
+    dialog.sls_input_container.setFixedHeight(34)
+    dialog.sls_input_container.setStyleSheet(
+        "QFrame { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; }"
+    )
+    sls_input_lay = QHBoxLayout(dialog.sls_input_container)
+    sls_input_lay.setContentsMargins(10, 0, 6, 0)
+    sls_input_lay.setSpacing(6)
+    fl = QLabel("Id:")
+    fl.setStyleSheet("color: rgba(255,255,255,0.75); font-size: 8.5pt; font-weight: 600; border: none; background: transparent;")
+    dialog.sls_input = QLineEdit()
+    dialog.sls_input.setPlaceholderText("480")
+    dialog.sls_input.setValidator(QIntValidator(0, 9999999))
+    dialog.sls_input.setFixedSize(64, 24)
+    dialog.sls_input.setToolTip("Fake AppID SLSonline uses for this game")
+    dialog.sls_input.setStyleSheet(f"""
+        QLineEdit {{ background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.15); border-radius: 5px;
+            color: #FFFFFF; font-size: 9pt; font-weight: 600; padding: 0 6px; }}
+        QLineEdit:focus {{ border-color: {dialog.accent_color}; }}
+        QLineEdit:read-only {{ color: rgba(255,255,255,0.55); }}
+    """)
+    sls_input_lay.addWidget(fl)
+    sls_input_lay.addWidget(dialog.sls_input)
+    dialog.sls_input_container.setVisible(False)
+    dialog.bottom_tiles_layout.addWidget(dialog.sls_input_container)
+
+    dialog.netsock_tile = SwitchTile("Netsock", "Inactive", dialog, is_toggle=True)
+    dialog.netsock_tile.setVisible(False)
+    dialog.bottom_tiles_layout.addWidget(dialog.netsock_tile)
+
+    dialog.eos_tile = SwitchTile("EOS Proxy", "Inactive", dialog, is_toggle=True)
+    dialog.eos_tile.setVisible(False)
+    eos_row.addWidget(dialog.eos_tile)
+
+    dialog.eos_exp_tile = SwitchTile("EOS Experimental", "", dialog, is_toggle=False)
+    dialog.eos_exp_tile.setEnabled(False)
+    dialog.eos_exp_tile.setToolTip("Experimental EOS proxy (coming later)")
+    dialog.eos_exp_tile.setVisible(False)
+    eos_row.addWidget(dialog.eos_exp_tile)
+    eos_row.addStretch(1)
+    dialog.bottom_tiles_layout.addStretch(1)
+    for _t in (dialog.sls_tile, dialog.netsock_tile, dialog.eos_tile, dialog.eos_exp_tile):
+        _t.update_state(False, dialog.accent_color)
+
+    lay.addWidget(bottom_tiles_widget)
+    lay.addSpacing(14)
     # ── AT0-M Mode Transition Buttons (Move to AT0-M / Move to ASSella) ───
     vapor_actions_widget = QWidget()
     vapor_actions_layout = QHBoxLayout(vapor_actions_widget)
-    vapor_actions_layout.setContentsMargins(0, 0, 0, 0)
+    vapor_actions_widget.setObjectName("modeLine")
+    vapor_actions_widget.setStyleSheet(
+        "QWidget#modeLine { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; }"
+    )
+    vapor_actions_layout.setContentsMargins(12, 6, 6, 6)
     vapor_actions_layout.setSpacing(10)
 
     dialog.move_to_vapor_btn = QPushButton("Move to AT0-M")
@@ -296,89 +436,21 @@ def init_info_tab(dialog) -> None:
     dialog.move_to_vapor_btn.clicked.connect(lambda: on_move_to_vapor_clicked(dialog))
     dialog.remove_from_vapor_btn.clicked.connect(lambda: on_remove_from_vapor_clicked(dialog))
 
-    vapor_actions_layout.addWidget(dialog.move_to_vapor_btn, 1)
-    vapor_actions_layout.addWidget(dialog.remove_from_vapor_btn, 1)
+    mode_text = QLabel(
+        "Managed by <b>AT0-M</b> (Steam native)." if is_vapor_mode
+        else "Managed by <b>ASSella</b>. Updates come from ASSella."
+    )
+    mode_text.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 9pt; background: transparent; border: none;")
+    vapor_actions_layout.addWidget(mode_text, 1)
+    for _b in (dialog.move_to_vapor_btn, dialog.remove_from_vapor_btn):
+        _b.setFixedHeight(30)
+    dialog.move_to_vapor_btn.setVisible(not is_vapor_mode)
+    dialog.remove_from_vapor_btn.setVisible(is_vapor_mode)
+    vapor_actions_layout.addWidget(dialog.move_to_vapor_btn, 0)
+    vapor_actions_layout.addWidget(dialog.remove_from_vapor_btn, 0)
 
     lay.addWidget(vapor_actions_widget)
-    lay.addSpacing(8)
-
-    # ── Bottom Row Section (SLSonline & EOS Proxy) ───────────
-    # ── Bottom Row Section (SLSonline, EOS Proxy, Netsock, EOS Experimental) ───────────
-    bottom_tiles_widget = QWidget()
-    dialog.bottom_tiles_widget = bottom_tiles_widget
-    dialog.bottom_tiles_layout = QGridLayout(bottom_tiles_widget)
-    dialog.bottom_tiles_layout.setContentsMargins(0, 0, 0, 0)
-    dialog.bottom_tiles_layout.setSpacing(10)
-
-    dialog.sls_container = QFrame()
-    dialog.sls_container.setFixedHeight(44)
-    dialog.sls_container.setStyleSheet("QFrame { background: transparent; border: none; }")
-    sls_container_layout = QHBoxLayout(dialog.sls_container)
-    sls_container_layout.setContentsMargins(0, 0, 0, 0)
-    sls_container_layout.setSpacing(0)
-
-    dialog.sls_tile = MaterialTile("SLSonline", "Inactive", dialog, is_toggle=True)
-    sls_container_layout.addWidget(dialog.sls_tile, 1)
-
-    dialog.sls_input_container = QFrame()
-    dialog.sls_input_container.setFixedWidth(95)
-    dialog.sls_input_container.setStyleSheet("""
-        QFrame {
-            background: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-left: none;
-            border-top-right-radius: 8px;
-            border-bottom-right-radius: 8px;
-        }
-    """)
-    sls_input_lay = QHBoxLayout(dialog.sls_input_container)
-    sls_input_lay.setContentsMargins(6, 2, 6, 2)
-    sls_input_lay.setSpacing(4)
-
-    fl = QLabel("FID:")
-    fl.setStyleSheet("color: rgba(255, 255, 255, 0.85); font-size: 8pt; font-weight: bold;")
-    dialog.sls_input = QLineEdit()
-    dialog.sls_input.setPlaceholderText("480")
-    dialog.sls_input.setValidator(QIntValidator())
-    dialog.sls_input.setFixedHeight(22)
-    dialog.sls_input.setFixedWidth(52)
-    dialog.sls_input.setStyleSheet("""
-        QLineEdit {
-            background: rgba(0, 0, 0, 0.25);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 4px;
-            color: #FFFFFF;
-            font-size: 8.5pt;
-            font-weight: bold;
-            padding: 0 4px;
-        }
-        QLineEdit:focus { border-color: #FFFFFF; }
-    """)
-    sls_input_lay.addWidget(fl)
-    sls_input_lay.addWidget(dialog.sls_input)
-    dialog.sls_input_container.setVisible(False)
-    sls_container_layout.addWidget(dialog.sls_input_container)
-
-    dialog.bottom_tiles_layout.addWidget(dialog.sls_container, 0, 0)
-
-    dialog.netsock_tile = MaterialTile("Netsock", "Inactive", dialog, is_toggle=True)
-    dialog.netsock_tile.setVisible(False)
-    dialog.bottom_tiles_layout.addWidget(dialog.netsock_tile, 0, 1)
-
-    dialog.eos_tile = MaterialTile("EOS Proxy", "Inactive", dialog, is_toggle=True)
-    dialog.eos_tile.setVisible(False)
-    dialog.bottom_tiles_layout.addWidget(dialog.eos_tile, 0, 1)
-
-    dialog.eos_exp_tile = MaterialTile("EOS Experimental", "Placeholder", dialog, is_toggle=False)
-    dialog.eos_exp_tile.setEnabled(False)
-    dialog.eos_exp_tile.setToolTip("Experimental EOS feature (Placeholder)")
-    dialog.eos_exp_tile.setVisible(False)
-    dialog.bottom_tiles_layout.addWidget(dialog.eos_exp_tile, 1, 1)
-
-    lay.addWidget(bottom_tiles_widget)
-    lay.addSpacing(12)
-    lay.addWidget(thin_line())
-    lay.addSpacing(10)
+    lay.addStretch(1)
 
     dialog.validate_btn.clicked.connect(lambda: on_validate_btn_clicked(dialog))
     dialog.branch_combo.currentIndexChanged.connect(lambda: on_branch_combo_changed(dialog))
@@ -408,143 +480,6 @@ def init_info_tab(dialog) -> None:
     info_tab_layout.setContentsMargins(0, 0, 0, 0)
     info_tab_layout.setSpacing(0)
     info_tab_layout.addWidget(scroll, 1)
-
-    # ── Floating Footer at the bottom ───────────────────────
-    dialog.footer_widget = QWidget()
-    dialog.footer_widget.setObjectName("floatingFooter")
-    dialog.footer_widget.setStyleSheet(f"""
-        QWidget#floatingFooter {{
-            background-color: {dialog.background_color};
-            border-top: 1px solid rgba(255, 255, 255, 0.08);
-        }}
-    """)
-    footer_layout = QVBoxLayout(dialog.footer_widget)
-    footer_layout.setContentsMargins(14, 10, 14, 10)
-    footer_layout.setSpacing(6)
-
-    btn_row = QHBoxLayout()
-    btn_row.setContentsMargins(0, 0, 0, 0)
-    btn_row.setSpacing(10)
-
-    from utils.color_utils import get_semantic_colors
-    sem_colors = get_semantic_colors(dialog.accent_color)
-    err_color = sem_colors["error"]
-    ec = QColor(err_color)
-
-    err_bg = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.12)"
-    err_border = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.22)"
-    err_hover = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.20)"
-    adv_bg = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.05)"
-    adv_border = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.12)"
-    adv_hover = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.08)"
-    adv_checked_bg = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.18)"
-    adv_checked_border = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.35)"
-    panel_bg = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.04)"
-    panel_border = f"rgba({ec.red()}, {ec.green()}, {ec.blue()}, 0.15)"
-
-    from utils.dlc_helpers import is_dlc_only_mode
-    is_vapor_dlc = is_vapor_mode and (
-        is_dlc_only_mode(dialog.appid)
-        or bool(dialog.game_data.get("dlc_only"))
-        or bool(dialog.game_data.get("is_dlc_only"))
-    )
-
-    dialog._uninstall_pill = QPushButton("Uninstall")
-    dialog._uninstall_pill.setFixedHeight(32)
-    if is_vapor_dlc:
-        dialog._uninstall_pill.setEnabled(False)
-        dialog._uninstall_pill.setStyleSheet("""
-            QPushButton, QPushButton:disabled {
-                background: rgba(255, 255, 255, 0.03);
-                color: rgba(255, 255, 255, 0.25);
-                border: 1px solid rgba(255, 255, 255, 0.06);
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 9.5pt;
-                padding: 0 16px;
-            }
-        """)
-        dialog._uninstall_pill.setToolTip("Uninstall is managed directly through Steam for DLC-only AT0-M games.")
-    else:
-        dialog._uninstall_pill.setStyleSheet(f"""
-            QPushButton {{
-                background: {err_bg};
-                color: {err_color};
-                border: 1px solid {err_border};
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 9.5pt;
-                padding: 0 16px;
-            }}
-            QPushButton:hover {{ background: {err_hover}; }}
-        """)
-        dialog._uninstall_pill.clicked.connect(lambda: do_standard_uninstall(dialog))
-    btn_row.addWidget(dialog._uninstall_pill, 1)
-
-    dialog._adv_uninstall_btn = QPushButton("Advanced Uninstall")
-    dialog._adv_uninstall_btn.setFixedHeight(32)
-    dialog._adv_uninstall_btn.setCheckable(not is_vapor_dlc)
-    if is_vapor_dlc:
-        dialog._adv_uninstall_btn.setEnabled(False)
-        dialog._adv_uninstall_btn.setStyleSheet("""
-            QPushButton, QPushButton:disabled {
-                background: rgba(255, 255, 255, 0.02);
-                color: rgba(255, 255, 255, 0.2);
-                border: 1px solid rgba(255, 255, 255, 0.05);
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 9.5pt;
-                padding: 0 16px;
-            }
-        """)
-        dialog._adv_uninstall_btn.setToolTip("Advanced uninstall is disabled for DLC-only AT0-M games.")
-    else:
-        dialog._adv_uninstall_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {adv_bg};
-                color: {err_color};
-                border: 1px solid {adv_border};
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 9.5pt;
-                padding: 0 16px;
-            }}
-            QPushButton:hover {{ background: {adv_hover}; }}
-            QPushButton:checked {{
-                background: {adv_checked_bg};
-                color: #FFFFFF;
-                border-color: {adv_checked_border};
-            }}
-        """)
-        dialog._adv_uninstall_btn.clicked.connect(lambda: toggle_uninstall_panel(dialog))
-    btn_row.addWidget(dialog._adv_uninstall_btn, 1)
-
-    footer_layout.addLayout(btn_row)
-
-    dialog._uninstall_expanded = False
-    dialog._uninstall_panel = QFrame()
-    dialog._uninstall_panel.setObjectName("uninstallPanel")
-    dialog._uninstall_panel.setStyleSheet(f"""
-        QFrame#uninstallPanel {{
-            background-color: {panel_bg};
-            border: 1px solid {panel_border};
-            border-radius: 4px;
-        }}
-        QFrame#uninstallPanel QLabel {{
-            border: none;
-            background: transparent;
-        }}
-    """)
-    dialog._uninstall_panel.setVisible(False)
-    dialog._uninstall_inner = QVBoxLayout(dialog._uninstall_panel)
-    dialog._uninstall_inner.setContentsMargins(10, 8, 10, 8)
-    dialog._uninstall_inner.setSpacing(6)
-    dialog._uninstall_content = QVBoxLayout()
-    dialog._uninstall_inner.addLayout(dialog._uninstall_content)
-    dialog._uninstall_panel_built = False
-
-    footer_layout.addWidget(dialog._uninstall_panel)
-    info_tab_layout.addWidget(dialog.footer_widget)
 
     dialog.stacked.addWidget(info_tab_container)
 
@@ -746,6 +681,9 @@ def on_branch_combo_changed(dialog) -> None:
                 branch_date_str = ""
 
     if hasattr(dialog, "build_val_lbl"):
+        from ui.dialogs.game_details.hero_header import set_build_snippet
+
+        date_part = f" ({branch_date_str})" if branch_date_str else ""
         if installed_bid:
             is_older = False
             if branch_bid and sel_branch == installed_branch:
@@ -753,37 +691,15 @@ def on_branch_combo_changed(dialog) -> None:
                     is_older = int(installed_bid) < int(branch_bid)
                 except (ValueError, TypeError):
                     is_older = (branch_bid != installed_bid)
-
             if is_older:
-                dialog.build_val_lbl.setText(installed_bid)
-                dialog.build_val_lbl.setStyleSheet("color: #FFB84D; font-size: 9.5pt; font-weight: bold; background: transparent;")
-                tt = f"Installed Build: {installed_bid}\nLatest on Steam ({sel_branch}): Build {branch_bid}"
-                if branch_date_str:
-                    tt += f" ({branch_date_str})"
-                tt += " • Update available"
-                dialog.build_val_lbl.setToolTip(tt)
+                set_build_snippet(dialog, installed_bid, "update",
+                                  f"Installed build {installed_bid}\nLatest on Steam ({sel_branch}): {branch_bid}{date_part}")
             else:
-                display_text = f"{installed_bid} ({branch_date_str})" if branch_date_str else installed_bid
-                dialog.build_val_lbl.setText(display_text)
-                dialog.build_val_lbl.setStyleSheet("color: #46b464; font-size: 9.5pt; font-weight: bold; background: transparent;")
-                tt = f"Installed Build: {installed_bid}"
-                if branch_date_str:
-                    tt += f" ({branch_date_str})"
-                tt += " • Up to date"
-                dialog.build_val_lbl.setToolTip(tt)
+                set_build_snippet(dialog, installed_bid, "ok", f"Installed build {installed_bid}{date_part} - up to date")
+        elif branch_bid:
+            set_build_snippet(dialog, "", "unknown", f"Latest on Steam ({sel_branch}): {branch_bid}{date_part}")
         else:
-            if branch_bid:
-                display_text = f"{branch_bid} ({branch_date_str})" if branch_date_str else branch_bid
-                dialog.build_val_lbl.setText(display_text)
-                dialog.build_val_lbl.setStyleSheet("color: #7ab3ff; font-size: 9.5pt; font-weight: bold; background: transparent;")
-                tt = f"Latest on Steam ({sel_branch}): Build {branch_bid}"
-                if branch_date_str:
-                    tt += f" ({branch_date_str})"
-                tt += "\n(Game not installed or build ID unknown)"
-                dialog.build_val_lbl.setToolTip(tt)
-            else:
-                dialog.build_val_lbl.setText("Unknown")
-                dialog.build_val_lbl.setStyleSheet(f"color: {dialog.accent_color}; font-size: 9.5pt; font-weight: bold; background: transparent;")
+            set_build_snippet(dialog, "", "unknown")
 
     update_validate_button(dialog)
 
@@ -901,7 +817,7 @@ def update_validate_button(dialog) -> None:
         set_btn_style(accent_hex)
     elif pinned and has_cache and not is_missing_manifest_or_lua:
         dialog.validate_btn.setText("Verify Pinned Build")
-        set_btn_style(success_hex)
+        set_btn_style(accent_hex)
     elif not same_branch:
         b_dict = getattr(dialog, "_branches_dict", {})
         branch_bid = ""
@@ -931,7 +847,7 @@ def update_validate_button(dialog) -> None:
         set_btn_style(accent_hex)
     else:
         dialog.validate_btn.setText("Verify Files")
-        set_btn_style(success_hex)
+        set_btn_style(accent_hex)
 
 
 def on_validate_btn_clicked(dialog) -> None:
@@ -1444,19 +1360,40 @@ def do_standard_uninstall(dialog) -> None:
         )
 
 
+def open_advanced_uninstall(dialog) -> None:
+    """Advanced uninstall in its own window (used to expand inside Game Details)."""
+    from PyQt6.QtWidgets import QDialog as _QDialog
+
+    from ui.dialogs.themed_dialog import install_themed_frame
+
+    win = _QDialog(dialog)
+    win.setWindowTitle(f"Uninstall {dialog.game_data.get('game_name', 'game')}")
+    win.setMinimumWidth(460)
+    body = install_themed_frame(win, margins=(16, 10, 16, 14), spacing=8)
+    dialog._uninstall_content = QVBoxLayout()
+    dialog._uninstall_content.setSpacing(6)
+    body.addLayout(dialog._uninstall_content)
+    build_uninstall_panel(dialog)
+    # Any confirm button in the panel closes this window first.
+    for i in range(dialog._uninstall_content.count()):
+        w = dialog._uninstall_content.itemAt(i).widget()
+        if isinstance(w, QPushButton):
+            w.clicked.connect(win.accept, Qt.ConnectionType.DirectConnection)
+    cancel = QPushButton("Cancel")
+    cancel.setFixedHeight(28)
+    cancel.clicked.connect(win.reject)
+    body.addWidget(cancel)
+    win.exec()
+
+
 def toggle_uninstall_panel(dialog) -> None:
-    dialog._uninstall_expanded = not dialog._uninstall_expanded
-    if dialog._uninstall_expanded and not getattr(dialog, "_uninstall_panel_built", False):
-        build_uninstall_panel(dialog)
-    dialog._uninstall_panel.setVisible(dialog._uninstall_expanded)
-    if hasattr(dialog, "_adv_uninstall_btn") and dialog._adv_uninstall_btn:
-        dialog._adv_uninstall_btn.setChecked(dialog._uninstall_expanded)
-    if dialog._uninstall_expanded and hasattr(dialog, "uninstall_scroll"):
-        QTimer.singleShot(100, lambda: uninstall_scroll_to_bottom(dialog))
+    """Older name: opens the advanced uninstall window."""
+    open_advanced_uninstall(dialog)
 
 
 def uninstall_scroll_to_bottom(dialog) -> None:
-    sb = dialog.uninstall_scroll.verticalScrollBar()
+    """Kept for older callers; advanced uninstall is a separate window now."""
+    sb = dialog.uninstall_scroll.verticalScrollBar() if hasattr(dialog, "uninstall_scroll") else None
     if sb:
         sb.setValue(sb.maximum())
 
@@ -1595,32 +1532,13 @@ def update_eos_btn_state(dialog) -> None:
     status = EOSDetector.get_proxy_status(install_path)
     is_sls_active = dialog.sls_tile.isChecked() if hasattr(dialog, "sls_tile") else False
 
-    # Reposition layout based on whether EOS Proxy is available
-    if hasattr(dialog, "bottom_tiles_layout") and hasattr(dialog, "sls_container"):
-        if status != "none":
-            # 2x2 grid:
-            # Top-left: SLSonline, Top-right: EOS Proxy
-            # Bottom-left: Netsock (just below SLSonline), Bottom-right: EOS Experimental
-            dialog.bottom_tiles_layout.addWidget(dialog.sls_container, 0, 0)
-            if hasattr(dialog, "eos_tile") and dialog.eos_tile:
-                dialog.bottom_tiles_layout.addWidget(dialog.eos_tile, 0, 1)
-                dialog.eos_tile.setVisible(True)
-            if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
-                dialog.bottom_tiles_layout.addWidget(dialog.netsock_tile, 1, 0)
-                dialog.netsock_tile.setVisible(True)
-            if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
-                dialog.bottom_tiles_layout.addWidget(dialog.eos_exp_tile, 1, 1)
-                dialog.eos_exp_tile.setVisible(True)
-        else:
-            # Single row: Left = SLSonline, Right = Netsock
-            dialog.bottom_tiles_layout.addWidget(dialog.sls_container, 0, 0)
-            if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
-                dialog.bottom_tiles_layout.addWidget(dialog.netsock_tile, 0, 1)
-                dialog.netsock_tile.setVisible(True)
-            if hasattr(dialog, "eos_tile") and dialog.eos_tile:
-                dialog.eos_tile.setVisible(False)
-            if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
-                dialog.eos_exp_tile.setVisible(False)
+    # One row: SLSonline · Id · Netsock, plus the two EOS switches when the
+    # game ships EOS.
+    if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
+        dialog.netsock_tile.setVisible(True)
+    for _t in ("eos_tile", "eos_exp_tile"):
+        if hasattr(dialog, _t) and getattr(dialog, _t):
+            getattr(dialog, _t).setVisible(status != "none")
 
     # Update EOS Proxy button state if applicable
     if status != "none" and hasattr(dialog, "eos_tile") and dialog.eos_tile:
@@ -1769,22 +1687,8 @@ def init_slsonline_logic(dialog) -> None:
         config = get_user_config_path()
         if config.exists():
             def _apply_split_style(checked):
+                # The Id field is its own box now, so no joined styling.
                 dialog.sls_tile.update_state(checked, dialog.accent_color)
-                if checked:
-                    from utils.color_utils import get_best_foreground_color
-                    text_color = get_best_foreground_color(dialog.accent_color, dark_color="#121214", light_color="#FFFFFF")
-                    dialog.sls_tile.setStyleSheet(f"""
-                        QPushButton {{
-                            background-color: {dialog.accent_color};
-                            border: none;
-                            border-top-left-radius: 8px;
-                            border-bottom-left-radius: 8px;
-                            border-top-right-radius: 0px;
-                            border-bottom-right-radius: 0px;
-                        }}
-                    """)
-                    dialog.sls_tile.title_lbl.setStyleSheet(f"font-weight: bold; font-size: 8.5pt; color: {text_color}; background: transparent;")
-                    dialog.sls_tile.sub_lbl.setStyleSheet(f"font-size: 7.5pt; font-style: italic; color: {text_color}; opacity: 0.85; background: transparent;")
 
             def _refresh_sls_state():
                 existing = get_fake_appid(config, dialog.appid) if config.exists() else None

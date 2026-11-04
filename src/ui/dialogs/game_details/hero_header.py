@@ -57,52 +57,161 @@ def load_hero_image(dialog) -> None:
         dialog._active_fetchers[f"hero_{dialog.appid}"] = fetcher
 
 
-def init_hero_v2(dialog, root) -> None:
-    """Initialize modern 120px tall hero header with inline game stats."""
-    dialog.hero = HeroBanner(bg_hex=dialog.background_color)
-    dialog.hero.setFixedHeight(125)
-    banner_layout = QVBoxLayout(dialog.hero)
-    banner_layout.setContentsMargins(14, 8, 14, 8)
-    banner_layout.setSpacing(4)
+def _is_atom_game(dialog) -> bool:
+    gd = dialog.game_data or {}
+    return bool(
+        gd.get("is_atom") or gd.get("is_vapor") or gd.get("is_plugin_game")
+        or gd.get("update_status") in ("vapor", "at0m", "at0-m")
+        or gd.get("source") in ("Vapor", "at0-m", "AT0-M")
+    )
 
-    # Top row: Left side has title and appid, Right side has ProtonDB badge
+
+def _mode_logo_pixmap(is_atom: bool, size: int = 18) -> QPixmap:
+    """Steam logo for AT0-M games, ASSella logo for ASSella-managed ones."""
+    from pathlib import Path
+    from utils.helpers import get_base_path
+
+    name = "steam.png" if is_atom else "accela.png"
+    for c in (
+        Path(__file__).resolve().parents[3] / "res" / "logo" / name,
+        get_base_path() / "Logo" / name,
+    ):
+        if c.is_file():
+            px = QPixmap(str(c))
+            if not px.isNull():
+                return px.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+    return QPixmap()
+
+
+def get_installed_date(dialog) -> str:
+    """When the game was installed / last updated: the ACF's LastUpdated, else
+    the install folder's modification time."""
+    import os
+    import re
+    from datetime import datetime
+
+    ts = 0
+    try:
+        from utils.steam_acf import find_appmanifest_path
+
+        acf = find_appmanifest_path(dialog.game_data, str(dialog.appid))
+        if acf and os.path.isfile(acf):
+            with open(acf, "r", encoding="utf-8", errors="ignore") as f:
+                m = re.search(r'"LastUpdated"\s+"(\d+)"', f.read())
+            if m:
+                ts = int(m.group(1))
+    except Exception:
+        ts = 0
+    if not ts:
+        path = dialog.game_data.get("install_path")
+        for cand in (os.path.join(path, ".DepotDownloader") if path else None, path):
+            if cand and os.path.exists(cand):
+                ts = int(os.path.getmtime(cand))
+                break
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(ts).strftime("%d %b %Y")
+
+
+SNIPPET_BASE = (
+    "QPushButton {{ background: rgba(0,0,0,0.35); border: 1px solid {border}; border-radius: 5px;"
+    " color: {color}; font-size: 8.5pt; font-weight: 600; padding: 2px 8px; text-align: left; }}"
+    "QPushButton:hover {{ border-color: {hover}; }}"
+)
+
+
+def _snippet(text: str, tip: str = "") -> QPushButton:
+    b = QPushButton(text)
+    b.setFlat(True)
+    b.setToolTip(tip)
+    b.setStyleSheet(SNIPPET_BASE.format(border="rgba(255,255,255,0.14)", color="#E8E8EE", hover="rgba(255,255,255,0.3)"))
+    return b
+
+
+def set_build_snippet(dialog, build: str, state: str, tooltip: str = "") -> None:
+    """state: 'ok' | 'update' | 'latest' (not installed) | 'unknown'.
+
+    An update is shown as an orange snippet with "!" after the build ID; the
+    Update button below the header does the rest.
+    """
+    lbl = getattr(dialog, "build_val_lbl", None)
+    if lbl is None:
+        return
+    if state == "update" and _is_atom_game(dialog):
+        state = "ok"  # Steam updates AT0-M games; nothing to flag here
+    if state == "update":
+        lbl.setText(f"Build {build}  !")
+        lbl.setStyleSheet(SNIPPET_BASE.format(border="rgba(255,183,77,0.6)", color="#FFB74D", hover="#FFB74D"))
+    else:
+        lbl.setText(f"Build {build}" if build else "Build unknown")
+        lbl.setStyleSheet(SNIPPET_BASE.format(border="rgba(255,255,255,0.14)", color="#E8E8EE", hover="rgba(255,255,255,0.3)"))
+    lbl.setToolTip((tooltip + "\n" if tooltip else "") + "Click to check for updates")
+
+
+def init_hero_v2(dialog, root) -> None:
+    """Header: name with the mode logo, italic clickable AppID, and snippets
+    for size, installed build (orange "!" when an update exists) and date."""
+    from PyQt6.QtWidgets import QApplication
+
+    is_atom = _is_atom_game(dialog)
+    dialog.hero = HeroBanner(bg_hex=dialog.background_color)
+    dialog.hero.setFixedHeight(100)
+    banner_layout = QVBoxLayout(dialog.hero)
+    banner_layout.setContentsMargins(14, 8, 14, 10)
+    banner_layout.setSpacing(3)
+
     top_row = QHBoxLayout()
     top_row.setContentsMargins(0, 0, 0, 0)
     top_row.setSpacing(10)
-
     left_col = QVBoxLayout()
     left_col.setContentsMargins(0, 0, 0, 0)
-    left_col.setSpacing(2)
+    left_col.setSpacing(1)
 
-    # Optional Denuvo badge row
-    dialog._ratings_row = QHBoxLayout()
-    dialog._ratings_row.setSpacing(6)
-    dialog._ratings_row.setContentsMargins(0, 0, 0, 0)
+    name_row = QHBoxLayout()
+    name_row.setSpacing(8)
+    dialog.name_lbl = QLabel()
+    dialog.name_lbl.setStyleSheet("font-size: 13pt; font-weight: bold; color: #FFFFFF; background: transparent;")
+    dialog.name_lbl.setMaximumHeight(28)
+    name_row.addWidget(dialog.name_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+    dialog.mode_logo_lbl = QLabel()
+    dialog.mode_logo_lbl.setStyleSheet("background: transparent;")
+    px = _mode_logo_pixmap(is_atom)
+    if not px.isNull():
+        dialog.mode_logo_lbl.setPixmap(px)
+    dialog.mode_logo_lbl.setToolTip(
+        "AT0-M: installed and updated by the Steam client" if is_atom else "Managed by ASSella"
+    )
+    name_row.addWidget(dialog.mode_logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
     dialog._denuvo_badge_lbl = QLabel()
     dialog._denuvo_badge_lbl.hide()
-    dialog._ratings_row.addWidget(dialog._denuvo_badge_lbl)
-    dialog._ratings_row.addStretch()
-    left_col.addLayout(dialog._ratings_row)
+    name_row.addWidget(dialog._denuvo_badge_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+    name_row.addStretch(1)
+    dialog._ratings_row = name_row
+    left_col.addLayout(name_row)
 
-    dialog.name_lbl = QLabel()
-    dialog.name_lbl.setStyleSheet(
-        "font-size: 13pt; font-weight: bold; color: #FFFFFF; background: transparent;"
-    )
-    dialog.name_lbl.setWordWrap(True)
-    dialog.name_lbl.setMaximumHeight(44)
-    left_col.addWidget(dialog.name_lbl)
-
-    dialog.appid_lbl = QLabel(f"App ID: {dialog.appid}")
+    dialog.appid_lbl = QPushButton(str(dialog.appid))
+    dialog.appid_lbl.setFlat(True)
+    dialog.appid_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.appid_lbl.setToolTip("Copy AppID")
     dialog.appid_lbl.setStyleSheet(
-        "font-size: 8.5pt; color: rgba(255, 255, 255, 0.706); background: transparent; font-weight: bold;"
+        "QPushButton { background: transparent; border: none; padding: 0; text-align: left;"
+        " color: rgba(255,255,255,0.6); font-size: 8.5pt; font-style: italic; }"
+        f"QPushButton:hover {{ color: {dialog.accent_color}; text-decoration: underline; }}"
     )
-    left_col.addWidget(dialog.appid_lbl)
+
+    def _copy_appid():
+        QApplication.clipboard().setText(str(dialog.appid))
+        dialog.appid_lbl.setText(f"{dialog.appid}  copied")
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(1200, lambda: dialog.appid_lbl.setText(str(dialog.appid)))
+
+    dialog.appid_lbl.clicked.connect(_copy_appid)
+    left_col.addWidget(dialog.appid_lbl, 0, Qt.AlignmentFlag.AlignLeft)
     top_row.addLayout(left_col, 1)
 
-    # Top-right container for ProtonDB pill badge
     right_badge_col = QVBoxLayout()
     right_badge_col.setContentsMargins(0, 2, 0, 0)
-    right_badge_col.setSpacing(0)
     dialog._proton_badge_lbl = QPushButton()
     dialog._proton_badge_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog._proton_badge_lbl.hide()
@@ -113,78 +222,59 @@ def init_hero_v2(dialog, root) -> None:
     right_badge_col.addWidget(dialog._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
     right_badge_col.addStretch()
     top_row.addLayout(right_badge_col, 0)
-
     banner_layout.addLayout(top_row)
 
     update_title(dialog)
 
-    # Stats row — horizontal labels under name
-    stats_row = QHBoxLayout()
-    stats_row.setSpacing(24)
-
-    def _stat_item(label_text, value_text, value_color=None):
-        item_widget = QVBoxLayout()
-        item_widget.setSpacing(2)
-        lbl = QLabel(label_text)
-        theme_acc = getattr(dialog, "_user_theme_accent", dialog.accent_color)
-        lbl.setStyleSheet(f"color: {theme_acc}; font-size: 8.5pt; background: transparent; font-weight: bold;")
-        val = QLabel(value_text)
-        val.setStyleSheet(
-            f"color: {value_color or theme_acc}; font-size: 9.5pt; font-weight: bold; background: transparent;"
-        )
-        item_widget.addWidget(lbl)
-        item_widget.addWidget(val)
-        return item_widget, val
-
+    # Snippets: size · build · installed date
+    snip_row = QHBoxLayout()
+    snip_row.setSpacing(6)
     if dialog.parent_window and hasattr(dialog.parent_window, "_format_size"):
         size_str = dialog.parent_window._format_size(dialog.game_data.get("size_on_disk", 0))
     else:
-        sb = dialog.game_data.get("size_on_disk", 0) or 0
-        if sb < 1024:
-            size_str = f"{sb} B"
-        elif sb < 1024 * 1024:
-            size_str = f"{sb / 1024:.1f} KB"
-        elif sb < 1024 * 1024 * 1024:
-            size_str = f"{sb / (1024 * 1024):.1f} MB"
-        else:
-            size_str = f"{sb / (1024 * 1024 * 1024):.2f} GB"
+        sb = float(dialog.game_data.get("size_on_disk", 0) or 0)
+        size_str = next(
+            (f"{sb / f:.1f} {u}" for f, u in ((1024 ** 3, "GB"), (1024 ** 2, "MB"), (1024, "KB")) if sb >= f),
+            f"{int(sb)} B",
+        )
+    dialog.size_val_lbl = _snippet(size_str, "Size on disk")
+    dialog.size_val_lbl.setEnabled(False)
+    snip_row.addWidget(dialog.size_val_lbl)
 
-    ri, dialog.size_val_lbl = _stat_item("SIZE", size_str)
-    stats_row.addLayout(ri)
-
-    ri, dialog.cached_val_lbl = _stat_item("MANIFEST", get_manifest_age(dialog))
-    stats_row.addLayout(ri)
-
-    installed_bid = dialog._get_installed_buildid()
-    bid_str = installed_bid if installed_bid else "Unknown"
-    initial_build_color = None
-    if installed_bid:
-        cached_bid = str(dialog.game_data.get("buildid", "")) if hasattr(dialog, "game_data") and isinstance(dialog.game_data, dict) else ""
-        if cached_bid:
-            is_old = False
-            try:
-                is_old = int(installed_bid) < int(cached_bid)
-            except (ValueError, TypeError):
-                is_old = (cached_bid != installed_bid)
-            initial_build_color = "#FFB84D" if is_old else "#46b464"
-
-    ri, dialog.build_val_lbl = _stat_item("BUILD", bid_str, value_color=initial_build_color)
+    dialog.build_val_lbl = _snippet("")
     dialog._hero_build_val_lbl = dialog.build_val_lbl
+    dialog.build_val_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+    installed_bid = dialog._get_installed_buildid()
+    state = "unknown"
     if installed_bid:
-        tip = f"Installed Build: {installed_bid}"
-        if initial_build_color == "#FFB84D":
-            tip += " (Update available)"
-        elif initial_build_color == "#46b464":
-            tip += " (Up to date)"
-        dialog.build_val_lbl.setToolTip(tip)
-    stats_row.addLayout(ri)
+        state = "ok"
+        latest = str(dialog.game_data.get("buildid", "") or "")
+        try:
+            if latest and int(installed_bid) < int(latest):
+                state = "update"
+        except (ValueError, TypeError):
+            pass
+    set_build_snippet(dialog, installed_bid, state, f"Installed build {installed_bid}" if installed_bid else "")
+    if not is_atom:
+        dialog.build_val_lbl.clicked.connect(
+            lambda: dialog._on_status_btn_clicked() if hasattr(dialog, "_on_status_btn_clicked") else None
+        )
+    else:
+        dialog.build_val_lbl.setToolTip("Steam handles updates for this game.")
+    snip_row.addWidget(dialog.build_val_lbl)
 
-    ri, dialog.lua_val_lbl = _stat_item("LUA", get_lua_age(dialog))
-    stats_row.addLayout(ri)
+    date_str = get_installed_date(dialog)
+    dialog.date_val_lbl = _snippet(f"Installed {date_str}" if date_str else "Install date unknown", "Installed / last updated")
+    dialog.date_val_lbl.setEnabled(False)
+    snip_row.addWidget(dialog.date_val_lbl)
+    snip_row.addStretch(1)
+    for w in (dialog.size_val_lbl, dialog.date_val_lbl):
+        w.setStyleSheet(w.styleSheet() + " QPushButton:disabled { color: #E8E8EE; }")
+    banner_layout.addLayout(snip_row)
 
-    stats_row.addStretch()
-    banner_layout.addLayout(stats_row)
-    banner_layout.addStretch()
+    # Kept for older callers; no longer shown.
+    dialog.cached_val_lbl = QLabel(get_manifest_age(dialog))
+    dialog.lua_val_lbl = QLabel(get_lua_age(dialog))
 
     load_hero_image(dialog)
     root.addWidget(dialog.hero)
