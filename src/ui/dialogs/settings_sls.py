@@ -254,25 +254,8 @@ def create_sls_tab(dialog) -> QWidget:
     # All games online
     from utils.yaml_config_manager import get_user_config_path, get_fake_appid, add_fake_app_id, remove_fake_app_id
     cfg_path = get_user_config_path()
-    saved_all_online = dialog.settings.value("all_games_online", None)
-    if saved_all_online is None:
-        saved_all_online = dialog.settings.value("all_games_online_beta", None)
-    if isinstance(saved_all_online, str):
-        saved_all_online = saved_all_online.strip().lower() in ("true", "1", "yes")
-    elif saved_all_online is not None:
-        saved_all_online = bool(saved_all_online)
-    else:
-        saved_all_online = True
-
-    current_all_online = saved_all_online
-
-    if cfg_path.exists():
-        has_entry = get_fake_appid(cfg_path, "0") is not None
-        if current_all_online and not has_entry:
-            add_fake_app_id(cfg_path, "0", game_name="All Unowned Apps", fake_appid="480")
-        elif not current_all_online and has_entry:
-            remove_fake_app_id(cfg_path, "0", fake_appid="480")
-            remove_fake_app_id(cfg_path, "0")
+    # config.yaml is the source of truth: FakeAppIds "0: 480" present = on.
+    current_all_online = bool(cfg_path.exists() and get_fake_appid(cfg_path, "0") is not None)
 
     dialog.all_games_online_checkbox = create_checkbox_setting(
         "All games online",
@@ -285,9 +268,9 @@ def create_sls_tab(dialog) -> QWidget:
 
     def _on_all_games_online_toggled(state):
         is_checked = bool(state)
-        dialog.settings.setValue("all_games_online", is_checked)
-        dialog.settings.setValue("all_games_online_beta", is_checked)
         c_path = get_user_config_path()
+        if not c_path.exists():
+            return
         if is_checked:
             add_fake_app_id(c_path, "0", game_name="All Unowned Apps", fake_appid="480")
         else:
@@ -322,6 +305,8 @@ def create_sls_tab(dialog) -> QWidget:
     settings_layout.addWidget(int_card)
     settings_layout.addStretch()
     sls_subtabs.addTab(settings_widget, "Settings")
+    from ui.dialogs.settings_tabs.sls_advanced_tab import create_sls_advanced_tab
+    sls_subtabs.addTab(create_sls_advanced_tab(dialog), "Advanced")
 
     # ── Subtab 2: Tickets ──
     tickets_widget = QWidget()

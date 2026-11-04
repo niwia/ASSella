@@ -177,6 +177,8 @@ def create_tools_tab(dialog) -> QWidget:
     log_layout.addLayout(btn_row)
     layout.addWidget(log_card)
 
+    layout.addWidget(create_sls_logging_card(dialog))
+
     # Optional components (Goldberg / Steamless / SLScheevo) are no longer
     # bundled - this is the one place they can be downloaded or updated.
     layout.addWidget(create_components_card(dialog))
@@ -184,6 +186,101 @@ def create_tools_tab(dialog) -> QWidget:
     layout.addStretch()
     dialog.tab_widget.addTab(tab, "Tools")
     return tab
+
+
+def create_sls_logging_card(dialog):
+    """SLSsteam logging: LogLevels and ExtendedLogging, read from and written
+    straight to config.yaml (the file is the source of truth)."""
+    from PyQt6.QtWidgets import QLabel as _QLabel
+
+    from ui.dialogs.settings_tabs.sls_advanced_tab import SlsConfigBinder
+    from utils.helpers import Material3Switch
+    from utils.yaml.sls_settings import LOG_LEVEL_PRESETS, LOGGING_SETTINGS
+
+    card, lay = dialog._create_card_frame("SLSsteam Logging")
+    binder = SlsConfigBinder(card)
+    dialog.sls_logging_binder = binder
+    muted = "color: rgba(255, 255, 255, 0.55); font-size: 8.5pt; background: transparent;"
+
+    if not binder.path.exists():
+        note = _QLabel("SLSsteam's config.yaml was not found, so its logging can't be changed here.")
+        note.setWordWrap(True)
+        note.setStyleSheet(muted)
+        lay.addWidget(note)
+        return card
+
+    def _row(title: str, hint: str, control, status):
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        text = QVBoxLayout()
+        text.setSpacing(1)
+        t = _QLabel(title)
+        t.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 600; background: transparent;")
+        h = _QLabel(hint)
+        h.setWordWrap(True)
+        h.setStyleSheet(muted)
+        text.addWidget(t)
+        text.addWidget(h)
+        row.addLayout(text, 1)
+        row.addWidget(status, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addLayout(row)
+
+    # Log level: presets of the LogLevels bit flags; anything else shows as Custom.
+    level_combo = ModernComboBox()
+    level_combo.setFixedWidth(220)
+    for name, value in LOG_LEVEL_PRESETS:
+        level_combo.addItem(f"{name}  (0x{value:x})", value)
+    level_status = _QLabel("")
+    dialog.sls_log_level_combo = level_combo
+
+    def _show_level(v):
+        try:
+            value = int(v) if v is not None else 0x3F
+        except (TypeError, ValueError):
+            value = 0x3F
+        level_combo.blockSignals(True)
+        idx = level_combo.findData(value)
+        if idx < 0:
+            custom = level_combo.findText("Custom", Qt.MatchFlag.MatchStartsWith)
+            if custom >= 0:
+                level_combo.removeItem(custom)
+            level_combo.addItem(f"Custom  (0x{value:x})", value)
+            idx = level_combo.count() - 1
+        level_combo.setCurrentIndex(idx)
+        level_combo.blockSignals(False)
+
+    level_combo.currentIndexChanged.connect(
+        lambda i: binder.write("LogLevels", level_combo.itemData(i)) if i >= 0 else None
+    )
+    binder.bind(LOGGING_SETTINGS["LogLevels"], _show_level, level_status)
+    _row(
+        "Log level",
+        "What SLSsteam writes to ~/.SLSsteam.log. Trace, Once and Debug only appear in debug builds.",
+        level_combo,
+        level_status,
+    )
+
+    ext_switch = Material3Switch(checked=False, accent_color=dialog.accent_color)
+    ext_status = _QLabel("")
+    dialog.sls_extended_logging_switch = ext_switch
+
+    def _show_ext(v):
+        ext_switch.blockSignals(True)
+        ext_switch.setChecked(bool(v))
+        ext_switch.blockSignals(False)
+
+    ext_switch.toggled.connect(lambda checked: binder.write("ExtendedLogging", checked))
+    binder.bind(LOGGING_SETTINGS["ExtendedLogging"], _show_ext, ext_status)
+    _row(
+        "Extended logging",
+        "Logs every Steamworks call. Makes the log very large; only for debugging.",
+        ext_switch,
+        ext_status,
+    )
+
+    binder.reload()
+    return card
 
 
 def export_diagnostic_logs(dialog) -> None:
