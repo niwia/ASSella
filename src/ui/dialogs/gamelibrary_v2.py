@@ -11,6 +11,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
+    QSizePolicy,
     QDialog,
     QHBoxLayout,
     QVBoxLayout,
@@ -237,21 +238,70 @@ class GameDetailsDialogV2(QDialog):
         if main_win and hasattr(main_win, "progress_bar"):
             main_win.progress_bar.valueChanged.connect(self._on_main_progress_changed)
 
+    # ── Per-tab height: Info is short, the other tabs get the full window ──
+    FULL_HEIGHT = 540
+
     def showEvent(self, event):
         super().showEvent(event)
         if not getattr(self, "_fitted_once", False):
             self._fitted_once = True
-            QTimer.singleShot(0, self._fit_to_info_tab)
+            self._full_height = max(self.height(), self.FULL_HEIGHT)
+            QTimer.singleShot(0, lambda: self._fit_height_for_tab(self.stacked.currentIndex(), animate=False))
 
-    def _fit_to_info_tab(self):
-        """Open just tall enough for the Info tab (no empty band under it)."""
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # A manual resize (dragging the frame) turns the automatic sizing off.
+        if getattr(self, "_fitted_once", False) and not getattr(self, "_auto_resizing", False) \
+                and event.oldSize().height() > 0 and event.size().height() != event.oldSize().height():
+            self._user_sized = True
+
+    def _tab_target_height(self, index: int) -> int:
+        if index != 0:
+            return self._full_height
         inner = getattr(self, "_info_inner", None)
-        if inner is None or self.isMaximized():
-            return
+        if inner is None:
+            return self._full_height
         content_h = inner.layout().sizeHint().height() if inner.layout() else inner.sizeHint().height()
         chrome = self.height() - self.stacked.height()
-        target = max(self.minimumHeight(), min(640, chrome + content_h + 4))
-        self.resize(self.width(), target)
+        return max(self.minimumHeight(), min(self._full_height, chrome + content_h + 4))
+
+    def _fit_height_for_tab(self, index: int, animate: bool = True) -> None:
+        if getattr(self, "_user_sized", False) or self.isMaximized() or not hasattr(self, "stacked"):
+            return
+        # Hidden pages must not hold the window open at their size.
+        for i in range(self.stacked.count()):
+            page = self.stacked.widget(i)
+            pol = QSizePolicy.Policy.Preferred if i == index else QSizePolicy.Policy.Ignored
+            page.setSizePolicy(pol, pol)
+        self.stacked.updateGeometry()
+        target = self._tab_target_height(index)
+        start = self.height()
+        if abs(target - start) < 3:
+            return
+        anim = getattr(self, "_height_anim", None)
+        if anim is not None:
+            anim.stop()
+        if not animate:
+            self._auto_resizing = True
+            self.resize(self.width(), target)
+            self._auto_resizing = False
+            return
+        from PyQt6.QtCore import QEasingCurve, QVariantAnimation
+
+        anim = QVariantAnimation(self)
+        anim.setStartValue(start)
+        anim.setEndValue(target)
+        anim.setDuration(160)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def _step(v):
+            self._auto_resizing = True
+            self.resize(self.width(), int(v))
+            self._auto_resizing = False
+
+        anim.valueChanged.connect(_step)
+        self._height_anim = anim
+        anim.start()
 
     def _on_main_progress_changed(self, value):
         try:
@@ -425,6 +475,8 @@ class GameDetailsDialogV2(QDialog):
 
     def _switch_tab(self, index):
         self.stacked.setCurrentIndex(index)
+        if getattr(self, "_fitted_once", False):
+            self._fit_height_for_tab(index)
         for i, btn in enumerate(self._tab_buttons):
             active = (i == index)
             if active:

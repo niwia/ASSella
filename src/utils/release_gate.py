@@ -179,7 +179,7 @@ class ReleaseGate:
                 STATUS_READY,
                 "[Key Ready]",
                 f"Depot {did} has an AES decryption key available on Hubcap.\n"
-                "Click 'API Refetch' to download keys and manifest.",
+                "Click 'Refetch keys' to download it.",
             )
         if state == STATE_PENDING:
             return (

@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtProperty, QPropertyAnimation, QEasingCurve, QSize
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, pyqtProperty, QPropertyAnimation, QEasingCurve, QSize, QTimer
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen
 from PyQt6.QtWidgets import (
     QWidget,
@@ -183,12 +183,10 @@ class MiniSwitchToggle(QWidget):
             track_color = QColor(255, 255, 255, 30)
             knob_color = QColor(135, 135, 135)
         else:
-            # Background track: Green if checked, Red if unchecked
-            track_color = QColor("#4CAF50") if self._checked else QColor("#E53935")
-            if self._read_only:
-                track_color.setAlpha(190)
-            else:
-                track_color.setAlpha(255)
+            # Background track: green when on, neutral grey when off
+            track_color = QColor("#4CAF50") if self._checked else QColor(255, 255, 255, 70)
+            if self._checked:
+                track_color.setAlpha(190 if self._read_only else 255)
             knob_color = QColor("#FFFFFF")
 
         p.setPen(Qt.PenStyle.NoPen)
@@ -448,28 +446,19 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
 
     # Status Label
     status_lbl = QLabel("")
-    status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
-    status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    try:
-        from managers.db_manager import DatabaseManager
-        at0m_stat = DatabaseManager().get_at0m_update_status(appid_str)
-        if at0m_stat:
-            if at0m_stat.get("status") == "update_available":
-                new_deps = at0m_stat.get("new_depots", [])
-                cnt = len(new_deps) if isinstance(new_deps, list) else 1
-                ready_ids = [str(d.get("id")) for d in new_deps if isinstance(d, dict) and d.get("has_key")]
-                ready_str = f" ({', '.join(ready_ids)})" if ready_ids else ""
-                status_lbl.setText(f"★ Update Available: {cnt} new depot key(s) ready on Hubcap{ready_str}! Click 'API Refetch' to fetch keys.")
-                status_lbl.setStyleSheet("color: #4DD0E1; font-size: 8.5pt; font-weight: bold;")
-            elif at0m_stat.get("status") == "key_pending":
-                new_deps = at0m_stat.get("new_depots", [])
-                pending_ids = [str(d.get("id")) for d in new_deps if isinstance(d, dict) and not d.get("has_key")]
-                pending_str = f" for depot(s) {', '.join(pending_ids)}" if pending_ids else ""
-                status_lbl.setText(f"ℹ Steam has updated depots, but keys are pending on Hubcap{pending_str} (cooldown active).")
-                status_lbl.setStyleSheet("color: #FFB74D; font-size: 8.5pt;")
-    except Exception:
-        pass
-    layout.addWidget(status_lbl)
+    status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.55); font-size: 8.5pt; background: transparent; border: none;")
+    status_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    status_lbl.setWordWrap(True)
+    _set_status_raw = status_lbl.setText
+
+    def _set_status(text: str) -> None:
+        # The bar already shows the change count; drop the old "click Sync" nags.
+        text = re.sub(r"\s*Click 'Sync( Changes)?' to apply\.?", "", str(text or "")).strip()
+        _set_status_raw(text)
+        if text:
+            QTimer.singleShot(6000, lambda t=text: _set_status_raw("") if status_lbl.text() == t else None)
+
+    status_lbl.setText = _set_status
 
     # Persistent Bottom Actions Bar
     btn_bar = QFrame()
@@ -478,88 +467,104 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
     bar_lay.setContentsMargins(0, 0, 0, 0)
     bar_lay.setSpacing(8)
 
-    refetch_btn = QPushButton("API Refetch")
-    refetch_btn.setFixedHeight(28)
-    refetch_btn.setStyleSheet("""
+    _btn_base = """
         QPushButton {
-            background-color: rgba(255, 255, 255, 0.07);
+            background-color: rgba(255, 255, 255, 0.05);
             color: rgba(255, 255, 255, 0.9);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 6px;
             font-size: 8.5pt;
             font-weight: 500;
-            padding: 2px 12px;
+            padding: 0 12px;
         }
-        QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.12);
-            border-color: rgba(255, 255, 255, 0.22);
-            color: #FFFFFF;
-        }
-        QPushButton:disabled {
-            background-color: rgba(255, 255, 255, 0.02);
-            color: rgba(255, 255, 255, 0.25);
-            border-color: rgba(255, 255, 255, 0.05);
-        }
-    """)
-
-    unlock_btn = QPushButton("Unlock")
-    unlock_btn.setFixedHeight(28)
-    unlock_btn_style_locked = """
-        QPushButton {
-            background-color: rgba(255, 255, 255, 0.07);
-            color: rgba(255, 255, 255, 0.9);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 4px;
-            font-size: 8.5pt;
-            font-weight: 500;
-            padding: 2px 12px;
-        }
-        QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.12);
-            border-color: rgba(255, 255, 255, 0.22);
-            color: #FFFFFF;
-        }
+        QPushButton:hover { background-color: rgba(255, 255, 255, 0.10); border-color: rgba(255, 255, 255, 0.28); }
+        QPushButton:disabled { background-color: rgba(255, 255, 255, 0.02); color: rgba(255, 255, 255, 0.25);
+            border-color: rgba(255, 255, 255, 0.06); }
     """
-    unlock_btn_style_unlocked = """
+    _btn_attention = """
         QPushButton {
-            background-color: rgba(255, 152, 0, 0.18);
-            color: #ffb74d;
-            border: 1px solid rgba(255, 152, 0, 0.45);
-            border-radius: 4px;
+            background-color: rgba(255, 183, 77, 0.12);
+            color: #FFB74D;
+            border: 1px solid rgba(255, 183, 77, 0.6);
+            border-radius: 6px;
             font-size: 8.5pt;
-            font-weight: bold;
-            padding: 2px 12px;
+            font-weight: 600;
+            padding: 0 12px;
         }
-        QPushButton:hover {
-            background-color: rgba(255, 152, 0, 0.26);
-        }
+        QPushButton:hover { background-color: rgba(255, 183, 77, 0.22); }
+        QPushButton:disabled { background-color: rgba(255, 255, 255, 0.02); color: rgba(255, 255, 255, 0.25);
+            border-color: rgba(255, 255, 255, 0.06); }
     """
-    unlock_btn.setStyleSheet(unlock_btn_style_locked)
 
-    sync_btn = QPushButton("Sync")
-    sync_btn.setFixedHeight(28)
+    refetch_btn = QPushButton("Refetch keys")
+    refetch_btn.setFixedHeight(30)
+    refetch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    refetch_btn.setStyleSheet(_btn_base)
+    refetch_btn.setToolTip("Download the latest keys and manifests for this game from Hubcap.")
+
+    # View / Edit switch (replaces the old Unlock button; same confirmation).
+    unlock_btn = QPushButton("Unlock")  # kept for the code that enables/disables it
+    unlock_btn.setVisible(False)
+    unlock_btn_style_locked = unlock_btn_style_unlocked = ""
+    mode_seg = QFrame()
+    mode_seg.setObjectName("modeSeg")
+    mode_seg.setStyleSheet(
+        "QFrame#modeSeg { border: 1px solid rgba(255,255,255,0.16); border-radius: 6px; background: transparent; }"
+    )
+    seg_lay = QHBoxLayout(mode_seg)
+    seg_lay.setContentsMargins(2, 2, 2, 2)
+    seg_lay.setSpacing(2)
+    view_btn = QPushButton("View")
+    edit_btn = QPushButton("Edit")
+    for b in (view_btn, edit_btn):
+        b.setCheckable(True)
+        b.setFixedHeight(24)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setStyleSheet(f"""
+            QPushButton {{ background: transparent; border: none; border-radius: 4px; padding: 0 12px;
+                color: rgba(255,255,255,0.55); font-size: 8.5pt; }}
+            QPushButton:checked {{ background: rgba(255,255,255,0.12); color: #FFFFFF; font-weight: 600; }}
+            QPushButton:hover:!checked {{ color: {ac}; }}
+        """)
+        seg_lay.addWidget(b)
+    view_btn.setChecked(not is_unlocked)
+    edit_btn.setChecked(is_unlocked)
+    view_btn.setToolTip("Read-only: the switches show what SLSsteam has configured.")
+    edit_btn.setToolTip("Change which apps, depots and keys are in SLSsteam's config.")
+
+    def _sync_mode_seg() -> None:
+        view_btn.setChecked(not is_unlocked)
+        edit_btn.setChecked(is_unlocked)
+
+    view_btn.clicked.connect(lambda: _on_unlock() if is_unlocked else _sync_mode_seg())
+    edit_btn.clicked.connect(lambda: _on_unlock() if not is_unlocked else _sync_mode_seg())
+
+    sync_btn = QPushButton("Save")
+    sync_btn.setFixedHeight(30)
+    sync_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     sync_btn.setStyleSheet(f"""
         QPushButton {{
             background-color: {ac};
             color: #000000;
             border: none;
-            border-radius: 4px;
+            border-radius: 6px;
             font-size: 8.5pt;
             font-weight: bold;
-            padding: 2px 12px;
+            padding: 0 16px;
         }}
-        QPushButton:hover {{
-            background-color: rgba(255, 255, 255, 0.92);
-        }}
+        QPushButton:hover {{ background-color: rgba(255, 255, 255, 0.92); }}
         QPushButton:disabled {{
-            background-color: rgba(255, 255, 255, 0.08);
-            color: rgba(255, 255, 255, 0.25);
+            background-color: rgba(255, 255, 255, 0.06);
+            color: rgba(255, 255, 255, 0.28);
+            border: 1px solid rgba(255, 255, 255, 0.08);
         }}
     """)
+    sync_btn.setEnabled(False)  # lights up only once something changed
 
-    bar_lay.addWidget(refetch_btn, 1)
-    bar_lay.addWidget(unlock_btn, 1)
-    bar_lay.addWidget(sync_btn, 1)
+    bar_lay.addWidget(mode_seg, 0)
+    bar_lay.addWidget(refetch_btn, 0)
+    bar_lay.addWidget(status_lbl, 1)
+    bar_lay.addWidget(sync_btn, 0)
 
     # Non-blocking check of Hubcap token quota (instant cached read + async background refresh)
     try:
@@ -607,9 +612,8 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
         }
     """)
     footer_lay = QVBoxLayout(footer_bar)
-    footer_lay.setContentsMargins(16, 6, 16, 10)
-    footer_lay.setSpacing(6)
-    footer_lay.addWidget(status_lbl)
+    footer_lay.setContentsMargins(14, 8, 14, 8)
+    footer_lay.setSpacing(0)
     footer_lay.addWidget(btn_bar)
 
     tab_layout.addWidget(footer_bar, 0)
@@ -1009,7 +1013,7 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
                             missing_depots_map[nid] = {
                                 "status": "ready_on_hubcap",
                                 "tag": "[Key Ready]",
-                                "tooltip": f"Depot {nid} has an AES decryption key available on Hubcap.\nClick 'API Refetch' to download keys and manifest.",
+                                "tooltip": f"Depot {nid} has an AES decryption key available on Hubcap.\nClick 'Refetch keys' to download it.",
                             }
                         else:
                             missing_depots_map[nid] = {
@@ -1203,25 +1207,33 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
         }
 
     def _update_sync_button_label(state: Dict[str, Any]) -> None:
-        """Check if desired states differ from live config state and update Sync button text."""
-        is_dirty = False
-        for item in state["apps"]:
-            aid = item["id"]
-            if aid in desired_apps and desired_apps[aid] != (aid in state["live_apps"]):
-                is_dirty = True
-                break
-        if not is_dirty:
-            for item in state["depots"]:
-                did = item["id"]
-                if did in desired_depots and desired_depots[did] != (did in state["live_depots"]):
-                    is_dirty = True
-                    break
-        if not is_dirty:
-            for item in state["keys"]:
-                kid = item["id"]
-                if kid in desired_keys and desired_keys[kid] != item["in_config"]:
-                    is_dirty = True
-                    break
+        """Light up Save only when something differs from the live config, and
+        flag Refetch when Hubcap has keys this game is missing."""
+        n_changes = sum(
+            1 for item in state["apps"]
+            if item["id"] in desired_apps and desired_apps[item["id"]] != (item["id"] in state["live_apps"])
+        )
+        n_changes += sum(
+            1 for item in state["depots"]
+            if item["id"] in desired_depots and desired_depots[item["id"]] != (item["id"] in state["live_depots"])
+        )
+        n_changes += sum(
+            1 for item in state["keys"]
+            if item["id"] in desired_keys and desired_keys[item["id"]] != item["in_config"]
+        )
+        is_dirty = n_changes > 0
+
+        ready = {
+            str(item["id"]) for item in (state["depots"] + state["keys"])
+            if str(item.get("missing_tag") or "") == "[Key Ready]"
+        }
+        if refetch_btn.isEnabled() or not refetch_btn.toolTip().startswith(("Daily", "API token")):
+            if ready:
+                refetch_btn.setText(f"Refetch keys \u00b7 {len(ready)} ready")
+                refetch_btn.setStyleSheet(_btn_attention)
+            else:
+                refetch_btn.setText("Refetch keys")
+                refetch_btn.setStyleSheet(_btn_base)
 
         if is_dlc_setup:
             n_sel = sum(
@@ -1231,10 +1243,9 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
             )
             sync_btn.setText(f"Register {n_sel} DLC{'s' if n_sel != 1 else ''}")
             sync_btn.setEnabled(n_sel > 0 or is_dirty)
-        elif is_dirty:
-            sync_btn.setText("Sync Changes")
         else:
-            sync_btn.setText("Sync")
+            sync_btn.setText(f"Save {n_changes} change{'s' if n_changes != 1 else ''}" if is_dirty else "Save")
+            sync_btn.setEnabled(is_dirty)
 
     def _update_bulk_states(state: Dict[str, Any]) -> None:
         """Synchronize the checked state of the bulk Select All / None toggles."""
@@ -1802,15 +1813,15 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
             )
             if reply == ThemedMessageBox.StandardButton.Yes:
                 is_unlocked = True
-                unlock_btn.setText("Unlocked")
-                unlock_btn.setStyleSheet(unlock_btn_style_unlocked)
-                status_lbl.setText("Custom editing unlocked. Switch toggles Green (enable) or Red (disable), then Sync.")
+                _sync_mode_seg()
+                status_lbl.setText("Editing on. Change the switches, then Save.")
                 _refresh_ui()
+            else:
+                _sync_mode_seg()
         else:
             is_unlocked = False
-            unlock_btn.setText("Unlock")
-            unlock_btn.setStyleSheet(unlock_btn_style_locked)
-            status_lbl.setText("Configuration locked.")
+            _sync_mode_seg()
+            status_lbl.setText("")
             _refresh_ui()
 
     def _on_sync():
@@ -2028,15 +2039,14 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
                 parts.append(f"{added_count} added")
             if removed_count:
                 parts.append(f"{removed_count} removed")
-            status_lbl.setText(f"Synced changes: {', '.join(parts)}.")
+            status_lbl.setText(f"Saved: {', '.join(parts)}.")
         else:
-            status_lbl.setText("Configuration is already up to date.")
+            status_lbl.setText("Nothing to save.")
 
         if is_dlc_setup:
             _register_dlc_setup(state, cfg_path, selected_dlc_apps, added_count, removed_count, bool(dlc_data_pending))
             return
 
-        sync_btn.setText("Sync")
         _refresh_ui()
 
     def _register_dlc_setup(state, cfg_path, selected_dlc_apps, added_count, removed_count, used_dlc_data) -> None:
@@ -2139,7 +2149,7 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
 
         reply = ThemedMessageBox.question(
             dialog,
-            "Confirm API Refetch",
+            "Refetch Keys",
             f"This action will consume your daily Hubcap API tokens.\n\n"
             f"You have {remaining}/{daily_limit} tokens remaining.\n\n"
             f"Do you want to continue?",
@@ -2150,7 +2160,7 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
             return
 
         refetch_btn.setEnabled(False)
-        unlock_btn.setEnabled(False)
+        mode_seg.setEnabled(False)
         sync_btn.setEnabled(False)
         status_lbl.setText("Refetching metadata from Hubcap...")
 
@@ -2293,8 +2303,7 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
 
         def _on_done(success: bool, msg: str):
             refetch_btn.setEnabled(True)
-            unlock_btn.setEnabled(True)
-            sync_btn.setEnabled(True)
+            mode_seg.setEnabled(True)
             status_lbl.setText(msg)
             try:
                 st = morrenus_api.get_user_stats(force=True)
@@ -2315,7 +2324,7 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
 
     if is_dlc_setup:
         # Setup flow: no unlock gate, and the manifest was just fetched.
-        unlock_btn.setVisible(False)
+        mode_seg.setVisible(False)
         refetch_btn.setVisible(False)
         status_lbl.setText(
             "Pick the DLCs to add. Steam-owned and unreleased items are greyed out and left untouched."
