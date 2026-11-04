@@ -713,6 +713,8 @@ class FetchManifestDialog(QDialog):
         self.status_label.setText("Search error. Press Enter to retry.")
 
     def on_search(self):
+        if getattr(self, "_selection_busy", False):
+            return
         # Cancel any active background update checks to free up the Steam connection
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
             try:
@@ -1175,6 +1177,7 @@ class FetchManifestDialog(QDialog):
                 selected_branch = branch_choice
             else:
                 self.status_label.setText("Fetch cancelled.")
+                self._end_selection()
                 return
 
         self._discovered_branches = branches or {"public": {}}
@@ -1233,6 +1236,8 @@ class FetchManifestDialog(QDialog):
         threading.Thread(target=_worker, daemon=True).start()
 
     def on_item_double_clicked(self, item):
+        if getattr(self, "_selection_busy", False):
+            return
         self._on_item_clicked(item)
         # Cancel any active background update checks to free up the Steam connection
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
@@ -1270,7 +1275,20 @@ class FetchManifestDialog(QDialog):
 
         aid_str = str(app_id).strip()
         name = game_name or f"App {aid_str}"
+        if not self._begin_selection(aid_str):
+            return
+        try:
+            self._route_game_selection(aid_str, name)
+        except Exception:
+            self._end_selection()
+            raise
+        # Synchronous routes (native flow, backend dialog cancelled) are over
+        # here; the ASSella flow keeps the lock until it finishes.
+        if not getattr(self, "_async_pending", False) and self.isVisible() and self.result() == 0:
+            self._end_selection()
 
+    def _route_game_selection(self, aid_str: str, name: str):
+        self._async_pending = False
         # If in library, redirect to GameLibraryDialog
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
             if self.parent_window.game_manager.get_game(aid_str) is not None:
@@ -1532,6 +1550,7 @@ class FetchManifestDialog(QDialog):
     def _start_assella_flow(self, app_id: str):
         """Standard ASSella downloader flow: branch selection -> manifest fetch -> depot selection."""
         aid_str = str(app_id).strip()
+        self._async_pending = True
         self._toggle_inputs(False)
         self._set_loading_active(True)
         self.status_label.setText("Checking branches...")
@@ -1544,7 +1563,7 @@ class FetchManifestDialog(QDialog):
 
         if error_msg:
             self._handle_error(error_msg)
-            self._toggle_inputs(True)
+            self._end_selection()
             return
 
         logger.info(f"Manifest downloaded: {filepath}")
@@ -1577,7 +1596,14 @@ class FetchManifestDialog(QDialog):
         )
 
     def _on_parse_finished(self, parsed_data, filepath, branch, metadata):
-        self._toggle_inputs(True)
+        self._redownload_pending = False
+        try:
+            self._on_parse_finished_impl(parsed_data, filepath, branch, metadata)
+        finally:
+            if not self._redownload_pending and self.result() == 0:
+                self._end_selection()
+
+    def _on_parse_finished_impl(self, parsed_data, filepath, branch, metadata):
         self._set_loading_active(False)
 
         if parsed_data and parsed_data.get("depots") and parsed_data.get("appid"):
@@ -1602,6 +1628,7 @@ class FetchManifestDialog(QDialog):
                     logger.debug(f"Could not remove corrupt zip {filepath}: {_del_err}")
 
                 self.status_label.setText("Re-downloading manifests...")
+                self._redownload_pending = True
                 self._toggle_inputs(False)
                 self._set_loading_active(True)
                 worker = self.task_runner.run(self.check_and_download_manifest, app_id, branch)
@@ -1845,8 +1872,28 @@ class FetchManifestDialog(QDialog):
     # --------------------------
 
     def _toggle_inputs(self, enabled: bool):
+        # While a game is being loaded, nothing else (a live search finishing,
+        # a search error) may unlock the list; only _end_selection() does.
+        if enabled and getattr(self, "_selection_busy", False):
+            return
         self.search_input.setEnabled(enabled)
         self.results_list.setEnabled(enabled)
+
+    def _begin_selection(self, app_id: str) -> bool:
+        """Lock the dialog to one game. False when another game is already loading."""
+        if getattr(self, "_selection_busy", False):
+            logger.info(f"Ignoring selection of {app_id}: {self._selection_busy} is still loading")
+            return False
+        if hasattr(self, "_live_search_timer"):
+            self._live_search_timer.stop()
+        self._search_generation += 1  # results of a search still running are dropped
+        self._toggle_inputs(False)
+        self._selection_busy = str(app_id)
+        return True
+
+    def _end_selection(self) -> None:
+        self._selection_busy = False
+        self._toggle_inputs(True)
 
     def _handle_error(self, message):
         logger.error(f"Operation failed: {message}")
@@ -1857,7 +1904,7 @@ class FetchManifestDialog(QDialog):
     def on_task_error(self, error_info):
         _, error_value, _ = error_info
         self._handle_error(str(error_value))
-        self._toggle_inputs(True)
+        self._end_selection()
 
     def _stop_active_image_fetchers(self):
         """Safely stops all running image fetchers and cancels pending timers."""

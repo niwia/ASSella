@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
     """Main application window."""
 
     refresh_system_status_signal = pyqtSignal()
+    plugin_check_ready_signal = pyqtSignal(list)
     notify_sls_watcher_crashed_signal = pyqtSignal()
     # Signal used to safely invoke a callable on the main thread from a background thread.
     # Using a typed signal instead of Q_ARG(object, fn) avoids PyQt6 GIL/metatype crashes.
@@ -69,6 +70,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.refresh_system_status_signal.connect(self.refresh_system_status)
+        self.plugin_check_ready_signal.connect(self._on_plugin_check_ready)
         self.notify_sls_watcher_crashed_signal.connect(self.notify_sls_filewatcher_crashed)
         self._main_thread_callable.connect(self._run_on_main_thread)
         self._steamdb_verified = False
@@ -303,15 +305,14 @@ class MainWindow(QMainWindow):
                 logger.debug(f"SLS binary boot version check skipped/failed: {e}")
             run_boot_config_check()
 
-            # Plugin check (background thread): retired / remotely disabled
-            # plugins go to .bak; at most every 6 hours the signed manifest is
-            # refreshed and unmodified family plugins are updated.
+            # Plugin check (background thread): only works out what would
+            # change (retired / remotely disabled plugins, missing family
+            # plugins, updates). The user is asked before anything happens.
             try:
-                from utils.plugin_manager import autodeploy_lobster_if_needed, run_plugin_maintenance
-                report = run_plugin_maintenance()
-                if report.get("updated") or report.get("archived"):
-                    logger.info(f"Plugin check: updated {report.get('updated')}, archived {report.get('archived')}")
-                autodeploy_lobster_if_needed()
+                from utils.plugin_manager import plan_plugin_maintenance
+                actions = plan_plugin_maintenance()
+                if actions:
+                    self.plugin_check_ready_signal.emit(actions)
             except Exception as e:
                 logger.debug(f"Plugin boot check skipped/failed: {e}")
 
@@ -356,6 +357,24 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(4000, self._check_legacy_plugins_startup)
         else:
             QTimer.singleShot(1500, self._check_legacy_plugins_startup)
+
+    def _on_plugin_check_ready(self, actions: list) -> None:
+        """Ask the user what to do about the plugin check findings."""
+        try:
+            from ui.dialogs.plugin_check_dialog import PluginCheckDialog
+            from utils.plugin_manager import apply_plugin_actions, snooze_plugin_actions
+
+            dlg = PluginCheckDialog(actions, parent=self, accent_color=getattr(self, "accent_color", "#a1c9fd"))
+            dlg.exec()
+            if dlg.choice == "apply":
+                chosen = dlg.selected()
+                for msg in apply_plugin_actions(chosen):
+                    logger.info(f"[PluginCheck] {msg}")
+                snooze_plugin_actions(dlg.unselected())  # unticked = declined
+            elif dlg.choice == "never":
+                snooze_plugin_actions(actions)
+        except Exception as e:
+            logger.warning(f"[MainWindow] Plugin check prompt failed: {e}")
 
     def _check_legacy_plugins_startup(self) -> None:
         """Check for legacy or foreign plugins on startup and prompt user if needed."""

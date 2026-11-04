@@ -1058,7 +1058,9 @@ def deploy_all_plugins(force_download: bool = False, only_if_missing: bool = Fal
     """
     ensure_sls_plugin_config_sections()
     fetch_plugins_manifest(force_refresh=True)
-    enforce_plugin_policy(deploy_replacements=False)
+    if not only_if_missing:
+        # Explicit "deploy all" from the user: retire old plugins too.
+        enforce_plugin_policy(deploy_replacements=False)
 
     retired = get_retired_plugins()
     active_interceptor = get_active_interceptor_filename() or get_settings().value("selected_download_plugin", "") or ""
@@ -1087,21 +1089,9 @@ def deploy_all_plugins(force_download: bool = False, only_if_missing: bool = Fal
 
 
 def autodeploy_lobster_if_needed() -> bool:
-    """Auto-deploy lobster.lua only if AT0-M mode is enabled, not user-disabled, and lobster.lua is missing."""
-    try:
-        from utils.yaml_config_manager import is_at0m_enabled
-        if not is_at0m_enabled() or is_plugin_user_disabled("lobster.lua"):
-            return False
-        if get_plugin_status("lobster.lua") != "missing":
-            return False
-        logger.info("[PluginManager] AT0-M enabled and lobster.lua missing. Autodeploying lobster.lua...")
-        ok, _skipped, msg = deploy_plugin("lobster.lua", only_if_missing=True)
-        if not ok:
-            logger.warning(f"[PluginManager] Failed autodeploying lobster.lua: {msg}")
-        return ok
-    except Exception as exc:
-        logger.warning(f"[PluginManager] Exception during autodeploy_lobster_if_needed: {exc}")
-        return False
+    """Deprecated: a missing Lobster is now offered in the startup plugin
+    check (plan_plugin_maintenance) instead of being installed silently."""
+    return False
 
 
 def sync_plugins_if_enabled() -> bool:
@@ -1109,56 +1099,135 @@ def sync_plugins_if_enabled() -> bool:
     return True
 
 
-def run_plugin_maintenance(force: bool = False) -> Dict[str, Any]:
-    """Background check, run from the startup workflow.
+def _snoozed(settings, key: str, fingerprint: str) -> bool:
+    return str(settings.value(f"plugin_prompt_snooze/{key}", "") or "") == fingerprint
 
-    Always (offline, cheap): archive retired / disabled plugins.
-    At most every 6 hours (or with ``force``): refresh the manifest, apply it,
-    and update installed family plugins that are unmodified ASSella installs.
-    A plugin the user edited is never touched.
+
+def plan_plugin_maintenance(force: bool = False) -> List[Dict[str, Any]]:
+    """What the startup plugin check would change, without changing anything.
+
+    Each action: {"id", "kind", "plugin", "title", "detail", "default"} where
+    kind is "archive" (retired / disabled by the manifest), "install" (a
+    family plugin that is missing), or "update" (a newer published version;
+    files the user edited are offered but unticked). The user decides; see
+    apply_plugin_actions().
     """
-    report: Dict[str, Any] = {"checked": False, "archived": [], "updated": [], "skipped": []}
     if is_plugin_check_bypassed():
-        return report
+        return []
+    try:
+        from utils.yaml_config_manager import is_at0m_enabled
+        if not is_at0m_enabled():
+            return []
+    except Exception:
+        return []
+
     settings = get_settings()
     now = time.time()
     try:
         last = float(settings.value("plugin_manifest_last_check", 0) or 0)
     except (TypeError, ValueError):
         last = 0.0
+    if force or now - last >= BACKGROUND_CHECK_INTERVAL:
+        fetch_plugins_manifest(force_refresh=True)
+        if get_manifest_source() == "remote":
+            settings.setValue("plugin_manifest_last_check", now)
+    else:
+        fetch_plugins_manifest()
 
-    if not force and now - last < BACKGROUND_CHECK_INTERVAL:
-        report["archived"] = enforce_plugin_policy(deploy_replacements=False)
-        return report
-
-    fetch_plugins_manifest(force_refresh=True)
-    report["checked"] = True
-    if get_manifest_source() == "remote":
-        settings.setValue("plugin_manifest_last_check", now)
-    report["archived"] = enforce_plugin_policy(deploy_replacements=True)
-    if get_manifest_source() != "remote":
-        return report
-
-    try:
-        from utils.yaml_config_manager import is_at0m_enabled
-        if not is_at0m_enabled():
-            return report
-    except Exception:
-        return report
+    actions: List[Dict[str, Any]] = []
+    retired = get_retired_plugins()
+    manifest = _memo.get("data") or {}
+    entries = manifest.get("plugins") or {}
+    seen = set()
+    for tdir in get_sls_plugins_dirs():
+        if not tdir.is_dir():
+            continue
+        for p in sorted(tdir.glob("*.lua")):
+            if not p.is_file() or p.name in seen:
+                continue
+            seen.add(p.name)
+            if p.name in retired:
+                repl = retired[p.name]
+                actions.append({
+                    "id": f"archive:{p.name}", "kind": "archive", "plugin": p.name, "default": True,
+                    "title": f"Retire {p.name}" + (f" (replaced by {repl})" if repl else ""),
+                    "detail": "It is moved to .bak, not deleted.",
+                })
+            elif isinstance(entries.get(p.name), dict) and entries[p.name].get("deployable") is False:
+                actions.append({
+                    "id": f"archive:{p.name}", "kind": "archive", "plugin": p.name, "default": True,
+                    "title": f"Turn off {p.name}",
+                    "detail": str(entries[p.name].get("disabled_reason") or "Disabled by the plugin manifest.")
+                              + " It is moved to .bak, not deleted.",
+                })
 
     published = _published_hashes()
-    for name in sorted(KATAMARI_FAMILY_PLUGINS | {"download.lua"}):
-        if get_plugin_status(name) != "outdated" or is_plugin_user_disabled(name):
+    for name in sorted(KATAMARI_FAMILY_PLUGINS):
+        if is_plugin_user_disabled(name) or not is_plugin_deployable(name)[0]:
             continue
-        path = _find_plugin_file(name)
-        local_sha = (calculate_sha256(path) or "").lower() if path else ""
-        recorded = str(settings.value(f"plugin_deployed_sha/{name}", "") or "").lower()
-        if local_sha and (local_sha in published or local_sha == recorded):
-            ok, _skipped, msg = deploy_plugin(name)
-            (report["updated"] if ok else report["skipped"]).append(name if ok else f"{name}: {msg}")
+        status = get_plugin_status(name)
+        info = entries.get(name) or {}
+        ver = info.get("version")
+        if status == "missing" and name in ("lobster.lua",) + tuple(FALLBACK_REQUIRED_PLUGINS):
+            actions.append({
+                "id": f"install:{name}", "kind": "install", "plugin": name, "default": True,
+                "title": f"Install {info.get('name') or name}" + (f" {ver}" if ver else ""),
+                "detail": str(info.get("description") or "Part of the plugin family, not installed."),
+            })
+        elif status == "outdated" and get_manifest_source() == "remote":
+            path = _find_plugin_file(name)
+            local_sha = (calculate_sha256(path) or "").lower() if path else ""
+            recorded = str(settings.value(f"plugin_deployed_sha/{name}", "") or "").lower()
+            edited = not (local_sha and (local_sha in published or local_sha == recorded))
+            actions.append({
+                "id": f"update:{name}", "kind": "update", "plugin": name, "default": not edited,
+                "title": f"Update {info.get('name') or name}" + (f" to {ver}" if ver else ""),
+                "detail": ("Your copy has local changes. " if edited else "")
+                          + "The current file is kept as .bak.",
+            })
+
+    # Drop what the user already declined for exactly this situation.
+    fingerprint = str(manifest.get("serial") or manifest.get("updated_at") or "")
+    return [a for a in actions if not _snoozed(settings, a["id"], fingerprint)]
+
+
+def snooze_plugin_actions(actions: List[Dict[str, Any]]) -> None:
+    """Remember that the user declined these, until the manifest changes."""
+    settings = get_settings()
+    manifest = _memo.get("data") or {}
+    fingerprint = str(manifest.get("serial") or manifest.get("updated_at") or "")
+    for a in actions:
+        settings.setValue(f"plugin_prompt_snooze/{a['id']}", fingerprint)
+
+
+def apply_plugin_actions(actions: List[Dict[str, Any]]) -> List[str]:
+    """Carry out the actions the user ticked. Returns one message per action."""
+    results = []
+    for a in actions:
+        name = a["plugin"]
+        if a["kind"] == "archive":
+            done = False
+            for tdir in get_sls_plugins_dirs():
+                p = tdir / name
+                if p.is_file() and _archive(p, "Archived on request"):
+                    done = True
+            results.append(f"{name}: moved to .bak" if done else f"{name}: nothing to move")
         else:
-            report["skipped"].append(f"{name}: modified locally")
-            logger.info(f"[PluginManager] {name} differs from every published version; leaving it alone")
+            ok, _skipped, msg = deploy_plugin(name)
+            results.append(msg)
+    return results
+
+
+def run_plugin_maintenance(force: bool = False) -> Dict[str, Any]:
+    """Non-interactive check for scripts and tests: plans, then applies only the
+    safe defaults. ASSella itself asks the user (plan + apply)."""
+    actions = [a for a in plan_plugin_maintenance(force=force) if a["default"]]
+    report: Dict[str, Any] = {"checked": True, "archived": [], "updated": [], "skipped": []}
+    for a, msg in zip(actions, apply_plugin_actions(actions)):
+        if a["kind"] == "archive":
+            report["archived"].append(a["plugin"])
+        else:
+            report["updated"].append(a["plugin"])
     return report
 
 

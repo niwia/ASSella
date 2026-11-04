@@ -590,7 +590,7 @@ class NativeSteamDownloadTask(QObject):
         try:
             from utils.plugin_manager import deploy_all_plugins
             self.progress.emit("[Native Steam] Checking required plugins from Cloud...")
-            ok, msgs = deploy_all_plugins()
+            ok, msgs = deploy_all_plugins(only_if_missing=True)  # never replace the user's files mid-download
             for m in msgs:
                 logger.info(f"[NativeSteamDL] {m}")
             return ok

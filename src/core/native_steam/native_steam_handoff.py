@@ -130,7 +130,7 @@ def deploy_bundled_plugins(plugins_dir: Path) -> bool:
     """Deploy the Katamari plugin family (interceptor, Styx, Katamari, Lobster, Lettuce) on demand."""
     try:
         from utils.plugin_manager import deploy_all_plugins
-        ok, msgs = deploy_all_plugins()
+        ok, msgs = deploy_all_plugins(only_if_missing=True)  # never replace the user's files mid-download
         for m in msgs:
             logger.info(f"[SteamHandoff] {m}")
         return ok
