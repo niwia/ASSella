@@ -188,7 +188,7 @@ class GameDetailsDialogV2(QDialog):
 
         self.setWindowTitle(f"{game_data.get('game_name', 'Game')} — Details")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setMinimumSize(560, 440)
+        self.setMinimumSize(560, 360)
         self.resize(680, 540)
         self.setModal(True)
 
@@ -236,6 +236,22 @@ class GameDetailsDialogV2(QDialog):
         main_win = parent.main_window if hasattr(parent, "main_window") else None
         if main_win and hasattr(main_win, "progress_bar"):
             main_win.progress_bar.valueChanged.connect(self._on_main_progress_changed)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not getattr(self, "_fitted_once", False):
+            self._fitted_once = True
+            QTimer.singleShot(0, self._fit_to_info_tab)
+
+    def _fit_to_info_tab(self):
+        """Open just tall enough for the Info tab (no empty band under it)."""
+        inner = getattr(self, "_info_inner", None)
+        if inner is None or self.isMaximized():
+            return
+        content_h = inner.layout().sizeHint().height() if inner.layout() else inner.sizeHint().height()
+        chrome = self.height() - self.stacked.height()
+        target = max(self.minimumHeight(), min(640, chrome + content_h + 4))
+        self.resize(self.width(), target)
 
     def _on_main_progress_changed(self, value):
         try:

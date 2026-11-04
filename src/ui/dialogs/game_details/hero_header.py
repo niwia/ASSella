@@ -85,30 +85,39 @@ def _mode_logo_pixmap(is_atom: bool, size: int = 18) -> QPixmap:
 
 
 def get_installed_date(dialog) -> str:
-    """When the game was installed / last updated: the ACF's LastUpdated, else
-    the install folder's modification time."""
+    """When the installed build was installed.
+
+    ASSella installs: the newest depot manifest DepotDownloader wrote into
+    .DepotDownloader (the same files the update check reads). AT0-M: the
+    Steam manifest's LastUpdated. Nothing found: empty (no guessing from
+    folder dates, which change for unrelated reasons).
+    """
     import os
     import re
     from datetime import datetime
 
     ts = 0
-    try:
-        from utils.steam_acf import find_appmanifest_path
-
-        acf = find_appmanifest_path(dialog.game_data, str(dialog.appid))
-        if acf and os.path.isfile(acf):
-            with open(acf, "r", encoding="utf-8", errors="ignore") as f:
-                m = re.search(r'"LastUpdated"\s+"(\d+)"', f.read())
-            if m:
-                ts = int(m.group(1))
-    except Exception:
-        ts = 0
+    path = dialog.game_data.get("install_path")
+    if path and not _is_atom_game(dialog):
+        ddm = os.path.join(path, ".DepotDownloader")
+        try:
+            for f in os.listdir(ddm):
+                if f.endswith(".manifest"):
+                    ts = max(ts, int(os.path.getmtime(os.path.join(ddm, f))))
+        except OSError:
+            pass
     if not ts:
-        path = dialog.game_data.get("install_path")
-        for cand in (os.path.join(path, ".DepotDownloader") if path else None, path):
-            if cand and os.path.exists(cand):
-                ts = int(os.path.getmtime(cand))
-                break
+        try:
+            from utils.steam_acf import find_appmanifest_path
+
+            acf = find_appmanifest_path(dialog.game_data, str(dialog.appid))
+            if acf and os.path.isfile(acf):
+                with open(acf, "r", encoding="utf-8", errors="ignore") as f:
+                    m = re.search(r'"LastUpdated"\s+"(\d+)"', f.read())
+                if m:
+                    ts = int(m.group(1))
+        except Exception:
+            ts = 0
     if not ts:
         return ""
     return datetime.fromtimestamp(ts).strftime("%d %b %Y")
@@ -166,7 +175,7 @@ def init_hero_v2(dialog, root) -> None:
     top_row.setSpacing(10)
     left_col = QVBoxLayout()
     left_col.setContentsMargins(0, 0, 0, 0)
-    left_col.setSpacing(1)
+    left_col.setSpacing(0)
 
     name_row = QHBoxLayout()
     name_row.setSpacing(8)
@@ -196,7 +205,7 @@ def init_hero_v2(dialog, root) -> None:
     dialog.appid_lbl.setToolTip("Copy AppID")
     dialog.appid_lbl.setStyleSheet(
         "QPushButton { background: transparent; border: none; padding: 0; text-align: left;"
-        " color: rgba(255,255,255,0.6); font-size: 8.5pt; font-style: italic; }"
+        " color: rgba(255,255,255,0.55); font-size: 11.5pt; font-style: italic; }"
         f"QPushButton:hover {{ color: {dialog.accent_color}; text-decoration: underline; }}"
     )
 
@@ -219,8 +228,6 @@ def init_hero_v2(dialog, root) -> None:
         lambda: QDesktopServices.openUrl(QUrl(f"https://www.protondb.com/app/{dialog.appid}"))
     )
     dialog._proton_badge_btn = dialog._proton_badge_lbl
-    right_badge_col.addWidget(dialog._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
-    right_badge_col.addStretch()
     top_row.addLayout(right_badge_col, 0)
     banner_layout.addLayout(top_row)
 
@@ -264,12 +271,15 @@ def init_hero_v2(dialog, root) -> None:
     snip_row.addWidget(dialog.build_val_lbl)
 
     date_str = get_installed_date(dialog)
-    dialog.date_val_lbl = _snippet(f"Installed {date_str}" if date_str else "Install date unknown", "Installed / last updated")
+    dialog.date_val_lbl = _snippet(f"Installed {date_str}" if date_str else "Install date unknown",
+                                   "When the installed build was installed")
     dialog.date_val_lbl.setEnabled(False)
     snip_row.addWidget(dialog.date_val_lbl)
+    snip_row.addWidget(dialog._proton_badge_lbl)  # ProtonDB tier, as a snippet
     snip_row.addStretch(1)
     for w in (dialog.size_val_lbl, dialog.date_val_lbl):
         w.setStyleSheet(w.styleSheet() + " QPushButton:disabled { color: #E8E8EE; }")
+    banner_layout.addSpacing(6)
     banner_layout.addLayout(snip_row)
 
     # Kept for older callers; no longer shown.
@@ -399,7 +409,7 @@ def update_title(dialog) -> None:
                     border: 1px solid {p_border};
                     border-radius: 4px;
                     padding: 2px 8px;
-                    font-size: 8pt;
+                    font-size: 8.5pt;
                     font-weight: bold;
                     letter-spacing: 0.5px;
                     outline: none;
@@ -422,7 +432,7 @@ def update_title(dialog) -> None:
                     border: 1px solid #4B5563;
                     border-radius: 4px;
                     padding: 2px 8px;
-                    font-size: 8pt;
+                    font-size: 8.5pt;
                     font-weight: bold;
                     letter-spacing: 0.5px;
                     outline: none;

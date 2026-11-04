@@ -156,12 +156,11 @@ def init_info_tab(dialog) -> None:
     dialog.branch_combo = CenteredComboBox()
     dialog.branch_combo.addItem(f"{saved_b} ({installed_bid})" if (installed_bid and not is_vapor_mode) else saved_b, saved_b)
     dialog.branch_combo.setFixedHeight(26)
-    dialog.branch_combo.setFixedWidth(200)
     dialog.branch_combo.setMaxVisibleItems(5)
     if is_vapor_mode:
         dialog.branch_combo.setEnabled(False)
         dialog.branch_combo.setToolTip("Branch selection is disabled for AT0-M games.")
-    actions_row.addWidget(dialog.branch_combo, 0)
+    actions_row.addWidget(dialog.branch_combo, 1)  # equal halves with the action button
 
     dialog.validate_btn = ProgressButton("Verify Build" if is_vapor_mode else "Verify Files", dialog)
     dialog.validate_btn.setFixedHeight(26)
@@ -281,11 +280,10 @@ def init_info_tab(dialog) -> None:
             dialog.settings.setValue(f"exclude_from_update_all/{dialog.appid}", is_exc)
 
     dialog.update_all_tile.clicked.connect(lambda: _update_all_toggled(dialog.update_all_tile.isChecked()))
-    hidden_layout.addWidget(dialog.update_all_tile)
+    top_tiles_layout.addWidget(dialog.update_all_tile, 1)
 
     dialog.uninstall_tile = _build_uninstall_tile(dialog, is_vapor_mode)
     top_tiles_layout.addWidget(dialog.uninstall_tile, 1)
-    top_tiles_layout.addStretch(1)  # three tiles, left-aligned in a four-tile grid
 
     lay.addWidget(top_tiles_widget)
     lay.addWidget(hidden_tiles)
@@ -345,14 +343,13 @@ def init_info_tab(dialog) -> None:
 
     dialog.eos_tile = SwitchTile("EOS Proxy", "Inactive", dialog, is_toggle=True)
     dialog.eos_tile.setVisible(False)
-    eos_row.addWidget(dialog.eos_tile)
+    dialog.bottom_tiles_layout.addWidget(dialog.eos_tile)
 
     dialog.eos_exp_tile = SwitchTile("EOS Experimental", "", dialog, is_toggle=False)
     dialog.eos_exp_tile.setEnabled(False)
     dialog.eos_exp_tile.setToolTip("Experimental EOS proxy (coming later)")
     dialog.eos_exp_tile.setVisible(False)
-    eos_row.addWidget(dialog.eos_exp_tile)
-    eos_row.addStretch(1)
+    eos_row.addWidget(dialog.eos_exp_tile)  # not offered yet; stays hidden
     dialog.bottom_tiles_layout.addStretch(1)
     for _t in (dialog.sls_tile, dialog.netsock_tile, dialog.eos_tile, dialog.eos_exp_tile):
         _t.update_state(False, dialog.accent_color)
@@ -451,6 +448,7 @@ def init_info_tab(dialog) -> None:
 
     lay.addWidget(vapor_actions_widget)
     lay.addStretch(1)
+    dialog._info_inner = inner
 
     dialog.validate_btn.clicked.connect(lambda: on_validate_btn_clicked(dialog))
     dialog.branch_combo.currentIndexChanged.connect(lambda: on_branch_combo_changed(dialog))
@@ -1536,9 +1534,10 @@ def update_eos_btn_state(dialog) -> None:
     # game ships EOS.
     if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
         dialog.netsock_tile.setVisible(True)
-    for _t in ("eos_tile", "eos_exp_tile"):
-        if hasattr(dialog, _t) and getattr(dialog, _t):
-            getattr(dialog, _t).setVisible(status != "none")
+    if hasattr(dialog, "eos_tile") and dialog.eos_tile:
+        dialog.eos_tile.setVisible(status != "none")
+    if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
+        dialog.eos_exp_tile.setVisible(False)  # EOS Experimental is not available yet
 
     # Update EOS Proxy button state if applicable
     if status != "none" and hasattr(dialog, "eos_tile") and dialog.eos_tile:
