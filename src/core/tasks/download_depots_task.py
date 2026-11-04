@@ -157,6 +157,8 @@ class DownloadDepotsTask(QObject):
                 self._current_depot_downloaded_bytes = 0
                 self._current_depot_uncompressed_bytes = 0
                 self._current_depot_errors = 0
+                self._dl_phase_start = 0.0
+                self._dl_phase_end = 0.0
                 depot_start_time = time.time()
 
                 # Determine creation flags for Windows to hide the console window
@@ -403,20 +405,23 @@ class DownloadDepotsTask(QObject):
                             from utils import auto_tune as _auto_tune
                             used_n = _auto_tune.get_cmd_concurrency(current_cmd, self._auto_cap)
                             wire_bytes = self._current_depot_downloaded_bytes
-                            if not _auto_tune.should_learn(wire_bytes):
+                            t0 = getattr(self, "_dl_phase_start", 0.0) or depot_start_time
+                            t1 = getattr(self, "_dl_phase_end", 0.0) or time.time()
+                            dl_secs = max(0.0, t1 - t0)
+                            if not _auto_tune.should_learn(wire_bytes, dl_secs):
                                 logger.debug(
                                     f"[DownloadDepotsTask] Auto-tune: depot {depot_id} "
-                                    f"moved {wire_bytes} wire bytes — validation-only, holding N={used_n}"
+                                    f"moved {wire_bytes} wire bytes in {dl_secs:.1f}s — too small to learn, holding N={used_n}"
                                 )
                                 self.progress.emit(
-                                    f"Auto-tune: depot {depot_id} validation-only, holding at "
+                                    f"Auto-tune: depot {depot_id} too small to measure, holding at "
                                     f"{used_n} (cap {self._auto_cap})."
                                 )
                             else:
-                                elapsed = max(0.0, time.time() - depot_start_time)
-                                speed_bps = self._smooth_speed_bps
-                                if speed_bps <= _auto_tune.SPEED_EPS_BPS and elapsed > 0 and wire_bytes > 0:
-                                    speed_bps = wire_bytes / elapsed
+                                # Real network speed: bytes that crossed the wire during
+                                # the download phase only (reused/validated bytes and the
+                                # planning phase are not network work).
+                                speed_bps = wire_bytes / dl_secs
                                 next_n = _auto_tune.record_result(
                                     get_settings(),
                                     self._auto_best_key,
@@ -702,7 +707,10 @@ class DownloadDepotsTask(QObject):
             or "failed to find any server with chunk" in lower_line
         ):
             self._current_depot_errors += 1
+        if line.strip().startswith("Downloading depot ") and not getattr(self, "_dl_phase_start", 0.0):
+            self._dl_phase_start = time.time()  # planning/validation is over
         if "total downloaded:" in lower_line:
+            self._dl_phase_end = time.time()
             if "from 0 depots" in lower_line and "0 bytes" in lower_line:
                 self._current_depot_zero_downloaded = True
             m_wire = re.search(r"total downloaded:\s*(\d+)\s*bytes", lower_line)
