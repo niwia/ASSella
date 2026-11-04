@@ -34,10 +34,21 @@ logger = logging.getLogger(__name__)
 
 def create_tools_tab(dialog) -> QWidget:
     """Create the Tools settings tab."""
+    from PyQt6.QtWidgets import QScrollArea
+
     tab = QWidget()
-    layout = QVBoxLayout(tab)
-    layout.setContentsMargins(12, 10, 12, 10)
-    layout.setSpacing(8)
+    tab_lay = QVBoxLayout(tab)
+    tab_lay.setContentsMargins(0, 0, 0, 0)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+    tab_lay.addWidget(scroll)
+    content = QWidget()
+    content.setStyleSheet("background: transparent;")
+    scroll.setWidget(content)
+    layout = QVBoxLayout(content)
+    layout.setContentsMargins(12, 10, 16, 14)
+    layout.setSpacing(14)
 
     # Tools Card
     tools_card, tools_layout = dialog._create_card_frame("Tools")
@@ -198,6 +209,7 @@ def create_sls_logging_card(dialog):
     from utils.yaml.sls_settings import LOG_LEVEL_PRESETS, LOGGING_SETTINGS
 
     card, lay = dialog._create_card_frame("SLSsteam Logging")
+    lay.setSpacing(12)
     binder = SlsConfigBinder(card)
     dialog.sls_logging_binder = binder
     muted = "color: rgba(255, 255, 255, 0.55); font-size: 8.5pt; background: transparent;"
@@ -212,16 +224,10 @@ def create_sls_logging_card(dialog):
     def _row(title: str, hint: str, control, status):
         row = QHBoxLayout()
         row.setSpacing(12)
-        text = QVBoxLayout()
-        text.setSpacing(1)
         t = _QLabel(title)
-        t.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 600; background: transparent;")
-        h = _QLabel(hint)
-        h.setWordWrap(True)
-        h.setStyleSheet(muted)
-        text.addWidget(t)
-        text.addWidget(h)
-        row.addLayout(text, 1)
+        t.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; background: transparent;")
+        t.setToolTip(hint)
+        row.addWidget(t, 1)
         row.addWidget(status, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(row)

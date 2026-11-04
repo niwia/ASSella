@@ -246,7 +246,10 @@ class GameDetailsDialogV2(QDialog):
         if not getattr(self, "_fitted_once", False):
             self._fitted_once = True
             self._full_height = max(self.height(), self.FULL_HEIGHT)
-            QTimer.singleShot(0, lambda: self._fit_height_for_tab(self.stacked.currentIndex(), animate=False))
+            # Fit now, and again once late content (branches, EOS, badges) has
+            # settled; the window manager may also resize the window on map.
+            for delay in (0, 300, 1200):
+                QTimer.singleShot(delay, lambda: self._fit_height_for_tab(self.stacked.currentIndex(), animate=False))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -266,7 +269,7 @@ class GameDetailsDialogV2(QDialog):
         return max(self.minimumHeight(), min(self._full_height, chrome + content_h + 4))
 
     def _fit_height_for_tab(self, index: int, animate: bool = True) -> None:
-        if getattr(self, "_user_sized", False) or self.isMaximized() or not hasattr(self, "stacked"):
+        if self.isMaximized() or not hasattr(self, "stacked"):
             return
         # Hidden pages must not hold the window open at their size.
         for i in range(self.stacked.count()):

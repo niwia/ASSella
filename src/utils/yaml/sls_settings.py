@@ -52,8 +52,6 @@ class SlsSetting:
 ADVANCED_SETTINGS: List[SlsSetting] = [
     SlsSetting("DisableFamilyShareLock", "Disable Family Share lock", "bool", "Library & licences",
                "Stops Family Share from locking your library while someone else plays."),
-    SlsSetting("UseWhitelist", "Use AppIds as a whitelist", "bool", "Library & licences",
-               "Unlock only the AppIds listed, instead of everything except them."),
     SlsSetting("DisableUpdates", "Disable updates for added apps", "bool", "Library & licences",
                "Stops Steam updating games added through AdditionalApps."),
     SlsSetting("DisableCloud", "Disable cloud saves", "bool", "Library & licences",
@@ -69,8 +67,6 @@ ADVANCED_SETTINGS: List[SlsSetting] = [
                maximum=0xFF, flags=((0x1, "SteamDRM"), (0x2, "Denuvo"))),
     SlsSetting("MaxSchemaTries", "Achievement schema tries", "int", "Games & DRM",
                "How often to fetch achievement schemas from Steam's CDN (0 = off).", maximum=1000),
-    SlsSetting("SteamIdOverride", "SteamID override", "str", "Games & DRM",
-               "SteamID games see. Blank = automatic, 0 = from the cached ticket."),
     SlsSetting("IdleStatus.AppId", "Idle status AppID", "int", "Profile",
                "Custom in-game status. 0 turns it off."),
     SlsSetting("IdleStatus.Title", "Idle status title", "str", "Profile",
