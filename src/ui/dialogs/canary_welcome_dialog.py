@@ -84,6 +84,7 @@ class CanaryWelcomeDialog(QDialog):
     _sls_check_signal = pyqtSignal(bool, dict)
     _headcrab_done_signal = pyqtSignal()
     _config_check_signal = pyqtSignal(tuple)
+    _at0m_deploy_signal = pyqtSignal(bool, str)
 
     def __init__(self, parent: Optional[QWidget] = None, manual: bool = False):
         super().__init__(parent)
@@ -114,6 +115,7 @@ class CanaryWelcomeDialog(QDialog):
         self._sls_check_signal.connect(self._on_sls_check_result)
         self._headcrab_done_signal.connect(self._on_headcrab_finished)
         self._config_check_signal.connect(self._on_config_check_result)
+        self._at0m_deploy_signal.connect(self._on_at0m_deploy_done)
 
         self._init_ui()
 
@@ -1089,33 +1091,127 @@ class CanaryWelcomeDialog(QDialog):
             "border-radius: 4px; padding: 2px 7px;"
         )
 
-    def _on_at0m_toggled(self, checked: bool) -> None:
-        self.settings.setValue("enable_at0m", checked)
-        self.settings.setValue("enable_vapor", checked)
+    # at0-m toggle: on = set Plugins: yes and deploy the plugin family (from
+    # R2, or the plugins packed with ASSella when R2 is unreachable); off =
+    # put the plugins folder and config.yaml back as they were before.
+
+    def _at0m_feedback(self, text: str, error: bool = False) -> None:
+        color = self.semantic.get("error", "#E57373") if error else self.semantic.get("success", "#81c784")
+        self.lbl_at0m_feedback.setStyleSheet(f"font-size: 9pt; color: {color}; border: none; background: transparent;")
+        self.lbl_at0m_feedback.setText(text)
+        self.lbl_at0m_feedback.show()
+
+    def _set_at0m_state(self, enabled: bool) -> None:
+        self.settings.setValue("enable_at0m", enabled)
+        self.settings.setValue("enable_vapor", enabled)
         self.settings.sync()
-
         if hasattr(self, "lbl_at0m_badge"):
-            self.lbl_at0m_badge.setText("ENABLED" if checked else "DISABLED")
-            self.lbl_at0m_badge.setStyleSheet(self._at0m_badge_style(checked))
+            self.lbl_at0m_badge.setText("ENABLED" if enabled else "DISABLED")
+            self.lbl_at0m_badge.setStyleSheet(self._at0m_badge_style(enabled))
+        if self.toggle_enable_at0m.isChecked() != enabled:
+            self.toggle_enable_at0m.blockSignals(True)
+            self.toggle_enable_at0m.setChecked(enabled)
+            self.toggle_enable_at0m.blockSignals(False)
 
-        if checked:
+    def _take_at0m_snapshot(self, cfg_path: Path) -> dict:
+        from utils.yaml_config_manager import get_sls_plugins_dirs
+
+        snap = {"config": (cfg_path, cfg_path.read_bytes()), "plugins": {}}
+        for d in get_sls_plugins_dirs():
+            files = {}
+            if d.is_dir():
+                for f in d.iterdir():
+                    if f.is_file() and (f.name.endswith(".lua") or f.name.endswith(".lua.bak")):
+                        files[f.name] = f.read_bytes()
+            snap["plugins"][d] = (d.is_dir(), files)
+        return snap
+
+    def _restore_at0m_snapshot(self) -> None:
+        snap = getattr(self, "_at0m_snapshot", None)
+        if not snap:
+            return
+        for d, (existed, files) in snap["plugins"].items():
+            if not d.is_dir():
+                continue
+            for f in list(d.iterdir()):
+                if f.is_file() and (f.name.endswith(".lua") or f.name.endswith(".lua.bak")) and f.name not in files:
+                    f.unlink()
+            for name, data in files.items():
+                target = d / name
+                if not target.is_file() or target.read_bytes() != data:
+                    target.write_bytes(data)
+            if not existed and not any(d.iterdir()):
+                d.rmdir()
+        cfg_path, data = snap["config"]
+        if cfg_path.is_file():
+            with open(cfg_path, "wb") as f:  # in place: SLSsteam watches this inode
+                f.write(data)
+        self._at0m_snapshot = None
+
+    def _on_at0m_toggled(self, checked: bool) -> None:
+        if not checked:
             try:
-                from core.steam_helpers import get_steam_env
-                from utils.yaml_config_manager import deploy_all_sls_plugins, update_yaml_boolean_value
-                env = get_steam_env()
-                if env.sls_config_path.exists():
-                    update_yaml_boolean_value(env.sls_config_path, "Plugins", True)
-                ok, msgs = deploy_all_sls_plugins()
-                if ok:
-                    self.lbl_at0m_feedback.setText("✓ Plugins injected & Plugins: yes enabled in config.yaml.")
-                else:
-                    self.lbl_at0m_feedback.setText(f"Plugins notice: {msgs}")
+                self._restore_at0m_snapshot()
+                self._at0m_feedback("at0-m disabled. Plugins and config.yaml were put back as they were.")
             except Exception as e:
-                self.lbl_at0m_feedback.setText(f"Deployment error: {e}")
-            self.lbl_at0m_feedback.show()
-        else:
-            self.lbl_at0m_feedback.setText("at0-m disabled.")
-            self.lbl_at0m_feedback.show()
+                logger.warning(f"[Onboarding] Could not revert at0-m setup: {e}")
+                self._at0m_feedback(f"at0-m disabled, but undoing the setup failed: {e}", error=True)
+            self._set_at0m_state(False)
+            return
+
+        from core.steam_helpers import get_steam_env
+
+        cfg_path = get_steam_env().sls_config_path
+        if not cfg_path.exists():
+            self._set_at0m_state(False)
+            self._at0m_feedback(
+                "SLSsteam isn't set up yet (no config.yaml), so at0-m can't be enabled. "
+                "Install SLSsteam first, then turn this on.",
+                error=True,
+            )
+            return
+
+        try:
+            self._at0m_snapshot = self._take_at0m_snapshot(cfg_path)
+        except Exception as e:
+            self._set_at0m_state(False)
+            self._at0m_feedback(f"Could not read the SLSsteam folders: {e}", error=True)
+            return
+
+        self._set_at0m_state(True)
+        self.toggle_enable_at0m.setEnabled(False)
+        self._at0m_feedback("Installing plugins...")
+
+        def _work():
+            try:
+                from utils.yaml_config_manager import deploy_all_sls_plugins, update_yaml_boolean_value
+
+                update_yaml_boolean_value(cfg_path, "Plugins", True)
+                ok, msgs = deploy_all_sls_plugins()
+                problems = "" if ok else "\n".join(str(m) for m in msgs if "fail" in str(m).lower() or "could not" in str(m).lower())
+                self._at0m_deploy_signal.emit(ok, problems)
+            except Exception as e:
+                self._at0m_deploy_signal.emit(False, str(e))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    @pyqtSlot(bool, str)
+    def _on_at0m_deploy_done(self, ok: bool, problems: str) -> None:
+        self.toggle_enable_at0m.setEnabled(True)
+        if ok:
+            self._at0m_feedback("Plugins installed and Plugins: yes set in config.yaml.")
+            return
+        # Neither R2 nor the packed plugins worked: undo and say why.
+        try:
+            self._restore_at0m_snapshot()
+        except Exception as e:
+            logger.warning(f"[Onboarding] Could not revert after failed deploy: {e}")
+        self._set_at0m_state(False)
+        self._at0m_feedback(
+            "Could not install the plugins (the plugin server was unreachable and the copies packed with "
+            f"ASSella could not be used), so at0-m was left off.\n{problems}".rstrip(),
+            error=True,
+        )
 
     def _advance_to_preferences(self) -> None:
         self.stack.setCurrentIndex(4)

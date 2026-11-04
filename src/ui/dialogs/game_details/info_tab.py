@@ -2374,6 +2374,73 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
         refresh_dlcdata_btn_text(dialog)
 
 
+def _atom_move_summary(game_name: str, res: dict) -> str:
+    """The message shown after a successful move to AT0-M."""
+    depots = res.get("depots_count", 0)
+    keys = res.get("keys_count", 0)
+    lines = [
+        f"'{game_name}' is now an AT0-M game.",
+        "",
+        f"Added {depots} depot{'s' if depots != 1 else ''} and {keys} decryption key{'s' if keys != 1 else ''} "
+        "to SLSsteam's config.",
+    ]
+    excluded = res.get("excluded_depots") or []
+    if excluded:
+        lines += [
+            "",
+            f"Left out {len(excluded)} depot{'s' if len(excluded) != 1 else ''} with no decryption key "
+            f"(Hubcap has none yet): {', '.join(str(d) for d in excluded)}. "
+            "Steam cannot download them without a key; add them from the Depots tab once Hubcap has one.",
+        ]
+    if res.get("marker_retained"):
+        lines += ["", f"Note: {res.get('marker_retained_reason') or 'the ASSella marker was kept for a retry.'}"]
+    lines += [
+        "",
+        "Next: restart Steam. It verifies the existing files and adds the game to your library.",
+        "To use a beta branch, pick it afterwards in the game's Properties in Steam.",
+    ]
+    return "\n".join(lines)
+
+
+def _run_atom_move_with_progress(dialog, game_data: dict, game_name: str) -> dict:
+    """Run migrate_game_to_atom off the GUI thread behind the progress card."""
+    from PyQt6.QtCore import QEventLoop, QThread, pyqtSignal
+
+    from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+    from utils.plugin_games import migrate_game_to_atom
+
+    class _MoveWorker(QThread):
+        done = pyqtSignal(dict)
+
+        def run(self):
+            try:
+                res = migrate_game_to_atom(
+                    game_data, settings=dialog.settings, auto_revert_goldberg=True, auto_revert_eos=True
+                )
+            except Exception as e:  # never leave the card up
+                logger.exception(f"[AtomMove] Move of {game_name} crashed")
+                res = {"success": False, "error": str(e)}
+            self.done.emit(res)
+
+    progress = ThemedProgressDialog(f"Moving {game_name} to AT0-M...", None, 0, 0, dialog)
+    worker = _MoveWorker(dialog)
+    loop = QEventLoop()
+    result: dict = {}
+
+    def _finished(res: dict) -> None:
+        result.update(res)
+        loop.quit()
+
+    worker.done.connect(_finished)
+    progress.show()
+    worker.start()
+    loop.exec()
+    worker.wait()
+    progress.close()
+    worker.deleteLater()
+    return result
+
+
 def on_move_to_vapor_clicked(dialog) -> None:
     game_data = dialog.game_data
     appid = str(dialog.appid)
@@ -2422,7 +2489,19 @@ def on_move_to_vapor_clicked(dialog) -> None:
     # Check for AT0-M readiness and complications before moving
     from utils.plugin_games import can_use_atom_mode, detect_migration_complications, migrate_game_to_atom
 
-    can_atom, atom_err = can_use_atom_mode()
+    can_atom, atom_err = can_use_atom_mode(auto_seed=False)
+    if not can_atom and "section" in atom_err:
+        # Only the AdditionalDepots / DecryptionKeys sections are missing: offer to add them.
+        fix = ThemedMessageBox.question(
+            dialog,
+            "SLSsteam Config Needs Sections",
+            f"{atom_err}.\n\nAdd the missing AdditionalDepots and DecryptionKeys sections to config.yaml now?",
+            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes,
+        )
+        if fix != ThemedMessageBox.StandardButton.Yes:
+            return
+        can_atom, atom_err = can_use_atom_mode(auto_seed=True)
     if not can_atom:
         ThemedMessageBox.warning(
             dialog,
@@ -2443,31 +2522,26 @@ def on_move_to_vapor_clicked(dialog) -> None:
         reply = ThemedMessageBox.question(
             dialog,
             "Move to AT0-M",
-            f"Are you sure you want to convert '{game_name}' to AT0-M (Steam Native)?\n\n"
-            "• ACCELA marker folders (.DepotDownloader) will be removed.\n"
-            "• Required AppID, DepotIDs, and DecryptionKeys will be registered in SLSsteam config.\n"
-            "• Updates will be handled natively by Steam client instead of ACCELA.\n\n"
-            "Do you want to proceed?",
+            f"Move '{game_name}' to AT0-M (Steam Native)?\n\n"
+            "• Its depots and decryption keys are added to SLSsteam's config.yaml.\n"
+            "• The .DepotDownloader folder in the install is removed.\n"
+            "• Steam handles updates for it from now on, instead of ASSella.\n\n"
+            "Steam is told to verify the existing files after a restart; nothing is downloaded again.",
             ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
             ThemedMessageBox.StandardButton.No,
         )
         if reply != ThemedMessageBox.StandardButton.Yes:
             return
 
-    res = migrate_game_to_atom(
-        game_data,
-        settings=dialog.settings,
-        auto_revert_goldberg=True,
-        auto_revert_eos=True,
-    )
+    res = _run_atom_move_with_progress(dialog, game_data, game_name)
 
     if not res.get("success"):
         ThemedMessageBox.critical(
             dialog,
-            "Migration Failed",
-            f"'{game_name}' could not be converted to AT0-M:\n\n"
+            "Move Failed",
+            f"'{game_name}' was not moved to AT0-M.\n\n"
             f"{res.get('error', 'Unknown error')}\n\n"
-            "The game was left as an ASSella install. See the log for details.",
+            "It is still an ASSella install. See the log for details.",
         )
         return
 
@@ -2478,23 +2552,7 @@ def on_move_to_vapor_clicked(dialog) -> None:
     game_data["source"] = "at0-m"
     game_data["update_status"] = "at0m"
 
-    info_msg = (
-        f"'{game_name}' has been successfully moved to AT0-M (Steam Native) mode.\n"
-        f"Registered {res.get('depots_count', 0)} depot(s) and {res.get('keys_count', 0)} decryption key(s) into SLSsteam.\n\n"
-        "Please restart Steam now so Steam client can adopt the game files and update your library.\n\n"
-        "After restarting, select your desired branch (Public/Beta/etc.) in Steam's library view."
-    )
-    if res.get("excluded_depots"):
-        info_msg += (
-            f"\n\nNote: Depot(s) {', '.join(str(d) for d in res['excluded_depots'])} lacked decryption keys "
-            "and were excluded from AdditionalDepots to prevent Steam download errors."
-        )
-
-    ThemedMessageBox.information(
-        dialog,
-        "Moved to AT0-M",
-        info_msg,
-    )
+    ThemedMessageBox.information(dialog, "Moved to AT0-M", _atom_move_summary(game_name, res))
 
     # Close dialog and refresh parent
     dialog.accept()

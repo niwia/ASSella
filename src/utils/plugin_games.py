@@ -1201,7 +1201,7 @@ def detect_migration_complications(game_data: Dict[str, Any], settings: Any = No
     }
 
 
-def can_use_atom_mode(config_path: Optional[Path] = None) -> Tuple[bool, str]:
+def can_use_atom_mode(config_path: Optional[Path] = None, auto_seed: bool = True) -> Tuple[bool, str]:
     """Check whether the environment is ready for AT0-M mode.
 
     Verifies:
@@ -1223,8 +1223,10 @@ def can_use_atom_mode(config_path: Optional[Path] = None) -> Tuple[bool, str]:
     if not cfg_path.exists():
         return False, f"SLSsteam config not found at {cfg_path}"
 
-    # Auto-seed required sections if config exists
-    ensure_sls_plugin_config_sections(cfg_path)
+    # Seed required sections only when the caller allows it; otherwise the
+    # missing sections are reported so the user can choose.
+    if auto_seed:
+        ensure_sls_plugin_config_sections(cfg_path)
 
     if not get_yaml_boolean_value(cfg_path, "Plugins", default=False):
         return False, "Plugins are not enabled in SLSsteam config ('Plugins: yes' missing or false)"
@@ -1244,6 +1246,53 @@ def can_use_atom_mode(config_path: Optional[Path] = None) -> Tuple[bool, str]:
             return False, "No active download interceptor plugin (e.g. download.lua or SpaceBunny) is deployed"
 
     return True, ""
+
+
+def refetch_missing_keys(appid: str, depot_ids: List[str]) -> Dict[str, str]:
+    """Fetch a fresh Hubcap bundle for ``appid`` when Hubcap actually has keys
+    for some of ``depot_ids``; returns {depot_id: key} for the ones found.
+
+    The Hubcap key index is checked first: when it is loaded and lists none of
+    the depots as available, nothing is downloaded (there is nothing to get).
+    If the index cannot be loaded, the fetch is tried anyway.
+    """
+    wanted = [str(d) for d in depot_ids if str(d) not in SHARED_REDISTS]
+    if not wanted:
+        return {}
+    try:
+        from core.hubcap_key_index import STATE_AVAILABLE, get_index
+
+        index = get_index(allow_network=True)
+        if index.loaded:
+            available = [d for d in wanted if index.state(d) == STATE_AVAILABLE]
+            if not available:
+                logger.info(f"[PluginGames] Hubcap has no keys for {wanted}; skipping refetch for {appid}")
+                return {}
+            wanted = available
+    except Exception as e:
+        logger.debug(f"[PluginGames] Hubcap key index unavailable, refetching anyway: {e}")
+
+    found: Dict[str, str] = {}
+    try:
+        from core import morrenus_api
+
+        zip_res, _ = morrenus_api.download_manifest(appid, force_update=True)
+        if zip_res and os.path.exists(zip_res):
+            fresh_keys: Dict[str, str] = {}
+            with zipfile.ZipFile(zip_res, "r") as zf:
+                for name in zf.namelist():
+                    if name.endswith(".lua"):
+                        lua_txt = zf.read(name).decode("utf-8", errors="ignore")
+                        for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_txt):
+                            fresh_keys[m.group(1)] = m.group(2).lower()
+            if fresh_keys:
+                from managers.depot_key_manager import DepotKeyManager
+
+                DepotKeyManager.get_instance().save_depot_keys(appid, fresh_keys)
+                found = {d: k for d, k in fresh_keys.items() if d in wanted}
+    except Exception as e:
+        logger.warning(f"[PluginGames] Key refetch for {appid} failed: {e}")
+    return found
 
 
 def migrate_game_to_atom(
@@ -1276,17 +1325,8 @@ def migrate_game_to_atom(
     installdir = game_data.get("installdir") or game_data.get("game_name") or ""
     install_path = _resolve_install_path(game_data)
 
-    # 1. Goldberg & EOS Reversion (undo before Steam inspects/adopts files)
-    if auto_revert_goldberg and install_path:
-        if not revert_goldberg_if_applied(install_path):
-            return {
-                "success": False,
-                "error": "Goldberg files could not be fully restored; the AT0-M migration was stopped and ASSella markers were kept.",
-            }
-    if auto_revert_eos and install_path:
-        revert_eos_proxy_if_applied(install_path)
-
-    # 2. Check DLC-only mode
+    # 1. Work out depots and keys first; nothing on disk changes until the
+    #    config check below has passed.
     from utils.dlc_helpers import get_saved_depot_selection, is_dlc_only_mode, resolve_dlc_mapping_for_selection
 
     is_dlc = is_dlc_only_mode(appid_str) or bool(game_data.get("is_dlc_only"))
@@ -1313,37 +1353,19 @@ def migrate_game_to_atom(
             if (d in depot_ids or d in dlc_appids or d == appid_str)
         }
 
-        # Emergency fetch if any DLC depot lacks a key
+        # Refetch keys Hubcap has for DLC depots that lack one
         missing_keys = [d for d in depot_ids if d not in decryption_keys]
         if missing_keys:
-            try:
-                from core import morrenus_api
-
-                zip_res, _ = morrenus_api.download_manifest(appid_str, force_update=True)
-                if zip_res and os.path.exists(zip_res):
-                    fresh_keys = {}
-                    with zipfile.ZipFile(zip_res, "r") as zf:
-                        for name in zf.namelist():
-                            if name.endswith(".lua"):
-                                lua_txt = zf.read(name).decode("utf-8", errors="ignore")
-                                for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_txt):
-                                    did_f, k_f = m.group(1), m.group(2).lower()
-                                    fresh_keys[did_f] = k_f
-                    if fresh_keys:
-                        from managers.depot_key_manager import DepotKeyManager
-
-                        DepotKeyManager.get_instance().save_depot_keys(appid_str, fresh_keys)
-                        for d_f, k_f in fresh_keys.items():
-                            if d_f in depot_ids or d_f in dlc_appids or d_f == appid_str:
-                                decryption_keys[d_f] = k_f
-            except Exception as e:
-                logger.warning(f"[PluginGames] DLC emergency key fetch failed: {e}")
+            decryption_keys.update(refetch_missing_keys(appid_str, missing_keys))
     else:
         # Full game: inject all depots and keys from Hubcap bundle without smart depot filtering
         dlc_appids = []
         depot_ids, decryption_keys, depot_names = collect_game_depots_and_keys(
             appid_str, game_data=game_data, allow_hubcap_fetch=True
         )
+        missing_keys = [d for d in depot_ids if d not in decryption_keys and d not in SHARED_REDISTS]
+        if missing_keys:
+            decryption_keys.update(refetch_missing_keys(appid_str, missing_keys))
 
 
     # 3. Guard against unkeyed depots (safely exclude from AdditionalDepots to prevent Steam DepotWithoutKey)
@@ -1372,6 +1394,18 @@ def migrate_game_to_atom(
             "success": False,
             "error": f"SLSsteam config.yaml not found at {cfg_path} - migration aborted, nothing was changed",
         }
+
+    # 4a. Goldberg & EOS reversion, now that the move can go ahead (undo
+    #     before Steam inspects/adopts the files).
+    if auto_revert_goldberg and install_path:
+        if not revert_goldberg_if_applied(install_path):
+            return {
+                "success": False,
+                "error": "Goldberg files could not be fully restored; the move was stopped before "
+                         "SLSsteam's config was changed.",
+            }
+    if auto_revert_eos and install_path:
+        revert_eos_proxy_if_applied(install_path)
 
     registered = register_plugin_game(
         appid=appid_str,

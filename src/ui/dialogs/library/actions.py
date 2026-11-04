@@ -1043,25 +1043,20 @@ class LibraryActionsMixin:
             self._clear_selection()
             self._refresh_game_list()
 
+            n = len(migrated)
+            parts = [f"Moved {n} game{'s' if n != 1 else ''} to AT0-M."]
             if failed:
-                warning_parts = [f"Successfully registered {len(migrated)} game(s) in AT0-M."]
-                if failed:
-                    failed_str = "\n".join(f"• {f['name']}: {f.get('reason', 'Failed')}" for f in failed[:8])
-                    if len(failed) > 8:
-                        failed_str += f"\n• ...and {len(failed) - 8} more."
-                    warning_parts.append(f"Skipped/failed games:\n{failed_str}")
-                ThemedMessageBox.warning(
-                    self._dialog_parent(),
-                    "AT0-M Migration Completed with Warnings",
-                    "\n\n".join(warning_parts),
-                )
-            else:
-                ThemedMessageBox.information(
-                    self._dialog_parent(),
-                    "AT0-M Migration Complete",
-                    f"Successfully moved all {len(migrated)} game(s) to AT0-M mode!\n\n"
-                    "SLSsteam configuration has been written and reloaded.",
-                )
+                failed_str = "\n".join(f"• {f['name']}: {f.get('reason', 'Failed')}" for f in failed[:8])
+                if len(failed) > 8:
+                    failed_str += f"\n• ...and {len(failed) - 8} more."
+                parts.append(f"Not moved (still ASSella installs):\n{failed_str}")
+            if n:
+                parts.append("Next: restart Steam. It verifies the existing files and adds the games to your library.")
+            (ThemedMessageBox.warning if failed else ThemedMessageBox.information)(
+                self._dialog_parent(),
+                "Move to AT0-M Finished" if failed else "Moved to AT0-M",
+                "\n\n".join(parts),
+            )
 
             markers_retained = result.get("markers_retained", [])
             if markers_retained:
