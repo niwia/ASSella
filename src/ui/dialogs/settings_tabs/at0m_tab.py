@@ -628,7 +628,8 @@ def create_at0m_tab(dialog) -> QWidget:
     def _update_subwidget_states(enabled: bool):
         if getattr(dialog, "at0m_disable_updates_checkbox", None):
             dialog.at0m_disable_updates_checkbox.setEnabled(enabled)
-        dialog.at0m_download_action_combo.setEnabled(enabled)
+        if getattr(dialog, "at0m_download_action_combo", None) is not None:  # Downloads page may not be built yet
+            dialog.at0m_download_action_combo.setEnabled(enabled)
         dialog.at0m_start_mode_combo.setEnabled(enabled)
         dialog.at0m_dlc_action_combo.setEnabled(enabled)
         deploy_card.setEnabled(enabled)
@@ -647,10 +648,14 @@ def create_at0m_tab(dialog) -> QWidget:
             ensure_sls_plugin_config_sections(cfg_path)
 
         _update_subwidget_states(checked)
-        combo = dialog.at0m_download_action_combo
-        idx = combo.findData("ask" if checked else "assella")
-        if idx >= 0:
-            combo.setCurrentIndex(idx)
+        combo = getattr(dialog, "at0m_download_action_combo", None)
+        if combo is not None:
+            idx = combo.findData("ask" if checked else "assella")
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        elif not checked:
+            for k in ("at0m_default_download_action", "vapor_default_download_action", "native_steam_default_action"):
+                dialog.settings.setValue(k, "assella")
 
     dialog.enable_at0m_checkbox.toggled.connect(_on_enable_at0m_toggled)
     _update_subwidget_states(dialog.enable_at0m_checkbox.isChecked())

@@ -344,7 +344,36 @@ class SettingsDialog(QDialog):
                 self._tabs: dict[str, int] = {}
                 self.currentChanged = nav_list.currentRowChanged
 
+            def addLazyTab(self, label, build):
+                """Register a page that is built the first time it is shown."""
+                holder = QWidget()
+                lay = QVBoxLayout(holder)
+                lay.setContentsMargins(0, 0, 0, 0)
+                holder._lazy_build = build
+                return self.addTab(holder, label)
+
+            def ensure_built(self, index):
+                holder = self._stack.widget(index)
+                build = getattr(holder, "_lazy_build", None)
+                if build is None:
+                    return
+                holder._lazy_build = None
+                self._capture = holder
+                try:
+                    build()
+                except Exception:
+                    import logging as _lg
+                    _lg.getLogger(__name__).exception("[Settings] Building page %s failed", self.tabText(index))
+                finally:
+                    self._capture = None
+                self._dialog._after_page_built(self.tabText(index))
+
             def addTab(self, widget, label):
+                capture = getattr(self, "_capture", None)
+                if capture is not None:
+                    # A lazy page's creator adding its real widget: put it in the holder.
+                    capture.layout().addWidget(widget)
+                    return self._stack.indexOf(capture)
                 idx = self._stack.addWidget(widget)
                 item = QListWidgetItem(label)
                 item.setFont(self._nav.font())
@@ -365,6 +394,7 @@ class SettingsDialog(QDialog):
                 return self._stack.widget(index)
 
             def setCurrentIndex(self, index):
+                self.ensure_built(index)
                 self._nav.setCurrentRow(index)
                 self._stack.setCurrentIndex(index)
 
@@ -412,7 +442,8 @@ class SettingsDialog(QDialog):
 
         self.tab_widget = _TabShim(self._nav_list, self._page_stack, self)
 
-        # Wire navigation clicks
+        # Wire navigation clicks (build a lazy page before it is shown)
+        self._nav_list.currentRowChanged.connect(self.tab_widget.ensure_built)
         self._nav_list.currentRowChanged.connect(self._page_stack.setCurrentIndex)
 
         content_widget = QWidget()
@@ -448,30 +479,39 @@ class SettingsDialog(QDialog):
         return card, card_layout
 
     def _setup_tabs(self) -> None:
-        """Initialize and add all settings tabs."""
-        tabs.create_assela_tab(self)
-        tabs.create_downloads_tab(self)
-        tabs.create_advanced_tab(self)
-        tabs.create_morrenus_tab(self)
-        create_sls_tab(self)
-        tabs.create_at0m_tab(self)
-        tabs.create_health_tab(self)
-        tabs.create_tools_tab(self)
-        tabs.create_style_tab(self)
+        """Register all settings pages. Each is built the first time it is opened,
+        so opening Settings only pays for the page it lands on."""
+        add = self.tab_widget.addLazyTab
+        add("ASSella", lambda: tabs.create_assela_tab(self))
+        add("Downloads", lambda: tabs.create_downloads_tab(self))
+        add("Advanced", lambda: tabs.create_advanced_tab(self))
+        add("Integrations", lambda: tabs.create_morrenus_tab(self))
+        add("SLS", lambda: create_sls_tab(self))
+        add("at0-m", lambda: tabs.create_at0m_tab(self))
+        add("Health", lambda: tabs.create_health_tab(self))
+        add("Tools", lambda: tabs.create_tools_tab(self))
+        add("Theme", lambda: tabs.create_style_tab(self))
 
         # Modular Settings tab unlocked via Konami cheat code
         if self.settings.value("konami_settings_unlocked", False, type=bool):
-            tabs.create_mrc_settings_tab(self)
+            add("Testing", lambda: tabs.create_mrc_settings_tab(self))
 
         # LuaTools Settings tab unlocked via search secret keyword
         if self.settings.value("luatools_unlocked", False, type=bool):
-            self.tab_widget.addTab(tabs.create_luatools_tab(self), "LuaTools")
+            add("LuaTools", lambda: self.tab_widget.addTab(tabs.create_luatools_tab(self), "LuaTools"))
 
         # Tab changed listener
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
-        # Initialize button state after all tabs have been populated
-        self._update_achievements_button_state()
+    def _after_page_built(self, label: str) -> None:
+        """Wiring that needs widgets from a page, run once that page exists."""
+        try:
+            self._update_achievements_button_state()
+        except Exception:
+            pass
+        if self.experimental_acf_independent_checkbox is None or getattr(self, "_acf_gate_done", False):
+            return
+        self._acf_gate_done = True
 
         # Sanity check: Check SLS requirements to enable/disable experimental_acf_independent_checkbox
         try:

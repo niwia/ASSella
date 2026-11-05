@@ -442,6 +442,8 @@ def on_titlebar_position_changed(dialog, state: int) -> None:
 
 
 def save_style_settings(dialog) -> bool:
+    if getattr(dialog, "accent_color_button", None) is None:
+        return True  # Theme page was never opened: nothing to save
     acc_s = dialog.accent_color_button.styleSheet()
     bg_s = dialog.bg_color_button.styleSheet()
     u_accent = acc_s.split("background-color: ")[1].split(";")[0]

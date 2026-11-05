@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path  # noqa: TC003 - needed at runtime to resolve annotations (527bd57)
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils.yaml.core import _atomic_write, _create_backup
