@@ -762,20 +762,37 @@ class SettingsDialog(QDialog):
                 f"An error occurred while saving settings:\n{e}\n\nSee log file for details."
             )
 
+    # Settings has no Save / Cancel buttons: every way of closing it (the
+    # power button, Esc, the window manager) saves. QDialog.closeEvent() calls
+    # reject() on a visible dialog, so closing used to save and then
+    # immediately run the "cancel" revert below, silently undoing the Hubcap
+    # key, title bar position, Remember origins, Simplify Denuvo, ignore
+    # online fixes, Workshop downloader, All games online and title bar
+    # search changes. All three paths now go through accept().
     def closeEvent(self, event) -> None:
         """Save settings and ensure no worker thread outlives this dialog."""
-        self._save_all_settings()
-        self._stop_background_workers()
-        super().closeEvent(event)
+        if self.isVisible() and not getattr(self, "_closing_saved", False):
+            self.accept()
+        event.accept()
 
     def accept(self) -> None:
         """Save all settings and close."""
+        if getattr(self, "_closing_saved", False):
+            return
+        self._closing_saved = True
         self._save_all_settings()
         self._stop_background_workers()
+        if hasattr(self, "_origins_movie") and self._origins_movie:
+            self._origins_movie.stop()
+            self._origins_movie = None
         super().accept()
 
     def reject(self) -> None:
-        """Revert settings on cancel."""
+        """Esc / close: same as accept (there is no Cancel)."""
+        self.accept()
+
+    def _revert_to_original(self) -> None:
+        """Undo the live-applied settings. Unused while Settings has no Cancel button."""
         self._stop_background_workers()
         self.settings.setValue("morrenus_api_key", self._original_morrenus_key)
         self.settings.setValue("titlebar_position", self._original_titlebar_position)
@@ -811,7 +828,6 @@ class SettingsDialog(QDialog):
 
         if hasattr(self, "service_poll_timer") and self.service_poll_timer:
             self.service_poll_timer.stop()
-        super().reject()
 
     def _save_general_settings(self) -> None:
         if hasattr(self, "api_key_input") and self.api_key_input is not None:
