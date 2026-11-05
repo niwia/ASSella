@@ -102,6 +102,26 @@ def benchmark_mrc_provider(provider: str) -> Tuple[bool, int, str]:
     return (ok, elapsed_ms, err)
 
 
+_SMALL_BTN = (
+    "QPushButton { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);"
+    " border-radius: 6px; color: #E8E8EE; font-size: 8.5pt; font-weight: 500; padding: 4px 12px; min-height: 22px; }"
+    "QPushButton:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.28); }"
+    "QPushButton:disabled { color: rgba(255,255,255,0.3); }"
+)
+_LINK_BTN = (
+    "QPushButton {{ background: transparent; border: none; color: {accent}; font-size: 8.5pt;"
+    " font-weight: 600; padding: 2px 0; text-align: left; }}"
+    "QPushButton:hover {{ text-decoration: underline; }}"
+)
+
+
+def set_key_status(label: QLabel, text: str, kind: str = "muted") -> None:
+    """Small status text next to a key field: ok | bad | warn | muted."""
+    color = {"ok": "#81C784", "bad": "#E57373", "warn": "#FFB74D"}.get(kind, "rgba(255,255,255,0.5)")
+    label.setText(text)
+    label.setStyleSheet(f"color: {color}; font-size: 8.5pt; font-weight: 600; background: transparent;")
+
+
 def create_api_key_setting(
     dialog,
     label: str,
@@ -109,121 +129,149 @@ def create_api_key_setting(
     setting_key: str,
     help_url: Optional[str] = None,
     help_text: Optional[str] = None,
+    hubcap_sync: Optional[bool] = None,
+    on_test=None,
 ) -> Tuple[QVBoxLayout, QLineEdit]:
-    """Create an API key input field with Get API Key, Show, and Paste buttons in a row below."""
+    """An API key row: masked field (first 5 characters visible), Show / Paste,
+    a link to get a key, an optional Test button, and (for Hubcap) AT0-M Sync.
+
+    The key is written to QSettings as it changes. ``on_test(key, status_label,
+    button)`` runs when Test is pressed.
+    """
+    from ui.widgets.api_key_field import ApiKeyField
+
+    if hubcap_sync is None:
+        hubcap_sync = setting_key == "morrenus_api_key"
+    accent = getattr(dialog, "accent_color", "#a1c9fd")
+
     layout = QVBoxLayout()
     layout.setSpacing(6)
 
-    lbl = QLabel(label)
-    lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
-    layout.addWidget(lbl)
+    head = QHBoxLayout()
+    head.setSpacing(8)
+    lbl = QLabel(label.rstrip(":"))
+    lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 600; border: none; background: transparent;")
+    head.addWidget(lbl)
+    head.addStretch(1)
+    status = QLabel("")
+    head.addWidget(status)
+    layout.addLayout(head)
 
-    api_key_input = QLineEdit()
-    api_key_input.setPlaceholderText(placeholder)
-    api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-    current_key = dialog.settings.value(setting_key, "", type=str)
-    api_key_input.setText(current_key)
-    layout.addWidget(api_key_input)
+    if help_text:
+        hint = QLabel(help_text)
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: rgba(255,255,255,0.55); font-size: 8.5pt; background: transparent;")
+        layout.addWidget(hint)
 
-    btn_row = QHBoxLayout()
-    btn_row.setSpacing(8)
-
-    if help_url:
-        get_key_btn = QPushButton("Get API Key")
-        get_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        get_key_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(help_url)))
-        btn_row.addWidget(get_key_btn)
+    field_row = QHBoxLayout()
+    field_row.setSpacing(6)
+    api_key_input = ApiKeyField(placeholder=placeholder, accent=accent)
+    api_key_input.setText(dialog.settings.value(setting_key, "", type=str))
+    field_row.addWidget(api_key_input, 1)
 
     toggle_btn = QPushButton("Show")
+    toggle_btn.setStyleSheet(_SMALL_BTN)
     toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     toggle_btn.clicked.connect(lambda: toggle_api_key_visibility(api_key_input, toggle_btn))
-    btn_row.addWidget(toggle_btn)
+    field_row.addWidget(toggle_btn)
 
     paste_btn = QPushButton("Paste")
+    paste_btn.setStyleSheet(_SMALL_BTN)
     paste_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    field_row.addWidget(paste_btn)
+    layout.addLayout(field_row)
 
-    from utils.sls_lua_config import (
-        generate_hubcap_timestamp,
-        get_hubcap_key_conf_path,
-        sync_hubcap_api_key,
-    )
+    foot = QHBoxLayout()
+    foot.setSpacing(12)
+    if help_url:
+        get_key_btn = QPushButton("Get an API key \u2197")
+        get_key_btn.setStyleSheet(_LINK_BTN.format(accent=accent))
+        get_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        get_key_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(help_url)))
+        foot.addWidget(get_key_btn)
+    if on_test is not None:
+        test_btn = QPushButton("Test key")
+        test_btn.setStyleSheet(_SMALL_BTN)
+        test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_btn.clicked.connect(lambda: on_test(api_key_input.key(), status, test_btn))
+        foot.addWidget(test_btn)
+    foot.addStretch(1)
 
-    is_sync_on = dialog.settings.value("atom_hubcap_sync_enabled", False, type=bool)
-    atom_sync_toggle = SwitchToggle(
-        checked=is_sync_on,
-        active_color=dialog.accent_color,
-        width=38,
-        height=20,
-    )
-
-    sync_lbl = QLabel("AT0-M Sync")
-    sync_lbl.setToolTip(
-        "Keep the Hubcap API key in ASSella and in katamari.conf.lua (used by the AT0-M plugins) the same; "
-        "the newer one wins."
-    )
-
-    conf_exists = get_hubcap_key_conf_path().is_file()
-    if not conf_exists:
-        atom_sync_toggle.setEnabled(False)
-        atom_sync_toggle.setReadOnly(True)
-        sync_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.35); font-size: 8.5pt; font-weight: 500; margin-left: 6px;")
-        atom_sync_toggle.setToolTip(
-            "AT0-M Sync needs katamari.conf.lua. Save the plugin settings in Settings -> AT0-M -> Advanced first."
+    sync_state = {"toggle": None}
+    if hubcap_sync:
+        from utils.sls_lua_config import (
+            generate_hubcap_timestamp,
+            get_hubcap_key_conf_path,
+            sync_hubcap_api_key,
         )
-    else:
-        atom_sync_toggle.setEnabled(True)
-        sync_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.85); font-size: 8.5pt; font-weight: 500; margin-left: 6px;")
 
-    def _on_sync_toggled(checked: bool):
-        dialog.settings.setValue("atom_hubcap_sync_enabled", checked)
-        if checked:
-            synced, msg = sync_hubcap_api_key(dialog.settings)
+        is_sync_on = dialog.settings.value("atom_hubcap_sync_enabled", False, type=bool)
+        atom_sync_toggle = SwitchToggle(checked=is_sync_on, active_color=accent, width=34, height=18)
+        sync_state["toggle"] = atom_sync_toggle
+        sync_lbl = QLabel("AT0-M Sync")
+        sync_lbl.setToolTip(
+            "Keep the Hubcap API key in ASSella and in katamari.conf.lua (used by the AT0-M plugins) the same; "
+            "the newer one wins."
+        )
+        conf_exists = get_hubcap_key_conf_path().is_file()
+        if not conf_exists:
+            atom_sync_toggle.setEnabled(False)
+            atom_sync_toggle.setReadOnly(True)
+            sync_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.35); font-size: 8.5pt; font-weight: 500;")
+            atom_sync_toggle.setToolTip(
+                "AT0-M Sync needs katamari.conf.lua. Save the plugin settings in Settings -> AT0-M -> Advanced first."
+            )
+        else:
+            sync_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.85); font-size: 8.5pt; font-weight: 500;")
+
+        def _on_sync_toggled(checked: bool):
+            dialog.settings.setValue("atom_hubcap_sync_enabled", checked)
+            if checked:
+                synced, _msg = sync_hubcap_api_key(dialog.settings)
+                if synced:
+                    api_key_input.setText(dialog.settings.value(setting_key, "", type=str))
+
+        atom_sync_toggle.toggled.connect(_on_sync_toggled)
+        foot.addWidget(sync_lbl)
+        foot.addWidget(atom_sync_toggle)
+
+        if is_sync_on and conf_exists:
+            synced, _msg = sync_hubcap_api_key(dialog.settings)
             if synced:
-                new_key = dialog.settings.value(setting_key, "", type=str)
-                api_key_input.setText(new_key)
+                api_key_input.setText(dialog.settings.value(setting_key, "", type=str))
+    layout.addLayout(foot)
 
-    atom_sync_toggle.toggled.connect(_on_sync_toggled)
+    def _store(cleaned: str):
+        dialog.settings.setValue(setting_key, cleaned)
+        if hubcap_sync:
+            dialog.settings.setValue("morrenus_api_key_timestamp", str(generate_hubcap_timestamp()))
+            tog = sync_state["toggle"]
+            if tog is not None and tog.isChecked() and tog.isEnabled():
+                sync_hubcap_api_key(dialog.settings)
+        set_key_status(status, "Saved" if cleaned else "", "ok")
 
     def _on_paste():
-        clip_text = QApplication.clipboard().text()
+        clip_text = QApplication.clipboard().text().strip()
         if clip_text:
-            cleaned = clip_text.strip()
-            api_key_input.setText(cleaned)
-            dialog.settings.setValue(setting_key, cleaned)
-            dialog.settings.setValue("morrenus_api_key_timestamp", str(generate_hubcap_timestamp()))
-            if atom_sync_toggle.isChecked() and atom_sync_toggle.isEnabled():
-                sync_hubcap_api_key(dialog.settings)
+            api_key_input.setText(clip_text)
+            _store(clip_text)
 
     paste_btn.clicked.connect(_on_paste)
-    btn_row.addWidget(paste_btn)
-    btn_row.addSpacing(6)
-    btn_row.addWidget(sync_lbl)
-    btn_row.addWidget(atom_sync_toggle)
+    api_key_input.keyChanged.connect(_store)
 
-    # Initial sync check on tab creation
-    if is_sync_on and conf_exists:
-        synced, msg = sync_hubcap_api_key(dialog.settings)
-        if synced:
-            current_key = dialog.settings.value(setting_key, "", type=str)
-            api_key_input.setText(current_key)
-
-    def _on_key_changed(text: str):
-        cleaned = text.strip()
-        dialog.settings.setValue(setting_key, cleaned)
-        dialog.settings.setValue("morrenus_api_key_timestamp", str(generate_hubcap_timestamp()))
-        if atom_sync_toggle.isChecked() and atom_sync_toggle.isEnabled():
-            sync_hubcap_api_key(dialog.settings)
-
-    api_key_input.textChanged.connect(_on_key_changed)
-
-    btn_row.addStretch()
-    layout.addLayout(btn_row)
+    if not api_key_input.key():
+        set_key_status(status, "Not set", "muted")
 
     return layout, api_key_input
 
 
 def toggle_api_key_visibility(input_field: QLineEdit, toggle_btn: QPushButton) -> None:
     """Toggle API key visibility."""
+    if hasattr(input_field, "setRevealed"):
+        reveal = not input_field.isRevealed()
+        input_field.setRevealed(reveal)
+        toggle_btn.setText("Hide" if reveal else "Show")
+        return
     if input_field.echoMode() == QLineEdit.EchoMode.Password:
         input_field.setEchoMode(QLineEdit.EchoMode.Normal)
         toggle_btn.setText("Hide")
@@ -479,16 +527,17 @@ def create_morrenus_tab(dialog) -> QWidget:
     hubcap_layout.setContentsMargins(0, 8, 0, 0)
     hubcap_layout.setSpacing(12)
 
-    # 1. API Keys Card
-    key_card, key_layout = dialog._create_card_frame("API Keys")
+    # 1. API Key Card
+    key_card, key_layout = dialog._create_card_frame("API Key")
     key_layout.setSpacing(8)
 
     morrenus_layout, dialog.api_key_input = create_api_key_setting(
         dialog,
-        "Hubcap API Key:",
+        "Hubcap",
         "Paste your Hubcap API key",
         "morrenus_api_key",
         help_url="https://hubcapmanifest.com/",
+        help_text="Used to fetch manifests and depot keys.",
     )
     key_layout.addLayout(morrenus_layout)
     hubcap_layout.addWidget(key_card)
@@ -666,6 +715,8 @@ def create_morrenus_tab(dialog) -> QWidget:
     steamdb_scroll.setWidget(steamdb_container)
     integ_subtabs.addTab(steamdb_scroll, "SteamDB")
 
+    integ_subtabs.addTab(create_others_subtab(dialog), "Others")
+
     outer_layout.addWidget(integ_subtabs)
 
     # Connect tab change for lazy loading stats
@@ -673,3 +724,113 @@ def create_morrenus_tab(dialog) -> QWidget:
 
     dialog.tab_widget.addTab(tab, "Integrations")
     return tab
+
+
+class _KeyCheckThread(QThread):
+    done = pyqtSignal(bool, str)
+
+    def __init__(self, check, key, parent=None):
+        super().__init__(parent)
+        self._check, self._key = check, key
+
+    def run(self):
+        try:
+            ok, msg = self._check(self._key)
+        except Exception as e:  # pragma: no cover - defensive
+            ok, msg = False, str(e)
+        self.done.emit(ok, msg)
+
+
+def create_others_subtab(dialog) -> QWidget:
+    """Integrations -> Others: SteamGridDB key and artwork preferences."""
+    from utils import steamgriddb as sgdb
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+    container = QWidget()
+    lay = QVBoxLayout(container)
+    lay.setContentsMargins(0, 8, 0, 0)
+    lay.setSpacing(12)
+
+    card, card_lay = dialog._create_card_frame("SteamGridDB")
+    card_lay.setSpacing(8)
+
+    def _test(key, status, btn):
+        set_key_status(status, "Checking...", "muted")
+        btn.setEnabled(False)
+        thread = _KeyCheckThread(sgdb.check_key, key, dialog)
+
+        def _done(ok, msg):
+            set_key_status(status, msg, "ok" if ok else "bad")
+            btn.setEnabled(True)
+            thread.deleteLater()
+
+        thread.done.connect(_done)
+        dialog._sgdb_check_thread = thread
+        thread.start()
+
+    key_layout, dialog.sgdb_key_input = create_api_key_setting(
+        dialog,
+        "API key",
+        "Paste your SteamGridDB API key",
+        sgdb.SETTING_KEY,
+        help_url=sgdb.KEY_URL,
+        help_text="Free with a SteamGridDB account (Profile -> Preferences -> API). "
+                  "Community artwork for grids, heroes, logos and icons.",
+        hubcap_sync=False,
+        on_test=_test,
+    )
+    card_lay.addLayout(key_layout)
+
+    sep = QFrame()
+    sep.setFixedHeight(1)
+    sep.setStyleSheet("background: rgba(255,255,255,0.08); border: none;")
+    card_lay.addWidget(sep)
+
+    pref_title = QLabel("Artwork preferences")
+    pref_title.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 600; background: transparent;")
+    card_lay.addWidget(pref_title)
+
+    style_row = QHBoxLayout()
+    style_lbl = QLabel("Grid style")
+    style_lbl.setStyleSheet("color: rgba(255,255,255,0.85); font-size: 9pt; background: transparent;")
+    style_row.addWidget(style_lbl)
+    style_row.addStretch(1)
+    style_combo = ModernComboBox()
+    for value, text in sgdb.STYLES:
+        style_combo.addItem(text, value)
+    style_combo.setFixedWidth(150)
+    idx = style_combo.findData(dialog.settings.value(sgdb.SETTING_STYLE, "any", type=str))
+    style_combo.setCurrentIndex(idx if idx >= 0 else 0)
+    style_combo.currentIndexChanged.connect(
+        lambda _i: dialog.settings.setValue(sgdb.SETTING_STYLE, style_combo.currentData()))
+    style_row.addWidget(style_combo)
+    card_lay.addLayout(style_row)
+
+    for setting, text, tip in (
+        (sgdb.SETTING_NSFW, "Allow NSFW artwork", "Off: adult artwork is filtered out."),
+        (sgdb.SETTING_HUMOR, "Allow humor artwork", "Off: joke / meme artwork is filtered out."),
+    ):
+        row = QHBoxLayout()
+        lbl = QLabel(text)
+        lbl.setToolTip(tip)
+        lbl.setStyleSheet("color: rgba(255,255,255,0.85); font-size: 9pt; background: transparent;")
+        row.addWidget(lbl)
+        row.addStretch(1)
+        tog = SwitchToggle(checked=dialog.settings.value(setting, False, type=bool),
+                           active_color=dialog.accent_color, width=34, height=18)
+        tog.toggled.connect(lambda checked, k=setting: dialog.settings.setValue(k, checked))
+        row.addWidget(tog)
+        card_lay.addLayout(row)
+
+    note = QLabel("ASSella does not use SteamGridDB artwork yet; these settings are ready for when it does.")
+    note.setWordWrap(True)
+    note.setStyleSheet("color: rgba(255,255,255,0.45); font-size: 8pt; background: transparent;")
+    card_lay.addWidget(note)
+
+    lay.addWidget(card)
+    lay.addStretch(1)
+    scroll.setWidget(container)
+    return scroll

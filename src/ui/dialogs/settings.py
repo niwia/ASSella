@@ -719,6 +719,9 @@ class SettingsDialog(QDialog):
         worker = getattr(self, "_manifest_worker", None)
         if worker is not None:
             workers.append(worker)
+        sgdb_check = getattr(self, "_sgdb_check_thread", None)
+        if sgdb_check is not None:
+            workers.append(sgdb_check)
         for worker in (getattr(self, "_component_workers", None) or {}).values():
             if worker is not None:
                 workers.append(worker)
