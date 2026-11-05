@@ -723,17 +723,20 @@ def download_plugin(
     else:
         logger.info(f"[PluginManager] No published hash for {filename}; not downloading it")
 
-    if not unreachable:
-        return False, None, f"Could not download a verified copy of {filename}."
-
-    # Sources unreachable: fall back to a local copy with the right hash.
+    # No verified download (sources unreachable, file missing on the source, or
+    # the source's copy does not match the manifest in use - e.g. the bucket has
+    # no signed manifest yet, so the bundled manifest is in use): fall back to a
+    # local copy, but only one whose hash matches that manifest.
     for cand in _local_candidates(filename):
         if expected and calculate_sha256(cand) != expected:
             continue
         if cand != cache_path:
             shutil.copy2(cand, cache_path)
-        logger.info(f"[PluginManager] Using local copy of {filename} ({cand}); plugin sources unreachable")
-        return True, cache_path, f"Using local copy of {filename} (offline)."
+        why = "plugin sources unreachable" if unreachable else "no verified copy on the plugin sources"
+        logger.info(f"[PluginManager] Using local copy of {filename} ({cand}); {why}")
+        return True, cache_path, f"Using local copy of {filename}."
+    if not unreachable:
+        return False, None, f"Could not download a verified copy of {filename}."
     return False, None, f"{filename} could not be downloaded and no matching local copy exists."
 
 
