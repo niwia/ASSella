@@ -14,14 +14,14 @@ from PyQt6.QtWidgets import QLineEdit
 
 VISIBLE_PREFIX = 5
 MASK_CHAR = "•"
-MAX_MASK = 24
 
 
 def mask_key(key: str) -> str:
     key = key or ""
     if len(key) <= VISIBLE_PREFIX:
         return key
-    return key[:VISIBLE_PREFIX] + MASK_CHAR * min(len(key) - VISIBLE_PREFIX, MAX_MASK)
+    # One dot per hidden character, so the masked key is as long as the real one.
+    return key[:VISIBLE_PREFIX] + MASK_CHAR * (len(key) - VISIBLE_PREFIX)
 
 
 class ApiKeyField(QLineEdit):

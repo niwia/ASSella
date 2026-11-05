@@ -14,14 +14,26 @@ from PyQt6.QtWidgets import (
     QSlider,
     QTabWidget,
     QDialog,
+    QScrollArea,
 )
 from ui.widgets.modern_dropdown import ModernComboBox
+from ui.sizes import size_control
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.settings_tabs.windows_depot_warning import WindowsDepotWarningDialog
 from utils.helpers import create_checkbox_setting
 from utils.paths import is_valid_download_directory
+
+
+def _scrolled(page: QWidget) -> QScrollArea:
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setFrameShape(QScrollArea.Shape.NoFrame)
+    area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+    area.setWidget(page)
+    return area
 
 
 def create_downloads_tab(dialog) -> QWidget:
@@ -64,6 +76,7 @@ def create_downloads_tab(dialog) -> QWidget:
 
     # Download Settings Card
     dl_card, dl_layout = dialog._create_card_frame("Download Settings")
+    dl_layout.setSpacing(8)
 
     library_tooltip = "Detect Steam libraries and let you choose where to install games."
     if sys.platform == "linux":
@@ -100,7 +113,6 @@ def create_downloads_tab(dialog) -> QWidget:
     act_row.addWidget(act_title, 1)
     combo = ModernComboBox()
     combo.setCursor(Qt.CursorShape.PointingHandCursor)
-    combo.setFixedWidth(155)
     combo.addItem("Always ask", "ask")
     combo.addItem("Start Native (at0-m)", "native")
     combo.addItem("Start ASSella", "assella")
@@ -126,6 +138,7 @@ def create_downloads_tab(dialog) -> QWidget:
     combo.currentIndexChanged.connect(_save_action)
     if not at0m_on:
         _save_action(0)
+    size_control(combo, "md")
     act_row.addWidget(combo)
     dl_layout.addLayout(act_row)
 
@@ -203,6 +216,7 @@ def create_downloads_tab(dialog) -> QWidget:
                 dialog.dl_location_combo.setCurrentIndex(0)
 
     dialog.dl_location_combo.currentIndexChanged.connect(on_dl_location_changed)
+    size_control(dialog.dl_location_combo, "md")
     loc_row.addWidget(dialog.dl_location_combo)
     dl_layout.addLayout(loc_row)
 
@@ -394,9 +408,10 @@ def create_downloads_tab(dialog) -> QWidget:
     test_btn.clicked.connect(_on_test_clicked)
 
     gen_layout.addWidget(mrc_card)
-    gen_layout.addSpacing(38)
     gen_layout.addStretch()
-    dl_subtabs.addTab(general_widget, "General")
+    # Scrollable, so wrapped descriptions get the height they need instead of
+    # being squeezed (and clipped) when the window is short.
+    dl_subtabs.addTab(_scrolled(general_widget), "General")
 
     # ── Subtab 2: Depot selection ──
     hide_widget = QWidget()
@@ -552,7 +567,7 @@ def create_downloads_tab(dialog) -> QWidget:
     hide_layout.addWidget(sel_card)
 
     hide_layout.addStretch()
-    dl_subtabs.addTab(hide_widget, "Depot selection")
+    dl_subtabs.addTab(_scrolled(hide_widget), "Depot selection")
 
     layout.addWidget(dl_subtabs)
     dialog.tab_widget.addTab(tab, "Downloads")

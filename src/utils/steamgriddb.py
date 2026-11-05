@@ -76,6 +76,15 @@ def check_key(key: str) -> Tuple[bool, str]:
     return False, f"SteamGridDB HTTP {resp.status_code}"
 
 
+def query_params(settings=None) -> Dict[str, Any]:
+    """Style / NSFW / humor filters from Settings -> Integrations -> Others."""
+    if settings is None:
+        from utils.settings import get_settings
+
+        settings = get_settings()
+    return _params(settings)
+
+
 def _params(settings) -> Dict[str, Any]:
     style = (settings.value(SETTING_STYLE, "any", type=str) or "any") if settings else "any"
     nsfw = settings.value(SETTING_NSFW, False, type=bool) if settings else False

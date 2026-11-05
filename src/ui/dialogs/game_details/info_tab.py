@@ -185,8 +185,7 @@ def init_info_tab(dialog) -> None:
         # Steam owns branch, updates and verification for AT0-M games.
         dialog.branch_combo.setVisible(False)
         dialog.validate_btn.setVisible(False)
-        note = QLabel("Steam downloads, updates and verifies this game. Change branch or verify it from the "
-                      "game's Properties in Steam.")
+        note = QLabel("Steam client manages the properties of the game.")
         note.setWordWrap(True)
         note.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 9pt; border: 1px dashed rgba(255,255,255,0.14);"
                            " border-radius: 8px; padding: 8px 12px; background: transparent;")

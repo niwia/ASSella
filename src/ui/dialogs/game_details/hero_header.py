@@ -126,7 +126,7 @@ def get_installed_date(dialog) -> str:
 SNIPPET_BASE = (
     "QPushButton {{ background: rgba(0,0,0,0.35); border: 1px solid {border}; border-radius: 5px;"
     " color: {color}; font-size: 8.5pt; font-weight: 600; padding: 2px 8px; text-align: left; }}"
-    "QPushButton:hover {{ border-color: {hover}; }}"
+    # Information only: no hover change, so nothing looks clickable ({hover} unused).
 )
 
 
@@ -134,6 +134,7 @@ def _snippet(text: str, tip: str = "") -> QPushButton:
     b = QPushButton(text)
     b.setFlat(True)
     b.setToolTip(tip)
+    b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     b.setStyleSheet(SNIPPET_BASE.format(border="rgba(255,255,255,0.14)", color="#E8E8EE", hover="rgba(255,255,255,0.3)"))
     return b
 
@@ -150,12 +151,12 @@ def set_build_snippet(dialog, build: str, state: str, tooltip: str = "") -> None
     if state == "update" and _is_atom_game(dialog):
         state = "ok"  # Steam updates AT0-M games; nothing to flag here
     if state == "update":
-        lbl.setText(f"Build {build}  !")
+        lbl.setText(f"{build}  !")
         lbl.setStyleSheet(SNIPPET_BASE.format(border="rgba(255,183,77,0.6)", color="#FFB74D", hover="#FFB74D"))
     else:
-        lbl.setText(f"Build {build}" if build else "Build unknown")
+        lbl.setText(build or "—")
         lbl.setStyleSheet(SNIPPET_BASE.format(border="rgba(255,255,255,0.14)", color="#E8E8EE", hover="rgba(255,255,255,0.3)"))
-    lbl.setToolTip((tooltip + "\n" if tooltip else "") + "Click to check for updates")
+    lbl.setToolTip(tooltip or "Installed build")
 
 
 def init_hero_v2(dialog, root) -> None:
@@ -249,7 +250,6 @@ def init_hero_v2(dialog, root) -> None:
 
     dialog.build_val_lbl = _snippet("")
     dialog._hero_build_val_lbl = dialog.build_val_lbl
-    dialog.build_val_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
     installed_bid = dialog._get_installed_buildid()
     state = "unknown"
     if installed_bid:
@@ -261,12 +261,10 @@ def init_hero_v2(dialog, root) -> None:
         except (ValueError, TypeError):
             pass
     set_build_snippet(dialog, installed_bid, state, f"Installed build {installed_bid}" if installed_bid else "")
-    if not is_atom:
-        dialog.build_val_lbl.clicked.connect(
-            lambda: dialog._on_status_btn_clicked() if hasattr(dialog, "_on_status_btn_clicked") else None
-        )
-    else:
-        dialog.build_val_lbl.setToolTip("Steam handles updates for this game.")
+    # Snippets are information only; the ProtonDB badge is the one link here.
+    dialog.build_val_lbl.setCursor(Qt.CursorShape.ArrowCursor)
+    dialog.build_val_lbl.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    dialog.build_val_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
     snip_row.addWidget(dialog.build_val_lbl)
 
     date_str = get_installed_date(dialog)

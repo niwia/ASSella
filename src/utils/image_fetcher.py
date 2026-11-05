@@ -189,6 +189,136 @@ class ImageFetcher(QObject):
         holder["reply"] = reply
         return reply
 
+    # --------------------------
+    # Second pass: SteamGridDB
+    # --------------------------
+    SGDB_RETRY_DAYS = 7
+
+    @staticmethod
+    def _sgdb_missing_path() -> Path:
+        return ImageFetcher.get_cache_dir() / "sgdb_missing.json"
+
+    @staticmethod
+    def _sgdb_recently_missing(app_id: str) -> bool:
+        import json
+
+        try:
+            data = json.loads(ImageFetcher._sgdb_missing_path().read_text())
+            ts = float(data.get(str(app_id), 0))
+        except Exception:
+            return False
+        return (time.time() - ts) < ImageFetcher.SGDB_RETRY_DAYS * 86400
+
+    @staticmethod
+    def _sgdb_mark_missing(app_id: str) -> None:
+        import json
+
+        path = ImageFetcher._sgdb_missing_path()
+        try:
+            data = json.loads(path.read_text()) if path.exists() else {}
+        except Exception:
+            data = {}
+        data[str(app_id)] = time.time()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data))
+        except Exception as e:
+            logger.debug(f"Could not record SteamGridDB miss for {app_id}: {e}")
+
+    def _start_sgdb_fallback(self) -> bool:
+        """Ask SteamGridDB for artwork when Steam's CDN had none.
+
+        Only for library / Game Details images (not ephemeral search results),
+        only when a SteamGridDB key is set, and at most once a week per game
+        that SteamGridDB has nothing for. The result is cached like Steam art.
+        Returns True when the second pass was started (it emits ``finished``).
+        """
+        if self._stopped or self.ephemeral or not self.app_id or getattr(self, "_sgdb_tried", False):
+            return False
+        self._sgdb_tried = True
+        try:
+            from utils import steamgriddb
+
+            key = steamgriddb.get_api_key()
+        except Exception:
+            key = ""
+        if not key or ImageFetcher._sgdb_recently_missing(self.app_id):
+            return False
+
+        from PyQt6.QtCore import QUrlQuery
+
+        url = QUrl(f"{steamgriddb.BASE_URL}/grids/steam/{self.app_id}")
+        query = QUrlQuery()
+        # Header-shaped grids first: they fit where Steam's header.jpg goes.
+        query.addQueryItem("dimensions", "460x215,920x430")
+        for k, v in steamgriddb.query_params().items():
+            query.addQueryItem(k, str(v))
+        url.setQuery(query)
+        request = QNetworkRequest(url)
+        request.setRawHeader(b"Authorization", f"Bearer {key}".encode())
+        request.setRawHeader(b"User-Agent", b"ASSella")
+        self._reply = get_network_manager().get(request)
+        self._reply.finished.connect(self._on_sgdb_list)  # type: ignore
+        logger.debug(f"No Steam artwork for {self.app_id}; trying SteamGridDB")
+        return True
+
+    def _on_sgdb_list(self) -> None:
+        reply, self._reply = self._reply, None
+        if reply is None or self._stopped:
+            if reply is not None:
+                reply.deleteLater()
+            return
+        image_url = ""
+        answered = False  # only a real "no artwork" answer is remembered
+        try:
+            status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+            answered = status in (200, 404)
+            if reply.error() == QNetworkReply.NetworkError.NoError:
+                import json
+
+                data = json.loads(bytes(reply.readAll()).decode("utf-8", errors="ignore") or "{}")
+                assets = sorted(data.get("data") or [], key=lambda a: a.get("score", 0), reverse=True)
+                image_url = next((a.get("url") for a in assets if a.get("url")), "")
+            else:
+                logger.debug(f"SteamGridDB lookup for {self.app_id} failed: {reply.errorString()}")
+        except Exception as e:
+            logger.debug(f"SteamGridDB reply for {self.app_id} unreadable: {e}")
+        finally:
+            reply.deleteLater()
+        if not image_url:
+            if answered:
+                ImageFetcher._sgdb_mark_missing(self.app_id)
+            self.finished.emit(b"")
+            return
+        request = QNetworkRequest(QUrl(image_url))
+        request.setRawHeader(b"User-Agent", b"ASSella")
+        self._reply = get_network_manager().get(request)
+        self._reply.finished.connect(self._on_sgdb_image)  # type: ignore
+
+    def _on_sgdb_image(self) -> None:
+        reply, self._reply = self._reply, None
+        if reply is None or self._stopped:
+            if reply is not None:
+                reply.deleteLater()
+            return
+        data = b""
+        gone = False
+        try:
+            if reply.error() == QNetworkReply.NetworkError.NoError:
+                data = bytes(reply.readAll())
+            else:
+                gone = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) in (403, 404)
+        finally:
+            reply.deleteLater()
+        if data:
+            ImageFetcher.put_to_session_cache(self.app_id, data)
+            ImageFetcher.save_to_cache(self.app_id, data)
+            logger.info(f"Using SteamGridDB artwork for {self.app_id} (none on Steam)")
+        elif gone:
+            ImageFetcher._sgdb_mark_missing(self.app_id)
+        if not self._stopped:
+            self.finished.emit(data)
+
     def stop(self) -> None:
         """Abort the request and prevent signal emission."""
         self._stopped = True
@@ -244,7 +374,9 @@ class ImageFetcher(QObject):
                     f"Skipping image fetch for AppID {self.app_id}: "
                     f"no artwork on the CDN (checked recently)"
                 )
-                QTimer.singleShot(0, lambda: self.finished.emit(b""))
+                # Steam has nothing; SteamGridDB may (second pass).
+                if not self._start_sgdb_fallback():
+                    QTimer.singleShot(0, lambda: self.finished.emit(b""))
                 return
 
         # 4. Tier 3: Fetch over network
@@ -274,6 +406,8 @@ class ImageFetcher(QObject):
                         f"Recorded missing artwork for AppID {self.app_id} "
                         f"({self._attempts} URL(s) returned 404/403)"
                     )
+                if self._start_sgdb_fallback():
+                    return
                 self.finished.emit(b"")
             return
 

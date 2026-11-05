@@ -406,13 +406,52 @@ def _fetch_remote_manifest() -> Tuple[Optional[Dict[str, Any]], Optional[str], s
     return None, None, "; ".join(problems)
 
 
+_offline = threading.local()
+
+
+class offline_manifest:
+    """Context manager: inside it, manifest lookups never touch the network.
+
+    Used to build UI (Settings -> AT0-M) instantly from the memo / cached /
+    bundled manifest; the caller refreshes from the network afterwards in a
+    background thread.
+    """
+
+    def __enter__(self):
+        _offline.depth = getattr(_offline, "depth", 0) + 1
+        return self
+
+    def __exit__(self, *_exc):
+        _offline.depth -= 1
+        return False
+
+
+def _local_manifest() -> Optional[Dict[str, Any]]:
+    if _memo["data"] is not None:
+        return _memo["data"]
+    cached = _read_json(get_cached_manifest_path())
+    if cached and _valid_manifest_shape(cached):
+        return cached
+    try:
+        bundled = Paths.resource("plugins/" + MANIFEST_FILENAME)
+        b = _read_json(bundled) if bundled.is_file() else None
+        if b and isinstance(b.get("plugins"), dict):
+            return b
+    except Exception:
+        pass
+    return None
+
+
 def fetch_plugins_manifest(force_refresh: bool = False) -> Optional[Dict[str, Any]]:
     """The plugin manifest: from the sources whenever they are reachable.
 
     ``force_refresh`` skips the short in-process memo. The cached copy and the
     bundled copy are fallbacks for when no source can be reached (or none
-    serves a manifest that verifies).
+    serves a manifest that verifies). Inside ``offline_manifest()`` only the
+    local copies are used.
     """
+    if getattr(_offline, "depth", 0) > 0:
+        return _local_manifest()
     with _manifest_lock:
         now = time.time()
         if not force_refresh:

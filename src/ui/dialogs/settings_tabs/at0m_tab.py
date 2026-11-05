@@ -597,8 +597,33 @@ def create_at0m_tab(dialog) -> QWidget:
 
     dialog.custom_plugins_checkbox.checkbox.toggled.connect(_on_custom_plugins_toggled)
 
-    # Initial populate
-    _refresh_all_buttons()
+    # Initial populate from the local manifest (instant), then check the
+    # plugin sources in the background and refresh the buttons when done.
+    # Fetching on the GUI thread here was most of Settings' opening delay.
+    from utils.plugin_manager import offline_manifest
+
+    with offline_manifest():
+        _refresh_all_buttons()
+
+    class _ManifestRefresh(QThread):
+        def run(self):
+            try:
+                from utils.plugin_manager import fetch_plugins_manifest
+
+                fetch_plugins_manifest()
+            except Exception as e:
+                logger.debug(f"[at0mTab] Background manifest refresh failed: {e}")
+
+    def _after_refresh():
+        try:
+            _refresh_all_buttons()
+        except RuntimeError:
+            pass  # dialog already closed
+
+    refresh = _ManifestRefresh(dialog)
+    refresh.finished.connect(_after_refresh)
+    dialog._plugin_manifest_worker = refresh
+    refresh.start()
 
     def _update_subwidget_states(enabled: bool):
         if getattr(dialog, "at0m_disable_updates_checkbox", None):
