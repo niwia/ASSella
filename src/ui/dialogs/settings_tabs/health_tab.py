@@ -20,6 +20,83 @@ from ui.dialogs.themed_message_box import ThemedMessageBox
 
 logger = logging.getLogger(__name__)
 
+STYLE_FIX_CONFIG_BLINK_A = """
+    QPushButton {
+        background-color: #d97706;
+        border: 1px solid #f59e0b;
+        border-radius: 8px;
+        color: #ffffff;
+        padding: 7px 16px;
+        font-size: 9.5pt;
+        font-weight: 600;
+    }
+    QPushButton:hover {
+        background-color: #f59e0b;
+        border-color: #fbbf24;
+    }
+    QPushButton:disabled {
+        background-color: rgba(217, 119, 6, 0.25) !important;
+        border: 1px solid rgba(245, 158, 11, 0.4) !important;
+        color: rgba(255, 255, 255, 0.4) !important;
+    }
+"""
+
+STYLE_FIX_CONFIG_BLINK_B = """
+    QPushButton {
+        background-color: rgba(217, 119, 6, 0.28);
+        border: 1px solid rgba(245, 158, 11, 0.55);
+        border-radius: 8px;
+        color: #fde68a;
+        padding: 7px 16px;
+        font-size: 9.5pt;
+        font-weight: 600;
+    }
+    QPushButton:hover {
+        background-color: rgba(217, 119, 6, 0.45);
+        border-color: rgba(245, 158, 11, 0.85);
+    }
+    QPushButton:disabled {
+        background-color: rgba(217, 119, 6, 0.15) !important;
+        border: 1px solid rgba(245, 158, 11, 0.3) !important;
+        color: rgba(255, 255, 255, 0.4) !important;
+    }
+"""
+
+
+def _stop_assfixer_blink(dialog) -> None:
+    timer = getattr(dialog, "_assfixer_blink_timer", None)
+    if timer is not None and timer.isActive():
+        timer.stop()
+
+
+def _start_assfixer_blink(dialog) -> None:
+    repair_btn = getattr(dialog, "assfixer_repair_btn", None)
+    if not repair_btn:
+        return
+    if not hasattr(dialog, "_assfixer_blink_timer"):
+        timer = QTimer(dialog)
+        dialog._assfixer_blink_timer = timer
+        dialog._assfixer_blink_state = False
+
+        def _on_blink_tick():
+            btn = getattr(dialog, "assfixer_repair_btn", None)
+            if not btn or btn.isHidden():
+                if timer.isActive():
+                    timer.stop()
+                return
+            dialog._assfixer_blink_state = not getattr(dialog, "_assfixer_blink_state", False)
+            if dialog._assfixer_blink_state:
+                btn.setStyleSheet(STYLE_FIX_CONFIG_BLINK_A)
+            else:
+                btn.setStyleSheet(STYLE_FIX_CONFIG_BLINK_B)
+
+        timer.timeout.connect(_on_blink_tick)
+
+    dialog._assfixer_blink_state = True
+    repair_btn.setStyleSheet(STYLE_FIX_CONFIG_BLINK_A)
+    if not dialog._assfixer_blink_timer.isActive():
+        dialog._assfixer_blink_timer.start(550)
+
 
 class HealthStatusTile(QPushButton):
     """Clean interactive status tile button used in the Health tab dashboard."""
@@ -340,9 +417,9 @@ def create_health_tab(dialog) -> QWidget:
         dialog.assfixer_check_btn.clicked.connect(lambda: run_assfixer_check(dialog))
         btn_row.addWidget(dialog.assfixer_check_btn)
 
-        dialog.assfixer_repair_btn = QPushButton("Repair / Resync")
+        dialog.assfixer_repair_btn = QPushButton("Fix Config")
         dialog.assfixer_repair_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        dialog.assfixer_repair_btn.setStyleSheet(btn_style)
+        dialog.assfixer_repair_btn.setStyleSheet(STYLE_FIX_CONFIG_BLINK_A)
         dialog.assfixer_repair_btn.setEnabled(False)
         dialog.assfixer_repair_btn.clicked.connect(lambda: run_assfixer_repair(dialog))
         btn_row.addWidget(dialog.assfixer_repair_btn)
@@ -366,6 +443,26 @@ def create_health_tab(dialog) -> QWidget:
         dialog.assfixer_status_lbl.setWordWrap(True)
         dialog.assfixer_status_lbl.hide()
         sls_cfg_layout.addWidget(dialog.assfixer_status_lbl)
+
+        # Only show Fix Config and start blinking if scan / boot check detected issues
+        try:
+            from utils import assfixer
+            boot_st = getattr(assfixer, "boot_status", None)
+            if boot_st == "needs_fix":
+                dialog.assfixer_repair_btn.setEnabled(True)
+                dialog.assfixer_repair_btn.show()
+                _start_assfixer_blink(dialog)
+                issues = getattr(assfixer, "boot_issues", [])
+                if issues:
+                    dialog.assfixer_status_lbl.setText(f"[!] SLS config has {len(issues)} issue(s) needing fix")
+                    dialog.assfixer_status_lbl.setToolTip("\n".join(issues))
+                    dialog.assfixer_status_lbl.setStyleSheet("color: #e0af68; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+                    dialog.assfixer_status_lbl.show()
+            else:
+                dialog.assfixer_repair_btn.hide()
+        except Exception as e:
+            logger.debug(f"Failed to check boot_status for health tab: {e}")
+            dialog.assfixer_repair_btn.hide()
 
         layout.addWidget(sls_cfg_card)
 
@@ -703,15 +800,32 @@ def handle_assfixer_check_done(dialog, result) -> None:
     dialog.assfixer_check_btn.setEnabled(True)
     if needs_repair:
         dialog.assfixer_repair_btn.setEnabled(True)
+        dialog.assfixer_repair_btn.show()
+        _start_assfixer_blink(dialog)
         dialog.assfixer_status_lbl.setText(f"[!] {summary}")
         dialog.assfixer_status_lbl.setStyleSheet("color: #e0af68; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
         if details:
             dialog.assfixer_status_lbl.setToolTip("\n".join(details))
+        dialog.assfixer_status_lbl.show()
+        try:
+            from utils import assfixer
+            assfixer.boot_status = "needs_fix"
+            assfixer.boot_issues = details[:] if details else [summary]
+        except Exception:
+            pass
     else:
-        dialog.assfixer_repair_btn.setEnabled(True)
+        _stop_assfixer_blink(dialog)
+        dialog.assfixer_repair_btn.hide()
         dialog.assfixer_status_lbl.setText(f"[OK] {summary}")
         dialog.assfixer_status_lbl.setStyleSheet("color: #9ece6a; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
         dialog.assfixer_status_lbl.setToolTip("")
+        dialog.assfixer_status_lbl.show()
+        try:
+            from utils import assfixer
+            assfixer.boot_status = "optimal"
+            assfixer.boot_issues = []
+        except Exception:
+            pass
 
 
 def run_assfixer_repair(dialog) -> None:
@@ -722,6 +836,7 @@ def run_assfixer_repair(dialog) -> None:
     if confirm_dlg.exec() != AssfixerConfirmDialog.DialogCode.Accepted:
         return
 
+    _stop_assfixer_blink(dialog)
     dialog.assfixer_repair_btn.setEnabled(False)
     dialog.assfixer_status_lbl.setText("Repairing and synchronizing config...")
     dialog.assfixer_status_lbl.setStyleSheet("color: #7aa2f7; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
@@ -743,13 +858,29 @@ def run_assfixer_repair(dialog) -> None:
 
 def handle_assfixer_repair_done(dialog, result) -> None:
     success, msg, has_bak = result
-    dialog.assfixer_repair_btn.setEnabled(True)
     dialog.assfixer_restore_btn.setEnabled(has_bak)
     if success:
+        _stop_assfixer_blink(dialog)
+        dialog.assfixer_repair_btn.hide()
         dialog.assfixer_status_lbl.setText(f"[OK] {msg}")
         dialog.assfixer_status_lbl.setStyleSheet("color: #9ece6a; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
+        try:
+            from utils import assfixer
+            assfixer.boot_status = "optimal"
+            assfixer.boot_issues = []
+        except Exception:
+            pass
+        if hasattr(dialog, "main_window") and dialog.main_window:
+            try:
+                if hasattr(dialog.main_window, "update_visor_status"):
+                    dialog.main_window.update_visor_status()
+            except Exception:
+                pass
         ThemedMessageBox.information(dialog, "ASSfixer", msg)
     else:
+        dialog.assfixer_repair_btn.setEnabled(True)
+        dialog.assfixer_repair_btn.show()
+        _start_assfixer_blink(dialog)
         dialog.assfixer_status_lbl.setText(f"[FAIL] {msg}")
         dialog.assfixer_status_lbl.setStyleSheet("color: #f7768e; font-size: 8.5pt; margin-top: 2px; border: none; background: transparent;")
         ThemedMessageBox.warning(dialog, "ASSfixer", msg)

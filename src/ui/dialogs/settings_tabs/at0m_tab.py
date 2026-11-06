@@ -250,7 +250,7 @@ def create_at0m_tab(dialog) -> QWidget:
     # -- 1. General Configuration Card --
     cfg_card, cfg_layout = dialog._create_card_frame("General Configuration")
 
-    # Master Option: Enable Lua Plugins (SLSsteam)
+    # Master Option: Enable plugins (SLSsteam)
     sls_plugins_val = get_yaml_boolean_value(cfg_path, "Plugins", default=True)
     saved_enable_at0m = dialog.settings.value(
         "enable_at0m",
@@ -259,11 +259,11 @@ def create_at0m_tab(dialog) -> QWidget:
     )
 
     dialog.enable_at0m_checkbox = create_checkbox_setting(
-        "Enable Lua Plugins (SLSsteam)",
+        "Enable plugins",
         "enable_at0m",
         saved_enable_at0m,
         dialog,
-        tooltip="Master switch for SLSsteam Lua plugins. Automatically deploys bundled plugins and enables Plugins in SLSsteam config.yaml.",
+        tooltip="Master switch for SLSsteam plugins. Automatically deploys bundled plugins and enables Plugins in SLSsteam config.yaml.",
         show_description=False,
     )
     dialog.enable_vapor_checkbox = dialog.enable_at0m_checkbox
@@ -347,12 +347,12 @@ def create_at0m_tab(dialog) -> QWidget:
     sep2.setStyleSheet("color: rgba(255,255,255,0.08); border: none; background: rgba(255,255,255,0.08); max-height: 1px;")
     cfg_layout.addWidget(sep2)
 
-    # Option 4: Default DLC-Only Behavior (after separator)
+    # Option 4: DLC-Only Download behaviour (after separator)
     dlc_act_row = QHBoxLayout()
     dlc_act_row.setContentsMargins(2, 2, 2, 2)
     dlc_act_row.setSpacing(10)
 
-    dlc_act_title = QLabel("Default DLC-Only Behavior")
+    dlc_act_title = QLabel("DLC-Only Download behaviour")
     dlc_act_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9pt;")
     dlc_act_row.addWidget(dlc_act_title, stretch=1)
 
@@ -387,13 +387,10 @@ def create_at0m_tab(dialog) -> QWidget:
     layout.addWidget(cfg_card)
 
     # -- 2. Katamari Plugins Status & Updaters Card --
-    deploy_card, deploy_layout = dialog._create_card_frame("Lua Plugins (Katamari Suite)")
+    deploy_card, deploy_layout = dialog._create_card_frame("Manage plugins")
     deploy_layout.setSpacing(8)
 
-    deploy_desc = QLabel(
-        "Katamari Lua plugins. Click a plugin to install it or bring it up to date; "
-        "an older copy is always kept as .bak."
-    )
+    deploy_desc = QLabel("Click to deploy and update")
     deploy_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
     deploy_desc.setWordWrap(True)
     deploy_layout.addWidget(deploy_desc)
