@@ -1521,7 +1521,11 @@ class FetchManifestDialog(QDialog):
             self.status_label.setText("No Steam library found.")
             return
 
-        if len(libraries) == 1:
+        norm_libs = {os.path.normpath(p): p for p in libraries}
+        default_dl = self.settings.value("default_download_directory", "", type=str)
+        if default_dl and os.path.normpath(default_dl) in norm_libs:
+            selected_library_path = norm_libs[os.path.normpath(default_dl)]
+        elif len(libraries) == 1:
             selected_library_path = libraries[0]
         else:
             dialog = SteamLibraryDialog(libraries, self, accent_color=self.accent_color)
@@ -1810,6 +1814,9 @@ class FetchManifestDialog(QDialog):
                 selected_storage = depot_dialog.get_selected_storage()
                 if selected_storage:
                     metadata["library_path"] = selected_storage
+                    if hasattr(depot_dialog, "should_remember_storage") and depot_dialog.should_remember_storage():
+                        self.settings.setValue("default_download_directory", selected_storage)
+                        logger.info(f"[FetchManifest] Remembered default storage library: {selected_storage}")
 
                 chosen_branch = depot_dialog.get_selected_branch() if hasattr(depot_dialog, "get_selected_branch") else None
                 if chosen_branch:
@@ -1951,7 +1958,11 @@ class FetchManifestDialog(QDialog):
             libraries = steam_helpers.get_steam_libraries()
             if libraries:
                 auto_skip_single_choice = self.settings.value("auto_skip_single_choice", True, type=bool) if self.settings else True
-                if auto_skip_single_choice and len(libraries) == 1:
+                norm_libs = {os.path.normpath(p): p for p in libraries}
+                default_dl = self.settings.value("default_download_directory", "", type=str) if self.settings else ""
+                if default_dl and os.path.normpath(default_dl) in norm_libs:
+                    dest_path = norm_libs[os.path.normpath(default_dl)]
+                elif auto_skip_single_choice and len(libraries) == 1:
                     dest_path = libraries[0]
                 else:
                     dialog = SteamLibraryDialog(libraries, self, accent_color=self.accent_color)

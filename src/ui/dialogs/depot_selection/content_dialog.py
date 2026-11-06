@@ -468,6 +468,45 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         self._drive_combo.currentIndexChanged.connect(self._on_drive_changed)
         bar.addWidget(self._drive_combo)
 
+        paths = list(getattr(self, "_storage_paths", None) or [])
+        locked = bool(getattr(self, "lock_storage", False)) or getattr(self, "_locked_storage_btn", None) is not None
+        if len(paths) > 1 and not locked:
+            from PyQt6.QtWidgets import QCheckBox
+            from PyQt6.QtCore import Qt
+            self.remember_storage_chk = QCheckBox("Remember choice")
+            self.remember_storage_chk.setChecked(False)
+            self.remember_storage_chk.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.remember_storage_chk.setToolTip("Remember this storage location as default for future installs")
+            self.remember_storage_chk.setStyleSheet("""
+                QCheckBox {
+                    font-size: 8pt;
+                    color: rgba(255, 255, 255, 0.7);
+                    spacing: 5px;
+                    border: none;
+                    background: transparent;
+                }
+                QCheckBox:focus {
+                    border: none;
+                    outline: none;
+                }
+                QCheckBox::indicator {
+                    width: 13px;
+                    height: 13px;
+                    border: none;
+                    border-radius: 3px;
+                    background: rgba(255, 255, 255, 0.12);
+                    outline: none;
+                }
+                QCheckBox::indicator:hover {
+                    background: rgba(255, 255, 255, 0.22);
+                }
+                QCheckBox::indicator:checked {
+                    background: %s;
+                    border: none;
+                }
+            """ % getattr(self, "accent_color", "#6c5ce7"))
+            bar.addWidget(self.remember_storage_chk)
+
         browse = next((b for b in self.findChildren(QPushButton) if b.text().startswith("Browse Files")), None)
         if browse is not None:
             browse.setText("Browse files")

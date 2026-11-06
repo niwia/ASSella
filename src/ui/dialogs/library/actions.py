@@ -3392,6 +3392,9 @@ class LibraryActionsMixin:
                     selected_storage = depot_dialog.get_selected_storage()
                     if selected_storage:
                         metadata["library_path"] = selected_storage
+                        if hasattr(depot_dialog, "should_remember_storage") and depot_dialog.should_remember_storage():
+                            settings.setValue("default_download_directory", selected_storage)
+                            logger.info(f"[LibraryActions] Remembered default storage library: {selected_storage}")
 
                     if hasattr(depot_dialog, "is_build_pinned") and depot_dialog.is_build_pinned():
                         pinned_bid = depot_dialog.get_selected_build()

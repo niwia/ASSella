@@ -4,11 +4,13 @@ accessor."""
 import logging
 import os
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QButtonGroup,
     QSizePolicy,
+    QCheckBox,
 )
 from ui.widgets.modern_dropdown import ModernComboBox
 
@@ -154,6 +156,41 @@ class StorageMixin:
             self._more_storage_combo.currentIndexChanged.connect(_on_combo_changed)
             layout.addWidget(self._more_storage_combo, 1)
 
+        if total_storages > 1:
+            self.remember_storage_chk = QCheckBox("Remember choice")
+            self.remember_storage_chk.setChecked(False)
+            self.remember_storage_chk.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.remember_storage_chk.setToolTip("Remember this storage location as default for future installs")
+            self.remember_storage_chk.setStyleSheet("""
+                QCheckBox {
+                    font-size: 8pt;
+                    color: rgba(255, 255, 255, 0.7);
+                    spacing: 5px;
+                    border: none;
+                    background: transparent;
+                }
+                QCheckBox:focus {
+                    border: none;
+                    outline: none;
+                }
+                QCheckBox::indicator {
+                    width: 13px;
+                    height: 13px;
+                    border: none;
+                    border-radius: 3px;
+                    background: rgba(255, 255, 255, 0.12);
+                    outline: none;
+                }
+                QCheckBox::indicator:hover {
+                    background: rgba(255, 255, 255, 0.22);
+                }
+                QCheckBox::indicator:checked {
+                    background: %s;
+                    border: none;
+                }
+            """ % self.accent_color)
+            layout.addWidget(self.remember_storage_chk)
+
         # Pre-select priority: preferred library path (zip confirmation or job
         # metadata), then the library the game is already installed in, then the
         # configured default, then the first drive.
@@ -189,3 +226,7 @@ class StorageMixin:
     def get_selected_storage(self) -> str:
         """Returns the selected storage destination path, or None."""
         return self.selected_storage_path
+
+    def should_remember_storage(self) -> bool:
+        """Whether the user checked the 'Remember choice' toggle for storage."""
+        return bool(getattr(self, "remember_storage_chk", None) and self.remember_storage_chk.isChecked())

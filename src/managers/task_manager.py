@@ -909,7 +909,12 @@ class TaskManager(
                 self.job_finished()
                 return
 
-            norm_libs = [os.path.normpath(p) for p in steam_libs]
+            norm_libs = {os.path.normpath(p): p for p in steam_libs}
+            default_dl = self.settings.value("default_download_directory", "", type=str)
+            if default_dl and os.path.normpath(default_dl) in norm_libs and (not dest_path or os.path.normpath(dest_path) not in norm_libs):
+                dest_path = norm_libs[os.path.normpath(default_dl)]
+                self.current_dest_path = dest_path
+
             if not dest_path or os.path.normpath(dest_path) not in norm_libs:
                 if len(steam_libs) == 1:
                     dest_path = steam_libs[0]
@@ -1330,7 +1335,11 @@ class TaskManager(
             )
             return
 
-        norm_libs = [os.path.normpath(p) for p in steam_libs]
+        norm_libs = {os.path.normpath(p): p for p in steam_libs}
+        default_dl = self.settings.value("default_download_directory", "", type=str)
+        if default_dl and os.path.normpath(default_dl) in norm_libs and (not library_path or os.path.normpath(library_path) not in norm_libs):
+            library_path = norm_libs[os.path.normpath(default_dl)]
+
         if not library_path or os.path.normpath(library_path) not in norm_libs:
             if len(steam_libs) == 1:
                 library_path = steam_libs[0]

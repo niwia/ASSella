@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QWidget,
     QScrollArea,
+    QCheckBox,
 )
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -187,8 +188,19 @@ class SteamLibraryDialog(QDialog):
         self.button_group.setExclusive(True)
 
         sorted_paths = sorted(self.library_paths)
-        for idx, path in enumerate(sorted_paths):
-            card = self._create_storage_card(path, idx == 0)
+        current_default = self.settings.value("default_download_directory", "", type=str)
+        default_path = None
+        if current_default:
+            norm_def = os.path.normpath(current_default)
+            for p in sorted_paths:
+                if os.path.normpath(p) == norm_def:
+                    default_path = p
+                    break
+        if not default_path and sorted_paths:
+            default_path = sorted_paths[0]
+
+        for path in sorted_paths:
+            card = self._create_storage_card(path, path == default_path)
             list_lay.addWidget(card)
 
         list_lay.addStretch()
@@ -202,6 +214,45 @@ class SteamLibraryDialog(QDialog):
             scroll.setFixedHeight(220)
 
         body_lay.addWidget(scroll)
+
+        # Remember my choice Checkbox
+        self.remember_chk = QCheckBox("Remember my choice")
+        self.remember_chk.setChecked(False)
+        self.remember_chk.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remember_chk.setStyleSheet("""
+            QCheckBox {
+                font-size: 8.5pt;
+                color: rgba(255, 255, 255, 0.75);
+                spacing: 7px;
+                border: none;
+                outline: none;
+                background: transparent;
+            }
+            QCheckBox:focus {
+                border: none;
+                outline: none;
+            }
+            QCheckBox::indicator {
+                width: 15px;
+                height: 15px;
+                border: none;
+                border-radius: 3px;
+                background: rgba(255, 255, 255, 0.12);
+                outline: none;
+            }
+            QCheckBox::indicator:hover {
+                background: rgba(255, 255, 255, 0.22);
+            }
+            QCheckBox::indicator:checked {
+                background: %s;
+                border: none;
+            }
+            QCheckBox::indicator:focus {
+                border: none;
+                outline: none;
+            }
+        """ % self.accent_color)
+        body_lay.addWidget(self.remember_chk)
 
         # Bottom row: Cancel / Proceed (big buttons filling bottom width)
         bot_layout = QHBoxLayout()
@@ -386,6 +437,10 @@ class SteamLibraryDialog(QDialog):
             else:
                 item["frame"].setStyleSheet(unsel_style)
 
+    def should_remember(self) -> bool:
+        """Return whether user checked 'Remember my choice'."""
+        return bool(hasattr(self, "remember_chk") and self.remember_chk.isChecked())
+
     def accept(self) -> None:
         """Handle Proceed button click."""
         for item in self.card_widgets:
@@ -396,6 +451,10 @@ class SteamLibraryDialog(QDialog):
         if not self.selected_path:
             ThemedMessageBox.warning(self, "No Selection", "Please select a Steam library folder.")
             return
+
+        if self.should_remember() and self.selected_path:
+            self.settings.setValue("default_download_directory", self.selected_path)
+            logger.info(f"[SteamLibraryDialog] Remembered default storage library: {self.selected_path}")
 
         logger.info(f"User selected Steam library: {self.selected_path}")
         super().accept()

@@ -502,6 +502,13 @@ class DepotSelectionDialog(
         if hasattr(self, "app_id") and self.app_id:
             ImageFetcher.promote_to_permanent_cache(self.app_id)
 
+        # Remember storage choice if requested
+        if hasattr(self, "should_remember_storage") and self.should_remember_storage():
+            chosen = self.get_selected_storage()
+            if chosen and hasattr(self, "_settings") and self._settings:
+                self._settings.setValue("default_download_directory", chosen)
+                logger.info(f"[DepotSelection] Remembered default storage library: {chosen}")
+
         super().accept()
 
     def closeEvent(self, a0):
