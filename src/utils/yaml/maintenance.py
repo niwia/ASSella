@@ -332,3 +332,42 @@ def remove_launch_option(config_path: Path, app_id: str) -> bool:
         f"Removed AppID '{app_id}' from LaunchOptions in {config_path}",
         f"Failed to remove LaunchOptions for AppID '{app_id}': {{e}}"
     )
+
+
+def build_bypass_launch_command(relative_exe_path: str) -> str:
+    """Build the SLSsteam LaunchOptions command to bypass a launcher.
+
+    Uses bash array index replacement to target the final command argument:
+    bash -c "cmd=(%command%)"'; cmd[-1]="$PWD/<relativeExe>"; "${cmd[@]}"'
+    """
+    clean_rel = relative_exe_path.replace("\\", "/").lstrip("/")
+    cmd_raw = f'bash -c "cmd=(%command%)"\'; cmd[-1]="$PWD/{clean_rel}"; "${{cmd[@]}}"\''
+    return '"' + cmd_raw.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def extract_bypass_exe(launch_option_str: Optional[str]) -> Optional[str]:
+    """Extract relative executable path from a bypass LaunchOptions command, or None."""
+    if not launch_option_str:
+        return None
+    m = re.search(r'cmd\[-1\]=\\?["\']?\$PWD/([^";\'\n\\]+)', launch_option_str)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def get_bypass_exe(config_path: Path, app_id: str) -> Optional[str]:
+    """Get the bypassed relative executable for an AppID, if configured."""
+    opt = get_launch_option(config_path, app_id)
+    return extract_bypass_exe(opt)
+
+
+def set_bypass_exe(config_path: Path, app_id: str, relative_exe_path: str) -> bool:
+    """Configure launcher bypass for an AppID in SLSsteam config.yaml."""
+    cmd = build_bypass_launch_command(relative_exe_path)
+    return add_launch_option(config_path, app_id, cmd)
+
+
+def remove_bypass(config_path: Path, app_id: str) -> bool:
+    """Remove launcher bypass for an AppID from SLSsteam config.yaml."""
+    return remove_launch_option(config_path, app_id)
+

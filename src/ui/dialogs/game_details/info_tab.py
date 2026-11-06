@@ -344,13 +344,17 @@ def init_info_tab(dialog) -> None:
     dialog.eos_tile.setVisible(False)
     dialog.bottom_tiles_layout.addWidget(dialog.eos_tile)
 
+    dialog.bypass_tile = SwitchTile("Bypass", "Inactive", dialog, is_toggle=True)
+    dialog.bypass_tile.setVisible(False)
+    dialog.bottom_tiles_layout.addWidget(dialog.bypass_tile)
+
     dialog.eos_exp_tile = SwitchTile("EOS Experimental", "", dialog, is_toggle=False)
     dialog.eos_exp_tile.setEnabled(False)
     dialog.eos_exp_tile.setToolTip("Experimental EOS proxy (coming later)")
     dialog.eos_exp_tile.setVisible(False)
     eos_row.addWidget(dialog.eos_exp_tile)  # not offered yet; stays hidden
     dialog.bottom_tiles_layout.addStretch(1)
-    for _t in (dialog.sls_tile, dialog.netsock_tile, dialog.eos_tile, dialog.eos_exp_tile):
+    for _t in (dialog.sls_tile, dialog.netsock_tile, dialog.eos_tile, dialog.eos_exp_tile, dialog.bypass_tile):
         _t.update_state(False, dialog.accent_color)
 
     lay.addWidget(bottom_tiles_widget)
@@ -1474,6 +1478,13 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
             dialog.eos_tile.setEnabled(False)
             dialog.eos_tile.setToolTip("Not available in DLC-Only mode")
             dialog.eos_tile.blockSignals(False)
+        if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
+            dialog.bypass_tile.blockSignals(True)
+            dialog.bypass_tile.setChecked(False)
+            dialog.bypass_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
+            dialog.bypass_tile.setEnabled(False)
+            dialog.bypass_tile.setToolTip("Not available in DLC-Only mode")
+            dialog.bypass_tile.blockSignals(False)
         if hasattr(dialog, "ws_tab_btn") and dialog.ws_tab_btn:
             dialog.ws_tab_btn.setVisible(False)
             if hasattr(dialog, "ws_page_index") and dialog.stacked.currentIndex() == dialog.ws_page_index:
@@ -1487,6 +1498,9 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
         if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
             dialog.netsock_tile.setEnabled(True)
             dialog.netsock_tile.setToolTip("")
+        if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
+            dialog.bypass_tile.setEnabled(True)
+            dialog.bypass_tile.setToolTip("")
         init_slsonline_logic(dialog)
         update_eos_btn_state(dialog)
         if hasattr(dialog, "ws_tab_btn") and dialog.ws_tab_btn:
@@ -1510,6 +1524,9 @@ def update_eos_btn_state(dialog) -> None:
         if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
             dialog.netsock_tile.setEnabled(False)
             dialog.netsock_tile.setToolTip("Not available in DLC-Only mode")
+        if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
+            dialog.bypass_tile.setEnabled(False)
+            dialog.bypass_tile.setToolTip("Not available in DLC-Only mode")
         if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
             dialog.eos_exp_tile.setEnabled(False)
             dialog.eos_exp_tile.setToolTip("Not available in DLC-Only mode")
@@ -1517,24 +1534,33 @@ def update_eos_btn_state(dialog) -> None:
 
     install_path = dialog.game_data.get("install_path")
     if not install_path or not os.path.exists(install_path):
+        if dialog.game_data.get("is_atom") or dialog.game_data.get("is_vapor"):
+            from utils.plugin_games import get_atom_game_install_path
+            resolved = get_atom_game_install_path(dialog.appid)
+            if resolved and os.path.exists(resolved):
+                install_path = resolved
+                dialog.game_data["install_path"] = resolved
+
+    # EOS status requires an existing installation folder
+    if not install_path or not os.path.exists(install_path):
         if hasattr(dialog, "eos_tile") and dialog.eos_tile:
             dialog.eos_tile.setVisible(False)
-        if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
-            dialog.netsock_tile.setVisible(False)
         if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
             dialog.eos_exp_tile.setVisible(False)
-        return
+        status = "none"
+    else:
+        from utils.eos_detector import EOSDetector
+        status = EOSDetector.get_proxy_status(install_path)
 
-    from utils.eos_detector import EOSDetector
-    status = EOSDetector.get_proxy_status(install_path)
     is_sls_active = dialog.sls_tile.isChecked() if hasattr(dialog, "sls_tile") else False
 
-    # One row: SLSonline · Id · Netsock, plus the two EOS switches when the
-    # game ships EOS.
+    # One row: SLSonline · Id · Netsock · EOS Proxy · Bypass
     if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
         dialog.netsock_tile.setVisible(True)
     if hasattr(dialog, "eos_tile") and dialog.eos_tile:
         dialog.eos_tile.setVisible(status != "none")
+    if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
+        dialog.bypass_tile.setVisible(True)
     if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
         dialog.eos_exp_tile.setVisible(False)  # EOS Experimental is not available yet
 
@@ -1558,18 +1584,25 @@ def update_eos_btn_state(dialog) -> None:
                 dialog.eos_tile.update_state(False, dialog.accent_color, active_sub="Remove Proxy", inactive_sub="Enable Proxy")
                 dialog.eos_tile.setToolTip("Apply Epic Online Services proxy DLL.")
 
-    # Always update Netsock state
-    if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
-        from utils.yaml_config_manager import get_user_config_path, get_launch_option
-        cfg_path = get_user_config_path()
-        cur_opt = get_launch_option(cfg_path, str(dialog.appid)) if cfg_path.exists() else None
-        is_netsock_configured = bool(cur_opt and "netsock.so" in cur_opt)
+    # Always update Netsock and Bypass states
+    from utils.yaml_config_manager import get_user_config_path, get_launch_option, extract_bypass_exe
+    cfg_path = get_user_config_path()
+    cur_opt = get_launch_option(cfg_path, str(dialog.appid)) if cfg_path.exists() else None
+    is_netsock_configured = bool(cur_opt and "netsock.so" in cur_opt)
+    bypass_exe = extract_bypass_exe(cur_opt)
+    is_bypass_configured = bool(cur_opt and bypass_exe)
 
+    if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
         if not is_sls_active:
             dialog.netsock_tile.setEnabled(False)
             dialog.netsock_tile.setChecked(False)
             dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Enable SLSonline")
             dialog.netsock_tile.setToolTip("Activate SLSonline first to enable Netsock.")
+        elif is_bypass_configured:
+            dialog.netsock_tile.setEnabled(False)
+            dialog.netsock_tile.setChecked(False)
+            dialog.netsock_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
+            dialog.netsock_tile.setToolTip("Disable Launcher Bypass before enabling Netsock.")
         else:
             dialog.netsock_tile.setEnabled(True)
             dialog.netsock_tile.setChecked(is_netsock_configured)
@@ -1584,17 +1617,48 @@ def update_eos_btn_state(dialog) -> None:
             else:
                 dialog.netsock_tile.setToolTip("Enable Netsock LD_AUDIT patch for Steam Networking Sockets.")
 
+    if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
+        if is_netsock_configured:
+            dialog.bypass_tile.setEnabled(False)
+            dialog.bypass_tile.setChecked(False)
+            dialog.bypass_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
+            dialog.bypass_tile.setToolTip("Disable Netsock before enabling Launcher Bypass.")
+        elif is_bypass_configured:
+            dialog.bypass_tile.setEnabled(True)
+            dialog.bypass_tile.setChecked(True)
+            dialog.bypass_tile.update_state(True, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
+            dialog.bypass_tile.setToolTip(f"Launcher bypass active: $PWD/{bypass_exe}\nClick to change or clear.")
+        else:
+            has_folder = bool(install_path and os.path.isdir(install_path))
+            if not has_folder:
+                dialog.bypass_tile.setEnabled(False)
+                dialog.bypass_tile.setChecked(False)
+                dialog.bypass_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
+                dialog.bypass_tile.setToolTip("Game folder not found on disk.")
+            else:
+                dialog.bypass_tile.setEnabled(True)
+                dialog.bypass_tile.setChecked(False)
+                dialog.bypass_tile.update_state(False, dialog.accent_color, active_sub="Active", inactive_sub="Inactive")
+                dialog.bypass_tile.setToolTip("Bypass third-party launcher for this game.")
+
 
 def on_netsock_btn_clicked(dialog) -> None:
     from utils.yaml_config_manager import (
         get_user_config_path, get_launch_option, add_launch_option,
-        remove_launch_option, ensure_netsock_binary, get_netsock_so_launch_path
+        remove_launch_option, ensure_netsock_binary, get_netsock_so_launch_path,
+        extract_bypass_exe
     )
     config = get_user_config_path()
     if not config.exists():
         return
 
     cur_opt = get_launch_option(config, str(dialog.appid))
+    if cur_opt and extract_bypass_exe(cur_opt):
+        from ui.dialogs.themed_message_box import ThemedMessageBox
+        ThemedMessageBox.warning(dialog, "Bypass Active", "Disable Launcher Bypass before enabling Netsock.")
+        dialog.netsock_tile.setChecked(False)
+        return
+
     is_currently_active = bool(cur_opt and "netsock.so" in cur_opt)
 
     if not is_currently_active:
@@ -1634,6 +1698,80 @@ def on_netsock_btn_clicked(dialog) -> None:
             ThemedMessageBox.information(dialog, "Netsock Disabled", "Netsock multiplayer patch has been removed for this game.")
         else:
             ThemedMessageBox.warning(dialog, "Error", "Failed to remove LaunchOptions from config.yaml.")
+
+    update_eos_btn_state(dialog)
+
+
+def on_bypass_btn_clicked(dialog) -> None:
+    from utils.yaml_config_manager import (
+        get_user_config_path, get_launch_option,
+        set_bypass_exe, remove_bypass, extract_bypass_exe,
+        is_slssteam_config_management_enabled
+    )
+    from ui.dialogs.game_details.bypass_picker_dialog import BypassPickerDialog
+    from ui.dialogs.themed_message_box import ThemedMessageBox
+
+    if not is_slssteam_config_management_enabled() or dialog.appid in ("0", "N/A", "unknown", "480"):
+        ThemedMessageBox.warning(dialog, "Unavailable", "SLSsteam config management is not enabled for this game.")
+        update_eos_btn_state(dialog)
+        return
+
+    config = get_user_config_path()
+    if not config.exists():
+        ThemedMessageBox.warning(dialog, "Error", f"SLSsteam config.yaml not found at {config}")
+        update_eos_btn_state(dialog)
+        return
+
+    cur_opt = get_launch_option(config, str(dialog.appid))
+    if cur_opt and "netsock.so" in cur_opt:
+        ThemedMessageBox.warning(dialog, "Netsock Active", "Disable Netsock before configuring Launcher Bypass.")
+        update_eos_btn_state(dialog)
+        return
+
+    current_bypass_exe = extract_bypass_exe(cur_opt)
+
+    install_path = dialog.game_data.get("install_path")
+    if not install_path or not os.path.exists(install_path):
+        if dialog.game_data.get("is_atom") or dialog.game_data.get("is_vapor"):
+            from utils.plugin_games import get_atom_game_install_path
+            resolved = get_atom_game_install_path(dialog.appid)
+            if resolved and os.path.exists(resolved):
+                install_path = resolved
+                dialog.game_data["install_path"] = resolved
+
+    if (not install_path or not os.path.isdir(install_path)) and not current_bypass_exe:
+        ThemedMessageBox.warning(dialog, "Folder Not Found", "Game installation folder could not be located on disk.")
+        update_eos_btn_state(dialog)
+        return
+
+    picker = BypassPickerDialog(
+        parent=dialog,
+        install_path=install_path,
+        current_exe=current_bypass_exe,
+        accent_color=dialog.accent_color,
+    )
+    picker.exec()
+
+    if picker.result_action == "select" and picker.selected_exe:
+        if set_bypass_exe(config, str(dialog.appid), picker.selected_exe):
+            ThemedMessageBox.information(
+                dialog,
+                "Launcher Bypass Enabled",
+                f"Launcher bypass enabled for this game:\n\n{picker.selected_exe}"
+            )
+        else:
+            ThemedMessageBox.warning(dialog, "Error", "Failed to write LaunchOptions to config.yaml.")
+    elif picker.result_action == "clear":
+        if remove_bypass(config, str(dialog.appid)):
+            ThemedMessageBox.information(
+                dialog,
+                "Launcher Bypass Cleared",
+                "Launcher bypass has been removed for this game."
+            )
+        else:
+            ThemedMessageBox.warning(dialog, "Error", "Failed to remove LaunchOptions from config.yaml.")
+
+    update_eos_btn_state(dialog)
 
 
 def on_eos_btn_clicked(dialog) -> None:
@@ -1680,6 +1818,8 @@ def on_eos_btn_clicked(dialog) -> None:
 def init_slsonline_logic(dialog) -> None:
     dialog.eos_tile.clicked.connect(lambda: on_eos_btn_clicked(dialog))
     dialog.netsock_tile.clicked.connect(lambda: on_netsock_btn_clicked(dialog))
+    if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
+        dialog.bypass_tile.clicked.connect(lambda: on_bypass_btn_clicked(dialog))
 
     if is_slssteam_config_management_enabled() and dialog.appid not in ("0", "N/A", "unknown", "480"):
         config = get_user_config_path()
@@ -1746,10 +1886,12 @@ def init_slsonline_logic(dialog) -> None:
                     cur = get_fake_appid(config, dialog.appid)
                     if cur:
                         remove_fake_app_id(config, dialog.appid, cur)
-                    from utils.yaml_config_manager import remove_launch_option
-                    remove_launch_option(config, str(dialog.appid))
-                    if hasattr(dialog, "netsock_tile"):
-                        dialog.netsock_tile.setChecked(False)
+                    from utils.yaml_config_manager import get_launch_option, remove_launch_option
+                    cur_opt = get_launch_option(config, str(dialog.appid))
+                    if cur_opt and "netsock.so" in cur_opt:
+                        remove_launch_option(config, str(dialog.appid))
+                        if hasattr(dialog, "netsock_tile"):
+                            dialog.netsock_tile.setChecked(False)
                 update_eos_btn_state(dialog)
 
             def _fin():
