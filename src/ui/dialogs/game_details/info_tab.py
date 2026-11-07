@@ -1277,7 +1277,7 @@ def build_uninstall_panel(dialog) -> None:
             options.extend([
                 (
                     "compat",
-                    "Remove Proton/Wine prefix (Warning: Contains Windows saves)",
+                    "Remove Proton prefix (has Windows saves)",
                     "Permanently deletes the entire Proton prefix directory, including any local Windows save games stored in AppData, Documents, and Saved Games.",
                 ),
                 (

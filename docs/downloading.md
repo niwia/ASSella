@@ -13,7 +13,7 @@ ASSella can put a game on your system in two ways. Both start the same way: find
 You can move a game between the two later from its [Game Details](/game-details) page (**Move to AT0-M** / **Move to ASSella**).
 
 ::: tip Before you start
-Finish the [Installation Guide](/install) first: your Hubcap key must be saved in **Settings → Integrations**. For the AT0-M way, also turn on **Settings → AT0-M → Enable plugins**.
+Finish the [Installation Guide](/install) first: your Hubcap key must be saved in **Settings → Integrations**. For the AT0-M way, also turn on **Settings → at0-m → Enable plugins** ([AT0-M setup](/at0m)).
 :::
 
 ---
@@ -65,6 +65,8 @@ ASSella writes the game's apps, depots and decryption keys into SLSsteam's `conf
 - **Always ask** — ASSella asks each time.
 
 Steam then downloads, updates and verifies the game itself, exactly like a game you own. If a game only ships Windows files, ASSella offers to force Proton for it.
+
+Want to know what happens underneath, or what each AT0-M setting does? See **[AT0-M](/at0m)** and **[Plugins](/plugins)**.
 
 ::: tip Also from Game Mode and your browser
 The same AT0-M library is shared with [Uran](/uran) (Decky plugin, Game Mode) and [Epsilon](/epsilon) (an *Add to at0-m* button on Steam Store and SteamDB pages).

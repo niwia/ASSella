@@ -184,7 +184,7 @@ class ManualRollbackDialog(QDialog):
         layout.addLayout(mid_row)
 
         # Pin build checkbox
-        self.pin_checkbox = QCheckBox("Pin build (stop the ACCELA auto-updater overriding it)")
+        self.pin_checkbox = QCheckBox("Pin build (stop ASSella updating it again)")
         self.pin_checkbox.setChecked(True)
         self.pin_checkbox.setToolTip(
             "Keeps ACCELA from updating this game past the build you roll back to."
