@@ -6,6 +6,7 @@ import logging
 import time
 from PyQt6.QtCore import Qt, QSize, QUrl
 from PyQt6.QtGui import QPixmap, QDesktopServices, QIcon
+from PyQt6.sip import delete
 
 logger = logging.getLogger(__name__)
 from PyQt6.QtWidgets import (
@@ -163,6 +164,132 @@ def set_build_snippet(dialog, build: str, state: str, tooltip: str = "") -> None
     lbl.setToolTip(tooltip or "Installed build")
 
 
+def _clear_hero_layout(dialog):
+    if hasattr(dialog, "hero") and dialog.hero and dialog.hero.layout() is not None:
+        l = dialog.hero.layout()
+        def _drain(lay):
+            while lay.count():
+                item = lay.takeAt(0)
+                sub = item.layout()
+                if sub:
+                    _drain(sub)
+                    delete(sub)
+        _drain(l)
+        delete(l)
+
+
+def apply_classic_header(dialog) -> None:
+    """Classic header layout used when SteamGridDB logos are disabled or unavailable."""
+    _clear_hero_layout(dialog)
+    dialog.hero.setFixedHeight(100)
+
+    banner_layout = QVBoxLayout(dialog.hero)
+    banner_layout.setContentsMargins(14, 8, 14, 10)
+    banner_layout.setSpacing(3)
+
+    top_row = QHBoxLayout()
+    top_row.setContentsMargins(0, 0, 0, 0)
+    top_row.setSpacing(10)
+
+    left_col = QVBoxLayout()
+    left_col.setContentsMargins(0, 0, 0, 0)
+    left_col.setSpacing(0)
+
+    name_row = QHBoxLayout()
+    name_row.setSpacing(8)
+    dialog.name_lbl.show()
+    name_row.addWidget(dialog.name_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+    dialog.mode_logo_lbl.show()
+    name_row.addWidget(dialog.mode_logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+    name_row.addStretch(1)
+    dialog._ratings_row = name_row
+    left_col.addLayout(name_row)
+
+    dialog.appid_lbl.show()
+    left_col.addWidget(dialog.appid_lbl, 0, Qt.AlignmentFlag.AlignLeft)
+    top_row.addLayout(left_col, 1)
+
+    top_row.addWidget(dialog._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+    banner_layout.addLayout(top_row)
+
+    # Snippets row: size · build · installed date · denuvo · steamdb
+    snip_row = QHBoxLayout()
+    snip_row.setSpacing(6)
+    snip_row.addWidget(dialog.size_val_lbl)
+    snip_row.addWidget(dialog.build_val_lbl)
+    snip_row.addWidget(dialog.date_val_lbl)
+    snip_row.addWidget(dialog._denuvo_badge_lbl)
+    snip_row.addStretch(1)
+    snip_row.addWidget(dialog._steamdb_btn, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
+
+    banner_layout.addSpacing(6)
+    banner_layout.addLayout(snip_row)
+    dialog.logo_lbl.hide()
+
+
+def apply_logo_header(dialog, pixmap: QPixmap) -> None:
+    """Refined logo header layout: bounded logo on left, 5-line metadata stack, ProtonDB top-right, SteamDB bottom-right."""
+    _clear_hero_layout(dialog)
+    dialog.hero.setFixedHeight(116)
+
+    banner_layout = QHBoxLayout(dialog.hero)
+    banner_layout.setContentsMargins(16, 8, 16, 8)
+    banner_layout.setSpacing(14)
+
+    # 1. Bounded logo container on left: max 220px width x 95px height
+    dialog.name_lbl.hide()
+    scaled = pixmap.scaled(220, 95, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    dialog.logo_lbl.setPixmap(scaled)
+    dialog.logo_lbl.setFixedSize(220, 95)
+    dialog.logo_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+    dialog.logo_lbl.setToolTip(dialog.game_data.get("game_name", ""))
+    dialog.logo_lbl.show()
+    banner_layout.addWidget(dialog.logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    # 2. Metadata column stacked directly to the right:
+    # Line 1: assella/steam logo
+    # Line 2: appid
+    # Line 3: size
+    # Line 4: buildid  date
+    # Line 5: denuvo (if it has)
+    meta_col = QVBoxLayout()
+    meta_col.setContentsMargins(0, 0, 0, 0)
+    meta_col.setSpacing(2)
+    meta_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+    dialog.mode_logo_lbl.show()
+    meta_col.addWidget(dialog.mode_logo_lbl, 0, Qt.AlignmentFlag.AlignLeft)
+
+    dialog.appid_lbl.show()
+    meta_col.addWidget(dialog.appid_lbl, 0, Qt.AlignmentFlag.AlignLeft)
+
+    dialog.size_val_lbl.show()
+    meta_col.addWidget(dialog.size_val_lbl, 0, Qt.AlignmentFlag.AlignLeft)
+
+    build_date_row = QHBoxLayout()
+    build_date_row.setContentsMargins(0, 0, 0, 0)
+    build_date_row.setSpacing(6)
+    build_date_row.addWidget(dialog.build_val_lbl)
+    build_date_row.addWidget(dialog.date_val_lbl)
+    build_date_row.addStretch(1)
+    meta_col.addLayout(build_date_row)
+
+    meta_col.addWidget(dialog._denuvo_badge_lbl, 0, Qt.AlignmentFlag.AlignLeft)
+
+    banner_layout.addLayout(meta_col, 0)
+    banner_layout.addStretch(1)
+
+    # 3. Right column: ProtonDB on top right, SteamDB on bottom right
+    right_col = QVBoxLayout()
+    right_col.setContentsMargins(0, 0, 0, 0)
+    right_col.setSpacing(0)
+    right_col.addWidget(dialog._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+    right_col.addStretch(1)
+    right_col.addWidget(dialog._steamdb_btn, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
+
+    banner_layout.addLayout(right_col, 0)
+
+
 def init_hero_v2(dialog, root) -> None:
     """Header: name with the mode logo, italic clickable AppID, and snippets
     for size, installed build (orange "!" when an update exists) and date."""
@@ -170,25 +297,14 @@ def init_hero_v2(dialog, root) -> None:
 
     is_atom = _is_atom_game(dialog)
     dialog.hero = HeroBanner(bg_hex=dialog.background_color)
-    dialog.hero.setMinimumHeight(100)
-    dialog.hero.setMaximumHeight(115)
-    banner_layout = QHBoxLayout(dialog.hero)
-    banner_layout.setContentsMargins(16, 10, 16, 10)
-    banner_layout.setSpacing(14)
-
-    # 1. Left container: Game Logo (or Title text) + mode icon
-    logo_container = QHBoxLayout()
-    logo_container.setSpacing(8)
 
     dialog.logo_lbl = QLabel()
     dialog.logo_lbl.setStyleSheet("background: transparent;")
     dialog.logo_lbl.hide()
-    logo_container.addWidget(dialog.logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
     dialog.name_lbl = QLabel()
     dialog.name_lbl.setStyleSheet("font-size: 13pt; font-weight: bold; color: #FFFFFF; background: transparent;")
     dialog.name_lbl.setMaximumHeight(28)
-    logo_container.addWidget(dialog.name_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
     dialog.mode_logo_lbl = QLabel()
     dialog.mode_logo_lbl.setStyleSheet("background: transparent;")
@@ -198,18 +314,7 @@ def init_hero_v2(dialog, root) -> None:
     dialog.mode_logo_lbl.setToolTip(
         "AT0-M: installed and updated by the Steam client" if is_atom else "Managed by ASSella"
     )
-    logo_container.addWidget(dialog.mode_logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
-    dialog._ratings_row = logo_container
 
-    banner_layout.addLayout(logo_container, 0)
-
-    # 2. Metadata column to the right of the logo: AppID, Snippets (Size, Build, Date), Denuvo
-    meta_col = QVBoxLayout()
-    meta_col.setContentsMargins(0, 0, 0, 0)
-    meta_col.setSpacing(3)
-    meta_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-
-    # Row 1: AppID
     dialog.appid_lbl = QPushButton(str(dialog.appid))
     dialog.appid_lbl.setFlat(True)
     dialog.appid_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -227,11 +332,8 @@ def init_hero_v2(dialog, root) -> None:
         QTimer.singleShot(1200, lambda: dialog.appid_lbl.setText(str(dialog.appid)))
 
     dialog.appid_lbl.clicked.connect(_copy_appid)
-    meta_col.addWidget(dialog.appid_lbl, 0, Qt.AlignmentFlag.AlignLeft)
 
-    # Row 2: Snippets: Size · Build · Installed date
-    snip_row = QHBoxLayout()
-    snip_row.setSpacing(6)
+    # Snippets: size · build · installed date
     if dialog.parent_window and hasattr(dialog.parent_window, "_format_size"):
         size_str = dialog.parent_window._format_size(dialog.game_data.get("size_on_disk", 0))
     else:
@@ -242,7 +344,6 @@ def init_hero_v2(dialog, root) -> None:
         )
     dialog.size_val_lbl = _snippet(size_str, "Size on disk")
     dialog.size_val_lbl.setEnabled(False)
-    snip_row.addWidget(dialog.size_val_lbl)
 
     dialog.build_val_lbl = _snippet("")
     dialog._hero_build_val_lbl = dialog.build_val_lbl
@@ -260,33 +361,18 @@ def init_hero_v2(dialog, root) -> None:
     dialog.build_val_lbl.setCursor(Qt.CursorShape.ArrowCursor)
     dialog.build_val_lbl.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     dialog.build_val_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-    snip_row.addWidget(dialog.build_val_lbl)
 
     date_str = get_installed_date(dialog)
     dialog.date_val_lbl = _snippet(date_str or "--/--/--",
                                    f"Installed build installed on {date_str}" if date_str else "Install date unknown")
     dialog.date_val_lbl.setEnabled(False)
     dialog.date_val_lbl.setVisible(bool(date_str))
-    snip_row.addWidget(dialog.date_val_lbl)
+
     for w in (dialog.size_val_lbl, dialog.date_val_lbl):
         w.setStyleSheet(w.styleSheet() + " QPushButton:disabled { color: #E8E8EE; }")
-    meta_col.addLayout(snip_row)
 
-    # Row 3: Denuvo badge
     dialog._denuvo_badge_lbl = QLabel()
     dialog._denuvo_badge_lbl.hide()
-    meta_col.addWidget(dialog._denuvo_badge_lbl, 0, Qt.AlignmentFlag.AlignLeft)
-
-    banner_layout.addLayout(meta_col, 0)
-    banner_layout.addStretch(1)
-
-    # 3. Far right column (top-right aligned): ProtonDB tier + SteamDB logo button
-    right_col = QVBoxLayout()
-    right_col.setContentsMargins(0, 0, 0, 0)
-    right_col.setSpacing(0)
-
-    right_badges_row = QHBoxLayout()
-    right_badges_row.setSpacing(8)
 
     dialog._proton_badge_lbl = QPushButton()
     dialog._proton_badge_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -295,7 +381,6 @@ def init_hero_v2(dialog, root) -> None:
         lambda: QDesktopServices.openUrl(QUrl(f"https://www.protondb.com/app/{dialog.appid}"))
     )
     dialog._proton_badge_btn = dialog._proton_badge_lbl
-    right_badges_row.addWidget(dialog._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
     dialog._steamdb_btn = QPushButton()
     dialog._steamdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -327,12 +412,22 @@ def init_hero_v2(dialog, root) -> None:
     dialog._steamdb_btn.clicked.connect(
         lambda: QDesktopServices.openUrl(QUrl(f"https://steamdb.info/app/{dialog.appid}/"))
     )
-    right_badges_row.addWidget(dialog._steamdb_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
-    right_col.addLayout(right_badges_row)
-    right_col.addStretch(1)
+    from utils.settings import get_settings
+    settings = get_settings()
+    fetch_logos_on = settings.value("steamgriddb_fetch_logos", False, type=bool)
+    from pathlib import Path
+    cache_dir = Path.home() / ".local" / "share" / "ACCELA" / "image_cache" / "logos"
+    cache_file = cache_dir / f"{dialog.appid}.png"
 
-    banner_layout.addLayout(right_col, 0)
+    if fetch_logos_on and cache_file.is_file():
+        px_cached = QPixmap(str(cache_file))
+        if not px_cached.isNull():
+            apply_logo_header(dialog, px_cached)
+        else:
+            apply_classic_header(dialog)
+    else:
+        apply_classic_header(dialog)
 
     update_title(dialog)
 
@@ -596,10 +691,12 @@ def load_title_logo(dialog) -> None:
 
     settings = get_settings()
     if not settings.value("steamgriddb_fetch_logos", False, type=bool):
+        apply_classic_header(dialog)
         return
 
     appid = str(getattr(dialog, "appid", "") or "")
     if not appid or appid in ("0", "N/A", "unknown"):
+        apply_classic_header(dialog)
         return
 
     from pathlib import Path
@@ -608,18 +705,13 @@ def load_title_logo(dialog) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"{appid}.png"
 
-    def _apply_pixmap(px: QPixmap):
-        if not px.isNull() and hasattr(dialog, "logo_lbl") and hasattr(dialog, "name_lbl"):
-            scaled = px.scaled(280, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            dialog.logo_lbl.setPixmap(scaled)
-            dialog.logo_lbl.setToolTip(dialog.game_data.get("game_name", ""))
-            dialog.logo_lbl.show()
-            dialog.name_lbl.hide()
-
     if cache_file.is_file():
         px = QPixmap(str(cache_file))
         if not px.isNull():
-            _apply_pixmap(px)
+            apply_logo_header(dialog, px)
+            return
+        else:
+            apply_classic_header(dialog)
             return
 
     import threading
@@ -631,9 +723,13 @@ def load_title_logo(dialog) -> None:
 
             assets = sgdb.get_assets("logos", appid, settings=settings)
             if not assets:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: apply_classic_header(dialog))
                 return
             logo_url = assets[0].get("url")
             if not logo_url:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: apply_classic_header(dialog))
                 return
             resp = requests.get(logo_url, timeout=8)
             if resp.status_code == 200 and resp.content:
@@ -643,11 +739,21 @@ def load_title_logo(dialog) -> None:
                 def _apply():
                     px = QPixmap()
                     px.loadFromData(resp.content)
-                    _apply_pixmap(px)
+                    if not px.isNull():
+                        apply_logo_header(dialog, px)
+                        if hasattr(dialog, "_fit_height_for_tab"):
+                            dialog._fit_height_for_tab(0)
+                    else:
+                        apply_classic_header(dialog)
 
                 QTimer.singleShot(0, _apply)
+            else:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: apply_classic_header(dialog))
         except Exception as e:
             logger.debug(f"[HeroHeader] Failed fetching title logo for {appid}: {e}")
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: apply_classic_header(dialog))
 
     threading.Thread(target=_fetch_worker, daemon=True).start()
 
