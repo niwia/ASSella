@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 from ui.dialogs.themed_message_box import ThemedMessageBox
+from utils.font_safety import status_dot
 
 logger = logging.getLogger(__name__)
 
@@ -475,7 +476,7 @@ def create_health_tab(dialog) -> QWidget:
     rec_header_row.addWidget(rec_title_lbl)
     rec_header_row.addStretch()
 
-    dialog.rec_score_badge = QLabel("● Checking...")
+    dialog.rec_score_badge = QLabel(f"{status_dot()} Checking...")
     dialog.rec_score_badge.setStyleSheet("font-size: 8.5pt; font-weight: bold; color: #81C784; background: rgba(76, 175, 80, 0.12); border: 1px solid rgba(76, 175, 80, 0.35); border-radius: 6px; padding: 2px 10px;")
     rec_header_row.addWidget(dialog.rec_score_badge)
     rec_layout.addLayout(rec_header_row)
@@ -706,7 +707,7 @@ def update_rec_score_badge(dialog) -> None:
     active_count = sum(1 for chk in chk_list if chk and chk.isChecked())
     total = len(chk_list)
     if active_count == total:
-        dialog.rec_score_badge.setText(f"● {active_count}/{total} Optimal")
+        dialog.rec_score_badge.setText(f"{status_dot()} {active_count}/{total} Optimal")
         dialog.rec_score_badge.setStyleSheet(
             "font-size: 8.5pt; font-weight: bold; color: #81C784; "
             "background: rgba(76, 175, 80, 0.12); "
@@ -717,7 +718,7 @@ def update_rec_score_badge(dialog) -> None:
             dialog.health_apply_rec_btn.setEnabled(False)
             dialog.health_apply_rec_btn.setToolTip("All recommended settings are already applied.")
     else:
-        dialog.rec_score_badge.setText(f"● {active_count}/{total} Recommended")
+        dialog.rec_score_badge.setText(f"{status_dot()} {active_count}/{total} Recommended")
         dialog.rec_score_badge.setStyleSheet(
             "font-size: 8.5pt; font-weight: bold; color: #FFB74D; "
             "background: rgba(255, 152, 0, 0.12); "

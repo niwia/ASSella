@@ -13,15 +13,19 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QLineEdit
 
 VISIBLE_PREFIX = 5
-MASK_CHAR = "•"
+MASK_CHAR = "•"  # preferred; mask_key() falls back to "*" when the UI font lacks it
 
 
 def mask_key(key: str) -> str:
     key = key or ""
     if len(key) <= VISIBLE_PREFIX:
         return key
-    # One dot per hidden character, so the masked key is as long as the real one.
-    return key[:VISIBLE_PREFIX] + MASK_CHAR * (len(key) - VISIBLE_PREFIX)
+    # One mask character per hidden character, so the masked key is as long as
+    # the real one. "*" when the font has no bullet: a missing glyph makes Qt
+    # look for a fallback font, which crashes on some systems (utils/font_safety).
+    from utils.font_safety import mask_char
+
+    return key[:VISIBLE_PREFIX] + mask_char() * (len(key) - VISIBLE_PREFIX)
 
 
 class ApiKeyField(QLineEdit):

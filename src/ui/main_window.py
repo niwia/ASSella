@@ -1515,7 +1515,9 @@ class MainWindow(QMainWindow):
 
     def open_settings(self, initial_tab: Optional[str] = None) -> None:
         from ui.dialogs.settings import SettingsDialog
+        from utils.font_safety import wait_for_probe
 
+        wait_for_probe()  # normally long finished; see utils/font_safety.py
         dialog = SettingsDialog(self, initial_tab=initial_tab)
         dialog.exec()
         self._check_network_connections_async()

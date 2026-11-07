@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 )
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.themed_dialog import install_themed_frame
+from utils.font_safety import status_dot
 
 logger = logging.getLogger(__name__)
 
@@ -175,24 +176,24 @@ class FixPreviewDialog(QDialog):
         # Legend explanation
         if self.mode == "apply":
             legend_lbl = QLabel(
-                '<span style="color: #fb923c; font-weight: 600;">●</span> '
+                f'<span style="color: #fb923c; font-weight: 600;">{status_dot()}</span> '
                 '<span style="color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;">Orange files replace existing game files</span>'
                 '&nbsp;&nbsp;&nbsp;&nbsp;'
-                '<span style="color: #e2e8f0; font-weight: 600;">●</span> '
+                f'<span style="color: #e2e8f0; font-weight: 600;">{status_dot()}</span> '
                 '<span style="color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;">White files are newly added</span>'
             )
         else:
             legend_lbl = QLabel(
-                '<span style="color: #60a5fa; font-weight: 600;">●</span> '
+                f'<span style="color: #60a5fa; font-weight: 600;">{status_dot()}</span> '
                 '<span style="color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;">Blue: restore</span>'
                 '&nbsp;&nbsp;&nbsp;&nbsp;'
-                '<span style="color: #f87171; font-weight: 600;">●</span> '
+                f'<span style="color: #f87171; font-weight: 600;">{status_dot()}</span> '
                 '<span style="color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;">Red: delete</span>'
                 '&nbsp;&nbsp;&nbsp;&nbsp;'
-                '<span style="color: #a78bfa; font-weight: 600;">●</span> '
+                f'<span style="color: #a78bfa; font-weight: 600;">{status_dot()}</span> '
                 '<span style="color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;">Purple: other fix</span>'
                 '&nbsp;&nbsp;&nbsp;&nbsp;'
-                '<span style="color: #fbbf24; font-weight: 600;">●</span> '
+                f'<span style="color: #fbbf24; font-weight: 600;">{status_dot()}</span> '
                 '<span style="color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;">Amber: conflict</span>'
             )
         legend_lbl.setStyleSheet("margin-top: 2px;")

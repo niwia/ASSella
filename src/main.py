@@ -277,6 +277,15 @@ def main():
     else:
         logger.warning(f"Failed to load custom font: '{str(font_info)}'")
 
+    # Some systems crash inside fontconfig when Qt looks for a fallback font;
+    # detect that in a child process and turn fallback off if so.
+    try:
+        from utils import font_safety
+
+        font_safety.init(app)
+    except Exception as e:
+        logger.debug(f"Font safety check skipped: {e}")
+
     # -------------------------------------------------------------------------
     # Main Window Launch
     # -------------------------------------------------------------------------
