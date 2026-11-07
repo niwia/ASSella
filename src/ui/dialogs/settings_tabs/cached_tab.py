@@ -10,13 +10,14 @@ from __future__ import annotations
 import logging
 
 from PyQt6 import sip
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -26,6 +27,7 @@ from ui.sizes import size_control
 logger = logging.getLogger(__name__)
 
 _BATCH = 60
+_ROW_H = 46  # fits the standard control height plus padding
 MUTED = "color: rgba(255,255,255,0.55); font-size: 8.5pt; border: none; background: transparent;"
 
 
@@ -69,7 +71,7 @@ def create_cached_page(dialog) -> QWidget:
     lst.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
     lst.setStyleSheet(
         "QListWidget { background: transparent; border: none; }"
-        "QListWidget::item { border-bottom: 1px solid rgba(255,255,255,0.06); }"
+        "QListWidget::item { padding: 0; border-bottom: 1px solid rgba(255,255,255,0.06); }"
         "QListWidget::item:hover { background: rgba(255,255,255,0.04); }"
     )
     lay.addWidget(lst, 1)
@@ -89,7 +91,8 @@ def create_cached_page(dialog) -> QWidget:
         item = QListWidgetItem()
         w = QWidget()
         h = QHBoxLayout(w)
-        h.setContentsMargins(6, 3, 6, 3)
+        h.setContentsMargins(8, 0, 8, 0)
+        w.setFixedHeight(_ROW_H)
         lbl = QLabel(name)
         lbl.setToolTip(f"AppID {appid}")
         lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; border: none; background: transparent;")
@@ -98,7 +101,9 @@ def create_cached_page(dialog) -> QWidget:
         size_control(btn, None)
         h.addWidget(lbl, 1)
         h.addWidget(btn)
-        item.setSizeHint(w.sizeHint())
+        lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        btn.setFixedWidth(84)
+        item.setSizeHint(QSize(0, _ROW_H))
         lst.addItem(item)
         lst.setItemWidget(item, w)
 
