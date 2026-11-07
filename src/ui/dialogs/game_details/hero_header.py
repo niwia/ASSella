@@ -84,6 +84,25 @@ def _svg_icon(path: str, size: QSize, widget=None) -> QIcon:
         return QIcon(path)
 
 
+_PROTONDB_BADGE_QSS = (
+    "QPushButton { border: 1px solid #ECEFF1; border-radius: 4px; padding: 2px 8px;"
+    " font-size: 8.5pt; font-weight: bold; letter-spacing: 0.5px; }"
+)
+_badge_size_cache = None
+
+
+def _protondb_badge_size() -> QSize:
+    """Size of the ProtonDB badge showing PLATINUM (its widest common tier)."""
+    global _badge_size_cache
+    if _badge_size_cache is None:
+        probe = QPushButton("PLATINUM")
+        probe.setStyleSheet(_PROTONDB_BADGE_QSS)
+        probe.ensurePolished()
+        _badge_size_cache = probe.sizeHint()
+        probe.deleteLater()
+    return QSize(_badge_size_cache)
+
+
 def _is_atom_game(dialog) -> bool:
     gd = dialog.game_data or {}
     return bool(
@@ -494,18 +513,16 @@ def init_hero_v2(dialog, root) -> None:
     dialog._steamdb_btn = QPushButton()
     dialog._steamdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog._steamdb_btn.setToolTip(f"Open {dialog.appid} on SteamDB (https://steamdb.info/app/{dialog.appid}/)")
-    dialog._steamdb_btn.setFixedHeight(26)
-
-    # The bundled lockup is white line art. On the old see-through button it
-    # took on whatever the hero art behind it was; a solid dark plate keeps
-    # it legible, and rendering the SVG at the screen's pixel ratio keeps it sharp.
+    # Same size as the ProtonDB badge (its "PLATINUM" size), with the white
+    # lockup on a solid plate so it stays legible over any hero art.
+    dialog._steamdb_btn.setFixedSize(_protondb_badge_size())
     icon_path = Paths.icon("steamdb-lockup.svg")
     if not icon_path.exists():
         icon_path = Paths.resource("steamdb-lockup.svg")
     if icon_path.exists():
-        dialog._steamdb_btn.setIcon(_svg_icon(str(icon_path), QSize(84, 17), dialog))
-        dialog._steamdb_btn.setIconSize(QSize(84, 17))
-        dialog._steamdb_btn.setMinimumWidth(104)
+        icon_size = QSize(60, 12)
+        dialog._steamdb_btn.setIcon(_svg_icon(str(icon_path), icon_size, dialog))
+        dialog._steamdb_btn.setIconSize(icon_size)
     else:
         dialog._steamdb_btn.setText("SteamDB")
 
@@ -513,8 +530,11 @@ def init_hero_v2(dialog, root) -> None:
         QPushButton {
             background-color: #16191f;
             border: 1px solid rgba(255, 255, 255, 0.22);
-            border-radius: 6px;
-            padding: 3px 10px;
+            border-radius: 4px;
+            padding: 2px 8px;
+            color: #FFFFFF;
+            font-size: 8.5pt;
+            font-weight: bold;
         }
         QPushButton:hover {
             background-color: #232833;
