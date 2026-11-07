@@ -12,6 +12,9 @@ hero:
     - theme: brand
       text: Installation Guide
       link: /install
+    - theme: brand
+      text: Downloading Games
+      link: /downloading
     - theme: alt
       text: Uran (Decky Plugin)
       link: /uran
@@ -21,26 +24,6 @@ hero:
     - theme: alt
       text: View on GitHub
       link: https://github.com/niwia/ASSella
-
-features:
-  - icon: 🖥️
-    title: ASSella
-    details: The desktop app. Download games and DLC, keep them updated, and run AT0-M — native Steam downloads through SLSsteam.
-    link: /install
-    linkText: Install ASSella
-  - icon: 🎮
-    title: Uran
-    details: ASSella in Game Mode. A Decky Loader plugin to search, add and manage AT0-M games from the Quick Access Menu or the Steam Store.
-    link: /uran
-    linkText: Get Uran
-  - icon: 🌐
-    title: Epsilon + Photar
-    details: An "Add to at0-m" button on the Steam Store and SteamDB in your browser. Sleeps until you click it — zero idle cost.
-    link: /epsilon
-    linkText: Set up Epsilon
-  - icon: 🔑
-    title: One key, one library
-    details: All three share your Hubcap key (newest wins) and the same AT0-M library. Manage Uran and Epsilon from ASSella → Settings → Companions.
 ---
 
 ## Quick Install

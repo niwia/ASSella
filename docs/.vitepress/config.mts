@@ -16,7 +16,8 @@ export default defineConfig({
     nav: [
       { text: 'Home', link: '/' },
       { text: 'Installation Guide', link: '/install' },
-      { text: 'Arch', link: '/arch-repo' },
+      { text: 'Downloading', link: '/downloading' },
+      { text: 'arm64', link: '/arm64' },
       { text: 'Uran', link: '/uran' },
       { text: 'Epsilon', link: '/epsilon' },
       {
@@ -37,7 +38,9 @@ export default defineConfig({
         text: 'Getting Started',
         items: [
           { text: 'Installation Guide', link: '/install' },
-          { text: 'Arch', link: '/arch-repo' },
+          { text: 'Downloading Games', link: '/downloading' },
+          { text: 'Game Details', link: '/game-details' },
+          { text: 'arm64', link: '/arm64' },
           { text: 'Uran (Decky Plugin)', link: '/uran' },
           { text: 'Epsilon (Browser Bridge)', link: '/epsilon' }
         ]
