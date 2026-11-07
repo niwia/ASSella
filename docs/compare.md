@@ -44,7 +44,6 @@ const groups = [
     ['SteamDB build history', N, Y, 'Direct; Byparr only as an optional fallback'],
     ['Advanced uninstall (prefix, cloud saves)', Y, Y],
     ['"I bought the game" clean-up', N, Y],
-    ['Move a game to another library', N, Y],
     ['Workshop mods', N, Y, 'Through AT0-M (the old downloader is retired)'],
   ]},
   { title: 'Fixes & online', rows: [
@@ -64,7 +63,7 @@ const groups = [
     ['Modern, themeable interface', P, Y],
     ['Smaller app; extras downloaded on demand', N, Y],
     ['Command line mode', Y, Y],
-    ['Desktop shortcuts with SteamGridDB icons', Y, N],
+    ['Desktop shortcuts with SteamGridDB icons', Y, Y],
     ['accela:// links & .zip right-click (Windows)', Y, N],
     ['Sounds & custom GIFs', Y, P],
   ]},
@@ -173,5 +172,5 @@ Moving over is painless, because ASSella reads the same places ACCELA used:
 4. Optional: turn on [AT0-M](/at0m) so Steam downloads and updates games for you.
 
 ::: tip What ASSella doesn't have (yet)
-ACCELA's desktop shortcuts with SteamGridDB icons, its `accela://` links and `.zip` right-click menu on Windows, and its sound effects aren't in ASSella yet. If you rely on one of these, keep ACCELA around for it. Both apps can be installed side by side.
+ACCELA's `accela://` links and `.zip` right-click menu on Windows, and its sound effects, aren't in ASSella yet. If you rely on one of these, keep ACCELA around for it. Both apps can be installed side by side.
 :::

@@ -2383,7 +2383,8 @@ class GameManager(QObject):
                     try:
                         with open(desktop_file, "r", encoding="utf-8") as f:
                             content = f.read()
-                            if f"steam://rungameid/{appid}" in content:
+                            # Exact AppID: rungameid/12 must not match rungameid/123.
+                            if re.search(rf"steam://rungameid/{appid}(?!\d)", content):
                                 os.remove(desktop_file)
                                 logger.info(f"Removed desktop entry: {desktop_file}")
                                 desktop_files_removed += 1

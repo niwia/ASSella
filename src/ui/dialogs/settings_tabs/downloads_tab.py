@@ -253,6 +253,19 @@ def create_downloads_tab(dialog) -> QWidget:
     dialog.ask_library_checkbox.toggled.connect(_sync_library_prefs)
     _sync_library_prefs()
 
+    from utils import desktop_shortcuts
+
+    if desktop_shortcuts.supported():
+        dialog.desktop_shortcut_checkbox = create_checkbox_setting(
+            "Create a desktop shortcut after install",
+            desktop_shortcuts.SETTING_AFTER_INSTALL,
+            False,
+            dialog,
+            "Adds each game ASSella downloads to your app menu, with its SteamGridDB icon. "
+            "The shortcut starts the game through Steam. Also available per game: Game Details -> Tools -> Desktop.",
+        )
+        dl_layout.addWidget(dialog.desktop_shortcut_checkbox)
+
     from utils.auto_tune import get_learned_display
     learned_text = get_learned_display(dialog.settings, "auto_tune_best")
     dialog.auto_tune_checkbox = create_checkbox_setting(

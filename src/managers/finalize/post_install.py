@@ -316,6 +316,10 @@ class PostInstallMixin:
                 else:
                     self._job_steps_completed.add("achievements")
 
+        if "desktop_shortcut" not in self._job_steps_completed:
+            self._job_steps_completed.add("desktop_shortcut")
+            self._maybe_create_desktop_shortcut(is_dlc_only)
+
         # Ensure any manifest symlinks (especially on Linux) are properly established
         try:
             from utils.manifest_resolver import restore_all_game_symlinks
@@ -522,6 +526,28 @@ class PostInstallMixin:
                 logger.debug(f"Could not refresh details dialog title after install: {_dt_err}")
 
         self.job_finished()
+    def _maybe_create_desktop_shortcut(self, is_dlc_only: bool) -> None:
+        """Settings -> Downloads -> "Create a desktop shortcut after install" (as ACCELA did).
+
+        Runs in the background and never holds up the rest of the install.
+        """
+        from utils import desktop_shortcuts
+
+        if (self.is_cancelling or is_dlc_only or not self.game_data or not desktop_shortcuts.supported()
+                or not self.settings.value(desktop_shortcuts.SETTING_AFTER_INSTALL, False, type=bool)):
+            return
+        appid = str(self.game_data.get("appid") or "")
+        name = self.game_data.get("game_name", "") or ""
+
+        def _bg():
+            try:
+                ok, msg = desktop_shortcuts.create_shortcut(appid, name)
+                (logger.info if ok else logger.warning)(f"[PostInstall] Desktop shortcut for {appid}: {msg}")
+            except Exception as e:
+                logger.warning(f"[PostInstall] Desktop shortcut for {appid} failed: {e}")
+
+        threading.Thread(target=_bg, name="desktop-shortcut", daemon=True).start()
+
     def _should_prompt_for_steam_restart(self) -> bool:
         if self.is_cancelling:
             return False
