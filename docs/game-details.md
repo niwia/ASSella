@@ -1,6 +1,6 @@
 # Game Details
 
-Click any game in **Library** to open its details. The header shows the game's art, size on disk, installed build and a **SteamDB** shortcut. The tabs below change with the game: AT0-M games get a **Depots** tab, games with downloaded mods get **Workshop**.
+Click any game in [Library](/library) to open its details. The header shows the game's art, size on disk, installed build and a **SteamDB** shortcut. The tabs below change with the game: AT0-M games get a **Depots** tab, games with downloaded mods get **Workshop**.
 
 ---
 
@@ -62,7 +62,7 @@ ASSella reads SteamDB directly. **Byparr** (a helper that gets past SteamDB's bo
 - **Depots & installation**
   - **Depots: Select** — choose which depots this game keeps (**Reset** returns to the default).
   - **Fix Installation** — repairs the install and makes Steam verify it.
-  - **Move Storage…** — moves the game and its manifest to another Steam library.
+  - **Desktop** — adds the game to your app menu with its SteamGridDB icon; the shortcut starts it through Steam. Click again (**Desktop: Remove**) to take it away. Linux, ASSella-managed games. To do this for every new download, turn on **Settings → Downloads → Create a desktop shortcut after install**.
 - **Utility & store links** — **Open Store**, **Open SteamDB**, **Copy App ID**, **Copy Path**.
 - **Move DLC to DlcData (Advanced)** — experimental: keeps DLC content in a separate folder. Use only when a guide tells you to.
 
