@@ -54,7 +54,8 @@ export default defineConfig({
               { text: 'Uninstall a Game', link: '/guides/uninstall' },
               { text: 'Launcher Bypass', link: '/guides/launcher-bypass' }
             ]
-          }
+          },
+          { text: 'ASSella vs ACCELA', link: '/compare' }
         ]
       },
       {
