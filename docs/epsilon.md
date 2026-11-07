@@ -67,6 +67,10 @@ ASSella detects Epsilon from its systemd user units, so a custom install folder 
 
 ---
 
+::: tip Plugins
+Epsilon adds games the AT0-M way, so it relies on the same [plugins](/plugins) ASSella installs. See [AT0-M](/at0m) for how the download works underneath.
+:::
+
 ## Step 1: Install Epsilon Service
 
 You can install Epsilon with a single terminal command.
