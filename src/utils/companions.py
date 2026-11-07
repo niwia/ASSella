@@ -189,6 +189,8 @@ def uran_info() -> Dict[str, Any]:
     home = decky_home()
     pdir = _uran_dir(home)
     meta = read_json(pdir / "plugin.json") if pdir else {}
+    if pdir and not meta.get("version"):
+        meta = read_json(pdir / "package.json")
     settings = dict(URAN_DEFAULTS)
     settings.update(read_json(uran_settings_path()))
     return {
@@ -200,6 +202,38 @@ def uran_info() -> Dict[str, Any]:
         "settings_path": str(uran_settings_path()),
         "settings": settings,
     }
+
+
+URAN_GUIDE_URL = "https://assella.pages.dev/uran"
+URAN_RELEASES_URL = "https://github.com/niwia/Uran/releases/latest"
+_URAN_LATEST_API = "https://api.github.com/repos/niwia/Uran/releases/latest"
+_URAN_PACKAGE_RAW = "https://raw.githubusercontent.com/niwia/Uran/main/package.json"
+
+
+def _version_tuple(v: str) -> tuple:
+    return tuple(int(x) for x in re.findall(r"\d+", str(v or ""))[:4])
+
+
+def uran_latest_version(timeout: float = 8.0) -> str:
+    """Newest Uran version on GitHub (latest release, else main's package.json). Network: call off-thread."""
+    for url, field in ((_URAN_LATEST_API, "tag_name"), (_URAN_PACKAGE_RAW, "version")):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "ASSella", "Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                v = str(json.loads(r.read().decode("utf-8", "replace")).get(field) or "").lstrip("vV")
+            if v:
+                return v
+        except Exception as e:
+            logger.debug(f"[Companions] Uran version lookup via {url} failed: {e}")
+    return ""
+
+
+def uran_update_state(installed: str) -> Dict[str, Any]:
+    """{'latest': str, 'newer': bool, 'error': bool}"""
+    latest = uran_latest_version()
+    if not latest:
+        return {"latest": "", "newer": False, "error": True}
+    return {"latest": latest, "newer": _version_tuple(latest) > _version_tuple(installed), "error": False}
 
 
 def set_uran_setting(key: str, value: Any) -> bool:

@@ -13,7 +13,7 @@ It brings the full power of ASSella's **AT0-M** (native Steam download) mode dir
 ::: tip Path 1: Already using ASSella Desktop?
 If you already installed and configured ASSella on your Steam Deck or Linux PC, **you are practically ready to go!**
 - Uran automatically detects and reads your existing SLSsteam `config.yaml`.
-- Uran automatically shares your Hubcap API key from ASSella's configuration (`~/.config/assella`).
+- Uran automatically shares your Hubcap API key with ASSella and the AT0-M plugins (newest key wins).
 - Injected games and library items stay perfectly in sync between ASSella and Uran (`plugin_library.json`).
 
 **Skip straight to [Installation via Decky Loader](#installation-via-decky-loader).**
@@ -25,6 +25,26 @@ If you are starting on a clean Steam Deck without ASSella installed:
 2. **Install SLSsteam (Headcrab)**: SLSsteam is required to manage decryption keys and manifests. Follow our [Headcrab Setup Guide](/install#_3-reset-steam-to-vanilla) to install SLSsteam.
 3. **Get a Hubcap Manifest API Key**: Get your free API key at [hubcapmanifest.com](https://hubcapmanifest.com/) (see the [Hubcap Key Setup Guide](/install#_1-get-your-hubcap-manifest-api-key)).
 :::
+
+::: info One Hubcap key for everything
+ASSella, Uran, Epsilon and the AT0-M plugins share one Hubcap API key. It lives in
+`~/.config/SLSsteam/katamari.conf.lua` (the `hubcap` section), which the plugins read.
+Whenever the key changes anywhere, the **newest one wins** and is copied to the others the
+next time each app looks at it. In ASSella this is the **AT0-M Sync** switch under
+**Settings → Integrations → Hubcap**.
+:::
+
+---
+
+## Manage Uran from ASSella
+
+ASSella has a **Companions** page in **Settings** with a tab for Uran:
+
+- **Not installed yet?** It tells you whether Decky Loader is present and links to this guide and the Uran releases.
+- **Installed:** shows the installed version, a **Check for updates** button and a link back to this guide.
+- **Settings:** the same options as in Uran (DLC fetching, Store button, notifications, Hubcap route). Changes are written straight to Uran's own settings file, so Uran and ASSella always agree.
+
+ASSella finds Uran wherever Decky Loader keeps its plugins (it reads Decky's own service file), so custom Decky locations work too.
 
 ---
 
@@ -220,6 +240,6 @@ No! Uran writes changes atomically to `config.yaml` and immediately transmits a 
 
 ## Updates
 
-Uran keeps track of new GitHub releases. Go to **Settings &rarr; Check for Updates** to compare your installed version against the latest release. 
+Uran keeps track of new GitHub releases. Go to **Settings &rarr; Check for Updates** in Uran, or **Settings &rarr; Companions &rarr; Uran &rarr; Check for updates** in ASSella, to compare your installed version against the latest release.
 
 When an update is available, you can update it directly through Decky Loader's plugin management or download the new `Uran.zip` release.

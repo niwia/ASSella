@@ -619,6 +619,23 @@ class MainWindow(QMainWindow):
             lambda: self.simplified_terminal._on_update_check_finished() if hasattr(self, "simplified_terminal") and self.simplified_terminal else None
         )
 
+        # AT0-M Sync: share the newest Hubcap key with katamari.conf.lua (which
+        # Uran, Epsilon and the plugins read). Small file reads, off the GUI thread.
+        if self.settings.value("atom_hubcap_sync_enabled", False, type=bool):
+            import threading
+
+            def _sync_hubcap_key():
+                try:
+                    from utils.sls_lua_config import sync_hubcap_api_key
+
+                    synced, msg = sync_hubcap_api_key(get_settings())
+                    if synced:
+                        logger.info(f"[AT0-M Sync] {msg}")
+                except Exception as e:
+                    logger.debug(f"[AT0-M Sync] startup sync skipped: {e}")
+
+            threading.Thread(target=_sync_hubcap_key, name="hubcap-key-sync", daemon=True).start()
+
         # Initial stats fetch
         self.refresh_hubcap_stats()
 

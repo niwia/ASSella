@@ -153,18 +153,17 @@ class _StatGrid(QWidget):
 
 
 def _key_row(dialog, lay, companion_key: str, write_key) -> None:
-    """Whether the companion uses its own Hubcap key; one click copies ASSella's."""
+    """Only shown when the companion's Hubcap key differs from ASSella's.
+
+    Normally the key is shared automatically (newest wins, through
+    katamari.conf.lua), so a matching key needs no row at all.
+    """
     assella_key = comp.assella_hubcap_key(dialog.settings)
-    texts = {
-        "same": ("Hubcap key: same as ASSella", OK),
-        "none": ("Hubcap key: uses ASSella's key", OK),
-        "own": ("Hubcap key: its own key, different from ASSella's", WARN),
-    }
-    state = comp.key_state(companion_key, assella_key)
+    if comp.key_state(companion_key, assella_key) != "own" or not assella_key:
+        return
     lbl = _label()
-    _colored(lbl, *texts[state])
+    _colored(lbl, "Hubcap key differs from ASSella's (turn on AT0-M Sync to share the newest one)", WARN)
     btn = _button("Use ASSella's key")
-    btn.setVisible(state == "own" and bool(assella_key))
 
     def _use():
         try:
@@ -172,7 +171,7 @@ def _key_row(dialog, lay, companion_key: str, write_key) -> None:
         except (TypeError, ValueError):
             ts = 0
         if write_key(assella_key, ts):
-            _colored(lbl, *texts["same"])
+            _colored(lbl, "Hubcap key: now the same as ASSella's", OK)
             btn.hide()
 
     btn.clicked.connect(_use)
@@ -225,26 +224,53 @@ def _uran_page(dialog) -> QWidget:
 
     # Status
     card, cl = dialog._create_card_frame("Uran")
-    stats = _StatGrid(["Status", "Version", "Decky", "Settings"])
+    stats = _StatGrid(["Status", "Version"])
     stats.set("Status", "Installed", OK)
     stats.set("Version", info["version"] or "unknown")
-    stats.set("Decky", info["decky_home"])
-    stats.set("Settings", "found" if comp.read_json(comp.uran_settings_path()) else "defaults")
     cl.addWidget(stats)
-    s = info["settings"]
-    _key_row(dialog, cl, s.get("manifest_api_key", ""),
-             lambda k, ts: comp.update_json(comp.uran_settings_path(),
-                                            {"manifest_api_key": k, "manifest_api_key_timestamp": ts}))
     row = QHBoxLayout()
-    open_btn = _button("Uran page ↗")
-    open_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(comp.URAN_REPO_URL)))
-    row.addWidget(open_btn)
+    check_btn = _button("Check for updates")
+    guide_btn = _button("Guide ↗")
+    guide_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(comp.URAN_GUIDE_URL)))
+    get_btn = _button("Get update ↗", primary=True, accent=dialog.accent_color)
+    get_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(comp.URAN_RELEASES_URL)))
+    get_btn.hide()
+    row.addWidget(check_btn)
+    row.addWidget(guide_btn)
     row.addStretch(1)
+    row.addWidget(get_btn)
     cl.addLayout(row)
+    update_lbl = _label()
+    update_lbl.hide()
+    cl.addWidget(update_lbl)
+
+    def _check():
+        check_btn.setEnabled(False)
+        check_btn.setText("Checking…")
+
+        def _done(res):
+            if sip.isdeleted(check_btn):
+                return
+            check_btn.setEnabled(True)
+            check_btn.setText("Check for updates")
+            update_lbl.show()
+            if isinstance(res, Exception) or res.get("error"):
+                _colored(update_lbl, "Could not reach GitHub. Try again later.", WARN)
+            elif res["newer"]:
+                _colored(update_lbl, f"Uran {res['latest']} is available. Update it from Decky Loader "
+                                     "or install the new Uran.zip.", OK)
+                get_btn.show()
+            else:
+                _colored(update_lbl, f"Up to date ({res['latest']}).", OK, bold=False)
+
+        _start(dialog, lambda: comp.uran_update_state(info["version"]), _done)
+
+    check_btn.clicked.connect(_check)
     lay.addWidget(card)
 
     # Settings
     card, cl = dialog._create_card_frame("Uran settings")
+    s = info["settings"]
 
     def save(key):
         def _apply(value):
@@ -262,6 +288,9 @@ def _uran_page(dialog) -> QWidget:
                                               save("notification_mode"))))
     cl.addWidget(_row("Hubcap route", _combo(comp.GATEWAY_OPTIONS, s.get("hubcap_gateway", "auto"),
                                              save("hubcap_gateway")), "How Uran reaches the Hubcap API."))
+    _key_row(dialog, cl, s.get("manifest_api_key", ""),
+             lambda k, ts: comp.update_json(comp.uran_settings_path(),
+                                            {"manifest_api_key": k, "manifest_api_key_timestamp": ts}))
     cl.addWidget(_label("Saved to Uran's own settings file; Uran picks changes up the next time it reads them."))
     lay.addWidget(card)
     lay.addStretch(1)
@@ -322,13 +351,9 @@ def _epsilon_install_page(dialog, page_lay, rebuild) -> None:
 def _epsilon_installed_page(dialog, page_lay, info, rebuild) -> None:
     # 1. Live status
     card, cl = dialog._create_card_frame("Epsilon")
-    stats = _StatGrid(["Bridge", "Version", "Ready", "SLSsteam", "Hubcap key", "Auto-update",
-                       "Games added (7 days)", "Last added"])
+    stats = _StatGrid(["Bridge", "Version", "Auto-update", "Games added (7 days)", "Last added"])
     stats.set("Version", info["version"] or "unknown")
     cl.addWidget(stats)
-    problem = _label()
-    problem.hide()
-    cl.addWidget(problem)
 
     actions = QHBoxLayout()
     refresh_btn = _button("Refresh")
@@ -416,16 +441,6 @@ def _epsilon_installed_page(dialog, page_lay, info, rebuild) -> None:
             stats.set("Bridge", "off", OFF)
         if st.get("version"):
             stats.set("Version", str(st["version"]))
-        if st:
-            stats.set("Ready", "yes" if st.get("ready") else "no", OK if st.get("ready") else WARN)
-            stats.set("SLSsteam", "active" if st.get("sls_active") else
-                      ("installed, not running" if st.get("sls_installed") else "not found"),
-                      OK if st.get("sls_active") else WARN)
-            stats.set("Hubcap key", "set" if st.get("has_hubcap_key") else "missing",
-                      OK if st.get("has_hubcap_key") else WARN)
-        else:
-            for name in ("Ready", "SLSsteam", "Hubcap key"):
-                stats.set(name, "—", OFF)
         stats.set("Auto-update", "on" if (upd["enabled"] or upd["active"]) else "off",
                   OK if (upd["enabled"] or upd["active"]) else OFF)
         if sd.get("available"):
@@ -437,12 +452,6 @@ def _epsilon_installed_page(dialog, page_lay, info, rebuild) -> None:
         else:
             stats.set("Games added (7 days)", "—", OFF)
             stats.set("Last added", "—", OFF)
-        err = st.get("error") if st and not st.get("ready", True) else ""
-        if err:
-            _colored(problem, err, WARN)
-            problem.show()
-        else:
-            problem.hide()
         for w, state in ((enabled_sw, sock), (updater_sw, upd)):
             w.blockSignals(True)
             w.setChecked(state["enabled"] or state["active"])

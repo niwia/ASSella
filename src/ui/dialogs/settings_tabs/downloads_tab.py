@@ -37,7 +37,7 @@ def _scrolled(page: QWidget) -> QScrollArea:
 
 
 def create_downloads_tab(dialog) -> QWidget:
-    """Create the Downloads settings tab with General and Depot selection sub-tabs."""
+    """Create the Downloads settings tab: General, Depot selection and Cached sub-tabs."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
     layout.setContentsMargins(12, 10, 12, 10)
@@ -601,6 +601,20 @@ def create_downloads_tab(dialog) -> QWidget:
 
     hide_layout.addStretch()
     dl_subtabs.addTab(_scrolled(hide_widget), "Depot selection")
+
+    # Cached: built (and the caches read) only when the tab is first opened.
+    cached_holder = QWidget()
+    QVBoxLayout(cached_holder).setContentsMargins(0, 0, 0, 0)
+    cached_index = dl_subtabs.addTab(cached_holder, "Cached")
+
+    def _build_cached(index: int) -> None:
+        if index != cached_index or cached_holder.layout().count():
+            return
+        from ui.dialogs.settings_tabs.cached_tab import create_cached_page
+
+        cached_holder.layout().addWidget(create_cached_page(dialog))
+
+    dl_subtabs.currentChanged.connect(_build_cached)
 
     layout.addWidget(dl_subtabs)
     dialog.tab_widget.addTab(tab, "Downloads")
