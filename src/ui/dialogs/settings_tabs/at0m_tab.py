@@ -19,7 +19,9 @@ from PyQt6.QtWidgets import (
     QMenu,
     QFileDialog,
     QTabWidget,
+    QGridLayout,
     QScrollArea,
+    QSizePolicy,
 )
 from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
@@ -446,11 +448,38 @@ def create_at0m_tab(dialog) -> QWidget:
         # (attribute, filename, display name, row)
         ("btn_spacebunny_plugin", "spacebunny.lua", "SpaceBunny", 0),
         ("btn_styx_plugin", "styx.lua", "Styx", 0),
-        ("btn_katamari_plugin", "katamari.lua", "Katamari", 0),
-        ("btn_lobster_plugin", "lobster.lua", "Lobster", 1),
+        ("btn_lobster_plugin", "lobster.lua", "Lobster", 0),
         ("btn_lettuce_plugin", "lettuce.lua", "Lettuce", 1),
-        ("btn_bakeneko_plugin", "bakeneko.lua", "Bakeneko", 1),
+        ("btn_pineapple_plugin", "pineapple.lua", "Pineapple", 1),
     ]
+
+    class _PluginButton(QPushButton):
+        """Plugin button whose text elides instead of widening the page."""
+
+        def __init__(self, text: str):
+            super().__init__(text)
+            self._full = text
+            self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            self.setMinimumWidth(60)
+
+        def setText(self, text: str) -> None:  # noqa: N802 - Qt override
+            self._full = text
+            self._elide()
+
+        def text(self) -> str:  # noqa: D401 - Qt override
+            return self._full
+
+        def resizeEvent(self, e):  # noqa: N802
+            super().resizeEvent(e)
+            self._elide()
+
+        def _elide(self) -> None:
+            avail = max(10, self.width() - 22)
+            shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, avail)
+            QPushButton.setText(self, shown)
+            tip = self.toolTip()
+            if shown != self._full and self._full not in tip:
+                self.setToolTip(self._full + ("\n\n" + tip if tip else ""))
 
     def _build_plugin_button_defs():
         from utils.plugin_manager import (
@@ -513,33 +542,38 @@ def create_at0m_tab(dialog) -> QWidget:
         button_defs = _build_plugin_button_defs()
         dialog._plugin_button_defs = button_defs
 
-        core_row = QHBoxLayout()
-        core_row.setContentsMargins(0, 2, 0, 4)
-        core_row.setSpacing(8)
-
-        extras_row = QHBoxLayout()
-        extras_row.setContentsMargins(0, 2, 0, 4)
-        extras_row.setSpacing(8)
-
-        rows = [core_row, extras_row]
+        # A fixed 3-column grid: buttons share the width and their text is
+        # elided, so a long label ("Download Interceptor (Install)") can never
+        # push the page wider than the dialog (it used to clip everything).
+        COLS = 3
+        core_grid, extras_grid = QGridLayout(), QGridLayout()
+        for g in (core_grid, extras_grid):
+            g.setContentsMargins(0, 2, 0, 4)
+            g.setHorizontalSpacing(8)
+            g.setVerticalSpacing(6)
+            for c in range(COLS):
+                g.setColumnStretch(c, 1)
+        counts = [0, 0]
         dialog._plugin_btn_entries = []
 
         for attr, fname, label, row_idx in button_defs:
-            btn = QPushButton(label)
+            btn = _PluginButton(label)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             setattr(dialog, attr, btn)
             btn.clicked.connect(lambda _c=False, b=btn, f=fname, n=label: _handle_plugin_click(b, f, n))
-            target_row = rows[0] if row_idx == 0 else rows[1]
-            target_row.addWidget(btn, 1)
+            which = 0 if row_idx == 0 else 1
+            grid = core_grid if which == 0 else extras_grid
+            n = counts[which]
+            grid.addWidget(btn, n // COLS, n % COLS)
+            counts[which] += 1
             dialog._plugin_btn_entries.append((btn, fname, label))
 
-        buttons_container_layout.addLayout(core_row)
-
-        extras_lbl = QLabel("Extras")
-        extras_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.9); font-size: 9pt; font-weight: 700; margin-top: 6px;")
-        buttons_container_layout.addWidget(extras_lbl)
-
-        buttons_container_layout.addLayout(extras_row)
+        buttons_container_layout.addLayout(core_grid)
+        if counts[1]:
+            extras_lbl = QLabel("Extras")
+            extras_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.9); font-size: 9pt; font-weight: 700; margin-top: 6px;")
+            buttons_container_layout.addWidget(extras_lbl)
+            buttons_container_layout.addLayout(extras_grid)
 
     # Separator
     deploy_sep = QFrame()
@@ -585,7 +619,7 @@ def create_at0m_tab(dialog) -> QWidget:
         deployable, why = is_plugin_deployable(filename)
         if not deployable:
             btn.setEnabled(False)
-            btn.setText(f"{display_name} (Unavailable)")
+            btn.setText(f"{display_name} · unavailable")
             btn.setToolTip(why)
             btn.setStyleSheet(STYLE_DISABLED)
             return
@@ -598,11 +632,11 @@ def create_at0m_tab(dialog) -> QWidget:
             btn.setToolTip((desc + "\n\n" if desc else "") + "Installed and up to date. Click to check for updates.")
             btn.setStyleSheet(STYLE_ACTIVE_GREEN)
         elif status == "missing":
-            btn.setText(f"{display_name} (Install)")
+            btn.setText(f"{display_name} · install")
             btn.setToolTip((desc + "\n\n" if desc else "") + "Not installed. Click to install.")
             btn.setStyleSheet(STYLE_ATTENTION_ORANGE)
         else:
-            btn.setText(f"{display_name} (Update)")
+            btn.setText(f"{display_name} · update")
             btn.setToolTip(
                 (desc + "\n\n" if desc else "")
                 + "A different version is installed. Click to install the published one "

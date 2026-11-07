@@ -70,13 +70,6 @@ PUBLISH: dict[str, dict] = {
         "required": True,
         "deployable": True,
     },
-    "katamari.lua": {
-        "name": "Katamari",
-        "description": "Family registry: reads katamari.conf.lua, the shared config every family plugin uses.",
-        "role": "registry",  # it is the registry, so it does not register itself
-        "required": True,
-        "deployable": True,
-    },
     "lobster.lua": {
         "name": "Lobster",
         "description": "Restores AdditionalDepots and DecryptionKeys in config.yaml when an SLSsteam update strips them.",
@@ -90,27 +83,25 @@ PUBLISH: dict[str, dict] = {
         "required": False,
         "deployable": True,
     },
-    "bakeneko.lua": {
-        "name": "Bakeneko",
-        "description": "Update path: puts manifests from Hubcap into Steam's depotcache before Steam asks for them.",
+    "pineapple.lua": {
+        # Published name differs from the file in the plugin repository.
+        "source": "pinapple_v1.lua",
+        "name": "Pineapple",
+        "description": "Manifest fallback: puts Hubcap manifests into Steam's depotcache before Steam asks, "
+                       "so updates work when every MRC provider is down. Formerly Bakeneko.",
         "required": False,
-        "deployable": False,
-        "disabled_reason": "Bakeneko is still in testing and will be enabled in a future update.",
-    },
-    "download.lua": {
-        "name": "Standard Interceptor",
-        "description": "The minimal reference download interceptor (alternative to SpaceBunny).",
-        "required": False,
-        "version": "1.0.1",  # the file carries no version of its own
         "deployable": True,
     },
 }
 
 RETIRED: dict[str, dict] = {
-    "hubcap.lua": {"replaced_by": "bakeneko.lua", "reason": "The Hubcap key resolver is retired; Bakeneko replaces it."},
+    "hubcap.lua": {"replaced_by": "pineapple.lua", "reason": "The Hubcap key resolver is retired; Pineapple replaces it."},
     "bypass.lua": {"replaced_by": "lettuce.lua", "reason": "Renamed to Lettuce."},
     "spacebunny1.5.lua": {"replaced_by": "spacebunny.lua", "reason": "Legacy SpaceBunny alias."},
     "spliced-tickets.lua": {"replaced_by": "styx.lua", "reason": "Superseded by Styx."},
+    "katamari.lua": {"replaced_by": None, "reason": "The registry is no longer needed; katamari.conf.lua stays the shared config."},
+    "bakeneko.lua": {"replaced_by": "pineapple.lua", "reason": "Renamed to Pineapple."},
+    "download.lua": {"replaced_by": "spacebunny.lua", "reason": "The Standard Interceptor is no longer published; SpaceBunny is the interceptor."},
 }
 
 _KATAMARI_RE = re.compile(r"KATAMARI\.plugins(?:\.(\w+)|\[\s*[\"'](\w+)[\"']\s*\])\s*=\s*\{(.*?)\}", re.S)
@@ -197,7 +188,7 @@ def previous_manifest(stage: Path) -> dict:
 
 
 def run_lua_tests(source: Path) -> bool:
-    tests = ["test_SpaceBunny1_8.0beta.lua", "test_styx.lua", "test_lettuce.lua", "test_bakeneko.lua", "test_lobster.lua"]
+    tests = ["test_SpaceBunny1_8.0beta.lua", "test_styx.lua", "test_lettuce.lua", "test_pinapple.lua", "test_lobster.lua"]
     luajit = shutil.which("luajit")
     if not luajit:
         print("luajit not found; skipping plugin tests (use --skip-tests to silence this)")
@@ -220,9 +211,9 @@ def build_manifest(source: Path, stage: Path, allow_same_version: bool) -> tuple
     payloads: dict[str, bytes] = {}
     problems = []
     for fname, info in PUBLISH.items():
-        src = source / fname
+        src = source / info.get("source", fname)
         if not src.is_file():
-            problems.append(f"{fname}: not found in {source}")
+            problems.append(f"{fname}: {src.name} not found in {source}")
             continue
         data = src.read_bytes()
         meta = plugin_meta(data.decode("utf-8", errors="ignore"))
@@ -308,6 +299,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="print the manifest, write nothing")
     ap.add_argument("--update-bundled", action="store_true", help="also write src/res/plugins/plugins_manifest.json")
     ap.add_argument("--publish", action="store_true", help="run publish.sh after staging")
+    ap.add_argument("--prune", action="store_true",
+                    help="with --publish: also delete retired plugins from the bucket")
     args = ap.parse_args()
 
     if args.init_key:
@@ -340,14 +333,26 @@ def main() -> int:
     print(f"Staged {len(payloads)} plugins + signed manifest in {args.stage}")
 
     if args.update_bundled:
+        # The bundled copies are the offline fallback (and are used when a
+        # source has no verified copy), so they must match the manifest.
+        bundled_dir = BUNDLED_MANIFEST.parent
         BUNDLED_MANIFEST.write_bytes(manifest_bytes)
-        print(f"Updated bundled manifest {BUNDLED_MANIFEST}")
+        for name, data in payloads.items():
+            (bundled_dir / name).write_bytes(data)
+        for old in bundled_dir.glob("*.lua"):
+            if old.name not in payloads:
+                old.unlink()
+                print(f"  removed {old.name} from bundled plugins")
+        print(f"Updated bundled manifest and {len(payloads)} plugin(s) in {bundled_dir}")
 
     if args.publish:
         if not DEFAULT_PUBLISH_SCRIPT.is_file():
             print(f"publish script not found: {DEFAULT_PUBLISH_SCRIPT}")
             return 1
-        subprocess.run(["bash", str(DEFAULT_PUBLISH_SCRIPT), str(args.stage)], cwd=DEFAULT_PUBLISH_SCRIPT.parent, check=True)
+        cmd = ["bash", str(DEFAULT_PUBLISH_SCRIPT), str(args.stage)]
+        if args.prune:
+            cmd.append("--prune")
+        subprocess.run(cmd, cwd=DEFAULT_PUBLISH_SCRIPT.parent, check=True)
     return 0
 
 

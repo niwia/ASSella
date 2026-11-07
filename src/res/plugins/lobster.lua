@@ -17,7 +17,7 @@
 
 Lobster = Lobster or {}
 
-Lobster.VERSION = Lobster.VERSION or "1.2.1"
+Lobster.VERSION = Lobster.VERSION or "1.2.2"
 Lobster.setup = Lobster.setup or false
 Lobster.enabled = Lobster.enabled ~= false
 Lobster.notify = Lobster.notify ~= false
@@ -29,7 +29,7 @@ KATAMARI = KATAMARI or { plugins = {} }
 KATAMARI.plugins.lobster = {
 	version = Lobster.VERSION,
 	role = "config-recovery",
-	priority = 40,
+	priority = 50,
 }
 -- Lobster.config_path is intentionally left as-is (nil means default path).
 Lobster._config_path_explicit = Lobster._config_path_explicit
@@ -77,10 +77,19 @@ local function lobsterLog(level, msg)
 	-- Map our levels to SLSsteam log levels; fall back to print when log is
 	-- unavailable (tests, or an early load failure).
 	if type(log) == "table" then
-		local fn = level == "error" and log.notifyError
-			or level == "warn" and log.notifyWarn
-			or level == "info" and log.notify
-			or log.debug
+		local fn
+
+		if Lobster.notify then
+			fn = level == "error" and log.notifyError
+				or level == "warn" and log.notifyWarn
+				or level == "info" and log.notify
+				or log.debug
+		else
+			fn = level == "error" and log.error
+				or level == "warn" and log.warn
+				or level == "info" and log.info
+				or log.debug
+		end
 
 		if type(fn) == "function" then
 			fn("[Lobster] " .. msg)
@@ -105,7 +114,7 @@ local function loadConfig()
 	-- Reset to defaults first so a value removed from the conf does not linger
 	-- across a luaReload.
 	Lobster.enabled = true
-	Lobster.notify = true
+	Lobster.notify = false
 	Lobster.auto_recover = true
 	Lobster.run_on_reload = false
 

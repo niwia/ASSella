@@ -91,40 +91,40 @@ BACKGROUND_CHECK_INTERVAL = 6 * 60 * 60
 # The family
 # ---------------------------------------------------------------------------
 
-# Plugins that make up the Katamari family. Bakeneko is listed but is only
-# installed when the manifest marks it deployable.
+# Plugins that make up the family. katamari.lua (the registry) is no longer
+# shipped: every plugin creates the KATAMARI table itself and only reads
+# katamari.conf.lua, which ASSella keeps writing as the shared config.
 KATAMARI_FAMILY_PLUGINS = {
-    "katamari.lua",
     "spacebunny.lua",
-    "bakeneko.lua",
     "styx.lua",
     "lobster.lua",
     "lettuce.lua",
+    "pineapple.lua",
 }
 
 # What "deploy all" installs, in order (interceptor first; it is resolved at
 # run time because the user may have picked a different one).
-FAMILY_DEPLOY_ORDER = ["styx.lua", "katamari.lua", "lobster.lua", "lettuce.lua", "bakeneko.lua"]
+FAMILY_DEPLOY_ORDER = ["styx.lua", "lobster.lua", "lettuce.lua", "pineapple.lua"]
 
 # Shown when no manifest can be read at all.
 FALLBACK_REQUIRED_PLUGINS = [
     "spacebunny.lua",
     "styx.lua",
     "lobster.lua",
-    "katamari.lua",
-    "lettuce.lua",
 ]
 
 # Retired plugins, archived to .bak wherever they are found. The manifest can
 # add to this list ("retired"); these entries hold even with no manifest.
 BUILTIN_RETIRED_PLUGINS: Dict[str, Optional[str]] = {
-    "hubcap.lua": "bakeneko.lua",
+    "hubcap.lua": "pineapple.lua",
     "bypass.lua": "lettuce.lua",
     "spacebunny1.5.lua": "spacebunny.lua",
+    "katamari.lua": None,              # registry no longer needed; katamari.conf.lua stays
+    "bakeneko.lua": "pineapple.lua",   # renamed
 }
 # Not released yet: installable only when a manifest explicitly says
 # "deployable": true (so old or bundled manifests cannot switch them on).
-HELD_UNTIL_ENABLED = {"bakeneko.lua": "Bakeneko is still in testing and will be enabled in a future update."}
+HELD_UNTIL_ENABLED: Dict[str, str] = {}
 
 REDUNDANT_LEGACY_PLUGINS = {"spacebunny1.5.lua": "spacebunny.lua"}  # older name, kept for imports
 
@@ -135,6 +135,7 @@ KNOWN_PLUGIN_ROLES: Dict[str, str] = {
     "download.lua": "download-interceptor",
     "katamari.lua": "registry",
     "bakeneko.lua": "manifest-seed",
+    "pineapple.lua": "manifest-seed",
     "styx.lua": "ticket-splicer",
     "spliced-tickets.lua": "ticket-splicer",
     "lobster.lua": "config-recovery",

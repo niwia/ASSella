@@ -1,4 +1,4 @@
--- spacebunny.lua (1.8.3)
+-- spacebunny.lua (1.8.4)
 --
 -- SLSsteam download interceptor: rewrites package 0 depot lists, injects
 -- configured AES decryption keys, and resolves manifest request codes.
@@ -60,9 +60,22 @@ SpaceBunny = SpaceBunny or {
 	-- GetMRC vars
 }
 
-SpaceBunny.VERSION = "1.8.3"
+SpaceBunny.VERSION = "1.8.4"
 
 SpaceBunny.DEBUG = false
+SpaceBunny.NOTIFY = false
+
+local function notify(message)
+	if SpaceBunny.NOTIFY then log.notify(message) else log.info(message) end
+end
+
+local function notifyWarn(message)
+	if SpaceBunny.NOTIFY then log.notifyWarn(message) else log.warn(message) end
+end
+
+local function notifyError(message)
+	if SpaceBunny.NOTIFY then log.notifyError(message) else log.error(message) end
+end
 
 -- SLSsteam re-runs every plugin file on any change in plugins/.  Hooks are
 -- already installed after the first successful load; re-running would patch
@@ -945,6 +958,11 @@ end
 
 local ffi = require("ffi")
 
+if ffi.abi("64bit") and not rawget(_G, "SPACEBUNNY_FORCE_32") then
+	notifyWarn("spacebunny.lua is the 32-bit build; use spacebunny_x64.lua on the x64 client")
+	return
+end
+
 pcall(ffi.cdef, [[
 	typedef long time_t;
 	typedef struct { time_t tv_sec; long tv_nsec; } timespec_t;
@@ -1471,14 +1489,14 @@ local function resolvePattern(label, pattern, module)
 	local ok, scan = pcall(memhlp.patternScan, pattern, module)
 
 	if not ok or scan == nil then
-		log.notifyError("Pattern scan failed for " .. label .. " - SLSsteam update?")
+		notifyError("Pattern scan failed for " .. label .. " - SLSsteam update?")
 		return nil
 	end
 
 	local resolved, target = pcall(memhlp.getJmpTarget, scan)
 
 	if not resolved or target == nil then
-		log.notifyError("getJmpTarget failed for " .. label .. " - SLSsteam update?")
+		notifyError("getJmpTarget failed for " .. label .. " - SLSsteam update?")
 		return nil
 	end
 
@@ -1488,7 +1506,7 @@ end
 local steamClientMod = memhlp.getModule("steamclient.so")
 
 if steamClientMod == nil then
-	log.notifyError("Failed to find steamclient.so")
+	notifyError("Failed to find steamclient.so")
 	return
 end
 
@@ -1504,13 +1522,13 @@ end
 
 local configStoreMapGetBinary = VFTableInfo_t("21IClientConfigStoreMap", "GetBinary")
 if not configStoreMapGetBinary:init() then
-	log.notifyError("Failed to find GetBinary!")
+	notifyError("Failed to find GetBinary!")
 	return
 end
 
 local configStoreGetBinary = VFTableInfo_t("12CConfigStore", "GetBinary", configStoreMapGetBinary.index)
 if not configStoreGetBinary:init() then
-	log.notifyError("Failed to find GetBinary on CConfigStore!")
+	notifyError("Failed to find GetBinary on CConfigStore!")
 	return
 end
 
@@ -1932,7 +1950,7 @@ end)
 
 SpaceBunny.STANDALONE = false
 SpaceBunny.MRC_ENABLED = true
-SpaceBunny.PRIORITY = 20
+SpaceBunny.PRIORITY = 10
 
 pcall(function()
 	local home = os.getenv("HOME") or ""
@@ -1951,6 +1969,9 @@ pcall(function()
 		if type(section.mrc_enabled) == "boolean" then
 			SpaceBunny.MRC_ENABLED = section.mrc_enabled
 		end
+		if type(section.notify) == "boolean" then
+			SpaceBunny.NOTIFY = section.notify
+		end
 		if tonumber(section.priority) ~= nil then
 			SpaceBunny.PRIORITY = tonumber(section.priority)
 		end
@@ -1965,6 +1986,9 @@ pcall(function()
 		if type(cfg.mrc_enabled) == "boolean" then
 			SpaceBunny.MRC_ENABLED = cfg.mrc_enabled
 		end
+		if type(cfg.notify) == "boolean" then
+			SpaceBunny.NOTIFY = cfg.notify
+		end
 		if tonumber(cfg.priority) ~= nil then
 			SpaceBunny.PRIORITY = tonumber(cfg.priority)
 		end
@@ -1978,7 +2002,7 @@ if type(Downloader) == "table" and Downloader.setup then
 	else
 		print("[SpaceBunny] Another download interceptor is active, standing down")
 		print("[SpaceBunny] To test this plugin next to it, set " ..
-			"standalone = true in ~/.config/SLSsteam/spacebunny.conf.lua")
+			"standalone = true in ~/.config/SLSsteam/katamari.conf.lua (spacebunny.standalone)")
 		return
 	end
 end
@@ -1986,14 +2010,14 @@ end
 local function installHook(label, hookName, target, callback, ctype)
 	local ok, hookOrErr = pcall(LuaHook, hookName, target)
 	if not ok or hookOrErr == nil then
-		log.notifyError("Failed to create " .. label .. " hook: " .. tostring(hookOrErr))
+		notifyError("Failed to create " .. label .. " hook: " .. tostring(hookOrErr))
 		return nil, nil
 	end
 
 	local hook = hookOrErr
 	local raw = ffi.C.place_lua_hook(hook.index, callback)
 	if raw == nil then
-		log.notifyError("Failed to install " .. label .. " hook: place_lua_hook returned NULL")
+		notifyError("Failed to install " .. label .. " hook: place_lua_hook returned NULL")
 		return nil, nil
 	end
 
@@ -2015,7 +2039,7 @@ SpaceBunny.getMRCHook, SpaceBunny.getMRCTramp = installHook(
 if SpaceBunny.getPackageTramp == nil or SpaceBunny.getBinaryTramp == nil
 		or SpaceBunny.getMRCTramp == nil then
 	SpaceBunny.setup = false
-	log.notifyError("SpaceBunny hooks were not fully installed; plugin disabled")
+	notifyError("SpaceBunny hooks were not fully installed; plugin disabled")
 	return
 end
 
@@ -2065,7 +2089,7 @@ SpaceBunny.configLoaded = function()
 	local keyNode = SLS.config:getNode("DecryptionKeys")
 
 	if not keyNode.isDefined then
-		log.notifyWarn("Missing DecryptionKeys in config!")
+		notifyWarn("Missing DecryptionKeys in config!")
 		return
 	end
 
@@ -2093,7 +2117,7 @@ SpaceBunny.configLoaded = function()
 	end
 
 	if skippedKeys > 0 then
-		log.notifyWarn("[SpaceBunny] Skipped " .. skippedKeys
+		notifyWarn("[SpaceBunny] Skipped " .. skippedKeys
 			.. " malformed DecryptionKeys entr" .. (skippedKeys == 1 and "y" or "ies"))
 	end
 
@@ -2128,6 +2152,9 @@ SpaceBunny.reloadFamilySettings = function()
 		if type(section.mrc_enabled) == "boolean" then
 			SpaceBunny.MRC_ENABLED = section.mrc_enabled
 		end
+		if type(section.notify) == "boolean" then
+			SpaceBunny.NOTIFY = section.notify
+		end
 		if tonumber(section.priority) ~= nil then
 			SpaceBunny.PRIORITY = tonumber(section.priority)
 		end
@@ -2138,6 +2165,9 @@ SpaceBunny.reloadFamilySettings = function()
 	if cfg_ok and type(cfg) == "table" then
 		if type(cfg.mrc_enabled) == "boolean" then
 			SpaceBunny.MRC_ENABLED = cfg.mrc_enabled
+		end
+		if type(cfg.notify) == "boolean" then
+			SpaceBunny.NOTIFY = cfg.notify
 		end
 		if tonumber(cfg.priority) ~= nil then
 			SpaceBunny.PRIORITY = tonumber(cfg.priority)
@@ -2178,12 +2208,12 @@ KATAMARI = KATAMARI or { plugins = {} }
 KATAMARI.plugins.spacebunny = {
 	version = SpaceBunny.VERSION,
 	role = "mrc-provider",
-	priority = SpaceBunny.PRIORITY or 20,
+	priority = SpaceBunny.PRIORITY or 10,
 	mrc_enabled = SpaceBunny.MRC_ENABLED ~= false,
 }
 
 SLS.registerCallback("SLSsteam::configLoaded", SpaceBunny.configLoaded)
 SLS.registerCallback("SLSsteam::luaReload", SpaceBunny.luaReload)
 
-log.notify("spacebunny.lua " .. SpaceBunny.VERSION .. " loaded!"
+notify("spacebunny.lua " .. SpaceBunny.VERSION .. " loaded!"
 	.. (hubcapEnabled() and " (Hubcap auto-fetch active)" or " (no Hubcap plugin)"))

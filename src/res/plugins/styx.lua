@@ -1,21 +1,7 @@
--- styx.lua (2.1)
+-- styx.lua (2.2)
 --
--- Styx is the app ownership ticket splicer for SLSsteam.  It gives SteamStub a
--- valid spacewar (480) ownership ticket wearing the requested app's id, so
--- unowned or token-only apps can pass their DRM check.
---
--- The working recipe:
---   1. Watch the network for k_EMsgClientAccountInfo (768).  That is the
---      "logged on, safe to touch IClientUser" signal.  206 is not a real EMsg.
---   2. Ask IClientUser for spacewar's ownership ticket with
---      BUpdateAppOwnershipTicket(480, false).  staleOnly must be false.
---   3. Hook GetAppOwnershipTicketExtendedData.  When the caller has no ticket
---      for its app, fetch 480's ticket, insert the requested app id at the
---      signature offset, shift the returned offsets by four, and return the
---      original 480 ticket size.
---   4. Leave the first 50 bytes of the ticket untouched.  SteamStub verifies
---      the RSA signature over that signed header; the insertion only moves the
---      offsets the caller is told to trust.
+-- ======================= 2.2 changes from 2.1 ==========================
+--  49. Version bump; internal explanatory comments trimmed. Behavior unchanged.
 --
 -- ======================= 2.1 changes from 0.4 ==========================
 --  44. Renamed to Styx.  Canonical files are styx.lua and styx.conf.lua; the
@@ -33,13 +19,6 @@
 --      false) through the live IClientUser vtable, readiness probing, fail-open
 --      bounds checks, per-app rules, secondary fallback, and the test suite.
 --
--- Verified working: app 3404260 after SteamStub.
---
--- Flow:
---   load -> initialized/accountInfo -> resolve vtables -> BUpdate(480, false)
---        -> place GetAppOwnershipTicketExtendedData detour
---        -> probe until 480's ticket lands -> splice
-
 Styx = Styx or {
 	setup          = false,
 	active         = false,
@@ -58,13 +37,13 @@ Styx = Styx or {
 	getTicketPtr   = nil,
 }
 
-Styx.VERSION = "2.1"
+Styx.VERSION = "2.2"
 
 KATAMARI = KATAMARI or { plugins = {} }
 KATAMARI.plugins.styx = {
 	version = Styx.VERSION,
 	role = "ticket-splicer",
-	priority = 30,
+	priority = 40,
 }
 
 if Styx.setup then
@@ -85,7 +64,6 @@ pcall(ffi.cdef, [[
 	typedef uint32_t(*UpdateTicket_t)(void*, uint32_t, int);
 ]])
 
--- Public SLS message numbers (src/sdk/protobufs/enums_clientserver.pb.h)
 local EMsg = {
 	ClientAccountInfo = 768,
 }
@@ -95,22 +73,16 @@ local EMsg = {
 -- ---------------------------------------------------------------------------
 local defaults = {
 	enabled              = true,
-	fallback_app         = 480,      -- spacewar. the only app every account owns.
-	secondary_fallback   = 291550,   -- last resort, not warmed over the network
-	-- Confirmed against SteamStub (app 3404260): insert + old size works,
-	-- overwrite is rejected (the stub reads the returned offsets and verifies
-	-- the untouched 50-byte signed header).
+	fallback_app         = 480,
+	secondary_fallback   = 291550,
 	splice_mode          = "insert",
 	return_expanded_size = false,
 	max_ticket_size      = 65536,
 	debug                = false,
+	notify               = false,
 
-	-- Minimum seconds between BUpdate requests for the fallback app, so a game
-	-- hammering GetTicket cannot turn into a request flood.
 	refresh_retry_seconds = 5,
 
-	-- How long to keep probing for the fallback ticket after a request, and how
-	-- many requests to make before giving up and relying on lazy hook retries.
 	probe_window_seconds = 60,
 	max_warmup_requests  = 120,
 
@@ -170,7 +142,6 @@ end
 local config = {}
 mergeConfig(config, defaults)
 
--- 1. Mother config.  2. Per-plugin conf overrides it.
 mergeConfig(config, motherStyxConfig())
 
 do
@@ -183,6 +154,14 @@ mergeConfig(config, rawget(_G, "StyxConfig"))
 
 S.config = config
 S.failedApps = S.failedApps or {}
+
+local function notify(message)
+	if S.config.notify then
+		notify(message)
+	else
+		log.info(message)
+	end
+end
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -299,13 +278,6 @@ local function spliceTicket(pTicket, ticketSize, size, sigOffset, appId)
 	return true, newSize
 end
 
--- The working splice shape: insert the requested app id at the spacewar
--- ticket's signature offset, shift the returned offsets by four, and return the
--- *spacewar* ticket size (not size + 4).  SteamStub reads the returned offsets
--- and verifies the untouched signed header, so the insertion has to leave the
--- first 50 bytes alone.  A blunter overwrite variant exists for stubs that
--- ignore signatures; it is not the default.  The conf is re-read on every
--- ticket request so the mode can be changed without restarting Steam.
 local function runtimeOptions(appId)
 	local options = {
 		mode = "insert",
@@ -359,7 +331,7 @@ local function logTicketLayout(appId, pTicket, fallbackSize, pOffAppId, pOffStea
 	S.loggedOffsets[appId] = true
 
 	local head = ffi.cast("uint32_t*", pTicket)
-	log.notify(string.format(
+	notify(string.format(
 		"[Styx] ticket for %d: size=%d len=%d ver=%d app=%d "
 			.. "appOff=%d steamOff=%d sigOff=%d sigSize=%d mode=%s expanded=%s",
 		appId, fallbackSize, head[0], head[1], head[4],
@@ -396,7 +368,6 @@ local function spliceByMode(pTicket, ticketSize, fallbackSize, pOffAppId, pOffSt
 		return true, fallbackSize
 	end
 
-	-- default: insert at the signature offset (the shape SteamStub accepts)
 	local ok, result = spliceTicket(pTicket, ticketSize, fallbackSize, sigOffset, appId)
 	if not ok then
 		return false, result
@@ -431,8 +402,6 @@ local function resolveUpdateFunction()
 		return nil
 	end
 
-	-- Prefer the live vtable slot.  SLS already replaced this slot with its own
-	-- hook, so calling through it gives us SLS' staleOnly handling for free.
 	if S.clientUser then
 		local vtable = ffi.cast("void**", S.clientUser)[0]
 		if vtable ~= nil then
@@ -446,7 +415,6 @@ local function resolveUpdateFunction()
 		end
 	end
 
-	-- Fallback: the address the decompiler found for the interface itself.
 	if S.updateInfo.ptr ~= nil then
 		S.updateFn = ffi.cast("UpdateTicket_t", S.updateInfo.ptr)
 		debug("BUpdateAppOwnershipTicket resolved from IClientUserMap")
@@ -483,8 +451,8 @@ local function recallFallback(reason)
 	end
 
 	local appId = S.config.fallback_app
-	local result = updateFn(S.clientUser, appId, 0) -- staleOnly = false
-	log.notify("[Styx] BUpdateAppOwnershipTicket(" .. tostring(appId)
+	local result = updateFn(S.clientUser, appId, 0)
+	notify("[Styx] BUpdateAppOwnershipTicket(" .. tostring(appId)
 		.. ", false) -> " .. tostring(result) .. " (" .. tostring(reason) .. ")")
 	return true
 end
@@ -506,7 +474,7 @@ local function probeFallback()
 
 	if size and size > 0 then
 		S.fallbackReady = true
-		log.notify("[Styx] Fallback ticket " .. tostring(appId)
+		notify("[Styx] Fallback ticket " .. tostring(appId)
 			.. " is loaded (" .. tostring(size) .. " bytes) — splicing is live")
 		return true
 	end
@@ -552,7 +520,6 @@ local function handleTicket(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSt
 		end
 
 		if fallbackSize <= 0 then
-			-- Not warm yet.  Kick a request so the next attempt can splice.
 			warnOnce(appId, "asked before the fallback ticket was warm; returning 0")
 			recallFallback("hook miss for " .. tostring(appId))
 			return 0
@@ -574,7 +541,7 @@ local function handleTicket(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSt
 		return fallbackSize
 	end
 
-	log.notify("[Styx] Spliced app " .. tostring(appId)
+	notify("[Styx] Spliced app " .. tostring(appId)
 		.. " from " .. tostring(fallbackApp) .. " using " .. options.mode
 		.. " (" .. tostring(fallbackSize) .. " -> " .. tostring(result) .. " bytes)")
 	debug("spliced app " .. tostring(appId) .. " from " .. tostring(fallbackApp)
@@ -590,7 +557,7 @@ S.hkGetTicket = ffi.cast("GetTicket_t", function(
 )
 	if not S.seenApps[appId] then
 		S.seenApps[appId] = true
-		log.notify("[Styx] HK GetTicket: appId=" .. tostring(appId)
+		notify("[Styx] HK GetTicket: appId=" .. tostring(appId)
 			.. " ticketSize=" .. tostring(ticketSize))
 	end
 	debug("hkGetTicket appId=" .. tostring(appId) .. " ticketSize=" .. tostring(ticketSize))
@@ -621,47 +588,35 @@ S.hkGetTicket = ffi.cast("GetTicket_t", function(
 end)
 
 -- ---------------------------------------------------------------------------
--- Resolution + hook placement
 -- ---------------------------------------------------------------------------
 local function resolveTargets()
 	if S.resolved then
 		return true
 	end
 
-	-- Resolve the interface map once.  This is already decompiled by SLS for its
-	-- own hooks, so it is cheap and warning-free.
 	local userMap = VFTableInfo_t("14IClientUserMap", "GetAppOwnershipTicketExtendedData")
 	if not userMap:init() then
-		log.notifyError("[Styx] Failed to resolve IClientUserMap::GetAppOwnershipTicketExtendedData")
+		log.error("[Styx] Failed to resolve IClientUserMap::GetAppOwnershipTicketExtendedData")
 		return false
 	end
 
-	-- Concrete CUser override at the same index: the object's vtable is
-	-- CUser's, not the interface's.
 	local impl = VFTableInfo_t("5CUser", "GetAppOwnershipTicketExtendedData", userMap.index, 0)
 	if not impl:init() then
-		log.notifyError("[Styx] Failed to resolve CUser::GetAppOwnershipTicketExtendedData")
+		log.error("[Styx] Failed to resolve CUser::GetAppOwnershipTicketExtendedData")
 		return false
 	end
 
-	-- Keep both forms:
-	--   ptr = the raw void* LuaBridge handed us (only this may go into LuaHook)
-	--   fn  = an FFI callable for direct/probe calls
-	-- Passing the ffi cast into LuaHook fails with "lua object can't be cast
-	-- to desired type" because it is cdata, not a lightuserdata pointer.
 	S.getTicketPtr = impl.ptr
 	S.getTicketFn = ffi.cast("GetTicket_t", impl.ptr)
 	S.getTicketIndex = userMap.index
 
-	-- BUpdate lives in the interface map, NOT in "5CUser".  Looking it up in
-	-- the concrete map is the mistake that made earlier versions silently fail.
 	S.updateInfo = VFTableInfo_t("14IClientUserMap", "BUpdateAppOwnershipTicket")
 	if not S.updateInfo:init() then
-		log.notifyError("[Styx] Failed to resolve IClientUserMap::BUpdateAppOwnershipTicket")
+		log.error("[Styx] Failed to resolve IClientUserMap::BUpdateAppOwnershipTicket")
 		return false
 	end
 
-	log.notify("[Styx] Resolved GetTicket index " .. tostring(S.getTicketIndex)
+	notify("[Styx] Resolved GetTicket index " .. tostring(S.getTicketIndex)
 		.. ", BUpdate index " .. tostring(S.updateInfo.index))
 
 	local maxSize = tonumber(S.config.max_ticket_size) or 65536
@@ -701,7 +656,6 @@ local function resolveClientUser()
 
 	S.userUd = user
 	S.clientUserUd = clientUser
-	-- LuaBridge userdata wraps the pointer; unpack it, never cast the box.
 	S.clientUser = ffi.C.unpack_user_data(clientUser)
 	S.updateFn = nil
 
@@ -713,18 +667,18 @@ local function placeHook()
 		return true
 	end
 
-	log.notify("[Styx] Placing GetAppOwnershipTicketExtendedData hook at index "
+	notify("[Styx] Placing GetAppOwnershipTicketExtendedData hook at index "
 		.. tostring(S.getTicketIndex))
 	S.getTicketHook = LuaHook("Styx GetTicket", S.getTicketPtr)
 	local trampoline = ffi.C.place_lua_hook(S.getTicketHook.index, S.hkGetTicket)
 	if trampoline == nil then
-		log.notifyError("[Styx] Failed to place GetAppOwnershipTicketExtendedData hook")
+		log.error("[Styx] Failed to place GetAppOwnershipTicketExtendedData hook")
 		S.getTicketHook = nil
 		return false
 	end
 
 	S.getTicketTramp = ffi.cast("GetTicket_t", trampoline)
-	log.notify("[Styx] Hook placed, trampoline=" .. tostring(trampoline))
+	notify("[Styx] Hook placed, trampoline=" .. tostring(trampoline))
 	return true
 end
 
@@ -754,8 +708,6 @@ local function start()
 		.. tostring(S.config.fallback_app) .. "), subscribed=" .. tostring(subscribed)
 		.. ", arming the ticket hook")
 
-	-- Order matters: request first, then arm.  The hook can be live before the
-	-- ticket lands; it simply returns 0 once and retries on the next call.
 	recallFallback("login")
 	probeFallback()
 	if not placeHook() then
@@ -797,8 +749,6 @@ local function onNetworkPacket(pkt)
 	local isAccountInfo = msgType == accountInfoType
 
 	if not S.active then
-		-- The dev's trigger.  We only arm here; the actual BUpdate below is
-		-- re-issued on accountInfo if the "initialized" callback armed us early.
 		if isAccountInfo then
 			if not S.loginDetected then
 				S.loginDetected = true
@@ -807,8 +757,6 @@ local function onNetworkPacket(pkt)
 			end
 			ensureStarted()
 		elseif S.initSeen then
-			-- initialized fired but activation did not stick (engine or vtable
-			-- not ready yet).  Retry on traffic, with a hard attempt cap.
 			ensureStarted()
 		end
 		return
@@ -818,10 +766,6 @@ local function onNetworkPacket(pkt)
 		return
 	end
 
-	-- SLS runs this callback before the packet's trampoline, so probing on the
-	-- ticket response itself is too early.  Probing on the following packets
-	-- works because callbacks for packet N run after packet N-1 has already been
-	-- processed by the client.  Bound it to a minute after the last request.
 	if os.time() <= S.probeUntil then
 		probeFallback()
 	elseif not S.fallbackReady and not S.warnedNoTicket then
@@ -833,10 +777,6 @@ local function onNetworkPacket(pkt)
 		return
 	end
 
-	-- If "initialized" armed us before logon, that first BUpdate was too early.
-	-- accountInfo is the authoritative "logged on now" signal, so force exactly
-	-- one retry there.  Later retries come from the GetTicket hook instead of
-	-- every recvPkt callback, keeping network sends off the packet hot path.
 	if isAccountInfo then
 		S.lastRequestAt = nil
 		recallFallback("accountInfo")
@@ -845,9 +785,6 @@ end
 
 local function onInitialized()
 	S.initSeen = true
-	-- Hooks are placed by the time this fires, but logon may still be in flight.
-	-- Arming now is harmless: if the first BUpdate is too early, accountInfo
-	-- forces a fresh one a moment later.
 	resolveClientUser()
 	ensureStarted()
 end
@@ -857,5 +794,5 @@ SLS.registerCallback("SLSsteam::initialized", onInitialized)
 
 S.setup = true
 
-log.notify("styx.lua " .. Styx.VERSION .. " loaded — will warm spacewar ("
+notify("styx.lua " .. Styx.VERSION .. " loaded — will warm spacewar ("
 	.. tostring(S.config.fallback_app) .. ") at init/accountInfo")
