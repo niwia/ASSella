@@ -207,28 +207,27 @@ class AtomManifestFixDialog(QDialog):
 
         layout.addLayout(options_layout)
 
-        # Cancel button row
-        bottom_row = QHBoxLayout()
-        bottom_row.addStretch()
+        # Cancel button (full width at the bottom)
         btn_cancel = QPushButton("Cancel")
         btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_cancel.setFixedSize(90, 32)
+        btn_cancel.setFixedHeight(34)
         btn_cancel.setStyleSheet("""
-            QPushButton {{
-                background-color: transparent;
-                color: rgba(255, 255, 255, 0.65);
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.75);
                 border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 5px;
-                font-size: 8.5pt;
-            }}
-            QPushButton:hover {{
+                border-radius: 6px;
+                font-size: 9pt;
+                font-weight: 500;
+            }
+            QPushButton:hover {
                 color: #FFFFFF;
-                border-color: rgba(255, 255, 255, 0.35);
-            }}
+                background-color: rgba(255, 255, 255, 0.10);
+                border-color: rgba(255, 255, 255, 0.30);
+            }
         """)
         btn_cancel.clicked.connect(self.reject)
-        bottom_row.addWidget(btn_cancel)
-        layout.addLayout(bottom_row)
+        layout.addWidget(btn_cancel)
 
     def _on_delete_acf(self) -> None:
         self.choice = ACTION_DELETE_ACF

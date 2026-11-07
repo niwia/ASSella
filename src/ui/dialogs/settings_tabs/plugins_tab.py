@@ -118,11 +118,6 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
 
     sb_cfg = cfg.get("spacebunny", {})
 
-    sb_enable_cb = QCheckBox("Enable Manifest Request Code (MRC) Resolution")
-    sb_enable_cb.setChecked(sb_cfg.get("mrc_enabled", True))
-    sb_enable_cb.setStyleSheet(STYLE_CHECKBOX)
-    sb_layout.addWidget(sb_enable_cb)
-
     sb_grid = QGridLayout()
     sb_grid.setHorizontalSpacing(14)
     sb_grid.setVerticalSpacing(8)
@@ -131,26 +126,89 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
     auth_lbl.setStyleSheet(STYLE_LABEL)
     mrc_auth_combo = ModernComboBox()
     mrc_auth_combo.setFixedWidth(200)
-    mrc_auth_combo.addItem("ManifestDeX (Primary)", "manifestdex")
-    mrc_auth_combo.addItem("Wudrm", "wudrm")
-    idx_auth = mrc_auth_combo.findData(sb_cfg.get("authority", "manifestdex"))
-    if idx_auth >= 0:
-        mrc_auth_combo.setCurrentIndex(idx_auth)
-
-    sb_grid.addWidget(auth_lbl, 0, 0)
-    sb_grid.addWidget(mrc_auth_combo, 0, 1)
 
     rescue_lbl = QLabel("Secondary Rescue:")
     rescue_lbl.setStyleSheet(STYLE_LABEL)
     mrc_rescue_combo = ModernComboBox()
     mrc_rescue_combo.setFixedWidth(200)
-    mrc_rescue_combo.addItem("Wudrm (Default)", "wudrm")
-    mrc_rescue_combo.addItem("ManifestDeX", "manifestdex")
-    mrc_rescue_combo.addItem("None (Disabled)", "none")
-    idx_rescue = mrc_rescue_combo.findData(sb_cfg.get("rescue", "wudrm"))
+
+    avail_provs = list(sb_cfg.get("available_providers") or ["manifestdex", "wudrm"])
+
+    def _display_name(p_id: str) -> str:
+        if p_id == "manifestdex":
+            return "ManifestDeX"
+        if p_id == "wudrm":
+            return "Wudrm"
+        return p_id.capitalize()
+
+    for p in avail_provs:
+        mrc_auth_combo.addItem(_display_name(p), p)
+
+    for p in avail_provs:
+        mrc_rescue_combo.addItem(_display_name(p), p)
+    if len(avail_provs) > 1:
+        mrc_rescue_combo.addItem("None (Disabled)", "none")
+
+    curr_auth = sb_cfg.get("authority", avail_provs[0] if avail_provs else "manifestdex")
+    curr_resc = sb_cfg.get("rescue", avail_provs[1] if len(avail_provs) > 1 else "none")
+
+    idx_auth = mrc_auth_combo.findData(curr_auth)
+    if idx_auth >= 0:
+        mrc_auth_combo.setCurrentIndex(idx_auth)
+
+    idx_rescue = mrc_rescue_combo.findData(curr_resc)
     if idx_rescue >= 0:
         mrc_rescue_combo.setCurrentIndex(idx_rescue)
 
+    prev_selection = {
+        "auth": mrc_auth_combo.currentData(),
+        "rescue": mrc_rescue_combo.currentData(),
+    }
+    _swap_lock = False
+
+    def _on_auth_changed():
+        nonlocal _swap_lock
+        if _swap_lock:
+            return
+        new_auth = mrc_auth_combo.currentData()
+        c_resc = mrc_rescue_combo.currentData()
+        if new_auth == c_resc and new_auth is not None:
+            _swap_lock = True
+            target_rescue = prev_selection["auth"]
+            if target_rescue == new_auth or target_rescue is None:
+                alts = [p for p in avail_provs if p != new_auth]
+                target_rescue = alts[0] if alts else "none"
+            idx = mrc_rescue_combo.findData(target_rescue)
+            if idx >= 0:
+                mrc_rescue_combo.setCurrentIndex(idx)
+            _swap_lock = False
+        prev_selection["auth"] = mrc_auth_combo.currentData()
+        prev_selection["rescue"] = mrc_rescue_combo.currentData()
+
+    def _on_rescue_changed():
+        nonlocal _swap_lock
+        if _swap_lock:
+            return
+        new_resc = mrc_rescue_combo.currentData()
+        c_auth = mrc_auth_combo.currentData()
+        if new_resc and new_resc != "none" and new_resc == c_auth:
+            _swap_lock = True
+            target_auth = prev_selection["rescue"]
+            if target_auth == new_resc or target_auth is None or target_auth == "none":
+                alts = [p for p in avail_provs if p != new_resc]
+                target_auth = alts[0] if alts else new_resc
+            idx = mrc_auth_combo.findData(target_auth)
+            if idx >= 0:
+                mrc_auth_combo.setCurrentIndex(idx)
+            _swap_lock = False
+        prev_selection["auth"] = mrc_auth_combo.currentData()
+        prev_selection["rescue"] = mrc_rescue_combo.currentData()
+
+    mrc_auth_combo.currentIndexChanged.connect(_on_auth_changed)
+    mrc_rescue_combo.currentIndexChanged.connect(_on_rescue_changed)
+
+    sb_grid.addWidget(auth_lbl, 0, 0)
+    sb_grid.addWidget(mrc_auth_combo, 0, 1)
     sb_grid.addWidget(rescue_lbl, 1, 0)
     sb_grid.addWidget(mrc_rescue_combo, 1, 1)
 
@@ -377,7 +435,7 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
                 "max_manifests": 32,
             }),
             "spacebunny": {
-                "mrc_enabled": sb_enable_cb.isChecked(),
+                "mrc_enabled": True,
                 "authority": mrc_auth_combo.currentData(),
                 "rescue": mrc_rescue_combo.currentData(),
                 "full_timeout_ms": current_cfg.get("spacebunny", {}).get("full_timeout_ms", 2000),
@@ -407,7 +465,6 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
         # Reset UI controls to defaults
         d = DEFAULT_KATAMARI_CONFIG
 
-        sb_enable_cb.setChecked(d["spacebunny"].get("mrc_enabled", True))
         idx_auth = mrc_auth_combo.findData(d["spacebunny"]["authority"])
         if idx_auth >= 0:
             mrc_auth_combo.setCurrentIndex(idx_auth)

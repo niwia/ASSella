@@ -195,7 +195,7 @@ def _apply_ratings_to_widget(
         c_entry = proton_cache.get(str(widget.app_id))
         proton_tier = c_entry.get("tier") if isinstance(c_entry, dict) else None
         _tier_map = {
-            "platinum": ("PLATINUM", "#90CAF9", "rgba(33, 150, 243, 0.15)", "rgba(144, 202, 249, 0.30)"),
+            "platinum": ("PLATINUM", "#CFD8DC", "rgba(207, 216, 220, 0.18)", "rgba(236, 239, 241, 0.35)"),
             "gold":     ("GOLD",     "#FFE082", "rgba(255, 193, 7, 0.15)",   "rgba(255, 224, 130, 0.30)"),
             "silver":   ("SILVER",   "#CFD8DC", "rgba(144, 164, 174, 0.15)", "rgba(207, 216, 220, 0.30)"),
             "bronze":   ("BRONZE",   "#FFAB91", "rgba(255, 112, 67, 0.15)",  "rgba(255, 171, 145, 0.30)"),

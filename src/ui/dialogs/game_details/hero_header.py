@@ -2,9 +2,12 @@
 Hero banner, title, badges, and layout helpers for GameDetailsDialogV2.
 """
 
+import logging
 import time
 from PyQt6.QtCore import Qt, QSize, QUrl
 from PyQt6.QtGui import QPixmap, QDesktopServices
+
+logger = logging.getLogger(__name__)
 from PyQt6.QtWidgets import (
     QWidget,
     QLabel,
@@ -180,6 +183,10 @@ def init_hero_v2(dialog, root) -> None:
 
     name_row = QHBoxLayout()
     name_row.setSpacing(8)
+    dialog.logo_lbl = QLabel()
+    dialog.logo_lbl.setStyleSheet("background: transparent;")
+    dialog.logo_lbl.hide()
+    name_row.addWidget(dialog.logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
     dialog.name_lbl = QLabel()
     dialog.name_lbl.setStyleSheet("font-size: 13pt; font-weight: bold; color: #FFFFFF; background: transparent;")
     dialog.name_lbl.setMaximumHeight(28)
@@ -276,6 +283,30 @@ def init_hero_v2(dialog, root) -> None:
     snip_row.addWidget(dialog._denuvo_badge_lbl)
     snip_row.addWidget(dialog._proton_badge_lbl)  # ProtonDB tier, as a snippet
     snip_row.addStretch(1)
+
+    dialog._steamdb_btn = QPushButton("SteamDB")
+    dialog._steamdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog._steamdb_btn.setToolTip(f"Open {dialog.appid} on SteamDB (https://steamdb.info/app/{dialog.appid}/)")
+    dialog._steamdb_btn.setStyleSheet("""
+        QPushButton {
+            color: #E8E8EE;
+            background-color: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 4px;
+            padding: 2px 10px;
+            font-size: 8.5pt;
+            font-weight: 600;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.18);
+            border-color: rgba(255, 255, 255, 0.35);
+            color: #FFFFFF;
+        }
+    """)
+    dialog._steamdb_btn.clicked.connect(
+        lambda: QDesktopServices.openUrl(QUrl(f"https://steamdb.info/app/{dialog.appid}/"))
+    )
+    snip_row.addWidget(dialog._steamdb_btn, 0, Qt.AlignmentFlag.AlignRight)
     for w in (dialog.size_val_lbl, dialog.date_val_lbl):
         w.setStyleSheet(w.styleSheet() + " QPushButton:disabled { color: #E8E8EE; }")
     banner_layout.addSpacing(6)
@@ -391,7 +422,7 @@ def update_title(dialog) -> None:
         from core.ratings import get_protondb_tier
         tier = get_protondb_tier(dialog.appid)
         _tier_map = {
-            "platinum": ("PLATINUM", "#FFFFFF", "#1976D2", "#42A5F5", "#1E88E5"),
+            "platinum": ("PLATINUM", "#263238", "#CFD8DC", "#ECEFF1", "#B0BEC5"),
             "gold":     ("GOLD",     "#111111", "#F59E0B", "#FBBF24", "#D97706"),
             "silver":   ("SILVER",   "#FFFFFF", "#546E7A", "#78909C", "#607D8B"),
             "bronze":   ("BRONZE",   "#FFFFFF", "#C2410C", "#FB923C", "#EA580C"),
@@ -533,3 +564,68 @@ def format_time_diff(ts) -> str:
         return f"{diff // 2592000}mo ago"
     else:
         return f"{diff // 31536000}yr ago"
+
+
+def load_title_logo(dialog) -> None:
+    """Lazy load transparent title logo from SteamGridDB if enabled in settings."""
+    from utils.settings import get_settings
+
+    settings = get_settings()
+    if not settings.value("steamgriddb_fetch_logos", False, type=bool):
+        return
+
+    appid = str(getattr(dialog, "appid", "") or "")
+    if not appid or appid in ("0", "N/A", "unknown"):
+        return
+
+    from utils.paths import Paths
+
+    cache_dir = Paths.cache() / "logos"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"{appid}.png"
+
+    if cache_file.is_file():
+        px = QPixmap(str(cache_file))
+        if not px.isNull() and hasattr(dialog, "logo_lbl") and hasattr(dialog, "name_lbl"):
+            scaled = px.scaledToHeight(30, Qt.TransformationMode.SmoothTransformation)
+            dialog.logo_lbl.setPixmap(scaled)
+            dialog.logo_lbl.setToolTip(dialog.game_data.get("game_name", ""))
+            dialog.logo_lbl.show()
+            dialog.name_lbl.hide()
+            return
+
+    import threading
+
+    def _fetch_worker():
+        try:
+            from utils import steamgriddb as sgdb
+            import requests
+
+            assets = sgdb.get_assets("logos", appid, settings=settings)
+            if not assets:
+                return
+            logo_url = assets[0].get("url")
+            if not logo_url:
+                return
+            resp = requests.get(logo_url, timeout=8)
+            if resp.status_code == 200 and resp.content:
+                cache_file.write_bytes(resp.content)
+                from PyQt6.QtCore import QTimer
+
+                def _apply():
+                    if hasattr(dialog, "logo_lbl") and hasattr(dialog, "name_lbl"):
+                        px = QPixmap()
+                        px.loadFromData(resp.content)
+                        if not px.isNull():
+                            scaled = px.scaledToHeight(30, Qt.TransformationMode.SmoothTransformation)
+                            dialog.logo_lbl.setPixmap(scaled)
+                            dialog.logo_lbl.setToolTip(dialog.game_data.get("game_name", ""))
+                            dialog.logo_lbl.show()
+                            dialog.name_lbl.hide()
+
+                QTimer.singleShot(0, _apply)
+        except Exception as e:
+            logger.debug(f"[HeroHeader] Failed fetching title logo for {appid}: {e}")
+
+    threading.Thread(target=_fetch_worker, daemon=True).start()
+

@@ -25,6 +25,7 @@ SETTING_KEY = "steamgriddb_api_key"
 SETTING_STYLE = "steamgriddb_style"
 SETTING_NSFW = "steamgriddb_nsfw"
 SETTING_HUMOR = "steamgriddb_humor"
+SETTING_FETCH_LOGOS = "steamgriddb_fetch_logos"
 
 # Grid styles SteamGridDB accepts (heroes and logos have their own sets;
 # "any" sends no style filter).

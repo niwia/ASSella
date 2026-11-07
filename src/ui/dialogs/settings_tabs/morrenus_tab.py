@@ -810,6 +810,8 @@ def create_others_subtab(dialog) -> QWidget:
     card_lay.addLayout(style_row)
 
     for setting, text, tip in (
+        (sgdb.SETTING_FETCH_LOGOS, "Fetch game title graphics (Logos)",
+         "On: lazy-loads official transparent title logos from SteamGridDB inside Game Details."),
         (sgdb.SETTING_NSFW, "Allow NSFW artwork", "Off: adult artwork is filtered out."),
         (sgdb.SETTING_HUMOR, "Allow humor artwork", "Off: joke / meme artwork is filtered out."),
     ):
@@ -825,7 +827,7 @@ def create_others_subtab(dialog) -> QWidget:
         row.addWidget(tog)
         card_lay.addLayout(row)
 
-    note = QLabel("ASSella does not use SteamGridDB artwork yet; these settings are ready for when it does.")
+    note = QLabel("SteamGridDB provides community cover art, hero banners, and game logos for installed titles.")
     note.setWordWrap(True)
     note.setStyleSheet("color: rgba(255,255,255,0.45); font-size: 8pt; background: transparent;")
     card_lay.addWidget(note)

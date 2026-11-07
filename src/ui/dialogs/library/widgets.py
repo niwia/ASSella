@@ -328,11 +328,11 @@ class GameItemWidget(QWidget):
         self.pinned_build_label.setVisible(False)
         self.pinned_label = self.pinned_build_label
 
-        self.denuvo_badge = QLabel()
+        self.denuvo_badge = QLabel(self)
         self.denuvo_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.denuvo_badge.hide()
 
-        self.proton_badge = QLabel()
+        self.proton_badge = QLabel(self)
         self.proton_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.proton_badge.hide()
 
@@ -586,6 +586,10 @@ class GameItemWidget(QWidget):
         if not hasattr(self, "denuvo_badge") or not self.denuvo_badge:
             return
 
+        if getattr(self, "_is_steam_tab", False):
+            self.denuvo_badge.hide()
+            return
+
         appid = self.game_data.get("appid", "0")
         if not appid or appid in ("0", "N/A", "unknown"):
             self.denuvo_badge.hide()
@@ -634,6 +638,10 @@ class GameItemWidget(QWidget):
         if not hasattr(self, "proton_badge") or not self.proton_badge:
             return
 
+        if getattr(self, "_is_steam_tab", False):
+            self.proton_badge.hide()
+            return
+
         appid = self.game_data.get("appid", "0")
         if not appid or appid in ("0", "N/A", "unknown"):
             self.proton_badge.hide()
@@ -666,9 +674,9 @@ class GameItemWidget(QWidget):
             return
 
         _tier_map = {
-            "platinum": ("PLATINUM", "#90CAF9", "rgba(33, 150, 243, 0.15)", "rgba(144, 202, 249, 0.30)"),
+            "platinum": ("PLATINUM", "#CFD8DC", "rgba(207, 216, 220, 0.18)", "rgba(236, 239, 241, 0.35)"),
             "gold":     ("GOLD",     "#FFE082", "rgba(255, 193, 7, 0.15)",   "rgba(255, 224, 130, 0.30)"),
-            "silver":   ("SILVER",   "#CFD8DC", "rgba(144, 164, 174, 0.15)", "rgba(207, 216, 220, 0.30)"),
+            "silver":   ("SILVER",   "#B0BEC5", "rgba(144, 164, 174, 0.15)", "rgba(176, 190, 197, 0.30)"),
             "bronze":   ("BRONZE",   "#FFAB91", "rgba(255, 112, 67, 0.15)",  "rgba(255, 171, 145, 0.30)"),
             "borked":   ("BORKED",   "#EF9A9A", "rgba(239, 83, 80, 0.18)",   "rgba(239, 154, 154, 0.35)"),
             "native":   ("NATIVE",   "#A5D6A7", "rgba(76, 175, 80, 0.15)",   "rgba(165, 214, 167, 0.30)"),

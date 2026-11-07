@@ -108,6 +108,7 @@ DEFAULT_KATAMARI_CONFIG: Dict[str, Any] = {
         "priority": 20,
         "authority": "manifestdex",
         "rescue": "wudrm",
+        "available_providers": ["manifestdex", "wudrm"],
         "full_timeout_ms": 2000,
         "probe_timeout_ms": 700,
         "probe_timeouts_to_mark_down": 2,
@@ -158,6 +159,61 @@ class KatamariConfigManager:
                     end = i + 1
                     break
         return text[start:end]
+
+    @staticmethod
+    def _extract_subblocks(array_block: str) -> List[str]:
+        """Extract top-level table subblocks { ... } from an array block."""
+        if not array_block or len(array_block) < 2:
+            return []
+        inner = array_block[1:-1]
+        blocks = []
+        i = 0
+        while i < len(inner):
+            if inner[i] == '{':
+                start = i
+                depth = 0
+                while i < len(inner):
+                    if inner[i] == '{':
+                        depth += 1
+                    elif inner[i] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            blocks.append(inner[start:i+1])
+                            break
+                    i += 1
+            i += 1
+        return blocks
+
+    @classmethod
+    def _reorder_mrc_providers(cls, text: str, ordered_names: List[str]) -> str:
+        """Reorder provider subblocks inside spacebunny.mrc.providers preserving all other text/comments."""
+        sb_block = cls._extract_section_block(text, "spacebunny")
+        if not sb_block:
+            return text
+        mrc_block = cls._extract_section_block(sb_block, "mrc")
+        if not mrc_block:
+            return text
+        prov_block = cls._extract_section_block(mrc_block, "providers")
+        if not prov_block:
+            return text
+
+        blocks = cls._extract_subblocks(prov_block)
+        prov_map = {}
+        for b in blocks:
+            m = re.search(r'name\s*=\s*["\']([^"\']+)["\']', b)
+            if m:
+                prov_map[m.group(1)] = b
+
+        new_blocks = []
+        for name in ordered_names:
+            if name in prov_map:
+                new_blocks.append(prov_map[name])
+        for name, b in prov_map.items():
+            if b not in new_blocks:
+                new_blocks.append(b)
+
+        reconstructed = "{\n\t\t\t\t" + ",\n\t\t\t\t".join(b.strip() for b in new_blocks) + ",\n\t\t\t}"
+        return text.replace(prov_block, reconstructed, 1)
 
     @staticmethod
     def _parse_bool(val: str) -> Optional[bool]:
@@ -309,11 +365,22 @@ class KatamariConfigManager:
                 # MRC providers hierarchy inside spacebunny
                 mrc_block = cls._extract_section_block(sb_block, "mrc")
                 if mrc_block:
-                    provs = re.findall(r'name\s*=\s*["\']([^"\']+)["\']', mrc_block)
-                    if len(provs) >= 1:
-                        cfg["spacebunny"]["authority"] = provs[0]
-                    if len(provs) >= 2:
-                        cfg["spacebunny"]["rescue"] = provs[1]
+                    prov_block = cls._extract_section_block(mrc_block, "providers")
+                    found_names = []
+                    if prov_block:
+                        subblocks = cls._extract_subblocks(prov_block)
+                        for b in subblocks:
+                            m_n = re.search(r'name\s*=\s*["\']([^"\']+)["\']', b)
+                            if m_n and m_n.group(1):
+                                found_names.append(m_n.group(1))
+                    if not found_names:
+                        found_names = re.findall(r'name\s*=\s*["\']([^"\']+)["\']', mrc_block)
+
+                    if found_names:
+                        cfg["spacebunny"]["available_providers"] = found_names
+                        cfg["spacebunny"]["authority"] = found_names[0]
+                        cfg["spacebunny"]["rescue"] = found_names[1] if len(found_names) > 1 else "none"
+
                     m_fsec = re.search(r'\bFULL_SEC\s*=\s*([^,\n\r]+)', mrc_block)
                     if m_fsec:
                         sec_val = cls._parse_int(m_fsec.group(1))
@@ -641,6 +708,14 @@ return {{
 
                 content = cls._update_key_in_section(content, "spacebunny", "FULL_SEC", str(full_sec))
                 content = cls._update_key_in_section(content, "spacebunny", "PROBE_SEC", str(probe_sec))
+
+                ordered_provs = []
+                if auth_prov and auth_prov != "none":
+                    ordered_provs.append(auth_prov)
+                if resc_prov and resc_prov != "none" and resc_prov not in ordered_provs:
+                    ordered_provs.append(resc_prov)
+                if ordered_provs:
+                    content = cls._reorder_mrc_providers(content, ordered_provs)
 
             sty = cfg.get("styx", {})
             if "enabled" in sty:

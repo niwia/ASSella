@@ -243,6 +243,12 @@ class GameDetailsDialogV2(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
+        try:
+            from ui.dialogs.game_details.hero_header import load_title_logo
+            QTimer.singleShot(150, lambda: load_title_logo(self))
+        except Exception:
+            pass
+
         if not getattr(self, "_fitted_once", False):
             self._fitted_once = True
             self._full_height = max(self.height(), self.FULL_HEIGHT)
@@ -264,14 +270,17 @@ class GameDetailsDialogV2(QDialog):
             self._user_sized = True
 
     def _tab_target_height(self, index: int) -> int:
-        if index != 0:
-            return self._full_height
-        inner = getattr(self, "_info_inner", None)
+        inner = None
+        if index == 0:
+            inner = getattr(self, "_info_inner", None)
+        elif hasattr(self, "_tickets_tab_index") and index == self._tickets_tab_index:
+            inner = getattr(self, "_tickets_inner", None)
+
         if inner is None:
             return self._full_height
         content_h = inner.layout().sizeHint().height() if inner.layout() else inner.sizeHint().height()
         chrome = self.height() - self.stacked.height()
-        return max(self.minimumHeight(), min(self._full_height, chrome + content_h + 4))
+        return max(self.minimumHeight(), min(self._full_height, chrome + content_h + 14))
 
     def _fit_height_for_tab(self, index: int, animate: bool = True) -> None:
         if self.isMaximized() or not hasattr(self, "stacked"):

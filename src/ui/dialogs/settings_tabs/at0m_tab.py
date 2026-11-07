@@ -438,10 +438,11 @@ def create_at0m_tab(dialog) -> QWidget:
         }
     """
 
-    # Plugin buttons. One click fetches the manifest and installs or updates
-    # that plugin; nothing else to do. The manifest decides which plugins can
+    # Plugin buttons. Read dynamically from manifest when available, falling back
+    # to the 6 Katamari family defaults. One click fetches the manifest and
+    # installs or updates that plugin. The manifest decides which plugins can
     # be installed at all (Bakeneko stays greyed out until it allows it).
-    PLUGIN_BUTTONS = [
+    DEFAULT_PLUGIN_BUTTONS = [
         # (attribute, filename, display name, row)
         ("btn_spacebunny_plugin", "spacebunny.lua", "SpaceBunny", 0),
         ("btn_styx_plugin", "styx.lua", "Styx", 0),
@@ -450,23 +451,95 @@ def create_at0m_tab(dialog) -> QWidget:
         ("btn_lettuce_plugin", "lettuce.lua", "Lettuce", 1),
         ("btn_bakeneko_plugin", "bakeneko.lua", "Bakeneko", 1),
     ]
-    rows = []
-    for _ in range(2):
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 2, 0, 4)
-        row.setSpacing(8)
-        rows.append(row)
-    for attr, _fname, label, row_idx in PLUGIN_BUTTONS:
-        btn = QPushButton(label)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        setattr(dialog, attr, btn)
-        rows[row_idx].addWidget(btn, 1)
 
-    deploy_layout.addLayout(rows[0])
-    extras_lbl = QLabel("Extras")
-    extras_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.9); font-size: 9pt; font-weight: 700; margin-top: 6px;")
-    deploy_layout.addWidget(extras_lbl)
-    deploy_layout.addLayout(rows[1])
+    def _build_plugin_button_defs():
+        from utils.plugin_manager import (
+            fetch_plugins_manifest,
+            get_retired_plugins,
+            get_manifest_plugin_info,
+        )
+
+        manifest = fetch_plugins_manifest()
+        retired = get_retired_plugins() or {}
+
+        button_defs = []
+        seen_files = set()
+
+        # 1. Base Katamari family plugins (display names from manifest if present)
+        for attr, fname, default_name, row_idx in DEFAULT_PLUGIN_BUTTONS:
+            if fname in retired:
+                continue
+            meta = get_manifest_plugin_info(fname) or {}
+            display_name = meta.get("name") or default_name
+            button_defs.append((attr, fname, display_name, row_idx))
+            seen_files.add(fname)
+
+        # 2. Additional dynamic plugins from manifest if present
+        if manifest and isinstance(manifest.get("plugins"), dict):
+            for fname, meta in manifest["plugins"].items():
+                if fname in seen_files or fname in retired:
+                    continue
+                if meta.get("retired"):
+                    continue
+                is_core = meta.get("required") or meta.get("category") == "interceptor"
+                row_idx = 0 if is_core else 1
+                display_name = meta.get("name") or fname.replace(".lua", "").title()
+                attr = f"btn_{fname.replace('.', '_').replace('-', '_')}"
+                button_defs.append((attr, fname, display_name, row_idx))
+                seen_files.add(fname)
+
+        return button_defs
+
+    buttons_container = QWidget()
+    buttons_container_layout = QVBoxLayout(buttons_container)
+    buttons_container_layout.setContentsMargins(0, 0, 0, 0)
+    buttons_container_layout.setSpacing(6)
+    deploy_layout.addWidget(buttons_container)
+
+    def _render_plugin_buttons():
+        while buttons_container_layout.count():
+            item = buttons_container_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+            l = item.layout()
+            if l:
+                while l.count():
+                    sub = l.takeAt(0)
+                    sw = sub.widget()
+                    if sw:
+                        sw.deleteLater()
+
+        button_defs = _build_plugin_button_defs()
+        dialog._plugin_button_defs = button_defs
+
+        core_row = QHBoxLayout()
+        core_row.setContentsMargins(0, 2, 0, 4)
+        core_row.setSpacing(8)
+
+        extras_row = QHBoxLayout()
+        extras_row.setContentsMargins(0, 2, 0, 4)
+        extras_row.setSpacing(8)
+
+        rows = [core_row, extras_row]
+        dialog._plugin_btn_entries = []
+
+        for attr, fname, label, row_idx in button_defs:
+            btn = QPushButton(label)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            setattr(dialog, attr, btn)
+            btn.clicked.connect(lambda _c=False, b=btn, f=fname, n=label: _handle_plugin_click(b, f, n))
+            target_row = rows[0] if row_idx == 0 else rows[1]
+            target_row.addWidget(btn, 1)
+            dialog._plugin_btn_entries.append((btn, fname, label))
+
+        buttons_container_layout.addLayout(core_row)
+
+        extras_lbl = QLabel("Extras")
+        extras_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.9); font-size: 9pt; font-weight: 700; margin-top: 6px;")
+        buttons_container_layout.addWidget(extras_lbl)
+
+        buttons_container_layout.addLayout(extras_row)
 
     # Separator
     deploy_sep = QFrame()
@@ -505,6 +578,10 @@ def create_at0m_tab(dialog) -> QWidget:
             return
 
         meta = get_manifest_plugin_info(filename) or {}
+        manifest_name = meta.get("name")
+        if manifest_name:
+            display_name = manifest_name
+
         deployable, why = is_plugin_deployable(filename)
         if not deployable:
             btn.setEnabled(False)
@@ -573,12 +650,8 @@ def create_at0m_tab(dialog) -> QWidget:
         job.start()
 
     def _refresh_all_buttons():
-        for attr, fname, label, _row in PLUGIN_BUTTONS:
-            _refresh_plugin_btn(getattr(dialog, attr), fname, label)
-
-    for attr, fname, label, _row in PLUGIN_BUTTONS:
-        b = getattr(dialog, attr)
-        b.clicked.connect(lambda _c=False, b=b, f=fname, n=label: _handle_plugin_click(b, f, n))
+        for btn, fname, label in getattr(dialog, "_plugin_btn_entries", []):
+            _refresh_plugin_btn(btn, fname, label)
 
     def _on_custom_plugins_toggled(checked: bool):
         dialog.settings.setValue("custom_plugins_advanced", checked)
@@ -600,6 +673,7 @@ def create_at0m_tab(dialog) -> QWidget:
     from utils.plugin_manager import offline_manifest
 
     with offline_manifest():
+        _render_plugin_buttons()
         _refresh_all_buttons()
 
     class _ManifestRefresh(QThread):
@@ -613,6 +687,11 @@ def create_at0m_tab(dialog) -> QWidget:
 
     def _after_refresh():
         try:
+            current_fnames = [fname for _, fname, _, _ in getattr(dialog, "_plugin_button_defs", [])]
+            new_defs = _build_plugin_button_defs()
+            new_fnames = [fname for _, fname, _, _ in new_defs]
+            if current_fnames != new_fnames:
+                _render_plugin_buttons()
             _refresh_all_buttons()
         except RuntimeError:
             pass  # dialog already closed
