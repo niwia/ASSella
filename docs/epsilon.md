@@ -22,7 +22,7 @@ Epsilon and Photar work seamlessly behind the scenes:
 ::: tip Path 1: Already using ASSella or Uran?
 If you already have ASSella or the Uran Decky plugin set up on your machine:
 - SLSsteam is already installed and configured.
-- Your Hubcap API key is already saved in your settings.
+- Your Hubcap API key is already saved, and Epsilon shares it automatically (newest key wins).
 - Required Lua interceptor plugins are already deployed.
 
 You can jump straight to **[Step 1: Install Epsilon Service](#step-1-install-epsilon-service)**.
@@ -32,8 +32,38 @@ You can jump straight to **[Step 1: Install Epsilon Service](#step-1-install-eps
 If you are configuring a fresh system without ASSella or Uran, ensure you complete these essential prerequisites first:
 1. **Install SLSsteam (Headcrab)**: SLSsteam is required to manage decryption keys and manifests. Follow our [Headcrab Setup Guide](/install#_3-reset-steam-to-vanilla).
 2. **Get a Hubcap Manifest API Key**: Get your free API key at [hubcapmanifest.com](https://hubcapmanifest.com/) (see the [Hubcap Key Setup Guide](/install#_1-get-your-hubcap-manifest-api-key)).
-3. **Save your API Key**: Place your API key in `~/.config/assella-decky/settings.json` under `"hubcap_api_key"` or inside your SLSsteam directory in `spacebunny.conf.lua`.
+3. **Save your API Key**: Place your API key in `~/.config/assella-decky/settings.json` under `"manifest_api_key"`, or in the `hubcap` section of `~/.config/SLSsteam/katamari.conf.lua`.
 :::
+
+::: info One Hubcap key for everything
+ASSella, Uran, Epsilon and the AT0-M plugins share one Hubcap API key. It lives in
+`~/.config/SLSsteam/katamari.conf.lua` (the `hubcap` section), which the plugins read.
+Whenever the key changes anywhere, the **newest one wins** and is copied to the others the
+next time each app looks at it. In ASSella this is the **AT0-M Sync** switch under
+**Settings → Integrations → Hubcap**.
+:::
+
+---
+
+## Install & Manage from ASSella (easiest)
+
+If you use ASSella, you don't need the terminal at all. Open **Settings → Companions → Epsilon**:
+
+- **Not installed:** click **Install Epsilon**. ASSella runs the same one-line installer shown below and switches to the status view when it is done. **Guides** opens this page.
+- **Installed:** you get a live overview:
+
+  | Shown | Meaning |
+  | :--- | :--- |
+  | **Bridge** | *running*, *listening (asleep)* — waiting for a click, uses nothing — or *off* |
+  | **Version** | Installed Epsilon version |
+  | **Auto-update** | Whether the daily updater timer is on |
+  | **Games added (7 days)** | Games added through Photar this week (failures shown in brackets) |
+  | **Last added** | When the last game came in |
+
+- **Buttons:** Refresh, Restart, Update, Logs, Guides — plus **Install Photar**, **Repair service** (re-creates the systemd units) and **Uninstall** (choose to keep or delete the `~/epsilon` folder).
+- **Settings** at the bottom: DLC options and the Hubcap route, saved straight to Epsilon's settings file.
+
+ASSella detects Epsilon from its systemd user units, so a custom install folder is found too. When ASSella runs as a Flatpak it manages Epsilon on the host for you.
 
 ---
 
@@ -161,7 +191,7 @@ Tampermonkey checks GitHub automatically in the background and updates Photar wh
 
 ### Uninstall Epsilon
 
-To completely remove Epsilon, its updater timer, and its systemd socket:
+In ASSella: **Settings → Companions → Epsilon → Uninstall**. From a terminal, to completely remove Epsilon, its updater timer, and its systemd socket:
 
 ```bash
 ~/epsilon/epsilon/uninstall.sh
@@ -177,7 +207,7 @@ When a prerequisite is missing or an error occurs during injection, the button i
 
 | Code | Cause | Resolution |
 | :--- | :--- | :--- |
-| **[401](#err-401)** | Hubcap API Key Missing or Invalid | Save your Hubcap API key in settings or `spacebunny.conf.lua` |
+| **[401](#err-401)** | Hubcap API Key Missing or Invalid | Save your Hubcap API key in ASSella, Uran, or `katamari.conf.lua` |
 | **[402](#err-402)** | Hubcap Daily Quota Exhausted | Wait for daily quota reset or upgrade tier on Hubcap |
 | **[404](#err-404)** | Manifest Not Found on Hubcap | Game manifest bundle is not available on Hubcap |
 | **[429](#err-429)** | Hubcap Rate Limit Reached | Wait a moment before requesting more games |
@@ -203,10 +233,10 @@ When a prerequisite is missing or an error occurs during injection, the button i
    - If using standalone Epsilon: Place it in `~/.config/assella-decky/settings.json`:
      ```json
      {
-       "hubcap_api_key": "YOUR_KEY_HERE"
+       "manifest_api_key": "YOUR_KEY_HERE"
      }
      ```
-   - Or add it directly to your SLSsteam configuration in `~/.config/SLSsteam/spacebunny.conf.lua`:
+   - Or add it directly to the `hubcap` section of `~/.config/SLSsteam/katamari.conf.lua`:
      ```lua
      hubcap = {
        api_key = "YOUR_KEY_HERE",
