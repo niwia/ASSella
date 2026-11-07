@@ -74,3 +74,86 @@ class PluginCheckDialog(QDialog):
 
     def unselected(self) -> List[Dict[str, Any]]:
         return [a for a, cb in zip(self.actions, self._boxes) if not cb.isChecked()]
+
+
+class UnlistedPluginsDialog(QDialog):
+    """Plugins in the SLSsteam folder that ASSella does not publish.
+
+    Two answers: turn them off (moved to .bak, nothing deleted) or keep them
+    and switch on "I'm using custom plugins". Closing asks again next start.
+    """
+
+    def __init__(self, paths, parent=None, accent_color: str = "#a1c9fd"):
+        super().__init__(parent)
+        self.setWindowTitle("Other SLSsteam plugins found")
+        self.setMinimumWidth(500)
+        self.choice = "later"  # "disable" | "custom" | "later"
+
+        body = install_themed_frame(self, margins=(16, 10, 16, 14), spacing=10)
+
+        intro = QLabel(
+            "These plugins are in your SLSsteam plugins folder but are not part of the set "
+            "ASSella installs and tests together:"
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: rgba(255,255,255,0.85); font-size: 9pt;")
+        body.addWidget(intro)
+
+        names = sorted({p.name for p in paths})
+        shown = names[:10]
+        listing = QLabel("\n".join(shown) + (f"\n…and {len(names) - len(shown)} more" if len(names) > len(shown) else ""))
+        listing.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        listing.setStyleSheet(
+            "color: #FFFFFF; font-family: 'JetBrains Mono','DejaVu Sans Mono',monospace; font-size: 9pt;"
+            " background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);"
+            " border-radius: 6px; padding: 8px 10px;"
+        )
+        try:
+            folders = sorted({str(p.parent) for p in paths})
+            listing.setToolTip("\n".join(folders))
+        except Exception:
+            pass
+        body.addWidget(listing)
+
+        why = QLabel(
+            "Other plugins can hook the same Steam functions as SpaceBunny and Styx. Two plugins "
+            "doing that at once is a common cause of downloads that stall, fail with missing keys, "
+            "or games that will not launch."
+        )
+        why.setWordWrap(True)
+        why.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 8.5pt;")
+        body.addWidget(why)
+
+        disable_hint = QLabel(
+            "<b>Turn them off</b>: moved to <i>.bak</i> in the same folder, nothing is deleted. "
+            "Rename a file back to turn it on again.<br>"
+            "<b>Keep them</b>: switches on “I'm using custom plugins”. ASSella then stops managing "
+            "and checking plugins; change it any time in Settings → AT0-M."
+        )
+        disable_hint.setWordWrap(True)
+        disable_hint.setStyleSheet("color: rgba(255,255,255,0.75); font-size: 8.5pt;")
+        body.addWidget(disable_hint)
+
+        btns = QHBoxLayout()
+        later = QPushButton("Not now")
+        later.setToolTip("Ask again next time ASSella starts.")
+        keep = QPushButton("Keep them (custom plugins)")
+        off = QPushButton("Turn them off")
+        off.setDefault(True)
+        off.setStyleSheet(f"background: {accent_color}; color: #000; font-weight: 600; border: none;"
+                          " border-radius: 6px; padding: 5px 16px;")
+        for b in (later, keep, off):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFixedHeight(30)
+        later.clicked.connect(lambda: self._done("later"))
+        keep.clicked.connect(lambda: self._done("custom"))
+        off.clicked.connect(lambda: self._done("disable"))
+        btns.addWidget(later)
+        btns.addStretch(1)
+        btns.addWidget(keep)
+        btns.addWidget(off)
+        body.addLayout(btns)
+
+    def _done(self, choice: str) -> None:
+        self.choice = choice
+        self.accept()

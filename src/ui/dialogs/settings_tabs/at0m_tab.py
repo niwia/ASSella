@@ -149,10 +149,13 @@ def get_available_download_plugins() -> list[tuple[str, str]]:
     std_label = f"{std_title} (download.lua) (Default)" if def_interceptor == "download.lua" else f"{std_title} (download.lua)"
 
     sb_filename = "spacebunny.lua" if (def_interceptor == "spacebunny.lua" or get_manifest_plugin_info("spacebunny.lua") or not get_manifest_plugin_info("spacebunny1.5.lua")) else "spacebunny1.5.lua"
-    options = [
-        (sb_label, sb_filename),
-        (std_label, "download.lua"),
-    ]
+    options = [(sb_label, sb_filename)]
+    # The Standard interceptor only when the manifest still publishes it.
+    try:
+        if get_manifest_plugin_info("download.lua"):
+            options.append((std_label, "download.lua"))
+    except Exception:
+        pass
     try:
         from utils.helpers import get_base_path
         from utils.yaml_config_manager import get_sls_plugins_dirs
@@ -428,6 +431,22 @@ def create_at0m_tab(dialog) -> QWidget:
             color: #FFFFFF;
         }
     """
+    STYLE_OPTIONAL_OFF = """
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.75);
+            border: 1px dashed rgba(255, 255, 255, 0.25);
+            border-radius: 6px;
+            padding: 7px 10px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.10);
+            border-color: rgba(255, 255, 255, 0.45);
+            color: #FFFFFF;
+        }
+    """
     STYLE_DISABLED = """
         QPushButton {
             background-color: rgba(255, 255, 255, 0.03);
@@ -482,41 +501,30 @@ def create_at0m_tab(dialog) -> QWidget:
                 self.setToolTip(self._full + ("\n\n" + tip if tip else ""))
 
     def _build_plugin_button_defs():
-        from utils.plugin_manager import (
-            fetch_plugins_manifest,
-            get_retired_plugins,
-            get_manifest_plugin_info,
-        )
+        from utils.plugin_manager import fetch_plugins_manifest, get_retired_plugins
 
         manifest = fetch_plugins_manifest()
         retired = get_retired_plugins() or {}
+        entries = (manifest or {}).get("plugins")
 
         button_defs = []
-        seen_files = set()
-
-        # 1. Base Katamari family plugins (display names from manifest if present)
-        for attr, fname, default_name, row_idx in DEFAULT_PLUGIN_BUTTONS:
-            if fname in retired:
-                continue
-            meta = get_manifest_plugin_info(fname) or {}
-            display_name = meta.get("name") or default_name
-            button_defs.append((attr, fname, display_name, row_idx))
-            seen_files.add(fname)
-
-        # 2. Additional dynamic plugins from manifest if present
-        if manifest and isinstance(manifest.get("plugins"), dict):
-            for fname, meta in manifest["plugins"].items():
-                if fname in seen_files or fname in retired:
+        if isinstance(entries, dict) and entries:
+            # The manifest is the list: what it publishes is shown (greyed out
+            # when not deployable), what it drops disappears. Essential
+            # plugins and interceptors go in the first block, the rest under
+            # "Extras".
+            for fname, meta in entries.items():
+                if fname in retired or not isinstance(meta, dict) or meta.get("retired"):
                     continue
-                if meta.get("retired"):
-                    continue
-                is_core = meta.get("required") or meta.get("category") == "interceptor"
-                row_idx = 0 if is_core else 1
+                is_core = bool(meta.get("required")) or meta.get("category") == "interceptor"
                 display_name = meta.get("name") or fname.replace(".lua", "").title()
                 attr = f"btn_{fname.replace('.', '_').replace('-', '_')}"
-                button_defs.append((attr, fname, display_name, row_idx))
-                seen_files.add(fname)
-
+                button_defs.append((attr, fname, display_name, 0 if is_core else 1))
+        else:
+            # No manifest at all (first start offline, no bundled copy).
+            for attr, fname, default_name, row_idx in DEFAULT_PLUGIN_BUTTONS:
+                if fname not in retired:
+                    button_defs.append((attr, fname, default_name, row_idx))
         return button_defs
 
     buttons_container = QWidget()
@@ -575,6 +583,47 @@ def create_at0m_tab(dialog) -> QWidget:
             buttons_container_layout.addWidget(extras_lbl)
             buttons_container_layout.addLayout(extras_grid)
 
+    # Plugins in the folder that the manifest does not publish.
+    unlisted_row = QHBoxLayout()
+    unlisted_row.setContentsMargins(0, 2, 0, 0)
+    dialog.unlisted_plugins_lbl = QLabel()
+    dialog.unlisted_plugins_lbl.setWordWrap(True)
+    dialog.unlisted_plugins_lbl.setStyleSheet("color: #FFB74D; font-size: 8.5pt;")
+    unlisted_btn = QPushButton("Review")
+    unlisted_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    unlisted_btn.setFixedHeight(26)
+    unlisted_row.addWidget(dialog.unlisted_plugins_lbl, 1)
+    unlisted_row.addWidget(unlisted_btn, 0)
+    unlisted_box = QWidget()
+    unlisted_box.setLayout(unlisted_row)
+    unlisted_box.hide()
+    deploy_layout.addWidget(unlisted_box)
+
+    def _refresh_unlisted():
+        try:
+            from utils.plugin_manager import find_unlisted_plugins
+
+            names = sorted({p.name for p in find_unlisted_plugins()})
+        except Exception:
+            names = []
+        if names:
+            shown = ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+            dialog.unlisted_plugins_lbl.setText(f"Other plugins in your SLSsteam folder: {shown}")
+            dialog.unlisted_plugins_lbl.setToolTip("Plugins ASSella does not publish can clash with SpaceBunny and Styx.")
+        unlisted_box.setVisible(bool(names))
+
+    def _review_unlisted():
+        from utils.plugin_manager import check_and_prompt_legacy_plugins
+
+        check_and_prompt_legacy_plugins(parent_window=dialog, force=True)
+        if dialog.settings.value("custom_plugins_advanced", False, type=bool):
+            dialog.custom_plugins_checkbox.setChecked(True)
+        _refresh_unlisted()
+        _refresh_all_buttons()
+
+    unlisted_btn.clicked.connect(_review_unlisted)
+    dialog._refresh_unlisted_plugins = _refresh_unlisted
+
     # Separator
     deploy_sep = QFrame()
     deploy_sep.setFrameShape(QFrame.Shape.HLine)
@@ -624,12 +673,27 @@ def create_at0m_tab(dialog) -> QWidget:
             btn.setStyleSheet(STYLE_DISABLED)
             return
 
+        from utils.plugin_manager import POLICY_REQUIRED, plugin_policy
+
         status = get_plugin_status(filename)
         desc = str(meta.get("description") or "")
+        policy = plugin_policy(filename)
+        btn.setProperty("plugin_optional", policy != POLICY_REQUIRED)
+        btn.setProperty("plugin_installed", status != "missing")
+        if status == "missing" and policy != POLICY_REQUIRED:
+            # Optional and off: nothing is wrong, so no orange.
+            btn.setText(f"{display_name} · off")
+            btn.setToolTip((desc + "\n\n" if desc else "") + "Optional. Click to install and turn it on.")
+            btn.setStyleSheet(STYLE_OPTIONAL_OFF)
+            btn.setEnabled(True)
+            return
         if status == "up_to_date":
             ver = get_plugin_version(filename) or meta.get("version", "")
             btn.setText(f"{display_name} v{ver}" if ver else display_name)
-            btn.setToolTip((desc + "\n\n" if desc else "") + "Installed and up to date. Click to check for updates.")
+            btn.setToolTip((desc + "\n\n" if desc else "") + (
+                "Installed and up to date. Click to check for updates or turn it off."
+                if policy != POLICY_REQUIRED else "Installed and up to date. Click to check for updates."
+            ))
             btn.setStyleSheet(STYLE_ACTIVE_GREEN)
         elif status == "missing":
             btn.setText(f"{display_name} · install")
@@ -648,14 +712,20 @@ def create_at0m_tab(dialog) -> QWidget:
     class _PluginJob(QThread):
         done = pyqtSignal(bool, str)
 
-        def __init__(self, filename: str, parent=None):
+        def __init__(self, filename: str, parent=None, remove: bool = False):
             super().__init__(parent)
             self.filename = filename
+            self.remove = remove
 
         def run(self):
             try:
-                from utils.plugin_manager import deploy_plugin, fetch_plugins_manifest
+                from utils.plugin_manager import deploy_plugin, fetch_plugins_manifest, undeploy_plugin
 
+                if self.remove:
+                    # Remembered as turned off, so no startup check reinstalls it.
+                    ok, msg = undeploy_plugin(self.filename)
+                    self.done.emit(ok, msg)
+                    return
                 fetch_plugins_manifest(force_refresh=True)
                 ok, _skipped, msg = deploy_plugin(self.filename)
                 self.done.emit(ok, msg)
@@ -666,12 +736,26 @@ def create_at0m_tab(dialog) -> QWidget:
         """Click and forget: refresh the manifest, then install or update."""
         if btn.property("plugin_busy"):
             return
+        remove = False
+        if btn.property("plugin_optional") and btn.property("plugin_installed"):
+            choice = ThemedMessageBox.choices(
+                dialog, display_name,
+                f"{display_name} is optional and turned on.\n\n"
+                "Turning it off removes it from the SLSsteam plugins folder; ASSella will not "
+                "reinstall it until you turn it on again here.",
+                [("Cancel", "cancel"), ("Turn off", "off"), ("Check for update", "update")],
+                default="update",
+            )
+            if choice == "off":
+                remove = True
+            elif choice != "update":
+                return
         btn.setProperty("plugin_busy", True)
         btn.setEnabled(False)
-        btn.setText(f"Updating {display_name}...")
+        btn.setText(f"Turning off {display_name}..." if remove else f"Updating {display_name}...")
         btn.setStyleSheet(STYLE_DISABLED)
 
-        job = _PluginJob(filename, dialog)
+        job = _PluginJob(filename, dialog, remove=remove)
 
         def _finished(ok: bool, msg: str):
             _refresh_all_buttons()
@@ -698,6 +782,7 @@ def create_at0m_tab(dialog) -> QWidget:
                 "Please note: ASSella cannot guarantee compatibility, functionality, or stability with third-party plugins!"
             )
         _refresh_all_buttons()
+        _refresh_unlisted()
 
     dialog.custom_plugins_checkbox.checkbox.toggled.connect(_on_custom_plugins_toggled)
 
@@ -709,6 +794,7 @@ def create_at0m_tab(dialog) -> QWidget:
     with offline_manifest():
         _render_plugin_buttons()
         _refresh_all_buttons()
+    _refresh_unlisted()
 
     class _ManifestRefresh(QThread):
         def run(self):

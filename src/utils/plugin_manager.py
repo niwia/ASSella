@@ -154,6 +154,66 @@ _memo: Dict[str, Any] = {"data": None, "source": None, "at": 0.0, "unreachable_a
 
 
 # ---------------------------------------------------------------------------
+# What the manifest says about each plugin
+# ---------------------------------------------------------------------------
+#
+# Every plugin entry in the manifest is shown in Settings -> AT0-M; deleting
+# an entry hides it (and "retired" moves installed copies to .bak). Per entry:
+#
+#   deployable: false   shown greyed out with disabled_reason; installed
+#                       copies are moved to .bak.
+#   required: true      essential: installed by "deploy all" and offered at
+#                       startup when missing; cannot be turned off.
+#   default_on: true    optional, but installed by default; the user may turn
+#                       it off (and it then stays off).
+#   (neither)           optional and off until the user turns it on.
+#
+# Interceptors are exclusive: only the active one (or the manifest default)
+# is installed.
+
+POLICY_REQUIRED = "required"
+POLICY_DEFAULT_ON = "default_on"
+POLICY_OPTIONAL = "optional"
+POLICY_UNAVAILABLE = "unavailable"
+
+
+def manifest_plugin_names(manifest: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Plugins the manifest publishes, in manifest order (retired ones left out)."""
+    m = manifest if manifest is not None else _local_manifest()
+    entries = (m or {}).get("plugins")
+    if not isinstance(entries, dict) or not entries:
+        return list(FALLBACK_REQUIRED_PLUGINS) + sorted(KATAMARI_FAMILY_PLUGINS - set(FALLBACK_REQUIRED_PLUGINS))
+    retired = get_retired_plugins()
+    return [n for n in entries if n not in retired]
+
+
+def plugin_policy(filename: str) -> str:
+    deployable, _ = is_plugin_deployable(filename)
+    if not deployable:
+        return POLICY_UNAVAILABLE
+    meta = get_manifest_plugin_info(filename)
+    if meta is None:
+        return POLICY_REQUIRED if filename in FALLBACK_REQUIRED_PLUGINS else POLICY_OPTIONAL
+    if meta.get("required"):
+        return POLICY_REQUIRED
+    if meta.get("default_on"):
+        return POLICY_DEFAULT_ON
+    return POLICY_OPTIONAL
+
+
+def is_plugin_wanted(filename: str) -> bool:
+    """Should this plugin be installed, given the manifest and the user's choices?"""
+    policy = plugin_policy(filename)
+    if policy == POLICY_REQUIRED:
+        return True
+    if policy == POLICY_DEFAULT_ON:
+        return not is_plugin_user_disabled(filename)
+    if policy == POLICY_OPTIONAL:
+        return is_plugin_installed(filename)  # on only if the user installed it
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
 
@@ -427,20 +487,39 @@ class offline_manifest:
         return False
 
 
-def _local_manifest() -> Optional[Dict[str, Any]]:
-    if _memo["data"] is not None:
-        return _memo["data"]
-    cached = _read_json(get_cached_manifest_path())
-    if cached and _valid_manifest_shape(cached):
-        return cached
+def _bundled_manifest() -> Optional[Dict[str, Any]]:
     try:
         bundled = Paths.resource("plugins/" + MANIFEST_FILENAME)
         b = _read_json(bundled) if bundled.is_file() else None
         if b and isinstance(b.get("plugins"), dict):
             return b
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[PluginManager] Bundled manifest unreadable: {e}")
     return None
+
+
+def _newest_local_manifest() -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Cached or bundled manifest, whichever is newer.
+
+    A new ASSella release ships a newer bundled manifest; preferring an old
+    cached copy over it would show a stale plugin set until the next fetch.
+    """
+    cached = _read_json(get_cached_manifest_path())
+    cached = cached if cached and _valid_manifest_shape(cached) else None
+    bundled = _bundled_manifest()
+    if cached and bundled:
+        return (bundled, "bundled") if _manifest_serial(bundled) > _manifest_serial(cached) else (cached, "cache")
+    if cached:
+        return cached, "cache"
+    if bundled:
+        return bundled, "bundled"
+    return None, None
+
+
+def _local_manifest() -> Optional[Dict[str, Any]]:
+    if _memo["data"] is not None:
+        return _memo["data"]
+    return _newest_local_manifest()[0]
 
 
 def fetch_plugins_manifest(force_refresh: bool = False) -> Optional[Dict[str, Any]]:
@@ -467,18 +546,7 @@ def fetch_plugins_manifest(force_refresh: bool = False) -> Optional[Dict[str, An
             return data
 
         logger.info(f"[PluginManager] Plugin sources unavailable, using local manifest ({problem})")
-        fallback, source = None, None
-        cached = _read_json(get_cached_manifest_path())
-        if cached and _valid_manifest_shape(cached):
-            fallback, source = cached, "cache"
-        else:
-            try:
-                bundled = Paths.resource("plugins/" + MANIFEST_FILENAME)
-                b = _read_json(bundled) if bundled.is_file() else None
-                if b and isinstance(b.get("plugins"), dict):
-                    fallback, source = b, "bundled"
-            except Exception as e:
-                logger.debug(f"[PluginManager] Bundled manifest unreadable: {e}")
+        fallback, source = _newest_local_manifest()
         _memo.update(data=fallback, source=source, at=now, base=None, unreachable_at=now)
         return fallback
 
@@ -564,6 +632,18 @@ def read_plugin_meta(content_or_path: Union[str, Path, bytes]) -> Dict[str, Opti
         elif "GetAppOwnershipTicket" in content:
             meta["role"] = "ticket-splicer"
     return meta
+
+
+def is_plugin_installed(filename: str) -> bool:
+    """A non-empty copy is in one of the SLSsteam plugin folders."""
+    for d in get_sls_plugins_dirs():
+        p = d / filename
+        try:
+            if p.is_file() and p.stat().st_size > 0:
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _find_plugin_file(filename: str) -> Optional[Path]:
@@ -1093,11 +1173,12 @@ def get_default_interceptor_from_manifest() -> str:
 
 
 def deploy_all_plugins(force_download: bool = False, only_if_missing: bool = False) -> Tuple[bool, List[str]]:
-    """Install the family: the interceptor, Styx, Katamari, Lobster, Lettuce,
-    and Bakeneko when the manifest allows it.
+    """Install what the manifest wants installed.
 
-    The interceptor and Styx are always installed; the others are skipped when
-    the user removed them, or when the manifest marks them not deployable.
+    The active (or default) interceptor and every required plugin always;
+    default-on plugins unless the user turned them off; optional plugins only
+    when the user already has them (they are updated, never added). Plugins
+    the manifest marks not deployable are skipped.
     """
     ensure_sls_plugin_config_sections()
     fetch_plugins_manifest(force_refresh=True)
@@ -1107,21 +1188,20 @@ def deploy_all_plugins(force_download: bool = False, only_if_missing: bool = Fal
 
     retired = get_retired_plugins()
     active_interceptor = get_active_interceptor_filename() or get_settings().value("selected_download_plugin", "") or ""
-    if not active_interceptor or active_interceptor in retired:
+    if not active_interceptor or active_interceptor in retired or not is_plugin_deployable(active_interceptor)[0]:
         active_interceptor = get_default_interceptor_from_manifest()
 
+    order = [active_interceptor] + [
+        n for n in manifest_plugin_names()
+        if n != active_interceptor and not is_interceptor_plugin(n)
+    ]
     results: List[str] = []
     overall_ok = True
-    for name in [active_interceptor] + FAMILY_DEPLOY_ORDER:
-        essential = name in (active_interceptor, "styx.lua")
-        if not essential:
-            deployable, why = is_plugin_deployable(name)
-            if not deployable:
-                logger.debug(f"[PluginManager] Skipping {name}: {why}")
-                continue
-            if is_plugin_user_disabled(name):
-                logger.debug(f"[PluginManager] {name} removed by the user, skipping.")
-                continue
+    for name in order:
+        essential = name == active_interceptor or plugin_policy(name) == POLICY_REQUIRED
+        if not essential and not is_plugin_wanted(name):
+            logger.debug(f"[PluginManager] Skipping {name} ({plugin_policy(name)})")
+            continue
         ok, _skipped, msg = deploy_plugin(name, only_if_missing=only_if_missing)
         results.append(msg)
         if not ok and essential:
@@ -1205,13 +1285,17 @@ def plan_plugin_maintenance(force: bool = False) -> List[Dict[str, Any]]:
                 })
 
     published = _published_hashes()
-    for name in sorted(KATAMARI_FAMILY_PLUGINS):
-        if is_plugin_user_disabled(name) or not is_plugin_deployable(name)[0]:
+    active_interceptor = get_active_interceptor_filename() or get_default_interceptor_from_manifest()
+    for name in manifest_plugin_names(manifest or None):
+        if not is_plugin_deployable(name)[0]:
             continue
+        if is_interceptor_plugin(name) and name != active_interceptor:
+            continue  # only one interceptor; the others stay out
         status = get_plugin_status(name)
         info = entries.get(name) or {}
         ver = info.get("version")
-        if status == "missing" and name in ("lobster.lua",) + tuple(FALLBACK_REQUIRED_PLUGINS):
+        wanted = name == active_interceptor or is_plugin_wanted(name)
+        if status == "missing" and wanted:
             actions.append({
                 "id": f"install:{name}", "kind": "install", "plugin": name, "default": True,
                 "title": f"Install {info.get('name') or name}" + (f" {ver}" if ver else ""),
@@ -1274,30 +1358,47 @@ def run_plugin_maintenance(force: bool = False) -> Dict[str, Any]:
     return report
 
 
-def detect_non_katamari_plugins() -> List[Path]:
-    """Return active .lua files in SLSsteam plugin directories that are outside the Katamari family."""
+def find_unlisted_plugins() -> List[Path]:
+    """Active .lua files in the SLSsteam plugin folders that the manifest does not publish.
+
+    Retired and manifest-disabled plugins are left out: the startup plugin
+    check already moves those to .bak. Uses the local manifest only (no
+    network), so it is cheap enough for startup and Settings.
+    """
     if is_plugin_check_bypassed():
         return []
-
-    target_dirs = get_sls_plugins_dirs()
-    if not target_dirs:
-        return []
-
-    active_interceptor = get_active_interceptor_filename() or ""
-    retired = get_retired_plugins()  # these are archived automatically
-    foreign: List[Path] = []
-    for tdir in target_dirs:
+    with offline_manifest():
+        known = set(manifest_plugin_names()) | set(get_retired_plugins())
+    found: List[Path] = []
+    seen = set()
+    for tdir in get_sls_plugins_dirs():
         if not tdir.is_dir():
             continue
-        for p in tdir.glob("*.lua"):
-            if not p.is_file() or p.name.endswith(".bak") or p.name.startswith("."):
+        for p in sorted(tdir.glob("*.lua")):
+            if not p.is_file() or p.name.startswith(".") or p.name in known or p.name in seen:
                 continue
-            # If standard download.lua is active intentionally, don't flag download.lua
-            if p.name == "download.lua" and active_interceptor == "download.lua":
-                continue
-            if p.name not in KATAMARI_FAMILY_PLUGINS and p.name not in retired:
-                foreign.append(p)
-    return foreign
+            seen.add(p.name)
+            found.append(p)
+    return found
+
+
+def detect_non_katamari_plugins() -> List[Path]:
+    """Older name for :func:`find_unlisted_plugins`."""
+    return find_unlisted_plugins()
+
+
+def archive_unlisted_plugins(names: Optional[Iterable[str]] = None) -> List[str]:
+    """Move unlisted plugins (or just ``names``) to .bak in every plugins folder."""
+    wanted = set(names) if names is not None else {p.name for p in find_unlisted_plugins()}
+    archived = []
+    for tdir in get_sls_plugins_dirs():
+        if not tdir.is_dir():
+            continue
+        for name in wanted:
+            p = tdir / name
+            if p.is_file() and _archive(p, "Turned off a plugin ASSella does not publish"):
+                archived.append(str(p))
+    return archived
 
 
 def archive_non_katamari_plugins() -> List[str]:
@@ -1348,116 +1449,50 @@ def archive_non_katamari_plugins() -> List[str]:
     return archived
 
 
-def check_and_prompt_legacy_plugins(parent_window=None) -> bool:
-    """Prompt user once per ASSella version if unrecognized/legacy plugins exist."""
+def check_and_prompt_legacy_plugins(parent_window=None, force: bool = False) -> bool:
+    """Ask about plugins in the SLSsteam folder that ASSella does not publish.
+
+    Other plugins can hook the same Steam functions as SpaceBunny/Styx and
+    break downloads in ways that are hard to trace, so the user picks:
+    turn them off (moved to .bak, nothing deleted) or keep them and switch
+    to custom plugins. Closing the dialog asks again next start; the same
+    set of files is never asked about twice once answered.
+    """
     if is_plugin_check_bypassed():
+        return False
+    try:
+        from utils.yaml_config_manager import is_at0m_enabled
+        if not is_at0m_enabled():
+            return False
+    except Exception:
+        return False
+
+    unlisted = find_unlisted_plugins()
+    if not unlisted:
         return False
 
     settings = get_settings()
-    is_atom = settings.value("enable_at0m", settings.value("enable_vapor", True, type=bool), type=bool)
-    if not is_atom:
-        return False
-
-    foreign_files = detect_non_katamari_plugins()
-    if not foreign_files:
-        return False
-
-    from utils.version import app_version, extract_semver
-    clean_ver = extract_semver(app_version) or "current"
-    flag_key = f"legacy_plugins_prompted_{clean_ver}"
-    if settings.value(flag_key, False, type=bool):
+    names = sorted({p.name for p in unlisted})
+    fingerprint = ",".join(names)
+    if not force and str(settings.value("unlisted_plugins_answered", "") or "") == fingerprint:
         return False
 
     try:
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
-        from PyQt6.QtCore import Qt
+        from ui.dialogs.plugin_check_dialog import UnlistedPluginsDialog
 
-        dlg = QDialog(parent_window)
-        dlg.setWindowTitle("SLSsteam Plugins — Katamari Suite")
-        dlg.setFixedWidth(520)
-        dlg.setStyleSheet("background-color: #1A1D24; color: #FFFFFF;")
-
-        layout = QVBoxLayout(dlg)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
-
-        title_lbl = QLabel("Legacy or Foreign Plugins Detected")
-        title_lbl.setStyleSheet("font-size: 11pt; font-weight: bold; color: #64B5F6;")
-        layout.addWidget(title_lbl)
-
-        names_list = "\n".join(f"  • {p.name}" for p in foreign_files[:8])
-        if len(foreign_files) > 8:
-            names_list += f"\n  • ...and {len(foreign_files) - 8} more"
-
-        body_lbl = QLabel(
-            "ASSella detected plugins in your SLSsteam plugins directory that are outside the Katamari family:\n\n"
-            f"{names_list}\n\n"
-            "The Katamari family (SpaceBunny, Styx, Katamari, Lobster, Lettuce) is the unified suite for manifest "
-            "resolution and ticket splicing.\n\n"
-            "Choose 'Fix' to safely deactivate foreign plugins (.lua.bak), or 'Use Custom' to preserve them without interference."
-        )
-        body_lbl.setWordWrap(True)
-        body_lbl.setStyleSheet("font-size: 9pt; color: rgba(255, 255, 255, 0.85); line-height: 1.4;")
-        layout.addWidget(body_lbl)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(10)
-
-        fix_btn = QPushButton("Fix (Deactivate to .bak)")
-        fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        fix_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2E7D32;
-                color: #FFFFFF;
-                border: 1px solid #4CAF50;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-size: 9pt;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background-color: #388E3C;
-            }
-        """)
-
-        custom_btn = QPushButton("Use Custom Plugins")
-        custom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        custom_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.08);
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.25);
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-size: 9pt;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.16);
-            }
-        """)
-
-        def _on_fix():
-            archive_non_katamari_plugins()
-            settings.setValue(flag_key, True)
-            settings.sync()
-            dlg.accept()
-
-        def _on_custom():
-            settings.setValue("custom_plugins_advanced", True)
-            settings.setValue(flag_key, True)
-            settings.sync()
-            dlg.reject()
-
-        fix_btn.clicked.connect(_on_fix)
-        custom_btn.clicked.connect(_on_custom)
-
-        btn_row.addStretch()
-        btn_row.addWidget(custom_btn)
-        btn_row.addWidget(fix_btn)
-        layout.addLayout(btn_row)
-
+        accent = str(settings.value("accent_color", "#a1c9fd") or "#a1c9fd")
+        dlg = UnlistedPluginsDialog(unlisted, parent=parent_window, accent_color=accent)
         dlg.exec()
-        return True
     except Exception as exc:
-        logger.warning(f"[PluginManager] Error showing legacy plugins prompt: {exc}")
+        logger.warning(f"[PluginManager] Could not show the unlisted plugins prompt: {exc}")
         return False
+
+    if dlg.choice == "disable":
+        for path in archive_unlisted_plugins(names):
+            logger.info(f"[PluginManager] Turned off {path}")
+        settings.setValue("unlisted_plugins_answered", fingerprint)
+    elif dlg.choice == "custom":
+        settings.setValue("custom_plugins_advanced", True)
+        settings.setValue("unlisted_plugins_answered", fingerprint)
+    settings.sync()
+    return True

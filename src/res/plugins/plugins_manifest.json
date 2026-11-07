@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
-  "serial": 20261107102104,
-  "updated_at": "2026-11-07T10:21:04Z",
+  "serial": 20261107110957,
+  "updated_at": "2026-11-07T11:09:57Z",
   "default_interceptor": "spacebunny.lua",
   "plugins": {
     "spacebunny.lua": {
@@ -63,7 +63,8 @@
       "sha256": "46408b2e77a2a7ed4fcf749ce1e61e583fecf83b7209518539606224f9e2f554",
       "size_bytes": 32056,
       "required": false,
-      "deployable": true
+      "deployable": false,
+      "disabled_reason": "Pineapple is still being finished and will be enabled in a future update."
     }
   },
   "retired": {

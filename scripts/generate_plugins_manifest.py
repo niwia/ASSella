@@ -15,9 +15,17 @@ script:
   * writes the manifest with a monotonic ``serial`` and signs it with Ed25519
     (``plugins_manifest.json.sig``), which ASSella verifies before trusting it.
 
-The PUBLISH table below is where a plugin is switched on or off for everyone:
-``deployable: False`` keeps it out of every install and moves installed
-copies to ``.bak``. RETIRED lists plugins that are gone for good.
+The PUBLISH table below is what ASSella shows in Settings -> AT0-M; a plugin
+left out of it is not shown. Per plugin:
+
+  required: True      essential; always installed, cannot be turned off
+  default_on: True    optional, installed by default, the user may turn it off
+  (neither)           optional, off until the user turns it on
+  deployable: False   shown greyed out with disabled_reason; installed copies
+                      are moved to .bak
+
+RETIRED lists plugins that are gone for good (moved to .bak everywhere,
+deleted from the bucket by ``--publish --prune``).
 
 Typical use:
 
@@ -90,7 +98,10 @@ PUBLISH: dict[str, dict] = {
         "description": "Manifest fallback: puts Hubcap manifests into Steam's depotcache before Steam asks, "
                        "so updates work when every MRC provider is down. Formerly Bakeneko.",
         "required": False,
-        "deployable": True,
+        # Not ready: no tests yet, and it does not use Lettuce for its own
+        # requests (only proxy.worker_url). Shown greyed out until then.
+        "deployable": False,
+        "disabled_reason": "Pineapple is still being finished and will be enabled in a future update.",
     },
 }
 
@@ -241,6 +252,8 @@ def build_manifest(source: Path, stage: Path, allow_same_version: bool) -> tuple
         }
         if info.get("is_default"):
             entry["is_default"] = True
+        if info.get("default_on") and not entry["required"]:
+            entry["default_on"] = True
         if info.get("disabled_reason"):
             entry["disabled_reason"] = info["disabled_reason"]
         plugins[fname] = entry
