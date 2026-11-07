@@ -14,9 +14,7 @@ export default defineConfig({
     logo: '/logo.png',
     siteTitle: 'ASSella',
     nav: [
-      { text: 'Home', link: '/' },
       { text: 'Installation Guide', link: '/install' },
-      { text: 'Downloading', link: '/downloading' },
       { text: 'arm64', link: '/arm64' },
       { text: 'Uran', link: '/uran' },
       { text: 'Epsilon', link: '/epsilon' },
@@ -35,18 +33,45 @@ export default defineConfig({
     ],
     sidebar: [
       {
-        text: 'Getting Started',
+        text: 'ASSella',
         items: [
           { text: 'Installation Guide', link: '/install' },
           { text: 'Downloading Games', link: '/downloading' },
           { text: 'Game Details', link: '/game-details' },
-          { text: 'arm64', link: '/arm64' },
-          { text: 'Uran (Decky Plugin)', link: '/uran' },
-          { text: 'Epsilon (Browser Bridge)', link: '/epsilon' }
+          {
+            text: 'AT0-M',
+            link: '/at0m',
+            items: [
+              { text: 'Plugins', link: '/plugins' }
+            ]
+          },
+          {
+            text: 'Guides',
+            collapsed: false,
+            items: [
+              { text: 'Downgrade a Game', link: '/guides/downgrade' },
+              { text: 'Pin a Build', link: '/guides/pin-build' },
+              { text: 'Uninstall a Game', link: '/guides/uninstall' },
+              { text: 'Launcher Bypass', link: '/guides/launcher-bypass' }
+            ]
+          }
         ]
       },
       {
-        text: 'Reference & Guides',
+        text: 'arm64',
+        items: [{ text: 'arm64 (coming soon)', link: '/arm64' }]
+      },
+      {
+        text: 'Uran',
+        items: [{ text: 'Uran (Decky Plugin)', link: '/uran' }]
+      },
+      {
+        text: 'Epsilon',
+        items: [{ text: 'Epsilon (Browser Bridge)', link: '/epsilon' }]
+      },
+      {
+        text: 'Documentation',
+        collapsed: true,
         items: [
           { text: 'Command Line Interface (CLI)', link: '/cli' },
           { text: 'Online Multiplayer Guide', link: '/online-multiplayer' },
