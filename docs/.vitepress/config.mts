@@ -36,7 +36,13 @@ export default defineConfig({
         text: 'ASSella',
         items: [
           { text: 'Installation Guide', link: '/install' },
-          { text: 'Downloading Games', link: '/downloading' },
+          {
+            text: 'Downloading Games',
+            link: '/downloading',
+            items: [
+              { text: 'Bring Your Own .lua', link: '/guides/import-lua' }
+            ]
+          },
           { text: 'Game Details', link: '/game-details' },
           {
             text: 'AT0-M',
@@ -55,7 +61,7 @@ export default defineConfig({
               { text: 'Launcher Bypass', link: '/guides/launcher-bypass' }
             ]
           },
-          { text: 'ASSella vs ACCELA', link: '/compare' }
+          { text: 'Why ASSella?', link: '/compare' }
         ]
       },
       {

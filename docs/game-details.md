@@ -46,7 +46,9 @@ What this game has in SLSsteam's config, in three lists:
 
 ## Builds
 
-The game's patch history from SteamDB. Pick an older build to see its depots and **Download Selected** to roll back, or **Manual** to enter a manifest by hand. History is fetched through Byparr; without it the tab offers to install it. Step by step: [Downgrade a Game](/guides/downgrade).
+The game's patch history from SteamDB. Pick an older build to see its depots and **Download Selected** to roll back, or **Manual** to enter a manifest by hand.
+
+ASSella reads SteamDB directly. **Byparr** (a helper that gets past SteamDB's bot check) is **optional**: it's only used as a fallback, for example to load the full history. If the direct route is blocked on your network, the tab offers to install it. Step by step: [Downgrade a Game](/guides/downgrade).
 
 ---
 
@@ -76,4 +78,8 @@ SLSsteam ownership tickets for this game. Drag a ticket `.yaml` onto the box, br
 
 ## Workshop
 
-Shown when the game has downloaded Workshop mods (and the Workshop downloader is enabled in Settings). Lists installed mods, marks outdated ones and updates them with **Update All**.
+::: warning Retired
+The old Workshop downloader no longer works reliably and is switched off by default. Use [AT0-M](/at0m) instead: subscribe to mods in Steam and Steam downloads and updates them for you.
+:::
+
+If you turn the old downloader back on (**Settings → Advanced**), this tab lists the game's installed mods and updates outdated ones.

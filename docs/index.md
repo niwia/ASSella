@@ -12,12 +12,6 @@ hero:
     - theme: brand
       text: Installation Guide
       link: /install
-    - theme: brand
-      text: Downloading Games
-      link: /downloading
-    - theme: alt
-      text: ASSella vs ACCELA
-      link: /compare
     - theme: alt
       text: Uran (Decky Plugin)
       link: /uran
@@ -25,8 +19,8 @@ hero:
       text: Epsilon (Browser Bridge)
       link: /epsilon
     - theme: alt
-      text: View on GitHub
-      link: https://github.com/niwia/ASSella
+      text: Why ASSella when I have ACCELA?
+      link: /compare
 ---
 
 ## Quick Install

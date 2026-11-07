@@ -13,7 +13,7 @@ Sometimes a game update breaks mods, saves or performance, and you want an older
 ## Way 1: Builds tab (easiest)
 
 1. Open the game ([Game Details](/game-details)), then the **Builds** tab.
-2. ASSella loads the game's patch history from SteamDB. This needs **Byparr**, a small helper that gets past SteamDB's bot check. If it's missing, the tab offers **Install ASSella Byparr**.
+2. ASSella loads the game's patch history from SteamDB. It reads SteamDB directly; **Byparr** (a helper that gets past SteamDB's bot check) is only an optional fallback, and the tab offers to install it if the direct route is blocked.
 3. Click the build you want. You'll see the depots in that build, with the installed ones ticked.
 4. Press **Download Selected**.
 
