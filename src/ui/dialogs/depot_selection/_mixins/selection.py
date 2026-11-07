@@ -275,8 +275,9 @@ class SelectionMixin:
         return False
 
     def _toggle_all_checkboxes(self, check=True):
+        rows = list(self._selectable_rows())  # one walk for the confirm pass and the ticking
         if check:
-            for _i, it in self._selectable_rows():
+            for _i, it in rows:
                 if it.data(Qt.ItemDataRole.UserRole + 21) and it.checkState() != Qt.CheckState.Checked:
                     if not self._confirm_dlcdata_unlock(it):
                         return
@@ -285,7 +286,7 @@ class SelectionMixin:
         self._has_saved_selection = True
         state = Qt.CheckState.Checked if check else Qt.CheckState.Unchecked
         self.table_widget.blockSignals(True)
-        for i, id_item in self._selectable_rows():
+        for i, id_item in rows:
             id_item.setCheckState(state)
         self.table_widget.blockSignals(False)
 
