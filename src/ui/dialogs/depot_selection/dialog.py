@@ -506,7 +506,9 @@ class DepotSelectionDialog(
         if hasattr(self, "should_remember_storage") and self.should_remember_storage():
             chosen = self.get_selected_storage()
             if chosen and hasattr(self, "_settings") and self._settings:
-                self._settings.setValue("default_download_directory", chosen)
+                from utils.library_choice import remember_library
+
+                remember_library(chosen, self._settings)
                 logger.info(f"[DepotSelection] Remembered default storage library: {chosen}")
 
         super().accept()

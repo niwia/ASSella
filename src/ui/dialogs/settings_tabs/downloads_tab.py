@@ -147,18 +147,18 @@ def create_downloads_tab(dialog) -> QWidget:
     loc_row.setContentsMargins(2, 2, 2, 2)
     loc_row.setSpacing(10)
 
-    dl_dir_label = QLabel("Default Download Location:")
+    dl_dir_label = QLabel("Preferred Library:")
     dl_dir_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
-    dl_dir_label.setToolTip("Direct downloads to this folder/library instead of prompting for every game. Defaults to Ask Every Time.")
+    dl_dir_label.setToolTip("The library every picker starts on. With \"Ask every time\" off, downloads go here without asking.")
     loc_row.addWidget(dl_dir_label, 1)
 
     dialog.dl_location_combo = ModernComboBox()
     dialog.dl_location_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.dl_location_combo.addItem("Ask Every Time", "")
+    dialog.dl_location_combo.addItem("No preference", "")
 
     def _fmt_path(p: str) -> str:
-        if not p or p == "Ask Every Time":
-            return "Ask Every Time"
+        if not p or p in ("Ask Every Time", "No preference"):
+            return "No preference"
         norm = os.path.normpath(p)
         parts = [x for x in norm.split(os.sep) if x]
         if len(parts) >= 2:
@@ -219,6 +219,39 @@ def create_downloads_tab(dialog) -> QWidget:
     size_control(dialog.dl_location_combo, "md")
     loc_row.addWidget(dialog.dl_location_combo)
     dl_layout.addLayout(loc_row)
+
+    # Works with the preferred library above and with "Remember choice" in the
+    # pickers (utils/library_choice.py). Both write instantly.
+    from utils.library_choice import KEY_ASK, ask_each_time, set_preferences
+
+    dialog.ask_library_checkbox = create_checkbox_setting(
+        "Ask which library every time",
+        KEY_ASK,
+        True,
+        dialog,
+        "Show the library picker for each download. Off: use the preferred library without asking. "
+        "\"Remember choice\" in a picker turns this off.",
+    )
+    dialog.ask_library_checkbox.setChecked(ask_each_time(dialog.settings))
+    dl_layout.addWidget(dialog.ask_library_checkbox)
+
+    def _sync_library_prefs(*_):
+        path = dialog.dl_location_combo.currentData() or ""
+        if path == "custom":
+            return
+        has_pref = bool(path)
+        if not has_pref and not dialog.ask_library_checkbox.isChecked():
+            dialog.ask_library_checkbox.blockSignals(True)
+            dialog.ask_library_checkbox.setChecked(True)
+            dialog.ask_library_checkbox.blockSignals(False)
+        dialog.ask_library_checkbox.setLocked(
+            not has_pref, "Pick a preferred library first; without one ASSella always asks." if not has_pref else None
+        )
+        set_preferences(path, dialog.ask_library_checkbox.isChecked(), dialog.settings)
+
+    dialog.dl_location_combo.currentIndexChanged.connect(_sync_library_prefs)
+    dialog.ask_library_checkbox.toggled.connect(_sync_library_prefs)
+    _sync_library_prefs()
 
     from utils.auto_tune import get_learned_display
     learned_text = get_learned_display(dialog.settings, "auto_tune_best")

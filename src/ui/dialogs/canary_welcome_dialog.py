@@ -1423,7 +1423,11 @@ class CanaryWelcomeDialog(QDialog):
 
     def _save_and_finish(self) -> None:
         self.settings.setValue("use_lancache", self.chk_lan_cache.isChecked())
-        self.settings.setValue("default_download_directory", self.combo_location.currentData() or "")
+        from utils.library_choice import set_preferences
+
+        # "Ask Every Time" = no preferred library; picking one means use it without asking.
+        loc = self.combo_location.currentData() or ""
+        set_preferences(loc, ask=not loc, settings=self.settings)
 
         behavior = self.combo_behavior.currentData() or "ask"
         self.settings.setValue("at0m_default_download_action", behavior)

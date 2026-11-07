@@ -476,7 +476,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             self.remember_storage_chk = QCheckBox("Remember choice")
             self.remember_storage_chk.setChecked(False)
             self.remember_storage_chk.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.remember_storage_chk.setToolTip("Remember this storage location as default for future installs")
+            self.remember_storage_chk.setToolTip("Use this library from now on without asking.\nChange it in Settings → Downloads.")
             self.remember_storage_chk.setStyleSheet("""
                 QCheckBox {
                     font-size: 8pt;

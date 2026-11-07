@@ -62,6 +62,28 @@ def load_hero_image(dialog) -> None:
         dialog._active_fetchers[f"hero_{dialog.appid}"] = fetcher
 
 
+def _svg_icon(path: str, size: QSize, widget=None) -> QIcon:
+    """An SVG rendered at the device pixel ratio (QIcon(svg) can come out soft)."""
+    try:
+        from PyQt6.QtGui import QPainter
+        from PyQt6.QtSvg import QSvgRenderer
+
+        dpr = widget.devicePixelRatioF() if widget is not None else 1.0
+        dpr = max(1.0, dpr)
+        px = QPixmap(round(size.width() * dpr), round(size.height() * dpr))
+        px.fill(Qt.GlobalColor.transparent)
+        r = QSvgRenderer(path)
+        if not r.isValid():
+            return QIcon(path)
+        p = QPainter(px)
+        r.render(p)
+        p.end()
+        px.setDevicePixelRatio(dpr)
+        return QIcon(px)
+    except Exception:
+        return QIcon(path)
+
+
 def _is_atom_game(dialog) -> bool:
     gd = dialog.game_data or {}
     return bool(
@@ -227,6 +249,92 @@ def apply_classic_header(dialog) -> None:
     dialog.logo_lbl.hide()
 
 
+# ── SteamGridDB title logo ───────────────────────────────────────────────
+# Logos are cached as <base>/image_cache/logos/<appid>.png. A game SteamGridDB
+# has no logo for gets a <appid>.none marker so it is not asked again for a week.
+LOGO_BOX_W = 230          # widest a logo may be
+LOGO_BOX_H = 84           # tallest a logo may be
+LOGO_TARGET_AREA = 230 * 62  # wide and square logos end up with similar visual weight
+_LOGO_MISS_TTL = 7 * 86400
+
+
+def _logo_cache_dir():
+    from utils.helpers import get_base_path
+
+    d = get_base_path() / "image_cache" / "logos"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def _logo_miss_recent(appid: str) -> bool:
+    marker = _logo_cache_dir() / f"{appid}.none"
+    try:
+        return marker.is_file() and (time.time() - marker.stat().st_mtime) < _LOGO_MISS_TTL
+    except OSError:
+        return False
+
+
+def cached_logo(appid: str) -> QPixmap:
+    f = _logo_cache_dir() / f"{appid}.png"
+    if f.is_file():
+        px = QPixmap(str(f))
+        if not px.isNull():
+            return px
+    return QPixmap()
+
+
+def _trim_transparent(px: QPixmap) -> QPixmap:
+    """Crop fully transparent margins, so padding in the source does not shrink the logo."""
+    img = px.toImage()
+    if not img.hasAlphaChannel():
+        return px
+    w, h = img.width(), img.height()
+    step = max(1, max(w, h) // 200)  # ~200 samples across: fast enough for the GUI thread
+    left, top, right, bottom = w, h, -1, -1
+    for y in range(0, h, step):
+        for x in range(0, w, step):
+            if (img.pixel(x, y) >> 24) & 0xFF > 12:
+                if x < left: left = x
+                if x > right: right = x
+                if y < top: top = y
+                if y > bottom: bottom = y
+    if right < 0:
+        return px
+    left, top = max(0, left - step), max(0, top - step)
+    right, bottom = min(w - 1, right + step), min(h - 1, bottom + step)
+    if (right - left + 1) >= w - 2 and (bottom - top + 1) >= h - 2:
+        return px
+    return px.copy(left, top, right - left + 1, bottom - top + 1)
+
+
+def fit_logo(px: QPixmap, dpr: float = 1.0) -> QPixmap:
+    """Trim, then scale so every logo reads at a similar size.
+
+    Fitting into a box alone makes square or tall logos tiny and lets wide ones
+    fill everything; scaling to a target area, capped by the box, evens that out.
+    Small sources are scaled up as well as down.
+    """
+    px = _trim_transparent(px)
+    w, h = max(1, px.width()), max(1, px.height())
+    scale = min(LOGO_BOX_W / w, LOGO_BOX_H / h, (LOGO_TARGET_AREA / (w * h)) ** 0.5)
+    tw, th = max(1, round(w * scale)), max(1, round(h * scale))
+    out = px.scaled(round(tw * dpr), round(th * dpr), Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+    out.setDevicePixelRatio(dpr)
+    return out
+
+
+def _pick_logo_asset(assets: list):
+    """Highest-scored PNG that is not tiny; else the best of what there is."""
+    pngs = [a for a in assets if str(a.get("mime", "")).endswith("png") or str(a.get("url", "")).endswith(".png")]
+    pool = pngs or assets
+    big = [a for a in pool if int(a.get("width") or 0) >= 300]
+    return (big or pool or [None])[0]
+
+
 def apply_logo_header(dialog, pixmap: QPixmap) -> None:
     """Refined logo header layout: bounded logo on left, 5-line metadata stack, ProtonDB top-right, SteamDB bottom-right."""
     _clear_hero_layout(dialog)
@@ -236,12 +344,13 @@ def apply_logo_header(dialog, pixmap: QPixmap) -> None:
     banner_layout.setContentsMargins(16, 8, 16, 8)
     banner_layout.setSpacing(14)
 
-    # 1. Bounded logo container on left: max 220px width x 95px height
+    # 1. Logo on the left, trimmed and scaled to a similar visual size (fit_logo)
     dialog.name_lbl.hide()
-    scaled = pixmap.scaled(220, 95, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-    dialog.logo_lbl.setPixmap(scaled)
-    dialog.logo_lbl.setFixedSize(220, 95)
-    dialog.logo_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+    dpr = dialog.devicePixelRatioF() if hasattr(dialog, "devicePixelRatioF") else 1.0
+    dialog.logo_lbl.setPixmap(fit_logo(pixmap, dpr))
+    # Fixed slot so the metadata column does not jump between games.
+    dialog.logo_lbl.setFixedSize(LOGO_BOX_W, LOGO_BOX_H + 8)
+    dialog.logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     dialog.logo_lbl.setToolTip(dialog.game_data.get("game_name", ""))
     dialog.logo_lbl.show()
     banner_layout.addWidget(dialog.logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -385,47 +494,48 @@ def init_hero_v2(dialog, root) -> None:
     dialog._steamdb_btn = QPushButton()
     dialog._steamdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog._steamdb_btn.setToolTip(f"Open {dialog.appid} on SteamDB (https://steamdb.info/app/{dialog.appid}/)")
-    dialog._steamdb_btn.setFixedHeight(24)
-    dialog._steamdb_btn.setMinimumWidth(82)
+    dialog._steamdb_btn.setFixedHeight(26)
 
+    # The bundled lockup is white line art. On the old see-through button it
+    # took on whatever the hero art behind it was; a solid dark plate keeps
+    # it legible, and rendering the SVG at the screen's pixel ratio keeps it sharp.
     icon_path = Paths.icon("steamdb-lockup.svg")
     if not icon_path.exists():
         icon_path = Paths.resource("steamdb-lockup.svg")
     if icon_path.exists():
-        dialog._steamdb_btn.setIcon(QIcon(str(icon_path)))
-        dialog._steamdb_btn.setIconSize(QSize(76, 15))
+        dialog._steamdb_btn.setIcon(_svg_icon(str(icon_path), QSize(84, 17), dialog))
+        dialog._steamdb_btn.setIconSize(QSize(84, 17))
+        dialog._steamdb_btn.setMinimumWidth(104)
     else:
         dialog._steamdb_btn.setText("SteamDB")
 
     dialog._steamdb_btn.setStyleSheet("""
         QPushButton {
-            background-color: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            border-radius: 5px;
-            padding: 2px 8px;
+            background-color: #16191f;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            border-radius: 6px;
+            padding: 3px 10px;
         }
         QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.18);
-            border-color: rgba(255, 255, 255, 0.35);
+            background-color: #232833;
+            border-color: rgba(255, 255, 255, 0.45);
+        }
+        QPushButton:pressed {
+            background-color: #0f1115;
         }
     """)
     dialog._steamdb_btn.clicked.connect(
         lambda: QDesktopServices.openUrl(QUrl(f"https://steamdb.info/app/{dialog.appid}/"))
     )
 
+    # A cached logo is a local file read, so it is shown straight away; a
+    # download only starts after the page is up (load_title_logo).
     from utils.settings import get_settings
-    settings = get_settings()
-    fetch_logos_on = settings.value("steamgriddb_fetch_logos", False, type=bool)
-    from pathlib import Path
-    cache_dir = Path.home() / ".local" / "share" / "ACCELA" / "image_cache" / "logos"
-    cache_file = cache_dir / f"{dialog.appid}.png"
-
-    if fetch_logos_on and cache_file.is_file():
-        px_cached = QPixmap(str(cache_file))
-        if not px_cached.isNull():
-            apply_logo_header(dialog, px_cached)
-        else:
-            apply_classic_header(dialog)
+    px_cached = QPixmap()
+    if get_settings().value("steamgriddb_fetch_logos", False, type=bool):
+        px_cached = cached_logo(str(dialog.appid))
+    if not px_cached.isNull():
+        apply_logo_header(dialog, px_cached)
     else:
         apply_classic_header(dialog)
 
@@ -686,74 +796,64 @@ def format_time_diff(ts) -> str:
 
 
 def load_title_logo(dialog) -> None:
-    """Lazy load transparent title logo from SteamGridDB if enabled in settings."""
+    """Fetch the SteamGridDB title logo once the page is up.
+
+    Called (once) after the details dialog has shown. Does nothing when the
+    logo is already on screen from the cache, when the feature is off, or when
+    SteamGridDB had no logo recently. The download runs on a worker thread and
+    the result is handed to the GUI thread with post_to_main_thread (a QTimer
+    started from a plain Python thread never fires).
+    """
     from utils.settings import get_settings
 
     settings = get_settings()
     if not settings.value("steamgriddb_fetch_logos", False, type=bool):
-        apply_classic_header(dialog)
         return
-
     appid = str(getattr(dialog, "appid", "") or "")
     if not appid or appid in ("0", "N/A", "unknown"):
-        apply_classic_header(dialog)
         return
+    from PyQt6 import sip
 
-    from pathlib import Path
-
-    cache_dir = Path.home() / ".local" / "share" / "ACCELA" / "image_cache" / "logos"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_file = cache_dir / f"{appid}.png"
-
-    if cache_file.is_file():
-        px = QPixmap(str(cache_file))
-        if not px.isNull():
-            apply_logo_header(dialog, px)
-            return
-        else:
-            apply_classic_header(dialog)
-            return
+    if sip.isdeleted(dialog) or getattr(dialog, "_logo_fetch_started", False):
+        return
+    dialog._logo_fetch_started = True
+    if not cached_logo(appid).isNull() or _logo_miss_recent(appid):
+        return
 
     import threading
 
-    def _fetch_worker():
+    from utils.main_thread import post_to_main_thread
+
+    cache_dir = _logo_cache_dir()
+
+    def _apply(data: bytes) -> None:
+        if sip.isdeleted(dialog) or not dialog.isVisible() or sip.isdeleted(dialog.hero):
+            return
+        px = QPixmap()
+        if px.loadFromData(data) and not px.isNull():
+            apply_logo_header(dialog, px)
+            if hasattr(dialog, "_fit_height_for_tab"):
+                dialog._fit_height_for_tab(0)
+
+    def _worker() -> None:
         try:
-            from utils import steamgriddb as sgdb
             import requests
 
-            assets = sgdb.get_assets("logos", appid, settings=settings)
-            if not assets:
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: apply_classic_header(dialog))
-                return
-            logo_url = assets[0].get("url")
-            if not logo_url:
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: apply_classic_header(dialog))
-                return
-            resp = requests.get(logo_url, timeout=8)
-            if resp.status_code == 200 and resp.content:
-                cache_file.write_bytes(resp.content)
-                from PyQt6.QtCore import QTimer
+            from utils import steamgriddb as sgdb
 
-                def _apply():
-                    px = QPixmap()
-                    px.loadFromData(resp.content)
-                    if not px.isNull():
-                        apply_logo_header(dialog, px)
-                        if hasattr(dialog, "_fit_height_for_tab"):
-                            dialog._fit_height_for_tab(0)
-                    else:
-                        apply_classic_header(dialog)
-
-                QTimer.singleShot(0, _apply)
-            else:
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: apply_classic_header(dialog))
+            asset = _pick_logo_asset(sgdb.get_assets("logos", appid, settings=settings))
+            url = asset.get("url") if asset else None
+            if not url:
+                (cache_dir / f"{appid}.none").touch()
+                return
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200 or not resp.content:
+                return  # transient; try again next time
+            tmp = cache_dir / f"{appid}.png.tmp"
+            tmp.write_bytes(resp.content)
+            tmp.replace(cache_dir / f"{appid}.png")
+            post_to_main_thread(_apply, resp.content)
         except Exception as e:
-            logger.debug(f"[HeroHeader] Failed fetching title logo for {appid}: {e}")
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: apply_classic_header(dialog))
+            logger.debug(f"[HeroHeader] Title logo for {appid} failed: {e}")
 
-    threading.Thread(target=_fetch_worker, daemon=True).start()
-
+    threading.Thread(target=_worker, name=f"sgdb-logo-{appid}", daemon=True).start()

@@ -3393,7 +3393,9 @@ class LibraryActionsMixin:
                     if selected_storage:
                         metadata["library_path"] = selected_storage
                         if hasattr(depot_dialog, "should_remember_storage") and depot_dialog.should_remember_storage():
-                            settings.setValue("default_download_directory", selected_storage)
+                            from utils.library_choice import remember_library
+
+                            remember_library(selected_storage, settings)
                             logger.info(f"[LibraryActions] Remembered default storage library: {selected_storage}")
 
                     if hasattr(depot_dialog, "is_build_pinned") and depot_dialog.is_build_pinned():

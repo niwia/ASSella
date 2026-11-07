@@ -334,25 +334,75 @@ def remove_launch_option(config_path: Path, app_id: str) -> bool:
     )
 
 
-def build_bypass_launch_command(relative_exe_path: str) -> str:
-    """Build the SLSsteam LaunchOptions command to bypass a launcher.
+BYPASS_MARK = "#assella-bypass"
 
-    Uses bash array index replacement to target the final command argument:
-    bash -c "cmd=(%command%)"'; cmd[-1]="$PWD/<relativeExe>"; "${cmd[@]}"'
+
+def _bash_dq(text: str) -> str:
+    """Escape for use inside bash double quotes."""
+    return re.sub(r'([\\"$`])', r"\\\1", text)
+
+
+def _bash_sq(text: str) -> str:
+    """Escape for use inside a bash single-quoted string."""
+    return text.replace("'", "'\\''")
+
+
+def build_bypass_launch_command(relative_exe_path: str) -> str:
+    """SLSsteam LaunchOptions value that starts <relative_exe_path> instead of the launcher.
+
+    Steam's arguments arrive as positional parameters (``-- %command%``), so
+    paths with spaces or quotes are never re-parsed by a shell. The last one
+    is the executable Steam would start (for Proton: the .exe after
+    ``waitforexitandrun``); it is swapped for the chosen one, resolved from
+    the game's install folder (``.../steamapps/common/<dir>``) taken from that
+    path. ``$PWD`` is only a fallback: Steam starts a game in the launcher's
+    own folder, which is not the install root when the launcher is in a
+    subfolder.
     """
-    clean_rel = relative_exe_path.replace("\\", "/").lstrip("/")
-    cmd_raw = f'bash -c "cmd=(%command%)"\'; cmd[-1]="$PWD/{clean_rel}"; "${{cmd[@]}}"\''
-    return '"' + cmd_raw.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    rel = relative_exe_path.replace("\\", "/").strip().lstrip("/")
+    script = (
+        'g="${@: -1}"; r="${g#*/steamapps/common/}"; '
+        'if [ "$r" != "$g" ]; then root="${g%%/steamapps/common/*}/steamapps/common/${r%%/*}"; '
+        'else root="$PWD"; fi; '
+        f'set -- "${{@:1:$#-1}}" "$root/{_bash_dq(rel)}"; exec "$@" {BYPASS_MARK}'
+    )
+    raw = f"bash -c '{_bash_sq(script)}' -- %command%"
+    return '"' + raw.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _yaml_unquote(value: str) -> str:
+    v = value.strip()
+    if len(v) >= 2 and v[0] == v[-1] == '"':
+        return re.sub(r'\\(.)', r'\1', v[1:-1])
+    if len(v) >= 2 and v[0] == v[-1] == "'":
+        return v[1:-1].replace("''", "'")
+    return v
 
 
 def extract_bypass_exe(launch_option_str: Optional[str]) -> Optional[str]:
-    """Extract relative executable path from a bypass LaunchOptions command, or None."""
+    """Relative executable of a bypass LaunchOptions value, or None.
+
+    Reads the current format and the first one (``cmd[-1]="$PWD/<exe>"``).
+    """
     if not launch_option_str:
+        return None
+    plain = _yaml_unquote(launch_option_str)
+    if BYPASS_MARK in plain:
+        script = plain.replace("'\\''", "'")
+        m = re.search(r'"\$root/((?:[^"\\]|\\.)*)"', script)
+        if m:
+            return re.sub(r'\\(.)', r'\1', m.group(1)).strip() or None
         return None
     m = re.search(r'cmd\[-1\]=\\?["\']?\$PWD/([^";\'\n\\]+)', launch_option_str)
     if m:
         return m.group(1).strip()
     return None
+
+
+def is_legacy_bypass(launch_option_str: Optional[str]) -> bool:
+    """True for the first bypass format, which relied on $PWD being the install root."""
+    return bool(launch_option_str) and BYPASS_MARK not in _yaml_unquote(launch_option_str) \
+        and extract_bypass_exe(launch_option_str) is not None
 
 
 def get_bypass_exe(config_path: Path, app_id: str) -> Optional[str]:

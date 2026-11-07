@@ -243,11 +243,11 @@ class GameDetailsDialogV2(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
-        try:
+        if not getattr(self, "_logo_scheduled", False):
+            # After the page has drawn, so a network lookup never delays opening it.
+            self._logo_scheduled = True
             from ui.dialogs.game_details.hero_header import load_title_logo
-            QTimer.singleShot(150, lambda: load_title_logo(self))
-        except Exception:
-            pass
+            QTimer.singleShot(400, lambda: load_title_logo(self))
 
         if not getattr(self, "_fitted_once", False):
             self._fitted_once = True

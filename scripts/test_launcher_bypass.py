@@ -53,7 +53,10 @@ def check(cond, label):
 def test_command_and_regex():
     print("\n=== 1. Shell Command Construction & Extraction ===")
     cmd = build_bypass_launch_command("Binaries/Win64/Game-Shipping.exe")
-    check('cmd[-1]=\\"$PWD/Binaries/Win64/Game-Shipping.exe\\"' in cmd, "cmd string contains relative path with $PWD")
+    check('$root/Binaries/Win64/Game-Shipping.exe' in cmd, "cmd resolves the exe from the install root")
+    check("-- %command%" in cmd, "Steam's arguments are passed as positional parameters")
+    legacy = '"bash -c \\"cmd=(%command%)\\"\'; cmd[-1]=\\"$PWD/Bin/G.exe\\"; \\"${cmd[@]}\\"\'"'
+    check(extract_bypass_exe(legacy) == "Bin/G.exe", "First-format bypass still recognised")
     check("bash -c" in cmd, "cmd uses bash -c")
 
     # Regex extraction

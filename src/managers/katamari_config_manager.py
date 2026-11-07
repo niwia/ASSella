@@ -160,33 +160,91 @@ class KatamariConfigManager:
                     break
         return text[start:end]
 
-    @staticmethod
-    def _extract_subblocks(array_block: str) -> List[str]:
-        """Extract top-level table subblocks { ... } from an array block."""
+    # A provider switched off ("None" as rescue) is kept in the file inside a
+    # block comment carrying this marker, so its URL/headers survive and it can
+    # be picked again. Katamari's Lua loader ignores comments.
+    _DISABLED_MARK = "--[[assella:disabled"
+
+    @classmethod
+    def _scan_providers(cls, array_block: str):
+        """Split a ``providers = { ... }`` block into its parts.
+
+        Returns (active_blocks, comments, disabled_blocks), all as original
+        text. Braces inside strings and comments are skipped, so a URL or a
+        comment containing ``{`` cannot cut a provider in half.
+        """
         if not array_block or len(array_block) < 2:
-            return []
+            return [], [], []
         inner = array_block[1:-1]
-        blocks = []
-        i = 0
-        while i < len(inner):
-            if inner[i] == '{':
-                start = i
-                depth = 0
-                while i < len(inner):
-                    if inner[i] == '{':
+        active, comments, disabled = [], [], []
+        i, n = 0, len(inner)
+
+        def _skip_string(j: int) -> int:
+            q = inner[j]
+            j += 1
+            while j < n and inner[j] != q:
+                j += 2 if inner[j] == "\\" else 1
+            return j + 1
+
+        while i < n:
+            if inner.startswith(cls._DISABLED_MARK, i):
+                end = inner.find("]]", i)
+                end = n if end == -1 else end
+                disabled.append(inner[i + len(cls._DISABLED_MARK):end].strip())
+                i = end + 2
+            elif inner.startswith("--[[", i):
+                end = inner.find("]]", i)
+                end = n if end == -1 else end + 2
+                comments.append(inner[i:end])
+                i = end
+            elif inner.startswith("--", i):
+                end = inner.find("\n", i)
+                end = n if end == -1 else end
+                comments.append(inner[i:end])
+                i = end
+            elif inner[i] in "\"'":
+                i = _skip_string(i)
+            elif inner[i] == "{":
+                start, depth = i, 0
+                while i < n:
+                    c = inner[i]
+                    if c in "\"'":
+                        i = _skip_string(i)
+                        continue
+                    if inner.startswith("--", i):
+                        nl = inner.find("\n", i)
+                        i = n if nl == -1 else nl
+                        continue
+                    if c == "{":
                         depth += 1
-                    elif inner[i] == '}':
+                    elif c == "}":
                         depth -= 1
                         if depth == 0:
-                            blocks.append(inner[start:i+1])
+                            active.append(inner[start:i + 1])
+                            i += 1
                             break
                     i += 1
-            i += 1
-        return blocks
+            else:
+                i += 1
+        return active, comments, disabled
+
+    @staticmethod
+    def _extract_subblocks(array_block: str) -> List[str]:
+        """Active provider blocks of a providers array (kept for callers)."""
+        return KatamariConfigManager._scan_providers(array_block)[0]
+
+    @staticmethod
+    def _provider_name(block: str) -> Optional[str]:
+        m = re.search(r'\bname\s*=\s*["\']([^"\']+)["\']', block)
+        return m.group(1) if m else None
 
     @classmethod
     def _reorder_mrc_providers(cls, text: str, ordered_names: List[str]) -> str:
-        """Reorder provider subblocks inside spacebunny.mrc.providers preserving all other text/comments."""
+        """Rewrite spacebunny.mrc.providers so ``ordered_names`` are active, in that order.
+
+        Every other provider is kept, disabled, in a marked block comment.
+        Standalone comments in the providers block are kept at its top.
+        """
         sb_block = cls._extract_section_block(text, "spacebunny")
         if not sb_block:
             return text
@@ -197,23 +255,26 @@ class KatamariConfigManager:
         if not prov_block:
             return text
 
-        blocks = cls._extract_subblocks(prov_block)
-        prov_map = {}
-        for b in blocks:
-            m = re.search(r'name\s*=\s*["\']([^"\']+)["\']', b)
-            if m:
-                prov_map[m.group(1)] = b
+        active, comments, disabled = cls._scan_providers(prov_block)
+        by_name: Dict[str, str] = {}
+        for b in active + disabled:
+            name = cls._provider_name(b)
+            if name and name not in by_name:
+                by_name[name] = b.strip()
 
-        new_blocks = []
-        for name in ordered_names:
-            if name in prov_map:
-                new_blocks.append(prov_map[name])
-        for name, b in prov_map.items():
-            if b not in new_blocks:
-                new_blocks.append(b)
+        keep = [n for n in ordered_names if n in by_name]
+        if not keep:
+            return text  # never write an empty provider list
+        off = [n for n in by_name if n not in keep]
 
-        reconstructed = "{\n\t\t\t\t" + ",\n\t\t\t\t".join(b.strip() for b in new_blocks) + ",\n\t\t\t}"
-        return text.replace(prov_block, reconstructed, 1)
+        ind = "\t\t\t\t"
+        parts = [c.strip() for c in comments]
+        parts += [by_name[n] + "," for n in keep]
+        parts += [f"{cls._DISABLED_MARK} {by_name[n]} ]]" for n in off]
+        rebuilt = "{\n" + "".join(f"{ind}{p}\n" for p in parts) + "\t\t\t}"
+        new_mrc = mrc_block.replace(prov_block, rebuilt, 1)
+        new_sb = sb_block.replace(mrc_block, new_mrc, 1)
+        return text.replace(sb_block, new_sb, 1)
 
     @staticmethod
     def _parse_bool(val: str) -> Optional[bool]:
@@ -366,20 +427,18 @@ class KatamariConfigManager:
                 mrc_block = cls._extract_section_block(sb_block, "mrc")
                 if mrc_block:
                     prov_block = cls._extract_section_block(mrc_block, "providers")
-                    found_names = []
+                    active_names: List[str] = []
+                    off_names: List[str] = []
                     if prov_block:
-                        subblocks = cls._extract_subblocks(prov_block)
-                        for b in subblocks:
-                            m_n = re.search(r'name\s*=\s*["\']([^"\']+)["\']', b)
-                            if m_n and m_n.group(1):
-                                found_names.append(m_n.group(1))
-                    if not found_names:
-                        found_names = re.findall(r'name\s*=\s*["\']([^"\']+)["\']', mrc_block)
+                        active, _comments, disabled = cls._scan_providers(prov_block)
+                        active_names = [x for x in (cls._provider_name(b) for b in active) if x]
+                        off_names = [x for x in (cls._provider_name(b) for b in disabled) if x]
 
-                    if found_names:
-                        cfg["spacebunny"]["available_providers"] = found_names
-                        cfg["spacebunny"]["authority"] = found_names[0]
-                        cfg["spacebunny"]["rescue"] = found_names[1] if len(found_names) > 1 else "none"
+                    if active_names:
+                        avail = list(dict.fromkeys(active_names + off_names))
+                        cfg["spacebunny"]["available_providers"] = avail
+                        cfg["spacebunny"]["authority"] = active_names[0]
+                        cfg["spacebunny"]["rescue"] = active_names[1] if len(active_names) > 1 else "none"
 
                     m_fsec = re.search(r'\bFULL_SEC\s*=\s*([^,\n\r]+)', mrc_block)
                     if m_fsec:
@@ -484,6 +543,22 @@ class KatamariConfigManager:
         resc_prov = sb.get("rescue", "wudrm")
         full_sec = max(1, int(sb.get("full_timeout_ms", 2000)) // 1000)
         probe_sec = max(1, int(sb.get("probe_timeout_ms", 700)) // 1000)
+        mrc_enabled = "true" if sb.get("mrc_enabled", True) else "false"
+
+        # Rescue "none" (or the same as authority) means one provider only.
+        rescue_block = ""
+        if resc_prov and resc_prov not in ("none", auth_prov):
+            resc_url = "https://gmrc.wudrm.com/manifest/" if resc_prov == "wudrm" else "https://manifest.manifestdex.com/"
+            rescue_block = (
+                "\t\t\t\t{\n"
+                f'\t\t\t\t\tname = "{resc_prov}",\n'
+                f'\t\t\t\t\turl = "{resc_url}",\n'
+                "\t\t\t\t\tproxy_url = false,\n"
+                "\t\t\t\t\theaders = nil,\n"
+                "\t\t\t\t\tprovisional = false,\n"
+                "\t\t\t\t\ttimeout = 4,\n"
+                "\t\t\t\t},\n"
+            )
 
         manifest_mode = fam.get("manifest_mode", "auto")
         bak_mode = bak.get("mode", "before")
@@ -588,7 +663,7 @@ return {{
 
 	spacebunny = {{
 		standalone = false,
-		mrc_enabled = true,
+		mrc_enabled = {mrc_enabled},
 		priority = 20,
 		mrc = {{
 			providers = {{
@@ -600,15 +675,7 @@ return {{
 					provisional = true,
 					timeout = 5,
 				}},
-				{{
-					name = "{resc_prov}",
-					url = "{'https://gmrc.wudrm.com/manifest/' if resc_prov == 'wudrm' else 'https://manifest.manifestdex.com/'}",
-					proxy_url = false,
-					headers = nil,
-					provisional = false,
-					timeout = 4,
-				}},
-			}},
+{rescue_block}			}},
 			tuning = {{
 				FULL_SEC = {full_sec},
 				PROBE_SEC = {probe_sec},

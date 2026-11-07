@@ -453,7 +453,9 @@ class SteamLibraryDialog(QDialog):
             return
 
         if self.should_remember() and self.selected_path:
-            self.settings.setValue("default_download_directory", self.selected_path)
+            from utils.library_choice import remember_library
+
+            remember_library(self.selected_path, self.settings)
             logger.info(f"[SteamLibraryDialog] Remembered default storage library: {self.selected_path}")
 
         logger.info(f"User selected Steam library: {self.selected_path}")

@@ -78,16 +78,19 @@ class AtomPendingDialog(QDialog):
         body.addLayout(header_row)
 
         # ── Info Card ──
+        # Styled by object name: a bare "QFrame { }" rule also hits every QLabel
+        # inside (QLabel is a QFrame) and draws a box around each line.
         info_card = QFrame()
+        info_card.setObjectName("pendingInfoCard")
         info_card.setStyleSheet("""
-            QFrame {
+            QFrame#pendingInfoCard {
                 background: rgba(255, 255, 255, 0.04);
                 border: 1px solid rgba(255, 255, 255, 0.10);
                 border-radius: 8px;
-                padding: 10px;
             }
         """)
         info_lay = QVBoxLayout(info_card)
+        info_lay.setContentsMargins(12, 10, 12, 10)
         info_lay.setSpacing(6)
 
         is_queued = game.get("pending_state") == "queued"
@@ -113,15 +116,16 @@ class AtomPendingDialog(QDialog):
         issues = game.get("pending_issues") or []
         if issues:
             issue_card = QFrame()
+            issue_card.setObjectName("pendingIssueCard")
             issue_card.setStyleSheet("""
-                QFrame {
+                QFrame#pendingIssueCard {
                     background: rgba(255, 171, 0, 0.10);
                     border: 1px solid rgba(255, 171, 0, 0.35);
                     border-radius: 8px;
-                    padding: 10px;
                 }
             """)
             issue_lay = QVBoxLayout(issue_card)
+            issue_lay.setContentsMargins(12, 10, 12, 12)
             issue_lay.setSpacing(6)
 
             issue_hdr = QLabel("⚠ Configuration Needs Attention")

@@ -920,9 +920,12 @@ class SettingsDialog(QDialog):
                 self.sls_config_management_checkbox.isChecked(),
             )
         if hasattr(self, "dl_location_combo") and self.dl_location_combo is not None:
-            self.settings.setValue(
-                "default_download_directory", self.dl_location_combo.currentData() or ""
-            )
+            data = self.dl_location_combo.currentData() or ""
+            if data != "custom":
+                from utils.library_choice import set_preferences
+
+                ask_cb = getattr(self, "ask_library_checkbox", None)
+                set_preferences(data, ask_cb.isChecked() if ask_cb is not None else not data, self.settings)
         if hasattr(self, "library_mode_checkbox") and self.library_mode_checkbox is not None:
             self.settings.setValue("library_mode", self.library_mode_checkbox.isChecked())
         if hasattr(self, "auto_skip_single_choice_checkbox") and self.auto_skip_single_choice_checkbox is not None:

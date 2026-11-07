@@ -435,7 +435,8 @@ def create_plugins_tab(dialog, add_to_dialog: bool = False) -> QWidget:
                 "max_manifests": 32,
             }),
             "spacebunny": {
-                "mrc_enabled": True,
+                # No toggle in the UI any more: keep whatever the file says.
+                "mrc_enabled": current_cfg.get("spacebunny", {}).get("mrc_enabled", True),
                 "authority": mrc_auth_combo.currentData(),
                 "rescue": mrc_rescue_combo.currentData(),
                 "full_timeout_ms": current_cfg.get("spacebunny", {}).get("full_timeout_ms", 2000),
