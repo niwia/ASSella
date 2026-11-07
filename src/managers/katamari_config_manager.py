@@ -41,6 +41,13 @@ def get_katamari_conf_path() -> Path:
     return get_sls_config_dir() / "katamari.conf.lua"
 
 
+# The Katamari Cloudflare worker. Lettuce uses it as worker_base (routes
+# /manifest, /rescue, /hubcap); Pineapple uses worker_url, the Hubcap API
+# base behind it (<worker>/hubcap replaces https://hubcapmanifest.com/api/v1).
+DEFAULT_WORKER_BASE = "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev"
+DEFAULT_WORKER_URL = DEFAULT_WORKER_BASE + "/hubcap"
+
+
 def _lua_str(value: Any) -> str:
     """Escape a value for a double-quoted Lua string."""
     return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
@@ -71,7 +78,8 @@ DEFAULT_KATAMARI_CONFIG: Dict[str, Any] = {
         "write_depot_comments": False,
     },
     "proxy": {
-        "worker_url": "",
+        "worker_base": DEFAULT_WORKER_BASE,
+        "worker_url": DEFAULT_WORKER_URL,
         "worker_token": "",
         "mode": "fallback",
         "cooldown": 60,
@@ -369,6 +377,11 @@ class KatamariConfigManager:
                     parsed_s = cls._parse_string(m_wurl.group(1))
                     if parsed_s is not None:
                         cfg["proxy"]["worker_url"] = parsed_s
+                m_wbase = re.search(r'\bworker_base\s*=\s*([^,\n\r]+)', prx_block)
+                if m_wbase:
+                    parsed_s = cls._parse_string(m_wbase.group(1))
+                    if parsed_s is not None:
+                        cfg["proxy"]["worker_base"] = parsed_s
                 m_wtok = re.search(r'\bworker_token\s*=\s*([^,\n\r]+)', prx_block)
                 if m_wtok:
                     parsed_s = cls._parse_string(m_wtok.group(1))
@@ -575,7 +588,8 @@ class KatamariConfigManager:
         lob_autorecover = "true" if lob.get("auto_recover", True) else "false"
         lob_notify = "true" if lob.get("notify", True) else "false"
 
-        worker_url = prx.get("worker_url", "")
+        worker_url = prx.get("worker_url", DEFAULT_WORKER_URL)
+        worker_base = prx.get("worker_base", DEFAULT_WORKER_BASE)
         worker_tok = prx.get("worker_token", "")
         prx_mode = prx.get("mode", "fallback")
 
@@ -617,6 +631,7 @@ return {{
 	}},
 
 	proxy = {{
+		worker_base = "{worker_base}",
 		worker_url = "{worker_url}",
 		worker_token = "{worker_tok}",
 		mode = "{prx_mode}",
@@ -748,6 +763,8 @@ return {{
             prx = cfg.get("proxy", {})
             if "worker_url" in prx:
                 content = cls._update_key_in_section(content, "proxy", "worker_url", f'"{prx["worker_url"]}"')
+            if "worker_base" in prx:
+                content = cls._update_key_in_section(content, "proxy", "worker_base", f'"{prx["worker_base"]}"')
             if "worker_token" in prx:
                 content = cls._update_key_in_section(content, "proxy", "worker_token", f'"{prx["worker_token"]}"')
             if "mode" in prx:
@@ -809,6 +826,54 @@ return {{
             return True
         except Exception as exc:
             logger.error(f"[KatamariConfigManager] Failed saving {path}: {exc}")
+            return False
+
+    @classmethod
+    def ensure_config(cls, conf_path: Optional[Path] = None) -> bool:
+        """Make sure katamari.conf.lua exists and has the shared keys the plugins need.
+
+        ASSella is the only writer of this file; the plugins only read it.
+        Missing file: written from the template (with the Hubcap key ASSella
+        has). Existing file: only keys that are absent, or left empty by an
+        older template, are filled in (the worker routes); nothing the user
+        set is changed.
+        """
+        path = conf_path or get_katamari_conf_path()
+        try:
+            if not path.parent.is_dir():
+                return False
+            if not path.is_file():
+                cfg = cls.load_config(path)
+                try:
+                    from utils.settings import get_settings
+
+                    s = get_settings()
+                    key = (s.value("morrenus_api_key", "", type=str) or "").strip()
+                    if key:
+                        cfg["hubcap"]["api_key"] = key
+                        cfg["hubcap"]["api_key_timestamp"] = int(s.value("morrenus_api_key_timestamp", 0) or 0)
+                except Exception:
+                    pass
+                return cls.save_config(cfg, path)
+
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            if not re.search(r"\bproxy\s*=\s*\{", content):
+                return True
+            block = cls._extract_section_block(content, "proxy") or ""
+            changed = False
+            for key, default in (("worker_base", DEFAULT_WORKER_BASE), ("worker_url", DEFAULT_WORKER_URL)):
+                m = re.search(r"\b" + key + r"\s*=\s*([^,\n\r]+)", block)
+                current = cls._parse_string(m.group(1)) if m else None
+                if not m or current == "":
+                    content = cls._update_key_in_section(content, "proxy", key, f'"{default}"')
+                    changed = True
+            if changed:
+                with open(path, "w", encoding="utf-8") as f:  # in place: keeps the inode
+                    f.write(content)
+                logger.info(f"[KatamariConfigManager] Added the worker routes to {path}")
+            return True
+        except Exception as exc:
+            logger.warning(f"[KatamariConfigManager] Could not ensure {path}: {exc}")
             return False
 
     @classmethod

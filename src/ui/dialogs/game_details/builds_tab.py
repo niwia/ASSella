@@ -249,7 +249,7 @@ def init_builds_tab(dialog) -> None:
 
     try:
         from core.steamdb_scraper import ByparrManager, cffi_requests
-        has_byparr = ByparrManager.is_available() or (cffi_requests is not None)
+        has_byparr = ByparrManager.is_available() or bool(cffi_requests)
     except Exception:
         has_byparr = False
     dialog.builds_bottom_bar.setVisible(has_byparr)

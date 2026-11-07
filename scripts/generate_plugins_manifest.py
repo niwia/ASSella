@@ -89,6 +89,9 @@ PUBLISH: dict[str, dict] = {
         "description": "Proxy / ISP-block transport for the plugins' own requests (MRC providers, Hubcap), "
                        "with a Cloudflare worker fallback. Formerly Bypass.",
         "required": False,
+        # SpaceBunny's (and later Pineapple's) one-shot proxy step; on by
+        # default, the user may turn it off.
+        "default_on": True,
         "deployable": True,
     },
     "pineapple.lua": {

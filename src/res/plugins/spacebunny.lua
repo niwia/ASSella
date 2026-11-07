@@ -1,4 +1,4 @@
--- spacebunny.lua (1.8.4)
+-- spacebunny.lua (1.8.5)
 --
 -- SLSsteam download interceptor: rewrites package 0 depot lists, injects
 -- configured AES decryption keys, and resolves manifest request codes.
@@ -36,6 +36,20 @@
 --      /manifest route now answers 200 with an MRC, so blacklisting it
 --      silently removed a working proxy from the config.
 --
+-- ======================= 1.8.5 changes from 1.8.4 =====================
+--  44. Lettuce is the proxy fallback. Direct requests always go straight
+--      to the providers (the untouched curl.downloadString, never Lettuce's
+--      wrapper), in katamari.conf order. Only when every direct provider
+--      failed does SpaceBunny make one pass through Lettuce (its proxy, or
+--      the worker), each provider at most once. If that fails too, the
+--      normal FAIL_TTL backoff applies; nothing is retried through the
+--      proxy. Without Lettuce loaded, the per-provider proxy_url and the
+--      trailing proxy entry work as before.
+--  45. MRC sanity: an answer must be 8-20 digits, fit in uint64, not be
+--      all zeros and not echo the manifest ID. A bare "404" or "1015"
+--      (an HTTP / Cloudflare status in the body) is no longer taken as a
+--      code and handed to Steam.
+--
 -- Everything from 1.8.0 is kept: multi-provider MRC with classified
 -- circuit breakers, total budget, provisional/trusted caching, URL
 -- repair, monotonic clock, runInHook safety wrapper, restoreDepotIds,
@@ -60,7 +74,7 @@ SpaceBunny = SpaceBunny or {
 	-- GetMRC vars
 }
 
-SpaceBunny.VERSION = "1.8.4"
+SpaceBunny.VERSION = "1.8.5"
 
 SpaceBunny.DEBUG = false
 SpaceBunny.NOTIFY = false
@@ -1003,7 +1017,12 @@ SpaceBunny.u32str = function(value)
 	return ffi.string(buf)
 end
 
-SpaceBunny.validateMRC = function(raw)
+-- Real manifest request codes are random uint64 values (almost always 18-20
+-- digits). Anything shorter than this is a status code or an error number
+-- that a provider put in the body, never a code worth handing to Steam.
+SpaceBunny.MRC_MIN_DIGITS = 8
+
+SpaceBunny.validateMRC = function(raw, manifestIdStr)
 	if raw == nil then
 		return nil
 	end
@@ -1022,7 +1041,14 @@ SpaceBunny.validateMRC = function(raw)
 		return nil
 	end
 
-	if #s > 20 then
+	local digits = s:gsub("^0+", "")
+
+	if #digits < SpaceBunny.MRC_MIN_DIGITS or #s > 20 then
+		return nil
+	end
+
+	-- Some broken mirrors echo the requested manifest ID back.
+	if manifestIdStr ~= nil and digits == tostring(manifestIdStr):gsub("^0+", "") then
 		return nil
 	end
 
@@ -1077,12 +1103,42 @@ SpaceBunny.classifyMRCFailure = function(raw, elapsedMs, timeoutSec)
 	return "junk", "bad-body"
 end
 
+-- The untouched curl.downloadString. Lettuce wraps curl.downloadString for
+-- the MRC hosts; direct attempts must not go through that wrapper, or every
+-- direct miss would already be a proxy attempt.
+local function directDownloadString()
+	local original = rawget(_G, "__LETTUCE_ORIGINAL_DOWNLOAD__")
+
+	if type(original) == "function" then
+		return original
+	end
+
+	return curl.downloadString
+end
+
+-- Lettuce is usable as the fallback when it is loaded, enabled and has a
+-- route (a proxy or the worker).
+SpaceBunny.lettuceFallbackAvailable = function()
+	local L = rawget(_G, "Lettuce")
+
+	if type(L) ~= "table" or type(L.fallbackFetch) ~= "function" then
+		return false
+	end
+
+	if type(L.hasFallbackRoute) == "function" then
+		local ok, has = pcall(L.hasFallbackRoute)
+		return ok and has == true
+	end
+
+	return false
+end
+
 SpaceBunny.fetchMRCFrom = function(provider, manifestIdStr, timeoutSec, urlOverride)
 	local base = urlOverride or provider.url
 	local url = base:gsub("/$", "") .. "/" .. manifestIdStr
 	local started = monoMs()
 
-	local skipRemaining = SpaceBunny.providerSkipRemaining(provider)
+	local skipRemaining = provider.no_breaker and 0 or SpaceBunny.providerSkipRemaining(provider)
 
 	if skipRemaining > 0 then
 		SpaceBunny.safeLog("debug", "MRC provider " .. provider.name
@@ -1092,10 +1148,27 @@ SpaceBunny.fetchMRCFrom = function(provider, manifestIdStr, timeoutSec, urlOverr
 
 	local ok, raw
 
-	if provider.headers ~= nil and #provider.headers > 0 then
-		ok, raw = pcall(curl.downloadString, url, provider.headers, timeoutSec)
+	if provider.via_lettuce then
+		-- One proxy attempt through Lettuce; it returns body, err.
+		local L = rawget(_G, "Lettuce")
+		local headers = (provider.headers ~= nil and #provider.headers > 0) and provider.headers or nil
+		local body, ferr
+		ok, body, ferr = pcall(L.fallbackFetch, url, headers, timeoutSec)
+
+		if ok then
+			raw = body or ""
+
+			if body == nil and ferr ~= nil then
+				SpaceBunny.safeLog("debug", "Lettuce fallback for " .. provider.name
+					.. ": " .. tostring(ferr))
+			end
+		else
+			raw = body
+		end
+	elseif provider.headers ~= nil and #provider.headers > 0 then
+		ok, raw = pcall(directDownloadString(), url, provider.headers, timeoutSec)
 	else
-		ok, raw = pcall(curl.downloadString, url, timeoutSec)
+		ok, raw = pcall(directDownloadString(), url, timeoutSec)
 	end
 
 	local elapsed = nil
@@ -1107,24 +1180,30 @@ SpaceBunny.fetchMRCFrom = function(provider, manifestIdStr, timeoutSec, urlOverr
 	if not ok then
 		SpaceBunny.safeLog("debug", "MRC provider " .. provider.name
 			.. " raised an error: " .. tostring(raw))
-		SpaceBunny.recordProviderFailure(provider, "transient")
+		if not provider.no_breaker then
+			SpaceBunny.recordProviderFailure(provider, "transient")
+		end
 
 		return nil, "error", elapsed
 	end
 
-	local codeStr = SpaceBunny.validateMRC(raw)
+	local codeStr = SpaceBunny.validateMRC(raw, manifestIdStr)
 
 	if codeStr == nil then
 		local kind, reason = SpaceBunny.classifyMRCFailure(raw, elapsed, timeoutSec)
 
 		SpaceBunny.safeLog("debug", "MRC provider " .. provider.name
 			.. " returned " .. reason .. " for " .. manifestIdStr)
-		SpaceBunny.recordProviderFailure(provider, kind)
+		if not provider.no_breaker then
+			SpaceBunny.recordProviderFailure(provider, kind)
+		end
 
 		return nil, reason, elapsed
 	end
 
-	SpaceBunny.recordProviderSuccess(provider)
+	if not provider.no_breaker then
+		SpaceBunny.recordProviderSuccess(provider)
+	end
 
 	SpaceBunny.safeLog("debug", "MRC " .. provider.name .. " answered " .. manifestIdStr
 		.. " in " .. tostring(math.floor(elapsed or 0)) .. "ms")
@@ -1156,6 +1235,11 @@ SpaceBunny.fetchMRCWithProxy = function(provider, manifestIdStr, timeoutSec, dea
 	end
 
 	if provider.proxy_url == nil or provider.proxy_url == "" then
+		return nil, reason, elapsed, false
+	end
+
+	-- With Lettuce loaded the proxy comes after every direct provider, once.
+	if SpaceBunny.lettuceFallbackAvailable() then
 		return nil, reason, elapsed, false
 	end
 
@@ -1310,6 +1394,11 @@ SpaceBunny.getManifestRequestCode = function(manifestId)
 	end
 
 	local minAttempt = t.MIN_ATTEMPT_SEC or 1
+	local useLettuce = SpaceBunny.lettuceFallbackAvailable()
+
+	if useLettuce then
+		proxyProvider = nil -- Lettuce is the proxy step
+	end
 
 	for i, provider in ipairs(directProviders) do
 		local isAuthority = providerKey(provider) == providerKey(SpaceBunny.MRC_AUTHORITY)
@@ -1335,6 +1424,7 @@ SpaceBunny.getManifestRequestCode = function(manifestId)
 			-- trailing proxy-only entry.
 			local stillAhead = (#directProviders - i)
 				+ (proxyProvider ~= nil and 1 or 0)
+				+ (useLettuce and 1 or 0)
 			local reserveAfter = stillAhead * floor
 			local fairShare = remaining - reserveAfter
 
@@ -1383,6 +1473,41 @@ SpaceBunny.getManifestRequestCode = function(manifestId)
 				cacheAnswer(proxyProvider, proxyCode, true)
 
 				return ffi.C.strtoull(proxyCode, nil, 10)
+			end
+		end
+	end
+
+	-- One pass through Lettuce after every direct provider failed. Each
+	-- provider at most once; the circuit breaker is not consulted (this is
+	-- a different route) and not fed (a proxy failure says nothing about the
+	-- provider). Answers are provisional.
+	if useLettuce then
+		for _, provider in ipairs(directProviders) do
+			local remaining = remainingSec()
+
+			if remaining < minAttempt then
+				report[#report + 1] = provider.name .. "-lettuce=no-budget"
+				break
+			end
+
+			local viaLettuce = {
+				name = provider.name .. "-lettuce",
+				url = provider.url,
+				headers = provider.headers,
+				via_lettuce = true,
+				provisional = true,
+				no_breaker = true,
+				timeout = math.max(minAttempt, math.min(provider.timeout or 3, remaining)),
+			}
+			local codeStr, reason, elapsed =
+				SpaceBunny.fetchMRCFrom(viaLettuce, manifestIdStr, viaLettuce.timeout)
+
+			note(viaLettuce, reason, elapsed)
+
+			if codeStr ~= nil then
+				cacheAnswer(viaLettuce, codeStr, true)
+
+				return ffi.C.strtoull(codeStr, nil, 10)
 			end
 		end
 	end

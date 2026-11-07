@@ -26,12 +26,47 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
 import requests
-from bs4 import BeautifulSoup
 
-try:
-    from curl_cffi import requests as cffi_requests
-except ImportError:
-    cffi_requests = None
+
+# curl_cffi and bs4 are heavy (about 0.1s warm, close to a second on a cold
+# start) and only needed when SteamDB is actually queried. The main window
+# imports this module while it is being built, so both load on first use.
+class _LazyModule:
+    """Imports a module on first use; falsy when it is not installed."""
+
+    def __init__(self, name: str):
+        self._name = name
+        self._mod = None
+        self._tried = False
+
+    def _load(self):
+        if not self._tried:
+            self._tried = True
+            try:
+                import importlib
+
+                self._mod = importlib.import_module(self._name)
+            except ImportError:
+                self._mod = None
+        return self._mod
+
+    def __bool__(self) -> bool:
+        return self._load() is not None
+
+    def __getattr__(self, attr):
+        mod = self._load()
+        if mod is None:
+            raise AttributeError(f"{self._name} is not installed")
+        return getattr(mod, attr)
+
+
+cffi_requests = _LazyModule("curl_cffi.requests")
+
+
+def BeautifulSoup(*args, **kwargs):  # noqa: N802 - keeps the bs4 name for callers
+    from bs4 import BeautifulSoup as _BeautifulSoup
+
+    return _BeautifulSoup(*args, **kwargs)
 
 from utils.settings import get_settings
 from utils.helpers import get_base_path

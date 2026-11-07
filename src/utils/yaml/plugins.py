@@ -75,6 +75,16 @@ def ensure_sls_plugin_config_sections(config_path: Optional[Path] = None) -> boo
         if modified:
             _write_in_place(config_path, content)
             logger.info(f"ensure_sls_plugin_config_sections: Added missing sections to {config_path}")
+
+        # The plugins' shared config (katamari.conf.lua) lives next to
+        # config.yaml; ASSella writes it so every plugin finds the same
+        # Hubcap key and proxy/worker routes.
+        try:
+            from managers.katamari_config_manager import KatamariConfigManager
+
+            KatamariConfigManager.ensure_config(config_path.parent / "katamari.conf.lua")
+        except Exception as e:
+            logger.debug(f"ensure_sls_plugin_config_sections: katamari.conf.lua not ensured: {e}")
         return True
     except Exception as e:
         logger.error(f"Failed to ensure SLS plugin config sections in {config_path}: {e}")

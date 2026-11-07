@@ -1,4 +1,10 @@
--- lettuce.lua (0.3)
+-- lettuce.lua (0.4)
+--
+-- 0.4: Lettuce.fallbackFetch / Lettuce.hasFallbackRoute, the one-shot proxy
+-- step SpaceBunny 1.8.5 calls after every direct MRC provider failed (proxy
+-- if configured, otherwise the worker; never a direct retry). MRC bodies
+-- must look like a real code (8-20 digits, not all zeros), so a "404" or
+-- "1015" in the body is no longer treated as usable.
 --
 -- Formerly bypass.lua.  Renamed to Lettuce in 0.3; it still reads a legacy
 -- bypass.conf.lua and the mother config's bypass = { } section when the
@@ -44,7 +50,7 @@
 
 Lettuce = Lettuce or {}
 
-Lettuce.VERSION = "0.3"
+Lettuce.VERSION = "0.4"
 
 KATAMARI = KATAMARI or { plugins = {} }
 KATAMARI.plugins.lettuce = {
@@ -1059,7 +1065,14 @@ local function bodyIsUsable(url, body)
 	if host == "manifest.manifestdex.com"
 			or host == "gmrc.wudrm.com"
 			or host == "manifest.opensteamtool.com" then
-		return body:match("^%s*%d+%s*$") ~= nil
+		-- A real manifest request code: 8-20 digits, not all zeros. Shorter
+		-- numbers are status/error codes a provider put in the body.
+		local digits = body:match("^%s*\"?(%d+)\"?%s*$")
+		if digits == nil then
+			return false
+		end
+		digits = digits:gsub("^0+", "")
+		return #digits >= 8 and #digits <= 20
 	end
 
 	if host == "hubcapmanifest.com" then
@@ -1175,6 +1188,73 @@ Lettuce.fetch = function(url, headers, timeout)
 	end
 
 	return body, workerErr or err, status
+end
+
+-- =========================================================================
+-- One-shot fallback (SpaceBunny's proxy step)
+-- =========================================================================
+
+local function proxyConfigured(cfg)
+	local function set(v)
+		if type(v) == "string" then
+			return trim(v) ~= ""
+		end
+		return type(v) == "table" and #v > 0
+	end
+
+	return set(cfg.proxy) or set(cfg.subscription)
+end
+
+-- True when there is somewhere to send a fallback request: a configured
+-- proxy or subscription, or the worker. Reads config only (no network).
+Lettuce.hasFallbackRoute = function()
+	local cfg = Lettuce.config
+
+	if cfg == nil or not cfg.enabled then
+		return false
+	end
+
+	if proxyConfigured(cfg) then
+		return true
+	end
+
+	return cfg.worker_fallback == true and trim(cfg.worker_base or "") ~= ""
+end
+
+-- One attempt, for a caller that already tried the host directly: through
+-- the proxy when one is configured and not cooling down, otherwise through
+-- the worker. Never a direct request, never a second route. Returns
+-- body, nil on success and nil, reason otherwise.
+Lettuce.fallbackFetch = function(url, headers, timeout)
+	local cfg = Lettuce.config
+
+	if cfg == nil or not cfg.enabled then
+		return nil, "lettuce disabled"
+	end
+
+	if proxyConfigured(cfg) then
+		local proxy = Lettuce.resolveProxy()
+
+		if proxy ~= nil then
+			local body, err = Lettuce.request(url, headers, timeout, proxy)
+
+			if bodyIsUsable(url, body) then
+				return body, nil
+			end
+
+			markProxyFailed(err or "unusable proxy body")
+
+			return nil, "proxy: " .. tostring(err or "unusable body")
+		end
+	end
+
+	local body, err = workerRequest(url, headers, timeout)
+
+	if body ~= nil then
+		return body, nil
+	end
+
+	return nil, "worker: " .. tostring(err or "no answer")
 end
 
 -- =========================================================================

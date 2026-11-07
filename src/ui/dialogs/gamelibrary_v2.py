@@ -532,7 +532,7 @@ class GameDetailsDialogV2(QDialog):
         self._builds_fetch_requested = True
         try:
             from core.steamdb_scraper import ByparrManager, cffi_requests
-            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or (cffi_requests is not None)
+            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or bool(cffi_requests)
         except Exception:
             has_solver = False
 

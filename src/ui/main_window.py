@@ -1885,7 +1885,7 @@ class MainWindow(QMainWindow):
 
         try:
             from core.steamdb_scraper import ByparrManager, cffi_requests
-            has_solver = ByparrManager.is_available() or (cffi_requests is not None)
+            has_solver = ByparrManager.is_available() or bool(cffi_requests)
             if not has_solver:
                 if hasattr(self, "steamdb_container"):
                     self.steamdb_container.setVisible(False)
@@ -1920,7 +1920,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
             try:
                 from core.steamdb_scraper import ByparrManager, cffi_requests
-                has_solver = ByparrManager.is_available() or (cffi_requests is not None)
+                has_solver = ByparrManager.is_available() or bool(cffi_requests)
             except Exception:
                 has_solver = False
 
@@ -1974,7 +1974,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
             self.active_hubcap_label.setText("Hubcap: Loading...")
 
-        from core.morrenus_api import get_all_hubcap_stats
+        def get_all_hubcap_stats():
+            # Imported on the worker thread: morrenus_api takes ~0.1s to import.
+            from core.morrenus_api import get_all_hubcap_stats as _fetch
+
+            return _fetch()
 
         worker = self.stats_task_runner.run(get_all_hubcap_stats)
         worker.finished.connect(self._on_user_stats_loaded)

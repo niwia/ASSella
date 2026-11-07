@@ -85,6 +85,7 @@ ALL_SHARED_REDISTS: Set[str] = SHARED_REDISTS | {str(d) for d in DEPOT_BLACKLIST
 
 # Cache TTL for "up_to_date" entries (24 hours)
 UP_TO_DATE_TTL_SECONDS = 24 * 3600
+NO_DEPOTS_RETRY_SECONDS = 6 * 3600
 # Cooldown for "key_pending" entries before re-checking Hubcap (6 hours)
 KEY_PENDING_COOLDOWN_SECONDS = 6 * 3600
 
@@ -611,8 +612,22 @@ class At0mUpdateChecker(QObject):
                 return "up_to_date", cached
 
         # Step 2: Fetch Steam app metadata (Steam PICS / SteamCMD)
-        from core.steam_api import fetch_steamcmd_info
-        steam_info = fetch_steamcmd_info(appid_str, include_header=False)
+        # An AppID Steam had no depots for (a removed app, a test entry) is
+        # not asked again for NO_DEPOTS_RETRY_SECONDS: each miss costs ~2s.
+        from utils.settings import get_settings
+
+        miss_key = f"at0m_no_depots/{appid_str}"
+        settings = get_settings()
+        try:
+            last_miss = int(settings.value(miss_key, 0) or 0)
+        except (TypeError, ValueError):
+            last_miss = 0
+        if not force_refresh and last_miss and now - last_miss < NO_DEPOTS_RETRY_SECONDS:
+            logger.debug(f"[At0mChecker] {appid_str}: Steam had no depots recently, not asking again yet")
+            steam_info = self.db.get_app_info(appid_str)
+        else:
+            from core.steam_api import fetch_steamcmd_info
+            steam_info = fetch_steamcmd_info(appid_str, include_header=False)
         if not steam_info or not steam_info.get("depots"):
             # Fallback to DB app info if remote fetch failed
             steam_info = self.db.get_app_info(appid_str)
@@ -627,6 +642,8 @@ class At0mUpdateChecker(QObject):
         if not steam_info or not steam_info.get("depots"):
             # Nobody could be asked. Reporting "up_to_date" would tell the
             # user there is nothing to do, which is not what we know.
+            if not last_miss or now - last_miss >= NO_DEPOTS_RETRY_SECONDS:
+                settings.setValue(miss_key, now)
             logger.info(f"[At0mChecker] Could not fetch Steam depots for {appid_str}")
             return "cannot_determine", {
                 "appid": appid_str,

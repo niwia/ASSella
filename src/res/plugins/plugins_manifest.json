@@ -1,18 +1,18 @@
 {
   "manifest_version": 2,
-  "serial": 20261107110957,
-  "updated_at": "2026-11-07T11:09:57Z",
+  "serial": 20261107113859,
+  "updated_at": "2026-11-07T11:38:59Z",
   "default_interceptor": "spacebunny.lua",
   "plugins": {
     "spacebunny.lua": {
       "name": "SpaceBunny",
       "filename": "spacebunny.lua",
-      "version": "1.8.4",
+      "version": "1.8.5",
       "role": "mrc-provider",
       "category": "interceptor",
       "description": "Download interceptor: injects depots and decryption keys and resolves manifest request codes from several providers with circuit breakers.",
-      "sha256": "4193f51c64f015d9ad53ace515d35f655009e572aa9bab843d4e9fa2ab4d1868",
-      "size_bytes": 60591,
+      "sha256": "b3ee2941c1f6d4c6ef9495bb6727531598787bc855cc547342f235396af8d590",
+      "size_bytes": 64882,
       "required": true,
       "deployable": true,
       "is_default": true
@@ -44,14 +44,15 @@
     "lettuce.lua": {
       "name": "Lettuce",
       "filename": "lettuce.lua",
-      "version": "0.3",
+      "version": "0.4",
       "role": "transport",
       "category": "companion",
       "description": "Proxy / ISP-block transport for the plugins' own requests (MRC providers, Hubcap), with a Cloudflare worker fallback. Formerly Bypass.",
-      "sha256": "ee674e37a74429dcd00854f6a047a75bd281d32eff657e1603b1a6fe88060a08",
-      "size_bytes": 33531,
+      "sha256": "e0e18caa4f229c59119d3becd1241e11333eadea91f7093511491a8b611ffe09",
+      "size_bytes": 35921,
       "required": false,
-      "deployable": true
+      "deployable": true,
+      "default_on": true
     },
     "pineapple.lua": {
       "name": "Pineapple",
