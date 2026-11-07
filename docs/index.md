@@ -16,6 +16,9 @@ hero:
       text: Downloading Games
       link: /downloading
     - theme: alt
+      text: ASSella vs ACCELA
+      link: /compare
+    - theme: alt
       text: Uran (Decky Plugin)
       link: /uran
     - theme: alt
