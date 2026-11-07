@@ -15,13 +15,13 @@ Click any game in **Library** to open its details. The header shows the game's a
   - **Refetch** when the game's manifest or key data is missing,
   - **Verify Pinned Build** while the build is pinned.
 - **Open folder** — opens the install folder (and shows which library it is in).
-- **Pin Build** — freezes the game on its current build: Update All and update checks leave it alone.
+- **Pin Build** — freezes the game on its current build: Update All and update checks leave it alone. [How pinning works](/guides/pin-build).
 - **Update-All** — include or exclude this game from the main screen's **Update All**.
-- **Uninstall** — *Standard* removes the game; *Advanced* lets you choose what else goes (Proton prefix, shader cache, config entries…).
+- **Uninstall** — *Standard* removes the game; *Advanced* lets you choose what else goes. [Uninstall guide](/guides/uninstall).
 - **Online**
   - **SLSonline** — gives the game a Fake AppID (480, *Spacewar*) so Steam multiplayer and lobbies work with friends.
   - **Netsock** — Steam Networking Sockets fix for games that disconnect under Proton. Needs SLSonline.
-  - **Bypass** — skips a third-party launcher and starts the game's real executable. Cannot be on together with Netsock.
+  - **Bypass** — skips a third-party launcher and starts the game's real executable. Cannot be on together with Netsock. [Launcher Bypass guide](/guides/launcher-bypass).
 - **Managed by** — whether ASSella or Steam (AT0-M) updates the game, with **Move to AT0-M** / **Move to ASSella** to switch.
 
 ![Info tab (AT0-M game)](/images/guide/details-info-atom.png)
@@ -46,7 +46,7 @@ What this game has in SLSsteam's config, in three lists:
 
 ## Builds
 
-The game's patch history from SteamDB. Pick an older build to see its depots and **Download Selected** to roll back, or **Manual** to enter a manifest by hand. History is fetched through Byparr; without it the tab offers to install it.
+The game's patch history from SteamDB. Pick an older build to see its depots and **Download Selected** to roll back, or **Manual** to enter a manifest by hand. History is fetched through Byparr; without it the tab offers to install it. Step by step: [Downgrade a Game](/guides/downgrade).
 
 ---
 
