@@ -172,27 +172,24 @@ def init_hero_v2(dialog, root) -> None:
     dialog.hero = HeroBanner(bg_hex=dialog.background_color)
     dialog.hero.setMinimumHeight(100)
     dialog.hero.setMaximumHeight(115)
-    banner_layout = QVBoxLayout(dialog.hero)
-    banner_layout.setContentsMargins(14, 8, 14, 10)
-    banner_layout.setSpacing(2)
+    banner_layout = QHBoxLayout(dialog.hero)
+    banner_layout.setContentsMargins(16, 10, 16, 10)
+    banner_layout.setSpacing(14)
 
-    top_row = QHBoxLayout()
-    top_row.setContentsMargins(0, 0, 0, 0)
-    top_row.setSpacing(10)
-    left_col = QVBoxLayout()
-    left_col.setContentsMargins(0, 0, 0, 0)
-    left_col.setSpacing(0)
+    # 1. Left container: Game Logo (or Title text) + mode icon
+    logo_container = QHBoxLayout()
+    logo_container.setSpacing(8)
 
-    name_row = QHBoxLayout()
-    name_row.setSpacing(8)
     dialog.logo_lbl = QLabel()
     dialog.logo_lbl.setStyleSheet("background: transparent;")
     dialog.logo_lbl.hide()
-    name_row.addWidget(dialog.logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+    logo_container.addWidget(dialog.logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+
     dialog.name_lbl = QLabel()
     dialog.name_lbl.setStyleSheet("font-size: 13pt; font-weight: bold; color: #FFFFFF; background: transparent;")
     dialog.name_lbl.setMaximumHeight(28)
-    name_row.addWidget(dialog.name_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+    logo_container.addWidget(dialog.name_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+
     dialog.mode_logo_lbl = QLabel()
     dialog.mode_logo_lbl.setStyleSheet("background: transparent;")
     px = _mode_logo_pixmap(is_atom)
@@ -201,20 +198,25 @@ def init_hero_v2(dialog, root) -> None:
     dialog.mode_logo_lbl.setToolTip(
         "AT0-M: installed and updated by the Steam client" if is_atom else "Managed by ASSella"
     )
-    name_row.addWidget(dialog.mode_logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
-    dialog._denuvo_badge_lbl = QLabel()
-    dialog._denuvo_badge_lbl.hide()  # placed in the snippet row below
-    name_row.addStretch(1)
-    dialog._ratings_row = name_row
-    left_col.addLayout(name_row)
+    logo_container.addWidget(dialog.mode_logo_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+    dialog._ratings_row = logo_container
 
+    banner_layout.addLayout(logo_container, 0)
+
+    # 2. Metadata column to the right of the logo: AppID, Snippets (Size, Build, Date), Denuvo
+    meta_col = QVBoxLayout()
+    meta_col.setContentsMargins(0, 0, 0, 0)
+    meta_col.setSpacing(3)
+    meta_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+    # Row 1: AppID
     dialog.appid_lbl = QPushButton(str(dialog.appid))
     dialog.appid_lbl.setFlat(True)
     dialog.appid_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.appid_lbl.setToolTip("Copy AppID")
     dialog.appid_lbl.setStyleSheet(
         "QPushButton { background: transparent; border: none; padding: 0; text-align: left;"
-        " color: rgba(255,255,255,0.55); font-size: 11.5pt; font-style: italic; }"
+        " color: rgba(255,255,255,0.55); font-size: 11pt; font-style: italic; }"
         f"QPushButton:hover {{ color: {dialog.accent_color}; text-decoration: underline; }}"
     )
 
@@ -225,24 +227,9 @@ def init_hero_v2(dialog, root) -> None:
         QTimer.singleShot(1200, lambda: dialog.appid_lbl.setText(str(dialog.appid)))
 
     dialog.appid_lbl.clicked.connect(_copy_appid)
-    left_col.addWidget(dialog.appid_lbl, 0, Qt.AlignmentFlag.AlignLeft)
-    top_row.addLayout(left_col, 1)
+    meta_col.addWidget(dialog.appid_lbl, 0, Qt.AlignmentFlag.AlignLeft)
 
-    right_badge_col = QVBoxLayout()
-    right_badge_col.setContentsMargins(0, 2, 0, 0)
-    dialog._proton_badge_lbl = QPushButton()
-    dialog._proton_badge_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog._proton_badge_lbl.hide()
-    dialog._proton_badge_lbl.clicked.connect(
-        lambda: QDesktopServices.openUrl(QUrl(f"https://www.protondb.com/app/{dialog.appid}"))
-    )
-    dialog._proton_badge_btn = dialog._proton_badge_lbl
-    top_row.addLayout(right_badge_col, 0)
-    banner_layout.addLayout(top_row)
-
-    update_title(dialog)
-
-    # Snippets: size · build · installed date
+    # Row 2: Snippets: Size · Build · Installed date
     snip_row = QHBoxLayout()
     snip_row.setSpacing(6)
     if dialog.parent_window and hasattr(dialog.parent_window, "_format_size"):
@@ -270,7 +257,6 @@ def init_hero_v2(dialog, root) -> None:
         except (ValueError, TypeError):
             pass
     set_build_snippet(dialog, installed_bid, state, f"Installed build {installed_bid}" if installed_bid else "")
-    # Snippets are information only; the ProtonDB badge is the one link here.
     dialog.build_val_lbl.setCursor(Qt.CursorShape.ArrowCursor)
     dialog.build_val_lbl.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     dialog.build_val_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
@@ -282,9 +268,34 @@ def init_hero_v2(dialog, root) -> None:
     dialog.date_val_lbl.setEnabled(False)
     dialog.date_val_lbl.setVisible(bool(date_str))
     snip_row.addWidget(dialog.date_val_lbl)
-    snip_row.addWidget(dialog._denuvo_badge_lbl)
-    snip_row.addWidget(dialog._proton_badge_lbl)  # ProtonDB tier, as a snippet
-    snip_row.addStretch(1)
+    for w in (dialog.size_val_lbl, dialog.date_val_lbl):
+        w.setStyleSheet(w.styleSheet() + " QPushButton:disabled { color: #E8E8EE; }")
+    meta_col.addLayout(snip_row)
+
+    # Row 3: Denuvo badge
+    dialog._denuvo_badge_lbl = QLabel()
+    dialog._denuvo_badge_lbl.hide()
+    meta_col.addWidget(dialog._denuvo_badge_lbl, 0, Qt.AlignmentFlag.AlignLeft)
+
+    banner_layout.addLayout(meta_col, 0)
+    banner_layout.addStretch(1)
+
+    # 3. Far right column (top-right aligned): ProtonDB tier + SteamDB logo button
+    right_col = QVBoxLayout()
+    right_col.setContentsMargins(0, 0, 0, 0)
+    right_col.setSpacing(0)
+
+    right_badges_row = QHBoxLayout()
+    right_badges_row.setSpacing(8)
+
+    dialog._proton_badge_lbl = QPushButton()
+    dialog._proton_badge_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog._proton_badge_lbl.hide()
+    dialog._proton_badge_lbl.clicked.connect(
+        lambda: QDesktopServices.openUrl(QUrl(f"https://www.protondb.com/app/{dialog.appid}"))
+    )
+    dialog._proton_badge_btn = dialog._proton_badge_lbl
+    right_badges_row.addWidget(dialog._proton_badge_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
     dialog._steamdb_btn = QPushButton()
     dialog._steamdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -316,11 +327,14 @@ def init_hero_v2(dialog, root) -> None:
     dialog._steamdb_btn.clicked.connect(
         lambda: QDesktopServices.openUrl(QUrl(f"https://steamdb.info/app/{dialog.appid}/"))
     )
-    snip_row.addWidget(dialog._steamdb_btn, 0, Qt.AlignmentFlag.AlignRight)
-    for w in (dialog.size_val_lbl, dialog.date_val_lbl):
-        w.setStyleSheet(w.styleSheet() + " QPushButton:disabled { color: #E8E8EE; }")
-    banner_layout.addSpacing(6)
-    banner_layout.addLayout(snip_row)
+    right_badges_row.addWidget(dialog._steamdb_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    right_col.addLayout(right_badges_row)
+    right_col.addStretch(1)
+
+    banner_layout.addLayout(right_col, 0)
+
+    update_title(dialog)
 
     # Kept for older callers; no longer shown.
     dialog.cached_val_lbl = QLabel(get_manifest_age(dialog))
@@ -596,7 +610,7 @@ def load_title_logo(dialog) -> None:
 
     def _apply_pixmap(px: QPixmap):
         if not px.isNull() and hasattr(dialog, "logo_lbl") and hasattr(dialog, "name_lbl"):
-            scaled = px.scaled(260, 50, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            scaled = px.scaled(280, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             dialog.logo_lbl.setPixmap(scaled)
             dialog.logo_lbl.setToolTip(dialog.game_data.get("game_name", ""))
             dialog.logo_lbl.show()
