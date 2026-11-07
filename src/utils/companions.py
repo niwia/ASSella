@@ -76,8 +76,8 @@ def update_json(path: Path, changes: Dict[str, Any]) -> bool:
         if path.exists():
             try:
                 os.chmod(tmp, path.stat().st_mode & 0o777)
-            except OSError:
-                pass
+            except OSError as _silent_err:
+                logger.debug("[companions] update_json: ignored %s", _silent_err, exc_info=False)
         tmp.replace(path)
         return True
     except OSError as e:
@@ -129,7 +129,8 @@ def _decky_homes() -> list:
     ):
         try:
             text = unit.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
+        except OSError as _silent_err:
+            logger.debug("[companions] _decky_homes: ignored %s", _silent_err, exc_info=False)
             continue
         for m in re.finditer(r"(/[^\s\"'=]*?/homebrew)(?:/|\b)", text):
             found.append(Path(m.group(1)))
@@ -169,8 +170,8 @@ def _uran_dir(home: Optional[Path]) -> Optional[Path]:
             meta = read_json(d / "plugin.json")
             if str(meta.get("name", "")).lower() == "uran":
                 return d
-    except OSError:
-        pass
+    except OSError as _silent_err:
+        logger.debug("[companions] _uran_dir: ignored %s", _silent_err, exc_info=False)
     return None
 
 
@@ -270,8 +271,8 @@ def epsilon_root() -> Optional[Path]:
             daemon = Path(m.group(1))
             if daemon.is_file():
                 return daemon.parent.parent
-    except OSError:
-        pass
+    except OSError as _silent_err:
+        logger.debug("[companions] epsilon_root: ignored %s", _silent_err, exc_info=False)
     default = _home() / "epsilon"
     return default if (default / "epsilon" / "daemon.py").is_file() else None
 

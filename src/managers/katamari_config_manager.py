@@ -852,8 +852,8 @@ return {{
                     if key:
                         cfg["hubcap"]["api_key"] = key
                         cfg["hubcap"]["api_key_timestamp"] = int(s.value("morrenus_api_key_timestamp", 0) or 0)
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[katamari_config_manager] ensure_config: ignored %s", _silent_err, exc_info=False)
                 return cls.save_config(cfg, path)
 
             content = path.read_text(encoding="utf-8", errors="ignore")

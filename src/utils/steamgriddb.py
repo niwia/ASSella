@@ -67,8 +67,8 @@ def check_key(key: str) -> Tuple[bool, str]:
         try:
             if resp.json().get("success"):
                 return True, "Key works"
-        except ValueError:
-            pass
+        except ValueError as _silent_err:
+            logger.debug("[steamgriddb] check_key: ignored %s", _silent_err, exc_info=False)
         return False, "Unexpected reply from SteamGridDB"
     if resp.status_code in (401, 403):
         return False, "Key rejected"

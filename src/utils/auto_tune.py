@@ -138,8 +138,8 @@ def _network_fingerprint() -> str:
         try:
             import os as _os
             kind = "wl" if _os.path.isdir(f"/sys/class/net/{iface}/wireless") else "eth"
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[auto_tune] _network_fingerprint: ignored %s", _silent_err, exc_info=False)
         mac_tail = "nogw"
         try:
             gw_ip = ".".join(str(int(gw_hex[i:i + 2], 16)) for i in (6, 4, 2, 0))
@@ -149,8 +149,8 @@ def _network_fingerprint() -> str:
                     if len(cells) >= 4 and cells[0] == gw_ip and len(cells[3]) == 17:
                         mac_tail = cells[3].replace(":", "")[-6:].lower()
                         break
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[auto_tune] _network_fingerprint: ignored %s", _silent_err, exc_info=False)
         return f"{kind}-{mac_tail}"
     except Exception:
         return "nonet"
@@ -164,8 +164,8 @@ def get_storage_tag(dest_path: str = "") -> str:
         norm = os.path.abspath(dest_path)
         if norm.startswith(("/run/media/", "/media/", "/mnt/")):
             return "sdcard"
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[auto_tune] get_storage_tag: ignored %s", _silent_err, exc_info=False)
     return "internal"
 
 
@@ -188,10 +188,10 @@ def _purge_legacy_keys(settings) -> None:
         for key in _LEGACY_BEST_KEYS:
             try:
                 settings.remove(key)
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as _silent_err:
+                logger.debug("[auto_tune] _purge_legacy_keys: ignored %s", _silent_err, exc_info=False)
+    except Exception as _silent_err:
+        logger.debug("[auto_tune] _purge_legacy_keys: ignored %s", _silent_err, exc_info=False)
 
 
 def _best_keys(base_best_key: str, settings, dest_path: str = "", lancache_key: str = "use_lancache"):

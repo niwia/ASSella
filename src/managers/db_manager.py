@@ -521,16 +521,16 @@ class DatabaseManager:
                 """)
                 try:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN osarch TEXT")
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
                 try:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
                 try:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN release_src TEXT")
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
 
                 now = int(time.time())
                 for dep_id, info in enrichments.items():
@@ -591,8 +591,8 @@ class DatabaseManager:
                 for col in ("releasestate", "release_src"):
                     try:
                         cur.execute(f"ALTER TABLE depot_enrichments ADD COLUMN {col} TEXT")
-                    except Exception:
-                        pass
+                    except Exception as _silent_err:
+                        logger.debug("[db_manager] update_release_states: ignored %s", _silent_err, exc_info=False)
                 now = int(time.time())
                 for did, (state, src) in states.items():
                     did = str(did)
@@ -638,16 +638,16 @@ class DatabaseManager:
                 """)
                 try:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN osarch TEXT")
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
                 try:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
                 try:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN release_src TEXT")
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
 
                 cur.execute("""
                     SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, release_src

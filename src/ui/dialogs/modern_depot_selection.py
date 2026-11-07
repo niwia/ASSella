@@ -143,8 +143,8 @@ class ModernDepotSelectionDialog(QDialog):
             if cached_col and cached_col.isValid():
                 self.accent_color = cached_col.name()
                 self._ambient_color = cached_col
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[modern_depot_selection] __init__: ignored %s", _silent_err, exc_info=False)
         try:
             c = QColor(self.accent_color)
             self.accent_r, self.accent_g, self.accent_b = c.red(), c.green(), c.blue()
@@ -175,8 +175,8 @@ class ModernDepotSelectionDialog(QDialog):
                     saved_data = json.loads(saved_val)
                     if saved_data.get("selected"):
                         self.selected_depots = saved_data["selected"]
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[modern_depot_selection] __init__: ignored %s", _silent_err, exc_info=False)
 
         self.resize(1050, 680)
         self.setMinimumSize(960, 580)
@@ -1538,8 +1538,8 @@ class ModernDepotSelectionDialog(QDialog):
                     m = find_live(lua_content, r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)")
                     if m:
                         depot_key = m.group(1)
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[modern_depot_selection] _open_file_selector_for_depot: ignored %s", _silent_err, exc_info=False)
 
         if not depot_key:
             try:
@@ -1547,8 +1547,8 @@ class ModernDepotSelectionDialog(QDialog):
                 cached = DepotKeyManager().get_depot_keys(app_id)
                 if target_depot in cached:
                     depot_key = cached[target_depot]
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[modern_depot_selection] _open_file_selector_for_depot: ignored %s", _silent_err, exc_info=False)
 
         if not depot_key:
             ThemedMessageBox.critical(self, "Error", f"Could not find depot key for depot {target_depot}.")

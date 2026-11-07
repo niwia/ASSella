@@ -12,6 +12,10 @@ from PyQt6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QLabel, QPushButton
 
 from ui.dialogs.themed_dialog import install_themed_frame
 
+import logging as _logging
+
+logger = _logging.getLogger(__name__)
+
 
 class PluginCheckDialog(QDialog):
     def __init__(self, actions: List[Dict[str, Any]], parent=None, accent_color: str = "#a1c9fd"):
@@ -111,8 +115,8 @@ class UnlistedPluginsDialog(QDialog):
         try:
             folders = sorted({str(p.parent) for p in paths})
             listing.setToolTip("\n".join(folders))
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[plugin_check_dialog] __init__: ignored %s", _silent_err, exc_info=False)
         body.addWidget(listing)
 
         why = QLabel(

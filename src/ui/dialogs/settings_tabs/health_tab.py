@@ -812,8 +812,8 @@ def handle_assfixer_check_done(dialog, result) -> None:
             from utils import assfixer
             assfixer.boot_status = "needs_fix"
             assfixer.boot_issues = details[:] if details else [summary]
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[health_tab] handle_assfixer_check_done: ignored %s", _silent_err, exc_info=False)
     else:
         _stop_assfixer_blink(dialog)
         dialog.assfixer_repair_btn.hide()
@@ -825,8 +825,8 @@ def handle_assfixer_check_done(dialog, result) -> None:
             from utils import assfixer
             assfixer.boot_status = "optimal"
             assfixer.boot_issues = []
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[health_tab] handle_assfixer_check_done: ignored %s", _silent_err, exc_info=False)
 
 
 def run_assfixer_repair(dialog) -> None:
@@ -869,14 +869,14 @@ def handle_assfixer_repair_done(dialog, result) -> None:
             from utils import assfixer
             assfixer.boot_status = "optimal"
             assfixer.boot_issues = []
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[health_tab] handle_assfixer_repair_done: ignored %s", _silent_err, exc_info=False)
         if hasattr(dialog, "main_window") and dialog.main_window:
             try:
                 if hasattr(dialog.main_window, "update_visor_status"):
                     dialog.main_window.update_visor_status()
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[health_tab] handle_assfixer_repair_done: ignored %s", _silent_err, exc_info=False)
         ThemedMessageBox.information(dialog, "ASSfixer", msg)
     else:
         dialog.assfixer_repair_btn.setEnabled(True)

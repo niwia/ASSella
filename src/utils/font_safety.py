@@ -101,16 +101,16 @@ def _fingerprint() -> str:
                 for child in sorted(d.iterdir())[:400]:
                     try:
                         h.update(f"{child.name}:{child.stat().st_mtime_ns}".encode())
-                    except OSError:
-                        pass
+                    except OSError as _silent_err:
+                        logger.debug("[font_safety] _fingerprint: ignored %s", _silent_err, exc_info=False)
         except OSError:
             h.update(f"{d}:-".encode())
     try:
         from PyQt6.QtWidgets import QApplication
 
         h.update(QApplication.font().family().encode())
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[font_safety] _fingerprint: ignored %s", _silent_err, exc_info=False)
     return h.hexdigest()
 
 
@@ -202,8 +202,8 @@ def enable_safe_mode(app=None, reason: str = "") -> None:
         _hooked = True
         try:
             app.fontChanged.connect(lambda _f: _apply_no_merging(app) if _safe_mode else None)
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[font_safety] enable_safe_mode: ignored %s", _silent_err, exc_info=False)
 
 
 def init(app, settings=None) -> None:
@@ -236,8 +236,8 @@ def init(app, settings=None) -> None:
                 from utils.settings import get_settings
 
                 get_settings().setValue(SETTING_RESULT, json.dumps({"fp": fp, "broken": broken}))
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[font_safety] init: ignored %s", _silent_err, exc_info=False)
         if broken:
             from utils.main_thread import post_to_main_thread
 

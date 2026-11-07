@@ -375,8 +375,8 @@ def get_owned_steam_appids() -> set:
             p = Path(env.steam_path) / "userdata"
             if p not in candidates:
                 candidates.append(p)
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[steam_helpers] get_owned_steam_appids: ignored %s", _silent_err, exc_info=False)
 
     for userdata_dir in candidates:
         if not userdata_dir.is_dir():
@@ -429,8 +429,8 @@ def get_steam_libraries():
     if os.path.exists(vdf_path):
         try:
             vdf_mtime = os.path.getmtime(vdf_path)
-        except OSError:
-            pass
+        except OSError as _silent_err:
+            logger.debug("[steam_helpers] get_steam_libraries: ignored %s", _silent_err, exc_info=False)
 
     if (
         _cached_steam_libraries is not None
@@ -765,7 +765,8 @@ def fix_greenluma_offline_mode():
     try:
         from utils.settings import get_settings
         from utils.yaml_config_manager import is_greenluma_wrapper_mode_enabled
-    except ImportError:
+    except ImportError as _silent_err:
+        logger.debug("[steam_helpers] fix_greenluma_offline_mode: ignored %s", _silent_err, exc_info=False)
         return
 
     settings = get_settings()
@@ -842,10 +843,11 @@ def app_id_exists_in_applist(app_list_dir, app_id_to_check):
                         content = f.read().strip()
                         if content == app_id_to_check:
                             return True
-                except (OSError, UnicodeDecodeError):
+                except (OSError, UnicodeDecodeError) as _silent_err:
+                    logger.debug("[steam_helpers] app_id_exists_in_applist: ignored %s", _silent_err, exc_info=False)
                     continue
-    except OSError:
-        pass
+    except OSError as _silent_err:
+        logger.debug("[steam_helpers] app_id_exists_in_applist: ignored %s", _silent_err, exc_info=False)
 
 
 def get_most_recent_steam_id() -> Optional[str]:

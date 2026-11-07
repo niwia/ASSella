@@ -29,8 +29,8 @@ def _read_acf(path: str) -> Dict[str, str]:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for m in re.finditer(r'^\s*"(\w+)"\s+"([^"]*)"', f.read(), re.MULTILINE):
                 out.setdefault(m.group(1), m.group(2))
-    except OSError:
-        pass
+    except OSError as _silent_err:
+        logger.debug("[atom_pending] _read_acf: ignored %s", _silent_err, exc_info=False)
     return out
 
 
@@ -48,8 +48,8 @@ def _dir_has_files(path: str) -> bool:
         for _root, _dirs, files in os.walk(path):
             if files:
                 return True
-    except OSError:
-        pass
+    except OSError as _silent_err:
+        logger.debug("[atom_pending] _dir_has_files: ignored %s", _silent_err, exc_info=False)
     return False
 
 
@@ -210,8 +210,8 @@ def remove_pending_atom_game(game: Dict[str, Any]) -> Tuple[bool, str]:
                 for d in dirs:
                     os.rmdir(os.path.join(root, d))
             os.rmdir(install_path)
-        except OSError:
-            pass  # not empty after all; leave it
+        except OSError as _silent_err:
+            logger.debug("[atom_pending] remove_pending_atom_game: ignored %s", _silent_err, exc_info=False)
     _clear_settings(appid)
     return True, "Removed"
 
@@ -239,8 +239,8 @@ def _clear_settings(appid: str) -> None:
                 "dlc_only_mode", "pin_build", "installed_buildid", "update_status", "branch",
             ):
                 s.remove(k)
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[atom_pending] _clear_settings: ignored %s", _silent_err, exc_info=False)
 
 
 def find_pending(appid: str, installed_appids: Iterable[str]) -> Optional[Dict[str, Any]]:

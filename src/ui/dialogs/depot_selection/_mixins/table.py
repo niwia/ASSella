@@ -100,8 +100,8 @@ class DepotTableMixin:
                     e_map = DatabaseManager().get_depot_enrichments(str(self.app_id))
                 if str(d_id) in e_map and e_map[str(d_id)].get("osarch"):
                     d_data["osarch"] = e_map[str(d_id)]["osarch"]
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[table] _build_config_text: ignored %s", _silent_err, exc_info=False)
 
         from utils.depot_tag_helpers import format_depot_row_label, get_os_icon
         os_icon = get_os_icon(d_data.get("oslist"))
@@ -153,8 +153,8 @@ class DepotTableMixin:
                     def _repopulate():
                         try:
                             self._populate_table()
-                        except RuntimeError:
-                            pass  # dialog already closed
+                        except RuntimeError as _silent_err:
+                            logger.debug("[table] _schedule_release_state_check: ignored %s", _silent_err, exc_info=False)
                     post_to_main_thread(_repopulate)
             except Exception as e:
                 logger.debug(f"[DepotSelection] Release state verification failed: {e}")
@@ -504,8 +504,8 @@ class DepotTableMixin:
                 try:
                     from managers.db_manager import DatabaseManager
                     DatabaseManager().clear_missing_hubcap_depot(str(self.app_id), str(depot_id))
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[table] _do_populate_table: ignored %s", _silent_err, exc_info=False)
 
             if is_depot_unreleased and not config_text.startswith("[Unreleased]"):
                 config_text = f"[Unreleased]  {config_text}"

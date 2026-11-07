@@ -516,8 +516,8 @@ class SettingsDialog(QDialog):
         """Wiring that needs widgets from a page, run once that page exists."""
         try:
             self._update_achievements_button_state()
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[settings] _after_page_built: ignored %s", _silent_err, exc_info=False)
         if self.experimental_acf_independent_checkbox is None or getattr(self, "_acf_gate_done", False):
             return
         self._acf_gate_done = True
@@ -556,8 +556,8 @@ class SettingsDialog(QDialog):
             if (self.experimental_acf_independent_checkbox is not None
                     and self.experimental_acf_independent_checkbox.isChecked()):
                 self._on_experimental_acf_toggled(True)
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[settings] _after_page_built: ignored %s", _silent_err, exc_info=False)
 
     def update_plugins_tab_visibility(self) -> None:
         """Retained for backward compatibility; plugins are now inside at0-m."""
@@ -780,9 +780,9 @@ class SettingsDialog(QDialog):
             try:
                 if w.isRunning():
                     w.requestInterruption()
-            except RuntimeError:
+            except RuntimeError as _silent_err:
                 # Already torn down; nothing to wait for.
-                pass
+                logger.debug("[settings] _stop_background_workers: ignored %s", _silent_err, exc_info=False)
 
         for w in workers:
             try:
@@ -792,8 +792,8 @@ class SettingsDialog(QDialog):
                         "detaching it so Qt does not abort on teardown.",
                         timeout_ms,
                     )
-            except RuntimeError:
-                pass
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _stop_background_workers: ignored %s", _silent_err, exc_info=False)
 
     def _save_all_settings(self) -> None:
         """Save all dialog settings to QSettings and disk."""
@@ -917,8 +917,8 @@ class SettingsDialog(QDialog):
         try:
             from utils.logger import update_log_filters
             update_log_filters()
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[settings] _save_general_settings: ignored %s", _silent_err, exc_info=False)
 
     def _save_download_settings(self) -> None:
         if self.sls_mode_checkbox is not None:
@@ -1097,8 +1097,8 @@ class SettingsDialog(QDialog):
         if hasattr(self, "max_downloads_slider") and self.max_downloads_slider:
             try:
                 val = max(1, min(30, int(self.max_downloads_slider.value())))
-            except (ValueError, TypeError):
-                pass
+            except (ValueError, TypeError) as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
         self.settings.setValue("max_downloads", val)
         if hasattr(self, "auto_tune_checkbox") and self.auto_tune_checkbox is not None:
             self.settings.setValue(
@@ -1117,23 +1117,23 @@ class SettingsDialog(QDialog):
         if hasattr(self, "hide_macos_depots_checkbox") and self.hide_macos_depots_checkbox is not None:
             try:
                 self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
-            except RuntimeError:
-                pass
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
         if hasattr(self, "hide_android_depots_checkbox") and self.hide_android_depots_checkbox is not None:
             try:
                 self.settings.setValue("hide_android_depots", self.hide_android_depots_checkbox.isChecked())
-            except RuntimeError:
-                pass
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
         if hasattr(self, "show_hidden_depots_selector_checkbox") and self.show_hidden_depots_selector_checkbox is not None:
             try:
                 self.settings.setValue("show_hidden_depots_in_selector", self.show_hidden_depots_selector_checkbox.isChecked())
-            except RuntimeError:
-                pass
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
         if getattr(self, "new_depot_selector_checkbox", None) is not None:
             try:
                 self.settings.setValue("use_new_depot_selector", self.new_depot_selector_checkbox.isChecked())
-            except RuntimeError:
-                pass
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
         if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo is not None:
             mode = self.isp_gateway_combo.currentData() or "auto"
             self.settings.setValue("isp_bypass_mode", mode)
@@ -1142,8 +1142,8 @@ class SettingsDialog(QDialog):
                 try:
                     from utils.isp_bypass import TorManager
                     TorManager.stop_tor()
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
 
         if hasattr(self, "experimental_acf_independent_checkbox") and self.experimental_acf_independent_checkbox is not None:
             is_enabled = self.experimental_acf_independent_checkbox.isChecked()
@@ -1153,8 +1153,8 @@ class SettingsDialog(QDialog):
                 try:
                     from utils.yaml_config_manager import ensure_slssteam_prerequisites
                     ensure_slssteam_prerequisites()
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
 
     def _save_vapor_settings(self) -> None:
         """Save all at0-m / Vapor settings."""

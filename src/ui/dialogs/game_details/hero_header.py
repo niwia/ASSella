@@ -150,8 +150,8 @@ def get_installed_date(dialog) -> str:
             for f in os.listdir(ddm):
                 if f.endswith(".manifest"):
                     ts = max(ts, int(os.path.getmtime(os.path.join(ddm, f))))
-        except OSError:
-            pass
+        except OSError as _silent_err:
+            logger.debug("[hero_header] get_installed_date: ignored %s", _silent_err, exc_info=False)
     if not ts:
         try:
             from utils.steam_acf import find_appmanifest_path
@@ -283,8 +283,8 @@ def _logo_cache_dir():
     d = get_base_path() / "image_cache" / "logos"
     try:
         d.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
+    except OSError as _silent_err:
+        logger.debug("[hero_header] _logo_cache_dir: ignored %s", _silent_err, exc_info=False)
     return d
 
 
@@ -483,8 +483,8 @@ def init_hero_v2(dialog, root) -> None:
         try:
             if latest and int(installed_bid) < int(latest):
                 state = "update"
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as _silent_err:
+            logger.debug("[hero_header] init_hero_v2: ignored %s", _silent_err, exc_info=False)
     set_build_snippet(dialog, installed_bid, state, f"Installed build {installed_bid}" if installed_bid else "")
     dialog.build_val_lbl.setCursor(Qt.CursorShape.ArrowCursor)
     dialog.build_val_lbl.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -764,8 +764,8 @@ def get_manifest_age(dialog) -> str:
     if fpath.exists():
         try:
             return format_time_diff(fpath.stat().st_mtime)
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[hero_header] get_manifest_age: ignored %s", _silent_err, exc_info=False)
     return "Not cached"
 
 
@@ -778,8 +778,8 @@ def get_lua_age(dialog) -> str:
         ts = dkm.get_key_updated_at(dialog.appid)
         if ts:
             return format_time_diff(ts)
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[hero_header] get_lua_age: ignored %s", _silent_err, exc_info=False)
     return "Not cached"
 
 
@@ -792,8 +792,8 @@ def get_last_checked(dialog) -> str:
         if entry and entry.get("updated_at"):
             try:
                 return format_time_diff(entry.get("updated_at"))
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[hero_header] get_last_checked: ignored %s", _silent_err, exc_info=False)
     return "Never"
 
 

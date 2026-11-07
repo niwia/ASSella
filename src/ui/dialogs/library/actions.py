@@ -2265,8 +2265,8 @@ class LibraryActionsMixin:
         try:
             if progress:
                 progress.close()
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[actions] _open_depot_dialog_after_parse: ignored %s", _silent_err, exc_info=False)
 
         if not parsed_data or not parsed_data.get("depots"):
             ThemedMessageBox.warning(self, "No Depots Found", "Could not parse depots for this game.")
@@ -3339,12 +3339,12 @@ class LibraryActionsMixin:
                     if dialog:
                         try:
                             dialog.accept()
-                        except RuntimeError:
-                            pass
+                        except RuntimeError as _silent_err:
+                            logger.debug("[actions] _on_zip_parse_complete: ignored %s", _silent_err, exc_info=False)
                     try:
                         self.accept()
-                    except RuntimeError:
-                        pass
+                    except RuntimeError as _silent_err:
+                        logger.debug("[actions] _on_zip_parse_complete: ignored %s", _silent_err, exc_info=False)
                     return
 
                 depot_dialog = DepotSelectionDialog(

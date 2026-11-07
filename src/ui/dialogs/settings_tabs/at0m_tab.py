@@ -154,8 +154,8 @@ def get_available_download_plugins() -> list[tuple[str, str]]:
     try:
         if get_manifest_plugin_info("download.lua"):
             options.append((std_label, "download.lua"))
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[at0m_tab] get_available_download_plugins: ignored %s", _silent_err, exc_info=False)
     try:
         from utils.helpers import get_base_path
         from utils.yaml_config_manager import get_sls_plugins_dirs
@@ -813,8 +813,8 @@ def create_at0m_tab(dialog) -> QWidget:
             if current_fnames != new_fnames:
                 _render_plugin_buttons()
             _refresh_all_buttons()
-        except RuntimeError:
-            pass  # dialog already closed
+        except RuntimeError as _silent_err:
+            logger.debug("[at0m_tab] create_at0m_tab: ignored %s", _silent_err, exc_info=False)
 
     refresh = _ManifestRefresh(dialog)
     refresh.finished.connect(_after_refresh)

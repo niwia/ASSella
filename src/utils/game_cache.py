@@ -92,8 +92,8 @@ def _file_ids(folder: Path, pattern: str, rx: str) -> Set[str]:
             m = r.match(f.name)
             if m:
                 out.add(m.group(1))
-    except OSError:
-        pass
+    except OSError as _silent_err:
+        logger.debug("[game_cache] _file_ids: ignored %s", _silent_err, exc_info=False)
     return out
 
 
@@ -121,8 +121,8 @@ def _cached_appids() -> Set[str]:
         try:
             ids.update(str(r[0]) for r in conn.execute(
                 "SELECT appid FROM apps WHERE depots_json IS NOT NULL AND length(depots_json) > 0"))
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as _silent_err:
+            logger.debug("[game_cache] _cached_appids: ignored %s", _silent_err, exc_info=False)
         finally:
             conn.close()
     base = _base()
@@ -159,8 +159,8 @@ def _names(appids: Set[str]) -> Dict[str, str]:
                 n = (lib.get(a) or {}).get("name") or (lib.get(a) or {}).get("game_name")
                 if n:
                     names[a] = str(n)
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[game_cache] _names: ignored %s", _silent_err, exc_info=False)
     return names
 
 
@@ -178,8 +178,8 @@ def _protected_appids() -> Set[str]:
     out: Set[str] = set()
     try:
         out.update(str(k) for k in json.loads(_data("plugin_library.json").read_text(encoding="utf-8")))
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[game_cache] _protected_appids: ignored %s", _silent_err, exc_info=False)
     try:
         from core.steam_helpers import get_steam_libraries
 
@@ -275,8 +275,8 @@ def clear_game_cache(appid: str) -> Dict[str, object]:
 
         if _drop_json_key(Path(get_cache_dir("editions")) / "catalog.json", appid, "apps"):
             removed.append("editions catalog")
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[game_cache] clear_game_cache: ignored %s", _silent_err, exc_info=False)
 
     files = [base / "image_cache" / f"{appid}.jpg", base / "metadata" / f"{appid}.json"]
     for d in (base / "image_cache" / "logos", base / "sgdb_cache" / "logos", base / "sgdb_cache" / "heroes"):

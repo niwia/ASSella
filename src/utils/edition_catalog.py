@@ -369,7 +369,8 @@ def fetch_bundles_batch(
     for raw_id in bundle_ids:
         try:
             bid = int(raw_id)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as _silent_err:
+            logger.debug("[edition_catalog] fetch_bundles_batch: ignored %s", _silent_err, exc_info=False)
             continue
         key = str(bid)
         entry = cache["bundle_data"].get(key)
@@ -401,7 +402,8 @@ def fetch_bundles_batch(
             for item in store_items:
                 try:
                     bid = int(item.get("id"))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError) as _silent_err:
+                    logger.debug("[edition_catalog] fetch_bundles_batch: ignored %s", _silent_err, exc_info=False)
                     continue
                 found_bids.add(bid)
                 name = str(item.get("name") or "").strip()
@@ -560,7 +562,8 @@ def fetch_package_apps_batch(
     for raw in package_ids:
         try:
             wanted.append(int(raw))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as _silent_err:
+            logger.debug("[edition_catalog] fetch_package_apps_batch: ignored %s", _silent_err, exc_info=False)
             continue
     if not wanted:
         return {}
@@ -589,7 +592,8 @@ def fetch_package_apps_batch(
         for item in items:
             try:
                 pid = int(item.get("id"))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as _silent_err:
+                logger.debug("[edition_catalog] fetch_package_apps_batch: ignored %s", _silent_err, exc_info=False)
                 continue
             included = item.get("included_appids") or []
             apps = sorted({str(a) for a in included if str(a).strip() and str(a) != "0"}) if isinstance(included, list) else []

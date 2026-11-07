@@ -8,6 +8,10 @@ for redistributables, uninstallers, and crash reporting tools.
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
+import logging as _logging
+
+logger = _logging.getLogger(__name__)
+
 IGNORED_DIR_NAMES = {
     "_commonredist",
     "directx",
@@ -99,8 +103,8 @@ def scan_game_executables(
                     "size_str": format_size(sz),
                     "is_root": True,
                 })
-    except (PermissionError, OSError):
-        pass
+    except (PermissionError, OSError) as _silent_err:
+        logger.debug("[executable_scanner] scan_game_executables: ignored %s", _silent_err, exc_info=False)
 
     # 2. Subdirectory executables
     def _walk_subdirs(current_dir: Path, current_depth: int) -> None:
@@ -128,16 +132,16 @@ def scan_game_executables(
                         "size_str": format_size(sz),
                         "is_root": False,
                     })
-        except (PermissionError, OSError):
-            pass
+        except (PermissionError, OSError) as _silent_err:
+            logger.debug("[executable_scanner] scan_game_executables: ignored %s", _silent_err, exc_info=False)
 
     try:
         for entry in p.iterdir():
             if entry.is_dir() and not entry.name.startswith("."):
                 if entry.name.lower() not in IGNORED_DIR_NAMES:
                     _walk_subdirs(entry, 1)
-    except (PermissionError, OSError):
-        pass
+    except (PermissionError, OSError) as _silent_err:
+        logger.debug("[executable_scanner] scan_game_executables: ignored %s", _silent_err, exc_info=False)
 
     root_exes.sort(key=lambda x: x["name"].lower())
     subdir_exes.sort(key=lambda x: x["relative_path"].lower())

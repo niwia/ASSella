@@ -327,8 +327,8 @@ class ByparrManager:
                     import ctypes
                     libc = ctypes.CDLL("libc.so.6")
                     libc.prctl(1, signal.SIGTERM)  # 1 = PR_SET_PDEATHSIG
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[steamdb_scraper] ensure_running: ignored %s", _silent_err, exc_info=False)
                 try:
                     os.setpriority(os.PRIO_PROCESS, 0, 10)
                 except OSError as e:
@@ -404,8 +404,8 @@ class ByparrManager:
         if byparr_dir and cls.is_running():
             try:
                 subprocess.run(["pkill", "-f", str(byparr_dir)], capture_output=True, timeout=2)
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[steamdb_scraper] stop: ignored %s", _silent_err, exc_info=False)
 
     @classmethod
     def build_headers(cls, auth_header: Optional[str] = None) -> Dict[str, str]:
@@ -538,7 +538,8 @@ class _SteamDBGovernor:
     def _settings(cls):
         try:
             return get_settings()
-        except Exception:
+        except Exception as _silent_err:
+            logger.debug("[steamdb_scraper] _settings: ignored %s", _silent_err, exc_info=False)
             return None
 
     @classmethod
@@ -1178,10 +1179,10 @@ class SteamDBScraper:
                                                 "dl_str": "",
                                                 "is_dlc": True,
                                             }
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
+                                except Exception as _silent_err:
+                                    logger.debug("[steamdb_scraper] _fetch_depots_fallback_steam_store: ignored %s", _silent_err, exc_info=False)
+                    except Exception as _silent_err:
+                        logger.debug("[steamdb_scraper] _fetch_depots_fallback_steam_store: ignored %s", _silent_err, exc_info=False)
         except Exception as e:
             logger.debug(f"[SteamDB Fallback] Store API fetch failed for {appid}: {e}")
         return results
@@ -1208,8 +1209,8 @@ def parse_size_to_bytes(size_str: str) -> int:
             val = float(m.group(1))
             unit = m.group(2).lower()
             return int(val * units.get(unit, 1))
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[steamdb_scraper] parse_size_to_bytes: ignored %s", _silent_err, exc_info=False)
     return 0
 
 

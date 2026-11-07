@@ -354,7 +354,8 @@ def verify_manifest_signature(manifest_bytes: bytes, signature: bytes) -> bool:
         try:
             Ed25519PublicKey.from_public_bytes(raw).verify(sig, manifest_bytes)
             return True
-        except InvalidSignature:
+        except InvalidSignature as _silent_err:
+            logger.debug("[plugin_manager] verify_manifest_signature: ignored %s", _silent_err, exc_info=False)
             continue
         except Exception as e:
             logger.debug(f"[PluginManager] Signature check error: {e}")
@@ -368,8 +369,8 @@ def _manifest_serial(data: Optional[Dict[str, Any]]) -> int:
     try:
         if data.get("serial") is not None:
             return int(data["serial"])
-    except (TypeError, ValueError):
-        pass
+    except (TypeError, ValueError) as _silent_err:
+        logger.debug("[plugin_manager] _manifest_serial: ignored %s", _silent_err, exc_info=False)
     digits = re.sub(r"\D", "", str(data.get("updated_at") or ""))
     try:
         return int(digits[:14]) if digits else 0
@@ -394,7 +395,8 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else None
-    except Exception:
+    except Exception as _silent_err:
+        logger.debug("[plugin_manager] _read_json: ignored %s", _silent_err, exc_info=False)
         return None
 
 
@@ -641,7 +643,8 @@ def is_plugin_installed(filename: str) -> bool:
         try:
             if p.is_file() and p.stat().st_size > 0:
                 return True
-        except OSError:
+        except OSError as _silent_err:
+            logger.debug("[plugin_manager] is_plugin_installed: ignored %s", _silent_err, exc_info=False)
             continue
     return False
 
@@ -741,8 +744,8 @@ def get_plugin_version(filename: str) -> Optional[str]:
         bundled = Paths.resource(f"plugins/{filename}")
         if bundled.is_file():
             return extract_plugin_version(bundled)
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[plugin_manager] get_plugin_version: ignored %s", _silent_err, exc_info=False)
     return None
 
 
@@ -754,15 +757,16 @@ def _local_candidates(filename: str) -> Iterable[Path]:
     candidates = [get_cached_plugin_path(filename)]
     try:
         candidates.append(Paths.resource(f"plugins/{filename}"))
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[plugin_manager] _local_candidates: ignored %s", _silent_err, exc_info=False)
     seen = set()
     for p in candidates:
         try:
             if p.is_file() and p not in seen:
                 seen.add(p)
                 yield p
-        except Exception:
+        except Exception as _silent_err:
+            logger.debug("[plugin_manager] _local_candidates: ignored %s", _silent_err, exc_info=False)
             continue
 
 
@@ -974,7 +978,8 @@ def get_plugin_status(filename: str) -> str:
             if candidate.is_file() and candidate.stat().st_size > 0:
                 found_file = candidate
                 break
-        except OSError:
+        except OSError as _silent_err:
+            logger.debug("[plugin_manager] get_plugin_status: ignored %s", _silent_err, exc_info=False)
             continue
     if not found_file:
         return "missing"
@@ -993,8 +998,8 @@ def _record_deployed_sha(filename: str, sha: str) -> None:
     try:
         settings = get_settings()
         settings.setValue(f"plugin_deployed_sha/{filename}", sha)
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[plugin_manager] _record_deployed_sha: ignored %s", _silent_err, exc_info=False)
 
 
 # ---------------------------------------------------------------------------

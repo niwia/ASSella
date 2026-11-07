@@ -423,8 +423,8 @@ class ModernPopup(QFrame):
                 local = self._anchor.mapFromGlobal(event.globalPosition().toPoint())
                 if self._anchor.rect().contains(local):
                     self.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay, True)
-            except RuntimeError:
-                pass
+            except RuntimeError as _silent_err:
+                logger.debug("[modern_dropdown] mousePressEvent: ignored %s", _silent_err, exc_info=False)
         super().mousePressEvent(event)
 
     def closeEvent(self, event) -> None:

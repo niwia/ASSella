@@ -158,7 +158,8 @@ class ReleaseGate:
             return None
         try:
             return index.state(str(depot_id))
-        except Exception:
+        except Exception as _silent_err:
+            logger.debug("[release_gate] hubcap_state: ignored %s", _silent_err, exc_info=False)
             return None
 
     def classify_missing(self, depot_id: Any, *, reported_missing: bool = False) -> Tuple[str, str, str]:

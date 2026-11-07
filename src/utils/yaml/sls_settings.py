@@ -104,7 +104,8 @@ def _read(path: Path) -> Optional[str]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
-    except OSError:
+    except OSError as _silent_err:
+        logger.debug("[sls_settings] _read: ignored %s", _silent_err, exc_info=False)
         return None
 
 
