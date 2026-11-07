@@ -478,6 +478,14 @@ class SettingsDialog(QDialog):
 
         return card, card_layout
 
+    def _build_companions_tab(self):
+        # Imported when the page is first opened, like every page's contents.
+        from ui.dialogs.settings_tabs.companions_tab import create_companions_tab
+
+        # Like every page creator: hand the page to addTab, which puts it in
+        # the lazy holder.
+        self.tab_widget.addTab(create_companions_tab(self), "Companions")
+
     def _setup_tabs(self) -> None:
         """Register all settings pages. Each is built the first time it is opened,
         so opening Settings only pays for the page it lands on."""
@@ -488,6 +496,7 @@ class SettingsDialog(QDialog):
         add("Integrations", lambda: tabs.create_morrenus_tab(self))
         add("SLS", lambda: create_sls_tab(self))
         add("at0-m", lambda: tabs.create_at0m_tab(self))
+        add("Companions", self._build_companions_tab)
         add("Health", lambda: tabs.create_health_tab(self))
         add("Tools", lambda: tabs.create_tools_tab(self))
         add("Theme", lambda: tabs.create_style_tab(self))
