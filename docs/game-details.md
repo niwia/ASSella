@@ -1,6 +1,6 @@
 # Game Details
 
-Click any game in **Library** to open its details. The header shows the game's art, size on disk, installed build and a **SteamDB** shortcut. The tabs below change with the game: AT0-M games get a **Depots** tab, games with downloaded mods get **Workshop**.
+Click any game in [Library](/library) to open its details. The header shows the game's art, size on disk, installed build and a **SteamDB** shortcut. The tabs below change with the game: AT0-M games get a **Depots** tab, games with downloaded mods get **Workshop**.
 
 ---
 

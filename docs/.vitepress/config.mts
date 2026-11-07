@@ -43,6 +43,7 @@ export default defineConfig({
               { text: 'Bring Your Own .lua', link: '/guides/import-lua' }
             ]
           },
+          { text: 'Library', link: '/library' },
           { text: 'Game Details', link: '/game-details' },
           {
             text: 'AT0-M',
