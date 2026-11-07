@@ -5,7 +5,7 @@ Hero banner, title, badges, and layout helpers for GameDetailsDialogV2.
 import logging
 import time
 from PyQt6.QtCore import Qt, QSize, QUrl
-from PyQt6.QtGui import QPixmap, QDesktopServices
+from PyQt6.QtGui import QPixmap, QDesktopServices, QIcon
 
 logger = logging.getLogger(__name__)
 from PyQt6.QtWidgets import (
@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 
 from ui.dialogs.game_details.widgets import HeroBanner
 from utils.image_fetcher import ImageFetcher
+from utils.paths import Paths
 from utils.update_status_cache import get_update_cache
 
 
@@ -169,10 +170,11 @@ def init_hero_v2(dialog, root) -> None:
 
     is_atom = _is_atom_game(dialog)
     dialog.hero = HeroBanner(bg_hex=dialog.background_color)
-    dialog.hero.setFixedHeight(100)
+    dialog.hero.setMinimumHeight(100)
+    dialog.hero.setMaximumHeight(115)
     banner_layout = QVBoxLayout(dialog.hero)
     banner_layout.setContentsMargins(14, 8, 14, 10)
-    banner_layout.setSpacing(3)
+    banner_layout.setSpacing(2)
 
     top_row = QHBoxLayout()
     top_row.setContentsMargins(0, 0, 0, 0)
@@ -284,23 +286,31 @@ def init_hero_v2(dialog, root) -> None:
     snip_row.addWidget(dialog._proton_badge_lbl)  # ProtonDB tier, as a snippet
     snip_row.addStretch(1)
 
-    dialog._steamdb_btn = QPushButton("SteamDB")
+    dialog._steamdb_btn = QPushButton()
     dialog._steamdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog._steamdb_btn.setToolTip(f"Open {dialog.appid} on SteamDB (https://steamdb.info/app/{dialog.appid}/)")
+    dialog._steamdb_btn.setFixedHeight(24)
+    dialog._steamdb_btn.setMinimumWidth(82)
+
+    icon_path = Paths.icon("steamdb-lockup.svg")
+    if not icon_path.exists():
+        icon_path = Paths.resource("steamdb-lockup.svg")
+    if icon_path.exists():
+        dialog._steamdb_btn.setIcon(QIcon(str(icon_path)))
+        dialog._steamdb_btn.setIconSize(QSize(76, 15))
+    else:
+        dialog._steamdb_btn.setText("SteamDB")
+
     dialog._steamdb_btn.setStyleSheet("""
         QPushButton {
-            color: #E8E8EE;
             background-color: rgba(255, 255, 255, 0.08);
             border: 1px solid rgba(255, 255, 255, 0.18);
-            border-radius: 4px;
-            padding: 2px 10px;
-            font-size: 8.5pt;
-            font-weight: 600;
+            border-radius: 5px;
+            padding: 2px 8px;
         }
         QPushButton:hover {
             background-color: rgba(255, 255, 255, 0.18);
             border-color: rgba(255, 255, 255, 0.35);
-            color: #FFFFFF;
         }
     """)
     dialog._steamdb_btn.clicked.connect(
@@ -578,20 +588,24 @@ def load_title_logo(dialog) -> None:
     if not appid or appid in ("0", "N/A", "unknown"):
         return
 
-    from utils.paths import Paths
+    from pathlib import Path
 
-    cache_dir = Paths.cache() / "logos"
+    cache_dir = Path.home() / ".local" / "share" / "ACCELA" / "image_cache" / "logos"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"{appid}.png"
 
-    if cache_file.is_file():
-        px = QPixmap(str(cache_file))
+    def _apply_pixmap(px: QPixmap):
         if not px.isNull() and hasattr(dialog, "logo_lbl") and hasattr(dialog, "name_lbl"):
-            scaled = px.scaledToHeight(30, Qt.TransformationMode.SmoothTransformation)
+            scaled = px.scaled(260, 50, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             dialog.logo_lbl.setPixmap(scaled)
             dialog.logo_lbl.setToolTip(dialog.game_data.get("game_name", ""))
             dialog.logo_lbl.show()
             dialog.name_lbl.hide()
+
+    if cache_file.is_file():
+        px = QPixmap(str(cache_file))
+        if not px.isNull():
+            _apply_pixmap(px)
             return
 
     import threading
@@ -613,15 +627,9 @@ def load_title_logo(dialog) -> None:
                 from PyQt6.QtCore import QTimer
 
                 def _apply():
-                    if hasattr(dialog, "logo_lbl") and hasattr(dialog, "name_lbl"):
-                        px = QPixmap()
-                        px.loadFromData(resp.content)
-                        if not px.isNull():
-                            scaled = px.scaledToHeight(30, Qt.TransformationMode.SmoothTransformation)
-                            dialog.logo_lbl.setPixmap(scaled)
-                            dialog.logo_lbl.setToolTip(dialog.game_data.get("game_name", ""))
-                            dialog.logo_lbl.show()
-                            dialog.name_lbl.hide()
+                    px = QPixmap()
+                    px.loadFromData(resp.content)
+                    _apply_pixmap(px)
 
                 QTimer.singleShot(0, _apply)
         except Exception as e:
