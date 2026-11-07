@@ -33,15 +33,17 @@ const groups = [
     ['Instant uninstall', N, Y],
     ['SLSsteam ownership tickets', N, Y, 'Import, verify and remove per game'],
     ['Health check & one-click config fix', N, Y],
+    ['SLSsteam config fixer (ASShead)', N, Y, 'Rebuilds config.yaml on the latest template, keeping all your entries'],
+    ['Missing keys refetched automatically', N, Y, 'Keys that were missing are fetched again when Hubcap gets them'],
   ]},
   { title: 'Library & game page', rows: [
     ['Library with uninstall', Y, Y],
+    ['Multi-select: update, uninstall or move many games', N, Y],
     ['Game details page with tabs', N, Y, 'Info, Depots, Builds, Tools, Tickets'],
     ['ProtonDB & SteamDB badges', N, Y],
     ['SteamDB build history', N, Y, 'Direct; Byparr only as an optional fallback'],
     ['Advanced uninstall (prefix, cloud saves)', Y, Y],
     ['"I bought the game" clean-up', N, Y],
-    ['Move a game to another library', N, Y],
     ['Workshop mods', N, Y, 'Through AT0-M (the old downloader is retired)'],
   ]},
   { title: 'Fixes & online', rows: [
@@ -61,19 +63,19 @@ const groups = [
     ['Modern, themeable interface', P, Y],
     ['Smaller app; extras downloaded on demand', N, Y],
     ['Command line mode', Y, Y],
-    ['Desktop shortcuts with SteamGridDB icons', Y, N],
+    ['Desktop shortcuts with SteamGridDB icons', Y, Y],
     ['accela:// links & .zip right-click (Windows)', Y, N],
     ['Sounds & custom GIFs', Y, P],
   ]},
 ]
 const highlights = [
-  { t: 'No Steam restarts, ever', d: 'ASSella talks to Steam live through the SLSsteam API. Games you install show up in Steam at once, uninstalls vanish at once, and config changes apply while Steam keeps running. ACCELA asked you to restart Steam after installs.', icon: '⚡', wide: true },
-  { t: 'Steam does the downloading', d: 'With AT0-M the real Steam client downloads and updates your games, like games you own.', icon: '🎮', link: '/at0m' },
-  { t: 'Only what changed', d: 'Updates download just the changed parts (delta updates), and the download speed tunes itself.', icon: '📦' },
-  { t: 'Smarter updates', d: 'SteamCMD and Steam PICS are checked side by side, and all your games update in one click.', icon: '🔄' },
-  { t: 'Any version you want', d: 'Roll back to any SteamDB build, pin it, or start from your own .lua and manifest files.', icon: '⏪', link: '/guides/downgrade' },
-  { t: 'Game Mode and browser', d: 'Uran adds games from Game Mode, Epsilon from the Steam Store and SteamDB in your browser.', icon: '🧩', link: '/uran' },
-  { t: 'Checks itself', d: 'The Health tab finds broken SLSsteam setups and fixes them in one click. Rarely used tools download only when you need them.', icon: '🩺' },
+  { t: 'No Steam restarts, ever', d: 'ASSella talks to Steam live through the SLSsteam API. Games you install show up in Steam at once, uninstalls vanish at once, and config changes apply while Steam keeps running.', wide: true },
+  { t: 'Steam does the downloading', d: 'With AT0-M the real Steam client downloads and updates your games, like games you own.', link: '/at0m' },
+  { t: 'Only what changed', d: 'Updates download just the changed parts (delta updates), and the download speed tunes itself.' },
+  { t: 'Smarter updates', d: 'SteamCMD and Steam PICS are checked side by side, and all your games update in one click.' },
+  { t: 'Any version you want', d: 'Roll back to any SteamDB build, pin it, or start from your own .lua and manifest files.', link: '/guides/downgrade' },
+  { t: 'Game Mode and browser', d: 'Uran adds games from Game Mode, Epsilon from the Steam Store and SteamDB in your browser.', link: '/uran' },
+  { t: 'Checks itself', d: 'The Health tab finds broken SLSsteam setups and fixes them in one click. Rarely used tools download only when you need them.' },
 ]
 const icon = v => v === 'yes' ? '✓' : v === 'no' ? '—' : 'Partly'
 </script>
@@ -92,11 +94,10 @@ const icon = v => v === 'yes' ? '✓' : v === 'no' ? '—' : 'Partly'
   </div>
 </div>
 
-<p class="vs-intro">ASSella is built on <b>ACCELA</b> by Tachibana Labs, and keeps everything that made it good. Here's what each one can do, side by side.</p>
+<p class="vs-intro">ASSella is built on <b>ACCELA</b> and keeps everything that made it good. Here's what each one can do, side by side.</p>
 
 <div class="vs-hl">
   <component :is="h.link ? 'a' : 'div'" v-for="h in highlights" :key="h.t" :class="['vs-card', { 'vs-wide': h.wide }]" :href="h.link">
-    <div class="vs-ic">{{ h.icon }}</div>
     <div class="vs-ct">{{ h.t }}</div>
     <div class="vs-cd">{{ h.d }}</div>
   </component>
@@ -171,5 +172,5 @@ Moving over is painless, because ASSella reads the same places ACCELA used:
 4. Optional: turn on [AT0-M](/at0m) so Steam downloads and updates games for you.
 
 ::: tip What ASSella doesn't have (yet)
-ACCELA's desktop shortcuts with SteamGridDB icons, its `accela://` links and `.zip` right-click menu on Windows, and its sound effects aren't in ASSella yet. If you rely on one of these, keep ACCELA around for it. Both apps can be installed side by side.
+ACCELA's `accela://` links and `.zip` right-click menu on Windows, and its sound effects, aren't in ASSella yet. If you rely on one of these, keep ACCELA around for it. Both apps can be installed side by side.
 :::
