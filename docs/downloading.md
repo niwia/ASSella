@@ -22,7 +22,7 @@ Finish the [Installation Guide](/install) first: your Hubcap key must be saved i
 
 Type a game name or a Steam **App ID** into the **Search games…** box in ASSella's title bar and pick the game from the list.
 
-You can also drag a manifest `.zip` (or `.lua`) onto ASSella's window to start from a file you already have.
+You can also start from files you already have, such as a `.lua`, `.manifest` or `.zip`. See [Bring Your Own .lua](/guides/import-lua).
 
 ## 2. Choose how to download
 

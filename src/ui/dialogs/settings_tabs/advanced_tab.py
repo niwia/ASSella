@@ -180,8 +180,11 @@ def create_advanced_tab(dialog) -> QWidget:
         if checked:
             reply = ThemedMessageBox.question(
                 dialog,
-                "Enable Workshop Downloader",
-                "Are you sure you want to enable the Workshop Downloader?\n\nThis feature is deprecated and may not work reliably.",
+                "Workshop downloader is retired",
+                "The Workshop downloader no longer works reliably.\n\n"
+                "AT0-M gives you Workshop mods now: subscribe to a mod in Steam and "
+                "Steam downloads and updates it for you.\n\n"
+                "Turn the old downloader on anyway?",
                 ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
                 ThemedMessageBox.StandardButton.No,
             )
