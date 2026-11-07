@@ -85,25 +85,117 @@ def update_json(path: Path, changes: Dict[str, Any]) -> bool:
         return False
 
 
-# ---------------------------------------------------------------- Uran
+# ---------------------------------------------------------------- environment
+
+def in_flatpak() -> bool:
+    """ASSella itself sandboxed: host commands go through flatpak-spawn."""
+    return Path("/.flatpak-info").exists()
+
+
+def host_cmd(args: list) -> list:
+    return ["flatpak-spawn", "--host", *args] if in_flatpak() else list(args)
+
+
+def _run(args: list, timeout: float = 8.0) -> subprocess.CompletedProcess:
+    return subprocess.run(host_cmd(args), capture_output=True, text=True, timeout=timeout)
+
+
+def have_systemd_user() -> bool:
+    try:
+        r = _run(["systemctl", "--user", "--version"], timeout=4)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------- Uran (Decky)
+
+DECKY_URL = "https://decky.xyz"
+
+
+def _decky_homes() -> list:
+    """Decky's homebrew folders, most likely first.
+
+    Decky installs as a system service (plugin_loader.service) that runs from
+    <user home>/homebrew; its unit names the real path on every distro
+    (SteamOS, Bazzite, ChimeraOS, Arch/Fedora/Ubuntu installs). Steam itself
+    may be native or Flatpak: Decky's folder is the same either way.
+    """
+    found = []
+    for unit in (
+        Path("/etc/systemd/system/plugin_loader.service"),
+        Path("/usr/lib/systemd/system/plugin_loader.service"),
+        Path("/lib/systemd/system/plugin_loader.service"),
+    ):
+        try:
+            text = unit.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for m in re.finditer(r"(/[^\s\"'=]*?/homebrew)(?:/|\b)", text):
+            found.append(Path(m.group(1)))
+    env = os.environ.get("DECKY_HOME")
+    if env:
+        found.append(Path(env))
+    found.append(_home() / "homebrew")
+    out, seen = [], set()
+    for p in found:
+        if str(p) not in seen:
+            seen.add(str(p))
+            out.append(p)
+    return out
+
+
+def decky_home() -> Optional[Path]:
+    for p in _decky_homes():
+        if (p / "plugins").is_dir() or (p / "services").is_dir():
+            return p
+    return None
+
+
+def decky_installed() -> bool:
+    return decky_home() is not None
+
+
+def _uran_dir(home: Optional[Path]) -> Optional[Path]:
+    if home is None:
+        return None
+    plugins = home / "plugins"
+    direct = plugins / "Uran"
+    if direct.is_dir():
+        return direct
+    # Store installs can use another folder name: find it by plugin.json.
+    try:
+        for d in plugins.iterdir():
+            meta = read_json(d / "plugin.json")
+            if str(meta.get("name", "")).lower() == "uran":
+                return d
+    except OSError:
+        pass
+    return None
+
 
 def uran_plugin_dir() -> Path:
-    return _home() / "homebrew" / "plugins" / "Uran"
+    return _uran_dir(decky_home()) or (_home() / "homebrew" / "plugins" / "Uran")
 
 
 def uran_settings_path() -> Path:
-    return _home() / "homebrew" / "settings" / "Uran" / "settings.json"
+    home = decky_home() or (_home() / "homebrew")
+    name = uran_plugin_dir().name or "Uran"
+    return home / "settings" / name / "settings.json"
 
 
 def uran_info() -> Dict[str, Any]:
-    """Local facts only (fast): installed, version, settings."""
-    pdir = uran_plugin_dir()
-    meta = read_json(pdir / "plugin.json")
-    installed = bool(meta) or (pdir / "main.py").is_file()
+    """Local facts only (fast): Decky, installed, version, settings."""
+    home = decky_home()
+    pdir = _uran_dir(home)
+    meta = read_json(pdir / "plugin.json") if pdir else {}
     settings = dict(URAN_DEFAULTS)
     settings.update(read_json(uran_settings_path()))
     return {
-        "installed": installed,
+        "decky": home is not None,
+        "decky_home": str(home) if home else "",
+        "installed": pdir is not None,
+        "plugin_dir": str(pdir) if pdir else "",
         "version": str(meta.get("version") or ""),
         "settings_path": str(uran_settings_path()),
         "settings": settings,
@@ -116,8 +208,19 @@ def set_uran_setting(key: str, value: Any) -> bool:
 
 # ---------------------------------------------------------------- Epsilon
 
+EPSILON_INSTALL_URL = "https://raw.githubusercontent.com/niwia/Uran/main/install_epsilon.sh"
+EPSILON_GUIDE_URL = "https://assella.pages.dev/epsilon"
+
+
+def _systemd_user_dirs() -> list:
+    return [_config_home() / "systemd" / "user", _home() / ".local" / "share" / "systemd" / "user"]
+
+
 def _systemd_user_dir() -> Path:
-    return _config_home() / "systemd" / "user"
+    for d in _systemd_user_dirs():
+        if (d / "epsilon.socket").is_file() or (d / "epsilon.service").is_file():
+            return d
+    return _systemd_user_dirs()[0]
 
 
 def epsilon_settings_path() -> Path:
@@ -160,8 +263,7 @@ def set_epsilon_setting(key: str, value: Any) -> bool:
 
 
 def _systemctl(*args: str, timeout: float = 8.0) -> subprocess.CompletedProcess:
-    exe = shutil.which("systemctl") or "systemctl"
-    return subprocess.run([exe, "--user", *args], capture_output=True, text=True, timeout=timeout)
+    return _run(["systemctl", "--user", *args], timeout=timeout)
 
 
 def _unit_state(unit: str) -> Dict[str, Any]:
@@ -180,12 +282,19 @@ def epsilon_live_status() -> Dict[str, Any]:
         "updater": _unit_state("epsilon-updater.timer"),
         "status": None,
         "error": "",
+        "systemd": True,
+        "stats": {},
     }
-    try:
-        with urllib.request.urlopen(f"{EPSILON_URL}/status", timeout=3) as r:
-            out["status"] = json.loads(r.read().decode("utf-8", "replace"))
-    except Exception as e:
-        out["error"] = str(getattr(e, "reason", e))
+    if not have_systemd_user():
+        out["systemd"] = False
+    # Asking /status wakes a socket-activated bridge, so only ask when it is on.
+    if out["socket"]["active"] or not out["systemd"]:
+        try:
+            with urllib.request.urlopen(f"{EPSILON_URL}/status", timeout=3) as r:
+                out["status"] = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception as e:
+            out["error"] = str(getattr(e, "reason", e))
+    out["stats"] = epsilon_stats()
     return out
 
 
@@ -210,14 +319,85 @@ def set_epsilon_updater(enabled: bool) -> tuple[bool, str]:
     return r.returncode == 0, (r.stderr or r.stdout).strip()
 
 
-def install_epsilon_command() -> Optional[list]:
-    """The installer of the found checkout, for a terminal (it prints its progress)."""
+def epsilon_script(name: str) -> Optional[Path]:
     root = epsilon_root()
-    script = root / "epsilon" / "install.sh" if root else None
-    return ["bash", str(script)] if script and script.is_file() else None
+    script = root / "epsilon" / name if root else None
+    return script if script and script.is_file() else None
 
 
-# ---------------------------------------------------------------- Hubcap key
+def run_epsilon_action(action: str, timeout: float = 300) -> tuple[bool, str]:
+    """install | repair | update | uninstall | restart. Returns (ok, output tail)."""
+    try:
+        if action == "install":
+            cmd = ["bash", "-c", f"curl -fsSL {EPSILON_INSTALL_URL} | bash"]
+        elif action in ("repair", "update", "uninstall"):
+            script = epsilon_script({"repair": "install.sh", "update": "update.sh", "uninstall": "uninstall.sh"}[action])
+            if script is None:
+                return False, "Epsilon's scripts were not found."
+            cmd = ["bash", str(script)]
+        elif action == "restart":
+            _systemctl("stop", "epsilon.service")
+            r = _systemctl("restart", "epsilon.socket")
+            return r.returncode == 0, (r.stderr or r.stdout).strip()
+        else:
+            return False, f"unknown action {action}"
+        r = _run(cmd, timeout=timeout)
+        out = ((r.stdout or "") + ("\n" + r.stderr if r.stderr else "")).strip()
+        return r.returncode == 0, out[-2000:]
+    except subprocess.TimeoutExpired:
+        return False, "Timed out."
+    except Exception as e:
+        return False, str(e)
+
+
+def remove_epsilon_files() -> tuple[bool, str]:
+    """After uninstall: delete the Epsilon folder (only a folder that looks like Epsilon)."""
+    root = epsilon_root()
+    if root is None:
+        return True, ""
+    if not (root / "epsilon" / "daemon.py").is_file() or root == _home():
+        return False, f"{root} does not look like an Epsilon folder; left alone."
+    try:
+        shutil.rmtree(root)
+        return True, str(root)
+    except OSError as e:
+        return False, str(e)
+
+
+def epsilon_stats(days: int = 7) -> Dict[str, Any]:
+    """Recent activity from the service journal (background thread).
+
+    Counts what Epsilon logs at INFO: "Background inject complete" (a game
+    added), "Background inject failed", and "Epsilon bridge active" (the
+    socket woke the bridge).
+    """
+    out: Dict[str, Any] = {"added": 0, "failed": 0, "wakes": 0, "last": "", "available": False}
+    try:
+        r = _run(["journalctl", "--user", "-u", "epsilon.service", "--since", f"{days} days ago",
+                  "-o", "short-iso", "--no-pager"], timeout=6)
+    except Exception:
+        return out
+    lines = [ln for ln in (r.stdout or "").splitlines() if ln and not ln.startswith("--")]
+    out["available"] = r.returncode == 0
+    for ln in lines:
+        if "Background inject complete" in ln:
+            out["added"] += 1
+            out["last"] = ln.split(" ", 1)[0]
+        elif "Background inject failed" in ln:
+            out["failed"] += 1
+        elif "Epsilon bridge active" in ln:
+            out["wakes"] += 1
+    return out
+
+
+def epsilon_log(lines: int = 80) -> str:
+    try:
+        r = _run(["journalctl", "--user", "-u", "epsilon.service", "-u", "epsilon-updater.service",
+                  "-n", str(lines), "-o", "short", "--no-pager"], timeout=6)
+        return (r.stdout or r.stderr or "").strip() or "No log entries."
+    except Exception as e:
+        return str(e)
+
 
 def assella_hubcap_key(settings=None) -> str:
     if settings is None:
