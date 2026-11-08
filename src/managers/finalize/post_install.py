@@ -278,6 +278,41 @@ class PostInstallMixin:
             or game_data.get("is_bundle_stale")
         )
 
+    def _apply_install_update_status(self, appid: str, is_stale_or_rollback: bool) -> str:
+        """Write the update cache status for a finished install.
+
+        Handoff jobs defer to VaporWatcher (Steam is still downloading). A pinned
+        older build is a deliberate freeze, so it reads ``up_to_date``; an unpinned
+        older package reads ``update_available`` so the UI shows the pending update.
+        Returns the status written (or ``"handoff"`` when deferred).
+        """
+        if getattr(self, "_is_handoff_job", False):
+            logger.info(
+                f"[JobFinished] Handoff job for appid={appid} — deferring up_to_date "
+                "to VaporWatcher (Steam download still in progress)"
+            )
+            return "handoff"
+
+        is_pinned = bool(
+            (self.current_job_metadata or {}).get("pin_build")
+            or (self.game_data or {}).get("pin_build")
+            or (self.game_data or {}).get("_pin_build")
+        )
+        from utils.update_status_cache import get_update_cache
+        cache = get_update_cache()
+        if is_stale_or_rollback and not is_pinned:
+            cache.set_status(appid, "update_available", {
+                "reason": "Package installed from older bundle manifests",
+            })
+            cache.save_async()
+            logger.info(f"[JobFinished] Stale bundle or rollback install for appid={appid} — marked 'update_available' in cache")
+            return "update_available"
+
+        cache.set_status(appid, "up_to_date")
+        cache.save_async()
+        logger.debug(f"Set update cache to up_to_date for freshly installed appid={appid}")
+        return "up_to_date"
+
     @staticmethod
     def _compute_final_buildid(new_bid, meta_bid, target_bid, is_stale_or_rollback) -> str:
         """Resolve the build id to stamp for a finished install.
@@ -415,7 +450,6 @@ class PostInstallMixin:
             # Clear the cached update status for this game so it gets re-checked
             # (it may have gone from "update_available" to "up_to_date")
             if self.game_data:
-                from utils.update_status_cache import get_update_cache
                 appid = self.game_data.get("appid", "")
                 if appid and appid not in ("0", "N/A", "unknown"):
                     # For handoff jobs (native Steam download), we do NOT mark up_to_date here.
@@ -423,37 +457,11 @@ class PostInstallMixin:
                     # up_to_date once StateFlags=4 is confirmed in the ACF. Without this guard,
                     # if gmrc.wudrm.com is unreachable Steam's MRC fetch fails and the download
                     # stalls, yet ASSella would incorrectly show the game as up_to_date.
-                    is_handoff = getattr(self, "_is_handoff_job", False)
                     is_stale_or_rollback = self._is_stale_or_rollback_install()
-                    is_pinned = bool(
-                        (self.current_job_metadata or {}).get("pin_build")
-                        or (self.game_data or {}).get("pin_build")
-                        or (self.game_data or {}).get("_pin_build")
-                    )
-                    if is_handoff:
-                        logger.info(
-                            f"[JobFinished] Handoff job for appid={appid} — deferring up_to_date "
-                            "to VaporWatcher (Steam download still in progress)"
-                        )
-                    # Set status to up_to_date so the post-download rescan restores
-                    # the correct status immediately. Without this, the game would stay
-                    # at "checking" indefinitely because _on_initial_scan_complete
-                    # (the only slot that calls check_game_updates_async) disconnects
-                    # itself after boot and never runs again for subsequent rescans.
-                    # For unpinned rollback or stale-bundle installs, set "update_available"
-                    # so the UI immediately reflects that newer files/manifests exist on Steam.
-                    elif is_stale_or_rollback and not is_pinned:
-                        cache = get_update_cache()
-                        cache.set_status(appid, "update_available", {
-                            "reason": "Package installed from older bundle manifests",
-                        })
-                        cache.save_async()
-                        logger.info(f"[JobFinished] Stale bundle or rollback install for appid={appid} — marked 'update_available' in cache")
-                    else:
-                        cache = get_update_cache()
-                        cache.set_status(appid, "up_to_date")
-                        cache.save_async()
-                        logger.debug(f"Set update cache to up_to_date for freshly installed appid={appid}")
+                    # Cache status: handoff defers to VaporWatcher; a pinned older
+                    # build is a deliberate freeze; an unpinned older package shows
+                    # the pending update. See _apply_install_update_status.
+                    self._apply_install_update_status(appid, is_stale_or_rollback)
 
                     # Upsert the new manifest/depot data to SQLite DB to refresh cache age and content
                     try:

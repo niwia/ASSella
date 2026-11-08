@@ -200,61 +200,59 @@ class TestStaleBundleBuildid(unittest.TestCase):
         self.assertEqual(settings._data["installed_buildid/555555"], "99999999")
 
 
-    def test_pinned_install_marks_up_to_date_in_cache(self):
-        """A pinned rollback must be treated as up-to-date in cache, not update-available."""
+    def _cache_status(self, game_data, metadata):
+        """Drive the real PostInstallMixin status helper and return (status, cache)."""
         from managers.finalize.post_install import PostInstallMixin
         from utils.update_status_cache import UpdateStatusCache
 
-        finalizer = self._finalizer(
+        finalizer = self._finalizer(game_data, metadata)
+        cache = UpdateStatusCache()
+        cache._cache = {}
+        cache.save_async = lambda: None  # no background disk write in tests
+        is_stale_or_rollback = PostInstallMixin._is_stale_or_rollback_install(finalizer)
+        with patch("utils.update_status_cache.get_update_cache", return_value=cache):
+            status = PostInstallMixin._apply_install_update_status(
+                finalizer, "555555", is_stale_or_rollback
+            )
+        return status, cache
+
+    def test_pinned_install_marks_up_to_date_in_cache(self):
+        """A pinned older build is a deliberate freeze → up_to_date, not update_available."""
+        status, cache = self._cache_status(
             {"appid": "555555", "_is_rollback": True, "buildid": "88888888"},
             {"is_rollback": True, "pin_build": True, "branch": "public"},
         )
-        cache = UpdateStatusCache()
-        cache._cache = {}
-
-        is_stale_or_rollback = PostInstallMixin._is_stale_or_rollback_install(finalizer)
-        is_pinned = bool(
-            (finalizer.current_job_metadata or {}).get("pin_build")
-            or (finalizer.game_data or {}).get("pin_build")
-            or (finalizer.game_data or {}).get("_pin_build")
-        )
-        self.assertTrue(is_stale_or_rollback)
-        self.assertTrue(is_pinned)
-
-        if is_stale_or_rollback and not is_pinned:
-            cache.set_status("555555", "update_available")
-        else:
-            cache.set_status("555555", "up_to_date")
-
+        self.assertEqual(status, "up_to_date")
         self.assertEqual(cache.get_status("555555"), "up_to_date")
 
     def test_unpinned_stale_install_marks_update_available_in_cache(self):
-        """An unpinned stale package must be marked update-available in cache."""
-        from managers.finalize.post_install import PostInstallMixin
-        from utils.update_status_cache import UpdateStatusCache
-
-        finalizer = self._finalizer(
+        """An unpinned older package must be marked update-available in cache."""
+        status, cache = self._cache_status(
             {"appid": "555555", "is_bundle_stale": True, "buildid": ""},
             {"is_bundle_stale": True, "branch": "public"},
         )
-        cache = UpdateStatusCache()
-        cache._cache = {}
-
-        is_stale_or_rollback = PostInstallMixin._is_stale_or_rollback_install(finalizer)
-        is_pinned = bool(
-            (finalizer.current_job_metadata or {}).get("pin_build")
-            or (finalizer.game_data or {}).get("pin_build")
-            or (finalizer.game_data or {}).get("_pin_build")
-        )
-        self.assertTrue(is_stale_or_rollback)
-        self.assertFalse(is_pinned)
-
-        if is_stale_or_rollback and not is_pinned:
-            cache.set_status("555555", "update_available")
-        else:
-            cache.set_status("555555", "up_to_date")
-
+        self.assertEqual(status, "update_available")
         self.assertEqual(cache.get_status("555555"), "update_available")
+
+    def test_scan_scrubs_dlc_only_base_appid(self):
+        """A DLC-only base AppID left in AdditionalApps is removed on scan."""
+        from managers.game_manager import GameManager
+        from utils.yaml.apps import get_additional_apps
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.yaml"
+            cfg.write_text(
+                "Plugins: yes\nAdditionalApps:\n  - 1942280\n  - 1942281\n",
+                encoding="utf-8",
+            )
+            with patch(
+                "utils.yaml_config_manager.get_user_config_path", return_value=cfg
+            ):
+                GameManager._scrub_dlc_only_base_appid(object(), "1942280")
+            remaining = get_additional_apps(cfg)
+
+        self.assertNotIn("1942280", remaining)
+        self.assertIn("1942281", remaining)
 
 
 if __name__ == "__main__":
