@@ -1465,8 +1465,10 @@ class GameManager(QObject):
                                     # It's not in the base game depots -> it's a DLC
                                     game_data["is_dlc_only"] = True
                                     game_data["is_accela_install"] = False
-                                    if not (game_data.get("is_atom") or game_data.get("is_vapor") or game_data.get("is_plugin_game")):
-                                        game_data["source"] = "Steam"
+                                    game_data["is_vapor"] = False
+                                    game_data["is_atom"] = False
+                                    game_data["source"] = "Steam"
+                                    self._scrub_dlc_only_base_appid(appid)
                                     try:
                                         from utils.settings import get_settings
                                         get_settings().setValue(f"dlc_only_mode/{appid}", True)
@@ -1475,7 +1477,7 @@ class GameManager(QObject):
                                     # A DLC-only Steam game keeps its base-game name:
                                     # the library card marks the mode with a chip.
                                     # Legacy ACCELA installs still carry the suffix.
-                                    if is_accela_install:
+                                    if is_accela_install and not appmanifest_path:
                                         dlc_info = db.get_app_info(main_depot_id)
                                         if dlc_info and dlc_info.get("name"):
                                             game_data["game_name"] = f"{dlc_info['name']} [DLC]"
