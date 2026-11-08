@@ -1,0 +1,574 @@
+name: Build and Release AppImage
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - 'ci-test'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Release Channel (stable, beta, canary)'
+        required: true
+        default: 'beta'
+        type: choice
+        options:
+          - beta
+          - canary
+          - stable
+      draft:
+        description: 'Mark as Draft Release'
+        required: true
+        default: true
+        type: boolean
+      publish:
+        description: 'Publish Release (if false, builds & tests artifacts without releasing)'
+        required: true
+        default: false
+        type: boolean
+      run_preflight:
+        description: 'Run the pre-release verification suite against the built AppImage'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-22.04-arm
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      channel: ${{ steps.meta.outputs.channel }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      draft: ${{ steps.meta.outputs.draft }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install System Packaging Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file python3-venv python3-pip git tor libevent-2.1-7 libgl1 libegl1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libfontconfig1 libdbus-1-3 zip
+
+      - name: Determine Release Channel & Metadata
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME:-}"
+          if [ -z "$TAG" ] || [ "$TAG" = "beta" ] || [ "$TAG" = "canary" ] || [ "$TAG" = "main" ]; then
+            TAG="v$(cat src/res/version 2>/dev/null || echo '2.7.1dev')"
+          fi
+          
+          # Detect channel from tag if on tag push, else use manual input
+          LOWER_TAG=$(echo "$TAG" | tr '[:upper:]' '[:lower:]')
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CHANNEL="${{ github.event.inputs.channel }}"
+            # There is no 'prerelease' dispatch input; derive it from the channel
+            # so a manually dispatched beta/canary build is still flagged as a
+            # pre-release. Previously this read an undefined input and always
+            # evaluated to empty, publishing beta builds as full releases.
+            if [ "$CHANNEL" = "stable" ]; then
+              IS_PRE="false"
+            else
+              IS_PRE="true"
+            fi
+          elif echo "$LOWER_TAG" | grep -q -E 'canary|testing'; then
+            CHANNEL="canary"
+            IS_PRE="true"
+          elif echo "$LOWER_TAG" | grep -q -E 'beta|dev|rc'; then
+            CHANNEL="beta"
+            IS_PRE="true"
+          else
+            CHANNEL="stable"
+            IS_PRE="false"
+          fi
+
+          DRAFT="true"
+          PUBLISH="false"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DRAFT="${{ github.event.inputs.draft }}"
+            PUBLISH="${{ github.event.inputs.publish }}"
+          elif echo "${{ github.ref }}" | grep -q '^refs/tags/'; then
+            PUBLISH="true"
+          fi
+
+          RELEASE_BODY_FILE="$RUNNER_TEMP/release_notes.md"
+          if [ -f "docs/changelogs/${TAG}.md" ]; then
+            cp "docs/changelogs/${TAG}.md" "$RELEASE_BODY_FILE"
+          elif [ -f "docs/changelogs/${TAG#v}.md" ]; then
+            cp "docs/changelogs/${TAG#v}.md" "$RELEASE_BODY_FILE"
+          else
+            echo "Release ${TAG} (${CHANNEL} channel)" > "$RELEASE_BODY_FILE"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
+          echo "draft=$DRAFT" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "body_file=$RELEASE_BODY_FILE" >> "$GITHUB_OUTPUT"
+          echo "Building for Tag: $TAG (Channel: $CHANNEL, Pre-release: $IS_PRE, Draft: $DRAFT, Publish: $PUBLISH)"
+
+      - name: Download and Setup appimagetool
+        run: |
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage -O appimagetool
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract
+          sudo mv squashfs-root /opt/appimagetool
+          sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
+
+      - name: Assemble AppDir
+        run: |
+          set -e
+          exec > >(tee /tmp/assemble.log) 2>&1
+          set -x
+          mkdir -p AppDir/bin
+          
+          # 1. Desktop Entry & Icon
+          cat << 'EOF' > AppDir/assella.desktop
+          [Desktop Entry]
+          Name=ASSella
+          Comment=Steam Game & Depot Management Suite
+          Exec=AppRun %U
+          Icon=assella
+          Terminal=false
+          Type=Application
+          Categories=Utility;Game;
+          # Must match QApplication::applicationName() in src/main.py, which is
+          # what the window manager matches against to pick the taskbar icon.
+          StartupWMClass=ASSella
+          MimeType=x-scheme-handler/accela;
+          EOF
+          # Legacy alias: earlier builds shipped this name, and some launchers
+          # and .desktop entries still reference it.
+          cp AppDir/assella.desktop AppDir/ACCELA.desktop
+          
+          # Copy icon. Prefer icon.png (500x500) and keep the legacy accela.png name so
+          # existing desktop entries and icon caches still resolve.
+          if [ -f "src/res/logo/icon.png" ]; then
+            cp "src/res/logo/icon.png" AppDir/assella.png
+            cp "src/res/logo/icon.png" AppDir/.DirIcon
+          elif [ -f "src/res/logo/accela.png" ]; then
+            cp "src/res/logo/accela.png" AppDir/assella.png
+            cp "src/res/logo/accela.png" AppDir/.DirIcon
+          elif [ -f "assela_logo.png" ]; then
+            cp "assela_logo.png" AppDir/assella.png
+            cp "assela_logo.png" AppDir/.DirIcon
+          fi
+          # Legacy icon alias.
+          [ -f AppDir/assella.png ] && cp AppDir/assella.png AppDir/accela.png
+
+          # 2. AppRun Script
+          cat << 'EOF' > AppDir/AppRun
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          cd "$HERE/bin"
+          export APPIMAGE=1
+          exec "./run.sh" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # 3. Bin run.sh (Preserves environment cleanly without overriding PYTHONHOME)
+          cat << 'EOF' > AppDir/bin/run.sh
+          #!/usr/bin/env bash
+          cd "$(dirname "$(realpath "$0")")"
+          export APPIMAGE=1
+
+          PYTHON_EXEC=".venv/bin/python3"
+          if [ -f "$PYTHON_EXEC" ]; then
+              exec "$PYTHON_EXEC" src/main.py "$@"
+          else
+              exec python3 src/main.py "$@"
+          fi
+          EOF
+          chmod +x AppDir/bin/run.sh
+
+          # 4. Copy Application Source Code
+          cp -r src AppDir/bin/
+          find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          # Optional components (Goldberg, Steamless, SLScheevo) are downloaded on demand from R2
+          rm -rf AppDir/bin/src/deps/Goldberg AppDir/bin/src/deps/Steamless AppDir/bin/src/deps/SLScheevo
+
+          # 5. Bundle appimageupdatetool (AppImageUpdate) for in-app delta updates.
+          # Ships as a self-contained AppImage in bin/; the app extracts and runs
+          # it on demand, so users need no system zsync/AppImageUpdate package.
+          if [ ! -f "AppDir/bin/appimageupdatetool" ]; then
+            echo "Downloading appimageupdatetool..."
+            curl -fsSL --retry 3 -o /tmp/appimageupdatetool \
+              "https://github.com/AppImageCommunity/AppImageUpdate/releases/download/continuous/appimageupdatetool-aarch64.AppImage" \
+              || curl -fsSL --retry 3 -o /tmp/appimageupdatetool \
+              "https://github.com/AppImage/appimageupdatetool/releases/download/continuous/appimageupdatetool-aarch64.AppImage"
+            chmod +x /tmp/appimageupdatetool
+            # Verify the download is a real AppImage before shipping it.
+            if ! /tmp/appimageupdatetool --appimage-extract >/dev/null 2>&1; then
+              echo "::error::appimageupdatetool failed extraction — refusing to ship"
+              exit 1
+            fi
+            # Current AppImageUpdate builds are not a single static binary: the
+            # executable carries RUNPATH=$ORIGIN/../lib and dlopen()s its
+            # dependencies from usr/lib. Copying only the executable produces an
+            # AppImage whose delta updater dies with
+            # "error while loading shared libraries: libappimageupdate.so".
+            # Preserve the usr/bin + usr/lib layout the runpath expects.
+            mkdir -p AppDir/bin/appimageupdatetool-root/usr
+            cp -r squashfs-root/usr/bin AppDir/bin/appimageupdatetool-root/usr/bin
+            cp -r squashfs-root/usr/lib AppDir/bin/appimageupdatetool-root/usr/lib
+            cp squashfs-root/.DirIcon AppDir/bin/appimageupdatetool-root/.DirIcon 2>/dev/null || true
+            rm -rf squashfs-root
+            # Thin launcher at the path the app probes for. It execs the real
+            # binary in-place so $ORIGIN resolves to its usr/bin directory.
+            printf '#!/bin/sh\n# Resolves its own location so the AppDir can be moved anywhere.\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/appimageupdatetool-root/usr/bin/appimageupdatetool" "$@"\n' > AppDir/bin/appimageupdatetool
+            chmod +x AppDir/bin/appimageupdatetool
+            # Prove the bundled updater actually executes. A present-but-broken
+            # binary silently disables delta updates for every user.
+            if ! AppDir/bin/appimageupdatetool --version >/dev/null 2>&1; then
+              echo "::error::Bundled appimageupdatetool fails to execute — delta updates would silently fall back"
+              exit 1
+            fi
+            echo "appimageupdatetool bundled and verified executable."
+          fi
+
+          # 6. Bundle zsync binary for delta-update fallback when appimageupdatetool
+          #    is unavailable. zsync is already installed in the CI image (see
+          #    "Install System Packaging Tools"). A bundled copy means users who
+          #    updated via full download never need to install it system-wide.
+          if [ -f "/usr/bin/zsync" ]; then
+            cp /usr/bin/zsync AppDir/bin/zsync
+            chmod +x AppDir/bin/zsync
+            echo "zsync bundled into AppDir/bin/zsync."
+          else
+            echo "::warning::zsync not found on build host — delta updates will fall back to full download."
+          fi
+
+          # 8. Bundle Tor Executable
+          if [ -f "/usr/bin/tor" ]; then
+            cp /usr/bin/tor AppDir/bin/tor
+          elif [ -f "bin/tor" ]; then
+            cp bin/tor AppDir/bin/tor
+          fi
+          chmod +x AppDir/bin/tor 2>/dev/null || true
+
+          # 9. Bundle Relocatable Standalone Python 3.13 Runtime
+          echo "Downloading relocatable python-build-standalone runtime (Python 3.13)..."
+          curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.13.0+20241016-aarch64-unknown-linux-gnu-install_only.tar.gz"
+          tar -xzf /tmp/cpython-standalone.tar.gz -C AppDir/bin/
+          mv AppDir/bin/python AppDir/bin/.venv
+
+          # 10. Install application dependencies into bundled runtime
+          AppDir/bin/.venv/bin/python3 -m pip install --upgrade pip setuptools wheel
+          AppDir/bin/.venv/bin/python3 -m pip install -r requirements.txt
+          find AppDir/bin/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+          # 11. Sanity check: Verify all required imports inside bundled AppDir runtime
+          echo "Verifying AppDir runtime imports..."
+          QT_QPA_PLATFORM=offscreen AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, urwid, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
+          test -x AppDir/bin/appimageupdatetool || { echo "::error::appimageupdatetool missing from AppDir"; exit 1; }
+          echo "appimageupdatetool present and executable."
+          # zsync is optional — we bundle it when available so delta updates work
+          # even when the user has no system zsync. Its absence is a warning, not a
+          # fatal error: the full-download path still works.
+          if [ -f "AppDir/bin/zsync" ]; then
+            AppDir/bin/zsync -V >/dev/null 2>&1 || \
+              echo "::warning::Bundled zsync present but fails to execute"
+            echo "zsync bundled and verified executable."
+          else
+            echo "::warning::zsync not bundled — delta updates require system zsync or fall back to full download."
+          fi
+
+      - name: Upload Assemble AppDir Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assemble-failure-log
+          path: /tmp/assemble.log
+
+      - name: Build AppImage with ZSync Update Information
+        run: |
+          CHANNEL="${{ steps.meta.outputs.channel }}"
+
+          # Embed GitHub Releases zsync update info for delta update capabilities.
+          #
+          # The 4th field is the release tag appimageupdatetool resolves. It MUST
+          # be channel-scoped, otherwise a canary user's updater follows the tag
+          # of whatever shipped most recently and silently crosses channels.
+          #
+          # It is deliberately NOT "latest": every release in this repo is marked
+          # prerelease=true, and GitHub's /releases/latest endpoint excludes
+          # prereleases, so "latest" resolves to HTTP 404. The in-app updater and
+          # any AppImageUpdate-based tool would then fail every update check.
+          # A wildcard tag makes each channel track only its own releases.
+          case "$CHANNEL" in
+            canary) UPDATE_TAG="*testing*" ;;
+            beta)   UPDATE_TAG="*beta*" ;;
+            *)      UPDATE_TAG="*" ;;
+          esac
+
+          UPDATE_INFO="gh-releases-zsync|niwia|ASSella|${UPDATE_TAG}|ASSella-aarch64.AppImage.zsync"
+
+          echo "Channel: $CHANNEL"
+          echo "Generating AppImage with update string: $UPDATE_INFO"
+          ARCH=aarch64 appimagetool -n -u "$UPDATE_INFO" AppDir ASSella-aarch64.AppImage
+
+          # Regenerate the .zsync from the FINAL AppImage rather than trusting the
+          # one appimagetool emitted mid-build. appimagetool writes its .zsync
+          # before the runtime/pip payload is fully materialised, so the emitted
+          # file can describe a smaller/earlier image than the one we ship.
+          # That mismatch is what shipped in v2.7.0beta: the .zsync claimed
+          # Length 161573368 / SHA-1 910061bb... while the published AppImage was
+          # 301302976 bytes / c52815c1... A delta sync against that file produces
+          # a corrupt binary.
+          echo "Regenerating zsync index from final AppImage..."
+          rm -f ASSella-aarch64.AppImage.zsync
+          zsyncmake -u "$UPDATE_INFO" -o ASSella-aarch64.AppImage.zsync ASSella-aarch64.AppImage
+
+          # Generate SHA256 checksums last, so they always describe the shipped bytes.
+          sha256sum ASSella-aarch64.AppImage > ASSella-aarch64.AppImage.sha256
+          sha256sum ASSella-aarch64.AppImage.zsync > ASSella-aarch64.AppImage.zsync.sha256
+
+      - name: Verify Release Artifact Integrity
+        run: |
+          set -euo pipefail
+          echo "Cross-checking .zsync / .sha256 metadata against the actual AppImage..."
+
+          actual_size=$(stat -c%s ASSella-aarch64.AppImage)
+          actual_sha1=$(sha1sum ASSella-aarch64.AppImage | awk '{print $1}')
+
+          # -a is REQUIRED, not cosmetic. A .zsync is a text header followed by a
+          # binary block-checksum table, so GNU grep classifies the whole file as
+          # binary, prints "binary file matches" to stderr and writes nothing to
+          # stdout. Without -a the two greps below yielded empty strings, and the
+          # comparison below then compared "" against a real hash and failed
+          # every build - which is how this gate first failed on a perfectly
+          # good AppImage. (The -q grep further down never showed it, because -q
+          # only uses the exit status.)
+          # The trailing `|| true` is required, not defensive noise. This step runs
+          # under `set -euo pipefail`, so if the header genuinely cannot be parsed
+          # grep exits 1, pipefail propagates that, and `set -e` aborts the script
+          # right here - silently, before the diagnostic below can explain it.
+          zsync_size=$(grep -a -i '^Length:' ASSella-aarch64.AppImage.zsync | awk '{print $2}' | tr -d '\r' || true)
+          zsync_sha1=$(grep -a -i '^SHA-1:' ASSella-aarch64.AppImage.zsync | awk '{print $2}' | tr -d '\r' || true)
+
+          fail=0
+
+          # An unparseable header is a distinct failure from a mismatch. Without
+          # this, "header missing" and "header present but wrong" look identical.
+          if [ -z "$zsync_size" ] || [ -z "$zsync_sha1" ]; then
+            echo "::error::Could not parse Length/SHA-1 from ASSella-aarch64.AppImage.zsync - treating this build as corrupt."
+            echo "::error::Parsed Length='${zsync_size}' SHA-1='${zsync_sha1}' (both must be non-empty)."
+            fail=1
+          fi
+
+          if [ "$zsync_size" != "$actual_size" ]; then
+            echo "::error::zsync Length mismatch — zsync=$zsync_size actual=$actual_size"
+            fail=1
+          else
+            echo "OK  zsync Length  = $actual_size"
+          fi
+
+          if [ "$zsync_sha1" != "$actual_sha1" ]; then
+            echo "::error::zsync SHA-1 mismatch — zsync=$zsync_sha1 actual=$actual_sha1"
+            fail=1
+          else
+            echo "OK  zsync SHA-1   = $actual_sha1"
+          fi
+
+          if [ "$(awk '{print $1}' ASSella-aarch64.AppImage.sha256)" != "$(sha256sum ASSella-aarch64.AppImage | awk '{print $1}')" ]; then
+            echo "::error::ASSella-aarch64.AppImage.sha256 does not match the AppImage"
+            fail=1
+          else
+            echo "OK  AppImage sha256 matches"
+          fi
+
+          # zsync must reference the delta target by the asset name actually published.
+          if ! grep -a -qi '^Filename:[[:space:]]*ASSella\.AppImage[[:space:]]*$' ASSella-aarch64.AppImage.zsync; then
+            echo "::error::zsync Filename header does not match published asset name"
+            fail=1
+          else
+            echo "OK  zsync Filename header"
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Refusing to publish — delta updates would be corrupt."
+            exit 1
+          fi
+          echo "All release artifacts are internally consistent."
+
+      # Runs the shipped AppImage's own interpreter and resource loader against
+      # the pre-release suite. This is the check that catches an image which
+      # assembles cleanly but cannot actually launch, which is exactly the class
+      # of defect that produced broken rebuilds.
+      - name: Smoke Test the Built AppImage
+        if: github.event.inputs.run_preflight != 'false'
+        run: |
+          set -euo pipefail
+          echo "::group::Extract AppImage"
+          rm -rf AppDir_extract
+          ./ASSella-aarch64.AppImage --appimage-extract > /dev/null
+          mv squashfs-root AppDir_extract
+          echo "::endgroup::"
+
+          echo "::group::Verify bundled runtime and resources"
+          test -x AppDir_extract/bin/appimageupdatetool \
+            || { echo "::error::appimageupdatetool missing from AppImage"; exit 1; }
+          # Existence is not enough: a bundling mistake can ship an executable
+          # whose shared libraries were never copied, which fails only at update
+          # time on the user's machine. Require it to actually run.
+          if ! AppDir_extract/bin/appimageupdatetool --version >/dev/null 2>&1; then
+            echo "::error::Bundled appimageupdatetool present but fails to execute (missing shared libs?)"
+            exit 1
+          fi
+          echo "OK  appimageupdatetool executes"
+          test -x AppDir_extract/bin/run.sh || { echo "::error::run.sh missing"; exit 1; }
+          test -f AppDir_extract/assella.desktop || { echo "::error::assella.desktop missing"; exit 1; }
+          test -f AppDir_extract/AppRun || { echo "::error::AppRun missing"; exit 1; }
+          # The embedded update string drives delta updates. It lives in the
+          # AppImage's ELF .upd_info section, not in the extracted squashfs
+          # tree, so read it from the binary itself.
+          UPDATE_STR=$(grep -a -o 'gh-releases-zsync|[^[:cntrl:]]*' ASSella-aarch64.AppImage | head -1 || true)
+          echo "Embedded update string: ${UPDATE_STR:-<none found>}"
+          case "$UPDATE_STR" in
+            gh-releases-zsync\|niwia\|ASSella\|*) echo "OK  update string present" ;;
+            *) echo "::error::Update string missing or malformed - delta updates would break"; exit 1 ;;
+          esac
+          echo "::endgroup::"
+
+          echo "::group::Import check inside the bundled interpreter"
+          QT_QPA_PLATFORM=offscreen AppDir_extract/bin/.venv/bin/python3 - <<'PY'
+          import importlib, sys
+          mods = ["PyQt6.QtCore","PyQt6.QtWidgets","PyQt6.QtGui","requests","yaml",
+                  "cryptography","configobj","urwid","vdf","steam","steam.client",
+                  "zstandard","curl_cffi","psutil","bs4","gevent","capstone"]
+          bad = []
+          for m in mods:
+              try: importlib.import_module(m)
+              except Exception as e: bad.append(f"{m}: {type(e).__name__}: {e}")
+          if bad:
+              print("::error::Bundled runtime cannot import:")
+              [print("  -", b) for b in bad]
+              sys.exit(1)
+          print(f"All {len(mods)} bundled dependencies import cleanly.")
+          PY
+          echo "::endgroup::"
+
+          echo "::group::Pre-release suite against the extracted image"
+          if [ -f AppDir_extract/bin/src/scripts/prerelease_check.py ]; then
+            QT_QPA_PLATFORM=offscreen ASSELLA_TESTER_NO_REEXEC=1 \
+              AppDir_extract/bin/.venv/bin/python3 -u \
+              AppDir_extract/bin/src/scripts/prerelease_check.py \
+              --ci --src AppDir_extract/bin/src 2>&1 | tee /tmp/appimage_prerelease.log || true
+            grep -E 'RESULTS:|STATUS:' /tmp/appimage_prerelease.log || true
+          else
+            echo "pre-release suite not bundled in AppImage; running repo copy against extracted src"
+            QT_QPA_PLATFORM=offscreen ASSELLA_TESTER_NO_REEXEC=1 \
+              AppDir_extract/bin/.venv/bin/python3 -u scripts/prerelease_check.py \
+              --ci --src AppDir_extract/bin/src 2>&1 | tee /tmp/appimage_prerelease.log || true
+            grep -E 'RESULTS:|STATUS:' /tmp/appimage_prerelease.log || true
+          fi
+          echo "::endgroup::"
+          echo "AppImage smoke test completed."
+
+      - name: Package Companion Source Code Archives
+        run: |
+          set -e
+          TAG="${{ steps.meta.outputs.tag }}"
+          PKG_NAME="ASSella-${TAG}-linux-source"
+          echo "Packaging source distribution: ${PKG_NAME}"
+
+          rm -rf "${PKG_NAME}" "${PKG_NAME}.tar.gz" "${PKG_NAME}.zip" "${PKG_NAME}.tar.gz.sha256" "${PKG_NAME}.zip.sha256"
+          mkdir -p "${PKG_NAME}/bin"
+
+          # 1. Root scripts & launchers
+          cp install.sh "${PKG_NAME}/"
+          cp uninstall.sh "${PKG_NAME}/"
+          chmod +x "${PKG_NAME}/install.sh" "${PKG_NAME}/uninstall.sh"
+
+          # 2. Bin files (requirements, icon, run launcher)
+          cp requirements.txt "${PKG_NAME}/bin/"
+          if [ -f "src/res/logo/icon.png" ]; then
+            cp "src/res/logo/icon.png" "${PKG_NAME}/bin/icon.png"
+          elif [ -f "src/res/logo/accela.png" ]; then
+            cp "src/res/logo/accela.png" "${PKG_NAME}/bin/icon.png"
+          fi
+
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'cd "$(dirname "$(realpath "$0")")"' \
+            '' \
+            'if [ -f ".venv/bin/python3" ]; then' \
+            '    exec .venv/bin/python3 src/main.py "$@"' \
+            'elif [ -f "../.venv/bin/python3" ]; then' \
+            '    exec ../.venv/bin/python3 src/main.py "$@"' \
+            'else' \
+            '    exec python3 src/main.py "$@"' \
+            'fi' > "${PKG_NAME}/bin/run.sh"
+          chmod +x "${PKG_NAME}/bin/run.sh"
+
+          # 3. Copy source tree & sanitize
+          cp -r src "${PKG_NAME}/bin/"
+          find "${PKG_NAME}" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          find "${PKG_NAME}" -type f -name "*.pyc" -delete 2>/dev/null || true
+          # Optional components (Goldberg, Steamless, SLScheevo) are downloaded on demand from R2
+          rm -rf "${PKG_NAME}/bin/src/deps/Goldberg" "${PKG_NAME}/bin/src/deps/Steamless" "${PKG_NAME}/bin/src/deps/SLScheevo"
+
+          # 4. Create tar.gz and zip archives
+          tar -czf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
+          zip -qr "${PKG_NAME}.zip" "${PKG_NAME}"
+
+          # 5. Generate checksums
+          sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
+          sha256sum "${PKG_NAME}.zip" > "${PKG_NAME}.zip.sha256"
+
+          # Clean up temporary staging directory
+          rm -rf "${PKG_NAME}"
+
+          echo "Generated companion source archives:"
+          ls -lh ASSella-*-linux-source.*
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ASSella-${{ steps.meta.outputs.channel }}-AppImage
+          path: |
+            ASSella-aarch64.AppImage
+            ASSella-aarch64.AppImage.zsync
+            *.sha256
+            ASSella-*-linux-source.tar.gz
+            ASSella-*-linux-source.zip
+
+      - name: Publish GitHub Release
+        if: (startsWith(github.ref, 'refs/tags/') && steps.meta.outputs.publish == 'true') || (github.event_name == 'workflow_dispatch' && steps.meta.outputs.publish == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "ASSella ${{ steps.meta.outputs.tag }}"
+          draft: ${{ steps.meta.outputs.draft == 'true' }}
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          body_path: ${{ steps.meta.outputs.body_file }}
+          generate_release_notes: false
+          files: |
+            ASSella-aarch64.AppImage
+            ASSella-aarch64.AppImage.zsync
+            ASSella-aarch64.AppImage.sha256
+            ASSella-aarch64.AppImage.zsync.sha256
+            ASSella-${{ steps.meta.outputs.tag }}-linux-source.tar.gz
+            ASSella-${{ steps.meta.outputs.tag }}-linux-source.tar.gz.sha256
+            ASSella-${{ steps.meta.outputs.tag }}-linux-source.zip
+            ASSella-${{ steps.meta.outputs.tag }}-linux-source.zip.sha256
+          # Never let a stale asset from a previous run survive alongside a fresh
+          # AppImage — that is exactly how v2.7.0beta ended up with a .zsync that
+          # described a different binary.
+          fail_on_unmatched_files: true
+          overwrite_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
