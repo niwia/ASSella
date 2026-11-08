@@ -625,7 +625,6 @@ class ProcessZipTask:
                             game_data["buildid"] = api_data["buildid"]
 
                         if api_data.get("buildid"):
-                            get_settings().setValue(f"fetched_buildid/{game_data['appid']}", api_data["buildid"])
                             logger.info(
                                 f"Official live buildid: {api_data['buildid']} (Assigned package buildid: {game_data.get('buildid')})"
                             )
@@ -746,9 +745,6 @@ class ProcessZipTask:
                                             steamdb_matched_bid.isdigit() and branch_live_bid.isdigit()
                                             and int(steamdb_matched_bid) < int(branch_live_bid)
                                         )
-                                else:
-                                    game_data["buildid"] = branch_live_bid
-                                get_settings().setValue(f"fetched_buildid/{game_data['appid']}", branch_live_bid)
                                 logger.info(
                                     f"[ProcessZipTask] Branch '{resolved_branch}' live buildid: {branch_live_bid} "
                                     f"(public: {api_data.get('buildid')}); package buildid={game_data.get('buildid')}"
@@ -772,6 +768,9 @@ class ProcessZipTask:
                             f"Received API details for processing: {api_details}"
                         )
 
+                        game_data.setdefault("is_bundle_stale", False)
+                        game_data.setdefault("stale_depots", [])
+
                         if not api_details:
                             logger.warning(
                                 "Could not retrieve supplementary details from Steam API."
@@ -792,6 +791,35 @@ class ProcessZipTask:
                             )
                             missing_from_hubcap = list(depot_comp.get("missing_from_hubcap") or [])
                             missing_depots_info = dict(depot_comp.get("missing_depots_info") or {})
+
+                            is_bundle_stale = not depot_comp.get("is_up_to_date", True)
+                            game_data["is_bundle_stale"] = is_bundle_stale
+                            game_data["stale_depots"] = list(depot_comp.get("stale_depots") or [])
+
+                            if is_bundle_stale:
+                                game_data["_is_rollback"] = True
+                                if steamdb_matched_bid:
+                                    game_data["buildid"] = steamdb_matched_bid
+                                    logger.info(
+                                        f"[ProcessZipTask] Package for AppID {game_data.get('appid')} is older than live Steam release. "
+                                        f"Matched historical buildid: {steamdb_matched_bid}"
+                                    )
+                                else:
+                                    game_data["buildid"] = ""
+                                    logger.info(
+                                        f"[ProcessZipTask] Package for AppID {game_data.get('appid')} has {len(game_data['stale_depots'])} stale depot(s) "
+                                        f"compared to live branch '{game_data.get('branch', 'public')}' (live build {api_data.get('buildid')}). "
+                                        "Cleared buildid to prevent poisoning installed metadata."
+                                    )
+                                try:
+                                    get_settings().remove(f"fetched_buildid/{game_data['appid']}")
+                                except Exception:
+                                    pass
+                            else:
+                                if not game_data.get("buildid"):
+                                    game_data["buildid"] = branch_live_bid or api_data.get("buildid") or ""
+                                if game_data.get("buildid"):
+                                    get_settings().setValue(f"fetched_buildid/{game_data['appid']}", game_data["buildid"])
 
                             # Lazily loaded once and reused for every missing
                             # depot below, instead of one DB read per depot.

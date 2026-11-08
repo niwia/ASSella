@@ -90,6 +90,8 @@ class SingleDepotSelectionDialog(QDialog):
             self.missing_hubcap_depots = [str(d) for d in (missing_hubcap_depots or []) if str(d).strip()]
 
         self.missing_depots_info = dict(missing_depots_info or {})
+        self.is_bundle_stale = bool(kwargs.get("is_bundle_stale", False))
+        self.stale_depots = list(kwargs.get("stale_depots", []))
 
         # Load accent color & settings
         try:
@@ -127,9 +129,11 @@ class SingleDepotSelectionDialog(QDialog):
         self.branch = str(branch or "public")
         self.branches = dict(branches or {"public": {}})
         self.current_build_id = str(current_build_id or self.single_depot_data.get("buildid") or "").strip()
-        if not self.current_build_id:
+        if not self.current_build_id and not self.is_bundle_stale:
             self.current_build_id = self._resolve_local_buildid()
         self._selected_build_id = self.current_build_id
+        if self.is_bundle_stale and not self.current_build_id:
+            self._try_resolve_historical_buildid_async()
         self._is_build_pinned = False
         self._manifest_overrides: Dict[str, str] = {}
 
@@ -325,9 +329,17 @@ class SingleDepotSelectionDialog(QDialog):
 
         controls_row.addSpacing(4)
 
-        display_bid = self.current_build_id or "Latest"
-        self.builds_btn = QPushButton(f"Build: {display_bid}")
-        self.builds_btn.setToolTip(f"Build ID: {display_bid} (Click to switch builds)")
+        if self.is_bundle_stale:
+            display_bid = f"Build: {self.current_build_id} (Older)" if self.current_build_id else "Older Build"
+            tooltip_bid = (
+                f"Manifests in this package are older than the latest release on branch '{self.branch}'.\n"
+                "Click to switch builds or view build details."
+            )
+        else:
+            display_bid = f"Build: {self.current_build_id}" if self.current_build_id else "Build: Latest"
+            tooltip_bid = f"Build ID: {self.current_build_id or 'Latest'} (Click to switch builds)"
+        self.builds_btn = QPushButton(display_bid)
+        self.builds_btn.setToolTip(tooltip_bid)
         self.builds_btn.setFixedHeight(28)
         self.builds_btn.setMinimumWidth(110)
         self.builds_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -926,6 +938,56 @@ class SingleDepotSelectionDialog(QDialog):
             pass
         return ""
 
+    def _try_resolve_historical_buildid_async(self):
+        """If bundle is stale and build ID is unknown, check SteamDB cache in background."""
+        aid_str = str(getattr(self, "app_id", "") or "").strip()
+        if not aid_str.isdigit() or aid_str in ("0", "N/A", "unknown"):
+            return
+        aid_int = int(aid_str)
+
+        def _worker():
+            try:
+                from core.steamdb_scraper import SteamDBBuildsCache
+                cached_builds = SteamDBBuildsCache().get_builds(aid_int) or []
+                if not cached_builds:
+                    return
+
+                zip_manifests = {}
+                mid = self.single_depot_data.get("manifest_id") or self.single_depot_data.get("manifests")
+                if mid and str(mid).isdigit():
+                    zip_manifests[str(self.single_depot_id)] = str(mid)
+                for did, ddata in (self.depots or {}).items():
+                    if isinstance(ddata, dict):
+                        m = ddata.get("manifest_id") or ddata.get("manifests")
+                        if m and str(m).isdigit():
+                            zip_manifests[str(did)] = str(m)
+
+                if not zip_manifests:
+                    return
+
+                for cb in cached_builds:
+                    c_depots = cb.get("depots", {})
+                    if any(
+                        str(d_id) in c_depots and str(c_depots[str(d_id)].get("manifest_id")) == str(m_id)
+                        for d_id, m_id in zip_manifests.items()
+                    ):
+                        matched_bid = str(cb.get("buildid", "")).strip()
+                        if matched_bid:
+                            def _update_ui(bid=matched_bid):
+                                if not getattr(self, "_selected_build_id", None) or self._selected_build_id == getattr(self, "current_build_id", ""):
+                                    self.current_build_id = bid
+                                    self._selected_build_id = bid
+                                    if hasattr(self, "builds_btn") and self.builds_btn is not None:
+                                        self.builds_btn.setText(f"Build: {bid} (Older)")
+                            from utils.main_thread import post_to_main_thread
+                            post_to_main_thread(_update_ui)
+                            break
+            except Exception as e:
+                logger.debug(f"[SingleDepot] Background build ID match failed: {e}")
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
     def get_selected_build(self) -> Optional[str]:
         return getattr(self, "_selected_build_id", None) or self.current_build_id
 
@@ -1007,6 +1069,23 @@ class SingleDepotSelectionDialog(QDialog):
                 QPushButton:hover {{
                     background-color: rgba(255, 255, 255, 0.14);
                 }}
+            """)
+        elif getattr(self, "is_bundle_stale", False):
+            self.builds_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(230, 126, 34, 0.12);
+                    border: 1px solid rgba(230, 126, 34, 0.6);
+                    border-radius: 6px;
+                    color: #f39c12;
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                    padding: 2px 10px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(230, 126, 34, 0.22);
+                    border-color: #f39c12;
+                    color: #f39c12;
+                }
             """)
         else:
             hex_c = self.accent_color.lstrip('#')

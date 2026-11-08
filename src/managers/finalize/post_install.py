@@ -349,6 +349,12 @@ class PostInstallMixin:
                     # if gmrc.wudrm.com is unreachable Steam's MRC fetch fails and the download
                     # stalls, yet ASSella would incorrectly show the game as up_to_date.
                     is_handoff = getattr(self, "_is_handoff_job", False)
+                    is_stale_or_rollback = bool(
+                        (self.current_job_metadata or {}).get("is_rollback")
+                        or (self.current_job_metadata or {}).get("is_bundle_stale")
+                        or (self.game_data.get("_is_rollback") if self.game_data else False)
+                        or (self.game_data.get("is_bundle_stale") if self.game_data else False)
+                    )
                     if is_handoff:
                         logger.info(
                             f"[JobFinished] Handoff job for appid={appid} — deferring up_to_date "
@@ -359,15 +365,20 @@ class PostInstallMixin:
                     # at "checking" indefinitely because _on_initial_scan_complete
                     # (the only slot that calls check_game_updates_async) disconnects
                     # itself after boot and never runs again for subsequent rescans.
-                    # Skip for rollback installs — user chose an older build, so keep
-                    # the game showing "update_available".
-                    elif not self.game_data.get("_is_rollback"):
+                    # For rollback or stale-bundle installs, set "update_available" so the UI
+                    # immediately reflects that newer files/manifests exist on Steam.
+                    elif is_stale_or_rollback:
+                        cache = get_update_cache()
+                        cache.set_status(appid, "update_available", {
+                            "reason": "Package installed from older bundle manifests",
+                        })
+                        cache.save_async()
+                        logger.info(f"[JobFinished] Stale bundle or rollback install for appid={appid} — marked 'update_available' in cache")
+                    else:
                         cache = get_update_cache()
                         cache.set_status(appid, "up_to_date")
                         cache.save_async()
                         logger.debug(f"Set update cache to up_to_date for freshly installed appid={appid}")
-                    else:
-                        logger.debug(f"Rollback install for appid={appid} — keeping current update status")
 
                     # Upsert the new manifest/depot data to SQLite DB to refresh cache age and content
                     try:
@@ -418,19 +429,43 @@ class PostInstallMixin:
                                 if isinstance(b_entry, dict):
                                     target_bid = str(b_entry.get("buildid", ""))
 
-                            is_rollback_job = (self.current_job_metadata or {}).get("is_rollback") or (self.game_data.get("_is_rollback") if self.game_data else False)
+                            is_rollback_job = is_stale_or_rollback
                             meta_bid = (self.current_job_metadata or {}).get("buildid")
                             if is_rollback_job:
-                                final_bid = meta_bid or new_bid
-                                logger.info(f"[DEBUG_DEV] Rollback/manual install detected. Using manual build ID as final_bid: {final_bid}")
+                                # For stale bundle or rollback, ONLY accept a verified numeric historical buildid.
+                                # NEVER fall back to target_bid (live Steam branch buildid) as that poisons the install!
+                                cand_bid = new_bid or meta_bid
+                                if cand_bid and str(cand_bid).strip().isdigit() and str(cand_bid).strip() != "0":
+                                    final_bid = str(cand_bid).strip()
+                                else:
+                                    final_bid = ""
+                                logger.info(
+                                    f"[JobFinished] Stale/rollback install for appid={appid}. "
+                                    f"Verified historical build ID: {final_bid or 'None (unmatched)'}"
+                                )
                             else:
                                 final_bid = new_bid or meta_bid or target_bid
                                 logger.info(f"[DEBUG_DEV] Standard install completed. final_bid: {final_bid}")
+
+                            # Ensure db_data carries consistent buildid
+                            if is_rollback_job and db_data.get("buildid") != final_bid:
+                                db_data["buildid"] = final_bid
+                                db.upsert_app_info(appid, db_data)
+
                             if final_bid:
                                 # Store per-branch: installed_buildid/appid/branch
                                 settings.setValue(f"installed_buildid/{appid}/{sel_b}", str(final_bid))
                                 # Also store legacy flat key for backward compat
                                 settings.setValue(f"installed_buildid/{appid}", str(final_bid))
+                            elif is_rollback_job:
+                                # If stale and no verified historical build ID could be matched,
+                                # remove any existing installed_buildid to prevent false up-to-date matches.
+                                settings.remove(f"installed_buildid/{appid}/{sel_b}")
+                                settings.remove(f"installed_buildid/{appid}")
+                                logger.info(
+                                    f"[JobFinished] Cleared installed_buildid for appid={appid} because package "
+                                    "manifests are older and exact historical build ID is unknown."
+                                )
 
                                 # If pin_build is specified in job metadata, apply user choice
                                 if self.current_job_metadata and "pin_build" in self.current_job_metadata:

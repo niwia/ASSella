@@ -1725,6 +1725,7 @@ class FetchManifestDialog(QDialog):
 
                 branches_dict = getattr(self, "_discovered_branches", None) or {"public": {}}
                 current_bid = parsed_data.get("buildid") or ""
+                is_bundle_stale = bool(parsed_data.get("is_bundle_stale", False))
 
                 depot_dialog = DepotSelectionDialog(
                     parsed_data["appid"],
@@ -1742,6 +1743,8 @@ class FetchManifestDialog(QDialog):
                     branches=branches_dict,
                     current_build_id=current_bid,
                     editions=parsed_data.get("editions"),
+                    is_bundle_stale=is_bundle_stale,
+                    stale_depots=parsed_data.get("stale_depots", []),
                 )
                 depot_dialog.raise_()
                 depot_dialog.activateWindow()
@@ -1840,6 +1843,11 @@ class FetchManifestDialog(QDialog):
                     overrides = depot_dialog.get_manifest_overrides()
                     if overrides:
                         metadata["manifest_overrides"] = overrides
+
+                if parsed_data.get("is_bundle_stale") or getattr(depot_dialog, "is_bundle_stale", False):
+                    metadata["is_bundle_stale"] = True
+                    metadata["is_rollback"] = True
+                    metadata["stale_depots"] = parsed_data.get("stale_depots", [])
             
             if selected_depots:
                 metadata["selected_depots_list"] = selected_depots

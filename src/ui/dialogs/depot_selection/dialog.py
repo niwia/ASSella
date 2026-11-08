@@ -153,6 +153,7 @@ class DepotSelectionDialog(
             dlc_catalog=kwargs.get("dlc_catalog") or {},
             editions=kwargs.get("editions"),
             is_atom_mode=is_atom_mode or kwargs.get("is_atom_mode", False),
+            **kwargs,
         )
         self.resize(700, 540)
         self.setMinimumSize(620, 480)
@@ -247,15 +248,19 @@ class DepotSelectionDialog(
         self.refetched_depots = [str(d) for d in (refetched_depots or []) if str(d).strip()]
         self.branch = str(branch or "public")
         self.branches = dict(branches or {"public": {}})
+        self.is_bundle_stale = bool(kwargs.get("is_bundle_stale", False))
+        self.stale_depots = kwargs.get("stale_depots") or []
         self.current_build_id = str(current_build_id or "").strip()
-        if not self.current_build_id:
+        if not self.current_build_id and not self.is_bundle_stale:
             self.current_build_id = self._resolve_local_buildid()
-        if not self.current_build_id and self.depots:
+        if not self.current_build_id and self.depots and not self.is_bundle_stale:
             for d_data in self.depots.values():
                 if isinstance(d_data, dict) and d_data.get("buildid"):
                     self.current_build_id = str(d_data["buildid"]).strip()
                     break
         self._selected_build_id = self.current_build_id
+        if self.is_bundle_stale and not self.current_build_id:
+            self._try_resolve_historical_buildid_async()
         self._is_build_pinned = False
         self._manifest_overrides: Dict[str, str] = {}
         self._recovered_depots_map: Dict[str, str] = {}

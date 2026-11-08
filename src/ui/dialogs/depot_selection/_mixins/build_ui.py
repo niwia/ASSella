@@ -303,9 +303,20 @@ class BuildUIMixin:
 
         badges_row.addSpacing(4)
 
-        display_bid = self.current_build_id or "Latest"
-        self.builds_btn = QPushButton(f"Build: {display_bid}")
-        self.builds_btn.setToolTip(f"Build ID: {display_bid} (Click to switch builds)")
+        is_bundle_stale = getattr(self, "is_bundle_stale", False)
+        display_bid = self.current_build_id or ""
+        if is_bundle_stale:
+            btn_text = f"Build: {display_bid} (Older)" if display_bid else "Older Build"
+            tip = (
+                f"Manifests in this package are older than the latest release on branch '{self.branch}'.\n"
+                "Click to switch builds or view build details."
+            )
+        else:
+            btn_text = f"Build: {display_bid or 'Latest'}"
+            tip = f"Build ID: {display_bid or 'Latest'} (Click to switch builds)"
+
+        self.builds_btn = QPushButton(btn_text)
+        self.builds_btn.setToolTip(tip)
         self.builds_btn.setFixedHeight(24)
         self.builds_btn.setMinimumWidth(100)
         self.builds_btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
