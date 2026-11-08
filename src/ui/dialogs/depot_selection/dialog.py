@@ -423,18 +423,26 @@ class DepotSelectionDialog(
             ThemedMessageBox.warning(self, "No Depots Selected", "Please select at least one depot or DLC to proceed.")
             return
 
+        # In DLC-only mode, ensure the base AppID never enters AdditionalApps and persist dlc_only_mode
+        if getattr(self, "_dlc_only_mode", False):
+            try:
+                from utils.yaml_config_manager import get_user_config_path, remove_additional_app
+                config_path = get_user_config_path()
+                if config_path and config_path.exists():
+                    remove_additional_app(config_path, self.app_id)
+                get_settings().setValue(f"dlc_only_mode/{self.app_id}", True)
+            except Exception as e:
+                logger.warning(f"[DepotSelectionDialog] DLC-only config update failed: {e}")
+
         # Auto-inject any checked DLC entitlements into SLSsteam config
         if checked_dlcs:
             try:
                 from utils.yaml.dlc import add_dlc_data_batch
-                from utils.yaml_config_manager import get_user_config_path, remove_additional_app
+                from utils.yaml_config_manager import get_user_config_path
 
                 config_path = get_user_config_path()
                 if config_path and config_path.exists():
                     add_dlc_data_batch(config_path, self.app_id, checked_dlcs)
-                    if getattr(self, "_dlc_only_mode", False) and not selected_depots:
-                        remove_additional_app(config_path, self.app_id)
-                        get_settings().setValue(f"dlc_only_mode/{self.app_id}", True)
                     self._config_written = True
             except Exception as e:
                 logger.warning(f"[DepotSelectionDialog] Auto-injecting checked DLC data failed: {e}")

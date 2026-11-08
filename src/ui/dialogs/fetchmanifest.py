@@ -1844,6 +1844,12 @@ class FetchManifestDialog(QDialog):
                     if overrides:
                         metadata["manifest_overrides"] = overrides
 
+                if getattr(depot_dialog, "_dlc_only_mode", False):
+                    metadata["is_dlc_only"] = True
+                    metadata["_dlc_only"] = True
+                    if appid:
+                        self.settings.setValue(f"dlc_only_mode/{appid}", True)
+
                 if parsed_data.get("is_bundle_stale") or getattr(depot_dialog, "is_bundle_stale", False):
                     metadata["is_bundle_stale"] = True
                     metadata["stale_depots"] = parsed_data.get("stale_depots", [])
