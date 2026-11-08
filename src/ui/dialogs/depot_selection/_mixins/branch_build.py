@@ -68,11 +68,12 @@ class BranchBuildMixin:
 
                 zip_manifests = {}
                 depots_dict = getattr(self, "depots", {}) or {}
+                from utils.depot_utils import iter_depot_manifest_gids
+                sel_branch = getattr(self, "branch", "public")
                 for did, ddata in depots_dict.items():
-                    if isinstance(ddata, dict):
-                        mid = ddata.get("manifest_id") or ddata.get("manifests")
-                        if mid and str(mid).isdigit():
-                            zip_manifests[str(did)] = str(mid)
+                    gids = iter_depot_manifest_gids(ddata, sel_branch)
+                    if gids:
+                        zip_manifests[str(did)] = gids
 
                 if not zip_manifests:
                     return
@@ -80,8 +81,8 @@ class BranchBuildMixin:
                 for cb in cached_builds:
                     c_depots = cb.get("depots", {})
                     if any(
-                        str(d_id) in c_depots and str(c_depots[str(d_id)].get("manifest_id")) == str(m_id)
-                        for d_id, m_id in zip_manifests.items()
+                        str(d_id) in c_depots and str(c_depots[str(d_id)].get("manifest_id")) in m_ids
+                        for d_id, m_ids in zip_manifests.items()
                     ):
                         matched_bid = str(cb.get("buildid", "")).strip()
                         if matched_bid:

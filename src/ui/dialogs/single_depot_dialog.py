@@ -952,15 +952,17 @@ class SingleDepotSelectionDialog(QDialog):
                 if not cached_builds:
                     return
 
+                from utils.depot_utils import iter_depot_manifest_gids
+                sel_branch = getattr(self, "branch", "public")
                 zip_manifests = {}
-                mid = self.single_depot_data.get("manifest_id") or self.single_depot_data.get("manifests")
-                if mid and str(mid).isdigit():
-                    zip_manifests[str(self.single_depot_id)] = str(mid)
+                single_gids = iter_depot_manifest_gids(getattr(self, "single_depot_data", {}) or {}, sel_branch)
+                single_id = str(getattr(self, "single_depot_id", "") or "").strip()
+                if single_id and single_gids:
+                    zip_manifests[single_id] = single_gids
                 for did, ddata in (self.depots or {}).items():
-                    if isinstance(ddata, dict):
-                        m = ddata.get("manifest_id") or ddata.get("manifests")
-                        if m and str(m).isdigit():
-                            zip_manifests[str(did)] = str(m)
+                    gids = iter_depot_manifest_gids(ddata, sel_branch)
+                    if gids:
+                        zip_manifests[str(did)] = gids
 
                 if not zip_manifests:
                     return
@@ -968,8 +970,8 @@ class SingleDepotSelectionDialog(QDialog):
                 for cb in cached_builds:
                     c_depots = cb.get("depots", {})
                     if any(
-                        str(d_id) in c_depots and str(c_depots[str(d_id)].get("manifest_id")) == str(m_id)
-                        for d_id, m_id in zip_manifests.items()
+                        str(d_id) in c_depots and str(c_depots[str(d_id)].get("manifest_id")) in m_ids
+                        for d_id, m_ids in zip_manifests.items()
                     ):
                         matched_bid = str(cb.get("buildid", "")).strip()
                         if matched_bid:

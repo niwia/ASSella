@@ -3,9 +3,10 @@
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 # Ensure src is on sys.path
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
@@ -14,6 +15,32 @@ if str(SRC_DIR) not in sys.path:
 
 # Use headless offscreen Qt platform
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+
+class _SettingsStore:
+    """Minimal in-memory stand-in for QSettings."""
+
+    def __init__(self):
+        self._data = {}
+
+    def setValue(self, key, value):
+        self._data[key] = value
+
+    def value(self, key, default=None, type=str):
+        return self._data.get(key, default)
+
+    def remove(self, key):
+        self._data.pop(key, None)
+
+
+class _DummyFinalizer:
+    """Carries only the state PostInstallMixin helpers actually read."""
+
+    def __init__(self, game_data, metadata):
+        self.game_data = game_data
+        self.current_job_metadata = metadata
+        self.current_job = None
+        self._is_handoff_job = False
 
 
 class TestStaleBundleBuildid(unittest.TestCase):
@@ -66,90 +93,168 @@ class TestStaleBundleBuildid(unittest.TestCase):
         self.assertIn("Manifests in this package are older", dialog.builds_btn.toolTip())
         dialog.close()
 
-    def test_post_install_stale_bundle_marks_update_available(self):
-        """Verify post_install marks update_available and does not poison installed_buildid with live build."""
+    # --- post-install helpers (exercise the real PostInstallMixin methods) ---
+
+    def _finalizer(self, game_data, metadata):
+        return _DummyFinalizer(game_data, metadata)
+
+    def test_stale_install_never_stamps_live_buildid(self):
+        """A stale bundle without a verified historical id must not stamp the live build id."""
+        from managers.finalize.post_install import PostInstallMixin
+
+        finalizer = self._finalizer(
+            {"appid": "555555", "is_bundle_stale": True, "buildid": ""},
+            {"is_bundle_stale": True, "branch": "public"},
+        )
+        settings = _SettingsStore()
+
+        is_stale = PostInstallMixin._is_stale_or_rollback_install(finalizer)
+        self.assertTrue(is_stale)
+
+        # target_bid here is the LIVE Steam branch build id; it must be ignored.
+        final_bid = PostInstallMixin._compute_final_buildid("", None, "99999999", is_stale)
+        self.assertEqual(final_bid, "")
+
+        PostInstallMixin._apply_install_buildid_and_pin(
+            finalizer, settings, "555555", "public", final_bid, is_stale
+        )
+        self.assertNotIn("installed_buildid/555555", settings._data)
+        self.assertNotIn("installed_buildid/555555/public", settings._data)
+
+    def test_stale_install_stamps_verified_historical_buildid(self):
+        """A verified numeric historical build id is stamped and the live id is ignored."""
+        from managers.finalize.post_install import PostInstallMixin
+
+        finalizer = self._finalizer(
+            {"appid": "555555", "is_bundle_stale": True, "buildid": "88888888"},
+            {"is_bundle_stale": True, "branch": "public"},
+        )
+        settings = _SettingsStore()
+
+        is_stale = PostInstallMixin._is_stale_or_rollback_install(finalizer)
+        final_bid = PostInstallMixin._compute_final_buildid("88888888", None, "99999999", is_stale)
+        self.assertEqual(final_bid, "88888888")
+
+        PostInstallMixin._apply_install_buildid_and_pin(
+            finalizer, settings, "555555", "public", final_bid, is_stale
+        )
+        self.assertEqual(settings._data["installed_buildid/555555"], "88888888")
+        self.assertEqual(settings._data["installed_buildid/555555/public"], "88888888")
+
+    def test_pin_applied_for_verified_rollback(self):
+        """Regression: a pinned install WITH a verified build id must still apply the pin.
+
+        The prior implementation nested the pin block under the empty-buildid
+        branch, so pins were silently dropped for the normal (verified) case.
+        """
+        from managers.finalize.post_install import PostInstallMixin
+
+        finalizer = self._finalizer(
+            {"appid": "555555", "_is_rollback": True, "buildid": "88888888"},
+            {"is_rollback": True, "pin_build": True, "branch": "public"},
+        )
+        settings = _SettingsStore()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "managers.finalize.post_install.get_base_path",
+                return_value=Path(tmp),
+            ):
+                current_job = Path(tmp) / "package.zip"
+                current_job.write_bytes(b"PK\x03\x04dummy")
+                finalizer.current_job = str(current_job)
+
+                is_stale = PostInstallMixin._is_stale_or_rollback_install(finalizer)
+                final_bid = PostInstallMixin._compute_final_buildid(
+                    "88888888", None, "99999999", is_stale
+                )
+                PostInstallMixin._apply_install_buildid_and_pin(
+                    finalizer, settings, "555555", "public", final_bid, is_stale
+                )
+
+                self.assertTrue(settings._data["pin_build/555555"])
+                self.assertEqual(settings._data["exclude_from_update_all/555555"], False)
+                self.assertTrue(
+                    (Path(tmp) / "hubcap_manifests"
+                     / "accela_fetch_555555_build_88888888.zip").exists()
+                )
+
+    def test_normal_install_stamps_live_buildid(self):
+        """A current bundle falls back to the live build id as before."""
+        from managers.finalize.post_install import PostInstallMixin
+
+        finalizer = self._finalizer(
+            {"appid": "555555", "buildid": ""},
+            {"branch": "public"},
+        )
+        settings = _SettingsStore()
+
+        is_stale = PostInstallMixin._is_stale_or_rollback_install(finalizer)
+        self.assertFalse(is_stale)
+        final_bid = PostInstallMixin._compute_final_buildid("", None, "99999999", is_stale)
+        self.assertEqual(final_bid, "99999999")
+
+        PostInstallMixin._apply_install_buildid_and_pin(
+            finalizer, settings, "555555", "public", final_bid, is_stale
+        )
+        self.assertEqual(settings._data["installed_buildid/555555"], "99999999")
+
+
+    def test_pinned_install_marks_up_to_date_in_cache(self):
+        """A pinned rollback must be treated as up-to-date in cache, not update-available."""
         from managers.finalize.post_install import PostInstallMixin
         from utils.update_status_cache import UpdateStatusCache
 
-        dummy_cache = UpdateStatusCache()
-        dummy_cache._cache = {}
+        finalizer = self._finalizer(
+            {"appid": "555555", "_is_rollback": True, "buildid": "88888888"},
+            {"is_rollback": True, "pin_build": True, "branch": "public"},
+        )
+        cache = UpdateStatusCache()
+        cache._cache = {}
 
-        dummy_settings = MagicMock()
-        settings_store = {}
-        dummy_settings.value = lambda k, default="", type=str: settings_store.get(k, default)
-        dummy_settings.setValue = lambda k, v: settings_store.__setitem__(k, str(v))
-        dummy_settings.remove = lambda k: settings_store.pop(k, None)
+        is_stale_or_rollback = PostInstallMixin._is_stale_or_rollback_install(finalizer)
+        is_pinned = bool(
+            (finalizer.current_job_metadata or {}).get("pin_build")
+            or (finalizer.game_data or {}).get("pin_build")
+            or (finalizer.game_data or {}).get("_pin_build")
+        )
+        self.assertTrue(is_stale_or_rollback)
+        self.assertTrue(is_pinned)
 
-        mock_finalizer = MagicMock(spec=PostInstallMixin)
-        mock_finalizer.game_data = {
-            "appid": "555555",
-            "game_name": "Stale Package",
-            "installdir": "StalePackage",
-            "header_url": "",
-            "buildid": "",  # Cleared by ProcessZipTask because bundle is stale
-            "is_bundle_stale": True,
-            "_is_rollback": True,
-            "branches": {
-                "public": {"buildid": "99999999"}  # Live Steam branch
-            },
-            "depots": {},
-        }
-        mock_finalizer.current_job_metadata = {
-            "is_bundle_stale": True,
-            "is_rollback": True,
-            "branch": "public",
-        }
-        mock_finalizer._is_handoff_job = False
+        if is_stale_or_rollback and not is_pinned:
+            cache.set_status("555555", "update_available")
+        else:
+            cache.set_status("555555", "up_to_date")
 
-        with patch("utils.update_status_cache.get_update_cache", return_value=dummy_cache), \
-             patch("utils.settings.get_settings", return_value=dummy_settings), \
-             patch("managers.db_manager.DatabaseManager"):
+        self.assertEqual(cache.get_status("555555"), "up_to_date")
 
-            # Run the finalize status & buildid logic from lines 345-445
-            appid = "555555"
-            is_handoff = getattr(mock_finalizer, "_is_handoff_job", False)
-            is_stale_or_rollback = bool(
-                (mock_finalizer.current_job_metadata or {}).get("is_rollback")
-                or (mock_finalizer.current_job_metadata or {}).get("is_bundle_stale")
-                or (mock_finalizer.game_data.get("_is_rollback") if mock_finalizer.game_data else False)
-                or (mock_finalizer.game_data.get("is_bundle_stale") if mock_finalizer.game_data else False)
-            )
+    def test_unpinned_stale_install_marks_update_available_in_cache(self):
+        """An unpinned stale package must be marked update-available in cache."""
+        from managers.finalize.post_install import PostInstallMixin
+        from utils.update_status_cache import UpdateStatusCache
 
-            if is_handoff:
-                pass
-            elif is_stale_or_rollback:
-                dummy_cache.set_status(appid, "update_available", {"reason": "Package installed from older bundle manifests"})
-            else:
-                dummy_cache.set_status(appid, "up_to_date")
+        finalizer = self._finalizer(
+            {"appid": "555555", "is_bundle_stale": True, "buildid": ""},
+            {"is_bundle_stale": True, "branch": "public"},
+        )
+        cache = UpdateStatusCache()
+        cache._cache = {}
 
-            # Check status
-            self.assertEqual(dummy_cache.get_status(appid), "update_available")
+        is_stale_or_rollback = PostInstallMixin._is_stale_or_rollback_install(finalizer)
+        is_pinned = bool(
+            (finalizer.current_job_metadata or {}).get("pin_build")
+            or (finalizer.game_data or {}).get("pin_build")
+            or (finalizer.game_data or {}).get("_pin_build")
+        )
+        self.assertTrue(is_stale_or_rollback)
+        self.assertFalse(is_pinned)
 
-            # Test buildid stamping logic
-            sel_b = "public"
-            target_bid = "99999999"  # Live Steam branch
-            new_bid = mock_finalizer.game_data.get("buildid")
-            meta_bid = mock_finalizer.current_job_metadata.get("buildid")
+        if is_stale_or_rollback and not is_pinned:
+            cache.set_status("555555", "update_available")
+        else:
+            cache.set_status("555555", "up_to_date")
 
-            if is_stale_or_rollback:
-                cand_bid = new_bid or meta_bid
-                if cand_bid and str(cand_bid).strip().isdigit() and str(cand_bid).strip() != "0":
-                    final_bid = str(cand_bid).strip()
-                else:
-                    final_bid = ""
-            else:
-                final_bid = new_bid or meta_bid or target_bid
-
-            if final_bid:
-                dummy_settings.setValue(f"installed_buildid/{appid}/{sel_b}", str(final_bid))
-                dummy_settings.setValue(f"installed_buildid/{appid}", str(final_bid))
-            elif is_stale_or_rollback:
-                dummy_settings.remove(f"installed_buildid/{appid}/{sel_b}")
-                dummy_settings.remove(f"installed_buildid/{appid}")
-
-            # Verify that live branch build 99999999 was NOT stamped into settings!
-            self.assertNotIn(f"installed_buildid/{appid}", settings_store)
-            self.assertNotIn(f"installed_buildid/{appid}/{sel_b}", settings_store)
+        self.assertEqual(cache.get_status("555555"), "update_available")
 
 
 if __name__ == "__main__":

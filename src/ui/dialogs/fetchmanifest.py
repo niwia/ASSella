@@ -1846,7 +1846,6 @@ class FetchManifestDialog(QDialog):
 
                 if parsed_data.get("is_bundle_stale") or getattr(depot_dialog, "is_bundle_stale", False):
                     metadata["is_bundle_stale"] = True
-                    metadata["is_rollback"] = True
                     metadata["stale_depots"] = parsed_data.get("stale_depots", [])
             
             if selected_depots:

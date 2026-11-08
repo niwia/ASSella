@@ -600,6 +600,10 @@ class ProcessZipTask:
                         # Check if SteamDB builds cache has a match for the zip manifests
                         zip_manifests = game_data.get("manifests", {})
                         steamdb_matched_bid = None
+                        # Initialised here (outside the `if api_data.get("buildid")` block
+                        # below) so the freshness branch further down can read it even
+                        # when the API response carries no live build id.
+                        branch_live_bid = ""
                         if zip_manifests:
                             try:
                                 from core.steamdb_scraper import SteamDBBuildsCache
@@ -797,7 +801,14 @@ class ProcessZipTask:
                             game_data["stale_depots"] = list(depot_comp.get("stale_depots") or [])
 
                             if is_bundle_stale:
-                                game_data["_is_rollback"] = True
+                                # A bundle that merely lags live Steam is not a
+                                # user rollback. Clear any rollback flag the
+                                # branch comparison above may have inferred, so
+                                # only an explicit pin/rollback keeps
+                                # `_is_rollback`; freshness is carried by
+                                # `is_bundle_stale` instead.
+                                if not (metadata or {}).get("is_rollback"):
+                                    game_data["_is_rollback"] = False
                                 if steamdb_matched_bid:
                                     game_data["buildid"] = steamdb_matched_bid
                                     logger.info(
@@ -813,8 +824,11 @@ class ProcessZipTask:
                                     )
                                 try:
                                     get_settings().remove(f"fetched_buildid/{game_data['appid']}")
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.debug(
+                                        f"[ProcessZipTask] Could not clear fetched_buildid for "
+                                        f"{game_data.get('appid')}: {e}"
+                                    )
                             else:
                                 if not game_data.get("buildid"):
                                     game_data["buildid"] = branch_live_bid or api_data.get("buildid") or ""

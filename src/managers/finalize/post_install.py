@@ -260,6 +260,81 @@ class PostInstallMixin:
                 )
         except OSError as e:
             logger.error(f"GreenLuma configuration failed: {e}", exc_info=True)
+
+    def _is_stale_or_rollback_install(self) -> bool:
+        """True when the finished job installed an older package.
+
+        Covers a user-chosen rollback/pin and a bundle whose manifests simply
+        lag behind live Steam (``is_bundle_stale``). Kept separate from the
+        download-time ``_is_rollback`` flag, which now means a real user
+        rollback only.
+        """
+        meta = self.current_job_metadata or {}
+        game_data = self.game_data or {}
+        return bool(
+            meta.get("is_rollback")
+            or meta.get("is_bundle_stale")
+            or game_data.get("_is_rollback")
+            or game_data.get("is_bundle_stale")
+        )
+
+    @staticmethod
+    def _compute_final_buildid(new_bid, meta_bid, target_bid, is_stale_or_rollback) -> str:
+        """Resolve the build id to stamp for a finished install.
+
+        For an older package only a verified numeric historical build id is
+        accepted; falling back to the live branch id would poison the install.
+        """
+        if is_stale_or_rollback:
+            cand_bid = new_bid or meta_bid
+            text = str(cand_bid).strip() if cand_bid is not None else ""
+            if text.isdigit() and text != "0":
+                return text
+            return ""
+        return new_bid or meta_bid or target_bid or ""
+
+    def _apply_install_buildid_and_pin(self, settings, appid, sel_b, final_bid, is_stale_or_rollback) -> None:
+        """Stamp/clear ``installed_buildid`` and apply the user's pin choice.
+
+        Shared by ``_finalize_job_logic`` so the poisoning guards are covered
+        by unit tests that exercise this method directly rather than a copy.
+        """
+        if final_bid:
+            # Store per-branch: installed_buildid/appid/branch
+            settings.setValue(f"installed_buildid/{appid}/{sel_b}", str(final_bid))
+            # Also store legacy flat key for backward compat
+            settings.setValue(f"installed_buildid/{appid}", str(final_bid))
+        elif is_stale_or_rollback:
+            # No verified historical build id: drop any existing stamp so a
+            # later manifest check cannot match the live build and report the
+            # older install as up to date.
+            settings.remove(f"installed_buildid/{appid}/{sel_b}")
+            settings.remove(f"installed_buildid/{appid}")
+            logger.info(
+                f"[JobFinished] Cleared installed_buildid for appid={appid} because package "
+                "manifests are older and exact historical build ID is unknown."
+            )
+
+        # Apply the user's pin choice for any pinned install, whether or not a
+        # verified build id was resolved.
+        meta = self.current_job_metadata or {}
+        if "pin_build" not in meta:
+            return
+        should_pin = bool(meta["pin_build"])
+        settings.setValue(f"pin_build/{appid}", should_pin)
+        if not should_pin:
+            return
+        settings.setValue(f"exclude_from_update_all/{appid}", False)
+        try:
+            manifests_dir = Path(get_base_path()) / "hubcap_manifests"
+            manifests_dir.mkdir(parents=True, exist_ok=True)
+            if final_bid and self.current_job and os.path.exists(self.current_job):
+                dest_zip = manifests_dir / f"accela_fetch_{appid}_build_{final_bid}.zip"
+                shutil.copy(self.current_job, dest_zip)
+                logger.info(f"Cached pinned manifest zip to {dest_zip}")
+        except Exception as e:
+            logger.warning(f"Failed to cache pinned manifest zip: {e}")
+
     @pyqtSlot()
     def _finalize_job_logic(self):
         """Called on Main Thread. Acts as a State Machine Conductor.
@@ -349,11 +424,11 @@ class PostInstallMixin:
                     # if gmrc.wudrm.com is unreachable Steam's MRC fetch fails and the download
                     # stalls, yet ASSella would incorrectly show the game as up_to_date.
                     is_handoff = getattr(self, "_is_handoff_job", False)
-                    is_stale_or_rollback = bool(
-                        (self.current_job_metadata or {}).get("is_rollback")
-                        or (self.current_job_metadata or {}).get("is_bundle_stale")
-                        or (self.game_data.get("_is_rollback") if self.game_data else False)
-                        or (self.game_data.get("is_bundle_stale") if self.game_data else False)
+                    is_stale_or_rollback = self._is_stale_or_rollback_install()
+                    is_pinned = bool(
+                        (self.current_job_metadata or {}).get("pin_build")
+                        or (self.game_data or {}).get("pin_build")
+                        or (self.game_data or {}).get("_pin_build")
                     )
                     if is_handoff:
                         logger.info(
@@ -365,9 +440,9 @@ class PostInstallMixin:
                     # at "checking" indefinitely because _on_initial_scan_complete
                     # (the only slot that calls check_game_updates_async) disconnects
                     # itself after boot and never runs again for subsequent rescans.
-                    # For rollback or stale-bundle installs, set "update_available" so the UI
-                    # immediately reflects that newer files/manifests exist on Steam.
-                    elif is_stale_or_rollback:
+                    # For unpinned rollback or stale-bundle installs, set "update_available"
+                    # so the UI immediately reflects that newer files/manifests exist on Steam.
+                    elif is_stale_or_rollback and not is_pinned:
                         cache = get_update_cache()
                         cache.set_status(appid, "update_available", {
                             "reason": "Package installed from older bundle manifests",
@@ -429,60 +504,26 @@ class PostInstallMixin:
                                 if isinstance(b_entry, dict):
                                     target_bid = str(b_entry.get("buildid", ""))
 
-                            is_rollback_job = is_stale_or_rollback
                             meta_bid = (self.current_job_metadata or {}).get("buildid")
-                            if is_rollback_job:
-                                # For stale bundle or rollback, ONLY accept a verified numeric historical buildid.
-                                # NEVER fall back to target_bid (live Steam branch buildid) as that poisons the install!
-                                cand_bid = new_bid or meta_bid
-                                if cand_bid and str(cand_bid).strip().isdigit() and str(cand_bid).strip() != "0":
-                                    final_bid = str(cand_bid).strip()
-                                else:
-                                    final_bid = ""
+                            final_bid = self._compute_final_buildid(
+                                new_bid, meta_bid, target_bid, is_stale_or_rollback
+                            )
+                            if is_stale_or_rollback:
                                 logger.info(
                                     f"[JobFinished] Stale/rollback install for appid={appid}. "
                                     f"Verified historical build ID: {final_bid or 'None (unmatched)'}"
                                 )
                             else:
-                                final_bid = new_bid or meta_bid or target_bid
                                 logger.info(f"[DEBUG_DEV] Standard install completed. final_bid: {final_bid}")
 
                             # Ensure db_data carries consistent buildid
-                            if is_rollback_job and db_data.get("buildid") != final_bid:
+                            if is_stale_or_rollback and db_data.get("buildid") != final_bid:
                                 db_data["buildid"] = final_bid
                                 db.upsert_app_info(appid, db_data)
 
-                            if final_bid:
-                                # Store per-branch: installed_buildid/appid/branch
-                                settings.setValue(f"installed_buildid/{appid}/{sel_b}", str(final_bid))
-                                # Also store legacy flat key for backward compat
-                                settings.setValue(f"installed_buildid/{appid}", str(final_bid))
-                            elif is_rollback_job:
-                                # If stale and no verified historical build ID could be matched,
-                                # remove any existing installed_buildid to prevent false up-to-date matches.
-                                settings.remove(f"installed_buildid/{appid}/{sel_b}")
-                                settings.remove(f"installed_buildid/{appid}")
-                                logger.info(
-                                    f"[JobFinished] Cleared installed_buildid for appid={appid} because package "
-                                    "manifests are older and exact historical build ID is unknown."
-                                )
-
-                                # If pin_build is specified in job metadata, apply user choice
-                                if self.current_job_metadata and "pin_build" in self.current_job_metadata:
-                                    should_pin = bool(self.current_job_metadata["pin_build"])
-                                    settings.setValue(f"pin_build/{appid}", should_pin)
-                                    if should_pin:
-                                        settings.setValue(f"exclude_from_update_all/{appid}", False)
-                                        try:
-                                            import shutil
-                                            manifests_dir = Path(get_base_path()) / "hubcap_manifests"
-                                            manifests_dir.mkdir(parents=True, exist_ok=True)
-                                            dest_zip = manifests_dir / f"accela_fetch_{appid}_build_{final_bid}.zip"
-                                            if self.current_job and os.path.exists(self.current_job):
-                                                shutil.copy(self.current_job, dest_zip)
-                                                logger.info(f"Cached pinned manifest zip to {dest_zip}")
-                                        except Exception as e:
-                                            logger.warning(f"Failed to cache pinned manifest zip: {e}")
+                            self._apply_install_buildid_and_pin(
+                                settings, appid, sel_b, final_bid, is_stale_or_rollback
+                            )
                     except Exception as e:
                         logger.error(f"Failed to upsert app info on job completion: {e}")
 
