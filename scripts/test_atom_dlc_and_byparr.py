@@ -320,6 +320,24 @@ Lobster = {
 
         print(f"  [PASS] Plugin version resolution and legacy archiving verified (SpaceBunny: {sb_ver}, Lobster: {lob_ver})")
 
+    def test_09_native_handoff_platform_check_runs_once(self):
+        """The AT0-M handoff must not re-ask the platform mismatch question
+        when the caller already answered it (fetchmanifest asks before handing off)."""
+        import inspect
+        from managers import task_manager as tm_mod
+
+        sig = inspect.signature(tm_mod.TaskManager.start_native_steam_handoff)
+        self.assertIn("platform_checked", sig.parameters)
+        self.assertIs(sig.parameters["platform_checked"].default, False)
+
+        body = inspect.getsource(tm_mod.TaskManager.start_native_steam_handoff)
+        guard = body.index("if platform_checked:")
+        check = body.index("check_native_steam_platform_mismatch(\n")
+        self.assertLess(guard, check, "the guard must wrap the mismatch check")
+
+        fm = (Path(__file__).resolve().parent.parent / "src/ui/dialogs/fetchmanifest.py").read_text()
+        self.assertIn("platform_checked=True", fm, "fetchmanifest must declare its prompt authoritative")
+
     def test_06_platform_mismatch_and_dlc_badge(self):
         """Verify PlatformMismatchDialog styling/text and single DLC Only badge in GameListWidget."""
         from ui.dialogs.platform_mismatch_dialog import (

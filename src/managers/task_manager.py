@@ -1277,10 +1277,14 @@ class TaskManager(
         pin_build: bool = False,
         manifest_overrides: Optional[Dict[str, str]] = None,
         build_id: str = "",
+        platform_checked: bool = False,
     ):
         """
         Direct asynchronous handoff to Steam client without manifest zip preprocessing
         or depot selection dialogs.
+
+        platform_checked: set by callers that already ran (and let the user answer)
+        the platform mismatch check for this same handoff, so it is not asked twice.
         """
         app_id_str = str(app_id).strip()
         name = game_name or f"App {app_id_str}"
@@ -1299,28 +1303,33 @@ class TaskManager(
                 ACTION_ASSELLA_DOWNLOAD,
                 ACTION_CANCEL,
             )
-            is_mismatch, mismatch_details = check_native_steam_platform_mismatch(
-                appid=app_id_str,
-                game_name=name,
-            )
-            if is_mismatch:
-                m_dlg = PlatformMismatchDialog(
-                    parent=self.main_window,
-                    details=mismatch_details,
+            if platform_checked:
+                logger.debug(
+                    f"[TaskManager] Platform mismatch already handled for {app_id_str}; skipping duplicate prompt"
                 )
-                m_dlg.exec()
-                m_act = m_dlg.get_action()
-                if m_act in (ACTION_PROCEED, ACTION_FORCE_PROTON):
-                    # Proceed normally without forcing Proton or restarting Steam
-                    pass
-                elif m_act == ACTION_ASSELLA_DOWNLOAD:
-                    logger.info(f"[TaskManager] User chose ASSella downloader for {app_id_str}")
-                    if self.main_window and hasattr(self.main_window, "open_download_dialog"):
-                        self.main_window.open_download_dialog(app_id_str)
-                    return
-                else:  # ACTION_CANCEL
-                    logger.info(f"[TaskManager] Handoff cancelled due to platform mismatch: {app_id_str}")
-                    return
+            else:
+                is_mismatch, mismatch_details = check_native_steam_platform_mismatch(
+                    appid=app_id_str,
+                    game_name=name,
+                )
+                if is_mismatch:
+                    m_dlg = PlatformMismatchDialog(
+                        parent=self.main_window,
+                        details=mismatch_details,
+                    )
+                    m_dlg.exec()
+                    m_act = m_dlg.get_action()
+                    if m_act in (ACTION_PROCEED, ACTION_FORCE_PROTON):
+                        # Proceed normally without forcing Proton or restarting Steam
+                        pass
+                    elif m_act == ACTION_ASSELLA_DOWNLOAD:
+                        logger.info(f"[TaskManager] User chose ASSella downloader for {app_id_str}")
+                        if self.main_window and hasattr(self.main_window, "open_download_dialog"):
+                            self.main_window.open_download_dialog(app_id_str)
+                        return
+                    else:  # ACTION_CANCEL
+                        logger.info(f"[TaskManager] Handoff cancelled due to platform mismatch: {app_id_str}")
+                        return
         except Exception as e:
             logger.debug(f"[TaskManager] Error checking mismatch in start_native_steam_handoff: {e}")
 

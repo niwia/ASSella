@@ -1553,6 +1553,7 @@ class FetchManifestDialog(QDialog):
                 pin_build=pin_build,
                 manifest_overrides=manifest_overrides,
                 build_id=pinned_bid,
+                platform_checked=True,
             )
 
     def _start_assella_flow(self, app_id: str):
