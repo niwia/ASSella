@@ -659,7 +659,7 @@ def update_appearance(
     apply_palette(app, accent, background, font_name=str(font_info) if font_ok else "", font=font)
     try:
         for w in app.allWidgets():
-            if w.__class__.__name__ == "DialogTitleBar" and hasattr(w, "update_style"):
+            if w.__class__.__name__ in ("DialogTitleBar", "BottomTitleBar") and hasattr(w, "update_style"):
                 w.update_style()
     except Exception:
         pass

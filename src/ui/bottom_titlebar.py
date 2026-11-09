@@ -67,6 +67,7 @@ class BottomTitleBar(QFrame):
         self.title_label: Optional[QLabel] = None
         self.search_controller = None
         self.logo_label: Optional[QLabel] = None
+        self.version_label: Optional[ClickableLabel] = None
 
         # Buttons
         self.status_button: Optional[QPushButton] = None
@@ -152,14 +153,17 @@ class BottomTitleBar(QFrame):
         layout.addWidget(self.logo_label, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addSpacing(6)
 
-        version_label = ClickableLabel(
+        settings = get_settings()
+        accent_color = settings.value("accent_color", "#C06C84")
+
+        self.version_label = ClickableLabel(
             app_version,
             self.parent_window,
             getattr(self.parent_window, "open_credits_dialog", None),
         )
-        version_label.setStyleSheet("color: #888888;")
-        version_label.setToolTip("View credits")
-        layout.addWidget(version_label, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.version_label.setStyleSheet(f"color: {accent_color}; background: transparent; border: none;")
+        self.version_label.setToolTip("View credits")
+        layout.addWidget(self.version_label, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.update_arrow_label = ClickableLabel(
             " ⬆ Update Available",
@@ -368,6 +372,9 @@ class BottomTitleBar(QFrame):
 
         if self.no_previous_state and self.status_button:
             self._update_colored_circle_button(self.status_button, accent_color)
+
+        if self.version_label:
+            self.version_label.setStyleSheet(f"color: {accent_color}; background: transparent; border: none;")
 
     @staticmethod
     def _update_colored_circle_button(button: QPushButton, color: str) -> None:

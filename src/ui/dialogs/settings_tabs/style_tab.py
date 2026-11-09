@@ -264,7 +264,7 @@ def create_style_tab(dialog) -> QWidget:
     cur_preset = dialog.settings.value("material_preset", "ocean", type=str)
     if cur_preset == "christmas":
         dialog.remember_origins_checkbox.setChecked(False)
-        dialog.remember_origins_checkbox.setLocked(True, "Disabled when Christmas Holiday theme is active.")
+        dialog.remember_origins_checkbox.setLocked(True, "Disabled when Christmas(beta) theme is active.")
     disp_layout.addWidget(dialog.remember_origins_checkbox)
 
     dialog.simplify_denuvo_status_checkbox = create_checkbox_setting(
@@ -286,22 +286,6 @@ def create_style_tab(dialog) -> QWidget:
         show_description=False,
     )
     disp_layout.addWidget(dialog.adaptive_theming_checkbox)
-
-    dialog.seasonal_audio_checkbox = create_checkbox_setting(
-        "Seasonal Theme Audio",
-        "seasonal_audio_enabled",
-        False,
-        dialog,
-        "Play festive holiday chime audio when activating seasonal themes.",
-        show_description=False,
-    )
-    def _on_seasonal_audio_toggled(state):
-        is_checked = (state == Qt.CheckState.Checked.value or state is True)
-        dialog.settings.setValue("seasonal_audio_enabled", is_checked)
-        if is_checked:
-            play_seasonal_audio(dialog)
-    dialog.seasonal_audio_checkbox.stateChanged.connect(_on_seasonal_audio_toggled)
-    disp_layout.addWidget(dialog.seasonal_audio_checkbox)
 
     layout.addWidget(disp_card)
     layout.addStretch(1)
@@ -402,65 +386,11 @@ def on_preset_changed(dialog, index: int) -> None:
         if hasattr(dialog, "remember_origins_checkbox") and dialog.remember_origins_checkbox:
             if preset_type == "christmas":
                 dialog.remember_origins_checkbox.setChecked(False)
-                dialog.remember_origins_checkbox.setLocked(True, "Disabled when Christmas Holiday theme is active.")
+                dialog.remember_origins_checkbox.setLocked(True, "Disabled when Christmas(beta) theme is active.")
             else:
                 dialog.remember_origins_checkbox.setLocked(False)
                 orig_origins = dialog.settings.value("remember_origins", False, type=bool)
                 dialog.remember_origins_checkbox.setChecked(orig_origins)
-
-        if preset_type == "christmas" and dialog.settings.value("seasonal_audio_enabled", False, type=bool):
-            play_seasonal_audio(dialog)
-
-
-def play_seasonal_audio(parent=None) -> None:
-    """Play festive holiday chime using direct PipeWire/PulseAudio or QSoundEffect fallback."""
-    import shutil
-    import subprocess
-    import threading
-    from utils.paths import Paths
-
-    chime_path = Paths.resource("christmas/jingle_chime.wav")
-    if not chime_path.exists():
-        return
-
-    # 1. Prefer fast, direct PipeWire / PulseAudio CLI playback
-    cli_player = shutil.which("pw-play") or shutil.which("paplay") or shutil.which("aplay")
-    if cli_player:
-        def _play_proc():
-            try:
-                subprocess.run(
-                    [cli_player, str(chime_path)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-            except Exception as e:
-                logger.debug(f"Direct seasonal audio CLI playback failed: {e}")
-
-        threading.Thread(target=_play_proc, daemon=True).start()
-        return
-
-    # 2. Qt Multimedia QSoundEffect fallback
-    try:
-        from PyQt6.QtCore import QUrl
-        from PyQt6.QtMultimedia import QSoundEffect
-
-        sound = QSoundEffect(parent)
-        sound.setSource(QUrl.fromLocalFile(str(chime_path)))
-        sound.setVolume(0.65)
-        if parent:
-            parent._seasonal_sound = sound
-
-        def _on_ready():
-            if sound.status() == QSoundEffect.Status.Ready:
-                sound.play()
-
-        if sound.status() == QSoundEffect.Status.Ready:
-            sound.play()
-        else:
-            sound.statusChanged.connect(_on_ready)
-    except Exception as e:
-        logger.debug(f"Seasonal audio playback skipped: {e}")
 
 
 def is_too_dark(color: QColor) -> bool:
@@ -579,9 +509,6 @@ def save_style_settings(dialog) -> bool:
 
     if hasattr(dialog, "adaptive_theming_checkbox") and dialog.adaptive_theming_checkbox is not None:
         dialog.settings.setValue("enable_adaptive_game_theming", dialog.adaptive_theming_checkbox.isChecked())
-
-    if hasattr(dialog, "seasonal_audio_checkbox") and dialog.seasonal_audio_checkbox is not None:
-        dialog.settings.setValue("seasonal_audio_enabled", dialog.seasonal_audio_checkbox.isChecked())
 
     if hasattr(dialog, "simplify_denuvo_status_checkbox") and dialog.simplify_denuvo_status_checkbox is not None:
         simplify = dialog.simplify_denuvo_status_checkbox.isChecked()
