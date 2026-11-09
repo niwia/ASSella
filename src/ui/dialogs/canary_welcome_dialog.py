@@ -1028,7 +1028,7 @@ class CanaryWelcomeDialog(QDialog):
         c_layout.addWidget(self.lbl_at0m_feedback)
 
         lbl_desc = QLabel(
-            "When enabled, essential plugins (SpaceBunny, Styx, Lobster) are deployed to your SLSsteam plugins "
+            "When enabled, essential required plugins are deployed to your SLSsteam plugins "
             "directory and Plugins: yes is set in config.yaml. You can configure additional plugins later in Settings → at0-m / Plugins."
         )
         lbl_desc.setWordWrap(True)
@@ -1199,7 +1199,7 @@ class CanaryWelcomeDialog(QDialog):
     def _on_at0m_deploy_done(self, ok: bool, problems: str) -> None:
         self.toggle_enable_at0m.setEnabled(True)
         if ok:
-            self._at0m_feedback("Essential plugins (SpaceBunny, Styx, Lobster) installed and Plugins: yes set in config.yaml.")
+            self._at0m_feedback("Essential plugins installed and Plugins: yes set in config.yaml.")
             return
         # Neither R2 nor the packed plugins worked: undo and say why.
         try:

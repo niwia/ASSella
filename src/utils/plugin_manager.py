@@ -187,6 +187,18 @@ def manifest_plugin_names(manifest: Optional[Dict[str, Any]] = None) -> List[str
     return [n for n in entries if n not in retired]
 
 
+def get_essential_plugin_names(manifest: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Plugins that are strictly essential/required according to the manifest."""
+    m = manifest if manifest is not None else _local_manifest()
+    active_interceptor = (m or {}).get("default_interceptor") or get_default_interceptor_from_manifest()
+    names = [active_interceptor]
+    for n in manifest_plugin_names(m):
+        if n != active_interceptor and not is_interceptor_plugin(n):
+            if plugin_policy(n) == POLICY_REQUIRED:
+                names.append(n)
+    return names
+
+
 def plugin_policy(filename: str) -> str:
     deployable, _ = is_plugin_deployable(filename)
     if not deployable:
