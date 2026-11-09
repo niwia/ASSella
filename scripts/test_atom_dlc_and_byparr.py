@@ -275,6 +275,39 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             mode = actions_obj._detect_configured_dlc_mode(setting_appid)
             self.assertEqual(mode, "assella")
 
+        # 5. ASSella config-only game. That path writes DlcData, which AT0-M
+        #    also writes, so the mode recorded at configure time must decide it.
+        class _RecordedAssellaSettings:
+            def value(self, key, default=None, type=None):
+                if key.startswith("dlc_mode_source/"):
+                    return "assella"
+                return default
+
+        config_only_appid = "5555555"
+        legacy_atom_appid = "4444444"
+        with tempfile.TemporaryDirectory() as tmp_cfg_dir:
+            cfg = Path(tmp_cfg_dir) / "config.yaml"
+            cfg.write_text("DlcData:\n", encoding="utf-8")
+
+            with patch("utils.plugin_games.load_plugin_library", return_value={}), \
+                 patch("utils.helpers.get_base_path", return_value=Path(tmp_cfg_dir)), \
+                 patch("utils.settings.get_settings", return_value=_RecordedAssellaSettings()), \
+                 patch("utils.yaml_config_manager.get_user_config_path", return_value=cfg), \
+                 patch("utils.yaml_config_manager.get_dlc_data", return_value={config_only_appid: {"1234": "DLC"}}), \
+                 patch("utils.dlc_helpers.is_dlc_only_mode", return_value=True):
+                mode = actions_obj._detect_configured_dlc_mode(config_only_appid)
+                self.assertEqual(mode, "assella", "recorded ASSella mode must beat DlcData")
+
+            # 6. Legacy AT0-M DlcData with no recorded mode stays native.
+            with patch("utils.plugin_games.load_plugin_library", return_value={}), \
+                 patch("utils.helpers.get_base_path", return_value=Path(tmp_cfg_dir)), \
+                 patch("utils.settings.get_settings", return_value=MagicMock(value=lambda *a, **k: "")), \
+                 patch("utils.yaml_config_manager.get_user_config_path", return_value=cfg), \
+                 patch("utils.yaml_config_manager.get_dlc_data", return_value={legacy_atom_appid: {"1234": "DLC"}}), \
+                 patch("utils.dlc_helpers.is_dlc_only_mode", return_value=False):
+                mode = actions_obj._detect_configured_dlc_mode(legacy_atom_appid)
+                self.assertEqual(mode, "native", "DlcData without a recorded ASSella mode stays AT0-M")
+
         print("  [PASS] DLC mode memory detection verified")
 
     def test_05_plugin_version_extraction_and_display(self):

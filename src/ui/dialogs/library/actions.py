@@ -700,6 +700,7 @@ class LibraryActionsMixin:
             # Strict DLC-only invariant: base game AppID must NEVER be in AdditionalApps
             remove_additional_app(config_path, appid)
             get_settings().setValue(f"dlc_only_mode/{appid}", True)
+            get_settings().setValue(f"dlc_mode_source/{appid}", "native")
 
             # Record in plugin_library so AT0-M knows about this depotless setup
             try:
@@ -766,7 +767,17 @@ class LibraryActionsMixin:
         except Exception as e:
             logger.debug(f"[DLCModeDetect] Error checking plugin_library for {appid_str}: {e}")
 
-        # 3. Check SLSsteam DlcData (used exclusively by AT0-M):
+        # 3. Check the mode recorded when the game's DLCs were configured.
+        #    ASSella's config-only path also writes DlcData, so DlcData alone
+        #    cannot tell the two modes apart; the recorded source can.
+        try:
+            from utils.settings import get_settings
+            if get_settings().value(f"dlc_mode_source/{appid_str}", "", type=str) == "assella":
+                return "assella"
+        except Exception as e:
+            logger.debug(f"[DLCModeDetect] Error checking dlc_mode_source for {appid_str}: {e}")
+
+        # 4. Check SLSsteam DlcData (written by AT0-M and by ASSella config-only):
         try:
             from utils.yaml_config_manager import get_user_config_path, get_dlc_data
             cfg_path = get_user_config_path()
@@ -776,7 +787,7 @@ class LibraryActionsMixin:
         except Exception as e:
             logger.debug(f"[DLCModeDetect] Error checking SLSsteam DlcData for {appid_str}: {e}")
 
-        # 4. Check ASSella DLC-only mode setting:
+        # 5. Check ASSella DLC-only mode setting:
         try:
             from utils.dlc_helpers import is_dlc_only_mode
             if is_dlc_only_mode(appid_str):
@@ -784,7 +795,7 @@ class LibraryActionsMixin:
         except Exception as e:
             logger.debug(f"[DLCModeDetect] Error checking is_dlc_only_mode for {appid_str}: {e}")
 
-        # 5. Fallback for depot-less DLCs already registered in AdditionalApps:
+        # 6. Fallback for depot-less DLCs already registered in AdditionalApps:
         # If there are NO sized content depots (depotless DLCs) and any DLC ID is in AdditionalApps:
         try:
             if discovery and not getattr(discovery, "has_sized_depots", True):
@@ -871,6 +882,9 @@ class LibraryActionsMixin:
         from utils.settings import get_settings
 
         get_settings().setValue(f"dlc_only_mode/{appid}", True)
+        # Record the mode so detection does not mistake the DlcData entry this
+        # path writes for an AT0-M setup.
+        get_settings().setValue(f"dlc_mode_source/{appid}", "assella")
         ThemedMessageBox.information(
             self,
             "DLC Mode Saved",
