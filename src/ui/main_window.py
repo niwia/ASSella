@@ -1251,7 +1251,66 @@ class MainWindow(QMainWindow):
         self.drop_text_label = DropTextLabelWrapper(self.status_pager)
 
         # Dashboard container widget
-        self.dashboard_widget = QWidget()
+        class VisorWidget(QWidget):
+            """Bottom dashboard visor with optional holiday decorations."""
+            def paintEvent(self, event):
+                super().paintEvent(event)
+                try:
+                    from utils.settings import get_settings
+                    settings = get_settings()
+                    if settings.value("material_preset", "ocean", type=str) == "christmas":
+                        from PyQt6.QtGui import QPainter, QPainterPath, QColor, QPen
+                        painter = QPainter(self)
+                        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                        w = self.width()
+
+                        # Pine garland string across the top
+                        painter.setPen(QPen(QColor(46, 125, 50, 220), 1.5))
+                        garland_step = 65.0
+                        x = 18.0
+                        while x < w - 18.0:
+                            nx = min(float(w - 18.0), x + garland_step)
+                            mid_x = (x + nx) / 2.0
+                            painter.drawLine(int(x), 3, int(mid_x), 6)
+                            painter.drawLine(int(mid_x), 6, int(nx), 3)
+
+                            # Holly berries at swag nodes
+                            painter.setPen(Qt.PenStyle.NoPen)
+                            painter.setBrush(QColor("#FF334B"))
+                            painter.drawEllipse(int(x) - 2, 2, 3, 3)
+                            painter.drawEllipse(int(x) + 1, 3, 3, 3)
+
+                            # Hanging Christmas Stocking at each swag dip
+                            stocking_x = int(mid_x)
+                            painter.setPen(QPen(QColor(230, 215, 160), 1.0))
+                            painter.drawLine(stocking_x - 1, 6, stocking_x + 1, 8)
+
+                            # Red sock body
+                            sock = QPainterPath()
+                            sock.moveTo(stocking_x - 3, 11)
+                            sock.lineTo(stocking_x - 3, 17)
+                            sock.cubicTo(stocking_x - 3, 21, stocking_x + 4, 21, stocking_x + 5, 18)
+                            sock.lineTo(stocking_x + 5, 16)
+                            sock.lineTo(stocking_x + 1, 16)
+                            sock.lineTo(stocking_x + 1, 11)
+                            sock.closeSubpath()
+                            painter.setPen(Qt.PenStyle.NoPen)
+                            painter.setBrush(QColor("#FF334B"))
+                            painter.drawPath(sock)
+
+                            # Green heel/toe accent
+                            painter.setBrush(QColor("#2E7D32"))
+                            painter.drawEllipse(stocking_x + 2, 16, 3, 3)
+
+                            # White fluffy cuff
+                            painter.setBrush(QColor("#FFFFFF"))
+                            painter.drawRoundedRect(stocking_x - 4, 8, 8, 3, 1.0, 1.0)
+
+                            x = nx
+                except Exception as e:
+                    logger.debug(f"Visor holiday decoration painting skipped: {e}")
+
+        self.dashboard_widget = VisorWidget()
         self.dashboard_widget.setObjectName("dashboard_widget")
         self.dashboard_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
@@ -1259,13 +1318,16 @@ class MainWindow(QMainWindow):
         self.dashboard_widget.setMinimumHeight(65)
         self.dashboard_widget.setMaximumHeight(85)
         
-        self.dashboard_widget.setStyleSheet("""
-            #dashboard_widget {
-                background-color: rgba(18, 18, 22, 235);
-                border: 1px solid rgba(255, 255, 255, 12);
+        preset = self.settings.value("material_preset", "ocean", type=str) if self.settings else "ocean"
+        visor_bg = "rgba(13, 36, 24, 235)" if preset == "christmas" else "rgba(18, 18, 22, 235)"
+        visor_border = "rgba(46, 125, 50, 0.50)" if preset == "christmas" else "rgba(255, 255, 255, 12)"
+        self.dashboard_widget.setStyleSheet(f"""
+            #dashboard_widget {{
+                background-color: {visor_bg};
+                border: 1px solid {visor_border};
                 border-radius: 8px;
                 margin: 4px 15px;
-            }
+            }}
         """)
 
         dash_main_layout = QVBoxLayout(self.dashboard_widget)
@@ -2776,6 +2838,10 @@ class MainWindow(QMainWindow):
                 if p and os.path.exists(str(p)):
                     bg_path_to_draw = str(p)
                     break
+        elif preset == "christmas":
+            christmas_bg = Paths.resource("christmas/christmas_bg.jpg")
+            if christmas_bg.exists():
+                bg_path_to_draw = str(christmas_bg)
 
         if bg_path_to_draw:
             if not hasattr(self, "_active_bg_path") or self._active_bg_path != bg_path_to_draw or not hasattr(self, "_custom_bg_pixmap") or self._custom_bg_pixmap is None:
@@ -2796,7 +2862,8 @@ class MainWindow(QMainWindow):
                 y = (rect.height() - scaled.height()) // 2
 
                 # Atmospheric opacity
-                painter.setOpacity(0.50)
+                bg_opacity = 0.35 if preset == "christmas" else 0.50
+                painter.setOpacity(bg_opacity)
                 painter.drawPixmap(x, y, scaled)
                 painter.setOpacity(1.0)
 
@@ -2817,7 +2884,7 @@ class MainWindow(QMainWindow):
         if preset == "christmas":
             if not hasattr(self, "_snow_engine") or self._snow_engine is None:
                 from ui.particles.snow_engine import SnowEngine
-                self._snow_engine = SnowEngine(self, flake_count=85)
+                self._snow_engine = SnowEngine(self, flake_count=100)
                 self._snow_engine.start()
             elif not self._snow_engine.is_running():
                 self._snow_engine.start()

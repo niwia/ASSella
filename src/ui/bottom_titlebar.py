@@ -247,6 +247,38 @@ class BottomTitleBar(QFrame):
         settings = get_settings()
         bg_color = settings.value("background_color", "#000000")
         accent_color = settings.value("accent_color", "#C06C84")
+        preset = settings.value("material_preset", "ocean", type=str)
+
+        if preset == "christmas":
+            self.setStyleSheet(
+                """
+                QFrame {
+                    background-color: transparent;
+                }
+                QPushButton {
+                    background-color: transparent;
+                    border: none;
+                    border-radius: 3px;
+                    padding: 1px;
+                    margin: 0px;
+                    min-width: 20px;
+                    max-width: 20px;
+                    min-height: 20px;
+                    max-height: 20px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(255, 255, 255, 0.22);
+                    border: none;
+                }
+                QToolTip {
+                    color: #FFFFFF;
+                    background-color: #0b0e14;
+                    border: 1px solid #FF334B;
+                    padding: 2px;
+                }
+                """
+            )
+            return
 
         self.setStyleSheet(
             f"""
@@ -299,6 +331,16 @@ class BottomTitleBar(QFrame):
         self.title_label.setText("")
         self.title_label.setToolTip("")
 
+    def paintEvent(self, event) -> None:
+        settings = get_settings()
+        preset = settings.value("material_preset", "ocean", type=str)
+        if preset == "christmas":
+            painter = QPainter(self)
+            from ui.theme import draw_christmas_titlebar
+            draw_christmas_titlebar(painter, self.width(), self.height())
+        else:
+            super().paintEvent(event)
+
     def _update_button_styles(self) -> None:
         """Update all button styles with custom border and background."""
         settings = get_settings()
@@ -340,6 +382,9 @@ class BottomTitleBar(QFrame):
         """Update all SVG button colors to match the current accent color."""
         settings = get_settings()
         accent_color = settings.value("accent_color", "#C06C84")
+        preset = settings.value("material_preset", "ocean", type=str)
+        if preset == "christmas":
+            accent_color = "#FFFFFF"
 
         buttons = [
             (self.search_button, SEARCH_SVG),

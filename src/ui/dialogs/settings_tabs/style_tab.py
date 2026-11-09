@@ -40,6 +40,7 @@ def _apply_circle_style(button: QPushButton, color_hex: str) -> None:
 def create_style_tab(dialog) -> QWidget:
     """Create the Theme settings tab."""
     tab = QWidget()
+    tab.setStyleSheet("background: transparent;")
     layout = QVBoxLayout(tab)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)
@@ -260,6 +261,10 @@ def create_style_tab(dialog) -> QWidget:
         show_description=False,
     )
     dialog.remember_origins_checkbox.stateChanged.connect(lambda s: on_origins_toggled(dialog, s))
+    cur_preset = dialog.settings.value("material_preset", "ocean", type=str)
+    if cur_preset == "christmas":
+        dialog.remember_origins_checkbox.setChecked(False)
+        dialog.remember_origins_checkbox.setLocked(True, "Disabled when Christmas Holiday theme is active.")
     disp_layout.addWidget(dialog.remember_origins_checkbox)
 
     dialog.simplify_denuvo_status_checkbox = create_checkbox_setting(
@@ -394,24 +399,66 @@ def on_preset_changed(dialog, index: int) -> None:
         if app:
             update_appearance(app, accent_hex, bg_hex)
 
+        if hasattr(dialog, "remember_origins_checkbox") and dialog.remember_origins_checkbox:
+            if preset_type == "christmas":
+                dialog.remember_origins_checkbox.setChecked(False)
+                dialog.remember_origins_checkbox.setLocked(True, "Disabled when Christmas Holiday theme is active.")
+            else:
+                dialog.remember_origins_checkbox.setLocked(False)
+                orig_origins = dialog.settings.value("remember_origins", False, type=bool)
+                dialog.remember_origins_checkbox.setChecked(orig_origins)
+
         if preset_type == "christmas" and dialog.settings.value("seasonal_audio_enabled", False, type=bool):
             play_seasonal_audio(dialog)
 
 
 def play_seasonal_audio(parent=None) -> None:
-    """Play lightweight holiday chime if seasonal audio is enabled."""
+    """Play festive holiday chime using direct PipeWire/PulseAudio or QSoundEffect fallback."""
+    import shutil
+    import subprocess
+    import threading
+    from utils.paths import Paths
+
+    chime_path = Paths.resource("christmas/jingle_chime.wav")
+    if not chime_path.exists():
+        return
+
+    # 1. Prefer fast, direct PipeWire / PulseAudio CLI playback
+    cli_player = shutil.which("pw-play") or shutil.which("paplay") or shutil.which("aplay")
+    if cli_player:
+        def _play_proc():
+            try:
+                subprocess.run(
+                    [cli_player, str(chime_path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            except Exception as e:
+                logger.debug(f"Direct seasonal audio CLI playback failed: {e}")
+
+        threading.Thread(target=_play_proc, daemon=True).start()
+        return
+
+    # 2. Qt Multimedia QSoundEffect fallback
     try:
         from PyQt6.QtCore import QUrl
         from PyQt6.QtMultimedia import QSoundEffect
-        from utils.paths import Paths
-        chime_path = Paths.resource("christmas/jingle_chime.wav")
-        if chime_path.exists():
-            sound = QSoundEffect(parent)
-            sound.setSource(QUrl.fromLocalFile(str(chime_path)))
-            sound.setVolume(0.5)
-            if parent:
-                parent._seasonal_sound = sound
+
+        sound = QSoundEffect(parent)
+        sound.setSource(QUrl.fromLocalFile(str(chime_path)))
+        sound.setVolume(0.65)
+        if parent:
+            parent._seasonal_sound = sound
+
+        def _on_ready():
+            if sound.status() == QSoundEffect.Status.Ready:
+                sound.play()
+
+        if sound.status() == QSoundEffect.Status.Ready:
             sound.play()
+        else:
+            sound.statusChanged.connect(_on_ready)
     except Exception as e:
         logger.debug(f"Seasonal audio playback skipped: {e}")
 

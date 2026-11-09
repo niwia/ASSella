@@ -28,15 +28,19 @@ logger = logging.getLogger(__name__)
 def create_assela_tab(dialog) -> QWidget:
     """Create the ASSella settings tab."""
     tab = QWidget()
+    tab.setStyleSheet("background: transparent;")
     outer_layout = QVBoxLayout(tab)
     outer_layout.setContentsMargins(0, 0, 0, 0)
 
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; } QScrollArea > QWidget > QWidget { background: transparent; }")
+    if scroll.viewport():
+        scroll.viewport().setStyleSheet("background: transparent;")
 
     container = QWidget()
+    container.setStyleSheet("background: transparent;")
     layout = QVBoxLayout(container)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)

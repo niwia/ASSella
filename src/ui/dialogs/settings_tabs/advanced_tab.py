@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 def create_advanced_tab(dialog) -> QWidget:
     """Create the Advanced settings tab with specialized settings."""
     tab = QWidget()
+    tab.setStyleSheet("background: transparent;")
     layout = QVBoxLayout(tab)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)

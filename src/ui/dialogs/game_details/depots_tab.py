@@ -183,7 +183,7 @@ class MiniSwitchToggle(QWidget):
             s = get_settings()
             is_christmas = (
                 s.value("material_preset", "ocean", type=str) == "christmas"
-                or s.value("accent_color", "", type=str).lower() in ("#e53935", "#d32f2f")
+                or s.value("accent_color", "", type=str).lower() in ("#e53935", "#d32f2f", "#ff334b")
             )
         except Exception:
             is_christmas = False
@@ -205,7 +205,7 @@ class MiniSwitchToggle(QWidget):
             p.save()
             p.setClipPath(border_path)
             for x in range(-h, w + h, 5):
-                p.fillRect(x, 0, 2, h, QColor("#D32F2F"))
+                p.fillRect(x, 0, 2, h, QColor("#FF334B"))
                 p.fillRect(x + 2, 0, 3, h, QColor("#FFFFFF"))
             p.restore()
 
@@ -227,7 +227,7 @@ class MiniSwitchToggle(QWidget):
             knob_d = 12.0
             knob_y = (h - knob_d) / 2.0
             knob_rect = QRectF(self._circle_pos, knob_y, knob_d, knob_d)
-            p.setPen(QPen(QColor("#D32F2F"), 1.0))
+            p.setPen(QPen(QColor("#FF334B"), 1.0))
             p.setBrush(QBrush(QColor("#FFFFFF")))
             p.drawRoundedRect(knob_rect, 3.0, 3.0)
             p.end()

@@ -93,6 +93,16 @@ class DialogTitleBar(QFrame):
             btn.clicked.connect(on_click)
         return btn
 
+    def paintEvent(self, event) -> None:
+        settings = get_settings()
+        preset = settings.value("material_preset", "ocean", type=str)
+        if preset == "christmas":
+            painter = QPainter(self)
+            from ui.theme import draw_christmas_titlebar
+            draw_christmas_titlebar(painter, self.width(), self.height())
+        else:
+            super().paintEvent(event)
+
     def update_style(self) -> None:
         """Update colors and icons to match active theme settings."""
         settings = get_settings()
@@ -103,15 +113,28 @@ class DialogTitleBar(QFrame):
 
         # Subtle elevated background for the titlebar
         titlebar_bg = bg_color.lighter(108).name()
+        preset = settings.value("material_preset", "ocean", type=str)
 
-        self.setStyleSheet(
-            f"""
-            DialogTitleBar {{
-                background-color: {titlebar_bg};
-                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-            }}
-            """
-        )
+        if preset == "christmas":
+            accent = "#FFFFFF"
+            accent_color = QColor("#FFFFFF")
+            self.setStyleSheet(
+                """
+                DialogTitleBar {
+                    background-color: transparent;
+                    border: none;
+                }
+                """
+            )
+        else:
+            self.setStyleSheet(
+                f"""
+                DialogTitleBar {{
+                    background-color: {titlebar_bg};
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                }}
+                """
+            )
         self.title_label.setStyleSheet(f"color: {accent}; font-weight: bold; font-size: 9.5pt; border: none; background: transparent;")
 
         # Update button icons

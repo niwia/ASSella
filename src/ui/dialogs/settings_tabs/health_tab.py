@@ -219,6 +219,7 @@ def create_rec_setting_row(title: str, desc: str, checkbox: QCheckBox) -> QWidge
 def create_health_tab(dialog) -> QWidget:
     """Create the consolidated Health settings tab combining SLS status, SLS config, and Recommended Settings."""
     tab = QWidget()
+    tab.setStyleSheet("background: transparent;")
     dialog.health_tab = tab
 
     outer_layout = QVBoxLayout(tab)
@@ -226,9 +227,12 @@ def create_health_tab(dialog) -> QWidget:
 
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
-    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; } QScrollArea > QWidget > QWidget { background: transparent; }")
+    if scroll.viewport():
+        scroll.viewport().setStyleSheet("background: transparent;")
 
     container = QWidget()
+    container.setStyleSheet("background: transparent;")
     layout = QVBoxLayout(container)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)

@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
   <defs>
     <pattern id="candy-unlit" width="14" height="14" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
-      <rect width="7" height="14" fill="#D32F2F"/>
+      <rect width="7" height="14" fill="#FF334B"/>
       <rect x="7" width="7" height="14" fill="#FFFFFF"/>
     </pattern>
   </defs>
@@ -10,6 +10,6 @@
   <!-- Candy cane border -->
   <rect x="12" y="12" width="76" height="76" rx="16" ry="16" fill="none" stroke="url(#candy-unlit)" stroke-width="10"/>
   <!-- Outer and inner crisp red contour outlines -->
-  <rect x="7" y="7" width="86" height="86" rx="20" ry="20" fill="none" stroke="#B71C1C" stroke-width="1.5"/>
-  <rect x="17" y="17" width="66" height="66" rx="11" ry="11" fill="none" stroke="#B71C1C" stroke-width="1.5"/>
+  <rect x="7" y="7" width="86" height="86" rx="20" ry="20" fill="none" stroke="#D90429" stroke-width="1.5"/>
+  <rect x="17" y="17" width="66" height="66" rx="11" ry="11" fill="none" stroke="#D90429" stroke-width="1.5"/>
 </svg>

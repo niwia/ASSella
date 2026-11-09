@@ -184,9 +184,9 @@ def check_and_apply_christmas_theme(settings: QSettings) -> bool:
             if applied_year != today.year:
                 settings.setValue("christmas_auto_applied_year", today.year)
                 settings.setValue("material_preset", "christmas")
-                settings.setValue("accent_color", "#e53935")
+                settings.setValue("accent_color", "#FF334B")
                 settings.setValue("background_color", "#0b0e14")
-                settings.setValue("user_accent_color", "#e53935")
+                settings.setValue("user_accent_color", "#FF334B")
                 settings.setValue("user_background_color", "#0b0e14")
                 settings.sync()
                 return True

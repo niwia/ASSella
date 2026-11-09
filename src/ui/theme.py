@@ -158,7 +158,7 @@ def _apply_stylesheet(
     christmas_lit_svg = str(Paths.resource("christmas/candy_square_lit.svg"))
     christmas_radio_unlit = str(Paths.resource("christmas/candy_circle_unlit.svg"))
     christmas_radio_lit = str(Paths.resource("christmas/candy_circle_lit.svg"))
-    is_christmas = (preset == "christmas" or accent_color.name().lower() in ("#e53935", "#d32f2f"))
+    is_christmas = (preset == "christmas" or accent_color.name().lower() in ("#e53935", "#d32f2f", "#ff334b"))
 
     custom_unlit = settings.value("theme_checkbox_unlit", "", type=str) if settings else ""
     custom_lit = settings.value("theme_checkbox_lit", "", type=str) if settings else ""
@@ -664,3 +664,72 @@ def update_appearance(
     except Exception:
         pass
     return font_ok, font_info
+
+
+def draw_christmas_titlebar(painter, w: int, h: int) -> None:
+    """Renders candy-cane striped background and dripping snow cap along the top edge."""
+    import math
+    from PyQt6.QtGui import QPainterPath, QColor, QPen, QPainter
+    from PyQt6.QtCore import Qt
+
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+    # 1. Base Dark Holiday Red Fill
+    painter.fillRect(0, 0, w, h, QColor("#8A0E1A"))
+
+    # 2. Diagonal Candy-Cane Stripes (alternating #FF334B and #8A0E1A)
+    stripe_w = 12
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#FF334B"))
+    for sx in range(-h * 2, w + h * 2, stripe_w * 2):
+        stripe = QPainterPath()
+        stripe.moveTo(sx, h)
+        stripe.lineTo(sx + stripe_w, h)
+        stripe.lineTo(sx + stripe_w + h, 0)
+        stripe.lineTo(sx + h, 0)
+        stripe.closeSubpath()
+        painter.drawPath(stripe)
+
+    # Soft dark bottom border
+    painter.setPen(QPen(QColor(0, 0, 0, 110), 1))
+    painter.drawLine(0, h - 1, w, h - 1)
+
+    # 3. Fluffy Snowdrift Mound with Dripping Scallops along the Top
+    snow = QPainterPath()
+    snow.moveTo(0, 0)
+
+    x = 0.0
+    snow_base_y = 6.0
+    snow.lineTo(0, snow_base_y)
+
+    step = 28.0
+    while x < w:
+        cx1 = x + step * 0.35
+        drip = 4.0 + (math.sin(x * 0.12) + 1.0) * 3.5
+        cy1 = snow_base_y + drip
+        cx2 = x + step * 0.65
+        cy2 = snow_base_y + drip
+        nx = min(float(w), x + step)
+        ny = snow_base_y + math.sin(nx * 0.08) * 1.5
+        snow.cubicTo(cx1, cy1, cx2, cy2, nx, ny)
+        x = nx
+
+    snow.lineTo(w, 0)
+    snow.closeSubpath()
+
+    # Snow shadow / frost outline underneath
+    shadow = QPainterPath(snow)
+    painter.setPen(QPen(QColor(210, 230, 245, 180), 2.0))
+    painter.drawPath(shadow)
+
+    # Crisp pure white snow fill
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#FFFFFF"))
+    painter.drawPath(snow)
+
+    # Subtle glisten line on top edge
+    painter.setPen(QPen(QColor(255, 255, 255, 240), 1.2))
+    painter.drawLine(0, 1, w, 1)
+
+    painter.restore()

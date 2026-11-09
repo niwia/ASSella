@@ -11,37 +11,40 @@ import random
 import time
 from typing import List, Optional
 
-from PyQt6.QtCore import QObject, QTimer, Qt
-from PyQt6.QtGui import QColor, QPainter, QBrush
+from PyQt6.QtCore import QObject, QTimer, Qt, QRectF
+from PyQt6.QtGui import QColor, QPainter, QBrush, QRadialGradient
 
 
 class SnowFlake:
-    __slots__ = ("x", "y", "radius", "speed_y", "drift_amp", "drift_freq", "drift_phase", "alpha")
+    __slots__ = ("x", "y", "radius", "speed_y", "drift_amp", "drift_freq", "drift_phase", "alpha", "is_blurred")
 
     def __init__(self, w: float, h: float, layer: int):
         self.x = random.uniform(0, max(w, 100))
         self.y = random.uniform(0, max(h, 100))
         self.drift_phase = random.uniform(0, math.tau)
-        self.drift_freq = random.uniform(0.8, 1.8)
+        self.drift_freq = random.uniform(0.6, 1.4)
 
         if layer == 0:
-            # Background layer: distant, fine flakes falling steadily
-            self.radius = random.uniform(1.0, 1.6)
-            self.speed_y = random.uniform(28.0, 48.0)
-            self.drift_amp = random.uniform(8.0, 16.0)
-            self.alpha = random.randint(90, 140)
+            # Background layer: distant, fine micro-flakes drifting gently
+            self.radius = random.uniform(1.0, 1.5)
+            self.speed_y = random.uniform(14.0, 26.0)
+            self.drift_amp = random.uniform(6.0, 14.0)
+            self.alpha = random.randint(70, 130)
+            self.is_blurred = False
         elif layer == 1:
-            # Midground layer: soft flakes drifting with noticeable sway
-            self.radius = random.uniform(1.8, 2.4)
-            self.speed_y = random.uniform(42.0, 68.0)
-            self.drift_amp = random.uniform(18.0, 32.0)
-            self.alpha = random.randint(150, 205)
+            # Midground layer: soft flakes with subtle sway, partially blurred
+            self.radius = random.uniform(1.6, 2.8)
+            self.speed_y = random.uniform(22.0, 38.0)
+            self.drift_amp = random.uniform(12.0, 24.0)
+            self.alpha = random.randint(130, 195)
+            self.is_blurred = random.random() < 0.60
         else:
-            # Foreground layer: prominent soft snow puffs
-            self.radius = random.uniform(2.8, 3.6)
-            self.speed_y = random.uniform(60.0, 95.0)
-            self.drift_amp = random.uniform(25.0, 45.0)
-            self.alpha = random.randint(210, 255)
+            # Foreground layer: prominent soft fluffy snow puffs with bokeh blur
+            self.radius = random.uniform(3.0, 4.5)
+            self.speed_y = random.uniform(32.0, 52.0)
+            self.drift_amp = random.uniform(18.0, 36.0)
+            self.alpha = random.randint(180, 245)
+            self.is_blurred = True
 
 
 class SnowEngine(QObject):
@@ -143,12 +146,21 @@ class SnowEngine(QObject):
                 sway_x = -flake.radius
                 flake.x = 0
 
-            painter.setBrush(QBrush(QColor(255, 255, 255, flake.alpha)))
-            painter.drawEllipse(
-                int(sway_x - flake.radius),
-                int(flake.y - flake.radius),
-                int(flake.radius * 2),
-                int(flake.radius * 2),
-            )
+            if flake.is_blurred:
+                grad = QRadialGradient(sway_x, flake.y, flake.radius)
+                grad.setColorAt(0.0, QColor(255, 255, 255, flake.alpha))
+                grad.setColorAt(0.5, QColor(255, 255, 255, int(flake.alpha * 0.55)))
+                grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+                painter.setBrush(QBrush(grad))
+            else:
+                painter.setBrush(QBrush(QColor(255, 255, 255, flake.alpha)))
+
+            painter.drawEllipse(QRectF(
+                sway_x - flake.radius,
+                flake.y - flake.radius,
+                flake.radius * 2.0,
+                flake.radius * 2.0,
+            ))
 
         painter.restore()
+

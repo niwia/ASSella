@@ -388,7 +388,7 @@ class UIStateManager:
     def _apply_background_color(self):
         """Apply background color to main content"""
         preset = self.settings.value("material_preset", "ocean", type=str)
-        if preset == "halloween":
+        if preset in ("halloween", "christmas"):
             self.main_window.central_widget.setStyleSheet("background: transparent;")
         else:
             self.main_window.central_widget.setStyleSheet(

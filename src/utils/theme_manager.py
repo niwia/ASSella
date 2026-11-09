@@ -38,9 +38,9 @@ BUILTIN_THEMES: Dict[str, Dict[str, Any]] = {
     "christmas": {
         "id": "christmas",
         "name": "Christmas Holiday (Candy Cane & Snow)",
-        "accent_color": "#e53935",
+        "accent_color": "#FF334B",
         "background_color": "#0b0e14",
-        "background_image": None,
+        "background_image": "src/res/christmas/christmas_bg.jpg",
         "checkbox_unlit": "src/res/christmas/candy_square_unlit.svg",
         "checkbox_lit": "src/res/christmas/candy_square_lit.svg",
     },

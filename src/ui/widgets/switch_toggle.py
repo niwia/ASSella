@@ -117,7 +117,7 @@ class SwitchToggle(QWidget):
             s = get_settings()
             is_christmas = (
                 s.value("material_preset", "ocean", type=str) == "christmas"
-                or s.value("accent_color", "", type=str).lower() in ("#e53935", "#d32f2f")
+                or s.value("accent_color", "", type=str).lower() in ("#e53935", "#d32f2f", "#ff334b")
             )
         except Exception:
             is_christmas = False
@@ -140,7 +140,7 @@ class SwitchToggle(QWidget):
             p.save()
             p.setClipPath(border_path)
             for x in range(-h, w + h, 6):
-                p.fillRect(x, 0, 3, h, QColor("#D32F2F"))
+                p.fillRect(x, 0, 3, h, QColor("#FF334B"))
                 p.fillRect(x + 3, 0, 3, h, QColor("#FFFFFF"))
             p.restore()
 

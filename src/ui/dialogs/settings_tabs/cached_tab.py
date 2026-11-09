@@ -70,9 +70,9 @@ def create_cached_page(dialog) -> QWidget:
     lst.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     lst.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
     lst.setStyleSheet(
-        "QListWidget { background: transparent; border: none; }"
-        "QListWidget::item { padding: 0; border-bottom: 1px solid rgba(255,255,255,0.06); }"
-        "QListWidget::item:hover { background: rgba(255,255,255,0.04); }"
+        "QListWidget { background-color: rgba(18, 20, 26, 0.70); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 4px; }"
+        "QListWidget::item { padding: 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }"
+        "QListWidget::item:hover { background: rgba(255, 255, 255, 0.06); border-radius: 4px; }"
     )
     lay.addWidget(lst, 1)
 

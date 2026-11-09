@@ -332,6 +332,7 @@ class SettingsDialog(QDialog):
         # Right stacked widget
         self._page_stack = QStackedWidget()
         self._page_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._page_stack.setStyleSheet("background: transparent;")
 
         content_row.addWidget(self._nav_list)
         content_row.addWidget(self._page_stack)
@@ -347,6 +348,7 @@ class SettingsDialog(QDialog):
             def addLazyTab(self, label, build):
                 """Register a page that is built the first time it is shown."""
                 holder = QWidget()
+                holder.setStyleSheet("background: transparent;")
                 lay = QVBoxLayout(holder)
                 lay.setContentsMargins(0, 0, 0, 0)
                 holder._lazy_build = build
@@ -448,6 +450,7 @@ class SettingsDialog(QDialog):
 
         content_widget = QWidget()
         content_widget.setLayout(content_row)
+        content_widget.setStyleSheet("background: transparent;")
         content_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.main_layout.addWidget(content_widget, 1)
 
