@@ -14,13 +14,13 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QCheckBox,
-    QComboBox,
     QFrame,
     QButtonGroup,
     QApplication,
     QSizePolicy,
     QWidget,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.depotselection import format_size
@@ -90,6 +90,8 @@ class SingleDepotSelectionDialog(QDialog):
             self.missing_hubcap_depots = [str(d) for d in (missing_hubcap_depots or []) if str(d).strip()]
 
         self.missing_depots_info = dict(missing_depots_info or {})
+        self.is_bundle_stale = bool(kwargs.get("is_bundle_stale", False))
+        self.stale_depots = list(kwargs.get("stale_depots", []))
 
         # Load accent color & settings
         try:
@@ -102,10 +104,15 @@ class SingleDepotSelectionDialog(QDialog):
 
         # Check for cached thumbnail color to apply on first paint immediately
         try:
+            from utils.settings import get_settings
+            s = getattr(self, "_settings", None) or get_settings()
+            if not s.value("enable_adaptive_game_theming", False, type=bool):
+                raise ValueError("Adaptive game theming disabled")
             from utils.color_utils import get_cached_thumbnail_color
             cached_col = get_cached_thumbnail_color(str(self.app_id))
             if cached_col and cached_col.isValid():
                 self._ambient_color = cached_col
+                self.accent_color = cached_col.name()
         except Exception:
             pass
 
@@ -122,9 +129,11 @@ class SingleDepotSelectionDialog(QDialog):
         self.branch = str(branch or "public")
         self.branches = dict(branches or {"public": {}})
         self.current_build_id = str(current_build_id or self.single_depot_data.get("buildid") or "").strip()
-        if not self.current_build_id:
+        if not self.current_build_id and not self.is_bundle_stale:
             self.current_build_id = self._resolve_local_buildid()
         self._selected_build_id = self.current_build_id
+        if self.is_bundle_stale and not self.current_build_id:
+            self._try_resolve_historical_buildid_async()
         self._is_build_pinned = False
         self._manifest_overrides: Dict[str, str] = {}
 
@@ -184,8 +193,6 @@ class SingleDepotSelectionDialog(QDialog):
             can_maximize=False,
             use_power_close=True,
         )
-        if getattr(self, "_ambient_color", None):
-            self.title_bar.update_accent_color(self._ambient_color)
         root_layout.addWidget(self.title_bar)
 
         content_widget = QWidget()
@@ -248,9 +255,10 @@ class SingleDepotSelectionDialog(QDialog):
 
             def _copy_appid_single():
                 from PyQt6.QtWidgets import QApplication, QToolTip
+                from PyQt6.QtCore import QRect
                 QApplication.clipboard().setText(aid_str)
                 pos = self.appid_btn.mapToGlobal(self.appid_btn.rect().bottomLeft())
-                QToolTip.showText(pos, f"✓ Copied AppID: {aid_str}", self.appid_btn, msecDisplayTime=2000)
+                QToolTip.showText(pos, f"✓ Copied AppID: {aid_str}", self.appid_btn, QRect(), 2000)
 
             self.appid_btn.clicked.connect(_copy_appid_single)
             title_hlayout.addWidget(self.appid_btn)
@@ -286,34 +294,9 @@ class SingleDepotSelectionDialog(QDialog):
             branch_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.7);")
             controls_row.addWidget(branch_lbl)
 
-            self.branch_combo = QComboBox()
+            self.branch_combo = ModernComboBox()
             self.branch_combo.setFixedHeight(28)
             self.branch_combo.setMinimumWidth(110)
-            self.branch_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba(255, 255, 255, 0.16);
-                    border-radius: 6px;
-                    color: #FFFFFF;
-                    padding: 2px 10px;
-                    font-size: 8.5pt;
-                    font-weight: 600;
-                }}
-                QComboBox:hover {{
-                    border-color: rgba(255, 255, 255, 0.3);
-                    background-color: rgba(255, 255, 255, 0.10);
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 18px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1c23;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }}
-            """)
             self.branch_combo.addItems(branch_list)
             self.branch_combo.currentTextChanged.connect(self._on_branch_changed)
             if self.branch in branch_list:
@@ -326,24 +309,37 @@ class SingleDepotSelectionDialog(QDialog):
             self.branch_btn.setMinimumWidth(110)
             self.branch_btn.setEnabled(False)
             self.branch_btn.setToolTip("No alternative branches available")
-            self.branch_btn.setStyleSheet("""
-                QPushButton, QPushButton:disabled {
+            hex_c = self.accent_color.lstrip('#')
+            try:
+                ar, ag, ab = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
+            except Exception:
+                ar, ag, ab = 192, 108, 132
+            self.branch_btn.setStyleSheet(f"""
+                QPushButton, QPushButton:disabled {{
                     background-color: rgba(255, 255, 255, 0.03);
-                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba({ar}, {ag}, {ab}, 0.35);
                     border-radius: 6px;
-                    color: rgba(255, 255, 255, 0.40);
+                    color: rgba(255, 255, 255, 0.85);
                     font-size: 8.5pt;
                     font-weight: 600;
                     padding: 2px 12px;
-                }
+                }}
             """)
             controls_row.addWidget(self.branch_btn)
 
         controls_row.addSpacing(4)
 
-        display_bid = self.current_build_id or "Latest"
-        self.builds_btn = QPushButton(f"Build: {display_bid}")
-        self.builds_btn.setToolTip(f"Build ID: {display_bid} (Click to switch builds)")
+        if self.is_bundle_stale:
+            display_bid = f"Build: {self.current_build_id} (Older)" if self.current_build_id else "Older Build"
+            tooltip_bid = (
+                f"Manifests in this package are older than the latest release on branch '{self.branch}'.\n"
+                "Click to switch builds or view build details."
+            )
+        else:
+            display_bid = f"Build: {self.current_build_id}" if self.current_build_id else "Build: Latest"
+            tooltip_bid = f"Build ID: {self.current_build_id or 'Latest'} (Click to switch builds)"
+        self.builds_btn = QPushButton(display_bid)
+        self.builds_btn.setToolTip(tooltip_bid)
         self.builds_btn.setFixedHeight(28)
         self.builds_btn.setMinimumWidth(110)
         self.builds_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -606,8 +602,9 @@ class SingleDepotSelectionDialog(QDialog):
         if _locked_target:
             target = storage_targets.describe(_locked_target)
             btn = create_locked_storage_button(
-                _locked_target, target.label, target.free, height=28, radius=4
+                _locked_target, target.label, target.free, height=28, radius=4, accent_color=self.accent_color
             )
+            self._locked_storage_btn = btn
             layout.addWidget(btn, 1)
             self.selected_storage_path = _locked_target
             return
@@ -674,43 +671,9 @@ class SingleDepotSelectionDialog(QDialog):
 
         # Dropdown combo box for 4+ storages
         if overflow_paths:
-            combo_style = f"""
-                QComboBox {{
-                    background-color: transparent;
-                    color: rgba(255, 255, 255, 0.7);
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 4px;
-                    padding: 2px 8px;
-                    font-size: 8.5pt;
-                    font-weight: 500;
-                }}
-                QComboBox:hover {{
-                    border-color: {self.accent_color};
-                    color: {self.accent_color};
-                }}
-                QComboBox[active="true"] {{
-                    background-color: {self.accent_color} !important;
-                    color: {text_hex} !important;
-                    border: 1px solid {self.accent_color} !important;
-                    font-weight: bold;
-                }}
-                QComboBox::drop-down {{
-                    border: none;
-                    width: 14px;
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1c23;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    selection-color: {text_hex};
-                    border: 1px solid rgba(255, 255, 255, 0.18);
-                    border-radius: 4px;
-                }}
-            """
-            combo = QComboBox()
+            combo = ModernComboBox()
             combo.setFixedHeight(28)
             combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            combo.setStyleSheet(combo_style)
             combo.setCursor(Qt.CursorShape.PointingHandCursor)
             combo.addItem("More...", None)
 
@@ -975,6 +938,58 @@ class SingleDepotSelectionDialog(QDialog):
             pass
         return ""
 
+    def _try_resolve_historical_buildid_async(self):
+        """If bundle is stale and build ID is unknown, check SteamDB cache in background."""
+        aid_str = str(getattr(self, "app_id", "") or "").strip()
+        if not aid_str.isdigit() or aid_str in ("0", "N/A", "unknown"):
+            return
+        aid_int = int(aid_str)
+
+        def _worker():
+            try:
+                from core.steamdb_scraper import SteamDBBuildsCache
+                cached_builds = SteamDBBuildsCache().get_builds(aid_int) or []
+                if not cached_builds:
+                    return
+
+                from utils.depot_utils import iter_depot_manifest_gids
+                sel_branch = getattr(self, "branch", "public")
+                zip_manifests = {}
+                single_gids = iter_depot_manifest_gids(getattr(self, "single_depot_data", {}) or {}, sel_branch)
+                single_id = str(getattr(self, "single_depot_id", "") or "").strip()
+                if single_id and single_gids:
+                    zip_manifests[single_id] = single_gids
+                for did, ddata in (self.depots or {}).items():
+                    gids = iter_depot_manifest_gids(ddata, sel_branch)
+                    if gids:
+                        zip_manifests[str(did)] = gids
+
+                if not zip_manifests:
+                    return
+
+                for cb in cached_builds:
+                    c_depots = cb.get("depots", {})
+                    if any(
+                        str(d_id) in c_depots and str(c_depots[str(d_id)].get("manifest_id")) in m_ids
+                        for d_id, m_ids in zip_manifests.items()
+                    ):
+                        matched_bid = str(cb.get("buildid", "")).strip()
+                        if matched_bid:
+                            def _update_ui(bid=matched_bid):
+                                if not getattr(self, "_selected_build_id", None) or self._selected_build_id == getattr(self, "current_build_id", ""):
+                                    self.current_build_id = bid
+                                    self._selected_build_id = bid
+                                    if hasattr(self, "builds_btn") and self.builds_btn is not None:
+                                        self.builds_btn.setText(f"Build: {bid} (Older)")
+                            from utils.main_thread import post_to_main_thread
+                            post_to_main_thread(_update_ui)
+                            break
+            except Exception as e:
+                logger.debug(f"[SingleDepot] Background build ID match failed: {e}")
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
     def get_selected_build(self) -> Optional[str]:
         return getattr(self, "_selected_build_id", None) or self.current_build_id
 
@@ -1057,11 +1072,33 @@ class SingleDepotSelectionDialog(QDialog):
                     background-color: rgba(255, 255, 255, 0.14);
                 }}
             """)
-        else:
+        elif getattr(self, "is_bundle_stale", False):
             self.builds_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(230, 126, 34, 0.12);
+                    border: 1px solid rgba(230, 126, 34, 0.6);
+                    border-radius: 6px;
+                    color: #f39c12;
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                    padding: 2px 10px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(230, 126, 34, 0.22);
+                    border-color: #f39c12;
+                    color: #f39c12;
+                }
+            """)
+        else:
+            hex_c = self.accent_color.lstrip('#')
+            try:
+                ar, ag, ab = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
+            except Exception:
+                ar, ag, ab = 192, 108, 132
+            self.builds_btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba(255, 255, 255, 0.16);
+                    border: 1px solid rgba({ar}, {ag}, {ab}, 0.35);
                     border-radius: 6px;
                     color: #FFFFFF;
                     font-size: 8.5pt;
@@ -1070,7 +1107,8 @@ class SingleDepotSelectionDialog(QDialog):
                 }}
                 QPushButton:hover {{
                     background-color: rgba(255, 255, 255, 0.12);
-                    border-color: rgba(255, 255, 255, 0.3);
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
                 }}
             """)
 
@@ -1130,15 +1168,129 @@ class SingleDepotSelectionDialog(QDialog):
                 self._apply_build_selection(selected_bid, patch_depots)
 
     def _apply_dynamic_theme(self, color: QColor) -> None:
-        """Dynamically adapt ambient color and titlebar without touching button styling."""
+        """Dynamically adapt ambient color, titlebar, checkbox and action button styling."""
+        from utils.settings import get_settings
+        s = getattr(self, "_settings", None) or get_settings()
+        if not s.value("enable_adaptive_game_theming", False, type=bool):
+            return
         if not color or not isinstance(color, QColor) or not color.isValid():
             return
         self._ambient_color = color
-        if hasattr(self, "title_bar") and self.title_bar:
-            self.title_bar.update_accent_color(color)
+        self.accent_color = color.name()
+
+        if hasattr(self, "depot_checkbox") and self.depot_checkbox:
+            self.depot_checkbox.setStyleSheet(f"""
+                QCheckBox::indicator {{
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 4px;
+                    border: 1px solid rgba(255, 255, 255, 0.3);
+                    background-color: rgba(255, 255, 255, 0.05);
+                }}
+                QCheckBox::indicator:hover {{
+                    border-color: {self.accent_color};
+                }}
+                QCheckBox::indicator:checked {{
+                    background-color: {self.accent_color};
+                    border-color: {self.accent_color};
+                }}
+            """)
+
+        if hasattr(self, "ok_btn") and self.ok_btn:
+            from utils.color_utils import get_best_foreground_color
+            btn_text_color = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")
+            self.ok_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {self.accent_color};
+                    color: {btn_text_color};
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    padding: 4px 14px;
+                }}
+                QPushButton:hover {{
+                    background-color: #FFFFFF;
+                    color: #111318;
+                }}
+            """)
+
+        if hasattr(self, "_update_build_btn_style"):
+            self._update_build_btn_style()
+
+        hex_c = self.accent_color.lstrip('#')
+        try:
+            ar, ag, ab = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
+        except Exception:
+            ar, ag, ab = 192, 108, 132
+
+        if hasattr(self, "select_files_button") and self.select_files_button:
+            self.select_files_button.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: rgba(255, 255, 255, 0.04);
+                    color: rgba(255, 255, 255, 0.85);
+                    border: 1px solid rgba({ar}, {ag}, {ab}, 0.30);
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                    font-size: 8.5pt;
+                    font-weight: 500;
+                }}
+                QPushButton:hover {{
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+            """)
+
+        if hasattr(self, "branch_btn") and self.branch_btn:
+            self.branch_btn.setStyleSheet(f"""
+                QPushButton, QPushButton:disabled {{
+                    background-color: rgba(255, 255, 255, 0.03);
+                    border: 1px solid rgba({ar}, {ag}, {ab}, 0.35);
+                    border-radius: 6px;
+                    color: rgba(255, 255, 255, 0.85);
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                    padding: 2px 12px;
+                }}
+            """)
+        if hasattr(self, "_locked_storage_btn") and self._locked_storage_btn:
+            from ui.dialogs.storage_lock import style_locked_storage_button
+            style_locked_storage_button(self._locked_storage_btn, self.accent_color)
+        elif hasattr(self, "_storage_btn_group") and self._storage_btn_group:
+            from utils.color_utils import get_best_foreground_color
+            text_hex = get_best_foreground_color(self.accent_color, dark_color="#111318", light_color="#FFFFFF")
+            btn_style = f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: rgba(255, 255, 255, 0.7);
+                    border: 1px solid rgba(255, 255, 255, 0.15);
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 8.5pt;
+                    font-weight: 500;
+                }}
+                QPushButton:hover {{
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
+                }}
+                QPushButton:checked {{
+                    background-color: {self.accent_color} !important;
+                    color: {text_hex} !important;
+                    border: 1px solid {self.accent_color} !important;
+                    font-weight: bold;
+                }}
+            """
+            for btn in self._storage_btn_group.buttons():
+                btn.setStyleSheet(btn_style)
+
         self.update()
 
     def closeEvent(self, a0):
+        if hasattr(self, "_enrich_runner") and self._enrich_runner:
+            try:
+                self._enrich_runner.stop(wait_ms=500, terminate_on_timeout=True)
+            except Exception as e:
+                logger.debug(f"[SingleDepot] Error stopping enrich runner: {e}")
         if hasattr(self, "fetcher") and self.fetcher is not None:
             try:
                 self.fetcher.stop()

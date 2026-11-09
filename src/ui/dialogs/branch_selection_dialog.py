@@ -17,7 +17,8 @@ class BranchSelectionDialog:
     def select_branch(
         parent=None,
         app_id: str = "",
-        branches: Optional[Dict[str, Any]] = None
+        branches: Optional[Dict[str, Any]] = None,
+        game_name: str = "",
     ) -> Tuple[Optional[str], bool]:
         branches = branches or {}
         items = sorted(branches.keys(), key=lambda k: (0 if k == "public" else 1, k.lower()))
@@ -28,14 +29,25 @@ class BranchSelectionDialog:
         for b in items:
             b_info = branches.get(b, {})
             bid = b_info.get("buildid", "") if isinstance(b_info, dict) else ""
-            display_items.append(f"{b} (Build: {bid})" if bid else b)
+            display_items.append(f"{b} ({bid})" if bid else b)
 
+        if not game_name:
+            try:
+                from utils.edition_catalog import get_app_name
+
+                game_name = get_app_name(str(app_id), allow_network=False)
+            except Exception:
+                game_name = ""
         dialog = ThemedInputDialog(
             parent,
             title="Select Branch",
-            label=f"Multiple branches found for AppID {app_id}.\nSelect which branch manifest to fetch:",
+            label=f"Select branch for: <b>{game_name or f'App {app_id}'}</b>",
             items=display_items,
         )
+        # Branch names and build IDs are short: no need for a full-width field.
+        dialog.setMinimumWidth(340)
+        dialog.field.setFixedWidth(230)
+        dialog.adjustSize()
 
         # Pre-select saved branch if exists
         settings = get_settings()

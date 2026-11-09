@@ -120,7 +120,6 @@ Terminal=false
 Type=Application
 Categories=Utility;Game;
 StartupWMClass=ASSella
-MimeType=x-scheme-handler/accela;
 EOL
     chmod 0644 "$desktop_tmp"
     # Unlink any existing entry/symlink so older coreutils mv (e.g. <= 8.32 on Ubuntu 22.04)

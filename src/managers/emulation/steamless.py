@@ -37,6 +37,11 @@ class SteamlessMixin:
                 self.steamless_task.wait(2000)
             self.steamless_task = None
     def _start_steamless_processing(self, use_aio=True):
+        if hasattr(self, "settings") and not self.settings.value("auto_run_steamless_post_install", True, type=bool):
+            logger.info("Auto-run Steamless is disabled in settings. Skipping post-processing...")
+            self._finalize_job_logic()
+            return
+
         if not self.current_dest_path or not self.game_data:
             self._finalize_job_logic()
             return

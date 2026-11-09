@@ -99,6 +99,12 @@ def get_settings() -> QSettings:
         except Exception:
             pass
 
+        # Christmas theme seasonal auto-activation (Dec 20 - Dec 26, one-time per year)
+        try:
+            check_and_apply_christmas_theme(_settings_local.instance)
+        except Exception as e:
+            logger.debug(f"Christmas theme auto-activation skipped: {e}")
+
         # Migrate default download plugin to spacebunny.lua starting this version
         try:
             if not _settings_local.instance.value("spacebunny_default_migrated_v28", False, type=bool):
@@ -157,8 +163,35 @@ def check_and_apply_halloween_theme(settings: QSettings) -> bool:
                 settings.setValue("user_background_color", "#141211")
                 settings.sync()
                 return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Failed to check/apply Halloween theme: {e}")
+    return False
+
+
+def check_and_apply_christmas_theme(settings: QSettings) -> bool:
+    """Auto-activates Christmas theme once per year if launched between Dec 20 and Dec 26.
+
+    The key 'christmas_auto_applied_year' stores the year it was triggered. If the user
+    manually changes their theme afterwards, it never reverts back for that year.
+    """
+    try:
+        from datetime import date
+        today = date.today()
+        # Active window: December 20 through December 26 (inclusive)
+        in_christmas_window = (today.month == 12 and 20 <= today.day <= 26)
+        if in_christmas_window:
+            applied_year = settings.value("christmas_auto_applied_year", 0, type=int)
+            if applied_year != today.year:
+                settings.setValue("christmas_auto_applied_year", today.year)
+                settings.setValue("material_preset", "christmas")
+                settings.setValue("accent_color", "#FF334B")
+                settings.setValue("background_color", "#0b0e14")
+                settings.setValue("user_accent_color", "#FF334B")
+                settings.setValue("user_background_color", "#0b0e14")
+                settings.sync()
+                return True
+    except Exception as e:
+        logger.debug(f"Failed to check/apply Christmas theme: {e}")
     return False
 
 

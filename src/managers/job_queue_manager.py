@@ -219,6 +219,11 @@ class JobQueueManager(QObject):
             elif self.jobs_completed_count > 0:
                 logger.info(f"Queue Finished: All {self.jobs_completed_count} job(s) have finished successfully!")
 
+            # Trigger consolidated library scan now that all queued jobs have completed
+            if hasattr(self.main_window, "game_manager") and self.main_window.game_manager:
+                logger.info("[JobQueue] Queue completed: Triggering consolidated library scan.")
+                self.main_window.game_manager.scan_steam_libraries_async()
+
             self.jobs_completed_count = 0
         finally:
             self.is_showing_completion_dialog = False

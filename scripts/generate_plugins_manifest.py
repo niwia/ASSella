@@ -1,281 +1,376 @@
 #!/usr/bin/env python3
-"""Utility script to generate plugins_manifest.json for Cloudflare R2 hosting.
+"""Build, sign and stage plugins_manifest.json for ASSella.
 
-Scans a directory for .lua files, computes their SHA-256 and byte sizes,
-and formats a clean plugins_manifest.json.
+The source of truth is the plugin repository (``~/Documents/spacebunny`` by
+default), never ASSella's own download cache. For each published plugin this
+script:
+
+  * reads the metadata the plugin carries itself: its version
+    (``X.VERSION = "..."`` or the ``-- name.lua (x.y)`` header) and its role
+    (``KATAMARI.plugins.<id> = { role = "..." }``); the role decides whether
+    ASSella treats it as a download interceptor;
+  * refuses to publish a file whose contents changed while its version did
+    not (bump the version in the plugin, or pass --allow-same-version);
+  * copies the file into the staging directory (real copies, no symlinks);
+  * writes the manifest with a monotonic ``serial`` and signs it with Ed25519
+    (``plugins_manifest.json.sig``), which ASSella verifies before trusting it.
+
+The PUBLISH table below is what ASSella shows in Settings -> AT0-M; a plugin
+left out of it is not shown. Per plugin:
+
+  required: True      essential; always installed, cannot be turned off
+  default_on: True    optional, installed by default, the user may turn it off
+  (neither)           optional, off until the user turns it on
+  deployable: False   shown greyed out with disabled_reason; installed copies
+                      are moved to .bak
+
+RETIRED lists plugins that are gone for good (moved to .bak everywhere,
+deleted from the bucket by ``--publish --prune``).
+
+Typical use:
+
+    # once: create the signing key, then put the printed public key in
+    # MANIFEST_PUBLIC_KEYS in src/utils/plugin_manager.py
+    python3 scripts/generate_plugins_manifest.py --init-key
+
+    # every release
+    python3 scripts/generate_plugins_manifest.py            # build + sign + stage
+    python3 scripts/generate_plugins_manifest.py --publish  # ... and run publish.sh
 """
 
+from __future__ import annotations
+
 import argparse
+import base64
 import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+HOME = Path.home()
+DEFAULT_SOURCE = HOME / "Documents" / "spacebunny"
+DEFAULT_STAGE = HOME / "r2-publish" / "github-files"
+DEFAULT_KEY = HOME / "r2-publish" / "keys" / "plugins_manifest_ed25519.pem"
+DEFAULT_PUBLISH_SCRIPT = HOME / "r2-publish" / "publish.sh"
+BUNDLED_MANIFEST = Path(__file__).resolve().parents[1] / "src" / "res" / "plugins" / "plugins_manifest.json"
 
-def calculate_sha256(file_path: Path) -> str:
-    h = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        while chunk := f.read(65536):
-            h.update(chunk)
-    return h.hexdigest()
+MANIFEST_NAME = "plugins_manifest.json"
+INTERCEPTOR_ROLES = {"mrc-provider", "download-interceptor", "interceptor"}
 
-
-def extract_plugin_version(file_path: Path) -> str | None:
-    """Try to extract version string from Lua file header or VERSION variable."""
-    try:
-        content = file_path.read_text(encoding="utf-8", errors="ignore")
-        # Match table.VERSION = "1.8.2..." or standalone/table-member VERSION = "1.2.0..."
-        m = re.search(r'\b(?:(?:SpaceBunny|HubcapResolver|Lobster|\w+)\.)?VERSION\s*=\s*["\']([^"\']+)["\']', content)
-        if m:
-            sem = re.search(r'(\d+\.\d+(?:\.\d+)?(?:[a-zA-Z0-9_\.\-]+)?)', m.group(1))
-            if sem:
-                return sem.group(1)
-        # Match header line comment e.g. -- spacebunny.lua (1.8.2)
-        m2 = re.search(r'^--\s*[\w\.\-]+\.lua\s*\((v?\d+(?:\.\d+)*(?:[a-zA-Z0-9_\.\-]+)?)\)', content, re.MULTILINE)
-        if m2:
-            return m2.group(1).lstrip("v")
-        m3 = re.search(r'^--\s*[\w\.\-]+\.lua\s+v?(\d+\.\d+(?:\.\d+)*(?:[a-zA-Z0-9_\.\-]+)?)', content, re.MULTILINE)
-        if m3:
-            return m3.group(1)
-    except Exception:
-        pass
-    return None
-
-
-DEFAULT_DESCRIPTIONS = {
-    "download.lua": {
-        "name": "Download Interceptor",
-        "description": "Native Steam download interception and depot streaming plugin for SLSsteam.",
-        "version": "1.0.1",
-        "category": "interceptor",
-        "required": False,
-        "is_default": False,
-    },
+# What gets published. Text here is what users see in ASSella.
+PUBLISH: dict[str, dict] = {
     "spacebunny.lua": {
         "name": "SpaceBunny",
-        "description": "Standardized SLSsteam download interceptor with multi-provider MRC authority & circuit breakers.",
-        "version": "1.8.2",
-        "category": "interceptor",
+        "description": "Download interceptor: injects depots and decryption keys and resolves "
+                       "manifest request codes from several providers with circuit breakers.",
         "required": True,
         "is_default": True,
+        "deployable": True,
     },
-    "spacebunny1.5.lua": {
-        "name": "SpaceBunny (Legacy)",
-        "description": "Legacy alias pointing to SpaceBunny 1.8.2.",
-        "version": "1.8.2",
-        "category": "interceptor",
-        "required": False,
-        "is_default": False,
-    },
-    "spliced-tickets.lua": {
-        "name": "Spliced Tickets",
-        "description": "App and depot ownership ticket splicing handler for SLSsteam.",
-        "version": "1.0.0",
-        "category": "companion",
+    "styx.lua": {
+        "name": "Styx",
+        "description": "Ownership ticket splicer so apps added through AdditionalApps pass SteamStub DRM checks.",
         "required": True,
+        "deployable": True,
     },
     "lobster.lua": {
         "name": "Lobster",
-        "description": "SLSsteam config recovery plugin: restores AdditionalDepots and DecryptionKeys if stripped by Headcrab updates.",
-        "version": "1.2.0",
-        "category": "companion",
+        "description": "Restores AdditionalDepots and DecryptionKeys in config.yaml when an SLSsteam update strips them.",
         "required": True,
+        "deployable": True,
     },
-    "hubcap.lua": {
-        "name": "Hubcap Auto-Fetch",
-        "description": "Standalone Hubcap key resolver. Automatically fetches missing AES decryption keys from Hubcap API.",
-        "version": "1.0.0",
-        "category": "companion",
+    "lettuce.lua": {
+        "name": "Lettuce",
+        "description": "Proxy / ISP-block transport for the plugins' own requests (MRC providers, Hubcap), "
+                       "with a Cloudflare worker fallback. Formerly Bypass.",
         "required": False,
+        # SpaceBunny's (and later Pineapple's) one-shot proxy step; on by
+        # default, the user may turn it off.
+        "default_on": True,
+        "deployable": True,
+    },
+    "pineapple.lua": {
+        # Published name differs from the file in the plugin repository.
+        "source": "pinapple_v1.lua",
+        "name": "Pineapple",
+        "description": "Manifest fallback: puts Hubcap manifests into Steam's depotcache before Steam asks, "
+                       "so updates work when every MRC provider is down. Formerly Bakeneko.",
+        "required": False,
+        # Not ready: no tests yet, and it does not use Lettuce for its own
+        # requests (only proxy.worker_url). Shown greyed out until then.
+        "deployable": False,
+        "disabled_reason": "Pineapple is still being finished and will be enabled in a future update.",
     },
 }
 
+RETIRED: dict[str, dict] = {
+    "hubcap.lua": {"replaced_by": "pineapple.lua", "reason": "The Hubcap key resolver is retired; Pineapple replaces it."},
+    "bypass.lua": {"replaced_by": "lettuce.lua", "reason": "Renamed to Lettuce."},
+    "spacebunny1.5.lua": {"replaced_by": "spacebunny.lua", "reason": "Legacy SpaceBunny alias."},
+    "spliced-tickets.lua": {"replaced_by": "styx.lua", "reason": "Superseded by Styx."},
+    "katamari.lua": {"replaced_by": None, "reason": "The registry is no longer needed; katamari.conf.lua stays the shared config."},
+    "bakeneko.lua": {"replaced_by": "pineapple.lua", "reason": "Renamed to Pineapple."},
+    "download.lua": {"replaced_by": "spacebunny.lua", "reason": "The Standard Interceptor is no longer published; SpaceBunny is the interceptor."},
+}
 
-def increment_version(version_str: str) -> str:
-    """Increment version x.y.z where z rolls over at 10 to bump y, and y rolls over at 10 to bump x."""
-    try:
-        parts = [int(p) for p in str(version_str).split(".")]
-        while len(parts) < 3:
-            parts.append(0)
-        x, y, z = parts[0], parts[1], parts[2]
-    except Exception:
-        x, y, z = 1, 0, 0
-
-    z += 1
-    if z >= 10:
-        z = 0
-        y += 1
-        if y >= 10:
-            y = 0
-            x += 1
-    return f"{x}.{y}.{z}"
+_KATAMARI_RE = re.compile(r"KATAMARI\.plugins(?:\.(\w+)|\[\s*[\"'](\w+)[\"']\s*\])\s*=\s*\{(.*?)\}", re.S)
 
 
-def generate_manifest(plugins_dir: Path, output_file: Path, force_bump: bool = False) -> dict:
-    # Attempt to load existing manifest to check versions and hashes
-    existing_plugins = {}
-    manifest_source = output_file if output_file.is_file() else (plugins_dir / "plugins_manifest.json")
-    if manifest_source.is_file():
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def plugin_meta(text: str) -> dict:
+    """Version and role from the plugin's own source."""
+    meta: dict = {"version": None, "role": None, "id": None}
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("--"))
+    m = re.search(r'\bVERSION\s*=\s*(?:\w+\.VERSION\s+or\s+)?["\']([^"\']+)["\']', text)
+    if m:
+        meta["version"] = m.group(1).strip()
+    else:
+        h = re.search(r"^--\s*[\w.\-]+\.lua\s*\(v?([\w.\-]+)\)", text, re.M)
+        if h:
+            meta["version"] = h.group(1)
+    k = _KATAMARI_RE.search(code)
+    if k:
+        meta["id"] = k.group(1) or k.group(2)
+        r = re.search(r"\brole\s*=\s*[\"']([\w\-]+)[\"']", k.group(3))
+        if r:
+            meta["role"] = r.group(1)
+    if not meta["role"]:
+        if re.search(r"GetPackage|GetManifestRequestCode|GetMRC\b|GetBinary", code):
+            meta["role"] = "download-interceptor"
+        elif "GetAppOwnershipTicket" in code:
+            meta["role"] = "ticket-splicer"
+    return meta
+
+
+# ---------------------------------------------------------------- signing key
+def _load_private_key(path: Path):
+    from cryptography.hazmat.primitives import serialization
+
+    return serialization.load_pem_private_key(path.read_bytes(), password=None)
+
+
+def public_key_b64(private_key) -> str:
+    from cryptography.hazmat.primitives import serialization
+
+    raw = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+    )
+    return base64.b64encode(raw).decode()
+
+
+def init_key(path: Path) -> int:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    if path.exists():
+        print(f"Key already exists: {path}")
+        print("Public key:", public_key_b64(_load_private_key(path)))
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    key = Ed25519PrivateKey.generate()
+    pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(pem)
+    print(f"Created signing key: {path}  (keep it private; back it up)")
+    print("Public key (put this in MANIFEST_PUBLIC_KEYS):", public_key_b64(key))
+    return 0
+
+
+# ------------------------------------------------------------------- building
+def previous_manifest(stage: Path) -> dict:
+    for cand in (stage / MANIFEST_NAME, BUNDLED_MANIFEST):
         try:
-            with open(manifest_source, "r", encoding="utf-8") as f:
-                old_data = json.load(f)
-                existing_plugins = old_data.get("plugins", {})
+            if cand.is_file() and not cand.is_symlink():
+                return json.loads(cand.read_text(encoding="utf-8"))
         except Exception:
-            existing_plugins = {}
+            continue
+    return {}
 
-    plugins = {}
-    for lua_file in sorted(plugins_dir.glob("*.lua")):
-        fname = lua_file.name
-        curr_sha256 = calculate_sha256(lua_file)
-        curr_size = lua_file.stat().st_size
 
-        meta = DEFAULT_DESCRIPTIONS.get(
-            fname,
-            {
-                "name": fname.replace(".lua", "").replace("-", " ").title(),
-                "description": f"SLSsteam plugin {fname}",
-                "version": "1.0.0",
-                "category": "companion" if fname in ("lobster.lua", "hubcap.lua", "spliced-tickets.lua") else "interceptor",
-                "required": False,
-            },
-        )
+def run_lua_tests(source: Path) -> bool:
+    tests = ["test_SpaceBunny1_8.0beta.lua", "test_styx.lua", "test_lettuce.lua", "test_pinapple.lua", "test_lobster.lua"]
+    luajit = shutil.which("luajit")
+    if not luajit:
+        print("luajit not found; skipping plugin tests (use --skip-tests to silence this)")
+        return True
+    ok = True
+    for t in tests:
+        if not (source / t).is_file():
+            continue
+        res = subprocess.run([luajit, t], cwd=source, capture_output=True, text=True, timeout=300)
+        tail = (res.stdout.strip().splitlines() or [""])[-1]
+        failed = bool(res.returncode != 0 or re.search(r"\b[1-9]\d* (?:failures|failed)\b", tail) or "FAIL " in res.stdout)
+        print(f"  {'FAIL' if failed else 'ok  '} {t}: {tail}")
+        ok = ok and not failed
+    return ok
 
-        detected_version = extract_plugin_version(lua_file)
-        base_version = detected_version or meta.get("version", "1.0.0")
 
-        old_entry = existing_plugins.get(fname, {})
-        old_sha = old_entry.get("sha256", "")
-        old_version = old_entry.get("version")
-
-        if detected_version:
-            new_version = detected_version
-        elif not old_sha:
-            new_version = base_version
-        elif old_sha != curr_sha256 or force_bump:
-            new_version = increment_version(old_version or base_version)
-        else:
-            new_version = old_version or base_version
-
-        plugin_entry = {
-            "name": meta["name"],
+def build_manifest(source: Path, stage: Path, allow_same_version: bool) -> tuple[dict, dict[str, bytes]]:
+    prev = (previous_manifest(stage).get("plugins") or {})
+    plugins: dict[str, dict] = {}
+    payloads: dict[str, bytes] = {}
+    problems = []
+    for fname, info in PUBLISH.items():
+        src = source / info.get("source", fname)
+        if not src.is_file():
+            problems.append(f"{fname}: {src.name} not found in {source}")
+            continue
+        data = src.read_bytes()
+        meta = plugin_meta(data.decode("utf-8", errors="ignore"))
+        meta["version"] = meta["version"] or info.get("version")
+        if not meta["version"]:
+            problems.append(f"{fname}: no version in the file (VERSION = \"x.y\" or a '-- {fname} (x.y)' header)")
+            continue
+        digest = sha256_bytes(data)
+        old = prev.get(fname) or {}
+        if old.get("sha256") and old["sha256"] != digest and str(old.get("version")) == meta["version"] and not allow_same_version:
+            problems.append(f"{fname}: contents changed but version is still {meta['version']}; bump it in the plugin")
+            continue
+        role = meta["role"] or info.get("role") or "companion"
+        entry = {
+            "name": info["name"],
             "filename": fname,
-            "version": new_version,
-            "category": meta.get("category", "interceptor"),
-            "description": meta["description"],
-            "sha256": curr_sha256,
-            "size_bytes": curr_size,
-            "required": meta["required"],
+            "version": meta["version"],
+            "role": role,
+            "category": "interceptor" if role in INTERCEPTOR_ROLES else "companion",
+            "description": info["description"],
+            "sha256": digest,
+            "size_bytes": len(data),
+            "required": bool(info.get("required", False)),
+            "deployable": bool(info.get("deployable", True)),
         }
-        if "is_default" in meta:
-            plugin_entry["is_default"] = meta["is_default"]
+        if info.get("is_default"):
+            entry["is_default"] = True
+        if info.get("default_on") and not entry["required"]:
+            entry["default_on"] = True
+        if info.get("disabled_reason"):
+            entry["disabled_reason"] = info["disabled_reason"]
+        plugins[fname] = entry
+        payloads[fname] = data
 
-        plugins[fname] = plugin_entry
+    if problems:
+        print("Not publishing:")
+        for p in problems:
+            print("  -", p)
+        sys.exit(1)
 
+    now = datetime.now(timezone.utc)
     manifest = {
-        "manifest_version": 1,
-        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "manifest_version": 2,
+        "serial": int(now.strftime("%Y%m%d%H%M%S")),
+        "updated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "default_interceptor": "spacebunny.lua",
         "plugins": plugins,
+        "retired": RETIRED,
     }
-
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
-        f.write("\n")
-
-    print(f"Generated manifest with {len(plugins)} plugins -> {output_file}")
-    return manifest
+    return manifest, payloads
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Generate plugins_manifest.json for R2 and sync plugins")
-    default_accela_dir = Path.home() / ".local/share/ACCELA/plugins"
-    default_r2_staging = Path.home() / "r2-publish/github-files"
-    publish_script = Path.home() / "r2-publish/publish.sh"
+def stage_files(stage: Path, manifest_bytes: bytes, signature: bytes, payloads: dict[str, bytes]) -> None:
+    stage.mkdir(parents=True, exist_ok=True)
 
-    parser.add_argument(
-        "--plugins-dir",
-        type=Path,
-        default=default_r2_staging if default_r2_staging.is_dir() else default_accela_dir,
-        help="Directory containing .lua plugins (default: r2-publish/github-files or ~/.local/share/ACCELA/plugins)",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=None,
-        help="Output JSON file path (default: <plugins-dir>/plugins_manifest.json)",
-    )
-    parser.add_argument(
-        "--stage-dir",
-        type=Path,
-        default=default_r2_staging if default_r2_staging.is_dir() else None,
-        help="R2 staging directory to synchronize plugins into (default: ~/r2-publish/github-files)",
-    )
-    parser.add_argument(
-        "--force-bump",
-        action="store_true",
-        help="Force increment version even if SHA-256 did not change",
-    )
-    parser.add_argument(
-        "--publish",
-        action="store_true",
-        help="Run publish.sh in r2-publish after generating manifest",
-    )
-    args = parser.parse_args()
+    def put(name: str, data: bytes) -> None:
+        dst = stage / name
+        if dst.is_symlink():
+            dst.unlink()  # the old layout linked into ASSella's cache; replace with a real file
+        tmp = dst.with_name(dst.name + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(dst)
 
-    # Step 1: Synchronize plugins from ~/.local/share/ACCELA/plugins to stage-dir if staging
-    stage_dir = args.stage_dir
-    if stage_dir and stage_dir.is_dir() and default_accela_dir.is_dir():
-        print(f"Syncing plugins from {default_accela_dir} to {stage_dir}...")
-        for src_file in default_accela_dir.glob("*.lua"):
-            dest_name = src_file.name
-            # Normalize spacebunnny1.5.lua -> spacebunny1.5.lua (single 'n')
-            if dest_name in ("spacebunnny1.5.lua", "spacebunnny1.5beta.lua"):
-                dest_name = "spacebunny1.5.lua"
+    for name, data in payloads.items():
+        put(name, data)
+    put(MANIFEST_NAME + ".sig", signature)
+    put(MANIFEST_NAME, manifest_bytes)
 
-            dest_path = stage_dir / dest_name
-            try:
-                if dest_path.is_symlink() or dest_path.exists():
-                    if dest_path.resolve() == src_file.resolve():
-                        print(f"  Already linked: {dest_path.name} -> {src_file}")
-                        continue
-                    # Remove stale link/file
-                    dest_path.unlink()
-                dest_path.symlink_to(src_file)
-                print(f"  Linked: {dest_path.name} -> {src_file}")
-            except Exception as e:
-                # Fallback to copy2
-                try:
-                    if dest_path.exists() and dest_path.resolve() == src_file.resolve():
-                        continue
-                    shutil.copy2(src_file, dest_path)
-                    print(f"  Copied: {src_file.name} -> {dest_path.name}")
-                except Exception as copy_err:
-                    print(f"  Error syncing {src_file.name}: {copy_err}")
+    # Retired payloads stay out of the upload set.
+    for name in RETIRED:
+        p = stage / name
+        if p.is_symlink() or p.is_file():
+            p.unlink()
+            print(f"  removed retired {name} from staging")
 
-    target_dir = stage_dir if (stage_dir and stage_dir.is_dir()) else args.plugins_dir
-    out_file = args.output or (target_dir / "plugins_manifest.json")
 
-    manifest = generate_manifest(target_dir, out_file, force_bump=args.force_bump)
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Build, sign and stage plugins_manifest.json for ASSella.")
+    ap.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="plugin repository (default: ~/Documents/spacebunny)")
+    ap.add_argument("--stage", type=Path, default=DEFAULT_STAGE, help="R2 staging directory (default: ~/r2-publish/github-files)")
+    ap.add_argument("--key", type=Path, default=DEFAULT_KEY, help="Ed25519 signing key (PEM)")
+    ap.add_argument("--init-key", action="store_true", help="create the signing key and print its public key")
+    ap.add_argument("--allow-same-version", action="store_true", help="publish changed files without a version bump")
+    ap.add_argument("--skip-tests", action="store_true", help="do not run the luajit plugin tests first")
+    ap.add_argument("--dry-run", action="store_true", help="print the manifest, write nothing")
+    ap.add_argument("--update-bundled", action="store_true", help="also write src/res/plugins/plugins_manifest.json")
+    ap.add_argument("--publish", action="store_true", help="run publish.sh after staging")
+    ap.add_argument("--prune", action="store_true",
+                    help="with --publish: also delete retired plugins from the bucket")
+    args = ap.parse_args()
 
-    # If staging dir was used, also mirror plugins_manifest.json back to ACCELA plugins
-    target_accela_manifest = default_accela_dir / "plugins_manifest.json"
-    if stage_dir and default_accela_dir.is_dir() and out_file.resolve() != target_accela_manifest.resolve():
-        shutil.copy2(out_file, target_accela_manifest)
-        print(f"Mirrored manifest to {target_accela_manifest}")
+    if args.init_key:
+        return init_key(args.key)
 
-    # Step 2: Publish if requested
+    if not args.key.is_file():
+        print(f"No signing key at {args.key}. Create one with --init-key.")
+        return 1
+    key = _load_private_key(args.key)
+
+    if not args.skip_tests:
+        print("Running plugin tests...")
+        if not run_lua_tests(args.source):
+            print("Plugin tests failed; not publishing.")
+            return 1
+
+    manifest, payloads = build_manifest(args.source, args.stage, args.allow_same_version)
+    manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+    signature = base64.b64encode(key.sign(manifest_bytes)) + b"\n"
+
+    for fname, e in manifest["plugins"].items():
+        flag = "" if e["deployable"] else "  (not deployable)"
+        print(f"  {fname:<16} {e['version']:<8} {e['role']:<20} {e['sha256'][:12]}{flag}")
+    print(f"serial {manifest['serial']}, signed with key {public_key_b64(key)[:16]}...")
+
+    if args.dry_run:
+        return 0
+
+    stage_files(args.stage, manifest_bytes, signature, payloads)
+    print(f"Staged {len(payloads)} plugins + signed manifest in {args.stage}")
+
+    if args.update_bundled:
+        # The bundled copies are the offline fallback (and are used when a
+        # source has no verified copy), so they must match the manifest.
+        bundled_dir = BUNDLED_MANIFEST.parent
+        BUNDLED_MANIFEST.write_bytes(manifest_bytes)
+        for name, data in payloads.items():
+            (bundled_dir / name).write_bytes(data)
+        for old in bundled_dir.glob("*.lua"):
+            if old.name not in payloads:
+                old.unlink()
+                print(f"  removed {old.name} from bundled plugins")
+        print(f"Updated bundled manifest and {len(payloads)} plugin(s) in {bundled_dir}")
+
     if args.publish:
-        if publish_script.is_file():
-            print(f"Executing publish script: {publish_script} ...")
-            subprocess.run(["bash", str(publish_script)], cwd=str(publish_script.parent), check=True)
-            print("Publish to Cloudflare R2 complete!")
-        else:
-            print(f"Warning: Publish script not found at {publish_script}")
+        if not DEFAULT_PUBLISH_SCRIPT.is_file():
+            print(f"publish script not found: {DEFAULT_PUBLISH_SCRIPT}")
+            return 1
+        cmd = ["bash", str(DEFAULT_PUBLISH_SCRIPT), str(args.stage)]
+        if args.prune:
+            cmd.append("--prune")
+        subprocess.run(cmd, cwd=DEFAULT_PUBLISH_SCRIPT.parent, check=True)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

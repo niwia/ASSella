@@ -1,4 +1,7 @@
+import logging
 from PyQt6.QtCore import QObject, QEvent, QTimer
+
+logger = logging.getLogger(__name__)
 
 class DialogRaiser(QObject):
     """An event filter installed on parent window/dialog.
@@ -7,12 +10,16 @@ class DialogRaiser(QObject):
     def __init__(self, parent_window, child_dialog):
         super().__init__(parent_window)
         self.child_dialog = child_dialog
-        parent_window.installEventFilter(self)
+        if parent_window:
+            parent_window.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.WindowActivate:
-            QTimer.singleShot(50, self._raise_child)
-        return super().eventFilter(obj, event)
+        try:
+            if event is not None and event.type() == QEvent.Type.WindowActivate:
+                QTimer.singleShot(50, self._raise_child)
+        except Exception as e:
+            logger.debug(f"[DialogRaiser] event error: {e}")
+        return False
 
     def _raise_child(self):
         try:

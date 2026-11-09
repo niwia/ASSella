@@ -1,14 +1,19 @@
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Dict, Optional
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer, QCoreApplication
 from PyQt6.QtGui import QColor, QImage, QPixmap
 
 logger = logging.getLogger(__name__)
 
 _THUMBNAIL_COLOR_CACHE: Dict[str, QColor] = {}
 _DISK_CACHE_LOADED: bool = False
+_DIRTY: bool = False
+_SAVE_TIMER: Optional[QTimer] = None
+_HOOK_REGISTERED: bool = False
 
 
 def _get_color_cache_file() -> Path:
@@ -43,26 +48,58 @@ def get_cached_thumbnail_color(app_id: Optional[str]) -> Optional[QColor]:
     return _THUMBNAIL_COLOR_CACHE.get(str(app_id))
 
 
-def _save_color_to_disk_cache(app_id: str, hex_val: str) -> None:
+def _schedule_disk_save() -> None:
+    global _DIRTY, _SAVE_TIMER, _HOOK_REGISTERED
+    _DIRTY = True
+
+    if not _HOOK_REGISTERED:
+        app = QCoreApplication.instance()
+        if app:
+            app.aboutToQuit.connect(flush_color_cache)
+            _HOOK_REGISTERED = True
+
+    if _SAVE_TIMER is None:
+        _SAVE_TIMER = QTimer()
+        _SAVE_TIMER.setSingleShot(True)
+        _SAVE_TIMER.setInterval(2000)
+        _SAVE_TIMER.timeout.connect(flush_color_cache)
+    _SAVE_TIMER.start()
+
+
+def flush_color_cache() -> None:
+    global _DIRTY
+    if not _DIRTY:
+        return
     try:
         cache_path = _get_color_cache_file()
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {}
-        if cache_path.is_file():
-            try:
-                raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    data = raw
-            except Exception:
-                data = {}
-        data[str(app_id)] = hex_val
+        _ensure_disk_cache_loaded()
+        data = {
+            str(k): v.name()
+            for k, v in _THUMBNAIL_COLOR_CACHE.items()
+            if isinstance(v, QColor) and v.isValid()
+        }
         # Cap size at 1500 entries
         if len(data) > 1500:
             for k in list(data.keys())[:300]:
                 data.pop(k, None)
-        cache_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        fd, tmp_file = tempfile.mkstemp(
+            dir=str(cache_path.parent), prefix="colors_", suffix=".tmp"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_file, cache_path)
+        _DIRTY = False
     except Exception as e:
-        logger.debug(f"Could not save thumbnail color cache to disk: {e}")
+        logger.debug(f"Could not flush thumbnail color cache to disk: {e}")
+
+
+def _save_color_to_disk_cache(app_id: str, hex_val: str) -> None:
+    col = QColor(hex_val)
+    if col.isValid():
+        _THUMBNAIL_COLOR_CACHE[str(app_id)] = col
+    _schedule_disk_save()
 
 
 def extract_dominant_color(pixmap: QPixmap, app_id: Optional[str] = None) -> Optional[QColor]:
@@ -144,7 +181,7 @@ def extract_dominant_color(pixmap: QPixmap, app_id: Optional[str] = None) -> Opt
             adjusted = QColor.fromHsv(h, s, v)
             if app_id:
                 _THUMBNAIL_COLOR_CACHE[str(app_id)] = adjusted
-                _save_color_to_disk_cache(str(app_id), adjusted.name())
+                _schedule_disk_save()
             return adjusted
 
     except Exception as e:

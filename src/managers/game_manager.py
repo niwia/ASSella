@@ -1231,6 +1231,33 @@ class GameManager(QObject):
         if tokens_skipped > 0:
             logger.debug(f"Skipped {tokens_skipped} AppToken(s) that already exist")
 
+    def _scrub_dlc_only_base_appid(self, appid) -> None:
+        """Remove a DLC-only base AppID from SLSsteam ``AdditionalApps`` if present.
+
+        Older builds persisted ``dlc_only_mode`` too late, so the base AppID of a
+        DLC-only game could end up in ``AdditionalApps`` and unlock the base game.
+        This self-heals such configs on the next scan.
+        """
+        appid_str = str(appid or "").strip()
+        if not appid_str.isdigit() or appid_str in ("0",):
+            return
+        try:
+            from utils.yaml_config_manager import (
+                get_user_config_path,
+                get_additional_apps,
+                remove_additional_app,
+            )
+            config_path = get_user_config_path()
+            if not config_path or not config_path.exists():
+                return
+            if appid_str in get_additional_apps(config_path):
+                if remove_additional_app(config_path, appid_str):
+                    logger.info(
+                        f"Removed DLC-only base AppID {appid_str} from AdditionalApps"
+                    )
+        except Exception as e:
+            logger.debug(f"DLC-only config scrub failed for {appid_str}: {e}")
+
     def _collect_game_data(
         self,
         game_path,
@@ -1263,6 +1290,11 @@ class GameManager(QObject):
                     is_dlc_only = bool(is_dlc_only_mode(appid))
                 except Exception as e:
                     logger.debug(f"  DLC-only check failed for {appid}: {e}")
+
+            # A DLC-only game must never sit in AdditionalApps, or SLSsteam
+            # unlocks the base game. Undo any stale entry left by older builds.
+            if is_dlc_only:
+                self._scrub_dlc_only_base_appid(appid)
 
             marker_path = marker_path or self._get_accela_marker_path(game_path)
             is_accela_install = bool(marker_path) and not is_dlc_only
@@ -1422,13 +1454,30 @@ class GameManager(QObject):
                             db = DatabaseManager()
                             app_info = db.get_app_info(appid)
                             if app_info and app_info.get("depots"):
-                                if main_depot_id not in app_info["depots"]:
+                                depots_map = app_info.get("depots", {})
+                                d_meta = depots_map.get(main_depot_id, {})
+                                from utils.dlc_helpers import is_dlc_depot
+                                desc = str(d_meta.get("desc") or d_meta.get("name") or "")
+                                if (
+                                    main_depot_id not in depots_map
+                                    or is_dlc_depot(main_depot_id, desc=desc, base_appid=appid, depot_meta=d_meta)
+                                ):
                                     # It's not in the base game depots -> it's a DLC
                                     game_data["is_dlc_only"] = True
+                                    game_data["is_accela_install"] = False
+                                    game_data["is_vapor"] = False
+                                    game_data["is_atom"] = False
+                                    game_data["source"] = "Steam"
+                                    self._scrub_dlc_only_base_appid(appid)
+                                    try:
+                                        from utils.settings import get_settings
+                                        get_settings().setValue(f"dlc_only_mode/{appid}", True)
+                                    except Exception as e:
+                                        logger.debug(f"  Could not persist dlc_only_mode for {appid}: {e}")
                                     # A DLC-only Steam game keeps its base-game name:
                                     # the library card marks the mode with a chip.
                                     # Legacy ACCELA installs still carry the suffix.
-                                    if is_accela_install:
+                                    if is_accela_install and not appmanifest_path:
                                         dlc_info = db.get_app_info(main_depot_id)
                                         if dlc_info and dlc_info.get("name"):
                                             game_data["game_name"] = f"{dlc_info['name']} [DLC]"
@@ -2383,7 +2432,8 @@ class GameManager(QObject):
                     try:
                         with open(desktop_file, "r", encoding="utf-8") as f:
                             content = f.read()
-                            if f"steam://rungameid/{appid}" in content:
+                            # Exact AppID: rungameid/12 must not match rungameid/123.
+                            if re.search(rf"steam://rungameid/{appid}(?!\d)", content):
                                 os.remove(desktop_file)
                                 logger.info(f"Removed desktop entry: {desktop_file}")
                                 desktop_files_removed += 1

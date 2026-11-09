@@ -111,6 +111,65 @@ class SwitchToggle(QWidget):
 
         w = self.width()
         h = self.height()
+
+        try:
+            from utils.settings import get_settings
+            s = get_settings()
+            is_christmas = (
+                s.value("material_preset", "ocean", type=str) == "christmas"
+                or s.value("accent_color", "", type=str).lower() in ("#e53935", "#d32f2f", "#ff334b")
+            )
+        except Exception:
+            is_christmas = False
+
+        if is_christmas:
+            from PyQt6.QtGui import QPainterPath
+            from PyQt6.QtCore import QRectF
+
+            r = 5.0
+            track_rect = QRectF(1.0, 1.0, w - 2.0, h - 2.0)
+            inner_rect = QRectF(3.5, 3.5, w - 7.0, h - 7.0)
+
+            path = QPainterPath()
+            path.addRoundedRect(track_rect, r, r)
+            inner_path = QPainterPath()
+            inner_path.addRoundedRect(inner_rect, r - 1.5, r - 1.5)
+            border_path = path.subtracted(inner_path)
+
+            # Candy-cane striped border
+            p.save()
+            p.setClipPath(border_path)
+            for x in range(-h, w + h, 6):
+                p.fillRect(x, 0, 3, h, QColor("#FF334B"))
+                p.fillRect(x + 3, 0, 3, h, QColor("#FFFFFF"))
+            p.restore()
+
+            # Inner track
+            bg_col = QColor(140, 20, 20, 160) if self._checked else QColor("#0c1017")
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(bg_col))
+            p.drawRoundedRect(inner_rect, r - 1.5, r - 1.5)
+
+            # Candy cane checkmark revealed when checked
+            if self._checked:
+                check_path = QPainterPath()
+                check_path.moveTo(7.5, h / 2.0)
+                check_path.lineTo(11.5, h / 2.0 + 3.5)
+                check_path.lineTo(17.5, h / 2.0 - 4.0)
+                p.strokePath(
+                    check_path,
+                    QPen(QColor("#FFFFFF"), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin),
+                )
+
+            # Square-rounded sliding knob
+            knob_y = (h - self._knob_diameter) / 2.0
+            knob_rect = QRectF(self._circle_pos, knob_y, self._knob_diameter, self._knob_diameter)
+            p.setPen(QPen(QColor("#D32F2F"), 1.0))
+            p.setBrush(QBrush(QColor("#FFFFFF")))
+            p.drawRoundedRect(knob_rect, 3.5, 3.5)
+            p.end()
+            return
+
         radius = h / 2.0
 
         # Background track color

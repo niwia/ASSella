@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QScrollArea,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.helpers import create_checkbox_setting
@@ -27,15 +28,19 @@ logger = logging.getLogger(__name__)
 def create_assela_tab(dialog) -> QWidget:
     """Create the ASSella settings tab."""
     tab = QWidget()
+    tab.setStyleSheet("background: transparent;")
     outer_layout = QVBoxLayout(tab)
     outer_layout.setContentsMargins(0, 0, 0, 0)
 
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; } QScrollArea > QWidget > QWidget { background: transparent; }")
+    if scroll.viewport():
+        scroll.viewport().setStyleSheet("background: transparent;")
 
     container = QWidget()
+    container.setStyleSheet("background: transparent;")
     layout = QVBoxLayout(container)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)
@@ -64,7 +69,7 @@ def create_assela_tab(dialog) -> QWidget:
     channel_row.addWidget(channel_lbl)
     channel_row.addStretch()
 
-    dialog.update_channel_combo = QComboBox()
+    dialog.update_channel_combo = ModernComboBox()
     dialog.update_channel_combo.addItem("Stable", "stable")
     dialog.update_channel_combo.addItem("Beta", "beta")
     dialog.update_channel_combo.addItem("Canary", "canary")
@@ -87,16 +92,6 @@ def create_assela_tab(dialog) -> QWidget:
     dialog.update_channel_combo.currentIndexChanged.connect(_on_channel_changed)
     channel_row.addWidget(dialog.update_channel_combo)
     assella_lay.addLayout(channel_row)
-
-    # 2. Enable EOSProxy by default
-    dialog.enable_eosproxy_default_checkbox = create_checkbox_setting(
-        "Enable EOSProxy by default",
-        "enable_eosproxy_default",
-        False,
-        dialog,
-        "Automatically detect and apply the EOS proxy DLL to newly downloaded games that use Epic Online Services.",
-    )
-    assella_lay.addWidget(dialog.enable_eosproxy_default_checkbox)
 
     if dialog.settings.value("use_experimental_ddm") is None:
         dialog.settings.setValue("use_experimental_ddm", True)
@@ -131,7 +126,7 @@ def create_assela_tab(dialog) -> QWidget:
     anim_row.addWidget(anim_lbl)
     anim_row.addStretch()
 
-    dialog.download_animation_combo = QComboBox()
+    dialog.download_animation_combo = ModernComboBox()
     dialog.download_animation_combo.addItem("Standard", "standard")
     dialog.download_animation_combo.addItem("Retro Ghost & Fog", "ghost")
     dialog.download_animation_combo.addItem("Pac-Man & Dots", "pacman")
@@ -145,6 +140,7 @@ def create_assela_tab(dialog) -> QWidget:
     dialog.download_animation_combo.addItem("Pokémon (Pokéball)", "pokemon")
     dialog.download_animation_combo.addItem("City Drive (Retro Car)", "car")
     dialog.download_animation_combo.addItem("Jack-o'-Lantern", "lantern")
+    dialog.download_animation_combo.addItem("Santa & Snowy Village", "santa")
     dialog.download_animation_combo.setFixedWidth(220)
 
     saved_anim = dialog.settings.value("download_animation", "standard", type=str)
@@ -156,117 +152,6 @@ def create_assela_tab(dialog) -> QWidget:
 
     anim_row.addWidget(dialog.download_animation_combo)
     assella_lay.addLayout(anim_row)
-
-    # 4. ISP Bypass & Hubcap Gateway Selector
-    isp_group = QVBoxLayout()
-    isp_group.setSpacing(8)
-    isp_group.setContentsMargins(0, 2, 0, 2)
-
-    isp_row = QHBoxLayout()
-    isp_row.setContentsMargins(0, 0, 0, 0)
-    isp_lbl = QLabel("Hubcap Gateway:")
-    isp_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
-    isp_lbl.setToolTip("Select how ASSella routes requests to Hubcap API (Auto Smart Fallback, Direct, DoH, Tor, or Wire).")
-    isp_row.addWidget(isp_lbl)
-    isp_row.addStretch()
-
-    dialog.isp_gateway_combo = QComboBox()
-    dialog.isp_gateway_combo.addItem("Auto", "auto")
-    dialog.isp_gateway_combo.addItem("Direct", "direct")
-    dialog.isp_gateway_combo.addItem("DoH", "doh")
-    dialog.isp_gateway_combo.addItem("Tor", "tor")
-    dialog.isp_gateway_combo.addItem("Wire", "wirecutter")
-    dialog.isp_gateway_combo.setFixedWidth(115)
-
-    # Load saved mode
-    saved_mode = dialog.settings.value("isp_bypass_mode", "auto", type=str)
-    if not saved_mode:
-        saved_mode = "auto"
-
-    idx = dialog.isp_gateway_combo.findData(saved_mode)
-    if idx >= 0:
-        dialog.isp_gateway_combo.setCurrentIndex(idx)
-    else:
-        dialog.isp_gateway_combo.setCurrentIndex(0)
-
-    dialog.isp_gateway_combo.currentIndexChanged.connect(
-        lambda idx: on_isp_gateway_changed(dialog, idx)
-    )
-    isp_row.addWidget(dialog.isp_gateway_combo)
-    isp_group.addLayout(isp_row)
-
-    # 4-Button Gateway Health Tester Row
-    test_bar_box = QVBoxLayout()
-    test_bar_box.setSpacing(4)
-    test_bar_box.setContentsMargins(0, 2, 0, 0)
-
-    test_bar_lbl = QLabel("Hubcap Gateway Health Check:")
-    test_bar_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; border: none; background: transparent;")
-    test_bar_box.addWidget(test_bar_lbl)
-
-    dialog.gateway_btn_row = QHBoxLayout()
-    dialog.gateway_btn_row.setSpacing(8)
-
-    base_btn_css = """
-        QPushButton {
-            background: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 6px;
-            padding: 5px 8px;
-            color: #e0e0e0;
-            font-size: 8.5pt;
-            font-weight: 500;
-            min-height: 26px;
-        }
-        QPushButton:hover {
-            background: rgba(255, 255, 255, 0.15);
-            border: 1px solid rgba(255, 255, 255, 0.25);
-        }
-        QPushButton:disabled {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            color: rgba(255, 255, 255, 0.25);
-        }
-    """
-
-    dialog.test_direct_btn = QPushButton("Direct")
-    dialog.test_direct_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.test_direct_btn.setStyleSheet(base_btn_css)
-    dialog.test_direct_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    dialog.test_direct_btn.clicked.connect(lambda: test_single_gateway(dialog, "direct", dialog.test_direct_btn, "Direct"))
-    dialog.gateway_btn_row.addWidget(dialog.test_direct_btn, 1)
-
-    dialog.test_doh_btn = QPushButton("DoH")
-    dialog.test_doh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.test_doh_btn.setStyleSheet(base_btn_css)
-    dialog.test_doh_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    dialog.test_doh_btn.clicked.connect(lambda: test_single_gateway(dialog, "doh", dialog.test_doh_btn, "DoH"))
-    dialog.gateway_btn_row.addWidget(dialog.test_doh_btn, 1)
-
-    dialog.test_tor_btn = QPushButton("Tor")
-    dialog.test_tor_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.test_tor_btn.setStyleSheet(base_btn_css)
-    dialog.test_tor_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    dialog.test_tor_btn.clicked.connect(lambda: test_single_gateway(dialog, "tor", dialog.test_tor_btn, "Tor"))
-    dialog.gateway_btn_row.addWidget(dialog.test_tor_btn, 1)
-
-    dialog.test_wirecutter_btn = QPushButton("Wirecutter")
-    dialog.test_wirecutter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.test_wirecutter_btn.setStyleSheet(base_btn_css)
-    dialog.test_wirecutter_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    dialog.test_wirecutter_btn.clicked.connect(lambda: test_single_gateway(dialog, "wirecutter", dialog.test_wirecutter_btn, "Wirecutter"))
-    dialog.gateway_btn_row.addWidget(dialog.test_wirecutter_btn, 1)
-
-    test_bar_box.addLayout(dialog.gateway_btn_row)
-    isp_group.addLayout(test_bar_box)
-    assella_lay.addLayout(isp_group)
-
-    # Initial button state check
-    if saved_mode == "disabled":
-        dialog.test_direct_btn.setEnabled(False)
-        dialog.test_doh_btn.setEnabled(False)
-        dialog.test_tor_btn.setEnabled(False)
-        dialog.test_wirecutter_btn.setEnabled(False)
 
     # 4. Update Check Interval Slider
     slider_layout = QHBoxLayout()
@@ -339,29 +224,8 @@ def create_assela_tab(dialog) -> QWidget:
         "• SteamcmdAPI: Fast parallel scan via CDN mirror."
     )
 
-    dialog.update_provider_combo = QComboBox()
+    dialog.update_provider_combo = ModernComboBox()
     dialog.update_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-    dialog.update_provider_combo.setStyleSheet("""
-        QComboBox {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 6px;
-            padding: 4px 12px;
-            color: #FFFFFF;
-            font-size: 9pt;
-            min-width: 130px;
-        }
-        QComboBox:hover {
-            background: rgba(255, 255, 255, 0.08);
-            border-color: rgba(255, 255, 255, 0.25);
-        }
-        QComboBox QAbstractItemView {
-            background: #1e1e24;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            color: #FFFFFF;
-            selection-background-color: %s;
-        }
-    """ % dialog.accent_color)
     dialog.update_provider_combo.addItem("Auto (Hybrid)", "auto")
     dialog.update_provider_combo.addItem("SteamPICS", "steampics")
     dialog.update_provider_combo.addItem("SteamcmdAPI", "steamcmd")
@@ -381,35 +245,20 @@ def create_assela_tab(dialog) -> QWidget:
     provider_layout.addWidget(dialog.update_provider_combo)
     assella_lay.addLayout(provider_layout)
 
+    # SLSah manual cheevos (Beta)
+    dialog.slsah_cheevos_checkbox = create_checkbox_setting(
+        "SLSah manual cheevos (Beta)",
+        "enable_slsah_cheevos",
+        False,
+        dialog,
+        "Enables viewing and manually managing achievements in the Game Details dialog.\n"
+        "When disabled, the achievements tab is hidden and background cache checks are skipped.",
+        show_description=False,
+    )
+    assella_lay.addWidget(dialog.slsah_cheevos_checkbox)
+
     layout.addWidget(assella_card)
     layout.addStretch()
-
-    # ── Uninstall (Linux only) ────────────────────────────────────────
-    if sys.platform != "win32":
-        uninstall_btn = QPushButton("Uninstall ASSella")
-        uninstall_btn.setToolTip("Remove ASSella and optionally restore the original ACCELA.")
-
-        accent_color = dialog.settings.value("accent_color", "#C06C84")
-        from utils.color_utils import get_semantic_colors
-        sem_colors = get_semantic_colors(accent_color)
-        err_color = sem_colors["error"]
-
-        uninstall_btn.setStyleSheet(f"""
-            QPushButton {{
-                color: {err_color} !important;
-                background: transparent;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 8px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: rgba(235, 87, 87, 0.12);
-                border-color: {err_color};
-            }}
-        """)
-        uninstall_btn.clicked.connect(lambda: uninstall_assela(dialog))
-        layout.addWidget(uninstall_btn)
 
     scroll.setWidget(container)
     outer_layout.addWidget(scroll)
@@ -418,98 +267,11 @@ def create_assela_tab(dialog) -> QWidget:
     return tab
 
 
-def on_isp_gateway_changed(dialog, index: int) -> None:
-    """Saves selected mode immediately and triggers Tor warm boot if needed."""
-    if not hasattr(dialog, "isp_gateway_combo") or not dialog.isp_gateway_combo:
-        return
-    mode = dialog.isp_gateway_combo.currentData() or "auto"
-    dialog.settings.setValue("isp_bypass_mode", mode)
-    dialog.settings.setValue("isp_bypass_hubcap", True)
-
-    if mode == "tor":
-        from utils.isp_bypass import TorManager
-        threading.Thread(target=TorManager.start_tor_if_needed, daemon=True).start()
-
-
-def test_single_gateway(dialog, gateway_key: str, btn: QPushButton, label: str) -> None:
-    """Runs an individual gateway health check in a background thread and updates button."""
-    btn.setEnabled(False)
-    btn.setText("Testing...")
-    btn.setStyleSheet("""
-        QPushButton {
-            background: #3b4261;
-            border: 1px solid #e0af68;
-            border-radius: 6px;
-            padding: 5px 8px;
-            color: #e0af68;
-            font-size: 8.5pt;
-            font-weight: bold;
-            min-height: 26px;
-        }
-    """)
-
-    def _target():
-        import utils.isp_bypass as isp
-        if gateway_key == "direct":
-            ok, status, lat = isp.test_gateway_direct()
-        elif gateway_key == "doh":
-            ok, status, lat = isp.test_gateway_doh()
-        elif gateway_key == "tor":
-            ok, status, lat = isp.test_gateway_tor()
-        elif gateway_key == "wirecutter":
-            ok, status, lat = isp.test_gateway_wirecutter()
-        else:
-            ok, status, lat = False, "Unknown", 0
-
-        QMetaObject.invokeMethod(
-            dialog,
-            "_handle_gateway_test_done",
-            Qt.ConnectionType.QueuedConnection,
-            Q_ARG(object, (btn, label, ok, status, lat)),
-        )
-
-    threading.Thread(target=_target, daemon=True).start()
-
-
-def handle_gateway_test_done(dialog, data) -> None:
-    btn, label, ok, status, lat = data
-    btn.setEnabled(True)
-    if ok:
-        btn.setText(f"{label}: OK")
-        btn.setToolTip(f"{label} Gateway: {status}")
-        btn.setStyleSheet("""
-            QPushButton {
-                background: #1b5e20;
-                border: 1px solid #4caf50;
-                border-radius: 6px;
-                padding: 5px 8px;
-                color: #a5d6a7;
-                font-size: 8.5pt;
-                font-weight: bold;
-                min-height: 26px;
-            }
-            QPushButton:hover {
-                background: #2e7d32;
-            }
-        """)
-    else:
-        btn.setText(f"{label}: {status}")
-        btn.setToolTip(f"{label} Gateway Failed: {status}")
-        btn.setStyleSheet("""
-            QPushButton {
-                background: #b71c1c;
-                border: 1px solid #ef5350;
-                border-radius: 6px;
-                padding: 5px 8px;
-                color: #ffcdd2;
-                font-size: 8.5pt;
-                font-weight: bold;
-                min-height: 26px;
-            }
-            QPushButton:hover {
-                background: #c62828;
-            }
-        """)
+from ui.dialogs.settings_tabs.morrenus_tab import (
+    on_isp_gateway_changed,
+    test_single_gateway,
+    handle_gateway_test_done,
+)
 
 
 def uninstall_assela(dialog) -> None:

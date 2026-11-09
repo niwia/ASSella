@@ -1,4 +1,7 @@
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QMovie, QPainter
@@ -9,11 +12,11 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QGridLayout,
     QLabel,
-    QComboBox,
     QPushButton,
     QApplication,
     QSlider,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_color_dialog import ThemedColorDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -37,6 +40,7 @@ def _apply_circle_style(button: QPushButton, color_hex: str) -> None:
 def create_style_tab(dialog) -> QWidget:
     """Create the Theme settings tab."""
     tab = QWidget()
+    tab.setStyleSheet("background: transparent;")
     layout = QVBoxLayout(tab)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)
@@ -210,7 +214,7 @@ def create_style_tab(dialog) -> QWidget:
     lbl_preset.setFixedWidth(120)
     preset_row.addWidget(lbl_preset)
 
-    dialog.preset_combo = QComboBox()
+    dialog.preset_combo = ModernComboBox()
     dialog.preset_combo.addItem("Custom (Select Color)", "custom")
 
     from utils.theme_manager import load_all_themes
@@ -257,6 +261,10 @@ def create_style_tab(dialog) -> QWidget:
         show_description=False,
     )
     dialog.remember_origins_checkbox.stateChanged.connect(lambda s: on_origins_toggled(dialog, s))
+    cur_preset = dialog.settings.value("material_preset", "ocean", type=str)
+    if cur_preset == "christmas":
+        dialog.remember_origins_checkbox.setChecked(False)
+        dialog.remember_origins_checkbox.setLocked(True, "Disabled when Christmas(beta) theme is active.")
     disp_layout.addWidget(dialog.remember_origins_checkbox)
 
     dialog.simplify_denuvo_status_checkbox = create_checkbox_setting(
@@ -268,6 +276,16 @@ def create_style_tab(dialog) -> QWidget:
         show_description=False,
     )
     disp_layout.addWidget(dialog.simplify_denuvo_status_checkbox)
+
+    dialog.adaptive_theming_checkbox = create_checkbox_setting(
+        "Adapt Dialog Theme to Game Artwork",
+        "enable_adaptive_game_theming",
+        False,
+        dialog,
+        "Dynamically tints depot selection and game details screens using the game's thumbnail color.",
+        show_description=False,
+    )
+    disp_layout.addWidget(dialog.adaptive_theming_checkbox)
 
     layout.addWidget(disp_card)
     layout.addStretch(1)
@@ -365,6 +383,15 @@ def on_preset_changed(dialog, index: int) -> None:
         if app:
             update_appearance(app, accent_hex, bg_hex)
 
+        if hasattr(dialog, "remember_origins_checkbox") and dialog.remember_origins_checkbox:
+            if preset_type == "christmas":
+                dialog.remember_origins_checkbox.setChecked(False)
+                dialog.remember_origins_checkbox.setLocked(True, "Disabled when Christmas(beta) theme is active.")
+            else:
+                dialog.remember_origins_checkbox.setLocked(False)
+                orig_origins = dialog.settings.value("remember_origins", False, type=bool)
+                dialog.remember_origins_checkbox.setChecked(orig_origins)
+
 
 def is_too_dark(color: QColor) -> bool:
     brightness = color.red() * 0.299 + color.green() * 0.587 + color.blue() * 0.114
@@ -432,6 +459,8 @@ def on_titlebar_position_changed(dialog, state: int) -> None:
 
 
 def save_style_settings(dialog) -> bool:
+    if getattr(dialog, "accent_color_button", None) is None:
+        return True  # Theme page was never opened: nothing to save
     acc_s = dialog.accent_color_button.styleSheet()
     bg_s = dialog.bg_color_button.styleSheet()
     u_accent = acc_s.split("background-color: ")[1].split(";")[0]
@@ -477,6 +506,9 @@ def save_style_settings(dialog) -> bool:
 
     origins = dialog.remember_origins_checkbox.isChecked()
     dialog.settings.setValue("remember_origins", origins)
+
+    if hasattr(dialog, "adaptive_theming_checkbox") and dialog.adaptive_theming_checkbox is not None:
+        dialog.settings.setValue("enable_adaptive_game_theming", dialog.adaptive_theming_checkbox.isChecked())
 
     if hasattr(dialog, "simplify_denuvo_status_checkbox") and dialog.simplify_denuvo_status_checkbox is not None:
         simplify = dialog.simplify_denuvo_status_checkbox.isChecked()

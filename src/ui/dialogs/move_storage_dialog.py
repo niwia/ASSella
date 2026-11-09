@@ -176,20 +176,11 @@ class MoveStorageDialog(QDialog):
         # Progress / Status
         self.status_lbl = QLabel("")
         self.status_lbl.setStyleSheet("font-size: 8.5pt; color: rgba(255,255,255,0.7);")
-        self.progress_bar = QProgressBar()
+        from ui.widgets.accent_progress_bar import AccentProgressBar
+        self.progress_bar = AccentProgressBar(self, accent=self.accent_color)
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
         self.progress_bar.setFixedHeight(8)
-        self.progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: rgba(255,255,255,0.06);
-                border-radius: 4px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {self.accent_color};
-                border-radius: 4px;
-            }}
-        """)
         layout.addWidget(self.status_lbl)
         layout.addWidget(self.progress_bar)
 

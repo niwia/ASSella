@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
     """Main application window."""
 
     refresh_system_status_signal = pyqtSignal()
+    plugin_check_ready_signal = pyqtSignal(list)
     notify_sls_watcher_crashed_signal = pyqtSignal()
     # Signal used to safely invoke a callable on the main thread from a background thread.
     # Using a typed signal instead of Q_ARG(object, fn) avoids PyQt6 GIL/metatype crashes.
@@ -69,6 +70,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.refresh_system_status_signal.connect(self.refresh_system_status)
+        self.plugin_check_ready_signal.connect(self._on_plugin_check_ready)
         self.notify_sls_watcher_crashed_signal.connect(self.notify_sls_filewatcher_crashed)
         self._main_thread_callable.connect(self._run_on_main_thread)
         self._steamdb_verified = False
@@ -287,7 +289,6 @@ class MainWindow(QMainWindow):
         # Trigger SLSsteam boot updates and config checks sequentially in a background thread
         import threading
         from utils.assfixer import run_boot_config_check
-        from ui.dialogs.settings_sls import run_boot_update_check
 
         # Warm up Byparr and verify SteamDB Cloudflare bypass in the background.
         # Deferred on purpose: Byparr spawns a headless Chromium, which costs
@@ -302,14 +303,16 @@ class MainWindow(QMainWindow):
                 check_slssteam_binary_is_latest()
             except Exception as e:
                 logger.debug(f"SLS binary boot version check skipped/failed: {e}")
-            run_boot_update_check()
             run_boot_config_check()
 
-            # Non-blocking autodeploy for lobster.lua if AT0-M is enabled and archiving of redundant plugins
+            # Plugin check (background thread): only works out what would
+            # change (retired / remotely disabled plugins, missing family
+            # plugins, updates). The user is asked before anything happens.
             try:
-                from utils.plugin_manager import archive_redundant_legacy_plugins, autodeploy_lobster_if_needed
-                archive_redundant_legacy_plugins()
-                autodeploy_lobster_if_needed()
+                from utils.plugin_manager import plan_plugin_maintenance
+                actions = plan_plugin_maintenance()
+                if actions:
+                    self.plugin_check_ready_signal.emit(actions)
             except Exception as e:
                 logger.debug(f"Plugin boot check skipped/failed: {e}")
 
@@ -351,6 +354,35 @@ class MainWindow(QMainWindow):
         from utils.settings import is_canary_welcome_needed
         if is_canary_welcome_needed():
             QTimer.singleShot(1000, self._show_canary_welcome)
+            QTimer.singleShot(4000, self._check_legacy_plugins_startup)
+        else:
+            QTimer.singleShot(1500, self._check_legacy_plugins_startup)
+
+    def _on_plugin_check_ready(self, actions: list) -> None:
+        """Ask the user what to do about the plugin check findings."""
+        try:
+            from ui.dialogs.plugin_check_dialog import PluginCheckDialog
+            from utils.plugin_manager import apply_plugin_actions, snooze_plugin_actions
+
+            dlg = PluginCheckDialog(actions, parent=self, accent_color=getattr(self, "accent_color", "#a1c9fd"))
+            dlg.exec()
+            if dlg.choice == "apply":
+                chosen = dlg.selected()
+                for msg in apply_plugin_actions(chosen):
+                    logger.info(f"[PluginCheck] {msg}")
+                snooze_plugin_actions(dlg.unselected())  # unticked = declined
+            elif dlg.choice == "never":
+                snooze_plugin_actions(actions)
+        except Exception as e:
+            logger.warning(f"[MainWindow] Plugin check prompt failed: {e}")
+
+    def _check_legacy_plugins_startup(self) -> None:
+        """Check for legacy or foreign plugins on startup and prompt user if needed."""
+        try:
+            from utils.plugin_manager import check_and_prompt_legacy_plugins
+            check_and_prompt_legacy_plugins(parent_window=self)
+        except Exception as e:
+            logger.debug(f"[MainWindow] Error checking legacy plugins on startup: {e}")
 
     def _show_canary_welcome(self) -> None:
         """Display the Canary Welcome Slideshow onboarding dialog."""
@@ -586,7 +618,23 @@ class MainWindow(QMainWindow):
         self.game_manager.all_updates_checked.connect(
             lambda: self.simplified_terminal._on_update_check_finished() if hasattr(self, "simplified_terminal") and self.simplified_terminal else None
         )
-        self.game_manager.all_updates_checked.connect(self.refresh_hubcap_stats)
+
+        # AT0-M Sync: share the newest Hubcap key with katamari.conf.lua (which
+        # Uran, Epsilon and the plugins read). Small file reads, off the GUI thread.
+        if self.settings.value("atom_hubcap_sync_enabled", False, type=bool):
+            import threading
+
+            def _sync_hubcap_key():
+                try:
+                    from utils.sls_lua_config import sync_hubcap_api_key
+
+                    synced, msg = sync_hubcap_api_key(get_settings())
+                    if synced:
+                        logger.info(f"[AT0-M Sync] {msg}")
+                except Exception as e:
+                    logger.debug(f"[AT0-M Sync] startup sync skipped: {e}")
+
+            threading.Thread(target=_sync_hubcap_key, name="hubcap-key-sync", daemon=True).start()
 
         # Initial stats fetch
         self.refresh_hubcap_stats()
@@ -961,6 +1009,8 @@ class MainWindow(QMainWindow):
             self.game_manager.reset_up_to_date_for_recheck()
             self.game_manager.check_game_updates_async(is_periodic=True)
         self.check_tool_updates()
+        # Periodically refresh Hubcap connection & stats (every 5 mins)
+        self.refresh_hubcap_stats()
 
     def _setup_ui(self) -> None:
         """Setup the main UI components."""
@@ -1484,7 +1534,9 @@ class MainWindow(QMainWindow):
 
     def open_settings(self, initial_tab: Optional[str] = None) -> None:
         from ui.dialogs.settings import SettingsDialog
+        from utils.font_safety import wait_for_probe
 
+        wait_for_probe()  # normally long finished; see utils/font_safety.py
         dialog = SettingsDialog(self, initial_tab=initial_tab)
         dialog.exec()
         self._check_network_connections_async()
@@ -1498,10 +1550,10 @@ class MainWindow(QMainWindow):
         self.ui_state.fetch_dialog = None
 
 
-    def open_game_library(self) -> None:
+    def open_game_library(self, show_details_for_appid: Optional[str] = None) -> None:
         from ui.dialogs.gamelibrary import GameLibraryDialog
 
-        dialog = GameLibraryDialog(self)
+        dialog = GameLibraryDialog(self, show_details_for_appid=show_details_for_appid)
         dialog.exec()
 
     def open_status_dialog(self) -> None:
@@ -1615,7 +1667,6 @@ class MainWindow(QMainWindow):
         sls_paths = get_sls_paths()
         sls_detected = sls_paths.get("detected", False)
         version_file_exists = os.path.exists(sls_paths.get("version_file", "")) if sls_detected else False
-        ignore_updater = self.settings.value("ignore_slssteam_updater", False, type=bool) if self.settings else False
 
         # --- SLS Detection & API Integration ---
         from utils.slssteam_integration import (
@@ -1853,7 +1904,7 @@ class MainWindow(QMainWindow):
 
         try:
             from core.steamdb_scraper import ByparrManager, cffi_requests
-            has_solver = ByparrManager.is_available() or (cffi_requests is not None)
+            has_solver = ByparrManager.is_available() or bool(cffi_requests)
             if not has_solver:
                 if hasattr(self, "steamdb_container"):
                     self.steamdb_container.setVisible(False)
@@ -1888,7 +1939,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
             try:
                 from core.steamdb_scraper import ByparrManager, cffi_requests
-                has_solver = ByparrManager.is_available() or (cffi_requests is not None)
+                has_solver = ByparrManager.is_available() or bool(cffi_requests)
             except Exception:
                 has_solver = False
 
@@ -1916,22 +1967,27 @@ class MainWindow(QMainWindow):
                 logger.info("[SteamDB Visor] SteamDB status updated to: Offline")
 
     def refresh_hubcap_stats(self, force: bool = False) -> None:
-        """Fetch user statistics from Hubcap API asynchronously."""
+        """Fetch user statistics from Hubcap API asynchronously.
+        When online, queries are throttled to once every 5 minutes (300s).
+        """
         now = time.time()
         last_refresh = getattr(self, "_last_hubcap_refresh_time", 0.0)
-        if not force and (now - last_refresh < 30.0):
-            logger.debug("[Hubcap] Skipping stats refresh - throttled (called <30s ago)")
+        current_hubcap = self.hubcap_conn_value.text() if hasattr(self, "hubcap_conn_value") else "Connecting..."
+        is_online = current_hubcap.startswith("Online")
+        throttle_interval = 300.0 if is_online else 30.0
+        if not force and (now - last_refresh < throttle_interval):
+            logger.debug(f"[Hubcap] Skipping stats refresh - throttled (called <{int(throttle_interval)}s ago)")
             return
         self._last_hubcap_refresh_time = now
 
         # Also refresh Steam and SLS status locally
         self.refresh_system_status()
 
-        # Trigger background network checks if offline/connecting
+        # Trigger background network checks if offline/connecting or forced
         current_hubcap = self.hubcap_conn_value.text() if hasattr(self, "hubcap_conn_value") else "Connecting..."
         current_steam = self.steam_conn_value.text() if hasattr(self, "steam_conn_value") else "Connecting..."
-        if current_hubcap in ("Connecting...", "Offline") or current_steam in ("Connecting...", "Offline"):
-            self._check_network_connections_async()
+        if force or current_hubcap in ("Connecting...", "Offline") or current_steam in ("Connecting...", "Offline"):
+            self._check_network_connections_async(force=force)
 
         if not self.stats_task_runner:
             self.stats_task_runner = TaskRunner(self)
@@ -1942,18 +1998,22 @@ class MainWindow(QMainWindow):
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
             self.active_hubcap_label.setText("Hubcap: Loading...")
 
-        from core.morrenus_api import get_all_hubcap_stats
+        def get_all_hubcap_stats():
+            # Imported on the worker thread: morrenus_api takes ~0.1s to import.
+            from core.morrenus_api import get_all_hubcap_stats as _fetch
+
+            return _fetch(force=force)
 
         worker = self.stats_task_runner.run(get_all_hubcap_stats)
         worker.finished.connect(self._on_user_stats_loaded)
         worker.error.connect(self._on_user_stats_error)
 
-    def _check_network_connections_async(self) -> None:
+    def _check_network_connections_async(self, force: bool = False) -> None:
         """Run connection check once in background thread."""
         def run_check():
             try:
                 from utils.network_status import run_connection_check
-                steam_ok, hubcap_ok, hubcap_mode = run_connection_check()
+                steam_ok, hubcap_ok, hubcap_mode = run_connection_check(force=force)
             except Exception as e:
                 logger.error(f"Error running network connection check: {e}")
                 steam_ok, hubcap_ok, hubcap_mode = False, False, "Offline"
@@ -2061,6 +2121,18 @@ class MainWindow(QMainWindow):
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
             self.active_hubcap_label.setText(f"Hubcap: {quota_str}")
             self.active_hubcap_label.setToolTip(tooltip_str)
+
+        # Hubcap is confirmed reachable and functional: ensure visor connection label reflects Online
+        if hasattr(self, "hubcap_conn_value") and self.hubcap_conn_value:
+            from utils.isp_bypass import connection_status
+            mode = connection_status if connection_status in ("Direct", "DoH", "Tor", "Wire") else "Online"
+            lbl = f"Online ({mode})" if mode not in ("Online", "Direct") else "Online"
+            self.hubcap_conn_value.setText(lbl)
+            self.hubcap_conn_value.setStyleSheet(self._get_status_style("success"))
+
+        if getattr(self, "_tool_update_status", "checking") in ("checking", "offline"):
+            if not getattr(self, "_tool_update_check_running", False):
+                self.check_tool_updates()
 
     def _on_user_stats_error(self, err_tuple: tuple) -> None:
         """Handle async hubcap stats load error."""
@@ -2335,8 +2407,9 @@ class MainWindow(QMainWindow):
                                 pass
 
                         if should_prompt:
-                            auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
-                            if auto_skip and len(depots) == 1:
+                            auto_skip = settings.value("auto_skip_single_choice", True, type=bool)
+                            from utils.dlc_helpers import is_dlc_only_context
+                            if auto_skip and len(depots) == 1 and not is_dlc_only_context(appid):
                                 selected_depots = list(depots.keys())
                             else:
                                 # Depot dialog must run on the main thread
@@ -2703,6 +2776,10 @@ class MainWindow(QMainWindow):
                 if p and os.path.exists(str(p)):
                     bg_path_to_draw = str(p)
                     break
+        elif preset == "christmas":
+            christmas_bg = Paths.resource("christmas/christmas_bg.jpg")
+            if christmas_bg.exists():
+                bg_path_to_draw = str(christmas_bg)
 
         if bg_path_to_draw:
             if not hasattr(self, "_active_bg_path") or self._active_bg_path != bg_path_to_draw or not hasattr(self, "_custom_bg_pixmap") or self._custom_bg_pixmap is None:
@@ -2714,16 +2791,27 @@ class MainWindow(QMainWindow):
             painter.fillRect(rect, base_col)
 
             if hasattr(self, "_custom_bg_pixmap") and self._custom_bg_pixmap and not self._custom_bg_pixmap.isNull():
-                scaled = self._custom_bg_pixmap.scaled(
-                    rect.size(),
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                if (
+                    not hasattr(self, "_cached_scaled_bg")
+                    or self._cached_scaled_bg is None
+                    or getattr(self, "_cached_scaled_size", None) != rect.size()
+                    or getattr(self, "_cached_scaled_path", None) != bg_path_to_draw
+                ):
+                    self._cached_scaled_size = rect.size()
+                    self._cached_scaled_path = bg_path_to_draw
+                    self._cached_scaled_bg = self._custom_bg_pixmap.scaled(
+                        rect.size(),
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+
+                scaled = self._cached_scaled_bg
                 x = (rect.width() - scaled.width()) // 2
                 y = (rect.height() - scaled.height()) // 2
 
                 # Atmospheric opacity
-                painter.setOpacity(0.50)
+                bg_opacity = 0.35 if preset == "christmas" else 0.50
+                painter.setOpacity(bg_opacity)
                 painter.drawPixmap(x, y, scaled)
                 painter.setOpacity(1.0)
 
@@ -2739,6 +2827,19 @@ class MainWindow(QMainWindow):
         else:
             bg_col = QColor(self.background_color or "#000000")
             painter.fillRect(rect, bg_col)
+
+        # Christmas snowfall particle simulation overlay
+        if preset == "christmas":
+            if not hasattr(self, "_snow_engine") or self._snow_engine is None:
+                from ui.particles.snow_engine import SnowEngine
+                self._snow_engine = SnowEngine(self, flake_count=100)
+                self._snow_engine.start()
+            elif not self._snow_engine.is_running():
+                self._snow_engine.start()
+            self._snow_engine.paint(painter, rect.width(), rect.height())
+        else:
+            if hasattr(self, "_snow_engine") and self._snow_engine and self._snow_engine.is_running():
+                self._snow_engine.stop()
 
     def reposition_titlebar(self, position: str) -> None:
         """Dynamically reposition the titlebar without restart."""

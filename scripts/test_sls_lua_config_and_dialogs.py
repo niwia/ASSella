@@ -11,7 +11,6 @@ Verification test suite for:
      - sync_hubcap_api_key (timestamp comparison)
   3. Dialog theming and construction:
      - LobsterConfigDialog frameless themed layout
-     - HubcapConfigDialog frameless themed layout
   4. SingleDepotSelectionDialog:
      - get_selected_dlc_data regression test
 """
@@ -36,13 +35,10 @@ from utils.settings import get_settings
 from utils.sls_lua_config import (
     read_lobster_conf,
     write_lobster_conf,
-    read_spacebunny_conf,
-    write_spacebunny_conf,
     is_valid_hubcap_key,
     sync_hubcap_api_key,
 )
 from ui.dialogs.lobster_config_dialog import LobsterConfigDialog
-from ui.dialogs.hubcap_config_dialog import HubcapConfigDialog
 from ui.dialogs.single_depot_dialog import SingleDepotSelectionDialog
 
 
@@ -100,37 +96,6 @@ class TestSlsLuaConfigAndDialogs(unittest.TestCase):
             self.assertTrue(cfg2.get("auto_recover"))
             self.assertTrue(cfg2.get("run_on_reload"))
 
-    def test_spacebunny_config_read_write(self):
-        """Verify spacebunny.conf.lua reading, modifying, and writing."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            conf_path = Path(tmpdir) / "spacebunny.conf.lua"
-
-            cfg = read_spacebunny_conf(conf_path)
-            self.assertFalse(cfg.get("standalone"))
-            self.assertIn("hubcap", cfg)
-            hub = cfg["hubcap"]
-            self.assertTrue(hub.get("enabled"))
-            self.assertEqual(hub.get("api_key"), "")
-
-            # Modify hubcap table
-            test_key = "abc12345-6789-def0-1234-56789abcdef0"
-            test_ts = 1845242026
-            hub["api_key"] = test_key
-            hub["api_key_timestamp"] = test_ts
-            hub["enabled"] = False
-            ok = write_spacebunny_conf(cfg, conf_path)
-            self.assertTrue(ok)
-            self.assertTrue(conf_path.is_file())
-            # File permission check (0600 on POSIX)
-            mode = conf_path.stat().st_mode & 0o777
-            self.assertEqual(mode, 0o600)
-
-            # Read back
-            cfg2 = read_spacebunny_conf(conf_path)
-            self.assertFalse(cfg2["hubcap"]["enabled"])
-            self.assertEqual(cfg2["hubcap"]["api_key"], test_key)
-            self.assertEqual(cfg2["hubcap"]["api_key_timestamp"], test_ts)
-
     def test_hubcap_key_validation(self):
         """Verify Hubcap API key validator."""
         self.assertTrue(is_valid_hubcap_key("12345678-1234-1234-1234-123456789abc"))
@@ -140,61 +105,52 @@ class TestSlsLuaConfigAndDialogs(unittest.TestCase):
         self.assertFalse(is_valid_hubcap_key("invalid key with spaces!"))
 
     def test_sync_hubcap_api_key(self):
-        """Verify bidirectional timestamp-based synchronization."""
+        """The Hubcap key syncs both ways with katamari.conf.lua's hubcap section."""
+        from managers.katamari_config_manager import KatamariConfigManager
+
         settings = get_settings()
         orig_key = settings.value("morrenus_api_key", "", type=str)
         orig_ts = settings.value("morrenus_api_key_timestamp", 0, type=int)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            sb_path = Path(tmpdir) / "spacebunny.conf.lua"
+            conf = Path(tmpdir) / "katamari.conf.lua"
+            conf.write_text(
+                '-- user comment kept\nreturn {\n\thubcap = {\n\t\tapi_key = "lua-newer-key-1234567890",\n'
+                '\t\tapi_key_timestamp = 20261024184500,\n\t\tbase_url = "https://hubcapmanifest.com/api/v1",\n\t},\n'
+                '\tstyx = { enabled = true },\n}\n',
+                encoding="utf-8",
+            )
             try:
-                # 1. Lua newer than settings -> sync to settings
-                lua_key = "lua-newer-key-1234567890"
-                lua_ts = 4518242026  # minute 45, hour 18, day 24, year 2026
                 settings.setValue("morrenus_api_key", "old-key-1234567890")
-                settings.setValue("morrenus_api_key_timestamp", "1012232026")  # day 23
-
-                lua_cfg = {
-                    "standalone": False,
-                    "hubcap": {
-                        "enabled": True,
-                        "api_key": lua_key,
-                        "api_key_timestamp": lua_ts,
-                    }
-                }
-                write_spacebunny_conf(lua_cfg, sb_path)
-
-                synced, msg = sync_hubcap_api_key(settings, sb_path)
+                settings.setValue("morrenus_api_key_timestamp", "20261023101200")
+                synced, msg = sync_hubcap_api_key(settings, conf)
                 self.assertTrue(synced)
-                self.assertIn("spacebunny.conf.lua to ASSella", msg)
-                self.assertEqual(settings.value("morrenus_api_key"), lua_key)
-                self.assertEqual(int(settings.value("morrenus_api_key_timestamp")), lua_ts)
+                self.assertIn("katamari.conf.lua to ASSella", msg)
+                self.assertEqual(settings.value("morrenus_api_key"), "lua-newer-key-1234567890")
 
-                # 2. Settings newer than Lua -> sync to Lua
-                local_key = "local-newer-key-9876543210"
-                local_ts = 5519262026  # day 26
-                settings.setValue("morrenus_api_key", local_key)
-                settings.setValue("morrenus_api_key_timestamp", str(local_ts))
-
-                synced2, msg2 = sync_hubcap_api_key(settings, sb_path)
+                settings.setValue("morrenus_api_key", "local-newer-key-9876543210")
+                settings.setValue("morrenus_api_key_timestamp", "20261026195500")
+                synced2, msg2 = sync_hubcap_api_key(settings, conf)
                 self.assertTrue(synced2)
-                self.assertIn("ASSella to spacebunny.conf.lua", msg2)
+                self.assertIn("ASSella to katamari.conf.lua", msg2)
+                hub = KatamariConfigManager.load_config(conf)["hubcap"]
+                self.assertEqual(hub["api_key"], "local-newer-key-9876543210")
+                self.assertEqual(hub["api_key_timestamp"], 20261026195500)
+                text = conf.read_text(encoding="utf-8")
+                self.assertIn("-- user comment kept", text)
+                self.assertIn("styx = { enabled = true }", text)
 
-                read_back = read_spacebunny_conf(sb_path)
-                self.assertEqual(read_back["hubcap"]["api_key"], local_key)
-                self.assertEqual(read_back["hubcap"]["api_key_timestamp"], local_ts)
+                self.assertFalse(sync_hubcap_api_key(settings, Path(tmpdir) / "missing.conf.lua")[0])
             finally:
                 settings.setValue("morrenus_api_key", orig_key)
                 settings.setValue("morrenus_api_key_timestamp", orig_ts)
 
     def test_dialogs_instantiation(self):
-        """Ensure LobsterConfigDialog and HubcapConfigDialog instantiate cleanly."""
+        """Ensure LobsterConfigDialog instantiates cleanly."""
         ldlg = LobsterConfigDialog()
         self.assertIn("enabled", ldlg.switches)
         self.assertIn("notify", ldlg.switches)
 
-        hdlg = HubcapConfigDialog()
-        self.assertIsNotNone(hdlg.key_input)
     def test_settings_dialog_tabs_initialization(self):
         """Ensure SettingsDialog loads all tabs without runtime import crashes and without touching live host config."""
         from unittest.mock import patch
@@ -293,33 +249,16 @@ class TestSlsLuaConfigAndDialogs(unittest.TestCase):
             self.assertEqual(keys.get("400751"), "f" * 64)
 
     def test_lua_string_escaping_roundtrip(self):
-        """Ensure special characters in Lua config strings are escaped and roundtrip safely."""
+        """Quotes and backslashes in the Hubcap key are escaped in katamari.conf.lua."""
+        from managers.katamari_config_manager import KatamariConfigManager
+
         with tempfile.TemporaryDirectory() as tmpdir:
-            conf_path = Path(tmpdir) / "spacebunny.conf.lua"
-            special_url = 'https://api.example.com/v1?query="val"&path=foo\\bar'
-            special_preflight = 'preflight"quoted"\\backslash'
-            cfg = {
-                "standalone": False,
-                "hubcap": {
-                    "enabled": True,
-                    "api_key": "valid_key_12345",
-                    "api_key_timestamp": 123456,
-                    "base_url": special_url,
-                    "preflight": special_preflight,
-                }
-            }
-            ok = write_spacebunny_conf(cfg, conf_path)
-            self.assertTrue(ok)
-
-            # Check raw file contents to ensure quotes and backslashes are escaped
-            raw_text = conf_path.read_text(encoding="utf-8")
-            self.assertIn('\\"val\\"', raw_text)
-            self.assertIn('foo\\\\bar', raw_text)
-
-            # Read back and verify exact unescaping
-            read_back = read_spacebunny_conf(conf_path)
-            self.assertEqual(read_back["hubcap"]["base_url"], special_url)
-            self.assertEqual(read_back["hubcap"]["preflight"], special_preflight)
+            conf = Path(tmpdir) / "katamari.conf.lua"
+            conf.write_text('return {\n\thubcap = {\n\t\tapi_key = "",\n\t},\n}\n', encoding="utf-8")
+            special = 'key"with\\odd'
+            self.assertTrue(KatamariConfigManager.set_hubcap_api_key(special, 1, conf))
+            raw_text = conf.read_text(encoding="utf-8")
+            self.assertIn('key\\"with\\\\odd', raw_text)
 
     def test_undeploy_plugin_preserves_bak(self):
         """Undeploying a plugin removes the active .lua file but preserves any .bak file."""
@@ -340,6 +279,67 @@ class TestSlsLuaConfigAndDialogs(unittest.TestCase):
                 self.assertFalse(active_lua.exists())
                 self.assertTrue(bak_lua.exists())
                 self.assertEqual(bak_lua.read_text(encoding="utf-8"), "-- backup code")
+
+    def test_companion_plugins_manifest_filtering(self):
+        """Companion plugins are derived from manifest and never treated as interceptors."""
+        from utils.plugin_manager import (
+            get_companion_plugin_filenames,
+            is_interceptor_plugin,
+            get_active_interceptor_filename,
+        )
+        from unittest.mock import patch
+
+        companions = get_companion_plugin_filenames()
+        self.assertIn("lobster.lua", companions)
+        self.assertIn("lettuce.lua", companions)
+        self.assertIn("styx.lua", companions)
+
+        self.assertFalse(is_interceptor_plugin("lobster.lua"))
+        self.assertFalse(is_interceptor_plugin("lettuce.lua"))
+        self.assertFalse(is_interceptor_plugin("spliced-tickets.lua"))
+        self.assertTrue(is_interceptor_plugin("spacebunny.lua"))
+        self.assertTrue(is_interceptor_plugin("download.lua"))
+        # Unknown files: the role they register, or the Steam functions they hook, decides
+        self.assertFalse(is_interceptor_plugin("my_custom_helper.lua"))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p_dir = Path(tmpdir)
+            (p_dir / "lobster.lua").write_text("code", encoding="utf-8")
+            (p_dir / "spliced-tickets.lua").write_text("code", encoding="utf-8")
+            (p_dir / "spacebunny.lua").write_text("code", encoding="utf-8")
+
+            with patch("utils.plugin_manager.get_sls_plugins_dirs", return_value=[p_dir]):
+                active = get_active_interceptor_filename()
+                self.assertEqual(active, "spacebunny.lua")
+
+    def test_0byte_plugin_handling(self):
+        """0-byte files are treated as missing and overwritten rather than preserved."""
+        from utils.plugin_manager import (
+            get_plugin_status,
+            is_plugin_installed_and_valid,
+            deploy_plugin,
+        )
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p_dir = Path(tmpdir)
+            zero_byte_file = p_dir / "spacebunny.lua"
+            zero_byte_file.touch()
+            self.assertEqual(zero_byte_file.stat().st_size, 0)
+
+            with patch("utils.plugin_manager.get_sls_plugins_dirs", return_value=[p_dir]):
+                # Status treats 0-byte file as missing
+                self.assertEqual(get_plugin_status("spacebunny.lua"), "missing")
+                self.assertFalse(is_plugin_installed_and_valid("spacebunny.lua"))
+
+                # deploy with only_if_missing does not preserve 0-byte stub
+                ok, skipped, msg = deploy_plugin("spacebunny.lua", only_if_missing=True)
+                self.assertTrue(ok)
+                # Did not skip as already present
+                self.assertFalse(skipped)
+                self.assertGreater(zero_byte_file.stat().st_size, 0)
+                # 0-byte file was not backed up to .bak
+                self.assertFalse((p_dir / "spacebunny.lua.bak").exists())
 
 
 if __name__ == "__main__":

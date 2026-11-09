@@ -93,6 +93,17 @@ class DialogTitleBar(QFrame):
             btn.clicked.connect(on_click)
         return btn
 
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        try:
+            settings = get_settings()
+            if settings.value("material_preset", "ocean", type=str) == "christmas":
+                painter = QPainter(self)
+                from ui.theme import draw_christmas_titlebar
+                draw_christmas_titlebar(painter, self.width(), self.height())
+        except Exception as e:
+            logger.debug(f"Dialog titlebar holiday snow overlay skipped: {e}")
+
     def update_style(self) -> None:
         """Update colors and icons to match active theme settings."""
         settings = get_settings()

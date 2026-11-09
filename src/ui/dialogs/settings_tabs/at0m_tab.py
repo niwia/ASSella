@@ -15,11 +15,15 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QFrame,
     QLabel,
-    QComboBox,
     QPushButton,
     QMenu,
     QFileDialog,
+    QTabWidget,
+    QGridLayout,
+    QScrollArea,
+    QSizePolicy,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.helpers import create_checkbox_setting
@@ -145,14 +149,21 @@ def get_available_download_plugins() -> list[tuple[str, str]]:
     std_label = f"{std_title} (download.lua) (Default)" if def_interceptor == "download.lua" else f"{std_title} (download.lua)"
 
     sb_filename = "spacebunny.lua" if (def_interceptor == "spacebunny.lua" or get_manifest_plugin_info("spacebunny.lua") or not get_manifest_plugin_info("spacebunny1.5.lua")) else "spacebunny1.5.lua"
-    options = [
-        (sb_label, sb_filename),
-        (std_label, "download.lua"),
-    ]
+    options = [(sb_label, sb_filename)]
+    # The Standard interceptor only when the manifest still publishes it.
+    try:
+        if get_manifest_plugin_info("download.lua"):
+            options.append((std_label, "download.lua"))
+    except Exception as _silent_err:
+        logger.debug("[at0m_tab] get_available_download_plugins: ignored %s", _silent_err, exc_info=False)
     try:
         from utils.helpers import get_base_path
         from utils.yaml_config_manager import get_sls_plugins_dirs
-        known_filenames = {opt[1] for opt in options}
+        from utils.plugin_manager import INTERCEPTOR_ROLES, get_retired_plugins, read_plugin_meta
+
+        # Only real download interceptors belong in this list: the role a
+        # plugin registers (or the Steam functions it hooks) decides.
+        known_filenames = {opt[1] for opt in options} | set(get_retired_plugins())
         search_dirs = [
             get_base_path() / "plugins",
             Path.home() / ".local" / "share" / "ACCELA" / "plugins",
@@ -163,8 +174,8 @@ def get_available_download_plugins() -> list[tuple[str, str]]:
                     if (
                         not f.name.endswith(".bak")
                         and not f.name.startswith(".")
-                        and f.name not in ("spliced-tickets.lua", "lobster.lua", "hubcap.lua")
                         and f.name not in known_filenames
+                        and read_plugin_meta(f).get("role") in INTERCEPTOR_ROLES
                     ):
                         options.append((f"{f.name}", f.name))
                         known_filenames.add(f.name)
@@ -190,19 +201,61 @@ def is_plugin_detected(filename: str) -> bool:
 
 def create_at0m_tab(dialog) -> QWidget:
     """
-    Create the dedicated at0-m settings tab for native Steam and SLSsteam integration.
+    Create the dedicated at0-m settings tab with General and Advanced (Plugins) sub-tabs.
     """
     tab = QWidget()
-    layout = QVBoxLayout(tab)
-    layout.setContentsMargins(12, 10, 12, 10)
+    main_layout = QVBoxLayout(tab)
+    main_layout.setContentsMargins(12, 10, 12, 10)
+    main_layout.setSpacing(8)
+
+    atom_subtabs = QTabWidget()
+    atom_subtabs.setUsesScrollButtons(True)
+    dialog.atom_subtabs = atom_subtabs
+    bg_color = dialog.settings.value("background_color", "#141416")
+    atom_subtabs.setStyleSheet(f"""
+        QTabWidget::pane {{
+            border: none;
+        }}
+        QTabBar::tab {{
+            background: {bg_color};
+            color: rgba(255, 255, 255, 0.6);
+            padding: 6px 16px;
+            border: none;
+            font-weight: bold;
+            font-size: 9.5pt;
+        }}
+        QTabBar::tab:selected {{
+            color: {dialog.accent_color};
+            border-bottom: 2px solid {dialog.accent_color};
+        }}
+        QTabBar::tab:hover {{
+            color: #FFFFFF;
+        }}
+    """)
+
+    # ── Subtab 1: General ──
+    general_tab = QWidget()
+    gen_scroll = QScrollArea()
+    gen_scroll.setWidgetResizable(True)
+    gen_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    gen_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+    gen_container = QWidget()
+    layout = QVBoxLayout(gen_container)
+    layout.setContentsMargins(0, 4, 0, 10)
     layout.setSpacing(8)
+    gen_scroll.setWidget(gen_container)
+
+    gen_tab_layout = QVBoxLayout(general_tab)
+    gen_tab_layout.setContentsMargins(0, 0, 0, 0)
+    gen_tab_layout.addWidget(gen_scroll)
 
     cfg_path = get_user_config_path()
 
     # -- 1. General Configuration Card --
     cfg_card, cfg_layout = dialog._create_card_frame("General Configuration")
 
-    # Master Option: Enable Lua Plugins (SLSsteam)
+    # Master Option: Enable plugins (SLSsteam)
     sls_plugins_val = get_yaml_boolean_value(cfg_path, "Plugins", default=True)
     saved_enable_at0m = dialog.settings.value(
         "enable_at0m",
@@ -211,11 +264,11 @@ def create_at0m_tab(dialog) -> QWidget:
     )
 
     dialog.enable_at0m_checkbox = create_checkbox_setting(
-        "Enable Lua Plugins (SLSsteam)",
+        "Enable plugins",
         "enable_at0m",
         saved_enable_at0m,
         dialog,
-        tooltip="Master switch for SLSsteam Lua plugins. Automatically deploys bundled plugins and enables Plugins in SLSsteam config.yaml.",
+        tooltip="Master switch for SLSsteam plugins. Automatically deploys bundled plugins and enables Plugins in SLSsteam config.yaml.",
         show_description=False,
     )
     dialog.enable_vapor_checkbox = dialog.enable_at0m_checkbox
@@ -233,50 +286,7 @@ def create_at0m_tab(dialog) -> QWidget:
     dialog.at0m_disable_updates_checkbox = None
     dialog.vapor_disable_updates_checkbox = None
 
-    # Option 2: Default Download Behavior
-    act_row = QHBoxLayout()
-    act_row.setContentsMargins(2, 2, 2, 2)
-    act_row.setSpacing(10)
-
-    act_title = QLabel("Default Download Behavior")
-    act_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9pt;")
-    act_row.addWidget(act_title, stretch=1)
-
-    dialog.at0m_download_action_combo = QComboBox()
-    dialog.at0m_download_action_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.at0m_download_action_combo.setFixedWidth(155)
-    dialog.at0m_download_action_combo.addItem("Always ask", "ask")
-    dialog.at0m_download_action_combo.addItem("Start Native (at0-m)", "native")
-    dialog.at0m_download_action_combo.addItem("Start ASSella", "assella")
-    dialog.vapor_download_action_combo = dialog.at0m_download_action_combo
-
-    saved_behavior = dialog.settings.value(
-        "at0m_default_download_action",
-        dialog.settings.value("vapor_default_download_action", "ask", type=str),
-        type=str,
-    )
-    cur_idx = dialog.at0m_download_action_combo.findData(saved_behavior)
-    if cur_idx >= 0:
-        dialog.at0m_download_action_combo.setCurrentIndex(cur_idx)
-
-    dialog.at0m_download_action_combo.currentIndexChanged.connect(
-        lambda _i: (
-            dialog.settings.setValue(
-                "at0m_default_download_action",
-                dialog.at0m_download_action_combo.currentData(),
-            ),
-            dialog.settings.setValue(
-                "vapor_default_download_action",
-                dialog.at0m_download_action_combo.currentData(),
-            ),
-            dialog.settings.setValue(
-                "native_steam_default_action",
-                dialog.at0m_download_action_combo.currentData(),
-            ),
-        )
-    )
-    act_row.addWidget(dialog.at0m_download_action_combo)
-    cfg_layout.addLayout(act_row)
+    # Default download behavior lives on the Downloads tab (dialog.at0m_download_action_combo).
 
     # Option 3: Start download with Steam
     start_row = QHBoxLayout()
@@ -287,7 +297,7 @@ def create_at0m_tab(dialog) -> QWidget:
     start_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9pt;")
     start_row.addWidget(start_title, stretch=1)
 
-    dialog.at0m_start_mode_combo = QComboBox()
+    dialog.at0m_start_mode_combo = ModernComboBox()
     dialog.at0m_start_mode_combo.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.at0m_start_mode_combo.setFixedWidth(155)
     dialog.at0m_start_mode_combo.addItem("Start auto", "immediate")
@@ -342,16 +352,16 @@ def create_at0m_tab(dialog) -> QWidget:
     sep2.setStyleSheet("color: rgba(255,255,255,0.08); border: none; background: rgba(255,255,255,0.08); max-height: 1px;")
     cfg_layout.addWidget(sep2)
 
-    # Option 4: Default DLC-Only Behavior (after separator)
+    # Option 4: DLC-Only Download behaviour (after separator)
     dlc_act_row = QHBoxLayout()
     dlc_act_row.setContentsMargins(2, 2, 2, 2)
     dlc_act_row.setSpacing(10)
 
-    dlc_act_title = QLabel("Default DLC-Only Behavior")
+    dlc_act_title = QLabel("DLC-Only Download behaviour")
     dlc_act_title.setStyleSheet("color: #FFFFFF; font-weight: bold; font-size: 9pt;")
     dlc_act_row.addWidget(dlc_act_title, stretch=1)
 
-    dialog.at0m_dlc_action_combo = QComboBox()
+    dialog.at0m_dlc_action_combo = ModernComboBox()
     dialog.at0m_dlc_action_combo.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.at0m_dlc_action_combo.setFixedWidth(155)
     dialog.at0m_dlc_action_combo.addItem("Always ask", "ask")
@@ -381,108 +391,14 @@ def create_at0m_tab(dialog) -> QWidget:
 
     layout.addWidget(cfg_card)
 
-    # -- 2. Deploy Card (3 Dynamic Buttons: Standard, SpaceBunny 1.7 beta, Spliced Tickets) --
-    deploy_card, deploy_layout = dialog._create_card_frame("Deploy Lua Plugins")
+    # -- 2. Katamari Plugins Status & Updaters Card --
+    deploy_card, deploy_layout = dialog._create_card_frame("Manage plugins")
     deploy_layout.setSpacing(8)
 
-    # Three Dynamic Buttons Row
-    buttons_row = QHBoxLayout()
-    buttons_row.setContentsMargins(0, 4, 0, 4)
-    buttons_row.setSpacing(8)
-
-    # 1. Standard Plugin button
-    dialog.btn_standard_plugin = QPushButton("Standard")
-    dialog.btn_standard_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
-    buttons_row.addWidget(dialog.btn_standard_plugin, 1)
-
-    # 2. SpaceBunny (Default) button
-    dialog.btn_spacebunny_plugin = QPushButton("SpaceBunny (Default)")
-    dialog.btn_spacebunny_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
-    buttons_row.addWidget(dialog.btn_spacebunny_plugin, 1)
-
-    # 3. Spliced Tickets button
-    dialog.btn_spliced_tickets = QPushButton("Spliced Tickets")
-    dialog.btn_spliced_tickets.setCursor(Qt.CursorShape.PointingHandCursor)
-    buttons_row.addWidget(dialog.btn_spliced_tickets, 1)
-
-    deploy_layout.addLayout(buttons_row)
-
-    # Extras section
-    extras_lbl = QLabel("Extras")
-    extras_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.9); font-size: 9pt; font-weight: 700; margin-top: 8px;")
-    deploy_layout.addWidget(extras_lbl)
-
-    extras_row = QHBoxLayout()
-    extras_row.setContentsMargins(0, 2, 0, 4)
-    extras_row.setSpacing(8)
-
-    # 4. Lobster button + config gear button
-    lobster_box = QHBoxLayout()
-    lobster_box.setContentsMargins(0, 0, 0, 0)
-    lobster_box.setSpacing(2)
-
-    dialog.btn_lobster_plugin = QPushButton("Lobster")
-    dialog.btn_lobster_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
-    lobster_box.addWidget(dialog.btn_lobster_plugin, 1)
-
-    dialog.btn_lobster_config = QPushButton()
-    dialog.btn_lobster_config.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.btn_lobster_config.setFixedSize(34, 34)
-    dialog.btn_lobster_config.setToolTip("Configure lobster.conf.lua")
-    lobster_box.addWidget(dialog.btn_lobster_config, 0)
-
-    extras_row.addLayout(lobster_box, 1)
-
-    # 5. Hubcap button + config gear button
-    hubcap_box = QHBoxLayout()
-    hubcap_box.setContentsMargins(0, 0, 0, 0)
-    hubcap_box.setSpacing(2)
-
-    dialog.btn_hubcap_plugin = QPushButton("Hubcap")
-    dialog.btn_hubcap_plugin.setCursor(Qt.CursorShape.PointingHandCursor)
-    hubcap_box.addWidget(dialog.btn_hubcap_plugin, 1)
-
-    dialog.btn_hubcap_config = QPushButton()
-    dialog.btn_hubcap_config.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.btn_hubcap_config.setFixedSize(34, 34)
-    dialog.btn_hubcap_config.setToolTip("Configure spacebunny.conf.lua (Hubcap settings)")
-    hubcap_box.addWidget(dialog.btn_hubcap_config, 0)
-
-    extras_row.addLayout(hubcap_box, 1)
-
-    deploy_layout.addLayout(extras_row)
-
-    # Separator
-    deploy_sep = QFrame()
-    deploy_sep.setFrameShape(QFrame.Shape.HLine)
-    deploy_sep.setStyleSheet("color: rgba(255,255,255,0.06); border: none; background: rgba(255,255,255,0.06); max-height: 1px;")
-    deploy_layout.addWidget(deploy_sep)
-
-    # Checkbox for custom plugins (Advanced)
-    dialog.custom_plugins_checkbox = create_checkbox_setting(
-        "I'm using custom plugins (Advanced)",
-        "custom_plugins_advanced",
-        False,
-        dialog,
-        "Bypasses plugin missing checks for game transfers and native downloads. Disables standard download.lua enforcement.",
-        show_description=False,
-    )
-    deploy_layout.addWidget(dialog.custom_plugins_checkbox)
-
-    def _on_custom_plugins_toggled(checked: bool):
-        dialog.settings.setValue("custom_plugins_advanced", checked)
-        if checked:
-            ThemedMessageBox.warning(
-                dialog,
-                "Custom Plugins (Advanced)",
-                "Bypassing plugin presence verification enables native downloads and game transfers with custom or third-party Lua plugins.\n\n"
-                "Please note: ASSella cannot guarantee compatibility, functionality, or stability with third-party plugins!"
-            )
-        _refresh_deploy_ui()
-
-    dialog.custom_plugins_checkbox.checkbox.toggled.connect(_on_custom_plugins_toggled)
-
-    layout.addWidget(deploy_card)
+    deploy_desc = QLabel("Click to deploy and update")
+    deploy_desc.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 8.5pt;")
+    deploy_desc.setWordWrap(True)
+    deploy_layout.addWidget(deploy_desc)
 
     STYLE_ACTIVE_GREEN = """
         QPushButton {
@@ -490,24 +406,13 @@ def create_at0m_tab(dialog) -> QWidget:
             color: #81C784;
             border: 1px solid rgba(129, 199, 132, 0.5);
             border-radius: 6px;
-            padding: 7px 12px;
+            padding: 7px 10px;
             font-size: 8.5pt;
             font-weight: 600;
         }
-    """
-    STYLE_INACTIVE_BUTTON = """
-        QPushButton {
-            background-color: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.22);
-            border-radius: 6px;
-            color: #FFFFFF;
-            padding: 7px 12px;
-            font-size: 8.5pt;
-            font-weight: 500;
-        }
         QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.16);
-            border-color: rgba(255, 255, 255, 0.35);
+            background-color: rgba(76, 175, 80, 0.32);
+            border-color: rgba(129, 199, 132, 0.85);
         }
     """
     STYLE_ATTENTION_ORANGE = """
@@ -516,7 +421,7 @@ def create_at0m_tab(dialog) -> QWidget:
             color: #FFD54F;
             border: 1px solid rgba(255, 171, 0, 0.55);
             border-radius: 6px;
-            padding: 7px 12px;
+            padding: 7px 10px;
             font-size: 8.5pt;
             font-weight: 600;
         }
@@ -526,375 +431,405 @@ def create_at0m_tab(dialog) -> QWidget:
             color: #FFFFFF;
         }
     """
+    STYLE_OPTIONAL_OFF = """
+        QPushButton {
+            background-color: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.75);
+            border: 1px dashed rgba(255, 255, 255, 0.25);
+            border-radius: 6px;
+            padding: 7px 10px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.10);
+            border-color: rgba(255, 255, 255, 0.45);
+            color: #FFFFFF;
+        }
+    """
     STYLE_DISABLED = """
         QPushButton {
             background-color: rgba(255, 255, 255, 0.03);
             color: rgba(255, 255, 255, 0.3);
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 6px;
-            padding: 7px 12px;
+            padding: 7px 10px;
             font-size: 8.5pt;
             font-weight: 500;
         }
     """
 
-    def _refresh_deploy_ui():
+    # Plugin buttons. Read dynamically from manifest when available, falling back
+    # to the 6 Katamari family defaults. One click fetches the manifest and
+    # installs or updates that plugin. The manifest decides which plugins can
+    # be installed at all (Bakeneko stays greyed out until it allows it).
+    DEFAULT_PLUGIN_BUTTONS = [
+        # (attribute, filename, display name, row)
+        ("btn_spacebunny_plugin", "spacebunny.lua", "SpaceBunny", 0),
+        ("btn_styx_plugin", "styx.lua", "Styx", 0),
+        ("btn_lobster_plugin", "lobster.lua", "Lobster", 0),
+        ("btn_lettuce_plugin", "lettuce.lua", "Lettuce", 1),
+        ("btn_pineapple_plugin", "pineapple.lua", "Pineapple", 1),
+    ]
+
+    class _PluginButton(QPushButton):
+        """Plugin button whose text elides instead of widening the page."""
+
+        def __init__(self, text: str):
+            super().__init__(text)
+            self._full = text
+            self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            self.setMinimumWidth(60)
+
+        def setText(self, text: str) -> None:  # noqa: N802 - Qt override
+            self._full = text
+            self._elide()
+
+        def text(self) -> str:  # noqa: D401 - Qt override
+            return self._full
+
+        def resizeEvent(self, e):  # noqa: N802
+            super().resizeEvent(e)
+            self._elide()
+
+        def _elide(self) -> None:
+            avail = max(10, self.width() - 22)
+            shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, avail)
+            QPushButton.setText(self, shown)
+            tip = self.toolTip()
+            if shown != self._full and self._full not in tip:
+                self.setToolTip(self._full + ("\n\n" + tip if tip else ""))
+
+    def _build_plugin_button_defs():
+        from utils.plugin_manager import fetch_plugins_manifest, get_retired_plugins
+
+        manifest = fetch_plugins_manifest()
+        retired = get_retired_plugins() or {}
+        entries = (manifest or {}).get("plugins")
+
+        button_defs = []
+        if isinstance(entries, dict) and entries:
+            # The manifest is the list: what it publishes is shown (greyed out
+            # when not deployable), what it drops disappears. Essential
+            # plugins and interceptors go in the first block, the rest under
+            # "Extras".
+            for fname, meta in entries.items():
+                if fname in retired or not isinstance(meta, dict) or meta.get("retired"):
+                    continue
+                is_core = bool(meta.get("required")) or meta.get("category") == "interceptor"
+                display_name = meta.get("name") or fname.replace(".lua", "").title()
+                attr = f"btn_{fname.replace('.', '_').replace('-', '_')}"
+                button_defs.append((attr, fname, display_name, 0 if is_core else 1))
+        else:
+            # No manifest at all (first start offline, no bundled copy).
+            for attr, fname, default_name, row_idx in DEFAULT_PLUGIN_BUTTONS:
+                if fname not in retired:
+                    button_defs.append((attr, fname, default_name, row_idx))
+        return button_defs
+
+    buttons_container = QWidget()
+    buttons_container_layout = QVBoxLayout(buttons_container)
+    buttons_container_layout.setContentsMargins(0, 0, 0, 0)
+    buttons_container_layout.setSpacing(6)
+    deploy_layout.addWidget(buttons_container)
+
+    def _render_plugin_buttons():
+        while buttons_container_layout.count():
+            item = buttons_container_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+            l = item.layout()
+            if l:
+                while l.count():
+                    sub = l.takeAt(0)
+                    sw = sub.widget()
+                    if sw:
+                        sw.deleteLater()
+
+        button_defs = _build_plugin_button_defs()
+        dialog._plugin_button_defs = button_defs
+
+        # A fixed 3-column grid: buttons share the width and their text is
+        # elided, so a long label ("Download Interceptor (Install)") can never
+        # push the page wider than the dialog (it used to clip everything).
+        COLS = 3
+        core_grid, extras_grid = QGridLayout(), QGridLayout()
+        for g in (core_grid, extras_grid):
+            g.setContentsMargins(0, 2, 0, 4)
+            g.setHorizontalSpacing(8)
+            g.setVerticalSpacing(6)
+            for c in range(COLS):
+                g.setColumnStretch(c, 1)
+        counts = [0, 0]
+        dialog._plugin_btn_entries = []
+
+        for attr, fname, label, row_idx in button_defs:
+            btn = _PluginButton(label)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            setattr(dialog, attr, btn)
+            btn.clicked.connect(lambda _c=False, b=btn, f=fname, n=label: _handle_plugin_click(b, f, n))
+            which = 0 if row_idx == 0 else 1
+            grid = core_grid if which == 0 else extras_grid
+            n = counts[which]
+            grid.addWidget(btn, n // COLS, n % COLS)
+            counts[which] += 1
+            dialog._plugin_btn_entries.append((btn, fname, label))
+
+        buttons_container_layout.addLayout(core_grid)
+        if counts[1]:
+            extras_lbl = QLabel("Extras")
+            extras_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.9); font-size: 9pt; font-weight: 700; margin-top: 6px;")
+            buttons_container_layout.addWidget(extras_lbl)
+            buttons_container_layout.addLayout(extras_grid)
+
+    # Plugins in the folder that the manifest does not publish.
+    unlisted_row = QHBoxLayout()
+    unlisted_row.setContentsMargins(0, 2, 0, 0)
+    dialog.unlisted_plugins_lbl = QLabel()
+    dialog.unlisted_plugins_lbl.setWordWrap(True)
+    dialog.unlisted_plugins_lbl.setStyleSheet("color: #FFB74D; font-size: 8.5pt;")
+    unlisted_btn = QPushButton("Review")
+    unlisted_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    unlisted_btn.setFixedHeight(26)
+    unlisted_row.addWidget(dialog.unlisted_plugins_lbl, 1)
+    unlisted_row.addWidget(unlisted_btn, 0)
+    unlisted_box = QWidget()
+    unlisted_box.setLayout(unlisted_row)
+    unlisted_box.hide()
+    deploy_layout.addWidget(unlisted_box)
+
+    def _refresh_unlisted():
+        try:
+            from utils.plugin_manager import find_unlisted_plugins
+
+            names = sorted({p.name for p in find_unlisted_plugins()})
+        except Exception:
+            names = []
+        if names:
+            shown = ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+            dialog.unlisted_plugins_lbl.setText(f"Other plugins in your SLSsteam folder: {shown}")
+            dialog.unlisted_plugins_lbl.setToolTip("Plugins ASSella does not publish can clash with SpaceBunny and Styx.")
+        unlisted_box.setVisible(bool(names))
+
+    def _review_unlisted():
+        from utils.plugin_manager import check_and_prompt_legacy_plugins
+
+        check_and_prompt_legacy_plugins(parent_window=dialog, force=True)
+        if dialog.settings.value("custom_plugins_advanced", False, type=bool):
+            dialog.custom_plugins_checkbox.setChecked(True)
+        _refresh_unlisted()
+        _refresh_all_buttons()
+
+    unlisted_btn.clicked.connect(_review_unlisted)
+    dialog._refresh_unlisted_plugins = _refresh_unlisted
+
+    # Separator
+    deploy_sep = QFrame()
+    deploy_sep.setFrameShape(QFrame.Shape.HLine)
+    deploy_sep.setStyleSheet("color: rgba(255,255,255,0.06); border: none; background: rgba(255,255,255,0.06); max-height: 1px;")
+    deploy_layout.addWidget(deploy_sep)
+
+    # Advanced custom plugins toggle
+    dialog.custom_plugins_checkbox = create_checkbox_setting(
+        "I'm using custom plugins (Advanced)",
+        "custom_plugins_advanced",
+        False,
+        dialog,
+        "Bypasses plugin missing checks for game transfers and native downloads. Disables non-family archiving.",
+        show_description=False,
+    )
+    deploy_layout.addWidget(dialog.custom_plugins_checkbox)
+
+    layout.addWidget(deploy_card)
+
+    def _refresh_plugin_btn(btn: QPushButton, filename: str, display_name: str):
         from utils.plugin_manager import (
-            archive_redundant_legacy_plugins,
-            get_default_interceptor_from_manifest,
+            get_manifest_plugin_info,
+            get_plugin_status,
             get_plugin_version,
-            is_plugin_user_disabled,
+            is_plugin_check_bypassed,
+            is_plugin_deployable,
         )
-        archive_redundant_legacy_plugins(auto_deploy_replacement=False)
-        is_custom = dialog.settings.value("custom_plugins_advanced", False, type=bool)
-        std_state = get_plugin_state("download.lua")
-        space_state = get_plugin_state("spacebunny.lua")
-        spliced_state = get_plugin_state("spliced-tickets.lua")
-        active_dl = get_active_download_plugin()
-        active_lower = (active_dl or "").lower()
 
-        sb_ver = get_plugin_version("spacebunny.lua") or ""
-        sb_name = f"SpaceBunny {sb_ver}".strip()
+        btn.setProperty("plugin_busy", False)
+        if is_plugin_check_bypassed():
+            btn.setEnabled(False)
+            btn.setText(display_name)
+            btn.setToolTip("Custom plugins option is enabled. Plugins are managed by you.")
+            btn.setStyleSheet(STYLE_DISABLED)
+            return
 
-        std_ver = get_plugin_version("download.lua") or ""
-        std_name = f"Standard {std_ver}".strip()
+        meta = get_manifest_plugin_info(filename) or {}
+        manifest_name = meta.get("name")
+        if manifest_name:
+            display_name = manifest_name
 
-        st_ver = get_plugin_version("spliced-tickets.lua") or ""
-        st_name = f"Spliced Tickets {st_ver}".strip()
+        deployable, why = is_plugin_deployable(filename)
+        if not deployable:
+            btn.setEnabled(False)
+            btn.setText(f"{display_name} · unavailable")
+            btn.setToolTip(why)
+            btn.setStyleSheet(STYLE_DISABLED)
+            return
 
-        lob_ver = get_plugin_version("lobster.lua") or ""
-        lob_name = f"Lobster {lob_ver}".strip()
+        from utils.plugin_manager import POLICY_REQUIRED, plugin_policy
 
-        hub_ver = get_plugin_version("hubcap.lua") or ""
-        hub_name = f"Hubcap {hub_ver}".strip()
-
-        def_interceptor = get_default_interceptor_from_manifest()
-        is_sb_default = def_interceptor in ("spacebunny.lua", "spacebunny1.5.lua")
-        sb_base = f"{sb_name} (Default)" if is_sb_default else sb_name
-        std_base = f"{std_name} (Default)" if def_interceptor == "download.lua" else std_name
-
-        is_space_active = ("spacebunny" in active_lower) or ("spacetest" in active_lower)
-        is_std_active = (active_dl == "download.lua")
-
-        if is_custom:
-            dialog.btn_standard_plugin.setEnabled(False)
-            dialog.btn_standard_plugin.setText(std_base)
-            dialog.btn_standard_plugin.setToolTip("Custom plugins option is enabled. Verification is bypassed.")
-            dialog.btn_standard_plugin.setStyleSheet(STYLE_DISABLED)
-
-            dialog.btn_spacebunny_plugin.setEnabled(False)
-            dialog.btn_spacebunny_plugin.setText(sb_base)
-            dialog.btn_spacebunny_plugin.setToolTip("Custom plugins option is enabled. Verification is bypassed.")
-            dialog.btn_spacebunny_plugin.setStyleSheet(STYLE_DISABLED)
-        elif is_std_active:
-            # Standard is active
-            if std_state == "up_to_date":
-                dialog.btn_standard_plugin.setEnabled(False)
-                dialog.btn_standard_plugin.setText(f"{std_base} (Active)")
-                dialog.btn_standard_plugin.setToolTip("download.lua is currently active and verified against Cloudflare manifest.")
-                dialog.btn_standard_plugin.setStyleSheet(STYLE_ACTIVE_GREEN)
-            else:
-                dialog.btn_standard_plugin.setEnabled(True)
-                dialog.btn_standard_plugin.setText(f"{std_base} (Update)")
-                dialog.btn_standard_plugin.setToolTip("download.lua is active but outdated. Click to update from Cloudflare.")
-                dialog.btn_standard_plugin.setStyleSheet(STYLE_ATTENTION_ORANGE)
-
-            # SpaceBunny is inactive (clickable to switch)
-            dialog.btn_spacebunny_plugin.setEnabled(True)
-            dialog.btn_spacebunny_plugin.setText(sb_base)
-            dialog.btn_spacebunny_plugin.setToolTip("Click to activate SpaceBunny (archives download.lua to .bak).")
-            dialog.btn_spacebunny_plugin.setStyleSheet(STYLE_INACTIVE_BUTTON)
-
-        elif is_space_active:
-            # SpaceBunny is active
-            if space_state == "up_to_date":
-                dialog.btn_spacebunny_plugin.setEnabled(False)
-                dialog.btn_spacebunny_plugin.setText(f"{sb_base} (Active)")
-                dialog.btn_spacebunny_plugin.setToolTip("SpaceBunny is currently active and verified against Cloudflare manifest.")
-                dialog.btn_spacebunny_plugin.setStyleSheet(STYLE_ACTIVE_GREEN)
-            else:
-                dialog.btn_spacebunny_plugin.setEnabled(True)
-                dialog.btn_spacebunny_plugin.setText(f"{sb_base} (Update)")
-                dialog.btn_spacebunny_plugin.setToolTip("SpaceBunny is active but outdated. Click to update from Cloudflare.")
-                dialog.btn_spacebunny_plugin.setStyleSheet(STYLE_ATTENTION_ORANGE)
-
-            # Standard is inactive (clickable to switch)
-            dialog.btn_standard_plugin.setEnabled(True)
-            dialog.btn_standard_plugin.setText(std_base)
-            dialog.btn_standard_plugin.setToolTip("Click to activate Standard download.lua (archives SpaceBunny to .bak).")
-            dialog.btn_standard_plugin.setStyleSheet(STYLE_INACTIVE_BUTTON)
-
+        status = get_plugin_status(filename)
+        desc = str(meta.get("description") or "")
+        policy = plugin_policy(filename)
+        btn.setProperty("plugin_optional", policy != POLICY_REQUIRED)
+        btn.setProperty("plugin_installed", status != "missing")
+        if status == "missing" and policy != POLICY_REQUIRED:
+            # Optional and off: nothing is wrong, so no orange.
+            btn.setText(f"{display_name} · off")
+            btn.setToolTip((desc + "\n\n" if desc else "") + "Optional. Click to install and turn it on.")
+            btn.setStyleSheet(STYLE_OPTIONAL_OFF)
+            btn.setEnabled(True)
+            return
+        if status == "up_to_date":
+            ver = get_plugin_version(filename) or meta.get("version", "")
+            btn.setText(f"{display_name} v{ver}" if ver else display_name)
+            btn.setToolTip((desc + "\n\n" if desc else "") + (
+                "Installed and up to date. Click to check for updates or turn it off."
+                if policy != POLICY_REQUIRED else "Installed and up to date. Click to check for updates."
+            ))
+            btn.setStyleSheet(STYLE_ACTIVE_GREEN)
+        elif status == "missing":
+            btn.setText(f"{display_name} · install")
+            btn.setToolTip((desc + "\n\n" if desc else "") + "Not installed. Click to install.")
+            btn.setStyleSheet(STYLE_ATTENTION_ORANGE)
         else:
-            # Neither is currently active
-            dialog.btn_standard_plugin.setEnabled(True)
-            dialog.btn_standard_plugin.setText(f"{std_base} (Missing)")
-            dialog.btn_standard_plugin.setToolTip("download.lua is not installed. Click to download and activate.")
-            dialog.btn_standard_plugin.setStyleSheet(STYLE_ATTENTION_ORANGE)
+            btn.setText(f"{display_name} · update")
+            btn.setToolTip(
+                (desc + "\n\n" if desc else "")
+                + "A different version is installed. Click to install the published one "
+                "(the current file is kept as .bak)."
+            )
+            btn.setStyleSheet(STYLE_ATTENTION_ORANGE)
+        btn.setEnabled(True)
 
-            dialog.btn_spacebunny_plugin.setEnabled(True)
-            dialog.btn_spacebunny_plugin.setText(f"{sb_base} (Missing)")
-            dialog.btn_spacebunny_plugin.setToolTip("SpaceBunny is not installed. Click to download and activate.")
-            dialog.btn_spacebunny_plugin.setStyleSheet(STYLE_ATTENTION_ORANGE)
+    class _PluginJob(QThread):
+        done = pyqtSignal(bool, str)
 
-        # 3. Spliced Tickets button state & style
-        if spliced_state == "up_to_date":
-            dialog.btn_spliced_tickets.setEnabled(False)
-            dialog.btn_spliced_tickets.setText(st_name)
-            dialog.btn_spliced_tickets.setToolTip("spliced-tickets.lua is deployed and active.")
-            dialog.btn_spliced_tickets.setStyleSheet(STYLE_ACTIVE_GREEN)
-        else:
-            dialog.btn_spliced_tickets.setEnabled(True)
-            status_txt = f"{st_name} (Missing)" if spliced_state == "missing" else f"{st_name} (Update)"
-            dialog.btn_spliced_tickets.setText(status_txt)
-            dialog.btn_spliced_tickets.setToolTip("spliced-tickets.lua is not deployed. Click to download and install.")
-            dialog.btn_spliced_tickets.setStyleSheet(STYLE_ATTENTION_ORANGE)
-
-        def _make_gear_icon(color_hex: str) -> QIcon:
-            renderer = QSvgRenderer(GEAR_SVG.encode("utf-8"))
-            pm = QPixmap(16, 16)
-            pm.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(pm)
-            renderer.render(painter)
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-            painter.fillRect(pm.rect(), QColor(color_hex))
-            painter.end()
-            return QIcon(pm)
-
-        icon_gear_active = _make_gear_icon("#81C784")
-        icon_gear_disabled = _make_gear_icon("#555555")
-
-        STYLE_SPLIT_ACTIVE_LEFT = """
-            QPushButton {
-                background-color: rgba(76, 175, 80, 0.2);
-                color: #81C784;
-                border: 1px solid rgba(129, 199, 132, 0.5);
-                border-top-right-radius: 0px;
-                border-bottom-right-radius: 0px;
-                border-right: none;
-                padding: 7px 12px;
-                font-size: 8.5pt;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background-color: rgba(76, 175, 80, 0.3);
-            }
-        """
-        STYLE_SPLIT_ACTIVE_GEAR = """
-            QPushButton {
-                background-color: rgba(76, 175, 80, 0.2);
-                border: 1px solid rgba(129, 199, 132, 0.5);
-                border-top-left-radius: 0px;
-                border-bottom-left-radius: 0px;
-                border-left: none;
-                padding: 0px;
-            }
-            QPushButton:hover {
-                background-color: rgba(76, 175, 80, 0.35);
-            }
-        """
-        STYLE_SPLIT_INACTIVE_LEFT = """
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.22);
-                border-top-right-radius: 0px;
-                border-bottom-right-radius: 0px;
-                border-right: none;
-                color: #FFFFFF;
-                padding: 7px 12px;
-                font-size: 8.5pt;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.14);
-            }
-        """
-        STYLE_SPLIT_DISABLED_GEAR = """
-            QPushButton, QPushButton:disabled {
-                background-color: rgba(255, 255, 255, 0.03);
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-top-left-radius: 0px;
-                border-bottom-left-radius: 0px;
-                border-left: none;
-                padding: 0px;
-            }
-        """
-
-        # 4. Lobster button state & style (toggleable: click active to disable, click inactive to enable)
-        lobster_state = get_plugin_state("lobster.lua")
-        lobster_desc = "Headcrab config recovery - restores AdditionalDepots and DecryptionKeys if stripped by Headcrab updates"
-        dialog.btn_lobster_plugin.setEnabled(True)
-        if lobster_state != "missing":
-            dialog.btn_lobster_plugin.setText(f"{lob_name} (Active)")
-            dialog.btn_lobster_plugin.setToolTip(f"{lobster_desc}\n\nClick to disable (removes from plugins directory).")
-            dialog.btn_lobster_plugin.setStyleSheet(STYLE_SPLIT_ACTIVE_LEFT)
-            dialog.btn_lobster_config.setEnabled(True)
-            dialog.btn_lobster_config.setIcon(icon_gear_active)
-            dialog.btn_lobster_config.setStyleSheet(STYLE_SPLIT_ACTIVE_GEAR)
-            dialog.btn_lobster_config.setToolTip("Configure lobster.conf.lua")
-        else:
-            lbl_text = f"{lob_name} (Disabled)" if is_plugin_user_disabled("lobster.lua") else lob_name
-            dialog.btn_lobster_plugin.setText(lbl_text)
-            dialog.btn_lobster_plugin.setToolTip(f"{lobster_desc}\n\nClick to enable and deploy.")
-            dialog.btn_lobster_plugin.setStyleSheet(STYLE_SPLIT_INACTIVE_LEFT)
-            dialog.btn_lobster_config.setEnabled(False)
-            dialog.btn_lobster_config.setIcon(icon_gear_disabled)
-            dialog.btn_lobster_config.setStyleSheet(STYLE_SPLIT_DISABLED_GEAR)
-            dialog.btn_lobster_config.setToolTip("Lobster is disabled. Enable Lobster to configure.")
-
-        # 5. Hubcap button state & style (toggleable: click active to disable, click inactive to enable)
-        hubcap_state = get_plugin_state("hubcap.lua")
-        hubcap_desc = "(Optional) Auto fetch depotkey when Steam asks for (experimental)"
-        dialog.btn_hubcap_plugin.setEnabled(True)
-        if hubcap_state != "missing":
-            dialog.btn_hubcap_plugin.setText(f"{hub_name} (Active)")
-            dialog.btn_hubcap_plugin.setToolTip(f"{hubcap_desc}\n\nClick to disable (removes from plugins directory).")
-            dialog.btn_hubcap_plugin.setStyleSheet(STYLE_SPLIT_ACTIVE_LEFT)
-            dialog.btn_hubcap_config.setEnabled(True)
-            dialog.btn_hubcap_config.setIcon(icon_gear_active)
-            dialog.btn_hubcap_config.setStyleSheet(STYLE_SPLIT_ACTIVE_GEAR)
-            dialog.btn_hubcap_config.setToolTip("Configure spacebunny.conf.lua (Hubcap settings)")
-        else:
-            lbl_text = f"{hub_name} (Disabled)" if is_plugin_user_disabled("hubcap.lua") else hub_name
-            dialog.btn_hubcap_plugin.setText(lbl_text)
-            dialog.btn_hubcap_plugin.setToolTip(f"{hubcap_desc}\n\nClick to enable and deploy.")
-            dialog.btn_hubcap_plugin.setStyleSheet(STYLE_SPLIT_INACTIVE_LEFT)
-            dialog.btn_hubcap_config.setEnabled(False)
-            dialog.btn_hubcap_config.setIcon(icon_gear_disabled)
-            dialog.btn_hubcap_config.setStyleSheet(STYLE_SPLIT_DISABLED_GEAR)
-            dialog.btn_hubcap_config.setToolTip("Hubcap is disabled. Enable Hubcap to configure.")
-
-    class DeployWorker(QThread):
-        finished_signal = pyqtSignal(bool, bool, str, str, str)
-
-        def __init__(self, filename: str, title: str):
-            super().__init__()
+        def __init__(self, filename: str, parent=None, remove: bool = False):
+            super().__init__(parent)
             self.filename = filename
-            self.title = title
+            self.remove = remove
 
         def run(self):
             try:
-                from utils.plugin_manager import deploy_plugin
-                ok, skipped, msg = deploy_plugin(self.filename, force_download=True)
-            except Exception as exc:
-                logger.error(f"[at0mTab] Deploy {self.filename} error: {exc}")
-                ok, skipped, msg = False, False, str(exc)
-            self.finished_signal.emit(ok, skipped, msg, self.title, self.filename)
+                from utils.plugin_manager import deploy_plugin, fetch_plugins_manifest, undeploy_plugin
 
-    def _deploy_single(filename: str, title: str, button: QPushButton):
-        button.setEnabled(False)
-        orig_text = button.text()
-        button.setText("Deploying...")
+                if self.remove:
+                    # Remembered as turned off, so no startup check reinstalls it.
+                    ok, msg = undeploy_plugin(self.filename)
+                    self.done.emit(ok, msg)
+                    return
+                fetch_plugins_manifest(force_refresh=True)
+                ok, _skipped, msg = deploy_plugin(self.filename)
+                self.done.emit(ok, msg)
+            except Exception as e:  # never leave the button stuck
+                self.done.emit(False, str(e))
 
-        worker = DeployWorker(filename, title)
-        dialog._active_deploy_worker = worker
-
-        def _on_done(ok: bool, skipped: bool, msg: str, t: str, f: str):
-            button.setEnabled(True)
-            button.setText(orig_text)
-            _refresh_deploy_ui()
-            if not ok:
-                ThemedMessageBox.warning(dialog, t, f"Failed downloading/deploying {f}:\n{msg}")
-            elif skipped:
-                ThemedMessageBox.information(
-                    dialog,
-                    t,
-                    f"{t} ({f}) is already active and up to date."
-                )
-            else:
-                ThemedMessageBox.information(
-                    dialog,
-                    t,
-                    f"Successfully activated {t} ({f})!"
-                )
-            dialog._active_deploy_worker = None
-
-        worker.finished_signal.connect(_on_done)
-        worker.start()
-
-    def _on_standard_clicked():
-        _deploy_single("download.lua", "Standard Plugin", dialog.btn_standard_plugin)
-
-    def _on_spacebunny_clicked():
-        from utils.plugin_manager import get_manifest_plugin_info, get_default_interceptor_from_manifest
-        def_name = get_default_interceptor_from_manifest()
-        sb_target = "spacebunny.lua" if (get_manifest_plugin_info("spacebunny.lua") or def_name == "spacebunny.lua" or not get_manifest_plugin_info("spacebunny1.5.lua")) else "spacebunny1.5.lua"
-        _deploy_single(sb_target, "SpaceBunny", dialog.btn_spacebunny_plugin)
-
-    def _on_spliced_tickets_clicked():
-        reply = ThemedMessageBox.warning(
-            dialog,
-            "Legality Warning",
-            "Bypassing DRM is illegal in many countries, make sure you are aware of this!",
-            ThemedMessageBox.StandardButton.Ok | ThemedMessageBox.StandardButton.Cancel,
-            ThemedMessageBox.StandardButton.Cancel,
-        )
-        if reply != ThemedMessageBox.StandardButton.Ok:
+    def _handle_plugin_click(btn: QPushButton, filename: str, display_name: str):
+        """Click and forget: refresh the manifest, then install or update."""
+        if btn.property("plugin_busy"):
             return
+        remove = False
+        if btn.property("plugin_optional") and btn.property("plugin_installed"):
+            choice = ThemedMessageBox.choices(
+                dialog, display_name,
+                f"{display_name} is optional and turned on.\n\n"
+                "Turning it off removes it from the SLSsteam plugins folder; ASSella will not "
+                "reinstall it until you turn it on again here.",
+                [("Cancel", "cancel"), ("Turn off", "off"), ("Check for update", "update")],
+                default="update",
+            )
+            if choice == "off":
+                remove = True
+            elif choice != "update":
+                return
+        btn.setProperty("plugin_busy", True)
+        btn.setEnabled(False)
+        btn.setText(f"Turning off {display_name}..." if remove else f"Updating {display_name}...")
+        btn.setStyleSheet(STYLE_DISABLED)
 
+        job = _PluginJob(filename, dialog, remove=remove)
+
+        def _finished(ok: bool, msg: str):
+            _refresh_all_buttons()
+            if not ok:
+                logger.warning(f"[at0mTab] {display_name}: {msg}")
+                btn.setToolTip(msg)
+            job.deleteLater()
+
+        job.done.connect(_finished)
+        job.start()
+
+    def _refresh_all_buttons():
+        for btn, fname, label in getattr(dialog, "_plugin_btn_entries", []):
+            _refresh_plugin_btn(btn, fname, label)
+
+    def _on_custom_plugins_toggled(checked: bool):
+        dialog.settings.setValue("custom_plugins_advanced", checked)
+        dialog.settings.sync()
+        if checked:
+            ThemedMessageBox.warning(
+                dialog,
+                "Custom Plugins (Advanced)",
+                "Bypassing plugin presence verification enables native downloads and game transfers with custom or third-party Lua plugins.\n\n"
+                "Please note: ASSella cannot guarantee compatibility, functionality, or stability with third-party plugins!"
+            )
+        _refresh_all_buttons()
+        _refresh_unlisted()
+
+    dialog.custom_plugins_checkbox.checkbox.toggled.connect(_on_custom_plugins_toggled)
+
+    # Initial populate from the local manifest (instant), then check the
+    # plugin sources in the background and refresh the buttons when done.
+    # Fetching on the GUI thread here was most of Settings' opening delay.
+    from utils.plugin_manager import offline_manifest
+
+    with offline_manifest():
+        _render_plugin_buttons()
+        _refresh_all_buttons()
+    _refresh_unlisted()
+
+    class _ManifestRefresh(QThread):
+        def run(self):
+            try:
+                from utils.plugin_manager import fetch_plugins_manifest
+
+                fetch_plugins_manifest()
+            except Exception as e:
+                logger.debug(f"[at0mTab] Background manifest refresh failed: {e}")
+
+    def _after_refresh():
         try:
-            from utils.yaml_config_manager import ensure_plugins_enabled, ensure_smart_tickets_enabled
-            ensure_plugins_enabled()
-            ensure_smart_tickets_enabled()
-        except Exception as ex:
-            logger.warning(f"Could not update config.yaml for spliced tickets: {ex}")
+            current_fnames = [fname for _, fname, _, _ in getattr(dialog, "_plugin_button_defs", [])]
+            new_defs = _build_plugin_button_defs()
+            new_fnames = [fname for _, fname, _, _ in new_defs]
+            if current_fnames != new_fnames:
+                _render_plugin_buttons()
+            _refresh_all_buttons()
+        except RuntimeError as _silent_err:
+            logger.debug("[at0m_tab] create_at0m_tab: ignored %s", _silent_err, exc_info=False)
 
-        _deploy_single("spliced-tickets.lua", "Spliced Tickets", dialog.btn_spliced_tickets)
-
-    dialog.btn_standard_plugin.clicked.connect(_on_standard_clicked)
-    dialog.btn_spacebunny_plugin.clicked.connect(_on_spacebunny_clicked)
-    dialog.btn_spliced_tickets.clicked.connect(_on_spliced_tickets_clicked)
-
-    def _toggle_extra_plugin(filename: str, title: str, button: QPushButton):
-        from utils.plugin_manager import get_plugin_status, undeploy_plugin
-        is_active = (get_plugin_state(filename) != "missing")
-        if is_active:
-            ok, msg = undeploy_plugin(filename)
-            _refresh_deploy_ui()
-            if ok:
-                ThemedMessageBox.information(
-                    dialog,
-                    title,
-                    f"Disabled {title} ({filename}).\nThe plugin has been removed and won't auto-deploy."
-                )
-            else:
-                ThemedMessageBox.warning(dialog, title, f"Could not disable {filename}:\n{msg}")
-        else:
-            _deploy_single(filename, title, button)
-
-    def _on_lobster_clicked():
-        _toggle_extra_plugin("lobster.lua", "Lobster", dialog.btn_lobster_plugin)
-
-    def _on_hubcap_clicked():
-        _toggle_extra_plugin("hubcap.lua", "Hubcap", dialog.btn_hubcap_plugin)
-
-    def _on_lobster_config_clicked():
-        from utils.sls_lua_config import get_lobster_conf_path, write_lobster_conf, read_lobster_conf
-        p = get_lobster_conf_path()
-        if not p.is_file():
-            write_lobster_conf(read_lobster_conf())
-        from ui.dialogs.lobster_config_dialog import LobsterConfigDialog
-        dlg = LobsterConfigDialog(dialog, accent_color=dialog.accent_color)
-        dlg.exec()
-
-    def _on_hubcap_config_clicked():
-        from utils.sls_lua_config import get_spacebunny_conf_path, write_spacebunny_conf, read_spacebunny_conf
-        p = get_spacebunny_conf_path()
-        if not p.is_file():
-            write_spacebunny_conf(read_spacebunny_conf())
-        from ui.dialogs.hubcap_config_dialog import HubcapConfigDialog
-        dlg = HubcapConfigDialog(dialog, accent_color=dialog.accent_color)
-        dlg.exec()
-
-    dialog.btn_lobster_plugin.clicked.connect(_on_lobster_clicked)
-    dialog.btn_hubcap_plugin.clicked.connect(_on_hubcap_clicked)
-    dialog.btn_lobster_config.clicked.connect(_on_lobster_config_clicked)
-    dialog.btn_hubcap_config.clicked.connect(_on_hubcap_config_clicked)
+    refresh = _ManifestRefresh(dialog)
+    refresh.finished.connect(_after_refresh)
+    dialog._plugin_manifest_worker = refresh
+    refresh.start()
 
     def _update_subwidget_states(enabled: bool):
         if getattr(dialog, "at0m_disable_updates_checkbox", None):
             dialog.at0m_disable_updates_checkbox.setEnabled(enabled)
-        dialog.at0m_download_action_combo.setEnabled(enabled)
+        if getattr(dialog, "at0m_download_action_combo", None) is not None:  # Downloads page may not be built yet
+            dialog.at0m_download_action_combo.setEnabled(enabled)
         dialog.at0m_start_mode_combo.setEnabled(enabled)
+        dialog.at0m_dlc_action_combo.setEnabled(enabled)
+        deploy_card.setEnabled(enabled)
+        atom_subtabs.setTabEnabled(1, enabled)
 
     def _on_enable_at0m_toggled(checked: bool):
         dialog.settings.setValue("enable_at0m", checked)
@@ -907,27 +842,30 @@ def create_at0m_tab(dialog) -> QWidget:
         if checked:
             from utils.yaml_config_manager import ensure_sls_plugin_config_sections
             ensure_sls_plugin_config_sections(cfg_path)
-            from utils.plugin_manager import (
-                get_default_interceptor_from_manifest,
-                is_plugin_user_disabled,
-            )
-            def_interceptor = get_default_interceptor_from_manifest()
-            for p_file in (def_interceptor, "spliced-tickets.lua"):
-                if get_plugin_state(p_file) == "missing":
-                    deploy_sls_plugin(p_file)
-            for extra in ("lobster.lua", "hubcap.lua"):
-                if not is_plugin_user_disabled(extra) and get_plugin_state(extra) == "missing":
-                    deploy_sls_plugin(extra)
-        _refresh_deploy_ui()
+
         _update_subwidget_states(checked)
+        combo = getattr(dialog, "at0m_download_action_combo", None)
+        if combo is not None:
+            idx = combo.findData("ask" if checked else "assella")
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        elif not checked:
+            for k in ("at0m_default_download_action", "vapor_default_download_action", "native_steam_default_action"):
+                dialog.settings.setValue(k, "assella")
 
     dialog.enable_at0m_checkbox.toggled.connect(_on_enable_at0m_toggled)
     _update_subwidget_states(dialog.enable_at0m_checkbox.isChecked())
 
-    # Initial state evaluation
-    _refresh_deploy_ui()
-
     layout.addStretch()
+
+    # ── Subtab 2: Advanced (Plugins configuration) ──
+    from ui.dialogs.settings_tabs.plugins_tab import create_plugins_tab
+    advanced_tab = create_plugins_tab(dialog, add_to_dialog=False)
+
+    atom_subtabs.addTab(general_tab, "General")
+    atom_subtabs.addTab(advanced_tab, "Advanced")
+    main_layout.addWidget(atom_subtabs)
+
     dialog.tab_widget.addTab(tab, "at0-m")
     return tab
 

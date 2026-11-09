@@ -4,9 +4,14 @@ platform_mismatch_dialog.py
 Dialog displayed when a game has native Linux depots in Steam PICS,
 but only Windows depots and keys are available in the package source.
 
+It is purely informational: it tells the user that the package only ships
+Windows depots, so they must select a compatibility tool (Proton) for the
+game in Steam before playing. ASSella deliberately does NOT edit Steam's
+config.vdf or restart Steam here.
+
 Gives the user three clear choices:
-  1. Force Proton & Install via Steam: writes Proton tool to config.vdf,
-     restarts Steam, and installs the Windows depot through Steam client.
+  1. Proceed: acknowledge the notice and continue with the handoff. Nothing
+     is configured by ASSella; the user picks the compatibility tool in Steam.
   2. Download via ASSella: switches to ASSella's built-in DepotDownloader
      to download Windows depots directly without modifying Steam.
   3. Cancel: abort the operation.
@@ -37,7 +42,6 @@ logger = logging.getLogger(__name__)
 
 ACTION_CANCEL = 0
 ACTION_PROCEED = 1
-ACTION_FORCE_PROTON = 1  # Backward-compatibility alias
 ACTION_ASSELLA_DOWNLOAD = 2
 
 
@@ -124,8 +128,11 @@ class PlatformMismatchDialog(QDialog):
 
         # Description
         desc_lbl = QLabel(
-            "Steam on Linux will attempt to download the native Linux version of this game.\n\n"
-            "Only Windows keys are available. Please switch to Proton in Steam compatibility options after install."
+            "This package only contains the Windows files of the game. Steam on Linux "
+            "cannot play them until you select a compatibility tool (Proton) for it.\n\n"
+            "After the install, open the game's Properties in Steam, go to Compatibility, "
+            "and enable the option to force a specific Steam Play compatibility tool. "
+            "ASSella does not change this for you."
         )
         desc_lbl.setWordWrap(True)
         desc_lbl.setStyleSheet(
@@ -209,7 +216,6 @@ class PlatformMismatchDialog(QDialog):
             }}
         """)
         self.btn_proceed.clicked.connect(self._on_proceed)
-        self.btn_force_proton = self.btn_proceed  # Backward-compatibility alias
         btn_lay.addWidget(self.btn_proceed)
 
         # Option B: Download via ASSella
@@ -268,9 +274,6 @@ class PlatformMismatchDialog(QDialog):
     def _on_proceed(self):
         self._action = ACTION_PROCEED
         self.accept()
-
-    def _on_force_proton(self):
-        self._on_proceed()
 
     def _on_assella(self):
         self._action = ACTION_ASSELLA_DOWNLOAD

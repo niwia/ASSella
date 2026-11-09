@@ -127,10 +127,10 @@ def send_sls_api(command: str) -> bool:
 
 
 def deploy_bundled_plugins(plugins_dir: Path) -> bool:
-    """Deploy download.lua and spliced-tickets.lua to plugins directory on demand from Cloud."""
+    """Deploy the Katamari plugin family (interceptor, Styx, Katamari, Lobster, Lettuce) on demand."""
     try:
         from utils.plugin_manager import deploy_all_plugins
-        ok, msgs = deploy_all_plugins()
+        ok, msgs = deploy_all_plugins(only_if_missing=True)  # never replace the user's files mid-download
         for m in msgs:
             logger.info(f"[SteamHandoff] {m}")
         return ok
@@ -321,7 +321,7 @@ def perform_steam_handoff(
     # 5. Verify plugins are present BEFORE mutating configuration
     from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
     if not are_plugins_present():
-        return False, "AT0-M plugins (download interceptor / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
+        return False, "AT0-M plugins (download interceptor / Styx) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
     if is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True):
         _emit("WARNING: Custom plugins active — third-party plugin support cannot be guaranteed.")
 

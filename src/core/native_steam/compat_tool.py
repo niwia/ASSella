@@ -231,18 +231,24 @@ def check_native_steam_platform_mismatch(
     if is_proton_forced(aid_str):
         return False, {}
 
-    # 3. Query Steam PICS to inspect official depots for this AppID
+    # 3. Query app metadata to inspect official depots for this AppID
+    app_info = {}
     try:
-        from core.steam_api import batched_get_product_info
-        pics_info = batched_get_product_info([int(aid_str)])
-        app_info = pics_info.get(int(aid_str)) or pics_info.get(aid_str) or {}
+        from managers.db_manager import DatabaseManager
+        app_info = DatabaseManager().get_app_info(aid_str) or {}
     except Exception as e:
-        logger.debug(f"[CompatTool] Error querying PICS for AppID {aid_str}: {e}")
-        app_info = {}
+        logger.debug(f"[CompatTool] Error querying DB for AppID {aid_str}: {e}")
+
+    if not app_info or not app_info.get("depots"):
+        try:
+            from core.steam_api import fetch_steamcmd_info
+            app_info = fetch_steamcmd_info(aid_str, include_header=False)
+        except Exception as e:
+            logger.debug(f"[CompatTool] Error fetching SteamCMD info for AppID {aid_str}: {e}")
 
     depots_dict = app_info.get("depots", {}) if isinstance(app_info, dict) else {}
     if not depots_dict:
-        # Cannot determine depot breakdown from PICS -> Assume no mismatch
+        # Cannot determine depot breakdown -> Assume no mismatch rather than blocking UI
         return False, {}
 
     linux_depots: List[str] = []

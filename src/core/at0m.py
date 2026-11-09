@@ -397,7 +397,7 @@ class WudrmMRCFetcher:
         def _do_dex():
             return "manifestdex", self.fetch_manifestdex(manifest_id_str)
 
-        logger.info(f"[MRC/Race] Racing Wudrm vs ManifestDeX for manifest {manifest_id_str} (timeout={timeout}s)...")
+        logger.info(f"[MRC/Race] Racing ManifestDeX vs Wudrm for manifest {manifest_id_str} (timeout={timeout}s)...")
 
         # Deliberately NOT a `with` block. The old code returned from inside
         # one, and __exit__ runs shutdown(wait=True), which blocks until the
@@ -412,8 +412,8 @@ class WudrmMRCFetcher:
             max_workers=2, thread_name_prefix="mrc-race"
         )
         future_to_name = {
-            executor.submit(_do_wudrm): "wudrm",
             executor.submit(_do_dex): "manifestdex",
+            executor.submit(_do_wudrm): "wudrm",
         }
 
         def _release() -> None:
@@ -799,6 +799,20 @@ def generate_single_manifest(
                 res = _try_download_and_unpack(mrc, provider)
                 if res:
                     return res, None
+
+            # If user's preferred provider had no MRC or failed on Steam CDN,
+            # try alternative provider (e.g. wudrm <-> manifestdex) before falling back to Hubcap API!
+            alt_provider = "wudrm" if provider == "manifestdex" else ("manifestdex" if provider == "wudrm" else None)
+            if alt_provider:
+                logger.info(
+                    f"[Primary/at0-m] Primary provider '{provider}' failed for {manifest_str}. "
+                    f"Trying alternative provider '{alt_provider}'..."
+                )
+                alt_mrc = _mrc_fetcher.fetch_mrc_single(manifest_str, provider=alt_provider)
+                if alt_mrc:
+                    res = _try_download_and_unpack(alt_mrc, alt_provider)
+                    if res:
+                        return res, None
 
         logger.warning(f"[Primary/at0-m] Primary CDN paths exhausted for {manifest_str}. Proceeding to Hubcap fallback.")
 

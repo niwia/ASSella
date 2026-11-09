@@ -22,8 +22,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QDialog,
-    QFontComboBox,
-    QComboBox,
     QSpinBox,
     QDialogButtonBox,
     QFormLayout,
@@ -714,11 +712,15 @@ def get_slscheevo_path() -> Path:
 
 
 def get_schema_grabber_path() -> Path:
-    binary_path = Paths.deps("schema-grabber/schema-grabber")
-    if not binary_path.exists():
-        fallback_path = Path.home() / ".local/share/ACCELA/schema-grabber/bin/Release/net9.0/linux-x64/publish/schema-grabber"
-        if fallback_path.exists():
-            return fallback_path
+    binary_path = Paths.deps("SLScheevo/schema-grabber")
+    if binary_path.exists():
+        return binary_path
+    legacy_path = Paths.deps("schema-grabber/schema-grabber")
+    if legacy_path.exists():
+        return legacy_path
+    fallback_path = Path.home() / ".local/share/ACCELA/schema-grabber/bin/Release/net9.0/linux-x64/publish/schema-grabber"
+    if fallback_path.exists():
+        return fallback_path
     return binary_path
 
 
@@ -1522,14 +1524,6 @@ class FontSelectionDialog(QDialog):
                 color: #FFFFFF;
                 font-size: 9.5pt;
             }
-            QComboBox, QFontComboBox {
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                border-radius: 6px;
-                color: #FFFFFF;
-                padding: 5px 8px;
-                font-size: 9.5pt;
-            }
             QSpinBox {
                 background-color: rgba(255, 255, 255, 0.08);
                 border: 1px solid rgba(255, 255, 255, 0.2);
@@ -1547,7 +1541,8 @@ class FontSelectionDialog(QDialog):
 
         lbl_f = QLabel("Font:", self)
         lbl_f.setProperty("form_label", True)
-        self.font_combo = QFontComboBox(self)
+        from ui.widgets.modern_dropdown import ModernComboBox, ModernFontComboBox
+        self.font_combo = ModernFontComboBox(self)
         if initial_font and initial_font.family():
             if initial_font.family().lower() in ("trixiecyrg-plain", "trixiecyrg-plain regular", "trixie"):
                 initial_font = QFont("Open Sans", initial_font.pointSize())
@@ -1556,7 +1551,7 @@ class FontSelectionDialog(QDialog):
 
         lbl_s = QLabel("Style:", self)
         lbl_s.setProperty("form_label", True)
-        self.style_combo = QComboBox(self)
+        self.style_combo = ModernComboBox(self)
         self.style_combo.addItems(["Normal", "Bold", "Italic", "Bold Italic"])
         
         if initial_font.bold() and initial_font.italic():

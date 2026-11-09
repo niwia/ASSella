@@ -4,13 +4,15 @@ accessor."""
 import logging
 import os
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
     QButtonGroup,
-    QComboBox,
     QSizePolicy,
+    QCheckBox,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from ui.dialogs.depot_selection import storage_targets
 
@@ -59,8 +61,9 @@ class StorageMixin:
         if locked_target:
             target = storage_targets.describe(locked_target)
             btn = create_locked_storage_button(
-                locked_target, target.label, target.free, height=28, radius=4
+                locked_target, target.label, target.free, height=28, radius=4, accent_color=self.accent_color
             )
+            self._locked_storage_btn = btn
             layout.addWidget(btn, 1)
             self.selected_storage_path = locked_target
             return
@@ -121,44 +124,25 @@ class StorageMixin:
                 logger.info(f"Storage library selected via button [{btn_id}]: {target_path}")
                 if self._more_storage_combo:
                     self._more_storage_combo.blockSignals(True)
-                    self._more_storage_combo.setCurrentIndex(0)
+                    self._more_storage_combo.setCurrentIndex(-1)
                     self._more_storage_combo.blockSignals(False)
 
         self._storage_btn_group.idClicked.connect(_on_storage_btn_clicked)
 
         if len(storage_paths) > max_direct_buttons:
-            self._more_storage_combo = QComboBox()
+            self._more_storage_combo = ModernComboBox()
             self._more_storage_combo.setFixedHeight(28)
             self._more_storage_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            self._more_storage_combo.addItem("More Drives ▾", None)
-            self._more_storage_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: transparent;
-                    color: rgba(255, 255, 255, 0.7);
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                    border-radius: 4px;
-                    padding: 2px 8px;
-                    font-size: 8.5pt;
-                }}
-                QComboBox:hover {{
-                    border-color: {self.accent_color};
-                    color: {self.accent_color};
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1a24;
-                    color: #FFFFFF;
-                    selection-background-color: {self.accent_color};
-                    border: 1px solid rgba(255, 255, 255, 0.15);
-                }}
-            """)
+            self._more_storage_combo.setPlaceholderText("More Drives")
             for i in range(max_direct_buttons, len(storage_paths)):
                 spath = storage_paths[i]
                 target = storage_targets.describe(spath)
                 item_text = f"{target.label} ({target.free})" if target.free else target.label
                 self._more_storage_combo.addItem(item_text, spath)
+            self._more_storage_combo.setCurrentIndex(-1)
 
             def _on_combo_changed(index):
-                if index > 0:
+                if index >= 0:
                     chosen_path = self._more_storage_combo.itemData(index)
                     if chosen_path:
                         self.selected_storage_path = chosen_path
@@ -171,6 +155,41 @@ class StorageMixin:
 
             self._more_storage_combo.currentIndexChanged.connect(_on_combo_changed)
             layout.addWidget(self._more_storage_combo, 1)
+
+        if total_storages > 1:
+            self.remember_storage_chk = QCheckBox("Remember choice")
+            self.remember_storage_chk.setChecked(False)
+            self.remember_storage_chk.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.remember_storage_chk.setToolTip("Use this library from now on without asking.\nChange it in Settings → Downloads.")
+            self.remember_storage_chk.setStyleSheet("""
+                QCheckBox {
+                    font-size: 8pt;
+                    color: rgba(255, 255, 255, 0.7);
+                    spacing: 5px;
+                    border: none;
+                    background: transparent;
+                }
+                QCheckBox:focus {
+                    border: none;
+                    outline: none;
+                }
+                QCheckBox::indicator {
+                    width: 13px;
+                    height: 13px;
+                    border: none;
+                    border-radius: 3px;
+                    background: rgba(255, 255, 255, 0.12);
+                    outline: none;
+                }
+                QCheckBox::indicator:hover {
+                    background: rgba(255, 255, 255, 0.22);
+                }
+                QCheckBox::indicator:checked {
+                    background: %s;
+                    border: none;
+                }
+            """ % self.accent_color)
+            layout.addWidget(self.remember_storage_chk)
 
         # Pre-select priority: preferred library path (zip confirmation or job
         # metadata), then the library the game is already installed in, then the
@@ -199,7 +218,7 @@ class StorageMixin:
         if default_target in self._storage_buttons:
             self._storage_buttons[default_target].setChecked(True)
         elif self._more_storage_combo:
-            for idx in range(1, self._more_storage_combo.count()):
+            for idx in range(self._more_storage_combo.count()):
                 if self._more_storage_combo.itemData(idx) == default_target:
                     self._more_storage_combo.setCurrentIndex(idx)
                     break
@@ -207,3 +226,7 @@ class StorageMixin:
     def get_selected_storage(self) -> str:
         """Returns the selected storage destination path, or None."""
         return self.selected_storage_path
+
+    def should_remember_storage(self) -> bool:
+        """Whether the user checked the 'Remember choice' toggle for storage."""
+        return bool(getattr(self, "remember_storage_chk", None) and self.remember_storage_chk.isChecked())

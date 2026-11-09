@@ -14,7 +14,10 @@ from PyQt6.QtWidgets import (
     QSlider,
     QTabWidget,
     QDialog,
+    QScrollArea,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
+from ui.sizes import size_control
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -23,8 +26,18 @@ from utils.helpers import create_checkbox_setting
 from utils.paths import is_valid_download_directory
 
 
+def _scrolled(page: QWidget) -> QScrollArea:
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setFrameShape(QScrollArea.Shape.NoFrame)
+    area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+    area.setWidget(page)
+    return area
+
+
 def create_downloads_tab(dialog) -> QWidget:
-    """Create the Downloads settings tab with General and Depot selection sub-tabs."""
+    """Create the Downloads settings tab: General, Depot selection and Cached sub-tabs."""
     tab = QWidget()
     layout = QVBoxLayout(tab)
     layout.setContentsMargins(12, 10, 12, 10)
@@ -63,6 +76,7 @@ def create_downloads_tab(dialog) -> QWidget:
 
     # Download Settings Card
     dl_card, dl_layout = dialog._create_card_frame("Download Settings")
+    dl_layout.setSpacing(8)
 
     library_tooltip = "Detect Steam libraries and let you choose where to install games."
     if sys.platform == "linux":
@@ -89,23 +103,62 @@ def create_downloads_tab(dialog) -> QWidget:
 
     dl_layout.addSpacing(8)
 
+    # Default download behavior (only meaningful with AT0-M on; otherwise ASSella).
+    act_row = QHBoxLayout()
+    act_row.setContentsMargins(2, 2, 2, 2)
+    act_row.setSpacing(10)
+    act_title = QLabel("Default Download Behavior:")
+    act_title.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+    act_title.setToolTip("What happens when you start a download. Needs AT0-M; without it ASSella downloads the game.")
+    act_row.addWidget(act_title, 1)
+    combo = ModernComboBox()
+    combo.setCursor(Qt.CursorShape.PointingHandCursor)
+    combo.addItem("Always ask", "ask")
+    combo.addItem("Start Native (at0-m)", "native")
+    combo.addItem("Start ASSella", "assella")
+    dialog.at0m_download_action_combo = combo
+    dialog.vapor_download_action_combo = combo
+    at0m_on = dialog.settings.value("enable_at0m", dialog.settings.value("enable_vapor", False, type=bool), type=bool)
+    saved = dialog.settings.value(
+        "at0m_default_download_action",
+        dialog.settings.value("vapor_default_download_action", "ask", type=str),
+        type=str,
+    )
+    if not at0m_on:
+        saved = "assella"
+    idx = combo.findData(saved)
+    combo.setCurrentIndex(idx if idx >= 0 else 0)
+    combo.setEnabled(bool(at0m_on))
+
+    def _save_action(_i):
+        val = combo.currentData()
+        for k in ("at0m_default_download_action", "vapor_default_download_action", "native_steam_default_action"):
+            dialog.settings.setValue(k, val)
+
+    combo.currentIndexChanged.connect(_save_action)
+    if not at0m_on:
+        _save_action(0)
+    size_control(combo, "md")
+    act_row.addWidget(combo)
+    dl_layout.addLayout(act_row)
+
     # Inputs Grid for Download Settings (Download Location, Max Downloads)
     loc_row = QHBoxLayout()
     loc_row.setContentsMargins(2, 2, 2, 2)
     loc_row.setSpacing(10)
 
-    dl_dir_label = QLabel("Default Download Location:")
+    dl_dir_label = QLabel("Preferred Library:")
     dl_dir_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
-    dl_dir_label.setToolTip("Direct downloads to this folder/library instead of prompting for every game. Defaults to Ask Every Time.")
+    dl_dir_label.setToolTip("The library every picker starts on. With \"Ask every time\" off, downloads go here without asking.")
     loc_row.addWidget(dl_dir_label, 1)
 
-    dialog.dl_location_combo = QComboBox()
+    dialog.dl_location_combo = ModernComboBox()
     dialog.dl_location_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.dl_location_combo.addItem("Ask Every Time", "")
+    dialog.dl_location_combo.addItem("No preference", "")
 
     def _fmt_path(p: str) -> str:
-        if not p or p == "Ask Every Time":
-            return "Ask Every Time"
+        if not p or p in ("Ask Every Time", "No preference"):
+            return "No preference"
         norm = os.path.normpath(p)
         parts = [x for x in norm.split(os.sep) if x]
         if len(parts) >= 2:
@@ -163,8 +216,55 @@ def create_downloads_tab(dialog) -> QWidget:
                 dialog.dl_location_combo.setCurrentIndex(0)
 
     dialog.dl_location_combo.currentIndexChanged.connect(on_dl_location_changed)
+    size_control(dialog.dl_location_combo, "md")
     loc_row.addWidget(dialog.dl_location_combo)
     dl_layout.addLayout(loc_row)
+
+    # Works with the preferred library above and with "Remember choice" in the
+    # pickers (utils/library_choice.py). Both write instantly.
+    from utils.library_choice import KEY_ASK, ask_each_time, set_preferences
+
+    dialog.ask_library_checkbox = create_checkbox_setting(
+        "Ask which library every time",
+        KEY_ASK,
+        True,
+        dialog,
+        "Show the library picker for each download. Off: use the preferred library without asking. "
+        "\"Remember choice\" in a picker turns this off.",
+    )
+    dialog.ask_library_checkbox.setChecked(ask_each_time(dialog.settings))
+    dl_layout.addWidget(dialog.ask_library_checkbox)
+
+    def _sync_library_prefs(*_):
+        path = dialog.dl_location_combo.currentData() or ""
+        if path == "custom":
+            return
+        has_pref = bool(path)
+        if not has_pref and not dialog.ask_library_checkbox.isChecked():
+            dialog.ask_library_checkbox.blockSignals(True)
+            dialog.ask_library_checkbox.setChecked(True)
+            dialog.ask_library_checkbox.blockSignals(False)
+        dialog.ask_library_checkbox.setLocked(
+            not has_pref, "Pick a preferred library first; without one ASSella always asks." if not has_pref else None
+        )
+        set_preferences(path, dialog.ask_library_checkbox.isChecked(), dialog.settings)
+
+    dialog.dl_location_combo.currentIndexChanged.connect(_sync_library_prefs)
+    dialog.ask_library_checkbox.toggled.connect(_sync_library_prefs)
+    _sync_library_prefs()
+
+    from utils import desktop_shortcuts
+
+    if desktop_shortcuts.supported():
+        dialog.desktop_shortcut_checkbox = create_checkbox_setting(
+            "Create a desktop shortcut after install",
+            desktop_shortcuts.SETTING_AFTER_INSTALL,
+            False,
+            dialog,
+            "Adds each game ASSella downloads to your app menu, with its SteamGridDB icon. "
+            "The shortcut starts the game through Steam. Also available per game: Game Details -> Tools -> Desktop.",
+        )
+        dl_layout.addWidget(dialog.desktop_shortcut_checkbox)
 
     from utils.auto_tune import get_learned_display
     learned_text = get_learned_display(dialog.settings, "auto_tune_best")
@@ -259,23 +359,18 @@ def create_downloads_tab(dialog) -> QWidget:
     mrc_desc.setWordWrap(True)
     mrc_layout.addWidget(mrc_desc)
 
-    # Row 1: Provider selection with full text width
+    # Row 1: Provider selection with test button & latency
     mrc_row = QHBoxLayout()
     mrc_row.setSpacing(10)
 
-    mrc_lbl = QLabel("Provider:")
-    mrc_lbl.setStyleSheet("color: #FFFFFF; font-size: 9pt; font-weight: 500;")
-    mrc_row.addWidget(mrc_lbl)
-
-    dialog.manifest_provider_combo = QComboBox()
-    dialog.manifest_provider_combo.setMinimumWidth(260)
+    dialog.manifest_provider_combo = ModernComboBox()
     dialog.manifest_provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-    dialog.manifest_provider_combo.addItem("Auto (Race Wudrm & ManifestDeX)", "auto")
-    dialog.manifest_provider_combo.addItem("Wudrm (Primary)", "wudrm")
+    dialog.manifest_provider_combo.addItem("Auto (Race ManifestDeX & Wudrm)", "auto")
     dialog.manifest_provider_combo.addItem("ManifestDeX", "manifestdex")
-    dialog.manifest_provider_combo.addItem("SteamRun (Testing)", "steamrun")
-    dialog.manifest_provider_combo.addItem("OpenSteamTool (Testing)", "opensteamtool")
-    dialog.manifest_provider_combo.addItem("Hubcap Manifest (Direct API)", "hubcap")
+    dialog.manifest_provider_combo.addItem("Wudrm", "wudrm")
+    dialog.manifest_provider_combo.addItem("SteamRun", "steamrun")
+    dialog.manifest_provider_combo.addItem("OpenSteamTool*", "opensteamtool")
+    dialog.manifest_provider_combo.addItem("Hubcap Manifest", "hubcap")
 
     current_provider = dialog.settings.value("manifest_provider", "auto", type=str).lower()
     idx = dialog.manifest_provider_combo.findData(current_provider)
@@ -290,12 +385,6 @@ def create_downloads_tab(dialog) -> QWidget:
 
     dialog.manifest_provider_combo.currentIndexChanged.connect(_on_provider_changed)
     mrc_row.addWidget(dialog.manifest_provider_combo)
-    mrc_row.addStretch()
-    mrc_layout.addLayout(mrc_row)
-
-    # Row 2: Dedicated testing row with ample room for status text
-    test_row = QHBoxLayout()
-    test_row.setSpacing(10)
 
     test_btn = QPushButton("Test Provider")
     test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -319,12 +408,14 @@ def create_downloads_tab(dialog) -> QWidget:
             border-color: rgba(255, 255, 255, 0.08);
         }}
     """)
-    test_row.addWidget(test_btn)
+    mrc_row.addWidget(test_btn)
 
     test_status_lbl = QLabel("")
     test_status_lbl.setStyleSheet("font-size: 8.5pt; font-weight: 500;")
-    test_row.addWidget(test_status_lbl)
-    test_row.addStretch()
+    mrc_row.addWidget(test_status_lbl)
+
+    mrc_row.addStretch()
+    mrc_layout.addLayout(mrc_row)
 
     def _on_test_clicked():
         provider = dialog.manifest_provider_combo.currentData() or "auto"
@@ -341,18 +432,18 @@ def create_downloads_tab(dialog) -> QWidget:
             if isinstance(result, tuple) and len(result) == 3:
                 ok, elapsed_ms, err_msg = result
                 if ok:
-                    test_status_lbl.setText(f"✓ Operational ({elapsed_ms} ms)")
+                    test_status_lbl.setText(f"{elapsed_ms} ms")
                     test_status_lbl.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: bold;")
                 else:
-                    test_status_lbl.setText(f"⚠ Failed ({err_msg or 'Error'})")
+                    test_status_lbl.setText(f"{err_msg or 'Failed'}")
                     test_status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt; font-weight: bold;")
             else:
-                test_status_lbl.setText("⚠ Failed (Error)")
+                test_status_lbl.setText("Failed")
                 test_status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt; font-weight: bold;")
 
         def _on_test_error(err_tuple):
             test_btn.setEnabled(True)
-            test_status_lbl.setText("⚠ Failed (Error)")
+            test_status_lbl.setText("Failed")
             test_status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt; font-weight: bold;")
 
         from ui.dialogs.settings_tabs.morrenus_tab import benchmark_mrc_provider
@@ -361,12 +452,12 @@ def create_downloads_tab(dialog) -> QWidget:
         worker.error.connect(_on_test_error)
 
     test_btn.clicked.connect(_on_test_clicked)
-    mrc_layout.addLayout(test_row)
 
     gen_layout.addWidget(mrc_card)
-    gen_layout.addSpacing(38)
     gen_layout.addStretch()
-    dl_subtabs.addTab(general_widget, "General")
+    # Scrollable, so wrapped descriptions get the height they need instead of
+    # being squeezed (and clipped) when the window is short.
+    dl_subtabs.addTab(_scrolled(general_widget), "General")
 
     # ── Subtab 2: Depot selection ──
     hide_widget = QWidget()
@@ -510,10 +601,33 @@ def create_downloads_tab(dialog) -> QWidget:
         "When enabled, the '▾ Hidden Depots' dropdown expander and filtered depots are visible by default in the depot selection window.",
     )
     sel_card_lay.addWidget(dialog.show_hidden_depots_selector_checkbox)
+    dialog.new_depot_selector_checkbox = create_checkbox_setting(
+        "Use new depot selector (preview)",
+        "use_new_depot_selector",
+        False,
+        dialog,
+        "Content view for normal installs: base game, DLC, soundtracks and extras on the left, "
+        "their depots on the right. Still being polished; turn off to use the classic list.",
+    )
+    sel_card_lay.addWidget(dialog.new_depot_selector_checkbox)
     hide_layout.addWidget(sel_card)
 
     hide_layout.addStretch()
-    dl_subtabs.addTab(hide_widget, "Depot selection")
+    dl_subtabs.addTab(_scrolled(hide_widget), "Depot selection")
+
+    # Cached: built (and the caches read) only when the tab is first opened.
+    cached_holder = QWidget()
+    QVBoxLayout(cached_holder).setContentsMargins(0, 0, 0, 0)
+    cached_index = dl_subtabs.addTab(cached_holder, "Cached")
+
+    def _build_cached(index: int) -> None:
+        if index != cached_index or cached_holder.layout().count():
+            return
+        from ui.dialogs.settings_tabs.cached_tab import create_cached_page
+
+        cached_holder.layout().addWidget(create_cached_page(dialog))
+
+    dl_subtabs.currentChanged.connect(_build_cached)
 
     layout.addWidget(dl_subtabs)
     dialog.tab_widget.addTab(tab, "Downloads")

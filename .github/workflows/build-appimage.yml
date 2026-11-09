@@ -147,7 +147,6 @@ jobs:
           # Must match QApplication::applicationName() in src/main.py, which is
           # what the window manager matches against to pick the taskbar icon.
           StartupWMClass=ASSella
-          MimeType=x-scheme-handler/accela;
           EOF
           # Legacy alias: earlier builds shipped this name, and some launchers
           # and .desktop entries still reference it.
@@ -197,7 +196,7 @@ jobs:
           cp -r src AppDir/bin/
           find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           # Optional components (Goldberg, Steamless, SLScheevo) are downloaded on demand from R2
-          rm -rf AppDir/bin/src/deps/Goldberg AppDir/bin/src/deps/Steamless AppDir/bin/src/deps/SLScheevo
+          rm -rf AppDir/bin/src/deps/Goldberg AppDir/bin/src/deps/Steamless AppDir/bin/src/deps/SLScheevo AppDir/bin/src/deps/schema-grabber
 
           # 5. Bundle appimageupdatetool (AppImageUpdate) for in-app delta updates.
           # Ships as a self-contained AppImage in bin/; the app extracts and runs
@@ -238,16 +237,45 @@ jobs:
             echo "appimageupdatetool bundled and verified executable."
           fi
 
-          # 6. Bundle zsync binary for delta-update fallback when appimageupdatetool
-          #    is unavailable. zsync is already installed in the CI image (see
-          #    "Install System Packaging Tools"). A bundled copy means users who
-          #    updated via full download never need to install it system-wide.
-          if [ -f "/usr/bin/zsync" ]; then
-            cp /usr/bin/zsync AppDir/bin/zsync
+          # 6. Bundle zsync2 binary for the delta-update fallback used when
+          #    appimageupdatetool is unavailable. Ubuntu's stock zsync links no
+          #    TLS library at all, so it cannot read an https:// control file
+          #    ("could not read control file from URL") — the fallback could
+          #    never work. zsync2 ships its own TLS and speaks the GitHub
+          #    Releases endpoints, so the fallback actually syncs. It is
+          #    installed under the name "zsync" because that is the path the app
+          #    probes (AppDir/bin/zsync); the full download stays the last resort.
+          if [ ! -f "AppDir/bin/zsync" ]; then
+            echo "Downloading zsync2..."
+            curl -fsSL --retry 3 -o /tmp/zsync2 \
+              "https://github.com/AppImageCommunity/zsync2/releases/download/2.0.0-alpha-1-20250926/zsync2-93-fc62ae7-x86_64.AppImage" \
+              || curl -fsSL --retry 3 -o /tmp/zsync2 \
+              "https://github.com/AppImage/zsync2/releases/download/2.0.0-alpha-1-20250926/zsync2-93-fc62ae7-x86_64.AppImage"
+            chmod +x /tmp/zsync2
+            # Verify the download is a real AppImage before shipping it.
+            if ! /tmp/zsync2 --appimage-extract >/dev/null 2>&1; then
+              echo "::error::zsync2 failed extraction — refusing to ship"
+              exit 1
+            fi
+            # zsync2 is not a static binary: it carries RUNPATH=$ORIGIN/../lib
+            # and loads its bundled OpenSSL/gcrypt from usr/lib. Preserve that
+            # layout and launch through a thin script at the probed path.
+            mkdir -p AppDir/bin/zsync2-root/usr
+            cp -r squashfs-root/usr/bin AppDir/bin/zsync2-root/usr/bin
+            cp -r squashfs-root/usr/lib AppDir/bin/zsync2-root/usr/lib
+            rm -rf squashfs-root
+            # Prepend the bundled lib dir to LD_LIBRARY_PATH: zsync2 ships its own
+            # OpenSSL 1.1/gcrypt, and RUNPATH ($ORIGIN/../lib) is only consulted
+            # after LD_LIBRARY_PATH, so an outer process could otherwise shadow them.
+            printf '#!/bin/sh\n# Resolves its own location so the AppDir can be moved anywhere.\nHERE="$(dirname "$(readlink -f "$0")")"\nexport LD_LIBRARY_PATH="$HERE/zsync2-root/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexec "$HERE/zsync2-root/usr/bin/zsync2" "$@"\n' > AppDir/bin/zsync
             chmod +x AppDir/bin/zsync
-            echo "zsync bundled into AppDir/bin/zsync."
-          else
-            echo "::warning::zsync not found on build host — delta updates will fall back to full download."
+            # Prove the bundled fallback actually executes. A present-but-broken
+            # binary silently disables delta updates for every user.
+            if ! AppDir/bin/zsync -V >/dev/null 2>&1; then
+              echo "::error::Bundled zsync2 fails to execute — delta updates would silently fall back"
+              exit 1
+            fi
+            echo "zsync2 bundled as AppDir/bin/zsync and verified executable."
           fi
 
           # 8. Bundle Tor Executable
@@ -260,7 +288,7 @@ jobs:
 
           # 9. Bundle Relocatable Standalone Python 3.13 Runtime
           echo "Downloading relocatable python-build-standalone runtime (Python 3.13)..."
-          curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.13.0+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz"
+          curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18+20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
           tar -xzf /tmp/cpython-standalone.tar.gz -C AppDir/bin/
           mv AppDir/bin/python AppDir/bin/.venv
 
@@ -271,18 +299,19 @@ jobs:
 
           # 11. Sanity check: Verify all required imports inside bundled AppDir runtime
           echo "Verifying AppDir runtime imports..."
-          QT_QPA_PLATFORM=offscreen AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, urwid, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
+          QT_QPA_PLATFORM=offscreen AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, rich, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
           test -x AppDir/bin/appimageupdatetool || { echo "::error::appimageupdatetool missing from AppDir"; exit 1; }
           echo "appimageupdatetool present and executable."
-          # zsync is optional — we bundle it when available so delta updates work
-          # even when the user has no system zsync. Its absence is a warning, not a
-          # fatal error: the full-download path still works.
+          # zsync2 fallback is optional — bundled above so delta updates work
+          # even when appimageupdatetool is unavailable. Its absence is a
+          # warning, not a fatal error: the app still falls back to a full
+          # download as the last resort.
           if [ -f "AppDir/bin/zsync" ]; then
             AppDir/bin/zsync -V >/dev/null 2>&1 || \
-              echo "::warning::Bundled zsync present but fails to execute"
-            echo "zsync bundled and verified executable."
+              echo "::warning::Bundled zsync2 present but fails to execute"
+            echo "zsync2 bundled and verified executable."
           else
-            echo "::warning::zsync not bundled — delta updates require system zsync or fall back to full download."
+            echo "::warning::zsync2 not bundled — delta updates fall back to full download."
           fi
 
       - name: Upload Assemble AppDir Log on Failure
@@ -298,19 +327,15 @@ jobs:
 
           # Embed GitHub Releases zsync update info for delta update capabilities.
           #
-          # The 4th field is the release tag appimageupdatetool resolves. It MUST
-          # be channel-scoped, otherwise a canary user's updater follows the tag
-          # of whatever shipped most recently and silently crosses channels.
-          #
-          # It is deliberately NOT "latest": every release in this repo is marked
-          # prerelease=true, and GitHub's /releases/latest endpoint excludes
-          # prereleases, so "latest" resolves to HTTP 404. The in-app updater and
-          # any AppImageUpdate-based tool would then fail every update check.
-          # A wildcard tag makes each channel track only its own releases.
+          # The 4th field is the release tag appimageupdatetool resolves.
+          # appimageupdatetool natively supports "latest" (queries /releases/latest
+          # for official stable releases) and "latest-all" / "latest-pre" (queries
+          # /releases for the latest release including pre-releases).
+          # Wildcards (*tag*) are not supported by the GitHub Releases API and
+          # result in HTTP 404.
           case "$CHANNEL" in
-            canary) UPDATE_TAG="*testing*" ;;
-            beta)   UPDATE_TAG="*beta*" ;;
-            *)      UPDATE_TAG="*" ;;
+            stable) UPDATE_TAG="latest" ;;
+            *)      UPDATE_TAG="latest-all" ;;
           esac
 
           UPDATE_INFO="gh-releases-zsync|niwia|ASSella|${UPDATE_TAG}|ASSella.AppImage.zsync"
@@ -323,13 +348,13 @@ jobs:
           # one appimagetool emitted mid-build. appimagetool writes its .zsync
           # before the runtime/pip payload is fully materialised, so the emitted
           # file can describe a smaller/earlier image than the one we ship.
-          # That mismatch is what shipped in v2.7.0beta: the .zsync claimed
-          # Length 161573368 / SHA-1 910061bb... while the published AppImage was
-          # 301302976 bytes / c52815c1... A delta sync against that file produces
-          # a corrupt binary.
+          #
+          # NOTE: zsyncmake's -u flag specifies the URL of the target binary to
+          # download (or its relative filename), NOT the AppImage update string.
+          # Using UPDATE_INFO here would corrupt the control file with an invalid URL.
           echo "Regenerating zsync index from final AppImage..."
           rm -f ASSella.AppImage.zsync
-          zsyncmake -u "$UPDATE_INFO" -o ASSella.AppImage.zsync ASSella.AppImage
+          zsyncmake -u ASSella.AppImage -o ASSella.AppImage.zsync ASSella.AppImage
 
           # Generate SHA256 checksums last, so they always describe the shipped bytes.
           sha256sum ASSella.AppImage > ASSella.AppImage.sha256
@@ -397,6 +422,13 @@ jobs:
             echo "OK  zsync Filename header"
           fi
 
+          if ! grep -a -qi '^URL:[[:space:]]*ASSella\.AppImage[[:space:]]*$' ASSella.AppImage.zsync; then
+            echo "::error::zsync URL header does not match published asset name"
+            fail=1
+          else
+            echo "OK  zsync URL header"
+          fi
+
           if [ "$fail" -ne 0 ]; then
             echo "::error::Refusing to publish — delta updates would be corrupt."
             exit 1
@@ -446,7 +478,7 @@ jobs:
           QT_QPA_PLATFORM=offscreen AppDir_extract/bin/.venv/bin/python3 - <<'PY'
           import importlib, sys
           mods = ["PyQt6.QtCore","PyQt6.QtWidgets","PyQt6.QtGui","requests","yaml",
-                  "cryptography","configobj","urwid","vdf","steam","steam.client",
+                  "cryptography","configobj","rich","vdf","steam","steam.client",
                   "zstandard","curl_cffi","psutil","bs4","gevent","capstone"]
           bad = []
           for m in mods:
@@ -518,7 +550,7 @@ jobs:
           find "${PKG_NAME}" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           find "${PKG_NAME}" -type f -name "*.pyc" -delete 2>/dev/null || true
           # Optional components (Goldberg, Steamless, SLScheevo) are downloaded on demand from R2
-          rm -rf "${PKG_NAME}/bin/src/deps/Goldberg" "${PKG_NAME}/bin/src/deps/Steamless" "${PKG_NAME}/bin/src/deps/SLScheevo"
+          rm -rf "${PKG_NAME}/bin/src/deps/Goldberg" "${PKG_NAME}/bin/src/deps/Steamless" "${PKG_NAME}/bin/src/deps/SLScheevo" "${PKG_NAME}/bin/src/deps/schema-grabber"
 
           # 4. Create tar.gz and zip archives
           tar -czf "${PKG_NAME}.tar.gz" "${PKG_NAME}"

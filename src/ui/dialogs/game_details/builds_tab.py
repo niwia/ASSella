@@ -180,7 +180,7 @@ def init_builds_tab(dialog) -> None:
         from ui.dialogs.custom_byparr_dialog import CustomByparrDialog
         dlg = CustomByparrDialog(dialog, accent_color=dialog.accent_color)
         if dlg.exec():
-            fetch_steamdb_builds_async(dialog)
+            fetch_steamdb_builds_async(dialog, manual=True)
 
     btn_custom_byparr.clicked.connect(_on_custom_byparr_clicked)
     setup_btn_row.addWidget(btn_custom_byparr)
@@ -238,7 +238,7 @@ def init_builds_tab(dialog) -> None:
     dialog.builds_download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     dialog.builds_download_btn.setStyleSheet(download_style)
 
-    dialog.builds_refresh_btn.clicked.connect(lambda: fetch_steamdb_builds_async(dialog))
+    dialog.builds_refresh_btn.clicked.connect(lambda: fetch_steamdb_builds_async(dialog, manual=True))
     dialog.builds_manual_btn.clicked.connect(lambda: dialog._on_manual_rollback_clicked())
     dialog.builds_download_btn.clicked.connect(lambda: on_builds_download_clicked(dialog))
 
@@ -249,7 +249,7 @@ def init_builds_tab(dialog) -> None:
 
     try:
         from core.steamdb_scraper import ByparrManager, cffi_requests
-        has_byparr = ByparrManager.is_available() or (cffi_requests is not None)
+        has_byparr = ByparrManager.is_available() or bool(cffi_requests)
     except Exception:
         has_byparr = False
     dialog.builds_bottom_bar.setVisible(has_byparr)
@@ -533,9 +533,24 @@ def _restore_refresh_btn(dialog) -> None:
     dialog.builds_refresh_btn.setToolTip("")
 
 
-def fetch_steamdb_builds_async(dialog) -> None:
+def fetch_steamdb_builds_async(dialog, manual: bool = False) -> None:
+    """Fetch build history. ``manual`` (Refresh button) may also load the full
+    history via Byparr; automatic fetches never chain extra SteamDB requests."""
     if sip.isdeleted(dialog) or not hasattr(dialog, "steamdb_scraper"):
         return
+
+    from core.steamdb_scraper import steamdb_cooldown_remaining
+    wait = steamdb_cooldown_remaining()
+    if wait > 0:
+        mins = int(wait // 60) + 1
+        dialog.builds_refresh_btn.setToolTip(
+            f"SteamDB asked us to slow down. Showing cached builds; try again in about {mins} min."
+        )
+        if dialog.builds_cards_layout.count() <= 1:
+            dialog.builds_error.emit(f"SteamDB rate limit reached. Try again in about {mins} min.")
+        return
+
+    dialog._builds_manual = bool(manual)
 
     dialog._fetching_byparr_deep = False
     dialog.builds_refresh_btn.setText("⟳  Checking...")
@@ -582,7 +597,14 @@ def on_builds_loaded(dialog, builds: list) -> None:
         if hasattr(dialog, "builds_bottom_bar") and dialog.builds_bottom_bar:
             dialog.builds_bottom_bar.setVisible(True)
 
-        if is_rss_fallback and has_byparr and not is_deep_fetching:
+        if is_rss_fallback and not getattr(dialog, "_builds_manual", False):
+            # Automatic fetch: keep it to one request. Full history is opt-in.
+            dialog._fetching_byparr_deep = False
+            _restore_refresh_btn(dialog)
+            dialog.builds_refresh_btn.setToolTip(
+                "Showing the latest builds. Press Refresh to load the full build history."
+            )
+        elif is_rss_fallback and has_byparr and not is_deep_fetching:
             dialog._fetching_byparr_deep = True
             greyscale_style = """
                 QPushButton {

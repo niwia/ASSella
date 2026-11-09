@@ -316,6 +316,13 @@ class LibraryActionsMixin:
         if not game_data:
             return
 
+        # Registered-but-not-downloaded AT0-M game: its own small dialog
+        # (and kept out of batch selections, which act on installed files).
+        if game_data.get("atom_pending"):
+            if not self._select_mode and not self._dialog_open:
+                self._show_pending_atom_dialog(game_data)
+            return
+
         # In select mode: toggle selection, don't open dialog
         if self._select_mode:
             appid = str(game_data.get("appid", "0"))
@@ -342,6 +349,18 @@ class LibraryActionsMixin:
         QTimer.singleShot(500, lambda: setattr(self, "_dialog_open", False))
 
         self._show_game_details_dialog(game_data)
+
+    def _show_pending_atom_dialog(self, game_data: dict) -> None:
+        from ui.dialogs.atom_pending_dialog import AtomPendingDialog
+
+        self._dialog_open = True
+        try:
+            dlg = AtomPendingDialog(game_data, self, getattr(self, "accent_color", "#a1c9fd"))
+            dlg.exec()
+            if dlg.removed:
+                self._refresh_game_list()
+        finally:
+            self._dialog_open = False
 
     def _on_item_double_clicked(self, item: QListWidgetItem) -> None:
         """Handle double-click on game item:
@@ -519,6 +538,19 @@ class LibraryActionsMixin:
         elif dlc_action in ("native", "assella"):
             mode_choice = dlc_action
         else:
+            mode_choice = "ask"
+
+        # AT0-M is only offered when the same readiness guards standard games
+        # pass are met. A remembered/default "native" that fails them falls
+        # back to the chooser with AT0-M disabled and the reason shown.
+        if mode_choice == "native":
+            from utils.plugin_games import can_use_atom_mode
+            atom_ok, atom_reason = can_use_atom_mode()
+            if not atom_ok:
+                logger.info(f"AT0-M DLC mode unavailable for {name} ({appid}): {atom_reason}")
+                mode_choice = "ask"
+
+        if mode_choice == "ask":
             from ui.dialogs.download_backend_dialog import (
                 DownloadBackendDialog,
                 BACKEND_CANCEL,
@@ -533,6 +565,7 @@ class LibraryActionsMixin:
                 game_name=name,
                 accent_color=accent_color,
                 mode="dlc",
+                atom_guard=True,
             )
             dlg.exec()
             choice = dlg.get_choice()
@@ -667,6 +700,24 @@ class LibraryActionsMixin:
             # Strict DLC-only invariant: base game AppID must NEVER be in AdditionalApps
             remove_additional_app(config_path, appid)
             get_settings().setValue(f"dlc_only_mode/{appid}", True)
+            get_settings().setValue(f"dlc_mode_source/{appid}", "native")
+
+            # Record in plugin_library so AT0-M knows about this depotless setup
+            try:
+                from utils.plugin_games import load_plugin_library, save_plugin_library
+                plib = load_plugin_library()
+                rec = plib.get(appid, {})
+                plib[appid] = {
+                    **rec,
+                    "name": name,
+                    "appid": appid,
+                    "is_atom": True,
+                    "is_dlc_only": True,
+                    "dlc_appids": sorted(set(rec.get("dlc_appids", [])) | set(dlc_dict.keys()), key=lambda x: int(x) if x.isdigit() else 0),
+                }
+                save_plugin_library(plib)
+            except Exception as _plib_err:
+                logger.debug(f"[Library] Error recording depotless AT0-M DLC setup in plugin_library: {_plib_err}")
 
             target_section = "DlcData" if mode == "dlc_data" else "AdditionalApps"
             ThemedMessageBox.information(
@@ -695,7 +746,18 @@ class LibraryActionsMixin:
         if not appid_str:
             return None
 
-        # 1. Check AT0-M configuration:
+        # 1. Check ASSella (ACCELA) mode via existing .depot file:
+        # If a .depot file exists on disk with content, it was downloaded and managed
+        # by ASSella (AT0-M deletes .depot on handoff and never writes one).
+        try:
+            from utils.helpers import get_base_path
+            depot_file = Path(get_base_path()) / "depots" / f"{appid_str}.depot"
+            if depot_file.exists() and depot_file.stat().st_size > 0:
+                return "assella"
+        except Exception as e:
+            logger.debug(f"[DLCModeDetect] Error checking .depot file for {appid_str}: {e}")
+
+        # 2. Check AT0-M configuration in plugin_library:
         try:
             from utils.plugin_games import load_plugin_library
             plugin_lib = load_plugin_library()
@@ -705,50 +767,50 @@ class LibraryActionsMixin:
         except Exception as e:
             logger.debug(f"[DLCModeDetect] Error checking plugin_library for {appid_str}: {e}")
 
+        # 3. Check the mode recorded when the game's DLCs were configured.
+        #    ASSella's config-only path also writes DlcData, so DlcData alone
+        #    cannot tell the two modes apart; the recorded source can.
         try:
-            from utils.yaml_config_manager import (
-                get_user_config_path,
-                get_dlc_data,
-                get_additional_apps,
-                get_additional_depots,
-            )
+            from utils.settings import get_settings
+            rec_mode = get_settings().value(f"dlc_mode_source/{appid_str}", "", type=str)
+            if rec_mode in ("assella", "native"):
+                return rec_mode
+        except Exception as e:
+            logger.debug(f"[DLCModeDetect] Error checking dlc_mode_source for {appid_str}: {e}")
+
+        # 4. Check SLSsteam DlcData (written by AT0-M and by ASSella config-only):
+        try:
+            from utils.yaml_config_manager import get_user_config_path, get_dlc_data
             cfg_path = get_user_config_path()
             if cfg_path and cfg_path.exists():
-                dlc_data = get_dlc_data(cfg_path, appid_str)
-                if dlc_data:
+                if get_dlc_data(cfg_path, appid_str):
                     return "native"
-
-                catalog = getattr(discovery, "catalog", {}) if discovery else {}
-                catalog_dlc_ids = {str(k).strip() for k in catalog.keys() if str(k).strip() != appid_str}
-                if catalog_dlc_ids:
-                    add_apps = set(get_additional_apps(cfg_path))
-                    if any(dlc_id in add_apps for dlc_id in catalog_dlc_ids):
-                        return "native"
-
-                cand_depots = getattr(discovery, "depots", []) if discovery else []
-                cand_depot_ids = {str(d.depot_id).strip() for d in cand_depots}
-                if cand_depot_ids:
-                    add_depots = set(get_additional_depots(cfg_path))
-                    if any(did in add_depots for did in cand_depot_ids):
-                        return "native"
         except Exception as e:
-            logger.debug(f"[DLCModeDetect] Error checking SLSsteam config for {appid_str}: {e}")
+            logger.debug(f"[DLCModeDetect] Error checking SLSsteam DlcData for {appid_str}: {e}")
 
-        # 2. Check ASSella (ACCELA) mode:
-        try:
-            from utils.helpers import get_base_path
-            depot_file = Path(get_base_path()) / "depots" / f"{appid_str}.depot"
-            if depot_file.exists() and depot_file.stat().st_size > 0:
-                return "assella"
-        except Exception as e:
-            logger.debug(f"[DLCModeDetect] Error checking .depot file for {appid_str}: {e}")
-
+        # 5. Check ASSella DLC-only mode setting:
         try:
             from utils.dlc_helpers import is_dlc_only_mode
             if is_dlc_only_mode(appid_str):
                 return "assella"
         except Exception as e:
             logger.debug(f"[DLCModeDetect] Error checking is_dlc_only_mode for {appid_str}: {e}")
+
+        # 6. Fallback for depot-less DLCs already registered in AdditionalApps:
+        # If there are NO sized content depots (depotless DLCs) and any DLC ID is in AdditionalApps:
+        try:
+            if discovery and not getattr(discovery, "has_sized_depots", True):
+                from utils.yaml_config_manager import get_user_config_path, get_additional_apps
+                cfg_path = get_user_config_path()
+                if cfg_path and cfg_path.exists():
+                    catalog = getattr(discovery, "catalog", {}) or {}
+                    catalog_dlc_ids = {str(k).strip() for k in catalog.keys() if str(k).strip() != appid_str}
+                    if catalog_dlc_ids:
+                        add_apps = set(get_additional_apps(cfg_path))
+                        if any(dlc_id in add_apps for dlc_id in catalog_dlc_ids):
+                            return "native"
+        except Exception as e:
+            logger.debug(f"[DLCModeDetect] Error checking depotless AdditionalApps for {appid_str}: {e}")
 
         return None
 
@@ -821,6 +883,9 @@ class LibraryActionsMixin:
         from utils.settings import get_settings
 
         get_settings().setValue(f"dlc_only_mode/{appid}", True)
+        # Record the mode so detection does not mistake the DlcData entry this
+        # path writes for an AT0-M setup.
+        get_settings().setValue(f"dlc_mode_source/{appid}", "assella")
         ThemedMessageBox.information(
             self,
             "DLC Mode Saved",
@@ -1029,25 +1094,20 @@ class LibraryActionsMixin:
             self._clear_selection()
             self._refresh_game_list()
 
+            n = len(migrated)
+            parts = [f"Moved {n} game{'s' if n != 1 else ''} to AT0-M."]
             if failed:
-                warning_parts = [f"Successfully registered {len(migrated)} game(s) in AT0-M."]
-                if failed:
-                    failed_str = "\n".join(f"• {f['name']}: {f.get('reason', 'Failed')}" for f in failed[:8])
-                    if len(failed) > 8:
-                        failed_str += f"\n• ...and {len(failed) - 8} more."
-                    warning_parts.append(f"Skipped/failed games:\n{failed_str}")
-                ThemedMessageBox.warning(
-                    self._dialog_parent(),
-                    "AT0-M Migration Completed with Warnings",
-                    "\n\n".join(warning_parts),
-                )
-            else:
-                ThemedMessageBox.information(
-                    self._dialog_parent(),
-                    "AT0-M Migration Complete",
-                    f"Successfully moved all {len(migrated)} game(s) to AT0-M mode!\n\n"
-                    "SLSsteam configuration has been written and reloaded.",
-                )
+                failed_str = "\n".join(f"• {f['name']}: {f.get('reason', 'Failed')}" for f in failed[:8])
+                if len(failed) > 8:
+                    failed_str += f"\n• ...and {len(failed) - 8} more."
+                parts.append(f"Not moved (still ASSella installs):\n{failed_str}")
+            if n:
+                parts.append("Next: restart Steam. It verifies the existing files and adds the games to your library.")
+            (ThemedMessageBox.warning if failed else ThemedMessageBox.information)(
+                self._dialog_parent(),
+                "Move to AT0-M Finished" if failed else "Moved to AT0-M",
+                "\n\n".join(parts),
+            )
 
             markers_retained = result.get("markers_retained", [])
             if markers_retained:
@@ -1308,7 +1368,7 @@ class LibraryActionsMixin:
 
         settings = get_settings()
         smart_active = settings.value("smart_depot_selection", True, type=bool)
-        auto_skip_setting = settings.value("auto_skip_single_choice", False, type=bool)
+        auto_skip_setting = settings.value("auto_skip_single_choice", True, type=bool)
         val = settings.value(f"depot_selection/{appid}", "", type=str)
 
         selected_depots: Optional[List[str]] = None
@@ -1496,6 +1556,9 @@ class LibraryActionsMixin:
 
         game_data = item.data(Qt.ItemDataRole.UserRole)
         if not game_data:
+            return
+        if game_data.get("atom_pending"):
+            self._show_pending_atom_dialog(game_data)
             return
 
         # For Steam tab games, offer DLC download and open folder options
@@ -2204,11 +2267,44 @@ class LibraryActionsMixin:
             self.executor.submit(self._download_manifest_async, appid, game_data, branch)
 
     def _show_depot_selection_dialog(self, filepath: str, game_data: dict) -> None:
+        from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+        from utils.main_thread import post_to_main_thread
+        name = game_data.get("game_name", "Game")
+        progress = ThemedProgressDialog(f"Loading depots for {name}...", None, 0, 0, self._dialog_parent())
+        progress.show()
+
+        def _parse_worker():
+            try:
+                from core.tasks.process_zip_task import ProcessZipTask
+                zip_task = ProcessZipTask()
+                return zip_task.run(filepath)
+            except Exception as e:
+                logger.error(f"[Library] Error parsing zip {filepath}: {e}", exc_info=True)
+                return None
+
+        def _on_parse_done(future):
+            try:
+                parsed_data = future.result()
+            except Exception as e:
+                logger.error(f"[Library] Worker failed parsing zip: {e}", exc_info=True)
+                parsed_data = None
+            post_to_main_thread(self._open_depot_dialog_after_parse, parsed_data, game_data, progress)
+
+        future = self.executor.submit(_parse_worker)
+        future.add_done_callback(_on_parse_done)
+
+    def _open_depot_dialog_after_parse(self, parsed_data: dict, game_data: dict, progress=None) -> None:
         try:
-            from core.tasks.process_zip_task import ProcessZipTask
-            zip_task = ProcessZipTask()
-            parsed_data = zip_task.run(filepath)
-            
+            if progress:
+                progress.close()
+        except Exception as _silent_err:
+            logger.debug("[actions] _open_depot_dialog_after_parse: ignored %s", _silent_err, exc_info=False)
+
+        if not parsed_data or not parsed_data.get("depots"):
+            ThemedMessageBox.warning(self, "No Depots Found", "Could not parse depots for this game.")
+            return
+
+        try:
             if parsed_data and parsed_data.get("depots"):
                 from ui.dialogs.depotselection import DepotSelectionDialog
                 depots = parsed_data.get("depots")
@@ -2323,22 +2419,37 @@ class LibraryActionsMixin:
         local_path_override: str = None, branch: str = None, is_verify: bool = False
     ) -> None:
         """Trigger background manifest download and show progress."""
+        def _reset_btn():
+            target_dlg = dialog or getattr(self, "_details_dialog", None)
+            if target_dlg and hasattr(target_dlg, "validate_btn"):
+                try:
+                    target_dlg.validate_btn.set_loading(False)
+                    target_dlg.validate_btn.setEnabled(True)
+                    from ui.dialogs.game_details.info_tab import update_validate_button
+                    update_validate_button(target_dlg)
+                except Exception as _e:
+                    logger.debug(f"Could not reset dialog button: {_e}")
+
         api_key = self.settings.value("morrenus_api_key", "", type=str).strip()
         if not api_key:
+            _reset_btn()
             ThemedMessageBox.critical(self, "API Key Missing", "Please configure your Hubcap API key in Settings before downloading updates/manifests.")
             return
         if not morrenus_api:
+            _reset_btn()
             ThemedMessageBox.critical(self, "Error", "API module missing.")
             return
 
         app_id = str(game_data.get("appid"))
         if app_id in ("0", "N/A", "unknown"):
+            _reset_btn()
             ThemedMessageBox.critical(self, "Error", f"Invalid AppID: {app_id}")
             return
 
         if not hasattr(self, "_active_fetches"):
             self._active_fetches = set()
         if app_id in self._active_fetches:
+            _reset_btn()
             logger.warning(f"Fetch/update already in progress for AppID {app_id}, ignoring duplicate request.")
             return
         self._active_fetches.add(app_id)
@@ -2356,7 +2467,19 @@ class LibraryActionsMixin:
             game_data["_is_verify"] = True
         self.settings.setValue(f"selected_branch/{app_id}", branch)
 
-        is_rollback = local_path_override is not None
+        is_pinned = bool(
+            self.settings.value(f"pin_build/{app_id}", False, type=bool)
+            or game_data.get("_pin_build")
+            or game_data.get("pin_build")
+        )
+        is_rollback = (
+            local_path_override is not None
+            or is_pinned
+            or bool(game_data.get("_is_rollback"))
+        )
+        if is_pinned:
+            game_data["_pin_build"] = True
+            game_data["_is_rollback"] = True
 
         # Curated / Recommended Builds Check ("Voices")
         if not download_only and not is_rollback:
@@ -2412,12 +2535,14 @@ class LibraryActionsMixin:
                             else:
                                 if hasattr(self, "_active_fetches"):
                                     self._active_fetches.discard(app_id)
+                                _reset_btn()
                                 return
                         elif action == ACTION_LATEST:
                             logger.info(f"[LibraryActions] User chose latest manifest build for {name} ({app_id})")
                         else:
                             if hasattr(self, "_active_fetches"):
                                 self._active_fetches.discard(app_id)
+                            _reset_btn()
                             return
             except Exception as _rec_err:
                 logger.warning(f"[LibraryActions] Error checking voices recommendation: {_rec_err}")
@@ -3233,9 +3358,10 @@ class LibraryActionsMixin:
 
                 is_atom_dlc = bool(game_data.get("_is_atom_dlc"))
                 if is_atom_dlc:
-                    from ui.dialogs.atom_dlc_selection_dialog import AtomDlcSelectionDialog
+                    # Config-only setup in the same panel as Game Details > Depots
+                    from ui.dialogs.atom_dlc_setup_dialog import AtomDlcSetupDialog
                     accent_color = getattr(self, "accent_color", "#6c5ce7")
-                    atom_dlg = AtomDlcSelectionDialog(
+                    atom_dlg = AtomDlcSetupDialog(
                         parent=parent_widget,
                         app_id=parsed_data["appid"],
                         game_name=parsed_data.get("game_name") or game_data.get("name") or game_info.get("name") or f"App {parsed_data['appid']}",
@@ -3257,12 +3383,12 @@ class LibraryActionsMixin:
                     if dialog:
                         try:
                             dialog.accept()
-                        except RuntimeError:
-                            pass
+                        except RuntimeError as _silent_err:
+                            logger.debug("[actions] _on_zip_parse_complete: ignored %s", _silent_err, exc_info=False)
                     try:
                         self.accept()
-                    except RuntimeError:
-                        pass
+                    except RuntimeError as _silent_err:
+                        logger.debug("[actions] _on_zip_parse_complete: ignored %s", _silent_err, exc_info=False)
                     return
 
                 depot_dialog = DepotSelectionDialog(
@@ -3310,6 +3436,11 @@ class LibraryActionsMixin:
                     selected_storage = depot_dialog.get_selected_storage()
                     if selected_storage:
                         metadata["library_path"] = selected_storage
+                        if hasattr(depot_dialog, "should_remember_storage") and depot_dialog.should_remember_storage():
+                            from utils.library_choice import remember_library
+
+                            remember_library(selected_storage, settings)
+                            logger.info(f"[LibraryActions] Remembered default storage library: {selected_storage}")
 
                     if hasattr(depot_dialog, "is_build_pinned") and depot_dialog.is_build_pinned():
                         pinned_bid = depot_dialog.get_selected_build()

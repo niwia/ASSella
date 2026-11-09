@@ -18,7 +18,6 @@ was, so nothing renders differently from before.
 
 from utils.color_utils import (
     get_best_foreground_color,
-    get_dark_container_color,
     get_raised_surface_tokens,
     is_light_color,
     surface_overlay_rgb,
@@ -76,10 +75,6 @@ def build_stylesheet(background: str, accent: str) -> str:
     tokens = get_raised_surface_tokens(background)
     ink = tokens["ink"]
     overlay = surface_overlay_rgb(background)
-    selection = get_dark_container_color(accent)
-    # The selection background is always a dark container, so its text is the
-    # readable ink for *that* colour, not for the window behind it.
-    selection_ink = get_best_foreground_color(selection)
     return f"""
         QDialog {{
             background-color: {background};
@@ -124,34 +119,6 @@ def build_stylesheet(background: str, accent: str) -> str:
         QLineEdit:disabled {{
             color: rgba({overlay}, 0.118);
             border-color: rgba(255, 255, 255, 8);
-        }}
-        QComboBox {{
-            background-color: rgba(0, 0, 0, 0.196);
-            color: {ink};
-            border: 1px solid rgba({overlay}, 0.059);
-            border-radius: 6px;
-            padding: 3px 8px;
-            font-size: 9.5pt;
-        }}
-        QComboBox::drop-down {{ border: none; width: 18px; }}
-        QComboBox QAbstractItemView {{
-            background-color: {background};
-            border: 1px solid rgba({overlay}, 0.08);
-            border-radius: 8px;
-            selection-background-color: {selection};
-            selection-color: {selection_ink};
-            font-size: 9.5pt;
-            outline: 0px;
-            padding: 4px;
-        }}
-        QComboBox QAbstractItemView::item {{
-            min-height: 28px;
-            padding: 4px 12px;
-            color: {ink};
-        }}
-        QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
-            background-color: {selection} !important;
-            color: {selection_ink} !important;
         }}
         QCheckBox {{
             color: {ink};

@@ -97,34 +97,35 @@ class DepotSelectionDialog(
         # the greyed out missing depots and their statuses.
         from ui.dialogs.depot_selection.rules import is_effectively_single_depot
         effective_single = is_single or (isinstance(depots, dict) and is_effectively_single_depot(depots, missing))
-        if not is_dlc and not missing and effective_single:
+        has_dlc_catalog = bool(kwargs.get("dlc_catalog"))
+        if not is_dlc and not missing and not has_dlc_catalog and effective_single:
             from ui.dialogs.single_depot_dialog import SingleDepotSelectionDialog
             return SingleDepotSelectionDialog(*args, **kwargs)
+
+        # Opt-in preview: normal installs use the content-grouped layout when
+        # Settings -> Downloads -> Depot selection -> "Use new depot selector"
+        # is on. DLC-only and AT0-M configuration keep the classic window.
+        is_atom = bool(kwargs.get("is_atom_mode"))
+        if not is_dlc and not is_atom:
+            try:
+                from utils.settings import get_settings
+                use_new = get_settings().value("use_new_depot_selector", False, type=bool)
+            except Exception:
+                use_new = False
+            if use_new:
+                from ui.dialogs.depot_selection.content_dialog import ContentDepotSelectionDialog
+                return super().__new__(ContentDepotSelectionDialog)
 
         return super().__new__(cls)
 
     def __init__(
-        self,
-        app_id,
-        game_name,
-        depots,
-        header_url=None,
-        parent=None,
-        selected_depots=None,
-        show_storage=True,
-        is_single_depot=False,
-        missing_hubcap_depots=None,
-        missing_depots_info=None,
-        library_path=None,
-        refetched_depots=None,
-        branch="public",
-        branches=None,
-        current_build_id="",
-        lock_storage=False,
-        dlc_only_mode=False,
-        lock_dlc_only=False,
-        is_atom_mode=False,
-        **kwargs,
+        self, app_id, game_name, depots, header_url=None, parent=None,
+        selected_depots=None, show_storage=True, is_single_depot=False,
+        missing_hubcap_depots=None, missing_depots_info=None,
+        library_path=None, refetched_depots=None, branch="public",
+        branches=None, current_build_id="", lock_storage=False,
+        dlc_only_mode=False, lock_dlc_only=False, is_atom_mode=False,
+        dlc_catalog=None, editions=None, **kwargs,
     ):
         super().__init__(parent)
         self._init_state(
@@ -132,12 +133,13 @@ class DepotSelectionDialog(
             show_storage, is_single_depot, library_path, refetched_depots,
             branch, branches, current_build_id, missing_hubcap_depots,
             missing_depots_info,
-            lock_storage=lock_storage or kwargs.get("lock_storage", False),
-            dlc_only_mode=dlc_only_mode or kwargs.get("dlc_only_mode", False),
-            lock_dlc_only=lock_dlc_only or kwargs.get("lock_dlc_only", False),
-            dlc_catalog=kwargs.get("dlc_catalog") or {},
-            editions=kwargs.get("editions"),
-            is_atom_mode=is_atom_mode or kwargs.get("is_atom_mode", False),
+            lock_storage=lock_storage or kwargs.pop("lock_storage", False),
+            dlc_only_mode=dlc_only_mode or kwargs.pop("dlc_only_mode", False),
+            lock_dlc_only=lock_dlc_only or kwargs.pop("lock_dlc_only", False),
+            dlc_catalog=dlc_catalog or kwargs.pop("dlc_catalog", None) or {},
+            editions=editions or kwargs.pop("editions", None),
+            is_atom_mode=is_atom_mode or kwargs.pop("is_atom_mode", False),
+            **kwargs,
         )
         self.resize(700, 540)
         self.setMinimumSize(620, 480)
@@ -200,6 +202,7 @@ class DepotSelectionDialog(
         lock_dlc_only: bool = False,
         dlc_catalog: dict = None,
         editions: dict = None,
+        is_atom_mode: bool = False,
         **kwargs,
     ) -> None:
         """Store every constructor argument and wire up signals and timers.
@@ -223,7 +226,7 @@ class DepotSelectionDialog(
         self.preferred_library_path = library_path
         self.lock_storage = lock_storage
         self.lock_dlc_only = lock_dlc_only
-        self._is_atom_mode = bool(kwargs.get("is_atom_mode", False))
+        self._is_atom_mode = bool(is_atom_mode or kwargs.get("is_atom_mode", False))
         self._settings = get_settings()
         self._dlc_only_mode = bool(
             dlc_only_mode
@@ -232,15 +235,19 @@ class DepotSelectionDialog(
         self.refetched_depots = [str(d) for d in (refetched_depots or []) if str(d).strip()]
         self.branch = str(branch or "public")
         self.branches = dict(branches or {"public": {}})
+        self.is_bundle_stale = bool(kwargs.get("is_bundle_stale", False))
+        self.stale_depots = kwargs.get("stale_depots") or []
         self.current_build_id = str(current_build_id or "").strip()
-        if not self.current_build_id:
+        if not self.current_build_id and not self.is_bundle_stale:
             self.current_build_id = self._resolve_local_buildid()
-        if not self.current_build_id and self.depots:
+        if not self.current_build_id and self.depots and not self.is_bundle_stale:
             for d_data in self.depots.values():
                 if isinstance(d_data, dict) and d_data.get("buildid"):
                     self.current_build_id = str(d_data["buildid"]).strip()
                     break
         self._selected_build_id = self.current_build_id
+        if self.is_bundle_stale and not self.current_build_id:
+            self._try_resolve_historical_buildid_async()
         self._is_build_pinned = False
         self._manifest_overrides: Dict[str, str] = {}
         self._recovered_depots_map: Dict[str, str] = {}
@@ -278,10 +285,13 @@ class DepotSelectionDialog(
             from utils.dlc_helpers import get_owned_dlcs_from_steam, get_injected_dlcs_from_config
             self._steam_owned_dlcs = get_owned_dlcs_from_steam(self.app_id)
             self._injected_dlcs = get_injected_dlcs_from_config(self.app_id)
+            from core.steam_helpers import get_owned_steam_appids
+            self._is_base_owned = str(self.app_id) in get_owned_steam_appids()
         except Exception as _dlc_init_err:
             logger.debug(f"[DepotSelectionDialog] Could not load owned/injected DLCs: {_dlc_init_err}")
             self._steam_owned_dlcs = set()
             self._injected_dlcs = set()
+            self._is_base_owned = False
 
         self._injection_only = False
         self._config_written = False
@@ -325,7 +335,7 @@ class DepotSelectionDialog(
             if id_item is None:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander"):
+            if role in ("missing", "expander", "unreleased"):
                 continue
             # Strictly exclude depotless DlcData items and Steam-owned depots from download queue
             is_depotless = bool(id_item.data(Qt.ItemDataRole.UserRole + 21))
@@ -347,6 +357,9 @@ class DepotSelectionDialog(
             if not id_item:
                 continue
             if id_item.checkState() != Qt.CheckState.Checked:
+                continue
+            role = id_item.data(Qt.ItemDataRole.UserRole + 2)
+            if role in ("missing", "expander", "unreleased"):
                 continue
             if id_item.data(Qt.ItemDataRole.UserRole + 25):
                 # Owned legitimately on Steam
@@ -397,18 +410,26 @@ class DepotSelectionDialog(
             ThemedMessageBox.warning(self, "No Depots Selected", "Please select at least one depot or DLC to proceed.")
             return
 
+        # In DLC-only mode, ensure the base AppID never enters AdditionalApps and persist dlc_only_mode
+        if getattr(self, "_dlc_only_mode", False):
+            try:
+                from utils.yaml_config_manager import get_user_config_path, remove_additional_app
+                config_path = get_user_config_path()
+                if config_path and config_path.exists():
+                    remove_additional_app(config_path, self.app_id)
+                get_settings().setValue(f"dlc_only_mode/{self.app_id}", True)
+            except Exception as e:
+                logger.warning(f"[DepotSelectionDialog] DLC-only config update failed: {e}")
+
         # Auto-inject any checked DLC entitlements into SLSsteam config
         if checked_dlcs:
             try:
                 from utils.yaml.dlc import add_dlc_data_batch
-                from utils.yaml_config_manager import get_user_config_path, remove_additional_app
+                from utils.yaml_config_manager import get_user_config_path
 
                 config_path = get_user_config_path()
                 if config_path and config_path.exists():
                     add_dlc_data_batch(config_path, self.app_id, checked_dlcs)
-                    if getattr(self, "_dlc_only_mode", False) and not selected_depots:
-                        remove_additional_app(config_path, self.app_id)
-                        get_settings().setValue(f"dlc_only_mode/{self.app_id}", True)
                     self._config_written = True
             except Exception as e:
                 logger.warning(f"[DepotSelectionDialog] Auto-injecting checked DLC data failed: {e}")
@@ -480,6 +501,15 @@ class DepotSelectionDialog(
         # 3. Promote header image to permanent cache since user is downloading
         if hasattr(self, "app_id") and self.app_id:
             ImageFetcher.promote_to_permanent_cache(self.app_id)
+
+        # Remember storage choice if requested
+        if hasattr(self, "should_remember_storage") and self.should_remember_storage():
+            chosen = self.get_selected_storage()
+            if chosen and hasattr(self, "_settings") and self._settings:
+                from utils.library_choice import remember_library
+
+                remember_library(chosen, self._settings)
+                logger.info(f"[DepotSelection] Remembered default storage library: {chosen}")
 
         super().accept()
 

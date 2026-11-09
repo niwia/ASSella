@@ -21,7 +21,6 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QCheckBox,
-    QComboBox,
     QDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -36,6 +35,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
 
@@ -138,6 +138,14 @@ class ModernDepotSelectionDialog(QDialog):
         self._settings = get_settings()
         self.accent_color = self._settings.value("theme_accent", "#C06C84", type=str)
         try:
+            from utils.color_utils import get_cached_thumbnail_color
+            cached_col = get_cached_thumbnail_color(str(self.app_id))
+            if cached_col and cached_col.isValid():
+                self.accent_color = cached_col.name()
+                self._ambient_color = cached_col
+        except Exception as _silent_err:
+            logger.debug("[modern_depot_selection] __init__: ignored %s", _silent_err, exc_info=False)
+        try:
             c = QColor(self.accent_color)
             self.accent_r, self.accent_g, self.accent_b = c.red(), c.green(), c.blue()
         except Exception:
@@ -167,8 +175,8 @@ class ModernDepotSelectionDialog(QDialog):
                     saved_data = json.loads(saved_val)
                     if saved_data.get("selected"):
                         self.selected_depots = saved_data["selected"]
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[modern_depot_selection] __init__: ignored %s", _silent_err, exc_info=False)
 
         self.resize(1050, 680)
         self.setMinimumSize(960, 580)
@@ -555,27 +563,12 @@ class ModernDepotSelectionDialog(QDialog):
             lbl_b.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.7);")
             top_row.addWidget(lbl_b)
 
-            self.branch_combo = QComboBox()
+            self.branch_combo = ModernComboBox()
             self.branch_combo.setFixedHeight(28)
             self.branch_combo.setMinimumWidth(110)
             self.branch_combo.addItems(branch_list)
             if self.branch in branch_list:
                 self.branch_combo.setCurrentText(self.branch)
-            self.branch_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba(255, 255, 255, 0.16);
-                    border-radius: 6px;
-                    color: #FFFFFF;
-                    padding: 2px 10px;
-                    font-size: 8.5pt;
-                    font-weight: 600;
-                }}
-                QComboBox:hover {{
-                    border-color: rgba(255, 255, 255, 0.35);
-                    background-color: rgba(255, 255, 255, 0.12);
-                }}
-            """)
             self.branch_combo.currentTextChanged.connect(self._on_branch_changed)
             top_row.addWidget(self.branch_combo)
 
@@ -941,34 +934,17 @@ class ModernDepotSelectionDialog(QDialog):
         self._storage_btn_group.idClicked.connect(_on_storage_btn_clicked)
 
         if total_storages > max_direct_buttons:
-            combo = QComboBox()
+            combo = ModernComboBox()
             combo.setFixedHeight(34)
-            combo.addItem("More Drives ▾", None)
-            combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.04);
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 6px;
-                    color: rgba(255, 255, 255, 0.85);
-                    padding: 2px 8px;
-                    font-size: 8pt;
-                }}
-                QComboBox:hover {{
-                    border-color: {acc};
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1c23;
-                    color: #FFFFFF;
-                    selection-background-color: {acc};
-                }}
-            """)
+            combo.setPlaceholderText("More Drives")
             for i in range(max_direct_buttons, total_storages):
                 spath = storage_paths[i]
                 lbl_text, free_str, _ = _format_storage_info(spath)
                 combo.addItem(f"{lbl_text} ({free_str})", spath)
+            combo.setCurrentIndex(-1)
 
             def _on_combo_changed(idx: int):
-                if idx > 0:
+                if idx >= 0:
                     chosen = combo.itemData(idx)
                     if chosen:
                         self.selected_storage_path = chosen
@@ -1562,8 +1538,8 @@ class ModernDepotSelectionDialog(QDialog):
                     m = find_live(lua_content, r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)")
                     if m:
                         depot_key = m.group(1)
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[modern_depot_selection] _open_file_selector_for_depot: ignored %s", _silent_err, exc_info=False)
 
         if not depot_key:
             try:
@@ -1571,8 +1547,8 @@ class ModernDepotSelectionDialog(QDialog):
                 cached = DepotKeyManager().get_depot_keys(app_id)
                 if target_depot in cached:
                     depot_key = cached[target_depot]
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[modern_depot_selection] _open_file_selector_for_depot: ignored %s", _silent_err, exc_info=False)
 
         if not depot_key:
             ThemedMessageBox.critical(self, "Error", f"Could not find depot key for depot {target_depot}.")

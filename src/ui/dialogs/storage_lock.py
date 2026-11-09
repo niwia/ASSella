@@ -111,8 +111,36 @@ def _shorten_path(path_str: str) -> str:
         return str(path_str)
 
 
+def style_locked_storage_button(btn, accent_color=None, radius=4):
+    """Apply styling with subtle accent border to locked storage button."""
+    if accent_color:
+        try:
+            c = str(accent_color).lstrip('#')
+            ar, ag, ab = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+            border_style = f"border: 1px solid rgba({ar}, {ag}, {ab}, 0.35);"
+            text_color = "color: rgba(255, 255, 255, 0.85);"
+        except Exception:
+            border_style = "border: 1px solid rgba(255, 255, 255, 0.08);"
+            text_color = "color: rgba(255, 255, 255, 0.45);"
+    else:
+        border_style = "border: 1px solid rgba(255, 255, 255, 0.08);"
+        text_color = "color: rgba(255, 255, 255, 0.45);"
+
+    btn.setStyleSheet(f"""
+        QPushButton {{
+            background-color: rgba(255, 255, 255, 0.04);
+            {text_color}
+            {border_style}
+            border-radius: {radius}px;
+            padding: 4px 10px;
+            font-size: 8.5pt;
+            font-weight: 500;
+        }}
+    """)
+
+
 def create_locked_storage_button(target_path, label_text, free_str=None,
-                                 height=28, radius=4):
+                                 height=28, radius=4, accent_color=None):
     """Build the greyed-out, non-interactive storage display button."""
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QPushButton, QSizePolicy
@@ -128,17 +156,7 @@ def create_locked_storage_button(target_path, label_text, free_str=None,
     btn.setEnabled(False)
     btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     btn.setCursor(Qt.CursorShape.ForbiddenCursor)
-    btn.setStyleSheet(f"""
-        QPushButton {{
-            background-color: rgba(255, 255, 255, 0.04);
-            color: rgba(255, 255, 255, 0.45);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: {radius}px;
-            padding: 4px 10px;
-            font-size: 8.5pt;
-            font-weight: 500;
-        }}
-    """)
+    style_locked_storage_button(btn, accent_color=accent_color, radius=radius)
     btn.setToolTip(f"Storage location: {target_path}\n(Locked to installation directory)")
     return btn
 

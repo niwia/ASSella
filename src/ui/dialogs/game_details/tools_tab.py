@@ -426,6 +426,20 @@ def init_tools_tab(dialog) -> None:
     dialog.fix_btn.clicked.connect(lambda: dialog.parent_window._fix_game_install(dialog.game_data))
     depots_row.addWidget(dialog.fix_btn, 1)
 
+    # App-menu shortcut that starts the game through Steam (as ACCELA did).
+    # ASSella-managed games on Linux only.
+    from utils import desktop_shortcuts
+
+    if desktop_shortcuts.supported() and not is_atom:
+        dialog.desktop_btn = QPushButton("Desktop")
+        dialog.desktop_btn.setFixedHeight(36)
+        dialog.desktop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        dialog.desktop_btn.setStyleSheet(dialog.fix_btn.styleSheet())
+        dialog.desktop_btn.setEnabled(False)
+        dialog.desktop_btn.setToolTip("Checking for a shortcut...")
+        depots_row.addWidget(dialog.desktop_btn, 1)
+        _wire_desktop_button(dialog)
+
     grid.addWidget(depots_row_widget)
 
     update_depot_label(dialog)
@@ -778,3 +792,66 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
     finally:
         dialog.dlcdata_exp_btn.setEnabled(True)
         refresh_dlcdata_btn_text(dialog)
+
+
+def _wire_desktop_button(dialog) -> None:
+    """Add / remove the app-menu shortcut; all file and network work off the GUI thread."""
+    import threading
+
+    from PyQt6 import sip
+
+    from utils import desktop_shortcuts
+    from utils.main_thread import post_to_main_thread
+
+    btn = dialog.desktop_btn
+    appid = str(dialog.appid)
+    name = dialog.game_data.get("game_name", "") or ""
+    state = {"has": False}
+
+    def _show(has: bool) -> None:
+        if sip.isdeleted(btn):
+            return
+        state["has"] = has
+        btn.setEnabled(True)
+        btn.setText("Desktop: Remove" if has else "Desktop")
+        btn.setToolTip(
+            "Remove this game's shortcut from your app menu."
+            if has else
+            "Add this game to your app menu, with its SteamGridDB icon. The shortcut starts it through Steam."
+        )
+
+    def _run(work, busy_text: str) -> None:
+        btn.setEnabled(False)
+        btn.setText(busy_text)
+
+        def _bg():
+            try:
+                ok, msg = work()
+            except Exception as e:
+                ok, msg = False, str(e)
+            has = desktop_shortcuts.has_shortcut(appid)
+
+            def _done():
+                if sip.isdeleted(btn):
+                    return
+                _show(has)
+                if ok:
+                    ThemedMessageBox.information(dialog, "Desktop shortcut", msg)
+                else:
+                    ThemedMessageBox.warning(dialog, "Desktop shortcut", msg)
+
+            post_to_main_thread(_done)
+
+        threading.Thread(target=_bg, name="desktop-shortcut", daemon=True).start()
+
+    def _clicked() -> None:
+        if state["has"]:
+            _run(lambda: desktop_shortcuts.remove_shortcut(appid), "Removing...")
+        else:
+            _run(lambda: desktop_shortcuts.create_shortcut(appid, name), "Adding...")
+
+    btn.clicked.connect(_clicked)
+    threading.Thread(
+        target=lambda: post_to_main_thread(lambda: _show(desktop_shortcuts.has_shortcut(appid))),
+        name="desktop-shortcut-check", daemon=True,
+    ).start()

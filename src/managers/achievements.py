@@ -128,6 +128,29 @@ class AchievementsMixin:
                 )
             return
 
+        from utils.component_manager import is_component_available
+        if not is_component_available("slscheevo"):
+            logger.info("SLScheevo component is not installed. Skipping achievements step.")
+            if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+                self.main_window.simplified_terminal.set_stage_status("achievements", "skipped")
+
+            self._slscheevo_ran = False
+            self._slscheevo_error = False
+            self._slscheevo_completed = True
+            self._last_slscheevo_status = "not_installed"
+            self._last_slscheevo_status_text = "Not Installed"
+
+            if self._current_active_step == "achievements":
+                self._current_active_step = None
+                self._waiting_for_achievements = False
+                self._finalize_job_logic()
+            elif self._waiting_for_achievements:
+                self._waiting_for_achievements = False
+                QMetaObject.invokeMethod(
+                    self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
+                )
+            return
+
         logger.info(f"Checking achievements availability for AppID: {app_id}...")
 
         if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:

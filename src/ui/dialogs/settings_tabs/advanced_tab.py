@@ -25,27 +25,17 @@ logger = logging.getLogger(__name__)
 def create_advanced_tab(dialog) -> QWidget:
     """Create the Advanced settings tab with specialized settings."""
     tab = QWidget()
+    tab.setStyleSheet("background: transparent;")
     layout = QVBoxLayout(tab)
     layout.setContentsMargins(12, 10, 12, 10)
     layout.setSpacing(8)
 
-    # Advanced Downloads Card
-    adv_card, adv_layout = dialog._create_card_frame("Advanced Download Settings")
-
-    dialog.auto_skip_single_choice_checkbox = create_checkbox_setting(
-        "Skip single-choice selection",
-        "auto_skip_single_choice",
-        False,
-        dialog,
-        "Automatically skip selection when only one option exists.",
-        show_description=False,
-    )
-    adv_layout.addWidget(dialog.auto_skip_single_choice_checkbox)
+    dialog.auto_skip_single_choice_checkbox = None
     dialog.probe_cdn_checkbox = None
     if dialog.settings.value("probe_cdn") is None:
         dialog.settings.setValue("probe_cdn", True)
-
-    layout.addWidget(adv_card)
+    if dialog.settings.value("auto_skip_single_choice") is None:
+        dialog.settings.setValue("auto_skip_single_choice", True)
 
     # Workshop Downloader Settings Card
     ws_card, ws_layout = dialog._create_card_frame("Workshop settings (deprecated)")
@@ -191,8 +181,11 @@ def create_advanced_tab(dialog) -> QWidget:
         if checked:
             reply = ThemedMessageBox.question(
                 dialog,
-                "Enable Workshop Downloader",
-                "Are you sure you want to enable the Workshop Downloader?\n\nThis feature is deprecated and may not work reliably.",
+                "Workshop downloader is retired",
+                "The Workshop downloader no longer works reliably.\n\n"
+                "AT0-M gives you Workshop mods now: subscribe to a mod in Steam and "
+                "Steam downloads and updates it for you.\n\n"
+                "Turn the old downloader on anyway?",
                 ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
                 ThemedMessageBox.StandardButton.No,
             )
@@ -236,11 +229,96 @@ def create_advanced_tab(dialog) -> QWidget:
     )
     pp_layout.addWidget(dialog.auto_apply_goldberg_checkbox)
 
+    dialog.auto_run_steamless_checkbox = create_checkbox_setting(
+        "Auto-run Steamless on Install/Update",
+        "auto_run_steamless_post_install",
+        True,
+        dialog,
+        "Automatically unpack SteamStub DRM with Steamless after game installation or update finishes.",
+        show_description=False,
+    )
+    pp_layout.addWidget(dialog.auto_run_steamless_checkbox)
+
+    dialog.auto_run_steamless_checkbox.toggled.connect(
+        lambda _checked: steamless_unchecked_warning(dialog)
+    )
+
     layout.addWidget(pp_card)
     layout.addStretch()
 
     dialog.tab_widget.addTab(tab, "Advanced")
     return tab
+
+
+def steamless_unchecked_warning(dialog) -> None:
+    """Run humorous 4-stage confirmation gauntlet when user unchecks Auto-run Steamless."""
+    checkbox = getattr(dialog, "auto_run_steamless_checkbox", None)
+    if not checkbox:
+        return
+    if checkbox.isChecked():
+        dialog.settings.setValue("auto_run_steamless_post_install", True)
+        dialog.settings.sync()
+        return
+
+    # User is attempting to turn it OFF.
+    def _cancel():
+        checkbox.blockSignals(True)
+        checkbox.setChecked(True)
+        checkbox.blockSignals(False)
+        dialog.settings.setValue("auto_run_steamless_post_install", True)
+        dialog.settings.sync()
+
+    # Stage 1: Are you sure?
+    r1 = ThemedMessageBox.warning(
+        dialog,
+        "Disable Steamless",
+        "Are you sure? This is an advanced feature and not recommended to turn off.",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.No,
+    )
+    if r1 != ThemedMessageBox.StandardButton.Yes:
+        _cancel()
+        return
+
+    # Stage 2: Are you really really sure?
+    r2 = ThemedMessageBox.warning(
+        dialog,
+        "Disable Steamless",
+        "Are you really really sure?",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.No,
+    )
+    if r2 != ThemedMessageBox.StandardButton.Yes:
+        _cancel()
+        return
+
+    # Stage 3: Are you sure?
+    r3 = ThemedMessageBox.warning(
+        dialog,
+        "Disable Steamless",
+        "Are you sure?",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.No,
+    )
+    if r3 != ThemedMessageBox.StandardButton.Yes:
+        _cancel()
+        return
+
+    # Stage 4: For the last time, are you really sure?
+    r4 = ThemedMessageBox.warning(
+        dialog,
+        "Disable Steamless",
+        "For the last time, are you really sure?",
+        ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+        ThemedMessageBox.StandardButton.No,
+    )
+    if r4 != ThemedMessageBox.StandardButton.Yes:
+        _cancel()
+        return
+
+    # Survived all 4 "Yes" prompts: safely deactivate
+    dialog.settings.setValue("auto_run_steamless_post_install", False)
+    dialog.settings.sync()
 
 
 def goldberg_checked_warning(dialog) -> None:

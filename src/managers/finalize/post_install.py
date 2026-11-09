@@ -260,6 +260,116 @@ class PostInstallMixin:
                 )
         except OSError as e:
             logger.error(f"GreenLuma configuration failed: {e}", exc_info=True)
+
+    def _is_stale_or_rollback_install(self) -> bool:
+        """True when the finished job installed an older package.
+
+        Covers a user-chosen rollback/pin and a bundle whose manifests simply
+        lag behind live Steam (``is_bundle_stale``). Kept separate from the
+        download-time ``_is_rollback`` flag, which now means a real user
+        rollback only.
+        """
+        meta = self.current_job_metadata or {}
+        game_data = self.game_data or {}
+        return bool(
+            meta.get("is_rollback")
+            or meta.get("is_bundle_stale")
+            or game_data.get("_is_rollback")
+            or game_data.get("is_bundle_stale")
+        )
+
+    def _apply_install_update_status(self, appid: str, is_stale_or_rollback: bool) -> str:
+        """Write the update cache status for a finished install.
+
+        Handoff jobs defer to VaporWatcher (Steam is still downloading). A pinned
+        older build is a deliberate freeze, so it reads ``up_to_date``; an unpinned
+        older package reads ``update_available`` so the UI shows the pending update.
+        Returns the status written (or ``"handoff"`` when deferred).
+        """
+        if getattr(self, "_is_handoff_job", False):
+            logger.info(
+                f"[JobFinished] Handoff job for appid={appid} — deferring up_to_date "
+                "to VaporWatcher (Steam download still in progress)"
+            )
+            return "handoff"
+
+        is_pinned = bool(
+            (self.current_job_metadata or {}).get("pin_build")
+            or (self.game_data or {}).get("pin_build")
+            or (self.game_data or {}).get("_pin_build")
+        )
+        from utils.update_status_cache import get_update_cache
+        cache = get_update_cache()
+        if is_stale_or_rollback and not is_pinned:
+            cache.set_status(appid, "update_available", {
+                "reason": "Package installed from older bundle manifests",
+            })
+            cache.save_async()
+            logger.info(f"[JobFinished] Stale bundle or rollback install for appid={appid} — marked 'update_available' in cache")
+            return "update_available"
+
+        cache.set_status(appid, "up_to_date")
+        cache.save_async()
+        logger.debug(f"Set update cache to up_to_date for freshly installed appid={appid}")
+        return "up_to_date"
+
+    @staticmethod
+    def _compute_final_buildid(new_bid, meta_bid, target_bid, is_stale_or_rollback) -> str:
+        """Resolve the build id to stamp for a finished install.
+
+        For an older package only a verified numeric historical build id is
+        accepted; falling back to the live branch id would poison the install.
+        """
+        if is_stale_or_rollback:
+            cand_bid = new_bid or meta_bid
+            text = str(cand_bid).strip() if cand_bid is not None else ""
+            if text.isdigit() and text != "0":
+                return text
+            return ""
+        return new_bid or meta_bid or target_bid or ""
+
+    def _apply_install_buildid_and_pin(self, settings, appid, sel_b, final_bid, is_stale_or_rollback) -> None:
+        """Stamp/clear ``installed_buildid`` and apply the user's pin choice.
+
+        Shared by ``_finalize_job_logic`` so the poisoning guards are covered
+        by unit tests that exercise this method directly rather than a copy.
+        """
+        if final_bid:
+            # Store per-branch: installed_buildid/appid/branch
+            settings.setValue(f"installed_buildid/{appid}/{sel_b}", str(final_bid))
+            # Also store legacy flat key for backward compat
+            settings.setValue(f"installed_buildid/{appid}", str(final_bid))
+        elif is_stale_or_rollback:
+            # No verified historical build id: drop any existing stamp so a
+            # later manifest check cannot match the live build and report the
+            # older install as up to date.
+            settings.remove(f"installed_buildid/{appid}/{sel_b}")
+            settings.remove(f"installed_buildid/{appid}")
+            logger.info(
+                f"[JobFinished] Cleared installed_buildid for appid={appid} because package "
+                "manifests are older and exact historical build ID is unknown."
+            )
+
+        # Apply the user's pin choice for any pinned install, whether or not a
+        # verified build id was resolved.
+        meta = self.current_job_metadata or {}
+        if "pin_build" not in meta:
+            return
+        should_pin = bool(meta["pin_build"])
+        settings.setValue(f"pin_build/{appid}", should_pin)
+        if not should_pin:
+            return
+        settings.setValue(f"exclude_from_update_all/{appid}", False)
+        try:
+            manifests_dir = Path(get_base_path()) / "hubcap_manifests"
+            manifests_dir.mkdir(parents=True, exist_ok=True)
+            if final_bid and self.current_job and os.path.exists(self.current_job):
+                dest_zip = manifests_dir / f"accela_fetch_{appid}_build_{final_bid}.zip"
+                shutil.copy(self.current_job, dest_zip)
+                logger.info(f"Cached pinned manifest zip to {dest_zip}")
+        except Exception as e:
+            logger.warning(f"Failed to cache pinned manifest zip: {e}")
+
     @pyqtSlot()
     def _finalize_job_logic(self):
         """Called on Main Thread. Acts as a State Machine Conductor.
@@ -277,8 +387,9 @@ class PostInstallMixin:
         if self._should_prompt_for_steam_restart():
             self.main_window.job_queue.steam_restart_prompt_pending = True
 
-        steamless_enabled = self.settings.value("use_steamless", False, type=bool)
-        steamless_aio_enabled = self.settings.value("use_steamless_aio", False, type=bool)
+        auto_run_steamless = self.settings.value("auto_run_steamless_post_install", True, type=bool)
+        steamless_enabled = auto_run_steamless and self.settings.value("use_steamless", False, type=bool)
+        steamless_aio_enabled = auto_run_steamless and self.settings.value("use_steamless_aio", False, type=bool)
         
         # Skip Steamless entirely if this is a DLC Only installation
         appid = self.game_data.get("appid") if self.game_data else None
@@ -315,6 +426,10 @@ class PostInstallMixin:
                 else:
                     self._job_steps_completed.add("achievements")
 
+        if "desktop_shortcut" not in self._job_steps_completed:
+            self._job_steps_completed.add("desktop_shortcut")
+            self._maybe_create_desktop_shortcut(is_dlc_only)
+
         # Ensure any manifest symlinks (especially on Linux) are properly established
         try:
             from utils.manifest_resolver import restore_all_game_symlinks
@@ -335,7 +450,6 @@ class PostInstallMixin:
             # Clear the cached update status for this game so it gets re-checked
             # (it may have gone from "update_available" to "up_to_date")
             if self.game_data:
-                from utils.update_status_cache import get_update_cache
                 appid = self.game_data.get("appid", "")
                 if appid and appid not in ("0", "N/A", "unknown"):
                     # For handoff jobs (native Steam download), we do NOT mark up_to_date here.
@@ -343,26 +457,11 @@ class PostInstallMixin:
                     # up_to_date once StateFlags=4 is confirmed in the ACF. Without this guard,
                     # if gmrc.wudrm.com is unreachable Steam's MRC fetch fails and the download
                     # stalls, yet ASSella would incorrectly show the game as up_to_date.
-                    is_handoff = getattr(self, "_is_handoff_job", False)
-                    if is_handoff:
-                        logger.info(
-                            f"[JobFinished] Handoff job for appid={appid} — deferring up_to_date "
-                            "to VaporWatcher (Steam download still in progress)"
-                        )
-                    # Set status to up_to_date so the post-download rescan restores
-                    # the correct status immediately. Without this, the game would stay
-                    # at "checking" indefinitely because _on_initial_scan_complete
-                    # (the only slot that calls check_game_updates_async) disconnects
-                    # itself after boot and never runs again for subsequent rescans.
-                    # Skip for rollback installs — user chose an older build, so keep
-                    # the game showing "update_available".
-                    elif not self.game_data.get("_is_rollback"):
-                        cache = get_update_cache()
-                        cache.set_status(appid, "up_to_date")
-                        cache.save_async()
-                        logger.debug(f"Set update cache to up_to_date for freshly installed appid={appid}")
-                    else:
-                        logger.debug(f"Rollback install for appid={appid} — keeping current update status")
+                    is_stale_or_rollback = self._is_stale_or_rollback_install()
+                    # Cache status: handoff defers to VaporWatcher; a pinned older
+                    # build is a deliberate freeze; an unpinned older package shows
+                    # the pending update. See _apply_install_update_status.
+                    self._apply_install_update_status(appid, is_stale_or_rollback)
 
                     # Upsert the new manifest/depot data to SQLite DB to refresh cache age and content
                     try:
@@ -413,36 +512,26 @@ class PostInstallMixin:
                                 if isinstance(b_entry, dict):
                                     target_bid = str(b_entry.get("buildid", ""))
 
-                            is_rollback_job = (self.current_job_metadata or {}).get("is_rollback") or (self.game_data.get("_is_rollback") if self.game_data else False)
                             meta_bid = (self.current_job_metadata or {}).get("buildid")
-                            if is_rollback_job:
-                                final_bid = meta_bid or new_bid
-                                logger.info(f"[DEBUG_DEV] Rollback/manual install detected. Using manual build ID as final_bid: {final_bid}")
+                            final_bid = self._compute_final_buildid(
+                                new_bid, meta_bid, target_bid, is_stale_or_rollback
+                            )
+                            if is_stale_or_rollback:
+                                logger.info(
+                                    f"[JobFinished] Stale/rollback install for appid={appid}. "
+                                    f"Verified historical build ID: {final_bid or 'None (unmatched)'}"
+                                )
                             else:
-                                final_bid = new_bid or meta_bid or target_bid
                                 logger.info(f"[DEBUG_DEV] Standard install completed. final_bid: {final_bid}")
-                            if final_bid:
-                                # Store per-branch: installed_buildid/appid/branch
-                                settings.setValue(f"installed_buildid/{appid}/{sel_b}", str(final_bid))
-                                # Also store legacy flat key for backward compat
-                                settings.setValue(f"installed_buildid/{appid}", str(final_bid))
 
-                                # If pin_build is specified in job metadata, apply user choice
-                                if self.current_job_metadata and "pin_build" in self.current_job_metadata:
-                                    should_pin = bool(self.current_job_metadata["pin_build"])
-                                    settings.setValue(f"pin_build/{appid}", should_pin)
-                                    if should_pin:
-                                        settings.setValue(f"exclude_from_update_all/{appid}", False)
-                                        try:
-                                            import shutil
-                                            manifests_dir = Path(get_base_path()) / "hubcap_manifests"
-                                            manifests_dir.mkdir(parents=True, exist_ok=True)
-                                            dest_zip = manifests_dir / f"accela_fetch_{appid}_build_{final_bid}.zip"
-                                            if self.current_job and os.path.exists(self.current_job):
-                                                shutil.copy(self.current_job, dest_zip)
-                                                logger.info(f"Cached pinned manifest zip to {dest_zip}")
-                                        except Exception as e:
-                                            logger.warning(f"Failed to cache pinned manifest zip: {e}")
+                            # Ensure db_data carries consistent buildid
+                            if is_stale_or_rollback and db_data.get("buildid") != final_bid:
+                                db_data["buildid"] = final_bid
+                                db.upsert_app_info(appid, db_data)
+
+                            self._apply_install_buildid_and_pin(
+                                settings, appid, sel_b, final_bid, is_stale_or_rollback
+                            )
                     except Exception as e:
                         logger.error(f"Failed to upsert app info on job completion: {e}")
 
@@ -498,7 +587,18 @@ class PostInstallMixin:
                         except Exception as _reg_err:
                             logger.warning(f"[TaskManager] Could not synchronize AT0-M registration: {_reg_err}")
 
-            self.main_window.game_manager.scan_steam_libraries_async()
+            # Defer library rescan if more jobs are queued to prevent severe disk/I/O thrashing
+            has_queued_jobs = False
+            queue_mgr = getattr(self.main_window, "job_queue_manager", None)
+            if queue_mgr and getattr(queue_mgr, "job_queue", None):
+                has_queued_jobs = len(queue_mgr.job_queue) > 0
+
+            if has_queued_jobs:
+                logger.info(
+                    f"[PostInstall] Deferring library scan: {len(queue_mgr.job_queue)} job(s) remaining in queue."
+                )
+            else:
+                self.main_window.game_manager.scan_steam_libraries_async()
 
             # Refresh title in the open game-details dialog immediately so the
             # branch suffix (e.g. "(beta)") updates live without a close/reopen.
@@ -510,6 +610,28 @@ class PostInstallMixin:
                 logger.debug(f"Could not refresh details dialog title after install: {_dt_err}")
 
         self.job_finished()
+    def _maybe_create_desktop_shortcut(self, is_dlc_only: bool) -> None:
+        """Settings -> Downloads -> "Create a desktop shortcut after install" (as ACCELA did).
+
+        Runs in the background and never holds up the rest of the install.
+        """
+        from utils import desktop_shortcuts
+
+        if (self.is_cancelling or is_dlc_only or not self.game_data or not desktop_shortcuts.supported()
+                or not self.settings.value(desktop_shortcuts.SETTING_AFTER_INSTALL, False, type=bool)):
+            return
+        appid = str(self.game_data.get("appid") or "")
+        name = self.game_data.get("game_name", "") or ""
+
+        def _bg():
+            try:
+                ok, msg = desktop_shortcuts.create_shortcut(appid, name)
+                (logger.info if ok else logger.warning)(f"[PostInstall] Desktop shortcut for {appid}: {msg}")
+            except Exception as e:
+                logger.warning(f"[PostInstall] Desktop shortcut for {appid} failed: {e}")
+
+        threading.Thread(target=_bg, name="desktop-shortcut", daemon=True).start()
+
     def _should_prompt_for_steam_restart(self) -> bool:
         if self.is_cancelling:
             return False

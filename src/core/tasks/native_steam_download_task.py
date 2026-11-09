@@ -8,7 +8,7 @@ Workflow:
   1. Reads depot keys and manifest GIDs from Hubcap bundle / cache.
   2. Patches config.yaml with Plugins: yes, AdditionalApps, AdditionalDepots,
      and DecryptionKeys atomically with fsync.
-  3. Deploys download.lua and spliced-tickets.lua to ~/.config/SLSsteam/plugins/
+  3. Deploys the Katamari plugin family to ~/.config/SLSsteam/plugins/
      (prioritizing locally bundled copies).
   4. Waits for AppLicensesChanged in .SLSsteam.log for the AppID, followed
      by a 1.5s delay for Steam memory propagation.
@@ -219,7 +219,7 @@ class NativeSteamDownloadTask(QObject):
         # 4. Verify SLSsteam plugins are present
         from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
         if not are_plugins_present():
-            msg = "AT0-M plugins (download interceptor / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
+            msg = "AT0-M plugins (download interceptor / Styx) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
             self.error.emit((RuntimeError, msg, None))
@@ -586,11 +586,11 @@ class NativeSteamDownloadTask(QObject):
         return depot_keys, manifest_gids
 
     def _deploy_plugin(self, plugins_dir: Path) -> bool:
-        """Deploy download.lua and spliced-tickets.lua to SLSsteam plugins directory from Cloud."""
+        """Deploy the Katamari plugin family to the SLSsteam plugins directory."""
         try:
             from utils.plugin_manager import deploy_all_plugins
             self.progress.emit("[Native Steam] Checking required plugins from Cloud...")
-            ok, msgs = deploy_all_plugins()
+            ok, msgs = deploy_all_plugins(only_if_missing=True)  # never replace the user's files mid-download
             for m in msgs:
                 logger.info(f"[NativeSteamDL] {m}")
             return ok

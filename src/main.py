@@ -2,12 +2,11 @@ import multiprocessing
 import os
 import sys
 import threading
-from urllib.parse import unquote
 import ctypes
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import QApplication
 from utils.paths import Paths
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
 from ui.main_window import MainWindow
 from ui.theme import update_appearance
 from managers.cli_manager import run_cli_mode, open_cli_terminal
@@ -89,18 +88,21 @@ def main():
         logger.warning(f"Error initializing VoicesManager: {e}")
 
     # Pre-scan for headless/helper mode to set environment variable before QApplication is created
-    headless_mode = "--headless" in sys.argv or "--helper" in sys.argv or "-helper" in sys.argv or "--check-updates" in sys.argv
-    if not headless_mode:
-        for arg in sys.argv:
-            if arg.startswith("accela://") and ("download/" in arg or "helper/" in arg):
-                headless_mode = True
-                break
+    headless_mode = "--headless" in sys.argv or "--helper" in sys.argv or "-helper" in sys.argv or "--check-updates" in sys.argv or "-cli" in sys.argv or "--cli" in sys.argv
 
     if headless_mode:
         logger.info("Headless/Helper mode requested. Setting QT_QPA_PLATFORM=offscreen")
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
     # People only have substance within the memories of other people.
+
+    # Configure fractional high-DPI scaling policy before QApplication is constructed.
+    # On Wayland (KDE Plasma 6 / SteamOS 3.5+ Desktop Mode), PassThrough prevents
+    # font blur and window geometry distortion at 125%/150% fractional display scaling.
+    if hasattr(QApplication, "setHighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
 
     app = QApplication(sys.argv)
     app.setApplicationName("ASSella")
@@ -123,50 +125,6 @@ def main():
     check_updates_mode = False
     command_line_zips = []
     command_line_appid = None
-
-    def _add_zip_from_url(zip_url: str, found_suffix: str = "") -> bool:
-        if not zip_url:
-            return False
-        if os.path.exists(zip_url):
-            command_line_zips.append(zip_url)
-            suffix = f" {found_suffix}" if found_suffix else ""
-            logger.info(f"Found ZIP file from URL: {zip_url}{suffix}")
-            return True
-        logger.warning(f"ZIP file not found from URL: {zip_url}")
-        return False
-
-    def _parse_url_action(url: str):
-        nonlocal cli_mode, command_line_appid, helper_mode
-        try:
-            url_content = url[9:]  # Remove 'accela://'
-            if url_content.startswith("cli/"):
-                cli_mode = True
-                rest = url_content[4:]
-            elif url_content.startswith("helper/"):
-                helper_mode = True
-                rest = url_content[7:]
-            else:
-                rest = url_content
-
-            if "/" in rest:
-                action, param_val = rest.split("/", 1)
-                param_val = unquote(param_val)
-            else:
-                action = rest
-                param_val = None
-
-            if action == "download" and param_val and param_val.isdigit():
-                command_line_appid = int(param_val)
-                helper_mode = True
-                logger.info(
-                    f"Found accela://{action} URL for AppID: {param_val} (Helper mode)"
-                )
-            elif action == "zip" and param_val:
-                _add_zip_from_url(param_val, "(Helper mode)" if helper_mode else "(GUI mode)")
-            else:
-                logger.warning(f"Invalid accela:// URL format: {url}")
-        except ValueError as ve:
-            logger.error(f"Failed to parse URL {url}: {ve}")
 
     settings = get_settings()
     server_port = int(settings.value("web_ui_port", 8765, type=int))
@@ -196,8 +154,6 @@ def main():
             else:
                 logger.error(f"Invalid AppID: {appid_str} (must be a number)")
             i += 1
-        elif arg.startswith("accela://"):
-            _parse_url_action(arg)
         elif arg.lower().endswith(".zip"):
             zip_file_path = os.path.abspath(arg)
             if os.path.exists(zip_file_path):
@@ -227,29 +183,31 @@ def main():
     # -------------------------------------------------------------------------
     # CLI Mode Execution
     # -------------------------------------------------------------------------
-    if cli_mode and (command_line_zips or command_line_appid):
-        if cli_mode and sys.platform == "linux":
-            if command_line_appid:
-                logger.info(
-                    f"Opening CLI mode in external terminal for AppID {command_line_appid}"
-                )
-                if open_cli_terminal(appid=command_line_appid):
-                    return None
-            elif command_line_zips:
-                logger.info("Opening CLI mode in external terminal for ZIP(s)")
-                if open_cli_terminal(zip_path=command_line_zips[0]):
-                    return None
-
-        if command_line_appid:
-            logger.info(f"Will process AppID {command_line_appid} via CLI")
-            return run_cli_mode(app, None, logger, appid=command_line_appid)
-        else:
-            logger.info(f"Processing {len(command_line_zips)} ZIPs via CLI")
-            return run_cli_mode(app, command_line_zips, logger)
+    if cli_mode:
+        from managers.cli_manager import run_cli_dispatcher
+        code = run_cli_dispatcher(
+            app=app,
+            raw_args=args,
+            logger=logger,
+            command_line_appid=command_line_appid,
+            command_line_zips=command_line_zips,
+        )
+        sys.exit(code if isinstance(code, int) else 0)
 
     # -------------------------------------------------------------------------
     # GUI Mode Initialization
     # -------------------------------------------------------------------------
+
+    if not headless_mode:
+        from utils.single_instance import SingleInstanceIPC
+
+        launch_payload = {
+            "appid": command_line_appid,
+            "zips": command_line_zips,
+        }
+        if SingleInstanceIPC.send_and_exit_if_running(launch_payload):
+            logger.info("Forwarded request to running ASSella instance. Exiting.")
+            sys.exit(0)
 
     config_path = get_user_config_path()
     try:
@@ -274,28 +232,8 @@ def main():
             except Exception as ex:
                 logger.error(f"Failed to check and merge Fake AppID database: {ex}")
 
-            try:
-                from utils.yaml_config_manager import get_fake_appid, add_fake_app_id, remove_fake_app_id
-                all_on = settings.value("all_games_online", None)
-                if all_on is None:
-                    all_on = settings.value("all_games_online_beta", None)
-
-                # Normalize boolean
-                if isinstance(all_on, str):
-                    all_on_bool = all_on.strip().lower() in ("true", "1", "yes")
-                elif all_on is not None:
-                    all_on_bool = bool(all_on)
-                else:
-                    all_on_bool = True  # Default on if never set
-
-                if all_on_bool:
-                    if get_fake_appid(config_path, "0") is None:
-                        add_fake_app_id(config_path, "0", game_name="All Unowned Apps", fake_appid="480")
-                else:
-                    if get_fake_appid(config_path, "0") is not None:
-                        remove_fake_app_id(config_path, "0")
-            except Exception as ex:
-                logger.debug(f"Failed to sync all_games_online FakeAppId: {ex}")
+            # "All games online" lives in config.yaml (FakeAppIds 0: 480) and is
+            # read from there; it is no longer re-applied from ASSella's settings.
 
             # A Steam update would replace the files SLSsteam patches, so the
             # config keeps DisableUpdates set. The writer memoises "already
@@ -339,6 +277,15 @@ def main():
     else:
         logger.warning(f"Failed to load custom font: '{str(font_info)}'")
 
+    # Some systems crash inside fontconfig when Qt looks for a fallback font;
+    # detect that in a child process and turn fallback off if so.
+    try:
+        from utils import font_safety
+
+        font_safety.init(app)
+    except Exception as e:
+        logger.debug(f"Font safety check skipped: {e}")
+
     # -------------------------------------------------------------------------
     # Main Window Launch
     # -------------------------------------------------------------------------
@@ -355,35 +302,62 @@ def main():
             logger.info("Main window displayed successfully.")
 
         # ---------------------------------------------------------------------
-        # Post-Launch Processing
+        # Post-Launch Processing & Single-Instance IPC Bridge
         # ---------------------------------------------------------------------
-        if command_line_zips or command_line_appid:
+        def add_manifest_to_queue(path):
+            """Run on the Qt main thread; queues a downloaded manifest ZIP."""
+            logger.info(f"Adding to queue: {os.path.basename(path)}")
+            main_win.job_queue.add_job(path)
 
-            def add_manifest_to_queue(path):
-                """Run on the Qt main thread; queues a downloaded manifest ZIP."""
-                logger.info(f"Adding to queue: {os.path.basename(path)}")
-                main_win.job_queue.add_job(path)
+        def threaded_manifest_download(appid):
+            """Background thread to handle network I/O."""
+            try:
+                branch = get_selected_branch(appid)
+                logger.info(
+                    f"Downloading manifest for AppID {appid} on branch '{branch}' (Background Thread)"
+                )
+                zip_file, error = download_manifest(appid, branch=branch)
+                if error:
+                    logger.error(f"Failed to download manifest: {error}")
+                    return
 
-            def threaded_manifest_download(appid):
-                """Background thread to handle network I/O."""
-                try:
-                    branch = get_selected_branch(appid)
-                    logger.info(
-                        f"Downloading manifest for AppID {appid} on branch '{branch}' (Background Thread)"
+                # Hand the ZIP to the Qt main thread through the app's bridge.
+                post_to_main_thread(add_manifest_to_queue, zip_file)
+            except Exception as ex:
+                logger.error(f"Threaded download failed: {ex}")
+
+        if not headless_mode:
+            from utils.single_instance import SingleInstanceIPC
+
+            def _handle_ipc_command(payload: dict):
+                p_appid = payload.get("appid")
+                p_zips = payload.get("zips", [])
+                if p_appid:
+                    logger.info(f"[IPC] Received AppID {p_appid} from secondary launch; queueing download...")
+                    t = threading.Thread(
+                        target=threaded_manifest_download,
+                        args=(p_appid,),
+                        daemon=True,
                     )
-                    zip_file, error = download_manifest(appid, branch=branch)
-                    if error:
-                        logger.error(f"Failed to download manifest: {error}")
-                        return
+                    t.start()
+                if p_zips:
+                    logger.info(f"[IPC] Received {len(p_zips)} ZIP file(s) from secondary launch; adding to queue...")
+                    for zf in p_zips:
+                        post_to_main_thread(add_manifest_to_queue, zf)
 
-                    # Hand the ZIP to the Qt main thread through the app's bridge.
-                    # QMetaObject.invokeMethod only resolves Qt slots, so it could
-                    # not reach a plain Python method (it raised and the ZIP was
-                    # silently dropped); post_to_main_thread is the supported path.
-                    post_to_main_thread(add_manifest_to_queue, zip_file)
-                except Exception as ex:
-                    logger.error(f"Threaded download failed: {ex}")
+                # Bring window to front
+                main_win.setWindowState(
+                    main_win.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive
+                )
+                main_win.show()
+                main_win.raise_()
+                main_win.activateWindow()
 
+            ipc_server = SingleInstanceIPC(_handle_ipc_command, parent=app)
+            ipc_server.start_server()
+            app.aboutToQuit.connect(ipc_server.close)
+
+        if command_line_zips or command_line_appid:
             def process_command_line_args():
                 """Dispatcher for command line args."""
                 if command_line_appid:

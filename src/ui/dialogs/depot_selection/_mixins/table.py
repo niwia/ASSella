@@ -94,12 +94,14 @@ class DepotTableMixin:
 
         if not d_data.get("osarch"):
             try:
-                from managers.db_manager import DatabaseManager
-                e_map = DatabaseManager().get_depot_enrichments(str(self.app_id))
+                e_map = getattr(self, "_enrichment_cache", None)
+                if e_map is None:
+                    from managers.db_manager import DatabaseManager
+                    e_map = DatabaseManager().get_depot_enrichments(str(self.app_id))
                 if str(d_id) in e_map and e_map[str(d_id)].get("osarch"):
                     d_data["osarch"] = e_map[str(d_id)]["osarch"]
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[table] _build_config_text: ignored %s", _silent_err, exc_info=False)
 
         from utils.depot_tag_helpers import format_depot_row_label, get_os_icon
         os_icon = get_os_icon(d_data.get("oslist"))
@@ -114,6 +116,53 @@ class DepotTableMixin:
         return cfg_text
 
     def _populate_table(self):
+        self.table_widget.setUpdatesEnabled(False)
+        try:
+            self._do_populate_table()
+        finally:
+            self.table_widget.setUpdatesEnabled(True)
+
+    def _schedule_release_state_check(self, catalog_ids, enrichments) -> None:
+        """Verify never-checked DLC release states once per dialog, then repopulate.
+
+        Older caches defaulted DLCs Steam does not publish to "released"; this
+        asks PICS (and the Store, capped) off the UI thread.
+        """
+        if getattr(self, "_release_check_started", False):
+            return
+        unverified = [
+            d for d in catalog_ids
+            if d.isdigit() and d != str(self.app_id) and not (enrichments.get(d) or {}).get("release_src")
+        ]
+        if not unverified:
+            return
+        self._release_check_started = True
+        names = {str(k): str(v) for k, v in (getattr(self, "dlc_catalog", {}) or {}).items()}
+        app_id = str(self.app_id)
+
+        def _worker():
+            try:
+                from core.steam_api import resolve_dlc_release_states
+                from managers.db_manager import DatabaseManager
+                from utils.main_thread import post_to_main_thread
+                states = resolve_dlc_release_states(unverified)
+                if not states:
+                    return
+                DatabaseManager().update_release_states(app_id, states, names)
+                if any(st in ("prerelease", "unpublished") for st, _src in states.values()):
+                    def _repopulate():
+                        try:
+                            self._populate_table()
+                        except RuntimeError as _silent_err:
+                            logger.debug("[table] _schedule_release_state_check: ignored %s", _silent_err, exc_info=False)
+                    post_to_main_thread(_repopulate)
+            except Exception as e:
+                logger.debug(f"[DepotSelection] Release state verification failed: {e}")
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _do_populate_table(self):
         self.table_widget.setSortingEnabled(False)
         self.table_widget.clearContents()
 
@@ -243,7 +292,7 @@ class DepotTableMixin:
                     else:
                         pre_selected_set = set(highest_ed["depot_ids"])
                     if hasattr(self, "edition_button"):
-                        short = highest_ed.get("short_name", "Complete")
+                        short = highest_ed.get("short_name", "Edition")
                         if len(self._available_platforms) > 1:
                             plat_prefix = "Linux: " if self._default_platform == "linux" else "Win: "
                             self.edition_button.setText(f"{plat_prefix}{short} ▾")
@@ -273,10 +322,31 @@ class DepotTableMixin:
 
         include_hidden = getattr(self, "_show_hidden_depots", False) and bool(hidden_depots)
 
-        # Collect depotless DLCs from dlc_catalog
+        # Collect depotless DLCs, unreleased DLCs, and missing key content depots from dlc_catalog
+        from managers.db_manager import DatabaseManager
+        from core.hubcap_key_index import get_index, STATE_AVAILABLE
+        key_index = get_index(allow_network=False)
+        db_mgr = DatabaseManager()
+        cached_enrichments = db_mgr.get_depot_enrichments(str(self.app_id)) or {}
+        cached_app_info = db_mgr.get_app_info(str(self.app_id)) or {}
+        app_depots = (cached_app_info.get("depots") or {}) if isinstance(cached_app_info, dict) else {}
+
+        from utils.release_gate import ReleaseGate, UNRELEASED_TAG, unreleased_tooltip
+        from core.hubcap_key_index import STATE_PENDING
+        # Gate 1 = Steam release state, gate 2 = Hubcap availability (see utils.release_gate)
+        gate = ReleaseGate(
+            str(self.app_id), enrichments=cached_enrichments, app_depots=app_depots,
+            db=db_mgr, key_index=key_index,
+        )
+
+        self._schedule_release_state_check(catalog_ids=[
+            str(k).strip() for k in (getattr(self, "dlc_catalog", {}) or {}).keys()
+        ], enrichments=cached_enrichments)
+
         depotless_dlcs = []
+        unreleased_dlcs = []
         catalog = getattr(self, "dlc_catalog", {}) or {}
-        active_and_missing_dids = {str(d[0]) for d in active_depots} | {str(d) for d in self.missing_hubcap_depots}
+        active_dids = {str(d[0]) for d in active_depots}
         active_dlc_apps = set()
         for _did, _ddata in active_depots:
             if isinstance(_ddata, dict):
@@ -284,14 +354,60 @@ class DepotTableMixin:
                 if cand and cand != str(self.app_id):
                     active_dlc_apps.add(cand)
 
+        missing_set = set(str(d) for d in self.missing_hubcap_depots)
+
         for dlc_id, dlc_name in catalog.items():
             dlc_id_str = str(dlc_id).strip()
             if not dlc_id_str.isdigit() or dlc_id_str == str(self.app_id):
                 continue
-            if dlc_id_str not in active_and_missing_dids and dlc_id_str not in active_dlc_apps:
+
+            # Gate 1: Unreleased DLC (prerelease). Listed, but locked; its content
+            # depots are shown as unreleased too (see the active / missing tiers).
+            if gate.is_unreleased(dlc_id_str, is_dlc_app=True):
+                unreleased_dlcs.append((dlc_id_str, str(dlc_name or f"DLC {dlc_id_str}")))
+                continue
+
+            # Check 2: Content DLC with depots on Steam
+            linked_content_depots = []
+            for did_cand, ddata in app_depots.items():
+                if not isinstance(ddata, dict):
+                    continue
+                did_cand_str = str(did_cand)
+                mapped_dlc = str(ddata.get("dlcappid") or "").strip()
+                if mapped_dlc == dlc_id_str or (did_cand_str == dlc_id_str and ddata.get("is_dlc")):
+                    raw_sz = ddata.get("size") or ddata.get("download")
+                    has_manifest = bool(ddata.get("manifest_id") or ddata.get("manifests"))
+                    is_real_content = (raw_sz and str(raw_sz).isdigit() and int(raw_sz) > 0) or has_manifest or (did_cand_str != dlc_id_str)
+                    if is_real_content:
+                        linked_content_depots.append((did_cand_str, ddata))
+
+            if linked_content_depots:
+                has_active = any(d[0] in active_dids for d in linked_content_depots)
+                if has_active:
+                    continue  # DLC content is covered in active_depots
+
+                # None of the content depots are active: track them in missing_hubcap_depots
+                for did_cand_str, ddata in linked_content_depots:
+                    if did_cand_str not in missing_set:
+                        self.missing_hubcap_depots.append(did_cand_str)
+                        missing_set.add(did_cand_str)
+                    if did_cand_str not in self.missing_depots_info:
+                        has_key = key_index.loaded and (key_index.state(did_cand_str) == STATE_AVAILABLE)
+                        self.missing_depots_info[did_cand_str] = {
+                            "name": ddata.get("name") or str(dlc_name or f"DLC {dlc_id_str}"),
+                            "size": ddata.get("size", 0),
+                            "hubcap_status": "missing_key" if not has_key else "missing_manifest",
+                            "dlcappid": dlc_id_str,
+                            "oslist": ddata.get("oslist"),
+                        }
+                # STRICT GUARD: Never downgrade content DLC to depotless DlcData!
+                continue
+
+            # Check 3: True Depotless DLC
+            if dlc_id_str not in active_dids and dlc_id_str not in active_dlc_apps and dlc_id_str not in missing_set:
                 depotless_dlcs.append((dlc_id_str, str(dlc_name or f"DLC {dlc_id_str}")))
 
-        total_rows = len(active_depots) + len(depotless_dlcs) + len(self.missing_hubcap_depots)
+        total_rows = len(active_depots) + len(depotless_dlcs) + len(unreleased_dlcs) + len(self.missing_hubcap_depots)
         if include_hidden:
             total_rows += 1 + len(hidden_depots)
         self.table_widget.setRowCount(total_rows)
@@ -332,14 +448,21 @@ class DepotTableMixin:
                 dlc_cand = ""
             is_base = is_base_game_main_depot(depot_id, config_text, str(self.app_id)) or (not is_dlc and not dlc_cand)
 
+            is_base_owned = getattr(self, "_is_base_owned", False)
             is_steam_owned = (
-                (is_dlc_mode and is_base)
+                ((is_dlc_mode or is_base_owned) and is_base)
                 or (dlc_cand and dlc_cand in steam_owned)
                 or (str(depot_id) in steam_owned)
             )
             is_injected = (
                 (dlc_cand and dlc_cand in injected_dlcs)
                 or (str(depot_id) in injected_dlcs)
+            )
+
+            is_depot_unreleased = (
+                str(depot_data.get("releasestate") or "").lower() == "prerelease"
+                or gate.is_unreleased(str(depot_id))
+                or bool(dlc_cand and gate.is_unreleased(dlc_cand, is_dlc_app=True))
             )
 
             id_val = int(depot_id) if str(depot_id).isdigit() else 0
@@ -350,7 +473,9 @@ class DepotTableMixin:
             id_item.setData(Qt.ItemDataRole.UserRole + 21, False)
             id_item.setData(Qt.ItemDataRole.UserRole + 22, [str(depot_id)])
 
-            if is_steam_owned:
+            if is_depot_unreleased:
+                status_key = "unreleased"
+            elif is_steam_owned:
                 status_key = "owned"
             elif is_injected:
                 status_key = "injected"
@@ -358,7 +483,12 @@ class DepotTableMixin:
                 status_key = "missing"
             id_item.setData(Qt.ItemDataRole.UserRole + 20, status_key)
 
-            if is_steam_owned:
+            if is_depot_unreleased:
+                id_item.setCheckState(Qt.CheckState.Unchecked)
+                id_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                id_item.setForeground(darker_grey)
+                id_item.setToolTip(unreleased_tooltip(str(depot_id)))
+            elif is_steam_owned:
                 id_item.setData(Qt.ItemDataRole.UserRole + 25, True)
                 id_item.setCheckState(Qt.CheckState.Checked)
                 id_item.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -374,11 +504,23 @@ class DepotTableMixin:
                 try:
                     from managers.db_manager import DatabaseManager
                     DatabaseManager().clear_missing_hubcap_depot(str(self.app_id), str(depot_id))
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[table] _do_populate_table: ignored %s", _silent_err, exc_info=False)
+
+            if is_depot_unreleased and not config_text.startswith("[Unreleased]"):
+                config_text = f"[Unreleased]  {config_text}"
+            elif is_steam_owned and not config_text.startswith("[Steam Owned]"):
+                config_text = f"[Steam Owned]  {config_text}"
 
             config_item = ConfigTableWidgetItem(config_text, tier=0)
-            if is_steam_owned:
+            if is_depot_unreleased:
+                config_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                config_item.setForeground(darker_grey)
+                u_cfg_font = config_item.font()
+                u_cfg_font.setItalic(True)
+                config_item.setFont(u_cfg_font)
+                config_item.setToolTip(unreleased_tooltip(str(depot_id)))
+            elif is_steam_owned:
                 config_item.setFlags(Qt.ItemFlag.NoItemFlags)
                 config_item.setForeground(darker_grey)
                 config_item.setToolTip("Owned legitimately on Steam")
@@ -392,7 +534,13 @@ class DepotTableMixin:
 
             # Col 2: Size
             size_item = NumericTableWidgetItem(size_str, int(depot_data.get("size") or 0), tier=0)
-            if is_steam_owned:
+            if is_depot_unreleased:
+                size_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                size_item.setForeground(darker_grey)
+                sz_f = size_item.font()
+                sz_f.setItalic(True)
+                size_item.setFont(sz_f)
+            elif is_steam_owned:
                 size_item.setFlags(Qt.ItemFlag.NoItemFlags)
                 size_item.setForeground(darker_grey)
             else:
@@ -464,6 +612,44 @@ class DepotTableMixin:
             self.table_widget.setItem(row_idx, 2, d_size_item)
             row_idx += 1
 
+        # 2b. Populate Unreleased DLCs (prerelease)
+        for dlc_app_id, dlc_title in unreleased_dlcs:
+            cfg_text = f"[Unreleased] [DLC]  {dlc_title}"
+            did_val = int(dlc_app_id) if dlc_app_id.isdigit() else 0
+            u_id_item = NumericTableWidgetItem(dlc_app_id, did_val, tier=1)
+            u_id_item.setData(Qt.ItemDataRole.UserRole, dlc_app_id)
+            u_id_item.setData(Qt.ItemDataRole.UserRole + 1, dlc_app_id)
+            u_id_item.setData(Qt.ItemDataRole.UserRole + 2, "unreleased")
+            u_id_item.setData(Qt.ItemDataRole.UserRole + 20, "unreleased")
+            u_id_item.setData(Qt.ItemDataRole.UserRole + 21, False)
+            u_id_item.setData(Qt.ItemDataRole.UserRole + 22, [dlc_app_id])
+            u_id_item.setCheckState(Qt.CheckState.Unchecked)
+            u_id_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            u_id_item.setForeground(darker_grey)
+            u_tip = unreleased_tooltip(dlc_app_id, is_dlc_app=True)
+            u_id_item.setToolTip(u_tip)
+
+            u_cfg_item = ConfigTableWidgetItem(cfg_text, tier=1)
+            u_cfg_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            u_cfg_item.setForeground(darker_grey)
+            u_cfg_font = u_cfg_item.font()
+            u_cfg_font.setItalic(True)
+            u_cfg_item.setFont(u_cfg_font)
+            u_cfg_item.setToolTip(u_tip)
+
+            u_sz_item = NumericTableWidgetItem("Unreleased", 0, tier=1)
+            u_sz_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            u_sz_item.setForeground(darker_grey)
+            u_sz_font = u_sz_item.font()
+            u_sz_font.setItalic(True)
+            u_sz_item.setFont(u_sz_font)
+            u_sz_item.setToolTip(u_tip)
+
+            self.table_widget.setItem(row_idx, 0, u_id_item)
+            self.table_widget.setItem(row_idx, 1, u_cfg_item)
+            self.table_widget.setItem(row_idx, 2, u_sz_item)
+            row_idx += 1
+
         # 3. Tier 1: Populate Missing Depots from Hubcap
         for did in self.missing_hubcap_depots:
             minfo = self.missing_depots_info.get(did, {})
@@ -471,12 +657,30 @@ class DepotTableMixin:
             mraw_size = depot_metadata.manifest_size(minfo, self.branch)
             msize_str = format_size(mraw_size) if mraw_size > 0 else "0 B"
             hubcap_status = minfo.get("hubcap_status")
-            if getattr(self, "_is_checking_missing_contents", False):
+            m_owner = str(minfo.get("dlcappid") or "").strip()
+            # Gate 1 first: unreleased content is never reported as a Hubcap problem.
+            m_unreleased = gate.is_unreleased(str(did)) or bool(
+                m_owner and m_owner != str(self.app_id) and gate.is_unreleased(m_owner, is_dlc_app=True)
+            )
+            # Gate 2: what Hubcap has for this depot.
+            h_state = None if m_unreleased else gate.hubcap_state(did)
+            if m_unreleased:
+                tag = UNRELEASED_TAG
+                tip = unreleased_tooltip(str(did))
+            elif getattr(self, "_is_checking_missing_contents", False):
                 tag = "[Checking]"
+                tip = f"Checking Hubcap for depot {did}..."
+            elif hubcap_status == "missing_key" and h_state == STATE_PENDING:
+                tag = "[Awaiting Key]"
+                tip = f"Depot {did} is released on Steam, but its AES key is still pending on Hubcap."
             elif hubcap_status == "missing_key":
                 tag = "[No Key]"
+                tip = f"Depot {did} has no AES decryption key on Hubcap. It cannot be downloaded or injected."
             else:
                 tag = "[Missing]"
+                tip = (
+                    f"Depot {did} has a key on Hubcap, but its manifest is not in the Hubcap bundle yet."
+                )
 
             base_mcfg = self._build_config_text(did, minfo)
             mconfig_text = f"{tag}  {base_mcfg}"
@@ -485,8 +689,9 @@ class DepotTableMixin:
             mid_item = NumericTableWidgetItem(str(did), mid_val, tier=1)
             mid_item.setData(Qt.ItemDataRole.UserRole, str(did))
             mid_item.setData(Qt.ItemDataRole.UserRole + 1, str(did))
-            mid_item.setData(Qt.ItemDataRole.UserRole + 2, "missing")
-            mid_item.setData(Qt.ItemDataRole.UserRole + 20, "missing")
+            m_role = "unreleased" if m_unreleased else "missing"
+            mid_item.setData(Qt.ItemDataRole.UserRole + 2, m_role)
+            mid_item.setData(Qt.ItemDataRole.UserRole + 20, m_role)
             mid_item.setCheckState(Qt.CheckState.Unchecked)
             mid_item.setFlags(Qt.ItemFlag.NoItemFlags)
             mid_item.setForeground(darker_grey)
@@ -502,10 +707,8 @@ class DepotTableMixin:
             cfg_font.setItalic(True)
             mconfig_item.setFont(cfg_font)
 
-            if hubcap_status == "missing_key":
-                tip = f"Depot {did} has a manifest but no AES decryption key available. It cannot be downloaded or injected."
-                mid_item.setToolTip(tip)
-                mconfig_item.setToolTip(tip)
+            mid_item.setToolTip(tip)
+            mconfig_item.setToolTip(tip)
 
             msize_item = NumericTableWidgetItem(msize_str, mraw_size, tier=1)
             msize_item.setFlags(Qt.ItemFlag.NoItemFlags)

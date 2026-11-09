@@ -18,7 +18,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple, Union
+from typing import Optional, Dict, Any, Tuple, Union, List
 
 import requests
 from utils.settings import get_settings
@@ -198,6 +198,9 @@ atexit.register(TorManager.stop_tor)
 _WIRECUTTER_SECRET = "DJLftA68CqIusHL1zjsD3?2m*0df#fR{%CTApj2<6)P<VOjHyTG%FVuPXrt-9als`Z#Om*"
 _WIRECUTTER_SALT = b"ASSella_Hubcap_Bypass_v261"
 
+_ASSELLA_TOKEN_SECRET = "ARr(B00000JXS3Y2NP~11{nYiDkl{Q1^@zGT~sd&VO3sQ"
+_ASSELLA_TOKEN_SALT = b"ASSella_Worker_Token_Salt_v261"
+
 
 def get_default_wirecutter_endpoint() -> str:
     """Returns the default embedded Wirecutter Cloudflare Worker endpoint."""
@@ -207,6 +210,106 @@ def get_default_wirecutter_endpoint() -> str:
         return bytes(b ^ _WIRECUTTER_SALT[i % len(_WIRECUTTER_SALT)] for i, b in enumerate(raw)).decode("utf-8")
     except Exception:
         return "https://rapid-thunder-fba1wirecutter.7ucking.workers.dev"
+
+
+def get_assella_proxy_token() -> str:
+    """Returns the internal ASSella authorization token for Wirecutter Worker."""
+    try:
+        from utils.settings import get_settings
+        custom_tok = get_settings().value("assella_proxy_token", "", type=str)
+        if custom_tok and custom_tok.strip():
+            return custom_tok.strip()
+    except Exception as e:
+        logger.debug(f"[ISPBypass] Could not read custom proxy token from settings: {e}")
+    try:
+        import base64
+        raw = base64.b85decode(_ASSELLA_TOKEN_SECRET.encode("ascii"))
+        return bytes(b ^ _ASSELLA_TOKEN_SALT[i % len(_ASSELLA_TOKEN_SALT)] for i, b in enumerate(raw)).decode("utf-8")
+    except Exception:
+        return "assella_k9_fba1wirecutter_token_2026"
+
+
+_hubcap_request_timestamps: List[float] = []
+_hubcap_rate_lock = threading.Lock()
+_hubcap_backoff_until: float = 0.0
+
+
+class HubcapRateLimitError(requests.exceptions.HTTPError):
+    """Raised when Hubcap or Wirecutter returns 429 Too Many Requests."""
+    def __init__(self, response: requests.Response, scope: str = "unknown", retry_after: float = 3.0):
+        super().__init__(f"Hubcap rate limit exceeded ({scope} scope). Retry after {retry_after}s.", response=response)
+        self.scope = scope
+        self.retry_after = retry_after
+
+
+def _process_429_response(resp: requests.Response) -> Tuple[float, str]:
+    """Extract Retry-After and scope from 429 response and register global backoff."""
+    global _hubcap_backoff_until
+    retry_after = 3.0
+    scope = "unknown"
+
+    # 1. Check Retry-After header
+    hdr_retry = resp.headers.get("Retry-After")
+    if hdr_retry:
+        try:
+            retry_after = max(1.0, float(hdr_retry))
+        except (ValueError, TypeError) as e:
+            logger.debug(f"[ISPBypass] Failed to parse Retry-After header '{hdr_retry}': {e}")
+
+    # 2. Check JSON payload
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            scope = body.get("scope", scope)
+            if "retry_after" in body:
+                try:
+                    retry_after = max(retry_after, float(body["retry_after"]))
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"[ISPBypass] Failed to parse retry_after payload: {e}")
+    except Exception as e:
+        logger.debug(f"[ISPBypass] Failed to parse 429 response body: {e}")
+
+    with _hubcap_rate_lock:
+        _hubcap_backoff_until = max(_hubcap_backoff_until, time.time() + retry_after)
+
+    logger.warning(
+        f"[ISPBypass] Hubcap 429 Too Many Requests (scope: {scope}). "
+        f"Backing off for {retry_after:.1f}s. Halting multi-tier fallbacks."
+    )
+    return retry_after, scope
+
+
+def _check_and_raise_for_status(resp: requests.Response) -> None:
+    """Check status code, handle 429 backoff specifically, or raise HTTPError."""
+    if resp.status_code == 429:
+        retry_after, scope = _process_429_response(resp)
+        raise HubcapRateLimitError(resp, scope=scope, retry_after=retry_after)
+    resp.raise_for_status()
+
+
+def _enforce_hubcap_rate_limit(max_requests: int = 3, per_seconds: float = 3.05) -> None:
+    """Ensure outgoing requests to Hubcap never exceed 3 requests per 3 seconds and respect 429 backoff."""
+    with _hubcap_rate_lock:
+        now = time.time()
+        global _hubcap_backoff_until
+        if _hubcap_backoff_until > now:
+            sleep_needed = _hubcap_backoff_until - now
+            logger.warning(f"[ISPBypass] Hubcap 429 backoff active. Waiting {sleep_needed:.2f}s...")
+            time.sleep(sleep_needed)
+            now = time.time()
+
+        while _hubcap_request_timestamps and _hubcap_request_timestamps[0] <= now - per_seconds:
+            _hubcap_request_timestamps.pop(0)
+
+        if len(_hubcap_request_timestamps) >= max_requests:
+            sleep_needed = per_seconds - (now - _hubcap_request_timestamps[0])
+            if sleep_needed > 0:
+                time.sleep(sleep_needed)
+            now = time.time()
+            while _hubcap_request_timestamps and _hubcap_request_timestamps[0] <= now - per_seconds:
+                _hubcap_request_timestamps.pop(0)
+
+        _hubcap_request_timestamps.append(time.time())
 
 
 def get_wirecutter_endpoint() -> str:
@@ -324,12 +427,21 @@ def is_html_or_blocked_payload(resp: Optional[requests.Response]) -> bool:
 # Gateway Health Check API (for UI Buttons)
 # --------------------------
 
+def _health_test_headers() -> Dict[str, str]:
+    """Return standard headers for health probes, ensuring X-Assella-Token is attached."""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    tok = get_assella_proxy_token()
+    if tok:
+        headers["X-Assella-Token"] = tok
+    return headers
+
+
 def test_gateway_direct() -> Tuple[bool, str, int]:
     """Tests Direct HTTPS gateway. Returns (success, display_status, latency_ms)."""
     t0 = time.time()
     try:
         url = "https://hubcapmanifest.com/api/v1/health"
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+        resp = requests.get(url, headers=_health_test_headers(), timeout=6)
         resp.raise_for_status()
         if is_html_or_blocked_payload(resp):
             return False, "ERR: Blocked", int((time.time() - t0) * 1000)
@@ -356,7 +468,7 @@ def test_gateway_doh() -> Tuple[bool, str, int]:
         socket.getaddrinfo = doh_getaddrinfo
         try:
             url = "https://hubcapmanifest.com/api/v1/health"
-            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+            resp = requests.get(url, headers=_health_test_headers(), timeout=6)
             resp.raise_for_status()
             latency = int((time.time() - t0) * 1000)
             return True, f"OK ({latency}ms)", latency
@@ -376,7 +488,7 @@ def test_gateway_tor() -> Tuple[bool, str, int]:
     try:
         proxies = TorManager.get_tor_proxies()
         url = "https://hubcapmanifest.com/api/v1/health"
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=15)
+        resp = requests.get(url, headers=_health_test_headers(), proxies=proxies, timeout=15)
         resp.raise_for_status()
         latency = int((time.time() - t0) * 1000)
         return True, f"OK ({latency}ms)", latency
@@ -390,9 +502,11 @@ def test_gateway_wirecutter(custom_url: Optional[str] = None) -> Tuple[bool, str
     t0 = time.time()
     try:
         worker_base = (custom_url.strip().rstrip("/") if custom_url and custom_url.strip() else get_wirecutter_endpoint())
+        wc_test_headers = _health_test_headers()
+
         if worker_base.startswith("socks5://") or worker_base.startswith("socks4://"):
             proxies = {"http": worker_base, "https": worker_base}
-            resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=8)
+            resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers=wc_test_headers, proxies=proxies, timeout=8)
             resp.raise_for_status()
             latency = int((time.time() - t0) * 1000)
             return True, f"OK ({latency}ms)", latency
@@ -401,17 +515,18 @@ def test_gateway_wirecutter(custom_url: Optional[str] = None) -> Tuple[bool, str
             worker_base = "https://" + worker_base
 
         health_url = f"{worker_base}/health"
+
         try:
-            resp = requests.get(health_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+            resp = requests.get(health_url, headers=wc_test_headers, timeout=8)
             resp.raise_for_status()
         except requests.exceptions.HTTPError:
             # Fallback to root endpoint if /health isn't mapped
-            resp = requests.get(worker_base, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+            resp = requests.get(worker_base, headers=wc_test_headers, timeout=8)
             resp.raise_for_status()
         except requests.exceptions.RequestException:
             # Check if user specified a forward HTTP proxy (e.g. http://127.0.0.1:7890)
             proxies = {"http": worker_base, "https": worker_base}
-            resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=8)
+            resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers=wc_test_headers, proxies=proxies, timeout=8)
             resp.raise_for_status()
 
         latency = int((time.time() - t0) * 1000)
@@ -429,7 +544,7 @@ def test_gateway_proxy(proxy_url: Optional[str] = None) -> Tuple[bool, str, int]
     t0 = time.time()
     try:
         proxies = {"http": p, "https": p}
-        resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers={"User-Agent": "Mozilla/5.0"}, proxies=proxies, timeout=8)
+        resp = requests.get("https://hubcapmanifest.com/api/v1/health", headers=_health_test_headers(), proxies=proxies, timeout=8)
         resp.raise_for_status()
         latency = int((time.time() - t0) * 1000)
         return True, f"OK ({latency}ms)", latency
@@ -505,6 +620,20 @@ def execute_hubcap_request(
     """
     global connection_status, _direct_connection_failed, _last_direct_check_time
 
+    # 1. Enforce GET/HEAD only on Hubcap routes per worker policy
+    method_upper = method.upper()
+    if method_upper not in ("GET", "HEAD"):
+        logger.warning(f"[ISPBypass] Non-GET/HEAD method '{method}' requested on Hubcap route: {url}")
+
+    # 2. Attach X-Assella-Token to every Hubcap request that can go through the worker
+    headers = dict(headers or {})
+    tok = get_assella_proxy_token()
+    if tok and "X-Assella-Token" not in headers:
+        headers["X-Assella-Token"] = tok
+
+    # 3. Enforce Hubcap 3 requests per 3 seconds rate limit ceiling across all execution threads
+    _enforce_hubcap_rate_limit(max_requests=3, per_seconds=3.05)
+
     settings = get_settings()
     mode = "auto"
     if settings:
@@ -513,10 +642,10 @@ def execute_hubcap_request(
     # --- Mode: Explicit Single Gateway Selections ---
     if mode == "direct" or mode == "disabled":
         resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
-        resp.raise_for_status()
+        connection_status = "Direct"
+        _check_and_raise_for_status(resp)
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Direct connection returned HTML/blocked payload (ISP block detected).")
-        connection_status = "Direct"
         return resp
 
     if mode == "doh":
@@ -532,10 +661,10 @@ def execute_hubcap_request(
         try:
             resp = session.request(method, url, headers=headers, params=params,
                                    timeout=timeout, stream=stream, verify=False)
-            resp.raise_for_status()
+            connection_status = "DoH"
+            _check_and_raise_for_status(resp)
             if not stream and is_html_or_blocked_payload(resp):
                 raise requests.exceptions.ConnectionError("DoH request returned empty or HTML payload.")
-            connection_status = "DoH"
             return resp
         finally:
             socket.getaddrinfo = orig_getaddrinfo
@@ -546,20 +675,20 @@ def execute_hubcap_request(
         tor_proxies = TorManager.get_tor_proxies()
         resp = session.request(method, url, headers=headers, params=params,
                                proxies=tor_proxies, timeout=timeout + 5, stream=stream, verify=False)
-        resp.raise_for_status()
+        connection_status = "Tor"
+        _check_and_raise_for_status(resp)
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Tor request returned empty or HTML payload.")
-        connection_status = "Tor"
         return resp
 
     if mode == "wirecutter":
         worker_url = rewrite_url_for_wirecutter(url)
         resp = session.request(method, worker_url, headers=headers, params=params,
                                timeout=timeout + 3, stream=stream, verify=False)
-        resp.raise_for_status()
+        connection_status = "Wire"
+        _check_and_raise_for_status(resp)
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Wirecutter request returned empty or HTML payload.")
-        connection_status = "Wire"
         return resp
 
     if mode in ("proxy", "custom_proxy"):
@@ -568,10 +697,10 @@ def execute_hubcap_request(
             raise requests.exceptions.ConnectionError("Custom proxy URL is not configured.")
         proxies = {"http": custom_p, "https": custom_p}
         resp = session.request(method, url, headers=headers, params=params, proxies=proxies, timeout=timeout + 5, stream=stream)
-        resp.raise_for_status()
+        connection_status = "Proxy"
+        _check_and_raise_for_status(resp)
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Custom proxy request returned empty or HTML payload.")
-        connection_status = "Proxy"
         return resp
 
     # --- Mode: 'auto' (Smart 4-Tier Fallback Pipeline) ---
@@ -585,31 +714,25 @@ def execute_hubcap_request(
     if use_direct:
         try:
             logger.debug(f"[ISPBypass] Trying direct request to {url}")
-            # The direct tier is a probe: its only job is to find out whether
-            # the plain route works. When it does not, the DoH tier right
-            # behind it resolves the same host and succeeds, so waiting out a
-            # full timeout here only delays the answer. The fallback tiers keep
-            # the caller's full budget.
             probe_timeout = min(timeout, _DIRECT_PROBE_TIMEOUT)
             resp = session.request(method, url, headers=headers, params=params, timeout=probe_timeout, stream=stream)
-            resp.raise_for_status()
+            connection_status = "Direct"
+            _direct_connection_failed = False
+            _check_and_raise_for_status(resp)
 
             if not stream and is_html_or_blocked_payload(resp):
                 raise requests.exceptions.ConnectionError("Direct connection returned empty or HTML payload (ISP block detected).")
 
-            connection_status = "Direct"
-            _direct_connection_failed = False
             return resp
+        except HubcapRateLimitError:
+            # 429 rate limit applies to API key / IP — do not burn remaining fallback tiers
+            raise
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.SSLError) as e:
             _direct_connection_failed = True
             _last_direct_check_time = now
             logger.warning(f"[ISPBypass] Direct request to {url} failed: {e}. Initiating automatic DoH fallback...")
 
-    # Tiers 2-4 are a *deliberate* user choice to route around a broken or
-    # hostile network (DNS poisoning, blocked CDN, TLS-stripping middlebox).
-    # They opt out of certificate verification explicitly so that turning
-    # verification ON for the direct tier cannot strand those users: a direct
-    # connection that fails on certificates simply falls through to these.
+    # Tiers 2-4: bypass TLS verification for circumvention proxies
     bypass_kwargs = {"verify": False}
 
     # 2. Tier 2: DoH (DNS-over-HTTPS) resolution
@@ -632,16 +755,18 @@ def execute_hubcap_request(
                     doh_headers["User-Agent"] = f"Mozilla/5.0 (X11; Linux x86_64; ASSella/{app_version})"
                 except Exception:
                     doh_headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; ASSella/2.6.2)"
-            
+
             resp = session.request(method, url, headers=doh_headers, params=params, timeout=timeout, stream=stream, **bypass_kwargs)
-            resp.raise_for_status()
+            connection_status = "DoH"
+            _check_and_raise_for_status(resp)
 
             if not stream and is_html_or_blocked_payload(resp):
                 raise requests.exceptions.ConnectionError("DoH request returned empty or HTML payload.")
 
             logger.info(f"[ISPBypass] DoH request to {url} SUCCESSFUL!")
-            connection_status = "DoH"
             return resp
+        except HubcapRateLimitError:
+            raise
         except Exception as doh_err:
             logger.warning(f"[ISPBypass] DoH request failed: {doh_err}. Initiating Tor fallback...")
         finally:
@@ -656,10 +781,12 @@ def execute_hubcap_request(
                 method, url, headers=headers, params=params, proxies=tor_proxies,
                 timeout=timeout + 5, stream=stream, **bypass_kwargs
             )
-            resp.raise_for_status()
-            logger.info(f"[ISPBypass] Tor request to {url} SUCCESSFUL!")
             connection_status = "Tor"
+            _check_and_raise_for_status(resp)
+            logger.info(f"[ISPBypass] Tor request to {url} SUCCESSFUL!")
             return resp
+        except HubcapRateLimitError:
+            raise
         except Exception as tor_err:
             logger.error(f"[ISPBypass] Tor request failed: {tor_err}. Checking Wirecutter proxy...")
 
@@ -671,10 +798,12 @@ def execute_hubcap_request(
             method, worker_url, headers=headers, params=params,
             timeout=timeout + 3, stream=stream, **bypass_kwargs
         )
-        resp.raise_for_status()
-        logger.info(f"[ISPBypass] Wirecutter request to {worker_url} SUCCESSFUL!")
         connection_status = "Wire"
+        _check_and_raise_for_status(resp)
+        logger.info(f"[ISPBypass] Wirecutter request to {worker_url} SUCCESSFUL!")
         return resp
+    except HubcapRateLimitError:
+        raise
     except Exception as wc_err:
         logger.error(f"[ISPBypass] Wirecutter proxy request failed: {wc_err}")
 

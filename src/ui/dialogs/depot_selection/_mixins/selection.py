@@ -94,7 +94,7 @@ class SelectionMixin:
             if not id_item:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander"):
+            if role in ("missing", "expander", "unreleased"):
                 continue
             depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
             data = selection_policy.depot_data(self.depots, depot_id)
@@ -120,7 +120,7 @@ class SelectionMixin:
             if id_item is None:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander"):
+            if role in ("missing", "expander", "unreleased"):
                 continue
             if id_item.data(Qt.ItemDataRole.UserRole + 25):
                 # Owned legitimately on Steam: remains checked & disabled
@@ -143,7 +143,7 @@ class SelectionMixin:
             return
 
         role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-        if role == "missing":
+        if role in ("missing", "unreleased"):
             return
 
         is_owned = bool(id_item.data(Qt.ItemDataRole.UserRole + 25))
@@ -184,6 +184,9 @@ class SelectionMixin:
             if current_state == Qt.CheckState.Checked
             else Qt.CheckState.Checked
         )
+
+        if new_state == Qt.CheckState.Checked and not self._confirm_dlcdata_unlock(id_item):
+            return
 
         id_item.setCheckState(new_state)
 
@@ -239,7 +242,7 @@ class SelectionMixin:
             if id_item is None:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander"):
+            if role in ("missing", "expander", "unreleased"):
                 continue
             if id_item.data(Qt.ItemDataRole.UserRole + 25):
                 continue
@@ -247,12 +250,43 @@ class SelectionMixin:
                 continue
             yield i, id_item
 
+    def _confirm_dlcdata_unlock(self, id_item) -> bool:
+        """DLC-only (ASSella) mode: warn once before unlocking a DLC that has no depot."""
+        if not getattr(self, "_dlc_only_mode", False) or getattr(self, "_is_atom_mode", False):
+            return True
+        if not bool(id_item.data(Qt.ItemDataRole.UserRole + 21)):  # not a DlcData row
+            return True
+        if getattr(self, "_dlcdata_warning_ok", False):
+            return True
+        from ui.dialogs.themed_message_box import ThemedMessageBox
+
+        reply = ThemedMessageBox.warning(
+            self,
+            "Unlock DLC",
+            "SLSsteam auto unlocks all the DLCs for all the games you own. "
+            "You only need to enable this if the DLC is not showing up, there are more than 64 DLCs, "
+            "or if you are sure about this.",
+            ThemedMessageBox.StandardButton.Ok | ThemedMessageBox.StandardButton.Cancel,
+            ThemedMessageBox.StandardButton.Cancel,
+        )
+        if reply == ThemedMessageBox.StandardButton.Ok:
+            self._dlcdata_warning_ok = True
+            return True
+        return False
+
     def _toggle_all_checkboxes(self, check=True):
+        rows = list(self._selectable_rows())  # one walk for the confirm pass and the ticking
+        if check:
+            for _i, it in rows:
+                if it.data(Qt.ItemDataRole.UserRole + 21) and it.checkState() != Qt.CheckState.Checked:
+                    if not self._confirm_dlcdata_unlock(it):
+                        return
+                    break
         self._user_interacted = True
         self._has_saved_selection = True
         state = Qt.CheckState.Checked if check else Qt.CheckState.Unchecked
         self.table_widget.blockSignals(True)
-        for i, id_item in self._selectable_rows():
+        for i, id_item in rows:
             id_item.setCheckState(state)
         self.table_widget.blockSignals(False)
 
@@ -278,7 +312,6 @@ class SelectionMixin:
 
     def _show_edition_menu(self):
         """Displays drop-up/down menu of available editions grouped by OS if multiple exist."""
-        from PyQt6.QtWidgets import QMenu
         from utils.edition_helpers import (
             get_available_platforms,
             resolve_multi_platform_editions,
@@ -294,59 +327,32 @@ class SelectionMixin:
             )
         self._start_edition_prefetch()
 
-        menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #1e1e24;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 6px;
-                padding: 4px;
-                color: #ffffff;
-            }
-            QMenu::item {
-                padding: 6px 20px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background-color: rgba(255, 255, 255, 0.12);
-            }
-        """)
-
         groups = selection_policy.edition_menu(
             self._available_platforms,
             self._multi_platform_editions,
             self.get_selected_depots(),
         )
-        for group in groups:
-            sub_menu = menu.addMenu(group.label) if group.label else menu
-            if group.label:
-                sub_menu.setStyleSheet(menu.styleSheet())
-            for choice in group.choices:
-                action = sub_menu.addAction(choice.name)
-                action.setCheckable(True)
-                if choice.checked:
-                    action.setChecked(True)
-                action.triggered.connect(lambda checked, target_ed=choice.edition: self._apply_edition_selection(target_ed))
 
-        if not getattr(self, "_editions_store_ready", False):
-            loading = menu.addAction("Loading store editions…")
-            loading.setEnabled(False)
+        from ui.dialogs.depot_selection.edition_popup import EditionPopup
+        accent_color = getattr(self, "accent_color", "#6c5ce7")
+        popup = EditionPopup(
+            self,
+            groups=groups,
+            accent_color=accent_color,
+            on_selected=self._apply_edition_selection,
+        )
 
-        menu.adjustSize()
-        menu_height = menu.sizeHint().height()
-        pos = self.edition_button.mapToGlobal(QPoint(0, -menu_height - 2))
-        if pos.y() < 0:
-            pos = self.edition_button.mapToGlobal(QPoint(0, self.edition_button.height() + 2))
-        self._edition_menu = menu
-        self._edition_menu_open = True
-        try:
-            menu.exec(pos)
-        finally:
+        def _on_closed():
             self._edition_menu_open = False
             self._edition_menu = None
-        if getattr(self, "_reopen_edition_menu", False):
-            self._reopen_edition_menu = False
-            QTimer.singleShot(0, self._show_edition_menu)
+            if getattr(self, "_reopen_edition_menu", False):
+                self._reopen_edition_menu = False
+                QTimer.singleShot(0, self._show_edition_menu)
+
+        popup.destroyed.connect(_on_closed)
+        self._edition_menu = popup
+        self._edition_menu_open = True
+        popup.show_at(self.edition_button)
 
     def _start_edition_prefetch(self) -> None:
         """Ask the store for its edition tiers once, off the UI thread."""

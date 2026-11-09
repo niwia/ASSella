@@ -13,7 +13,7 @@ Features:
      fresh Steam library warning, binary detection, "Run Headcrab" terminal
      launcher, and automatic API: yes config toggle.
   4. at0-m Native Downloads: Toggle to enable at0-m native Steam client downloads,
-     immediate distro-aware plugin deployment (download.lua, spliced-tickets.lua),
+     immediate distro-aware plugin deployment (the Katamari family),
      and Plugins: yes in config.yaml.
   5. Preferences & Maintenance: Config fixer with live check and conditional Fix
      button (only shown when issues detected), LAN Cache toggle, default download
@@ -44,9 +44,9 @@ from PyQt6.QtWidgets import (
     QFrame,
     QWidget,
     QCheckBox,
-    QComboBox,
     QSizePolicy,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from ui.widgets.switch_toggle import SwitchToggle
 
@@ -84,6 +84,7 @@ class CanaryWelcomeDialog(QDialog):
     _sls_check_signal = pyqtSignal(bool, dict)
     _headcrab_done_signal = pyqtSignal()
     _config_check_signal = pyqtSignal(tuple)
+    _at0m_deploy_signal = pyqtSignal(bool, str)
 
     def __init__(self, parent: Optional[QWidget] = None, manual: bool = False):
         super().__init__(parent)
@@ -114,6 +115,7 @@ class CanaryWelcomeDialog(QDialog):
         self._sls_check_signal.connect(self._on_sls_check_result)
         self._headcrab_done_signal.connect(self._on_headcrab_finished)
         self._config_check_signal.connect(self._on_config_check_result)
+        self._at0m_deploy_signal.connect(self._on_at0m_deploy_done)
 
         self._init_ui()
 
@@ -240,24 +242,6 @@ class CanaryWelcomeDialog(QDialog):
             QLineEdit:focus {{
                 border-bottom: 1px solid {self.accent_color};
                 background-color: rgba(255, 255, 255, 0.07);
-            }}
-            QComboBox {{
-                background-color: rgba(255, 255, 255, 0.06);
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 6px;
-                padding: 4px 10px;
-                color: #FFFFFF;
-                font-size: 9pt;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 20px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #1a1c23;
-                color: #FFFFFF;
-                selection-background-color: {self.accent_color};
-                selection-color: #000000;
             }}
             QCheckBox {{
                 color: #FFFFFF;
@@ -426,8 +410,7 @@ class CanaryWelcomeDialog(QDialog):
         """)
         titles_layout.addWidget(self.awake_title_lbl)
 
-        _short_version = ".".join(app_version.split(".")[:2])
-        self.awake_sub_lbl = QLabel(f"Welcome to ASSella {_short_version}. Let's configure your setup.")
+        self.awake_sub_lbl = QLabel(f"Welcome to ASSella {app_version}. Let's configure your setup.")
         self.awake_sub_lbl.setStyleSheet("""
             color: rgba(255, 255, 255, 0.75);
             font-size: 9pt;
@@ -1044,8 +1027,8 @@ class CanaryWelcomeDialog(QDialog):
         c_layout.addWidget(self.lbl_at0m_feedback)
 
         lbl_desc = QLabel(
-            "When enabled, download.lua and spliced-tickets.lua plugins are deployed to your SLSsteam plugins "
-            "directory and Plugins: yes is set in config.yaml. You can also configure this later in Settings → at0-m."
+            "When enabled, essential required plugins are deployed to your SLSsteam plugins "
+            "directory and Plugins: yes is set in config.yaml. You can configure additional plugins later in Settings → at0-m / Plugins."
         )
         lbl_desc.setWordWrap(True)
         lbl_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; border: none; background: transparent;")
@@ -1107,33 +1090,127 @@ class CanaryWelcomeDialog(QDialog):
             "border-radius: 4px; padding: 2px 7px;"
         )
 
-    def _on_at0m_toggled(self, checked: bool) -> None:
-        self.settings.setValue("enable_at0m", checked)
-        self.settings.setValue("enable_vapor", checked)
+    # at0-m toggle: on = set Plugins: yes and deploy the plugin family (from
+    # R2, or the plugins packed with ASSella when R2 is unreachable); off =
+    # put the plugins folder and config.yaml back as they were before.
+
+    def _at0m_feedback(self, text: str, error: bool = False) -> None:
+        color = self.semantic.get("error", "#E57373") if error else self.semantic.get("success", "#81c784")
+        self.lbl_at0m_feedback.setStyleSheet(f"font-size: 9pt; color: {color}; border: none; background: transparent;")
+        self.lbl_at0m_feedback.setText(text)
+        self.lbl_at0m_feedback.show()
+
+    def _set_at0m_state(self, enabled: bool) -> None:
+        self.settings.setValue("enable_at0m", enabled)
+        self.settings.setValue("enable_vapor", enabled)
         self.settings.sync()
-
         if hasattr(self, "lbl_at0m_badge"):
-            self.lbl_at0m_badge.setText("ENABLED" if checked else "DISABLED")
-            self.lbl_at0m_badge.setStyleSheet(self._at0m_badge_style(checked))
+            self.lbl_at0m_badge.setText("ENABLED" if enabled else "DISABLED")
+            self.lbl_at0m_badge.setStyleSheet(self._at0m_badge_style(enabled))
+        if self.toggle_enable_at0m.isChecked() != enabled:
+            self.toggle_enable_at0m.blockSignals(True)
+            self.toggle_enable_at0m.setChecked(enabled)
+            self.toggle_enable_at0m.blockSignals(False)
 
-        if checked:
+    def _take_at0m_snapshot(self, cfg_path: Path) -> dict:
+        from utils.yaml_config_manager import get_sls_plugins_dirs
+
+        snap = {"config": (cfg_path, cfg_path.read_bytes()), "plugins": {}}
+        for d in get_sls_plugins_dirs():
+            files = {}
+            if d.is_dir():
+                for f in d.iterdir():
+                    if f.is_file() and (f.name.endswith(".lua") or f.name.endswith(".lua.bak")):
+                        files[f.name] = f.read_bytes()
+            snap["plugins"][d] = (d.is_dir(), files)
+        return snap
+
+    def _restore_at0m_snapshot(self) -> None:
+        snap = getattr(self, "_at0m_snapshot", None)
+        if not snap:
+            return
+        for d, (existed, files) in snap["plugins"].items():
+            if not d.is_dir():
+                continue
+            for f in list(d.iterdir()):
+                if f.is_file() and (f.name.endswith(".lua") or f.name.endswith(".lua.bak")) and f.name not in files:
+                    f.unlink()
+            for name, data in files.items():
+                target = d / name
+                if not target.is_file() or target.read_bytes() != data:
+                    target.write_bytes(data)
+            if not existed and not any(d.iterdir()):
+                d.rmdir()
+        cfg_path, data = snap["config"]
+        if cfg_path.is_file():
+            with open(cfg_path, "wb") as f:  # in place: SLSsteam watches this inode
+                f.write(data)
+        self._at0m_snapshot = None
+
+    def _on_at0m_toggled(self, checked: bool) -> None:
+        if not checked:
             try:
-                from core.steam_helpers import get_steam_env
-                from utils.yaml_config_manager import deploy_all_sls_plugins, update_yaml_boolean_value
-                env = get_steam_env()
-                if env.sls_config_path.exists():
-                    update_yaml_boolean_value(env.sls_config_path, "Plugins", True)
-                ok, msgs = deploy_all_sls_plugins()
-                if ok:
-                    self.lbl_at0m_feedback.setText("✓ Plugins injected & Plugins: yes enabled in config.yaml.")
-                else:
-                    self.lbl_at0m_feedback.setText(f"Plugins notice: {msgs}")
+                self._restore_at0m_snapshot()
+                self._at0m_feedback("at0-m disabled. Plugins and config.yaml were put back as they were.")
             except Exception as e:
-                self.lbl_at0m_feedback.setText(f"Deployment error: {e}")
-            self.lbl_at0m_feedback.show()
-        else:
-            self.lbl_at0m_feedback.setText("at0-m disabled.")
-            self.lbl_at0m_feedback.show()
+                logger.warning(f"[Onboarding] Could not revert at0-m setup: {e}")
+                self._at0m_feedback(f"at0-m disabled, but undoing the setup failed: {e}", error=True)
+            self._set_at0m_state(False)
+            return
+
+        from core.steam_helpers import get_steam_env
+
+        cfg_path = get_steam_env().sls_config_path
+        if not cfg_path.exists():
+            self._set_at0m_state(False)
+            self._at0m_feedback(
+                "SLSsteam isn't set up yet (no config.yaml), so at0-m can't be enabled. "
+                "Install SLSsteam first, then turn this on.",
+                error=True,
+            )
+            return
+
+        try:
+            self._at0m_snapshot = self._take_at0m_snapshot(cfg_path)
+        except Exception as e:
+            self._set_at0m_state(False)
+            self._at0m_feedback(f"Could not read the SLSsteam folders: {e}", error=True)
+            return
+
+        self._set_at0m_state(True)
+        self.toggle_enable_at0m.setEnabled(False)
+        self._at0m_feedback("Installing plugins...")
+
+        def _work():
+            try:
+                from utils.yaml_config_manager import deploy_all_sls_plugins, update_yaml_boolean_value
+
+                update_yaml_boolean_value(cfg_path, "Plugins", True)
+                ok, msgs = deploy_all_sls_plugins(essential_only=True)
+                problems = "" if ok else "\n".join(str(m) for m in msgs if "fail" in str(m).lower() or "could not" in str(m).lower())
+                self._at0m_deploy_signal.emit(ok, problems)
+            except Exception as e:
+                self._at0m_deploy_signal.emit(False, str(e))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    @pyqtSlot(bool, str)
+    def _on_at0m_deploy_done(self, ok: bool, problems: str) -> None:
+        self.toggle_enable_at0m.setEnabled(True)
+        if ok:
+            self._at0m_feedback("Essential plugins installed and Plugins: yes set in config.yaml.")
+            return
+        # Neither R2 nor the packed plugins worked: undo and say why.
+        try:
+            self._restore_at0m_snapshot()
+        except Exception as e:
+            logger.warning(f"[Onboarding] Could not revert after failed deploy: {e}")
+        self._set_at0m_state(False)
+        self._at0m_feedback(
+            "Could not install the plugins (the plugin server was unreachable and the copies packed with "
+            f"ASSella could not be used), so at0-m was left off.\n{problems}".rstrip(),
+            error=True,
+        )
 
     def _advance_to_preferences(self) -> None:
         self.stack.setCurrentIndex(4)
@@ -1191,7 +1268,7 @@ class CanaryWelcomeDialog(QDialog):
         c1.addLayout(cfg_btn_row)
 
         c1.addWidget(QLabel("Interface Font:"))
-        self.combo_font = QComboBox()
+        self.combo_font = ModernComboBox()
         self.combo_font.setFixedHeight(30)
         self.combo_font.addItem("Open Sans (Default)", "Open Sans")
         self.combo_font.addItem("Google Sans", "Google Sans")
@@ -1231,7 +1308,7 @@ class CanaryWelcomeDialog(QDialog):
         c2.addWidget(lbl_lan_desc)
 
         c2.addWidget(QLabel("Default Download Behavior:"))
-        self.combo_behavior = QComboBox()
+        self.combo_behavior = ModernComboBox()
         self.combo_behavior.setFixedHeight(30)
         self.combo_behavior.addItem("Ask every time (Default)", "ask")
         self.combo_behavior.addItem("Always Native Steam (at0-m)", "native")
@@ -1248,7 +1325,7 @@ class CanaryWelcomeDialog(QDialog):
         c2.addWidget(self.combo_behavior)
 
         c2.addWidget(QLabel("Default Download Location:"))
-        self.combo_location = QComboBox()
+        self.combo_location = ModernComboBox()
         self.combo_location.setFixedHeight(30)
         self.combo_location.addItem("Ask Every Time (Default)", "")
 
@@ -1345,7 +1422,11 @@ class CanaryWelcomeDialog(QDialog):
 
     def _save_and_finish(self) -> None:
         self.settings.setValue("use_lancache", self.chk_lan_cache.isChecked())
-        self.settings.setValue("default_download_directory", self.combo_location.currentData() or "")
+        from utils.library_choice import set_preferences
+
+        # "Ask Every Time" = no preferred library; picking one means use it without asking.
+        loc = self.combo_location.currentData() or ""
+        set_preferences(loc, ask=not loc, settings=self.settings)
 
         behavior = self.combo_behavior.currentData() or "ask"
         self.settings.setValue("at0m_default_download_action", behavior)

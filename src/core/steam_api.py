@@ -314,6 +314,7 @@ def fetch_steamcmd_info(app_id: str, include_header: bool = True) -> dict:
                             "name": app_name,
                             "type": app_data.get("common", {}).get("type"),
                             "parent": app_data.get("common", {}).get("parent"),
+                            "releasestate": app_data.get("common", {}).get("releasestate", "released"),
                             "hasdepotsindlc": has_depots_in_dlc,
                             "listofdlc": listofdlc,
                         }
@@ -372,6 +373,74 @@ def batched_fetch_steamcmd_info(
     return results
 
 
+class _StoreUnreachable(Exception):
+    """The Store could not be asked (offline, proxy, 5xx, rate limit): no verdict."""
+
+
+def _store_release_state(appid: str) -> Tuple[Optional[str], str]:
+    """(state, name) from the Store: "prerelease" if coming soon, "released" if out,
+    None if the Store answered but does not know the app.
+
+    Raises _StoreUnreachable when the Store could not be asked at all, so callers
+    never mistake "offline" for "not on Steam".
+    """
+    try:
+        resp = requests.get(
+            f"https://store.steampowered.com/api/appdetails?appids={appid}",
+            timeout=5,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+    except Exception as e:
+        raise _StoreUnreachable(str(e)) from e
+    if resp.status_code != 200:
+        raise _StoreUnreachable(f"HTTP {resp.status_code}")
+    try:
+        node = (resp.json() or {}).get(str(appid)) or {}
+    except ValueError as e:
+        raise _StoreUnreachable("bad JSON") from e
+    if not node.get("success"):
+        return None, ""
+    data = node.get("data") or {}
+    coming = (data.get("release_date") or {}).get("coming_soon")
+    state = "prerelease" if coming else "released"
+    return state, str(data.get("name") or "")
+
+
+def resolve_dlc_release_states(dlc_ids, store_limit: int = 25) -> Dict[str, Tuple[str, str]]:
+    """Verify release state for DLC app ids: ``{id: (state, source)}``.
+
+    PICS (via steamcmd info) first; for apps PICS cannot return, the Store's
+    coming_soon flag; otherwise "unpublished" (listed by the game but not on
+    Steam). Blocking network calls: run off the UI thread.
+    """
+    ids = [str(d) for d in dlc_ids if str(d).isdigit()]
+    if not ids:
+        return {}
+    results = batched_fetch_steamcmd_info(ids, include_header=False) or {}
+    # PICS only counts as having answered if it returned at least one app; an
+    # empty result is "unreachable", not "none of these exist".
+    pics_answered = any((v or {}).get("name") for v in results.values())
+    out: Dict[str, Tuple[str, str]] = {}
+    store_calls = 0
+    for did in ids:
+        info = results.get(did) or {}
+        if info.get("name"):
+            out[did] = (str(info.get("releasestate") or "released").lower(), "pics")
+            continue
+        if store_calls >= store_limit:
+            continue  # left unverified; checked again next time (keeps the Store API happy)
+        store_calls += 1
+        try:
+            state, _ = _store_release_state(did)
+        except _StoreUnreachable:
+            if pics_answered:
+                out[did] = ("unpublished", "none")  # PICS is up and does not have it
+            # else: nothing reachable -> no verdict, stays unverified
+            continue
+        out[did] = (state or "unpublished", "store" if state else "none")
+    return out
+
+
 def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
     """
     Enriches and expands DLC depots for the given app_info:
@@ -415,23 +484,28 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
 
     dlc_results = batched_fetch_steamcmd_info(list(dlc_ids), max_workers=max_workers, include_header=False)
 
-    # For any DLC missing from SteamCMD results or lacking a name, fallback to Steam Store API
-    missing_dlc_ids = [did for did in dlc_ids if not dlc_results.get(did, {}).get("name")]
-    if missing_dlc_ids:
-        for m_did in missing_dlc_ids:
-            try:
-                s_resp = requests.get(
-                    f"https://store.steampowered.com/api/appdetails?appids={m_did}",
-                    timeout=5,
-                    headers={"User-Agent": "Mozilla/5.0"}
-                )
-                if s_resp.status_code == 200:
-                    s_data = s_resp.json()
-                    s_name = s_data.get(str(m_did), {}).get("data", {}).get("name")
-                    if s_name:
-                        dlc_results.setdefault(m_did, {})["name"] = s_name
-            except Exception:
-                pass
+    # PICS is authoritative for release state. Steam lists upcoming DLC in
+    # listofdlc before publishing it, and PICS returns nothing for those apps;
+    # they must never default to "released".
+    pics_ok = {did for did in dlc_ids if (dlc_results.get(did) or {}).get("name")}
+    for did in dlc_ids:
+        entry = dlc_results.setdefault(did, {})
+        if did in pics_ok:
+            entry["releasestate"] = str(entry.get("releasestate") or "released").lower()
+            entry["release_src"] = "pics"
+            continue
+        try:
+            store_state, store_name = _store_release_state(did)
+        except _StoreUnreachable:
+            if pics_ok:
+                entry["releasestate"] = "unpublished"   # PICS answered, just not for this app
+                entry["release_src"] = "none"
+            # else: offline -> leave unverified (re-checked later), never "unpublished"
+            continue
+        if store_name and not entry.get("name"):
+            entry["name"] = store_name
+        entry["releasestate"] = store_state or "unpublished"
+        entry["release_src"] = "store" if store_state else "none"
 
     added_count = 0
     enriched_count = 0
@@ -440,6 +514,8 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
         if not isinstance(dlc_data, dict):
             continue
         dlc_name = dlc_data.get("name")
+        dlc_rel = dlc_data.get("releasestate", "released")
+        dlc_src = dlc_data.get("release_src")
 
         # 1. Enrich existing base depots referencing this DLC
         for d_id, d_info in base_depots.items():
@@ -448,6 +524,8 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
             if str(d_info.get("dlcappid") or "") == str(dlc_id_str):
                 d_info["is_dlc"] = True
                 d_info["dlcappid"] = str(dlc_id_str)
+                d_info["releasestate"] = dlc_rel
+                d_info["release_src"] = dlc_src
                 curr_name = d_info.get("name")
                 if not curr_name or re.match(r"^Depot \d+$", str(curr_name), re.IGNORECASE):
                     if dlc_name:
@@ -470,6 +548,8 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
                     merged_info = dict(d_info)
                     merged_info["is_dlc"] = True
                     merged_info["dlcappid"] = dlc_id_str
+                    merged_info["releasestate"] = dlc_rel
+                    merged_info["release_src"] = dlc_src
                     if not merged_info.get("name") and dlc_name:
                         merged_info["name"] = f"[DLC {dlc_id_str}] {dlc_name}"
 
@@ -519,7 +599,26 @@ def expand_dlc_depots(app_info: dict, max_workers: int = 50) -> dict:
                         "size_bytes": int(raw_sz) if raw_sz and str(raw_sz).isdigit() else 0,
                         "is_dlc": bool(dinfo.get("is_dlc")),
                         "dlcappid": dinfo.get("dlcappid"),
+                        "releasestate": dinfo.get("releasestate", "released"),
+                        "release_src": dinfo.get("release_src"),
                     }
+
+            # Also persist child DLC metadata for depotless or unreleased DLCs
+            for dlc_id_str, dlc_data in dlc_results.items():
+                if str(dlc_id_str) not in enrichments_to_save and isinstance(dlc_data, dict):
+                    enrichments_to_save[str(dlc_id_str)] = {
+                        "depot_id": str(dlc_id_str),
+                        "name": dlc_data.get("name") or f"DLC {dlc_id_str}",
+                        "oslist": dlc_data.get("oslist"),
+                        "osarch": dlc_data.get("osarch"),
+                        "size_str": "0 B",
+                        "size_bytes": 0,
+                        "is_dlc": True,
+                        "dlcappid": str(dlc_id_str),
+                        "releasestate": dlc_data.get("releasestate", "released"),
+                        "release_src": dlc_data.get("release_src"),
+                    }
+
             if enrichments_to_save:
                 db.save_depot_enrichments(app_id_val, enrichments_to_save)
     except Exception as e:
@@ -831,6 +930,7 @@ def _fetch_with_steam_client(app_id, access_token=None):
             "branches": open_branches,
             "type": common_data.get("type"),
             "parent": common_data.get("parent"),
+            "releasestate": common_data.get("releasestate", "released"),
             "baselanguages": baselanguages,
             "hasdepotsindlc": has_depots_in_dlc,
             "listofdlc": listofdlc,

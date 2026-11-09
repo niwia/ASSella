@@ -26,12 +26,47 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
 import requests
-from bs4 import BeautifulSoup
 
-try:
-    from curl_cffi import requests as cffi_requests
-except ImportError:
-    cffi_requests = None
+
+# curl_cffi and bs4 are heavy (about 0.1s warm, close to a second on a cold
+# start) and only needed when SteamDB is actually queried. The main window
+# imports this module while it is being built, so both load on first use.
+class _LazyModule:
+    """Imports a module on first use; falsy when it is not installed."""
+
+    def __init__(self, name: str):
+        self._name = name
+        self._mod = None
+        self._tried = False
+
+    def _load(self):
+        if not self._tried:
+            self._tried = True
+            try:
+                import importlib
+
+                self._mod = importlib.import_module(self._name)
+            except ImportError:
+                self._mod = None
+        return self._mod
+
+    def __bool__(self) -> bool:
+        return self._load() is not None
+
+    def __getattr__(self, attr):
+        mod = self._load()
+        if mod is None:
+            raise AttributeError(f"{self._name} is not installed")
+        return getattr(mod, attr)
+
+
+cffi_requests = _LazyModule("curl_cffi.requests")
+
+
+def BeautifulSoup(*args, **kwargs):  # noqa: N802 - keeps the bs4 name for callers
+    from bs4 import BeautifulSoup as _BeautifulSoup
+
+    return _BeautifulSoup(*args, **kwargs)
 
 from utils.settings import get_settings
 from utils.helpers import get_base_path
@@ -292,8 +327,8 @@ class ByparrManager:
                     import ctypes
                     libc = ctypes.CDLL("libc.so.6")
                     libc.prctl(1, signal.SIGTERM)  # 1 = PR_SET_PDEATHSIG
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[steamdb_scraper] ensure_running: ignored %s", _silent_err, exc_info=False)
                 try:
                     os.setpriority(os.PRIO_PROCESS, 0, 10)
                 except OSError as e:
@@ -369,8 +404,8 @@ class ByparrManager:
         if byparr_dir and cls.is_running():
             try:
                 subprocess.run(["pkill", "-f", str(byparr_dir)], capture_output=True, timeout=2)
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[steamdb_scraper] stop: ignored %s", _silent_err, exc_info=False)
 
     @classmethod
     def build_headers(cls, auth_header: Optional[str] = None) -> Dict[str, str]:
@@ -477,6 +512,101 @@ class ByparrManager:
 # Register clean process termination on normal or unexpected Python exit
 atexit.register(ByparrManager.stop)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Request governor: every SteamDB request (fast path and Byparr) goes through
+# here so the app as a whole stays polite and never hammers SteamDB from one IP.
+# ─────────────────────────────────────────────────────────────────────────────
+import threading as _threading
+
+
+class SteamDBRateLimited(RuntimeError):
+    """Raised (or reported) while SteamDB asked us to back off."""
+
+
+class _SteamDBGovernor:
+    MIN_INTERVAL = 2.0          # seconds between SteamDB requests, app-wide
+    CACHE_TTL = 600             # identical URL within 10 min is served from memory
+    COOLDOWN_BASE = 300         # first rate-limit hit: 5 min
+    COOLDOWN_MAX = 3 * 3600     # cap: 3 h
+    STRIKE_RESET = 6 * 3600     # strikes decay after 6 h without a hit
+
+    _lock = _threading.Lock()
+    _last_request = 0.0
+    _cache: Dict[str, Tuple[float, str]] = {}
+
+    @classmethod
+    def _settings(cls):
+        try:
+            return get_settings()
+        except Exception as _silent_err:
+            logger.debug("[steamdb_scraper] _settings: ignored %s", _silent_err, exc_info=False)
+            return None
+
+    @classmethod
+    def cooldown_remaining(cls) -> float:
+        s = cls._settings()
+        until = float(s.value("steamdb/cooldown_until", 0, type=float) or 0) if s else 0.0
+        return max(0.0, until - time.time())
+
+    @classmethod
+    def note_rate_limited(cls, reason: str = "") -> float:
+        s = cls._settings()
+        now = time.time()
+        strikes = int(s.value("steamdb/strikes", 0, type=int) or 0) if s else 0
+        last_hit = float(s.value("steamdb/last_hit", 0, type=float) or 0) if s else 0.0
+        if now - last_hit > cls.STRIKE_RESET:
+            strikes = 0
+        delay = min(cls.COOLDOWN_BASE * (2 ** strikes), cls.COOLDOWN_MAX)
+        if s:
+            s.setValue("steamdb/cooldown_until", now + delay)
+            s.setValue("steamdb/strikes", strikes + 1)
+            s.setValue("steamdb/last_hit", now)
+        logger.warning(f"[SteamDB] Rate limited ({reason or 'HTTP 429'}); pausing SteamDB requests for {int(delay // 60)} min.")
+        return delay
+
+    @classmethod
+    def acquire(cls, url: str) -> None:
+        """Block until this request may go out; raise if SteamDB asked us to back off."""
+        remaining = cls.cooldown_remaining()
+        if remaining > 0:
+            raise SteamDBRateLimited(f"SteamDB rate limit: retry in {int(remaining // 60) + 1} min")
+        with cls._lock:
+            wait = cls.MIN_INTERVAL - (time.time() - cls._last_request)
+            if wait > 0:
+                time.sleep(wait)
+            cls._last_request = time.time()
+
+    @classmethod
+    def cached(cls, key: str) -> Optional[str]:
+        hit = cls._cache.get(key)
+        if hit and (time.time() - hit[0]) < cls.CACHE_TTL:
+            return hit[1]
+        return None
+
+    @classmethod
+    def store(cls, key: str, html: str) -> None:
+        if html:
+            cls._cache[key] = (time.time(), html)
+            if len(cls._cache) > 200:
+                for k in sorted(cls._cache, key=lambda k: cls._cache[k][0])[:50]:
+                    cls._cache.pop(k, None)
+
+
+def steamdb_cooldown_remaining() -> float:
+    """Seconds left on a SteamDB back-off (0 when requests are allowed)."""
+    return _SteamDBGovernor.cooldown_remaining()
+
+
+_RATE_LIMIT_MARKERS = ("too many requests", "rate limited", "you are being rate limited", "error 1015")
+
+
+def _looks_rate_limited(status: int, text: str) -> bool:
+    if status == 429:
+        return True
+    low = (text or "")[:4000].lower()
+    return any(m in low for m in _RATE_LIMIT_MARKERS)
+
+
 # Public alias for connection test
 test_byparr_connection = ByparrManager.test_connection
 
@@ -514,52 +644,60 @@ class SteamDBScraper:
 
     def fetch_via_fast_race(self, url: str, timeout_seconds: float = 4.0, extra_headers: Optional[Dict[str, str]] = None) -> str:
         """
-        Races multiple browser TLS / HTTP/2 impersonation profiles in parallel using curl_cffi.
-        Returns the HTML from the first profile that succeeds with HTTP 200 and no Cloudflare challenge.
+        Direct TLS fetch with browser impersonation (curl_cffi).
+
+        Polite by design: the profile that last worked is tried first and, only
+        if it fails, at most two others one after another (no parallel fan-out,
+        which multiplied every request by the number of profiles). A 429 or a
+        rate-limit page stops immediately and starts the global back-off.
         """
         if not cffi_requests:
             return ""
 
-        def _try_profile(profile: Dict[str, Any]) -> Tuple[bool, str, str]:
+        s = get_settings()
+        sticky = str(s.value("steamdb/fast_profile", "", type=str) or "") if s else ""
+        profiles = sorted(FAST_RACE_PROFILES, key=lambda p: 0 if p["name"] == sticky else 1)[:3]
+
+        for profile in profiles:
+            try:
+                _SteamDBGovernor.acquire(url)
+            except SteamDBRateLimited as e:
+                logger.info(f"[SteamDB] {e}; skipping {url}")
+                return ""
             try:
                 headers = profile["headers"].copy()
                 if extra_headers:
                     headers.update(extra_headers)
-                r = cffi_requests.get(
-                    url,
-                    impersonate=profile["impersonate"],
-                    headers=headers,
-                    timeout=timeout_seconds,
-                )
-                cf_mitigated = r.headers.get("Cf-Mitigated", "").lower()
-                is_challenge = cf_mitigated == "challenge" or "challenges.cloudflare.com" in r.text
-                if r.status_code == 200 and not is_challenge and len(r.text) > 500:
-                    return True, profile["name"], r.text
-                return False, profile["name"], ""
-            except Exception:
-                return False, profile["name"], ""
-
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(FAST_RACE_PROFILES)) as executor:
-                futures = {executor.submit(_try_profile, p): p for p in FAST_RACE_PROFILES}
-                for f in concurrent.futures.as_completed(futures, timeout=timeout_seconds + 1.0):
-                    success, name, html = f.result()
-                    if success:
-                        logger.info(f"[SteamDB] Fast-path race won by profile '{name}' for {url}")
-                        for remaining in futures:
-                            remaining.cancel()
-                        return html
-        except concurrent.futures.TimeoutError:
-            logger.debug(f"[SteamDB] Fast-path race timed out after {timeout_seconds}s for {url}")
-        except Exception as e:
-            logger.debug(f"[SteamDB] Error during fast-path race: {e}")
-
+                r = cffi_requests.get(url, impersonate=profile["impersonate"], headers=headers, timeout=timeout_seconds)
+            except Exception as e:
+                logger.debug(f"[SteamDB] Fast path via '{profile['name']}' failed for {url}: {e}")
+                continue
+            if _looks_rate_limited(r.status_code, r.text):
+                _SteamDBGovernor.note_rate_limited(f"HTTP {r.status_code}")
+                return ""
+            cf_mitigated = r.headers.get("Cf-Mitigated", "").lower()
+            is_challenge = cf_mitigated == "challenge" or "challenges.cloudflare.com" in r.text
+            if r.status_code == 200 and not is_challenge and len(r.text) > 500:
+                if s and profile["name"] != sticky:
+                    s.setValue("steamdb/fast_profile", profile["name"])
+                logger.info(f"[SteamDB] Fast path via '{profile['name']}' for {url}")
+                return r.text
+            if is_challenge:
+                # A Cloudflare challenge is per-IP; other profiles will get it too.
+                logger.info(f"[SteamDB] Cloudflare challenge on fast path for {url}")
+                return ""
         return ""
 
     def fetch_via_byparr(self, url: str, timeout_seconds: int = 60) -> str:
         """
         Fetches the fully-rendered DOM from SteamDB via Byparr (which executes JS & bypasses Turnstile).
         """
+        try:
+            _SteamDBGovernor.acquire(url)
+        except SteamDBRateLimited as e:
+            logger.info(f"[SteamDB] {e}; skipping Byparr fetch of {url}")
+            return ""
+
         if not ByparrManager.is_running():
             ByparrManager.ensure_running()
 
@@ -577,6 +715,9 @@ class SteamDBScraper:
                 data = r.json()
                 sol = data.get("solution", {})
                 html = sol.get("response", "")
+                if _looks_rate_limited(int(sol.get("status") or 200), html):
+                    _SteamDBGovernor.note_rate_limited("Byparr page")
+                    return ""
 
                 # Cache cookies & user-agent for fast static requests
                 cookies = {c["name"]: c["value"] for c in sol.get("cookies", [])}
@@ -604,6 +745,19 @@ class SteamDBScraper:
         if get_settings().value("disable_steamdb_scraping", False, type=bool):
             logger.info("[SteamDB] Scraping disabled in Testing settings; skipping fetch.")
             return ""
+
+        cache_key = f"{url}|{sorted((extra_headers or {}).items())}"
+        cached = _SteamDBGovernor.cached(cache_key)
+        if cached is not None:
+            return cached
+        if _SteamDBGovernor.cooldown_remaining() > 0:
+            return ""
+
+        html = self._fetch_rendered_uncached(url, timeout_seconds, allow_fast_path, extra_headers)
+        _SteamDBGovernor.store(cache_key, html)
+        return html
+
+    def _fetch_rendered_uncached(self, url: str, timeout_seconds: int, allow_fast_path: bool, extra_headers: Optional[Dict[str, str]]) -> str:
 
         # 1. Fast-path multi-profile race
         if allow_fast_path and cffi_requests:
@@ -797,6 +951,9 @@ class SteamDBScraper:
                 logger.info(f"[SteamDB] Parsed {len(results)} patchnotes entries from RenderAppSection for App {appid}")
                 return results
 
+        if _SteamDBGovernor.cooldown_remaining() > 0:
+            raise SteamDBRateLimited(f"SteamDB rate limit: retry in {int(_SteamDBGovernor.cooldown_remaining() // 60) + 1} min")
+
         # 2. Try official XML RSS feed fallback (provides the 10 most recent release builds)
         rss_url = f"{STEAMDB_BASE_URL}/api/PatchnotesRSS/?appid={appid}"
         xml_data = self.fetch_rendered_html(rss_url)
@@ -809,6 +966,8 @@ class SteamDBScraper:
 
         # 3. Fall back to static HTML page (branches table)
         url = f"{STEAMDB_BASE_URL}/app/{appid}/patchnotes/"
+        if _SteamDBGovernor.cooldown_remaining() > 0:
+            return []
         html = self.fetch_rendered_html(url)
         if html:
             results = self._parse_patchnotes_html(html, limit=limit)
@@ -1020,10 +1179,10 @@ class SteamDBScraper:
                                                 "dl_str": "",
                                                 "is_dlc": True,
                                             }
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
+                                except Exception as _silent_err:
+                                    logger.debug("[steamdb_scraper] _fetch_depots_fallback_steam_store: ignored %s", _silent_err, exc_info=False)
+                    except Exception as _silent_err:
+                        logger.debug("[steamdb_scraper] _fetch_depots_fallback_steam_store: ignored %s", _silent_err, exc_info=False)
         except Exception as e:
             logger.debug(f"[SteamDB Fallback] Store API fetch failed for {appid}: {e}")
         return results
@@ -1050,8 +1209,8 @@ def parse_size_to_bytes(size_str: str) -> int:
             val = float(m.group(1))
             unit = m.group(2).lower()
             return int(val * units.get(unit, 1))
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[steamdb_scraper] parse_size_to_bytes: ignored %s", _silent_err, exc_info=False)
     return 0
 
 

@@ -20,9 +20,9 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QComboBox,
     QFrame,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.themed_dialog import install_themed_frame
 
@@ -149,25 +149,6 @@ class ManualManifestDialog(QDialog):
                 background-color: rgba(255, 255, 255, 0.08);
             }}
         """
-        combo_style = f"""
-            QComboBox {{
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.14);
-                border-radius: 5px;
-                color: #FFFFFF;
-                padding: 4px 8px;
-                font-size: 9pt;
-            }}
-            QComboBox:hover {{
-                border-color: rgba(255, 255, 255, 0.28);
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #1a1c23;
-                color: #FFFFFF;
-                selection-background-color: {self.accent_color};
-                border: 1px solid rgba(255, 255, 255, 0.15);
-            }}
-        """
 
         # 1. Target Depot Field
         depot_section = QVBoxLayout()
@@ -177,9 +158,8 @@ class ManualManifestDialog(QDialog):
         depot_section.addWidget(depot_lbl)
 
         if self.depots_dict:
-            self.depot_combo = QComboBox()
+            self.depot_combo = ModernComboBox()
             self.depot_combo.setFixedHeight(30)
-            self.depot_combo.setStyleSheet(combo_style)
             self.depot_combo.setEditable(True)
 
             sel_idx = 0

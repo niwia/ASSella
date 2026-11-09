@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from PyQt6.QtCore import QSize, Qt, QTimer, QRectF
 from PyQt6.QtGui import QColor, QIcon, QPixmap, QPainter, QBrush, QLinearGradient, QPen, QMovie
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -94,7 +95,7 @@ from core.manifest_fetcher import verify_or_download_manifest
 logger = logging.getLogger(__name__)
 
 # Constants
-_API_STATS_CACHE_DURATION = 60  # seconds
+_API_STATS_CACHE_DURATION = 300  # seconds (5 minutes)
 
 # Global Cache State
 _api_stats_cache = {"data": None, "timestamp": 0.0}
@@ -605,7 +606,65 @@ class FetchManifestDialog(QDialog):
     def _set_loading_active(self, active: bool):
         """Toggle loading spinners inside the dialog synchronously."""
         if hasattr(self, "footer_spinner") and self.footer_spinner:
-            self.footer_spinner.setVisible(active)
+            overlay = getattr(self, "_loading_overlay", None)
+            if overlay and overlay.isVisible():
+                self.footer_spinner.setVisible(False)
+            else:
+                self.footer_spinner.setVisible(active)
+
+    # --------------------------
+    # Loading Overlay Helpers
+    # --------------------------
+
+    def _show_loading_overlay(self, label: str) -> None:
+        """Shows floating pixel loader overlay centered over the dialog."""
+        self._dismiss_loading_overlay()
+        try:
+            from ui.widgets.pixel_loader_overlay import PixelLoadingOverlay
+            accent = getattr(self, "accent_color", "#a1c9fd")
+            self._loading_overlay = PixelLoadingOverlay(
+                parent=self,
+                label=label,
+                accent_color=accent,
+            )
+            self._loading_overlay.show_centered()
+            if hasattr(self, "status_label") and self.status_label:
+                self.status_label.setText("")
+            if hasattr(self, "footer_spinner") and self.footer_spinner:
+                self.footer_spinner.setVisible(False)
+            QApplication.processEvents()
+        except Exception as e:
+            logger.debug(f"[FetchManifest] Could not show loading overlay: {e}")
+
+    def _update_loading_overlay(self, label: str) -> None:
+        """Update status text of existing loading overlay, or create if missing."""
+        overlay = getattr(self, "_loading_overlay", None)
+        if overlay and overlay.isVisible():
+            overlay.set_label(label)
+            if hasattr(self, "status_label") and self.status_label:
+                self.status_label.setText("")
+            if hasattr(self, "footer_spinner") and self.footer_spinner:
+                self.footer_spinner.setVisible(False)
+            QApplication.processEvents()
+        else:
+            self._show_loading_overlay(label)
+
+    def _dismiss_loading_overlay(self) -> None:
+        """Dismiss and clean up the floating loading overlay if active."""
+        overlay = getattr(self, "_loading_overlay", None)
+        if overlay:
+            try:
+                overlay.close()
+                overlay.deleteLater()
+            except (RuntimeError, AttributeError) as exc:
+                logger.debug(f"[FetchManifest] Could not dismiss loading overlay: {exc}")
+            self._loading_overlay = None
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        overlay = getattr(self, "_loading_overlay", None)
+        if overlay and overlay.isVisible():
+            overlay._center_on_parent()
 
     def _request_api_status_update(self):
         self.top_spinner.setVisible(True)
@@ -713,6 +772,8 @@ class FetchManifestDialog(QDialog):
         self.status_label.setText("Search error. Press Enter to retry.")
 
     def on_search(self):
+        if getattr(self, "_selection_busy", False):
+            return
         # Cancel any active background update checks to free up the Steam connection
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
             try:
@@ -1169,20 +1230,28 @@ class FetchManifestDialog(QDialog):
 
         selected_branch = "public"
         if branches and len(branches) > 1:
+            if getattr(self, "_loading_overlay", None):
+                self._loading_overlay.hide()
             from ui.dialogs.branch_selection_dialog import BranchSelectionDialog
-            branch_choice, ok = BranchSelectionDialog.select_branch(self, app_id=app_id, branches=branches)
+            branch_choice, ok = BranchSelectionDialog.select_branch(
+                self, app_id=app_id, branches=branches, game_name=getattr(self, "_selected_game_name", "")
+            )
             if ok and branch_choice:
                 selected_branch = branch_choice
+                self._show_loading_overlay("Downloading manifests from Hubcap...")
             else:
+                self._dismiss_loading_overlay()
                 self.status_label.setText("Fetch cancelled.")
+                self._end_selection()
                 return
+        else:
+            self._update_loading_overlay("Downloading manifests from Hubcap...")
 
         self._discovered_branches = branches or {"public": {}}
         self._current_selected_branch = selected_branch
         self.settings.setValue(f"selected_branch/{app_id}", selected_branch)
         self._toggle_inputs(False)
         self._set_loading_active(True)
-        self.status_label.setText("Fetching from Hubcap...")
 
         worker = self.task_runner.run(self.check_and_download_manifest, app_id, selected_branch)
         worker.finished.connect(self.on_download_finished)
@@ -1233,6 +1302,8 @@ class FetchManifestDialog(QDialog):
         threading.Thread(target=_worker, daemon=True).start()
 
     def on_item_double_clicked(self, item):
+        if getattr(self, "_selection_busy", False):
+            return
         self._on_item_clicked(item)
         # Cancel any active background update checks to free up the Steam connection
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
@@ -1270,7 +1341,21 @@ class FetchManifestDialog(QDialog):
 
         aid_str = str(app_id).strip()
         name = game_name or f"App {aid_str}"
+        if not self._begin_selection(aid_str):
+            return
+        self._selected_game_name = game_name if game_name and not game_name.startswith("App ") else ""
+        try:
+            self._route_game_selection(aid_str, name)
+        except Exception:
+            self._end_selection()
+            raise
+        # Synchronous routes (native flow, backend dialog cancelled) are over
+        # here; the ASSella flow keeps the lock until it finishes.
+        if not getattr(self, "_async_pending", False) and self.isVisible() and self.result() == 0:
+            self._end_selection()
 
+    def _route_game_selection(self, aid_str: str, name: str):
+        self._async_pending = False
         # If in library, redirect to GameLibraryDialog
         if self.parent_window and hasattr(self.parent_window, "game_manager") and self.parent_window.game_manager:
             if self.parent_window.game_manager.get_game(aid_str) is not None:
@@ -1331,6 +1416,7 @@ class FetchManifestDialog(QDialog):
         """Handle Native Steam (AT0-M) installation flow without branch/depot/storage picker."""
         aid_str = str(app_id).strip()
         name = game_name or f"App {aid_str}"
+        self._show_loading_overlay(f"Preparing Steam handoff for {name}...")
 
         # Pre-handoff platform compatibility check (Linux host vs Windows-only depots in package)
         try:
@@ -1341,7 +1427,6 @@ class FetchManifestDialog(QDialog):
             from ui.dialogs.platform_mismatch_dialog import (
                 PlatformMismatchDialog,
                 ACTION_PROCEED,
-                ACTION_FORCE_PROTON,
                 ACTION_ASSELLA_DOWNLOAD,
                 ACTION_CANCEL,
             )
@@ -1350,6 +1435,8 @@ class FetchManifestDialog(QDialog):
                 game_name=name,
             )
             if is_mismatch:
+                if getattr(self, "_loading_overlay", None):
+                    self._loading_overlay.hide()
                 m_dlg = PlatformMismatchDialog(
                     parent=self,
                     details=mismatch_details,
@@ -1357,18 +1444,102 @@ class FetchManifestDialog(QDialog):
                 )
                 m_dlg.exec()
                 m_act = m_dlg.get_action()
-                if m_act in (ACTION_PROCEED, ACTION_FORCE_PROTON):
-                    # Proceed normally without forcing Proton or restarting Steam
-                    pass
+                if m_act == ACTION_PROCEED:
+                    self._show_loading_overlay(f"Preparing Steam handoff for {name}...")
                 elif m_act == ACTION_ASSELLA_DOWNLOAD:
-                    self.status_label.setText("Switching to ASSella downloader...")
                     self._start_assella_flow(aid_str)
                     return
                 else:  # ACTION_CANCEL
+                    self._dismiss_loading_overlay()
                     self.status_label.setText("Download cancelled.")
                     return
         except Exception as e:
             logger.debug(f"[FetchManifest] Error during platform mismatch check: {e}")
+
+        # Check voices.json for recommended / curated build in AT0-M mode
+        pin_build = False
+        pinned_bid = ""
+        manifest_overrides = {}
+        try:
+            from managers.voices_manager import VoicesManager
+            rec = VoicesManager.get_instance().get_recommendation(aid_str, name)
+            if rec and rec.get("recommended_build_id"):
+                rec_bid = str(rec["recommended_build_id"]).strip()
+                is_already_pinned = self.settings.value(f"pin_build/{aid_str}", False, type=bool)
+                if not is_already_pinned:
+                    if getattr(self, "_loading_overlay", None):
+                        self._loading_overlay.hide()
+                    from ui.dialogs.recommended_build_dialog import (
+                        RecommendedBuildPromptDialog,
+                        ACTION_RECOMMENDED,
+                        ACTION_LATEST,
+                        ACTION_BROWSE,
+                    )
+                    prompt = RecommendedBuildPromptDialog(
+                        parent=self,
+                        app_id=aid_str,
+                        game_name=name,
+                        recommended_build_id=rec_bid,
+                        current_build_id="",
+                        reason=rec.get("reason", ""),
+                        accent_color=self.accent_color,
+                    )
+                    prompt.exec()
+                    action = prompt.get_action()
+                    if action == ACTION_RECOMMENDED:
+                        rec_overrides = rec.get("manifest_overrides", {})
+                        if not rec_overrides:
+                            try:
+                                from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
+                                cache = SteamDBBuildsCache()
+                                c_depots = cache.get_build_depots(rec_bid)
+                                if c_depots:
+                                    rec_overrides = {str(d): str(info.get("manifest_id") or info.get("gid", "")) for d, info in c_depots.items()}
+                                else:
+                                    s_depots = SteamDBScraper().get_patch_depots(rec_bid) or {}
+                                    rec_overrides = {str(d): str(info.get("manifest_id") or info.get("gid", "")) for d, info in s_depots.items()}
+                            except Exception as _e:
+                                logger.warning(f"Failed to resolve SteamDB depots for {rec_bid}: {_e}")
+                        pin_build = True
+                        pinned_bid = rec_bid
+                        manifest_overrides = {str(d): str(m) for d, m in rec_overrides.items() if m}
+                        self.settings.setValue(f"pin_build/{aid_str}", True)
+                        self.settings.setValue(f"pinned_build_id/{aid_str}", rec_bid)
+                        logger.info(f"[FetchManifest] AT0-M pinned recommended build {rec_bid} with {len(manifest_overrides)} overrides")
+                        self._show_loading_overlay(f"Preparing Steam handoff for {name}...")
+                    elif action == ACTION_BROWSE:
+                        from ui.dialogs.build_selection_dialog import BuildSelectionDialog
+                        b_dlg = BuildSelectionDialog(
+                            parent=self,
+                            app_id=aid_str,
+                            current_build_id="",
+                            accent_color=self.accent_color,
+                        )
+                        if b_dlg.exec():
+                            chosen_bid = b_dlg.get_selected_build_id()
+                            chosen_overrides = b_dlg.get_patch_depots() or {}
+                            if chosen_bid:
+                                pin_build = True
+                                pinned_bid = str(chosen_bid).strip()
+                                manifest_overrides = {str(d): str(info.get("manifest_id") or info.get("gid", "")) for d, info in chosen_overrides.items() if info}
+                                self.settings.setValue(f"pin_build/{aid_str}", True)
+                                self.settings.setValue(f"pinned_build_id/{aid_str}", pinned_bid)
+                                logger.info(f"[FetchManifest] AT0-M user pinned browse build {pinned_bid}")
+                                self._show_loading_overlay(f"Preparing Steam handoff for {name}...")
+                        else:
+                            self._dismiss_loading_overlay()
+                            self.status_label.setText("Download cancelled.")
+                            return
+                    elif action == ACTION_LATEST:
+                        logger.info(f"[FetchManifest] AT0-M user chose latest build for {aid_str}")
+                        self._show_loading_overlay(f"Preparing Steam handoff for {name}...")
+                    else:
+                        self._dismiss_loading_overlay()
+                        logger.info(f"[FetchManifest] AT0-M cancelled at recommended build prompt for {aid_str}")
+                        self.status_label.setText("Download cancelled.")
+                        return
+        except Exception as _rec_err:
+            logger.warning(f"[FetchManifest] Error checking voices recommendation in AT0-M flow: {_rec_err}")
 
         start_mode = self.settings.value(
             "at0m_start_download_action",
@@ -1389,6 +1560,8 @@ class FetchManifestDialog(QDialog):
         elif start_mode == "add_only":
             auto_install = False
         else:  # "ask"
+            if getattr(self, "_loading_overlay", None):
+                self._loading_overlay.hide()
             from ui.dialogs.native_steam_action_dialog import (
                 NativeSteamActionDialog,
                 ACTION_DOWNLOAD,
@@ -1405,6 +1578,7 @@ class FetchManifestDialog(QDialog):
             dlg.exec()
             act = dlg.get_action()
             if act == ACTION_CANCEL:
+                self._dismiss_loading_overlay()
                 self.status_label.setText("Download cancelled.")
                 return
             if dlg.should_remember():
@@ -1412,10 +1586,12 @@ class FetchManifestDialog(QDialog):
                 self.settings.setValue("at0m_start_download_action", saved_val)
                 self.settings.setValue("vapor_start_download_action", saved_val)
             auto_install = (act in (ACTION_DOWNLOAD, ACTION_TRACK))
+            self._show_loading_overlay(f"Preparing Steam handoff for {name}...")
 
         selected_library_path = ""
         libraries = steam_helpers.get_steam_libraries()
         if not libraries:
+            self._dismiss_loading_overlay()
             ThemedMessageBox.warning(
                 self,
                 "No Steam Library Found",
@@ -1425,22 +1601,32 @@ class FetchManifestDialog(QDialog):
             self.status_label.setText("No Steam library found.")
             return
 
-        if len(libraries) == 1:
+        from utils.library_choice import remembered_library
+
+        remembered = remembered_library(libraries, self.settings)
+        if remembered:
+            selected_library_path = remembered
+        elif len(libraries) == 1:
             selected_library_path = libraries[0]
         else:
+            if getattr(self, "_loading_overlay", None):
+                self._loading_overlay.hide()
             dialog = SteamLibraryDialog(libraries, self, accent_color=self.accent_color)
             if dialog.exec():
                 selected_library_path = dialog.get_selected_path()
                 if not selected_library_path:
+                    self._dismiss_loading_overlay()
                     self.status_label.setText("Download cancelled.")
                     return
             else:
+                self._dismiss_loading_overlay()
                 self.status_label.setText("Download cancelled.")
                 return
 
         logger.info(
             f"[FetchManifest] Handing off {name} ({aid_str}) directly to Steam (auto_install={auto_install}, library={selected_library_path})"
         )
+        self._dismiss_loading_overlay()
         self.accept()
 
         if self.parent_window and hasattr(self.parent_window, "task_manager") and self.parent_window.task_manager:
@@ -1449,14 +1635,20 @@ class FetchManifestDialog(QDialog):
                 game_name=name,
                 auto_install=auto_install,
                 library_path=selected_library_path,
+                pin_build=pin_build,
+                manifest_overrides=manifest_overrides,
+                build_id=pinned_bid,
+                platform_checked=True,
             )
 
     def _start_assella_flow(self, app_id: str):
         """Standard ASSella downloader flow: branch selection -> manifest fetch -> depot selection."""
         aid_str = str(app_id).strip()
+        name = getattr(self, "_selected_game_name", "") or f"App {aid_str}"
+        self._async_pending = True
         self._toggle_inputs(False)
         self._set_loading_active(True)
-        self.status_label.setText("Checking branches...")
+        self._show_loading_overlay(f"Checking branches for {name}...")
         worker = self.task_runner.run(self._fetch_branches_and_prompt, aid_str)
         worker.finished.connect(self._on_branches_fetched)
         worker.error.connect(self.on_task_error)
@@ -1465,8 +1657,9 @@ class FetchManifestDialog(QDialog):
         filepath, error_msg = result
 
         if error_msg:
+            self._dismiss_loading_overlay()
             self._handle_error(error_msg)
-            self._toggle_inputs(True)
+            self._end_selection()
             return
 
         logger.info(f"Manifest downloaded: {filepath}")
@@ -1478,7 +1671,7 @@ class FetchManifestDialog(QDialog):
         branch = getattr(self, "_current_selected_branch", "public")
         metadata = {"branch": branch, "download_backend": "assella"}
         
-        self.status_label.setText("Processing manifests...")
+        self._update_loading_overlay("Processing manifests...")
         self._toggle_inputs(False)
 
         def _parse_task():
@@ -1499,7 +1692,14 @@ class FetchManifestDialog(QDialog):
         )
 
     def _on_parse_finished(self, parsed_data, filepath, branch, metadata):
-        self._toggle_inputs(True)
+        self._redownload_pending = False
+        try:
+            self._on_parse_finished_impl(parsed_data, filepath, branch, metadata)
+        finally:
+            if not self._redownload_pending and self.result() == 0:
+                self._end_selection()
+
+    def _on_parse_finished_impl(self, parsed_data, filepath, branch, metadata):
         self._set_loading_active(False)
 
         if parsed_data and parsed_data.get("depots") and parsed_data.get("appid"):
@@ -1523,7 +1723,8 @@ class FetchManifestDialog(QDialog):
                 except Exception as _del_err:
                     logger.debug(f"Could not remove corrupt zip {filepath}: {_del_err}")
 
-                self.status_label.setText("Re-downloading manifests...")
+                self._update_loading_overlay("Re-downloading manifests...")
+                self._redownload_pending = True
                 self._toggle_inputs(False)
                 self._set_loading_active(True)
                 worker = self.task_runner.run(self.check_and_download_manifest, app_id, branch)
@@ -1531,6 +1732,7 @@ class FetchManifestDialog(QDialog):
                 worker.error.connect(self.on_task_error)
                 return
             else:
+                self._dismiss_loading_overlay()
                 self._is_manifest_retry = False
                 logger.error(f"[FetchManifest] Failed to parse valid manifest data for {filepath}")
                 self.status_label.setText("Error: Could not retrieve valid depot manifests for game.")
@@ -1541,6 +1743,7 @@ class FetchManifestDialog(QDialog):
             self.settings.setValue(f"selected_branch/{appid}", branch)
 
         if not parsed_data.get("depots"):
+            self._dismiss_loading_overlay()
             logger.warning(f"[FetchManifest] No downloadable depots available for {parsed_data.get('appid')}")
             self.status_label.setText("No downloadable depots available for this game.")
             missing_depots = parsed_data.get("missing_depots_from_hubcap") or []
@@ -1551,11 +1754,12 @@ class FetchManifestDialog(QDialog):
             return
 
         if parsed_data.get("depots"):
+            self._dismiss_loading_overlay()
             from ui.dialogs.depotselection import DepotSelectionDialog
             from utils.settings import get_settings
             from utils.paths import is_valid_download_directory
             settings = get_settings()
-            auto_skip = settings.value("auto_skip_single_choice", False, type=bool)
+            auto_skip = settings.value("auto_skip_single_choice", True, type=bool)
             default_dl = settings.value("default_download_directory", "", type=str)
             has_default_dl = bool(default_dl and is_valid_download_directory(default_dl))
             depots = parsed_data.get("depots")
@@ -1567,7 +1771,10 @@ class FetchManifestDialog(QDialog):
             selected_depots = None
             is_single = is_effectively_single_depot(depots, missing_depots)
 
-            show_timer = (is_single and auto_skip and has_default_dl)
+            # DLC-only games must always get the depot selector (never the countdown).
+            from utils.dlc_helpers import is_dlc_only_context
+            is_dlc_only = is_dlc_only_context(appid, parsed_data, metadata)
+            show_timer = (is_single and auto_skip and has_default_dl and not is_dlc_only)
             open_dialog = False
 
             if show_timer:
@@ -1609,6 +1816,7 @@ class FetchManifestDialog(QDialog):
 
                 branches_dict = getattr(self, "_discovered_branches", None) or {"public": {}}
                 current_bid = parsed_data.get("buildid") or ""
+                is_bundle_stale = bool(parsed_data.get("is_bundle_stale", False))
 
                 depot_dialog = DepotSelectionDialog(
                     parsed_data["appid"],
@@ -1626,6 +1834,8 @@ class FetchManifestDialog(QDialog):
                     branches=branches_dict,
                     current_build_id=current_bid,
                     editions=parsed_data.get("editions"),
+                    is_bundle_stale=is_bundle_stale,
+                    stale_depots=parsed_data.get("stale_depots", []),
                 )
                 depot_dialog.raise_()
                 depot_dialog.activateWindow()
@@ -1685,6 +1895,8 @@ class FetchManifestDialog(QDialog):
                 except Exception as _rec_err:
                     logger.warning(f"[FetchManifest] Error checking voices recommendation: {_rec_err}")
 
+                from PyQt6.QtWidgets import QApplication
+                QApplication.processEvents()
                 depot_res = depot_dialog.exec()
                 if not depot_res:
                     logger.info("User cancelled depot selection.")
@@ -1697,6 +1909,11 @@ class FetchManifestDialog(QDialog):
                 selected_storage = depot_dialog.get_selected_storage()
                 if selected_storage:
                     metadata["library_path"] = selected_storage
+                    if hasattr(depot_dialog, "should_remember_storage") and depot_dialog.should_remember_storage():
+                        from utils.library_choice import remember_library
+
+                        remember_library(selected_storage, self.settings)
+                        logger.info(f"[FetchManifest] Remembered default storage library: {selected_storage}")
 
                 chosen_branch = depot_dialog.get_selected_branch() if hasattr(depot_dialog, "get_selected_branch") else None
                 if chosen_branch:
@@ -1717,6 +1934,16 @@ class FetchManifestDialog(QDialog):
                     overrides = depot_dialog.get_manifest_overrides()
                     if overrides:
                         metadata["manifest_overrides"] = overrides
+
+                if getattr(depot_dialog, "_dlc_only_mode", False):
+                    metadata["is_dlc_only"] = True
+                    metadata["_dlc_only"] = True
+                    if appid:
+                        self.settings.setValue(f"dlc_only_mode/{appid}", True)
+
+                if parsed_data.get("is_bundle_stale") or getattr(depot_dialog, "is_bundle_stale", False):
+                    metadata["is_bundle_stale"] = True
+                    metadata["stale_depots"] = parsed_data.get("stale_depots", [])
             
             if selected_depots:
                 metadata["selected_depots_list"] = selected_depots
@@ -1762,10 +1989,32 @@ class FetchManifestDialog(QDialog):
     # --------------------------
 
     def _toggle_inputs(self, enabled: bool):
+        # While a game is being loaded, nothing else (a live search finishing,
+        # a search error) may unlock the list; only _end_selection() does.
+        if enabled and getattr(self, "_selection_busy", False):
+            return
         self.search_input.setEnabled(enabled)
         self.results_list.setEnabled(enabled)
 
+    def _begin_selection(self, app_id: str) -> bool:
+        """Lock the dialog to one game. False when another game is already loading."""
+        if getattr(self, "_selection_busy", False):
+            logger.info(f"Ignoring selection of {app_id}: {self._selection_busy} is still loading")
+            return False
+        if hasattr(self, "_live_search_timer"):
+            self._live_search_timer.stop()
+        self._search_generation += 1  # results of a search still running are dropped
+        self._toggle_inputs(False)
+        self._selection_busy = str(app_id)
+        return True
+
+    def _end_selection(self) -> None:
+        self._selection_busy = False
+        self._toggle_inputs(True)
+        self._dismiss_loading_overlay()
+
     def _handle_error(self, message):
+        self._dismiss_loading_overlay()
         logger.error(f"Operation failed: {message}")
         self._set_loading_active(False)
         ThemedMessageBox.critical(self, "Error", message)
@@ -1774,7 +2023,7 @@ class FetchManifestDialog(QDialog):
     def on_task_error(self, error_info):
         _, error_value, _ = error_info
         self._handle_error(str(error_value))
-        self._toggle_inputs(True)
+        self._end_selection()
 
     def _stop_active_image_fetchers(self):
         """Safely stops all running image fetchers and cancels pending timers."""
@@ -1817,8 +2066,13 @@ class FetchManifestDialog(QDialog):
         if steam_integration:
             libraries = steam_helpers.get_steam_libraries()
             if libraries:
-                auto_skip_single_choice = self.settings.value("auto_skip_single_choice", False, type=bool) if self.settings else False
-                if auto_skip_single_choice and len(libraries) == 1:
+                auto_skip_single_choice = self.settings.value("auto_skip_single_choice", True, type=bool) if self.settings else True
+                from utils.library_choice import remembered_library
+
+                remembered = remembered_library(libraries, self.settings)
+                if remembered:
+                    dest_path = remembered
+                elif auto_skip_single_choice and len(libraries) == 1:
                     dest_path = libraries[0]
                 else:
                     dialog = SteamLibraryDialog(libraries, self, accent_color=self.accent_color)
@@ -1915,6 +2169,7 @@ class FetchManifestDialog(QDialog):
         super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        self._dismiss_loading_overlay()
         if hasattr(self, "_origins_movie") and self._origins_movie:
             self._origins_movie.stop()
             self._origins_movie = None

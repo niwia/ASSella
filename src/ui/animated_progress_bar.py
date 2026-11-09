@@ -56,10 +56,23 @@ class AnimatedProgressBar(QProgressBar):
 
     def _get_anim_mode(self) -> str:
         try:
+            settings = None
             if self.main_window and hasattr(self.main_window, "settings") and self.main_window.settings:
-                return self.main_window.settings.value("download_animation", "standard", type=str)
-            from utils.settings import get_settings
-            return get_settings().value("download_animation", "standard", type=str)
+                settings = self.main_window.settings
+            else:
+                from utils.settings import get_settings
+                settings = get_settings()
+
+            saved_mode = settings.value("download_animation", "", type=str) if settings else ""
+            if saved_mode and saved_mode != "standard":
+                return saved_mode
+
+            preset = settings.value("material_preset", "ocean", type=str) if settings else "ocean"
+            if preset == "christmas":
+                return "santa"
+            if preset == "halloween":
+                return "lantern"
+            return saved_mode or "standard"
         except Exception:
             return "standard"
 
@@ -195,6 +208,11 @@ class AnimatedProgressBar(QProgressBar):
                 painter.fillPath(track_path, QColor(21, 13, 5, 230))
                 painter.setPen(QPen(QColor(255, 117, 24, 70), 1))
                 painter.drawPath(track_path)
+            elif anim_mode == "santa":
+                painter.fillPath(track_path, QColor(10, 16, 28, 250))
+                painter.setPen(QPen(QColor(229, 57, 53, 90), 1))
+                painter.drawPath(track_path)
+                self._draw_snowy_village(painter, w, h)
             else:
                 painter.fillPath(track_path, QColor(255, 255, 255, 20))
                 painter.setPen(QPen(QColor(255, 255, 255, 35), 1))
@@ -206,13 +224,13 @@ class AnimatedProgressBar(QProgressBar):
         val = self.value()
 
         if min_v == max_v:
-            # Indeterminate wave
-            wave_w = max(40.0, w * 0.25)
-            cycle = (self._phase * 3.0) % (w + wave_w * 2)
-            prog_x = cycle - wave_w
-            fill_rect = QRectF(max(0.0, prog_x), 0, min(w, wave_w), h)
+            # Indeterminate sliding capsule
+            seg = max(w * 0.3, h * 3)
+            phase = (self._phase * 0.015) % 1.0
+            eased = (1.0 - math.cos(phase * math.pi * 2.0)) / 2.0
+            x = -seg + (w + seg) * eased
             fill_path = QPainterPath()
-            fill_path.addRoundedRect(fill_rect, r, r)
+            fill_path.addRoundedRect(QRectF(x, 0, seg, h), r, r)
             painter.fillPath(fill_path, accent_color)
             return
 
@@ -243,6 +261,8 @@ class AnimatedProgressBar(QProgressBar):
             self._draw_mario_coins_ahead(painter, prog_w + 10, w - 6, h)
         elif anim_mode == "pokemon" and prog_w < w - 6:
             self._draw_pokemon_tall_grass(painter, prog_w + 6, w - 4, h)
+        elif anim_mode == "santa" and prog_w < w - 6:
+            self._draw_santa_snow_ahead(painter, prog_w + 12, w - 6, h)
 
         # 4. Fill Progress Path
         clip_path = QPainterPath()
@@ -296,11 +316,23 @@ class AnimatedProgressBar(QProgressBar):
             pumpkin_grad.setColorAt(0.7, QColor(230, 105, 15, 220))
             pumpkin_grad.setColorAt(1.0, QColor(255, 140, 20, 255))
             painter.fillPath(clip_path, pumpkin_grad)
+        elif anim_mode == "santa":
+            self._draw_santa_stardust_trail(painter, prog_w, h)
         else:
             grad = QLinearGradient(0, 0, prog_w, 0)
-            grad.setColorAt(0.0, accent_color.darker(115))
-            grad.setColorAt(1.0, accent_color)
+            grad.setColorAt(0.0, accent_color)
+            grad.setColorAt(1.0, accent_color.lighter(118))
             painter.fillPath(clip_path, grad)
+
+            # Soft shimmer sweep across fill
+            shimmer_phase = (self._phase * 0.02) % 1.0
+            band = max(40.0, prog_w * 0.35)
+            sx = -band + (prog_w + band) * shimmer_phase
+            shimmer = QLinearGradient(sx, 0, sx + band, 0)
+            shimmer.setColorAt(0.0, QColor(255, 255, 255, 0))
+            shimmer.setColorAt(0.5, QColor(255, 255, 255, 55))
+            shimmer.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.fillRect(QRectF(sx, 0, band, h), shimmer)
 
         painter.restore()
 
@@ -331,6 +363,8 @@ class AnimatedProgressBar(QProgressBar):
             self._draw_car_runner(painter, min(w - 11.0, prog_w), h)
         elif anim_mode == "lantern":
             self._draw_lantern(painter, edge_x, h)
+        elif anim_mode == "santa":
+            self._draw_santa_sleigh(painter, min(w - 6.0, prog_w), h)
 
     # -------------------------------------------------------------
     # Pac-Man Implementation
@@ -999,3 +1033,134 @@ class AnimatedProgressBar(QProgressBar):
             QPointF(cx + 2.0, cy + 4.0),
             QPointF(cx + 4.0, cy + 2.0),
         ]))
+
+    # -------------------------------------------------------------
+    # Santa in Sleigh & Snowy Village Implementation
+    # -------------------------------------------------------------
+    def _draw_snowy_village(self, painter: QPainter, w: float, h: float) -> None:
+        house_widths = [14.0, 18.0, 12.0, 16.0, 20.0, 15.0]
+        house_heights = [7.0, 9.0, 6.0, 8.5, 7.5, 9.5]
+        cur_x = 0.0
+        idx = 0
+        while cur_x < w:
+            hw = house_widths[idx % len(house_widths)]
+            hh = house_heights[idx % len(house_heights)]
+            # Cottage silhouette
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(18, 24, 38, 230))
+            painter.drawRect(QRectF(cur_x, h - hh, hw, hh))
+            # Chimney with smoking puffs
+            chim_x = cur_x + hw * 0.7
+            chim_h = 3.5
+            painter.setBrush(QColor(45, 25, 25, 240))
+            painter.drawRect(QRectF(chim_x, h - hh - chim_h, 2.5, chim_h))
+            smoke_y = h - hh - chim_h - 2.5 - (math.sin(self._phase * 0.12 + idx) * 1.5)
+            painter.setBrush(QColor(230, 240, 255, 170))
+            painter.drawEllipse(QRectF(chim_x - 0.5, smoke_y, 3.5, 3.0))
+            # Snow cap on roof
+            roof = QPainterPath()
+            roof.moveTo(cur_x - 1.0, h - hh + 1.0)
+            roof.lineTo(cur_x + hw / 2.0, h - hh - 2.5)
+            roof.lineTo(cur_x + hw + 1.0, h - hh + 1.0)
+            painter.strokePath(
+                roof,
+                QPen(QColor(245, 250, 255, 240), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap),
+            )
+            # Warm glowing window
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#FFE082"))
+            painter.drawRect(QRectF(cur_x + 3.0, h - hh + 2.0, 2.5, 2.5))
+            cur_x += hw + 3.0
+            idx += 1
+
+    def _draw_santa_snow_ahead(self, painter: QPainter, start_x: float, end_x: float, h: float) -> None:
+        painter.setPen(Qt.PenStyle.NoPen)
+        cur_x = start_x
+        step = 16.0
+        while cur_x < end_x:
+            shift_y = math.sin(self._phase * 0.08 + cur_x * 0.2) * 3.0
+            py = (h / 2.0) + shift_y
+            painter.setBrush(QColor(255, 255, 255, 170))
+            painter.drawEllipse(QPointF(cur_x, py), 1.2, 1.2)
+            cur_x += step
+
+    def _draw_santa_stardust_trail(self, painter: QPainter, prog_w: float, h: float) -> None:
+        # Festive ruby red to warm gold stardust gradient fill
+        festive_grad = QLinearGradient(0, 0, prog_w, 0)
+        festive_grad.setColorAt(0.0, QColor(140, 15, 20, 200))
+        festive_grad.setColorAt(0.65, QColor(198, 40, 40, 230))
+        festive_grad.setColorAt(1.0, QColor(255, 213, 79, 255))
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(QRectF(0, 0, prog_w, h), h / 2.0, h / 2.0)
+        painter.fillPath(clip_path, festive_grad)
+
+        # Golden sparkling stardust particles flowing behind Santa
+        painter.setPen(Qt.PenStyle.NoPen)
+        spacing = 10.0
+        cur_x = max(6.0, prog_w - 45.0)
+        while cur_x < prog_w - 6.0:
+            sparkle_phase = self._phase * 0.15 + cur_x
+            sy = (h / 2.0) + math.sin(sparkle_phase) * 3.5
+            rad = 1.0 + (math.sin(sparkle_phase * 1.5) + 1.0) * 0.5
+            painter.setBrush(QColor(255, 245, 180, 220))
+            painter.drawEllipse(QPointF(cur_x, sy), rad, rad)
+            cur_x += spacing
+
+    def _draw_santa_sleigh(self, painter: QPainter, edge_x: float, h: float) -> None:
+        cy = (h / 2.0) - 2.0 + math.sin(self._phase * 0.12) * 1.2
+
+        # 1. Golden Sleigh Runners
+        painter.setPen(QPen(QColor("#FFD54F"), 1.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawLine(QPointF(edge_x - 22.0, cy + 5.0), QPointF(edge_x - 9.0, cy + 5.0))
+        painter.drawLine(QPointF(edge_x - 9.0, cy + 5.0), QPointF(edge_x - 6.0, cy + 2.0))
+
+        # 2. Sleigh Body
+        sleigh = QPainterPath()
+        sleigh.moveTo(edge_x - 21.0, cy + 4.0)
+        sleigh.lineTo(edge_x - 10.0, cy + 4.0)
+        sleigh.lineTo(edge_x - 8.0, cy)
+        sleigh.lineTo(edge_x - 14.0, cy - 2.0)
+        sleigh.lineTo(edge_x - 22.0, cy)
+        sleigh.closeSubpath()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.fillPath(sleigh, QColor("#D32F2F"))
+
+        # 3. Green Toy Sack
+        painter.setBrush(QColor("#2E7D32"))
+        painter.drawEllipse(QRectF(edge_x - 21.0, cy - 4.5, 6.0, 5.0))
+
+        # 4. Santa Face & Beard
+        painter.setBrush(QColor("#FFCDD2"))
+        painter.drawEllipse(QRectF(edge_x - 15.0, cy - 4.0, 4.0, 4.0))
+        painter.setBrush(QColor("#FFFFFF"))
+        painter.drawEllipse(QRectF(edge_x - 15.0, cy - 2.0, 4.0, 3.0))
+
+        # 5. Santa Hat & Pom-pom
+        hat = QPainterPath()
+        hat.moveTo(edge_x - 15.0, cy - 3.0)
+        hat.lineTo(edge_x - 13.0, cy - 7.5)
+        hat.lineTo(edge_x - 11.0, cy - 3.0)
+        hat.closeSubpath()
+        painter.fillPath(hat, QColor("#D32F2F"))
+        painter.setBrush(QColor("#FFFFFF"))
+        painter.drawEllipse(QRectF(edge_x - 14.0, cy - 8.5, 2.2, 2.2))
+
+        # 6. Golden Reins
+        painter.setPen(QPen(QColor("#FFD54F"), 0.8))
+        painter.drawLine(QPointF(edge_x - 8.0, cy), QPointF(edge_x - 2.0, cy - 1.0))
+
+        # 7. Reindeer (Rudolph)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#795548"))
+        painter.drawEllipse(QRectF(edge_x - 3.0, cy - 2.0, 5.0, 4.0))
+        painter.drawEllipse(QRectF(edge_x + 1.0, cy - 5.0, 3.5, 3.5))
+
+        # Antlers
+        painter.setPen(QPen(QColor("#4E342E"), 0.8))
+        painter.drawLine(QPointF(edge_x + 2.0, cy - 5.0), QPointF(edge_x + 1.0, cy - 8.0))
+        painter.drawLine(QPointF(edge_x + 3.0, cy - 5.0), QPointF(edge_x + 4.0, cy - 8.0))
+
+        # Glowing Red Nose (Rudolph)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#FF1744"))
+        painter.drawEllipse(QRectF(edge_x + 4.0, cy - 4.0, 1.8, 1.8))

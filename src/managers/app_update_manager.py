@@ -185,13 +185,23 @@ class AppUpdateManager(QObject):
                     else:
                         QMetaObject.invokeMethod(progress, "setLabelText",
                             Qt.ConnectionType.QueuedConnection, Q_ARG(str, "Delta update via AppImageUpdate..."))
-                        # appimageupdatetool rewrites its target in place and creates
-                        # a .zs-old backup; work on a copy so a failed run cannot
-                        # damage the working install.
+                        # appimageupdatetool with -O overwrites its target in place;
+                        # work on a copy so a failed run cannot damage the working
+                        # install. Without -O it creates a new file and leaves the
+                        # original untouched, so -O is required for the success
+                        # check below to see the updated content.
+                        # Pass -u with the resolved release tag so the updater
+                        # targets the intended release even if the AppImage's
+                        # embedded update string has an unresolvable wildcard tag.
                         target = dest_dir / "ASSella.AppImage.autoupdate"
                         shutil.copy2(appimage_path, target)
+                        cmd = [updater, "-O"]
+                        target_tag = release_data.get("tag_name") or (tag if tag != "latest" else "")
+                        if target_tag:
+                            cmd.extend(["-u", f"gh-releases-zsync|niwia|ASSella|{target_tag}|ASSella.AppImage.zsync"])
+                        cmd.append(str(target))
                         proc = subprocess.run(
-                            [updater, "--self-update", str(target)],
+                            cmd,
                             capture_output=True, text=True, timeout=3600,
                         )
                         out = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -204,6 +214,7 @@ class AppUpdateManager(QObject):
                             logger.info(
                                 f"Delta update complete ({target.stat().st_size} bytes) via appimageupdatetool."
                             )
+                            Path(str(target) + ".zs-old").unlink(missing_ok=True)
                         else:
                             logger.warning(
                                 f"appimageupdatetool returned rc={proc.returncode}; falling back."
@@ -243,8 +254,18 @@ class AppUpdateManager(QObject):
                             # a copy: a failed sync must not damage the working install.
                             shutil.copy2(appimage_path, seed_copy)
 
+                            # Pass the target AppImage URL explicitly via -u. zsync2
+                            # (bundled since 3.1) reads -u as "the URL to get the
+                            # target file" and uses it to override the .zsync's own
+                            # URL header. Older releases filled that header with the
+                            # AppImageUpdate descriptor ("gh-releases-zsync|..."),
+                            # which zsync2 would otherwise treat as a relative path
+                            # and 404 on. (Stock zsync 0.6.2 gives -u a different
+                            # meaning — the referring URL — but it cannot read an
+                            # https control file at all, so it never reaches here.)
                             proc = subprocess.run(
-                                [zsync_bin, "-i", str(seed_copy), "-o", str(zsync_out),
+                                [zsync_bin, "-u", download_url,
+                                 "-i", str(seed_copy), "-o", str(zsync_out),
                                  f"{download_url}.zsync"],
                                 capture_output=True, text=True, timeout=1800,
                                 cwd=str(dest_dir),

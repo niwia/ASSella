@@ -9,7 +9,9 @@ from typing import List
 
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
+    QSizePolicy,
     QDialog,
     QHBoxLayout,
     QVBoxLayout,
@@ -147,6 +149,13 @@ class GameDetailsDialogV2(QDialog):
     def __init__(self, parent, game_data):
         super().__init__(parent)
         self.parent_window = parent
+        if parent is None or not hasattr(parent, "_fetch_game_manifest"):
+            from ui.dialogs.gamelibrary import GameLibraryDialog
+            self._library_delegate = GameLibraryDialog(parent)
+            self.parent_window = self._library_delegate
+            self._library_delegate._details_dialog = self
+        else:
+            self._library_delegate = None
         self.game_data = game_data
         self.appid = str(game_data.get("appid") or game_data.get("app_id") or "0")
         self.settings = get_settings()
@@ -165,13 +174,23 @@ class GameDetailsDialogV2(QDialog):
         self.luafix_check_finished.connect(self._on_luafix_check_finished)
         self.manifest_fetch_completed.connect(self._on_manifest_fetch_completed)
 
-        self.accent_color = getattr(parent, "accent_color", "#a1c9fd")
+        self._user_theme_accent = getattr(parent, "accent_color", "#a1c9fd")
         self.background_color = getattr(parent, "background_color", "#111318")
+
+        if self.settings.value("enable_adaptive_game_theming", False, type=bool):
+            from utils.color_utils import get_cached_thumbnail_color
+            cached_col = get_cached_thumbnail_color(str(self.appid))
+            if cached_col and cached_col.isValid():
+                self.accent_color = cached_col.name()
+            else:
+                self.accent_color = self._user_theme_accent
+        else:
+            self.accent_color = self._user_theme_accent
 
         self.setWindowTitle(f"{game_data.get('game_name', 'Game')} — Details")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setMinimumSize(560, 440)
-        self.resize(620, 500)
+        self.setMinimumSize(560, 360)
+        self.resize(680, 540)
         self.setModal(True)
 
         # Workshop tab is shown only if game has workshop AND has downloaded content
@@ -219,6 +238,88 @@ class GameDetailsDialogV2(QDialog):
         if main_win and hasattr(main_win, "progress_bar"):
             main_win.progress_bar.valueChanged.connect(self._on_main_progress_changed)
 
+    # ── Per-tab height: Info is short, the other tabs get the full window ──
+    FULL_HEIGHT = 540
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not getattr(self, "_logo_scheduled", False):
+            # After the page has drawn, so a network lookup never delays opening it.
+            self._logo_scheduled = True
+            from ui.dialogs.game_details.hero_header import load_title_logo
+            QTimer.singleShot(400, lambda: load_title_logo(self))
+
+        if not getattr(self, "_fitted_once", False):
+            self._fitted_once = True
+            self._full_height = max(self.height(), self.FULL_HEIGHT)
+            # showEvent runs before the window is mapped: fitting here means
+            # the window first appears at the fitted size, not the full one.
+            if self.layout() is not None:
+                self.layout().activate()
+            self._fit_height_for_tab(self.stacked.currentIndex(), animate=False)
+            # Fit now, and again once late content (branches, EOS, badges) has
+            # settled; the window manager may also resize the window on map.
+            for delay in (300, 1200):
+                QTimer.singleShot(delay, lambda: self._fit_height_for_tab(self.stacked.currentIndex(), animate=False))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # A manual resize (dragging the frame) turns the automatic sizing off.
+        if getattr(self, "_fitted_once", False) and not getattr(self, "_auto_resizing", False) \
+                and event.oldSize().height() > 0 and event.size().height() != event.oldSize().height():
+            self._user_sized = True
+
+    def _tab_target_height(self, index: int) -> int:
+        inner = None
+        if index == 0:
+            inner = getattr(self, "_info_inner", None)
+        elif hasattr(self, "_tickets_tab_index") and index == self._tickets_tab_index:
+            inner = getattr(self, "_tickets_inner", None)
+
+        if inner is None:
+            return self._full_height
+        content_h = inner.layout().sizeHint().height() if inner.layout() else inner.sizeHint().height()
+        chrome = self.height() - self.stacked.height()
+        return max(self.minimumHeight(), min(self._full_height, chrome + content_h + 14))
+
+    def _fit_height_for_tab(self, index: int, animate: bool = True) -> None:
+        if self.isMaximized() or not hasattr(self, "stacked"):
+            return
+        # Hidden pages must not hold the window open at their size.
+        for i in range(self.stacked.count()):
+            page = self.stacked.widget(i)
+            pol = QSizePolicy.Policy.Preferred if i == index else QSizePolicy.Policy.Ignored
+            page.setSizePolicy(pol, pol)
+        self.stacked.updateGeometry()
+        target = self._tab_target_height(index)
+        start = self.height()
+        if abs(target - start) < 3:
+            return
+        anim = getattr(self, "_height_anim", None)
+        if anim is not None:
+            anim.stop()
+        if not animate:
+            self._auto_resizing = True
+            self.resize(self.width(), target)
+            self._auto_resizing = False
+            return
+        from PyQt6.QtCore import QEasingCurve, QVariantAnimation
+
+        anim = QVariantAnimation(self)
+        anim.setStartValue(start)
+        anim.setEndValue(target)
+        anim.setDuration(160)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def _step(v):
+            self._auto_resizing = True
+            self.resize(self.width(), int(v))
+            self._auto_resizing = False
+
+        anim.valueChanged.connect(_step)
+        self._height_anim = anim
+        anim.start()
+
     def _on_main_progress_changed(self, value):
         try:
             main_win = self.parent_window.main_window if hasattr(self.parent_window, "main_window") else None
@@ -233,6 +334,34 @@ class GameDetailsDialogV2(QDialog):
         self.setStyleSheet(
             build_stylesheet(self.background_color, self.accent_color)
         )
+
+    def _apply_dynamic_accent(self, color: QColor) -> None:
+        if not self.settings.value("enable_adaptive_game_theming", False, type=bool):
+            return
+        if not color or not isinstance(color, QColor) or not color.isValid():
+            return
+        new_hex = color.name()
+        if new_hex.lower() == (self.accent_color or "").lower():
+            return
+        self.accent_color = new_hex
+        self._apply_stylesheet()
+        if hasattr(self, "stacked"):
+            self._switch_tab(self.stacked.currentIndex())
+        if hasattr(self, "_tab_close_btn") and self._tab_close_btn:
+            self._tab_close_btn.setStyleSheet(f"""
+                QPushButton {{
+                    border: none; border-radius: 0;
+                    padding: 0 8px; font-size: 9pt;
+                    color: {ink_on(self.background_color, 0.6)};
+                }}
+                QPushButton:hover {{ color: {self.accent_color}; }}
+            """)
+        if hasattr(self, "folder_tile") and self.folder_tile:
+            self.folder_tile.update_state(False, self.accent_color, inactive_sub="Open directory")
+        if hasattr(self, "dlc_tile") and self.dlc_tile:
+            self.dlc_tile.update_state(self.dlc_tile.isChecked(), self.accent_color)
+        if hasattr(self, "pin_tile") and self.pin_tile:
+            self.pin_tile.update_state(self.pin_tile.isChecked(), self.accent_color)
 
     def _setup_ui(self):
         root = QVBoxLayout(self)
@@ -279,40 +408,29 @@ class GameDetailsDialogV2(QDialog):
         self._has_depots = has_depots
 
         self._tab_buttons = []
-        if has_depots:
-            self._pages_info = [
-                ("Info", 0),
-                ("Depots", 1),
-                ("Builds", 2),
-                ("Tools", 3),
-                ("Achievements", 4),
-                ("Workshop", 5),
-                ("Tickets", 6),
-            ]
-            self.depots_page_index = 1
-            self.builds_page_index = 2
-            self.achievements_page_index = 4
-            self.ws_page_index = 5
-            self._tickets_tab_index = 6
-        else:
-            self._pages_info = [
-                ("Info", 0),
-                ("Builds", 1),
-                ("Tools", 2),
-                ("Achievements", 3),
-                ("Workshop", 4),
-                ("Tickets", 5),
-            ]
-            self.depots_page_index = None
-            self.builds_page_index = 1
-            self.achievements_page_index = 3
-            self.ws_page_index = 4
-            self._tickets_tab_index = 5
+        has_cheevos = self.settings.value("enable_slsah_cheevos", False, type=bool)
 
+        pages = [("Info", "info")]
+        if has_depots:
+            pages.append(("Depots", "depots"))
+        pages.append(("Builds", "builds"))
+        pages.append(("Tools", "tools"))
+        if has_cheevos:
+            pages.append(("Achievements", "achievements"))
+        pages.append(("Workshop", "workshop"))
+        pages.append(("Tickets", "tickets"))
         if self._is_luatools_available():
-            idx = len(self._pages_info)
-            self._pages_info.append(("LuaFix", idx))
-            self.luafix_page_index = idx
+            pages.append(("LuaFix", "luafix"))
+
+        self._pages_info = [(label, idx) for idx, (label, _key) in enumerate(pages)]
+        page_dict = {key: idx for idx, (_label, key) in enumerate(pages)}
+
+        self.depots_page_index = page_dict.get("depots")
+        self.builds_page_index = page_dict.get("builds")
+        self.achievements_page_index = page_dict.get("achievements")
+        self.ws_page_index = page_dict.get("workshop")
+        self._tickets_tab_index = page_dict.get("tickets")
+        self.luafix_page_index = page_dict.get("luafix")
 
         for label, idx in self._pages_info:
             btn = QPushButton(label)
@@ -335,6 +453,7 @@ class GameDetailsDialogV2(QDialog):
         tab_bar_layout.addStretch()
 
         close_btn = QPushButton("✕ Close")
+        self._tab_close_btn = close_btn
         close_btn.setFlat(True)
         close_btn.setFixedHeight(30)
         close_btn.setStyleSheet(f"""
@@ -346,6 +465,7 @@ class GameDetailsDialogV2(QDialog):
             QPushButton:hover {{ color: {self.accent_color}; }}
         """)
         close_btn.clicked.connect(self.accept)
+        close_btn.setVisible(False)  # the title bar already closes the window
         tab_bar_layout.addWidget(close_btn)
 
         root.addWidget(tab_bar_frame)
@@ -358,7 +478,8 @@ class GameDetailsDialogV2(QDialog):
             self._init_depots_tab()
         self._init_builds_tab()
         self._init_tools_tab()
-        self._init_achievements_tab()
+        if has_cheevos:
+            self._init_achievements_tab()
         self._init_workshop_tab()
         self._init_tickets_tab()
         if self._is_luatools_available():
@@ -371,6 +492,8 @@ class GameDetailsDialogV2(QDialog):
 
     def _switch_tab(self, index):
         self.stacked.setCurrentIndex(index)
+        if getattr(self, "_fitted_once", False):
+            self._fit_height_for_tab(index)
         for i, btn in enumerate(self._tab_buttons):
             active = (i == index)
             if active:
@@ -407,10 +530,9 @@ class GameDetailsDialogV2(QDialog):
         if getattr(self, "_builds_fetch_requested", False):
             return
         self._builds_fetch_requested = True
-        CACHE_FRESH_SECONDS = 3600
         try:
             from core.steamdb_scraper import ByparrManager, cffi_requests
-            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or (cffi_requests is not None)
+            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or bool(cffi_requests)
         except Exception:
             has_solver = False
 
@@ -423,11 +545,31 @@ class GameDetailsDialogV2(QDialog):
         if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
             self.builds_bottom_bar.setVisible(True)
 
+        # SteamDB is only asked automatically when there is nothing cached or the
+        # game has a newer build than the cache knows about. Everything else is
+        # served from cache; the Refresh button always fetches.
         if not getattr(self, "_cached_builds", None):
             self.builds_center_stack.setCurrentIndex(0)
             self._fetch_steamdb_builds_async()
-        elif self._cache_age < 0 or self._cache_age >= CACHE_FRESH_SECONDS:
+        elif self._builds_update_detected():
+            logger.info(f"[BuildsTab] Update detected for {self.appid}; refreshing build history.")
             self._fetch_steamdb_builds_async()
+
+    def _builds_update_detected(self) -> bool:
+        """True when Game Details saw an update the cached build list does not include."""
+        gd = self.game_data or {}
+        cached_ids = {str(b.get("buildid") or "") for b in (getattr(self, "_cached_builds", None) or [])}
+        latest = str(gd.get("latest_buildid") or "").strip()
+        if not latest:
+            try:
+                from managers.db_manager import DatabaseManager
+                info = DatabaseManager().get_app_info(str(self.appid), bypass_expiration=True) or {}
+                latest = str(info.get("buildid") or "").strip()
+            except Exception:
+                latest = ""
+        if latest and latest not in cached_ids:
+            return True
+        return gd.get("update_status") == "update_available" and not (latest and latest in cached_ids)
 
     def _ensure_workshop_loaded(self):
         is_vapor = bool(
@@ -615,8 +757,8 @@ class GameDetailsDialogV2(QDialog):
     def _init_builds_tab(self):
         init_builds_tab(self)
 
-    def _fetch_steamdb_builds_async(self):
-        fetch_steamdb_builds_async(self)
+    def _fetch_steamdb_builds_async(self, manual: bool = False):
+        fetch_steamdb_builds_async(self, manual=manual)
 
     def _populate_builds_cards(self, data: list):
         if sip.isdeleted(self):
@@ -691,6 +833,8 @@ class GameDetailsDialogV2(QDialog):
         init_achievements_tab(self)
 
     def _ensure_achievements_loaded(self):
+        if not self.settings.value("enable_slsah_cheevos", False, type=bool):
+            return
         ensure_achievements_loaded(self)
 
     # ──────────────────────────────────────────
@@ -813,3 +957,20 @@ class GameDetailsDialogV2(QDialog):
             self._cached_luafix_res = res_data
             if hasattr(self, "_luafix_bridge"):
                 self._luafix_bridge.loaded.emit(res_data)
+
+    def _cleanup_delegate(self):
+        if getattr(self, "_library_delegate", None):
+            try:
+                self._library_delegate.close()
+                self._library_delegate.deleteLater()
+            except Exception as e:
+                logger.debug(f"Error during library delegate cleanup: {e}")
+            self._library_delegate = None
+
+    def closeEvent(self, event):
+        self._cleanup_delegate()
+        super().closeEvent(event)
+
+    def done(self, r):
+        self._cleanup_delegate()
+        super().done(r)

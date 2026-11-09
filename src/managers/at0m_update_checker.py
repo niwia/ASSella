@@ -85,6 +85,7 @@ ALL_SHARED_REDISTS: Set[str] = SHARED_REDISTS | {str(d) for d in DEPOT_BLACKLIST
 
 # Cache TTL for "up_to_date" entries (24 hours)
 UP_TO_DATE_TTL_SECONDS = 24 * 3600
+NO_DEPOTS_RETRY_SECONDS = 6 * 3600
 # Cooldown for "key_pending" entries before re-checking Hubcap (6 hours)
 KEY_PENDING_COOLDOWN_SECONDS = 6 * 3600
 
@@ -522,6 +523,20 @@ class At0mUpdateChecker(QObject):
         if error or not ready:
             return None
 
+        # Verify against Hubcap manifest contents endpoint
+        try:
+            from core.morrenus_api import get_manifest_contents
+            contents = get_manifest_contents(appid_str)
+            if isinstance(contents, dict) and not contents.get("error"):
+                hubcap_depots = contents.get("depot_ids") or set()
+                if hubcap_depots:
+                    ready = [d for d in ready if d in hubcap_depots]
+        except Exception as e:
+            logger.debug(f"[At0mChecker] Could not verify Hubcap manifest contents during promote for {appid_str}: {e}")
+
+        if not ready:
+            return None
+
         app_name = cached.get("game_title") or f"App {appid_str}"
         depots_info = [
             {"id": str(d["id"]), "name": d.get("name") or f"Depot {d['id']}", "has_key": True}
@@ -597,8 +612,22 @@ class At0mUpdateChecker(QObject):
                 return "up_to_date", cached
 
         # Step 2: Fetch Steam app metadata (Steam PICS / SteamCMD)
-        from core.steam_api import fetch_steamcmd_info
-        steam_info = fetch_steamcmd_info(appid_str, include_header=False)
+        # An AppID Steam had no depots for (a removed app, a test entry) is
+        # not asked again for NO_DEPOTS_RETRY_SECONDS: each miss costs ~2s.
+        from utils.settings import get_settings
+
+        miss_key = f"at0m_no_depots/{appid_str}"
+        settings = get_settings()
+        try:
+            last_miss = int(settings.value(miss_key, 0) or 0)
+        except (TypeError, ValueError):
+            last_miss = 0
+        if not force_refresh and last_miss and now - last_miss < NO_DEPOTS_RETRY_SECONDS:
+            logger.debug(f"[At0mChecker] {appid_str}: Steam had no depots recently, not asking again yet")
+            steam_info = self.db.get_app_info(appid_str)
+        else:
+            from core.steam_api import fetch_steamcmd_info
+            steam_info = fetch_steamcmd_info(appid_str, include_header=False)
         if not steam_info or not steam_info.get("depots"):
             # Fallback to DB app info if remote fetch failed
             steam_info = self.db.get_app_info(appid_str)
@@ -613,6 +642,8 @@ class At0mUpdateChecker(QObject):
         if not steam_info or not steam_info.get("depots"):
             # Nobody could be asked. Reporting "up_to_date" would tell the
             # user there is nothing to do, which is not what we know.
+            if not last_miss or now - last_miss >= NO_DEPOTS_RETRY_SECONDS:
+                settings.setValue(miss_key, now)
             logger.info(f"[At0mChecker] Could not fetch Steam depots for {appid_str}")
             return "cannot_determine", {
                 "appid": appid_str,
@@ -685,6 +716,27 @@ class At0mUpdateChecker(QObject):
             }
             logger.info(f"[At0mChecker] {appid_str} cannot be determined ({index_error}).")
             return status, details
+
+        if ready_depots:
+            # Verify against Hubcap /contents: if Hubcap has a manifest bundle for this app,
+            # ensure the ready depots are actually included in the bundle contents.
+            try:
+                from core.morrenus_api import get_manifest_contents
+                contents = get_manifest_contents(appid_str)
+                if isinstance(contents, dict) and not contents.get("error"):
+                    hubcap_depots = contents.get("depot_ids") or set()
+                    if hubcap_depots:
+                        verified = [d for d in ready_depots if d in hubcap_depots]
+                        unverified = [d for d in ready_depots if d not in hubcap_depots]
+                        if unverified:
+                            logger.info(
+                                f"[At0mChecker] App {appid_str}: Depot(s) {unverified} have keys in index "
+                                f"but are missing from Hubcap manifest contents. Marking as awaiting."
+                            )
+                            awaiting_depots.extend(unverified)
+                            ready_depots = verified
+            except Exception as e:
+                logger.debug(f"[At0mChecker] Could not verify Hubcap manifest contents for {appid_str}: {e}")
 
         depots_info = self._depot_info(ready_depots, depots_dict, has_key=True)
         pending_info = self._depot_info(awaiting_depots, depots_dict, has_key=False)

@@ -11,7 +11,7 @@ from typing import Optional
 from pathlib import Path
 import logging
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap, QColor
 from PyQt6.QtWidgets import (
     QDialog,
@@ -53,8 +53,14 @@ class DownloadBackendDialog(QDialog):
         game_name: str = "",
         accent_color: str = "#6c5ce7",
         mode: str = "download",
+        atom_guard: bool = False,
     ):
         super().__init__(parent)
+        # atom_guard: also require the full AT0-M readiness check (config,
+        # Plugins: yes, AdditionalDepots/DecryptionKeys, interceptor), the same
+        # gate standard games pass before AT0-M mode is offered.
+        self._atom_guard = atom_guard
+        self._atom_block_reason = ""
         self.app_id = str(app_id)
         self.game_name = game_name or f"App {app_id}"
         self.accent_color = accent_color
@@ -62,7 +68,7 @@ class DownloadBackendDialog(QDialog):
         self._choice = BACKEND_CANCEL
         self.settings = get_settings()
 
-        self._plugins_available = are_plugins_present()
+        self._plugins_available = self._compute_atom_available()
         self._selected_backend = BACKEND_NATIVE_STEAM if self._plugins_available else BACKEND_ASSELLA
 
         # Parse accent RGB for glowing backgrounds
@@ -78,6 +84,35 @@ class DownloadBackendDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         self._init_ui()
+
+    def _compute_atom_available(self) -> bool:
+        """Plugins present and, when guarded, the full AT0-M readiness check."""
+        self._atom_block_reason = ""
+        if not are_plugins_present():
+            return False
+        if self._atom_guard:
+            try:
+                from utils.plugin_games import can_use_atom_mode
+                ok, reason = can_use_atom_mode()
+            except Exception as e:
+                ok, reason = False, f"AT0-M readiness check failed: {e}"
+            if not ok:
+                self._atom_block_reason = reason or "AT0-M is not ready"
+                return False
+        return True
+
+    def _apply_block_reason(self) -> None:
+        """Show why AT0-M is unavailable when it is the guard (not plugins) blocking it."""
+        if self._atom_block_reason and are_plugins_present(ignore_bypass=True):
+            self.steam_status_lbl.setStyleSheet("font-size: 7.5pt; color: #ff6b6b; border: none; background: transparent; font-weight: 500;")
+            self.steam_status_lbl.setText("AT0-M not ready")
+            self.steam_status_lbl.setVisible(True)
+            self.steam_card.setToolTip(self._atom_block_reason)
+            self.steam_status_lbl.setToolTip(self._atom_block_reason)
+            if hasattr(self, "plugin_help_btn"):
+                self.plugin_help_btn.setVisible(True)
+        else:
+            self.steam_card.setToolTip("")
 
     def _init_ui(self):
         root = QVBoxLayout(self)
@@ -173,6 +208,8 @@ class DownloadBackendDialog(QDialog):
         else:
             self.steam_status_lbl.setVisible(False)
         steam_vbox.addWidget(self.steam_status_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+        if self._atom_block_reason:
+            QTimer.singleShot(0, self._apply_block_reason)
 
         self.steam_card.mousePressEvent = lambda e: self._select_backend(BACKEND_NATIVE_STEAM)
         cards_layout.addWidget(self.steam_card)
@@ -448,8 +485,8 @@ class DownloadBackendDialog(QDialog):
             except Exception as e:
                 logger.error(f"[DownloadBackendDialog] Error opening settings: {e}")
 
-        # Re-check plugin availability
-        self._plugins_available = are_plugins_present()
+        # Re-check plugin availability (and AT0-M readiness when guarded)
+        self._plugins_available = self._compute_atom_available()
         phys_present = are_plugins_present(ignore_bypass=True)
         bypassed = is_plugin_check_bypassed()
         self.plugin_help_btn.setVisible(not self._plugins_available)
@@ -465,6 +502,7 @@ class DownloadBackendDialog(QDialog):
         else:
             self.steam_status_lbl.setVisible(False)
 
+        self._apply_block_reason()
         self.steam_card.setCursor(Qt.CursorShape.PointingHandCursor if self._plugins_available else Qt.CursorShape.ForbiddenCursor)
         if self._plugins_available and self._selected_backend != BACKEND_ASSELLA:
             self._selected_backend = BACKEND_NATIVE_STEAM

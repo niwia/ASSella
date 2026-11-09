@@ -37,7 +37,7 @@ EXPECTED_SKIPS = {
 # A module that fails to import because one of these is absent is a real
 # failure: the dependency is declared in requirements.txt and must be installed.
 HARD_DEPENDENCIES = {
-    "PyQt6", "psutil", "gevent", "urwid", "capstone", "curl_cffi",
+    "PyQt6", "psutil", "gevent", "rich", "capstone", "curl_cffi",
     "yaml", "cryptography", "Crypto", "vdf", "steam", "requests",
     "bs4", "curl_cffi.requests", "zstandard", "protobuf",
 }

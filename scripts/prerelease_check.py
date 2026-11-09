@@ -38,7 +38,7 @@ if not APPIMAGE_VENV.exists():
 if APPIMAGE_VENV.exists() and sys.executable != str(APPIMAGE_VENV) and not os.environ.get("ASSELLA_TESTER_NO_REEXEC"):
     try:
         from steam.client import SteamClient
-        import urwid
+        import rich
     except ImportError:
         env = dict(os.environ)
         env["ASSELLA_TESTER_NO_REEXEC"] = "1"
@@ -723,13 +723,13 @@ class PreReleaseTester:
                 self.log_result("Goldberg Binary & Tool Suite Integrity", False, str(e), duration=time.time() - t0)
 
         # Test 9.2: Goldberg Headless Auto-Application & File Backup
-        # Requires urwid, which is only present in the bundled AppImage runtime.
+        # Requires rich, which is present in the runtime environment.
         t0 = time.time()
         if self.is_ci:
             self.log_result("Goldberg Auto-Application, Backup & steam_appid.txt", True, "Skipped in CI (optional component not bundled in git)", duration=time.time() - t0, skipped=True)
-        elif importlib.util.find_spec("urwid") is None:
+        elif importlib.util.find_spec("rich") is None:
             self.log_result("Goldberg Auto-Application, Backup & steam_appid.txt", True,
-                            "urwid not installed in this interpreter", duration=time.time() - t0, skipped=True)
+                            "rich not installed in this interpreter", duration=time.time() - t0, skipped=True)
         else:
           try:
             from utils.paths import Paths

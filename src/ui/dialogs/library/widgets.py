@@ -185,6 +185,33 @@ class GameItemWidget(QWidget):
         self.parent_dialog = parent_dialog
         self.appid = str(game_data.get("appid", "") or "")
         self._init_ui(size_str)
+        if game_data.get("atom_pending"):
+            self._apply_pending()
+
+    def _apply_pending(self) -> None:
+        """AT0-M game that is registered but not downloaded: say so instead of a status."""
+        from utils.atom_pending import pending_label
+
+        text, color = pending_label(self.game_data)
+        lbl = getattr(self, "status_label", None)
+        if lbl is not None:
+            lbl.setText(text)
+            lbl.setVisible(True)
+            lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            lbl.setStyleSheet(
+                f"color: {color}; background-color: rgba(255,255,255,0.06); border: 1px solid {color};"
+                " border-radius: 10px; padding: 3px 10px; font-size: 11px; font-weight: bold;"
+            )
+            issues = self.game_data.get("pending_issues") or []
+            lbl.setToolTip("\n".join(issues) if issues else "Registered with SLSsteam; no game files yet.")
+        ml = getattr(self, "manifest_label", None)
+        if ml is not None:
+            ml.setText("Not downloaded yet")
+            ml.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
+        for attr in ("pinned_build_label",):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setVisible(False)
 
     def _init_ui(self, size_str: str) -> None:
         """Initialize the UI components."""
@@ -301,11 +328,11 @@ class GameItemWidget(QWidget):
         self.pinned_build_label.setVisible(False)
         self.pinned_label = self.pinned_build_label
 
-        self.denuvo_badge = QLabel()
+        self.denuvo_badge = QLabel(self)
         self.denuvo_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.denuvo_badge.hide()
 
-        self.proton_badge = QLabel()
+        self.proton_badge = QLabel(self)
         self.proton_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.proton_badge.hide()
 
@@ -404,6 +431,8 @@ class GameItemWidget(QWidget):
         """Update the manifest status label in-place."""
         if not hasattr(self, "manifest_label") or not self.manifest_label:
             return
+        if self.game_data.get("atom_pending"):
+            return
 
         appid = self.game_data.get("appid", "0")
 
@@ -494,6 +523,9 @@ class GameItemWidget(QWidget):
 
     def update_status(self, update_status: str) -> None:
         """Update update and manifest status labels in-place."""
+        if self.game_data.get("atom_pending"):
+            self._apply_pending()
+            return
         is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
         is_at0m_game = not is_accela and bool(
             self.game_data.get("is_atom")
@@ -554,6 +586,10 @@ class GameItemWidget(QWidget):
         if not hasattr(self, "denuvo_badge") or not self.denuvo_badge:
             return
 
+        if getattr(self, "_is_steam_tab", False):
+            self.denuvo_badge.hide()
+            return
+
         appid = self.game_data.get("appid", "0")
         if not appid or appid in ("0", "N/A", "unknown"):
             self.denuvo_badge.hide()
@@ -602,6 +638,10 @@ class GameItemWidget(QWidget):
         if not hasattr(self, "proton_badge") or not self.proton_badge:
             return
 
+        if getattr(self, "_is_steam_tab", False):
+            self.proton_badge.hide()
+            return
+
         appid = self.game_data.get("appid", "0")
         if not appid or appid in ("0", "N/A", "unknown"):
             self.proton_badge.hide()
@@ -634,9 +674,9 @@ class GameItemWidget(QWidget):
             return
 
         _tier_map = {
-            "platinum": ("PLATINUM", "#90CAF9", "rgba(33, 150, 243, 0.15)", "rgba(144, 202, 249, 0.30)"),
+            "platinum": ("PLATINUM", "#CFD8DC", "rgba(207, 216, 220, 0.18)", "rgba(236, 239, 241, 0.35)"),
             "gold":     ("GOLD",     "#FFE082", "rgba(255, 193, 7, 0.15)",   "rgba(255, 224, 130, 0.30)"),
-            "silver":   ("SILVER",   "#CFD8DC", "rgba(144, 164, 174, 0.15)", "rgba(207, 216, 220, 0.30)"),
+            "silver":   ("SILVER",   "#B0BEC5", "rgba(144, 164, 174, 0.15)", "rgba(176, 190, 197, 0.30)"),
             "bronze":   ("BRONZE",   "#FFAB91", "rgba(255, 112, 67, 0.15)",  "rgba(255, 171, 145, 0.30)"),
             "borked":   ("BORKED",   "#EF9A9A", "rgba(239, 83, 80, 0.18)",   "rgba(239, 154, 154, 0.35)"),
             "native":   ("NATIVE",   "#A5D6A7", "rgba(76, 175, 80, 0.15)",   "rgba(165, 214, 167, 0.30)"),

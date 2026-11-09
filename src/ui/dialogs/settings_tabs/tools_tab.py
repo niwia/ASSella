@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -7,15 +8,15 @@ import threading
 import webbrowser
 
 from PyQt6.QtCore import Qt, QUrl, QMetaObject
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
-    QComboBox,
     QPushButton,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -33,10 +34,21 @@ logger = logging.getLogger(__name__)
 
 def create_tools_tab(dialog) -> QWidget:
     """Create the Tools settings tab."""
+    from PyQt6.QtWidgets import QScrollArea
+
     tab = QWidget()
-    layout = QVBoxLayout(tab)
-    layout.setContentsMargins(12, 10, 12, 10)
-    layout.setSpacing(8)
+    tab_lay = QVBoxLayout(tab)
+    tab_lay.setContentsMargins(0, 0, 0, 0)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+    tab_lay.addWidget(scroll)
+    content = QWidget()
+    content.setStyleSheet("background: transparent;")
+    scroll.setWidget(content)
+    layout = QVBoxLayout(content)
+    layout.setContentsMargins(12, 10, 16, 14)
+    layout.setSpacing(14)
 
     # Tools Card
     tools_card, tools_layout = dialog._create_card_frame("Tools")
@@ -91,26 +103,6 @@ def create_tools_tab(dialog) -> QWidget:
     tools_layout.addLayout(tools_btn_row)
     layout.addWidget(tools_card)
 
-    # Windows Registry Card
-    if sys.platform == "win32":
-        reg_card, reg_layout = dialog._create_card_frame("Windows Registry")
-
-        add_tool_button(
-            reg_layout,
-            "Register Registry Entries",
-            "Register accela:// URL protocol and .zip context menu entries.",
-            register_registry_entries,
-        )
-
-        add_tool_button(
-            reg_layout,
-            "Remove Registry Entries",
-            "Remove accela:// URL protocol and .zip context menu entries.",
-            remove_registry_entries,
-        )
-
-        layout.addWidget(reg_card)
-
     # Logging Configuration Card
     log_card, log_layout = dialog._create_card_frame("Logging Configuration")
 
@@ -126,7 +118,7 @@ def create_tools_tab(dialog) -> QWidget:
         "Minimum severity of messages to log.\n"
         "Select NONE to disable all logging (improves performance)."
     )
-    dialog.log_level_combo = QComboBox()
+    dialog.log_level_combo = ModernComboBox()
     dialog.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "NONE"])
     _current_level = dialog.settings.value("log_filter_level", "DEBUG") or "DEBUG"
     idx = dialog.log_level_combo.findText(_current_level)
@@ -140,7 +132,7 @@ def create_tools_tab(dialog) -> QWidget:
     cat_label = QLabel("Log Filter:")
     cat_label.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500;")
     cat_label.setToolTip("Restrict logs to a specific module group.")
-    dialog.log_category_combo = QComboBox()
+    dialog.log_category_combo = ModernComboBox()
     dialog.log_category_combo.addItems([
         "All Modules",
         "Only Steam Client & API",
@@ -157,11 +149,46 @@ def create_tools_tab(dialog) -> QWidget:
     log_row.addStretch()
     log_layout.addLayout(log_row)
 
-    _log_note = QLabel("Changes take effect immediately when you click OK.")
-    _log_note.setStyleSheet("color: #888888; font-size: 11px;")
-    _log_note.setWordWrap(True)
-    log_layout.addWidget(_log_note)
+    btn_row = QHBoxLayout()
+    btn_row.setContentsMargins(0, 4, 0, 0)
+    btn_row.setSpacing(10)
+
+    btn_style = f"""
+        QPushButton {{
+            background-color: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 6px;
+            color: #FFFFFF;
+            padding: 6px 14px;
+            font-size: 9pt;
+            font-weight: 600;
+        }}
+        QPushButton:hover {{
+            background-color: rgba(255, 255, 255, 0.16);
+            border-color: {dialog.accent_color};
+        }}
+    """
+
+    open_log_btn = QPushButton("Open Log Folder")
+    open_log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    open_log_btn.setStyleSheet(btn_style)
+    from utils.logger import open_log_directory
+    open_log_btn.clicked.connect(lambda: open_log_directory())
+    open_log_btn.setToolTip("Open the ASSella log directory in your file manager.")
+    btn_row.addWidget(open_log_btn)
+
+    export_logs_btn = QPushButton("Export Diagnostic Logs")
+    export_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    export_logs_btn.setStyleSheet(btn_style)
+    export_logs_btn.clicked.connect(lambda: export_diagnostic_logs(dialog))
+    export_logs_btn.setToolTip("Bundle recent ASSella logs, SLSsteam logs, config.yaml, and plugin details into a ZIP archive.")
+    btn_row.addWidget(export_logs_btn)
+
+    btn_row.addStretch()
+    log_layout.addLayout(btn_row)
     layout.addWidget(log_card)
+
+    layout.addWidget(create_sls_logging_card(dialog))
 
     # Optional components (Goldberg / Steamless / SLScheevo) are no longer
     # bundled - this is the one place they can be downloaded or updated.
@@ -170,6 +197,191 @@ def create_tools_tab(dialog) -> QWidget:
     layout.addStretch()
     dialog.tab_widget.addTab(tab, "Tools")
     return tab
+
+
+def create_sls_logging_card(dialog):
+    """SLSsteam logging: LogLevels and ExtendedLogging, read from and written
+    straight to config.yaml (the file is the source of truth)."""
+    from PyQt6.QtWidgets import QLabel as _QLabel
+
+    from ui.dialogs.settings_tabs.sls_advanced_tab import SlsConfigBinder
+    from utils.helpers import Material3Switch
+    from utils.yaml.sls_settings import LOG_LEVEL_PRESETS, LOGGING_SETTINGS
+
+    card, lay = dialog._create_card_frame("SLSsteam Logging")
+    lay.setSpacing(12)
+    binder = SlsConfigBinder(card)
+    dialog.sls_logging_binder = binder
+    muted = "color: rgba(255, 255, 255, 0.55); font-size: 8.5pt; background: transparent;"
+
+    if not binder.path.exists():
+        note = _QLabel("SLSsteam's config.yaml was not found, so its logging can't be changed here.")
+        note.setWordWrap(True)
+        note.setStyleSheet(muted)
+        lay.addWidget(note)
+        return card
+
+    def _row(title: str, hint: str, control, status):
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        t = _QLabel(title)
+        t.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; background: transparent;")
+        t.setToolTip(hint)
+        row.addWidget(t, 1)
+        row.addWidget(status, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addLayout(row)
+
+    # Log level: presets of the LogLevels bit flags; anything else shows as Custom.
+    level_combo = ModernComboBox()
+    level_combo.setFixedWidth(220)
+    for name, value in LOG_LEVEL_PRESETS:
+        level_combo.addItem(f"{name}  (0x{value:x})", value)
+    level_status = _QLabel("")
+    dialog.sls_log_level_combo = level_combo
+
+    def _show_level(v):
+        try:
+            value = int(v) if v is not None else 0x3F
+        except (TypeError, ValueError):
+            value = 0x3F
+        level_combo.blockSignals(True)
+        idx = level_combo.findData(value)
+        if idx < 0:
+            custom = level_combo.findText("Custom", Qt.MatchFlag.MatchStartsWith)
+            if custom >= 0:
+                level_combo.removeItem(custom)
+            level_combo.addItem(f"Custom  (0x{value:x})", value)
+            idx = level_combo.count() - 1
+        level_combo.setCurrentIndex(idx)
+        level_combo.blockSignals(False)
+
+    level_combo.currentIndexChanged.connect(
+        lambda i: binder.write("LogLevels", level_combo.itemData(i)) if i >= 0 else None
+    )
+    binder.bind(LOGGING_SETTINGS["LogLevels"], _show_level, level_status)
+    _row(
+        "Log level",
+        "What SLSsteam writes to ~/.SLSsteam.log. Trace, Once and Debug only appear in debug builds.",
+        level_combo,
+        level_status,
+    )
+
+    ext_switch = Material3Switch(checked=False, accent_color=dialog.accent_color)
+    ext_status = _QLabel("")
+    dialog.sls_extended_logging_switch = ext_switch
+
+    def _show_ext(v):
+        ext_switch.blockSignals(True)
+        ext_switch.setChecked(bool(v))
+        ext_switch.blockSignals(False)
+
+    ext_switch.toggled.connect(lambda checked: binder.write("ExtendedLogging", checked))
+    binder.bind(LOGGING_SETTINGS["ExtendedLogging"], _show_ext, ext_status)
+    _row(
+        "Extended logging",
+        "Logs every Steamworks call. Makes the log very large; only for debugging.",
+        ext_switch,
+        ext_status,
+    )
+
+    binder.reload()
+    return card
+
+
+def export_diagnostic_logs(dialog) -> None:
+    """Bundle latest 2 ASSella logs, SLSsteam log, config.yaml, and plugins info into a ZIP archive."""
+    import zipfile
+    from datetime import datetime
+    from utils.logger import get_base_path
+    from utils.slssteam_integration import _get_sls_log_path
+    from utils.yaml_config_manager import get_user_config_path
+    from managers.katamari_config_manager import get_sls_config_dir, get_katamari_conf_path
+
+    # Flush current log handlers so in-memory logs are committed to disk
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception as e:
+            logger.debug(f"[Diagnostics] Error flushing log handler: {e}")
+
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    default_name = f"assella_diagnostics_{timestamp_str}.zip"
+    default_dest = str(Path.home() / default_name)
+
+    save_path, _ = ThemedFileDialog.getSaveFileName(
+        dialog,
+        "Export Diagnostic Logs",
+        default_dest,
+        "Zip Archives (*.zip)",
+    )
+    if not save_path:
+        return
+
+    collected = []
+    try:
+        with zipfile.ZipFile(save_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            # 1. Latest 2 ASSella logs
+            log_dir = get_base_path() / "logs"
+            if log_dir.is_dir():
+                log_files = sorted(
+                    log_dir.glob("assella_*.log"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                for log_file in log_files[:2]:
+                    zf.write(log_file, arcname=f"logs/{log_file.name}")
+                    collected.append(f"ASSella Log: {log_file.name}")
+
+            # 2. SLSsteam log from user home
+            try:
+                sls_log = _get_sls_log_path()
+                if sls_log.exists():
+                    zf.write(sls_log, arcname=f"slssteam/{sls_log.name}")
+                    collected.append(f"SLSsteam Log: {sls_log.name}")
+            except Exception as e:
+                logger.debug(f"[ExportDiag] Error collecting SLS log: {e}")
+
+            # 3. SLSsteam config.yaml
+            try:
+                cfg_path = get_user_config_path()
+                if cfg_path.exists():
+                    zf.write(cfg_path, arcname="slssteam/config.yaml")
+                    collected.append("SLSsteam Config: config.yaml")
+            except Exception as e:
+                logger.debug(f"[ExportDiag] Error collecting config.yaml: {e}")
+
+            # 4. Plugins directory listing & katamari.conf.lua
+            try:
+                sls_cfg_dir = get_sls_config_dir()
+                plugins_dir = sls_cfg_dir / "plugins"
+                plugin_names = []
+                if plugins_dir.is_dir():
+                    plugin_names = sorted([p.name for p in plugins_dir.iterdir() if not p.name.startswith(".")])
+                plugins_listing = "SLSsteam Installed Plugins:\n" + ("\n".join(plugin_names) if plugin_names else "(none)") + "\n"
+                zf.writestr("slssteam/plugins_list.txt", plugins_listing)
+                collected.append(f"Plugins List ({len(plugin_names)} items)")
+
+                kat_conf = get_katamari_conf_path()
+                if kat_conf.exists():
+                    zf.write(kat_conf, arcname="slssteam/katamari.conf.lua")
+                    collected.append("Katamari Config: katamari.conf.lua")
+            except Exception as e:
+                logger.debug(f"[ExportDiag] Error collecting plugins list: {e}")
+
+        summary = "\n• " + "\n• ".join(collected) if collected else "No files collected."
+        ThemedMessageBox.information(
+            dialog,
+            "Diagnostics Exported",
+            f"Diagnostic log archive successfully saved to:\n{save_path}\n\nContents:{summary}",
+        )
+    except Exception as e:
+        logger.error(f"Failed to export diagnostic archive: {e}", exc_info=True)
+        ThemedMessageBox.critical(
+            dialog,
+            "Export Failed",
+            f"Failed to create diagnostic archive:\n{e}",
+        )
 
 
 def add_tool_button(layout: QVBoxLayout, text: str, tooltip: str, slot) -> QPushButton:
@@ -219,7 +431,13 @@ def add_tool_button(layout: QVBoxLayout, text: str, tooltip: str, slot) -> QPush
 
 
 def run_schema_grabber_manually(dialog) -> None:
-    helper_path = Paths.deps("schema-grabber/login_helper.py")
+    from ui.dialogs.settings_tabs.components_card import require_component
+    if not require_component(dialog, "slscheevo"):
+        return
+
+    helper_path = Paths.deps("SLScheevo/login_helper.py")
+    if not helper_path.exists():
+        helper_path = Paths.deps("schema-grabber/login_helper.py")
     if not helper_path.exists():
         ThemedMessageBox.critical(dialog, "Error", f"Achievements helper missing at: {helper_path}")
         return
@@ -228,6 +446,7 @@ def run_schema_grabber_manually(dialog) -> None:
     py = get_venv_python()
     cmd.append(py if py else ("python" if sys.platform == "win32" else "python3"))
     cmd.append(str(helper_path))
+    os.environ["ASSELLA_SRC"] = str(Paths.BASE_DIR)
     launch_terminal_command(cmd, str(helper_path.parent))
 
 
@@ -308,45 +527,6 @@ def browse_aio_script(dialog) -> None:
     if path and current:
         current.setText(path)
         get_settings().setValue("steamless_aio_path", path)
-
-
-def register_registry_entries() -> None:
-    manage_registry("ACCELA.reg", "Registered successfully")
-
-
-def remove_registry_entries() -> None:
-    manage_registry("ACCELA_uninstall.reg", "Removed successfully")
-
-
-def manage_registry(filename: str, success_msg: str) -> None:
-    if sys.platform != "win32":
-        return
-
-    base = (
-        os.path.join(getattr(sys, "_MEIPASS"), "deps")
-        if getattr(sys, "frozen", False)
-        else os.path.join(os.path.dirname(__file__), "..", "..", "..", "deps")
-    )
-    reg_path = os.path.join(base, filename)
-
-    if not os.path.exists(reg_path):
-        ThemedMessageBox.critical(None, "Error", f"Missing {filename}")
-        return
-
-    try:
-        with open(reg_path, "r", encoding="utf-8-sig") as f:
-            content = f.read().replace("[INSTALL_PATH]", sys.executable.replace("\\", "\\\\"))
-
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".reg", delete=False) as tmp:
-            tmp.write(content)
-            tmp_name = tmp.name
-
-        subprocess.run(["regedit", "/s", str(tmp_name)], check=True, shell=True)
-        os.unlink(tmp_name)
-        ThemedMessageBox.information(None, "Success", success_msg)
-    except (IOError, OSError, subprocess.SubprocessError) as e:
-        ThemedMessageBox.critical(None, "Error", f"Registry error: {e}")
 
 
 def update_achievements_button_state(dialog) -> None:

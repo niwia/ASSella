@@ -223,7 +223,8 @@ def main() -> int:
     check(cached_mem is not None and cached_mem == extracted,
           "cached color retrieved from memory cache")
 
-    # Test disk cache round-trip
+    # Test disk cache round-trip (flush pending debounced writes first)
+    cu.flush_color_cache()
     cu._THUMBNAIL_COLOR_CACHE.clear()
     cu._DISK_CACHE_LOADED = False
     cached_disk = cu.get_cached_thumbnail_color("9999991")

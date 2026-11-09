@@ -13,7 +13,7 @@ import urllib.request
 import urllib.error
 
 # QObject and pyqtSlot for robust threading
-from PyQt6.QtCore import QTimer, Qt, QObject, pyqtSlot, pyqtSignal
+from PyQt6.QtCore import QTimer, Qt, QObject, pyqtSlot, pyqtSignal, QFileSystemWatcher
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -181,8 +181,9 @@ class TaskManager(
             st.reset_stages()
 
             # Check Steamless status
-            steamless_enabled = self.settings.value("use_steamless", False, type=bool)
-            steamless_aio_enabled = self.settings.value("use_steamless_aio", False, type=bool)
+            auto_run_steamless = self.settings.value("auto_run_steamless_post_install", True, type=bool)
+            steamless_enabled = auto_run_steamless and self.settings.value("use_steamless", False, type=bool)
+            steamless_aio_enabled = auto_run_steamless and self.settings.value("use_steamless_aio", False, type=bool)
             
             depots_to_check = selected_depots or (self.game_data.get("selected_depots_list") if self.game_data else None)
             
@@ -376,7 +377,7 @@ class TaskManager(
 
         from utils.paths import is_valid_download_directory
         auto_skip_single_choice = self.settings.value(
-            "auto_skip_single_choice", False, type=bool
+            "auto_skip_single_choice", True, type=bool
         )
         default_dl = self.settings.value("default_download_directory", "", type=str)
         has_default_dl = bool(default_dl and is_valid_download_directory(default_dl))
@@ -408,7 +409,10 @@ class TaskManager(
 
         # Show 3-second countdown timer ONLY if single depot AND auto_skip is enabled AND a default download directory is set!
         # If user chose "Ask Every Time" (has_default_dl is False), always open minimal depot selection directly so they can choose their drive.
-        show_timer = (is_single and auto_skip_single_choice and has_default_dl)
+        # DLC-only games must always get the depot selector (never the countdown).
+        from utils.dlc_helpers import is_dlc_only_context
+        is_dlc_only = is_dlc_only_context(appid, self.game_data, self.current_job_metadata)
+        show_timer = (is_single and auto_skip_single_choice and has_default_dl and not is_dlc_only)
 
         if show_timer:
             from ui.dialogs.single_depot_timer_dialog import SingleDepotTimerDialog
@@ -583,7 +587,7 @@ class TaskManager(
         libraries = steam_helpers.get_steam_libraries()
         if libraries:
             auto_skip_single_choice = self.settings.value(
-                "auto_skip_single_choice", False, type=bool
+                "auto_skip_single_choice", True, type=bool
             )
             if auto_skip_single_choice and len(libraries) == 1:
                 return libraries[0]
@@ -861,7 +865,6 @@ class TaskManager(
                 from ui.dialogs.platform_mismatch_dialog import (
                     PlatformMismatchDialog,
                     ACTION_PROCEED,
-                    ACTION_FORCE_PROTON,
                     ACTION_ASSELLA_DOWNLOAD,
                     ACTION_CANCEL,
                 )
@@ -878,7 +881,7 @@ class TaskManager(
                     )
                     m_dlg.exec()
                     m_act = m_dlg.get_action()
-                    if m_act in (ACTION_PROCEED, ACTION_FORCE_PROTON):
+                    if m_act == ACTION_PROCEED:
                         # Proceed normally without forcing Proton or restarting Steam
                         pass
                     elif m_act == ACTION_ASSELLA_DOWNLOAD:
@@ -905,7 +908,14 @@ class TaskManager(
                 self.job_finished()
                 return
 
-            norm_libs = [os.path.normpath(p) for p in steam_libs]
+            from utils.library_choice import remembered_library
+
+            norm_libs = {os.path.normpath(p): p for p in steam_libs}
+            remembered = remembered_library(steam_libs, self.settings)
+            if remembered and (not dest_path or os.path.normpath(dest_path) not in norm_libs):
+                dest_path = remembered
+                self.current_dest_path = dest_path
+
             if not dest_path or os.path.normpath(dest_path) not in norm_libs:
                 if len(steam_libs) == 1:
                     dest_path = steam_libs[0]
@@ -1124,74 +1134,129 @@ class TaskManager(
 
     def _start_vapor_install_watcher(self, appid: str):
         """
-        Spawn a background thread watching for Steam to complete downloading a Vapor game.
+        Watch for Steam to complete downloading a Vapor game using QFileSystemWatcher.
         When Steam marks the game StateFlags=4 (Fully Installed) in appmanifest_<appid>.acf,
         automatically trigger an async library scan so the game appears in the Library tab.
         """
-        def _watch():
-            try:
-                from core.steam_helpers import get_steam_env
-                env = get_steam_env()
-                steamapps_dirs = [Path(p) for p in env.steamapps_paths if os.path.exists(p)]
-                # Poll every 3 seconds for up to 30 minutes (600 iterations)
-                for _ in range(600):
-                    time.sleep(3)
-                    for s_dir in steamapps_dirs:
-                        acf_path = s_dir / f"appmanifest_{appid}.acf"
-                        if acf_path.exists():
+        try:
+            from core.steam_helpers import get_steam_env
+            env = get_steam_env()
+            steamapps_dirs = [Path(p) for p in env.steamapps_paths if os.path.exists(p)]
+            if not steamapps_dirs:
+                logger.debug(f"[VaporWatcher] No steamapps directories found for AppID {appid}")
+                return
+
+            watcher = QFileSystemWatcher(self)
+            paths_to_watch = []
+            for s_dir in steamapps_dirs:
+                paths_to_watch.append(str(s_dir))
+                acf_path = s_dir / f"appmanifest_{appid}.acf"
+                if acf_path.exists():
+                    paths_to_watch.append(str(acf_path))
+
+            watcher.addPaths(paths_to_watch)
+
+            # 30-minute safety timeout
+            timeout_timer = QTimer(self)
+            timeout_timer.setSingleShot(True)
+            timeout_timer.setInterval(1800 * 1000)
+
+            # Periodic 15-second heartbeat for non-inotify mounts (e.g. exFAT/NFS)
+            poll_timer = QTimer(self)
+            poll_timer.setInterval(15 * 1000)
+
+            def _cleanup():
+                try:
+                    if timeout_timer.isActive():
+                        timeout_timer.stop()
+                    if poll_timer.isActive():
+                        poll_timer.stop()
+                    watcher.directoryChanged.disconnect()
+                    watcher.fileChanged.disconnect()
+                except Exception as ex:
+                    logger.debug(f"[VaporWatcher] Cleanup error for {appid}: {ex}")
+                watcher.deleteLater()
+                timeout_timer.deleteLater()
+                poll_timer.deleteLater()
+
+            def _check_acf():
+                for s_dir in steamapps_dirs:
+                    acf_path = s_dir / f"appmanifest_{appid}.acf"
+                    if not acf_path.exists():
+                        continue
+
+                    # If file newly appeared, make sure it is directly watched too
+                    str_acf = str(acf_path)
+                    if str_acf not in watcher.files():
+                        try:
+                            watcher.addPath(str_acf)
+                        except Exception as add_err:
+                            logger.debug(f"[VaporWatcher] Could not add path {str_acf}: {add_err}")
+
+                    try:
+                        text = acf_path.read_text(encoding="utf-8", errors="ignore")
+                        m = re.search(r'"StateFlags"\s+"(\d+)"', text)
+                        if m and m.group(1) == "4":
+                            # Validate against 0-byte ghost installs
+                            m_size = re.search(r'"SizeOnDisk"\s+"(\d+)"', text)
+                            size_on_disk = int(m_size.group(1)) if m_size else 0
+                            m_depots = re.search(r'"InstalledDepots"\s*\{([^}]*)\}', text, re.DOTALL)
+                            depot_matches = re.findall(r'"(\d+)"\s*\{', m_depots.group(1)) if m_depots else []
+
+                            if size_on_disk == 0 or not depot_matches:
+                                logger.warning(
+                                    f"[VaporWatcher] AppID {appid} reached StateFlags=4 but SizeOnDisk={size_on_disk} "
+                                    f"and InstalledDepots={depot_matches}. Ghost/empty download detected. "
+                                    "Aborting watcher without marking up_to_date."
+                                )
+                                _cleanup()
+                                return
+
+                            logger.info(
+                                f"[VaporWatcher] Steam download completed for AppID {appid} (StateFlags=4, SizeOnDisk={size_on_disk}). "
+                                "Marking up_to_date and refreshing library..."
+                            )
                             try:
-                                text = acf_path.read_text(encoding="utf-8", errors="ignore")
-                                m = re.search(r'"StateFlags"\s+"(\d+)"', text)
-                                if m and m.group(1) == "4":
-                                    # Validate against 0-byte ghost installs
-                                    m_size = re.search(r'"SizeOnDisk"\s+"(\d+)"', text)
-                                    size_on_disk = int(m_size.group(1)) if m_size else 0
-                                    m_depots = re.search(r'"InstalledDepots"\s*\{([^}]*)\}', text, re.DOTALL)
-                                    depot_matches = re.findall(r'"(\d+)"\s*\{', m_depots.group(1)) if m_depots else []
+                                from utils.update_status_cache import get_update_cache
+                                cache = get_update_cache()
+                                cache.set_status(appid, "up_to_date")
+                                cache.save_async()
+                                logger.info(f"[VaporWatcher] Set up_to_date for appid={appid} after confirmed Steam download")
+                            except Exception as _cache_err:
+                                logger.debug(f"[VaporWatcher] Error updating status cache for {appid}: {_cache_err}")
 
-                                    if size_on_disk == 0 or not depot_matches:
-                                        logger.warning(
-                                            f"[VaporWatcher] AppID {appid} reached StateFlags=4 but SizeOnDisk={size_on_disk} "
-                                            f"and InstalledDepots={depot_matches}. Ghost/empty download detected. "
-                                            "Aborting watcher without marking up_to_date."
-                                        )
-                                        return
+                            if (
+                                self.main_window
+                                and hasattr(self.main_window, "game_manager")
+                                and self.main_window.game_manager
+                            ):
+                                self.main_window.game_manager.scan_steam_libraries_async()
 
-                                    logger.info(
-                                        f"[VaporWatcher] Steam download completed for AppID {appid} (StateFlags=4, SizeOnDisk={size_on_disk}). "
-                                        "Marking up_to_date and refreshing library..."
-                                    )
-                                    # Now that Steam confirmed the download, set the status.
-                                    # This is deferred from job_finished() so that wudrm/MRC
-                                    # failures during download don't produce a false up_to_date.
-                                    try:
-                                        from utils.update_status_cache import get_update_cache
-                                        cache = get_update_cache()
-                                        cache.set_status(appid, "up_to_date")
-                                        cache.save_async()
-                                        logger.info(f"[VaporWatcher] Set up_to_date for appid={appid} after confirmed Steam download")
-                                    except Exception as _cache_err:
-                                        logger.debug(f"[VaporWatcher] Error updating status cache for {appid}: {_cache_err}")
-                                    if (
-                                        self.main_window
-                                        and hasattr(self.main_window, "game_manager")
-                                        and self.main_window.game_manager
-                                    ):
-                                        self.main_window.game_manager.scan_steam_libraries_async()
-                                    return
-                            except Exception:
-                                pass
-                # Watcher timed out — Steam never reached StateFlags=4 within 30 minutes.
-                # The download likely failed (e.g. wudrm/MRC unavailable). Do NOT mark up_to_date.
+                            _cleanup()
+                            return
+                    except Exception as read_err:
+                        logger.debug(f"[VaporWatcher] Error reading {acf_path}: {read_err}")
+
+            def _on_timeout():
                 logger.warning(
                     f"[VaporWatcher] Timed out waiting for Steam to complete AppID {appid} download. "
                     "Update status will remain as-is (not marked up_to_date)."
                 )
-            except Exception as e:
-                logger.debug(f"[VaporWatcher] Error in watcher thread for AppID {appid}: {e}")
+                _cleanup()
 
-        t = threading.Thread(target=_watch, daemon=True)
-        t.start()
+            watcher.directoryChanged.connect(lambda _path: _check_acf())
+            watcher.fileChanged.connect(lambda _path: _check_acf())
+            timeout_timer.timeout.connect(_on_timeout)
+            poll_timer.timeout.connect(_check_acf)
+
+            timeout_timer.start()
+            poll_timer.start()
+
+            # Immediate initial check in case Steam already finished before watcher started
+            _check_acf()
+
+        except Exception as e:
+            logger.debug(f"[VaporWatcher] Error setting up watcher for AppID {appid}: {e}")
 
     @pyqtSlot(str)
     def _on_handoff_status_updated(self, msg: str):
@@ -1208,10 +1273,17 @@ class TaskManager(
         game_name: str = "",
         auto_install: bool = True,
         library_path: str = "",
+        pin_build: bool = False,
+        manifest_overrides: Optional[Dict[str, str]] = None,
+        build_id: str = "",
+        platform_checked: bool = False,
     ):
         """
         Direct asynchronous handoff to Steam client without manifest zip preprocessing
         or depot selection dialogs.
+
+        platform_checked: set by callers that already ran (and let the user answer)
+        the platform mismatch check for this same handoff, so it is not asked twice.
         """
         app_id_str = str(app_id).strip()
         name = game_name or f"App {app_id_str}"
@@ -1226,32 +1298,36 @@ class TaskManager(
             from ui.dialogs.platform_mismatch_dialog import (
                 PlatformMismatchDialog,
                 ACTION_PROCEED,
-                ACTION_FORCE_PROTON,
                 ACTION_ASSELLA_DOWNLOAD,
                 ACTION_CANCEL,
             )
-            is_mismatch, mismatch_details = check_native_steam_platform_mismatch(
-                appid=app_id_str,
-                game_name=name,
-            )
-            if is_mismatch:
-                m_dlg = PlatformMismatchDialog(
-                    parent=self.main_window,
-                    details=mismatch_details,
+            if platform_checked:
+                logger.debug(
+                    f"[TaskManager] Platform mismatch already handled for {app_id_str}; skipping duplicate prompt"
                 )
-                m_dlg.exec()
-                m_act = m_dlg.get_action()
-                if m_act in (ACTION_PROCEED, ACTION_FORCE_PROTON):
-                    # Proceed normally without forcing Proton or restarting Steam
-                    pass
-                elif m_act == ACTION_ASSELLA_DOWNLOAD:
-                    logger.info(f"[TaskManager] User chose ASSella downloader for {app_id_str}")
-                    if self.main_window and hasattr(self.main_window, "open_download_dialog"):
-                        self.main_window.open_download_dialog(app_id_str)
-                    return
-                else:  # ACTION_CANCEL
-                    logger.info(f"[TaskManager] Handoff cancelled due to platform mismatch: {app_id_str}")
-                    return
+            else:
+                is_mismatch, mismatch_details = check_native_steam_platform_mismatch(
+                    appid=app_id_str,
+                    game_name=name,
+                )
+                if is_mismatch:
+                    m_dlg = PlatformMismatchDialog(
+                        parent=self.main_window,
+                        details=mismatch_details,
+                    )
+                    m_dlg.exec()
+                    m_act = m_dlg.get_action()
+                    if m_act == ACTION_PROCEED:
+                        # Proceed normally without forcing Proton or restarting Steam
+                        pass
+                    elif m_act == ACTION_ASSELLA_DOWNLOAD:
+                        logger.info(f"[TaskManager] User chose ASSella downloader for {app_id_str}")
+                        if self.main_window and hasattr(self.main_window, "open_download_dialog"):
+                            self.main_window.open_download_dialog(app_id_str)
+                        return
+                    else:  # ACTION_CANCEL
+                        logger.info(f"[TaskManager] Handoff cancelled due to platform mismatch: {app_id_str}")
+                        return
         except Exception as e:
             logger.debug(f"[TaskManager] Error checking mismatch in start_native_steam_handoff: {e}")
 
@@ -1268,7 +1344,13 @@ class TaskManager(
             )
             return
 
-        norm_libs = [os.path.normpath(p) for p in steam_libs]
+        from utils.library_choice import remembered_library
+
+        norm_libs = {os.path.normpath(p): p for p in steam_libs}
+        remembered = remembered_library(steam_libs, self.settings)
+        if remembered and (not library_path or os.path.normpath(library_path) not in norm_libs):
+            library_path = remembered
+
         if not library_path or os.path.normpath(library_path) not in norm_libs:
             if len(steam_libs) == 1:
                 library_path = steam_libs[0]
@@ -1282,12 +1364,21 @@ class TaskManager(
                     logger.info("[TaskManager] User cancelled Steam library selection")
                     return
 
+        # Check settings for pinned build if not passed explicitly
+        if not pin_build:
+            pin_build = self.settings.value(f"pin_build/{app_id_str}", False, type=bool)
+            if pin_build and not build_id:
+                build_id = self.settings.value(f"pinned_build_id/{app_id_str}", "", type=str)
+
         self.is_processing = True
         self._is_handoff_job = True
         self.game_data = {
             "appid": app_id_str,
             "game_name": name,
             "library_path": library_path,
+            "pin_build": pin_build,
+            "manifest_overrides": manifest_overrides or {},
+            "buildid": build_id,
         }
         self.current_job = f"steam_handoff_{app_id_str}"
         self.current_job_metadata = {"appid": app_id_str, "game_name": name, "auto_install": auto_install}
@@ -1485,9 +1576,17 @@ class TaskManager(
         except Exception as e:
             logger.debug(f"Error disconnecting shared client after job: {e}")
 
-        # Refresh stats immediately after a job finishes to keep API limits in sync
-        if self.main_window and hasattr(self.main_window, "refresh_hubcap_stats"):
-            self.main_window.refresh_hubcap_stats()
+        # Refresh stats after a job finishes, but ONLY if the job actually invoked
+        # Hubcap manifest generation/download endpoints to avoid hitting the 3/3/s rate limit.
+        try:
+            from core.morrenus_api import pop_hubcap_manifest_used
+            if pop_hubcap_manifest_used():
+                if self.main_window and hasattr(self.main_window, "refresh_hubcap_stats"):
+                    self.main_window.refresh_hubcap_stats()
+            else:
+                logger.debug("[Hubcap] Skipping post-job stats refresh (no Hubcap manifest quota was consumed)")
+        except Exception as e:
+            logger.debug(f"[Hubcap] Error checking manifest usage flag: {e}")
 
         self._update_status_button_color()
         self.current_job = None

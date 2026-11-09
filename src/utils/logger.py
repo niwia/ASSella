@@ -313,11 +313,14 @@ def update_log_filters():
 
             if not is_file:
                 handler.addFilter(LogCategoryFilter(level_str, category_str))
-                if level_str.upper() == "NONE":
+                if _is_cli_quiet() and handler is not qt_log_handler:
+                    handler.setLevel(logging.WARNING)
+                elif level_str.upper() == "NONE":
                     level_num = 100
+                    handler.setLevel(level_num)
                 else:
                     level_num = getattr(logging, level_str.upper(), logging.INFO)
-                handler.setLevel(level_num)
+                    handler.setLevel(level_num)
             else:
                 handler.setLevel(logging.DEBUG)
 
@@ -348,7 +351,8 @@ def _create_file_handler(log_path: Path) -> Optional[LineRotatingFileHandler]:
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(formatter)
         handler.addFilter(SensitiveDataFilter())
-        print(f"Log file created: {log_path}", file=sys.stderr)
+        if not _is_cli_quiet():
+            print(f"Log file created: {log_path}", file=sys.stderr)
         return handler
     except (PermissionError, OSError) as e:
         print(f"Error: Could not create log file at {log_path}: {e}", file=sys.stderr)
@@ -551,6 +555,23 @@ def set_third_party_level(level: int) -> None:
     _quiet_third_party(level)
 
 
+def _is_cli_quiet() -> bool:
+    """Return True if running in CLI mode without verbose logging flags."""
+    argv = getattr(sys, "argv", [])
+    has_cli = "-cli" in argv or "--cli" in argv
+    has_verbose = any(v in argv for v in ("-v", "--verbose", "-debug", "--debug"))
+    return has_cli and not has_verbose
+
+
+def set_console_log_level(level: int) -> None:
+    """Set the logging level for console/terminal stream handlers."""
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            if handler is not qt_log_handler:
+                handler.setLevel(level)
+
+
 def setup_logging() -> logging.Logger:
     cleanup_old_logs()
 
@@ -583,7 +604,7 @@ def setup_logging() -> logging.Logger:
 
     # Console Handler
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.WARNING if _is_cli_quiet() else logging.INFO)
     console_handler.setFormatter(formatter)
     console_handler.addFilter(SensitiveDataFilter())
     handlers.append(console_handler)
@@ -712,6 +733,8 @@ def cleanup_old_logs() -> None:
     for old_log in log_files[MAX_PREVIOUS_LOGS:]:
         try:
             old_log.unlink()
-            print(f"Removed old log file: {old_log.name}", file=sys.stderr)
+            if not _is_cli_quiet():
+                print(f"Removed old log file: {old_log.name}", file=sys.stderr)
         except OSError as e:
-            print(f"Could not remove {old_log.name}: {e}", file=sys.stderr)
+            if not _is_cli_quiet():
+                print(f"Could not remove {old_log.name}: {e}", file=sys.stderr)

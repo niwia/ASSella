@@ -20,7 +20,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QComboBox,
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
@@ -29,6 +28,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QAbstractItemView,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.themed_dialog import install_themed_frame
 
@@ -116,21 +116,6 @@ class ManualRollbackDialog(QDialog):
                 border: 1px solid {self.accent_color};
                 background-color: rgba(255, 255, 255, 0.08);
             }}
-            QComboBox {{
-                background-color: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 6px;
-                color: #FFFFFF;
-                padding: 6px 10px;
-                font-size: 9.5pt;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #1b1b1f;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                selection-background-color: {self.accent_color};
-                selection-color: #000000;
-                padding: 4px;
-            }}
             QCheckBox {{
                 color: rgba(255, 255, 255, 0.85);
                 font-size: 9pt;
@@ -159,7 +144,7 @@ class ManualRollbackDialog(QDialog):
         depot_lbl.setStyleSheet("font-weight: bold; color: rgba(255, 255, 255, 0.9);")
         depot_row.addWidget(depot_lbl)
 
-        self.depot_combo = QComboBox()
+        self.depot_combo = ModernComboBox()
         self.depot_combo.setFixedHeight(32)
         self.depot_combo.setEditable(True)
         if self.depots_dict:
@@ -199,7 +184,7 @@ class ManualRollbackDialog(QDialog):
         layout.addLayout(mid_row)
 
         # Pin build checkbox
-        self.pin_checkbox = QCheckBox("Pin build (stop the ACCELA auto-updater overriding it)")
+        self.pin_checkbox = QCheckBox("Pin build (stop ASSella updating it again)")
         self.pin_checkbox.setChecked(True)
         self.pin_checkbox.setToolTip(
             "Keeps ACCELA from updating this game past the build you roll back to."

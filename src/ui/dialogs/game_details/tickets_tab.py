@@ -39,6 +39,7 @@ def init_tickets_tab(dialog) -> None:
 
     tick_widget = QWidget()
     tick_widget.setAcceptDrops(True)
+    dialog._tickets_inner = tick_widget
 
     def _drag_enter(event):
         if event.mimeData().hasUrls() or event.mimeData().hasText():

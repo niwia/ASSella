@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import shutil
@@ -5,7 +6,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, Union, List
+from typing import Optional, Dict, Any, Union, List, Tuple
 
 # Handle optional compression dependency
 try:
@@ -125,6 +126,10 @@ class DatabaseManager:
         self.conn = self._connect_db()
         self.cctx = zstd.ZstdCompressor(level=3) if zstd else None
         self.dctx = zstd.ZstdDecompressor() if zstd else None
+        # (appid, bypass_expiration) -> (last_updated, result). Callers always get a
+        # deep copy so mutating a returned dict can never corrupt the cache.
+        self._app_info_cache: Dict[Tuple[str, bool], Tuple[int, Dict[str, Any]]] = {}
+        self._depot_enrichments_cache: Dict[str, Dict[str, dict]] = {}
 
         self.is_initialized = True
         logger.info(f"DatabaseManager initialized at: {self.db_path}")
@@ -188,6 +193,16 @@ class DatabaseManager:
         if not self.conn or not self.dctx:
             return None
 
+        cache_key = (str(appid), bool(bypass_expiration))
+        with self._conn_lock:
+            hit = self._app_info_cache.get(cache_key)
+            if hit is not None:
+                cached_at, cached_result = hit
+                if bypass_expiration or (int(time.time()) - cached_at) <= EXPIRATION_SECONDS:
+                    return copy.deepcopy(cached_result)
+                self._app_info_cache.pop(cache_key, None)
+                return None
+
         try:
             with self._conn_lock:
                 cur = self.conn.cursor()
@@ -223,10 +238,11 @@ class DatabaseManager:
                 # language depots as missing, and a DB hit returns early
                 # without ever touching the network.
                 baselanguages = depots_data.pop("baselanguages", None)
+                releasestate = depots_data.pop("releasestate", None)
 
                 full_header_url = _construct_full_url(row["header_path"])
 
-                return {
+                result = {
                     "appid": appid,
                     "name": row["name"],
                     "installdir": row["installdir"],
@@ -238,8 +254,11 @@ class DatabaseManager:
                     "hasdepotsindlc": hasdepotsindlc,
                     "listofdlc": listofdlc,
                     "dlcs_expanded": dlcs_expanded,
+                    "releasestate": releasestate,
                     "source": "database",
                 }
+                self._app_info_cache[cache_key] = (last_updated, result)
+                return copy.deepcopy(result)
 
         except Exception as e:
             logger.error(f"DB Read Error {appid}: {e}")
@@ -263,6 +282,8 @@ class DatabaseManager:
 
         try:
             with self._conn_lock:
+                self._app_info_cache.pop((str(appid), True), None)
+                self._app_info_cache.pop((str(appid), False), None)
                 header_raw = data.get("header_url")
                 header_path = (
                     _normalize_header_path(appid, header_raw) if header_raw else None
@@ -345,6 +366,11 @@ class DatabaseManager:
             depots_to_save["listofdlc"] = data["listofdlc"]
         elif existing_listofdlc is not None:
             depots_to_save["listofdlc"] = existing_listofdlc
+
+        # Steam release state (released / prerelease); existing value is kept
+        # in depots_to_save (non-digit keys survive the merge above).
+        if data.get("releasestate"):
+            depots_to_save["releasestate"] = str(data["releasestate"])
 
         if "dlcs_expanded" in data:
             depots_to_save["dlcs_expanded"] = data["dlcs_expanded"]
@@ -433,6 +459,9 @@ class DatabaseManager:
             return
         try:
             with self._conn_lock:
+                self._app_info_cache.pop((str(appid), True), None)
+                self._app_info_cache.pop((str(appid), False), None)
+                self._depot_enrichments_cache.pop(str(appid), None)
                 cur = self.conn.cursor()
                 cur.execute("DELETE FROM apps WHERE appid = ?", (str(appid),))
                 self.conn.commit()
@@ -445,6 +474,8 @@ class DatabaseManager:
             return
         try:
             with self._conn_lock:
+                self._app_info_cache.clear()
+                self._depot_enrichments_cache.clear()
                 cur = self.conn.cursor()
                 cur.execute("UPDATE apps SET depots_json = NULL")
                 self.conn.commit()
@@ -472,6 +503,7 @@ class DatabaseManager:
             return
         try:
             with self._conn_lock:
+                self._depot_enrichments_cache.pop(str(appid), None)
                 cur = self.conn.cursor()
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS depot_enrichments (
@@ -489,14 +521,22 @@ class DatabaseManager:
                 """)
                 try:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN osarch TEXT")
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
+                try:
+                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
+                try:
+                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN release_src TEXT")
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] save_depot_enrichments: ignored %s", _silent_err, exc_info=False)
 
                 now = int(time.time())
                 for dep_id, info in enrichments.items():
                     cur.execute("""
-                        INSERT INTO depot_enrichments (depot_id, appid, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO depot_enrichments (depot_id, appid, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, release_src, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(depot_id) DO UPDATE SET
                             appid = excluded.appid,
                             name = excluded.name,
@@ -506,6 +546,8 @@ class DatabaseManager:
                             is_dlc = excluded.is_dlc,
                             oslist = excluded.oslist,
                             osarch = excluded.osarch,
+                            releasestate = excluded.releasestate,
+                            release_src = COALESCE(excluded.release_src, depot_enrichments.release_src),
                             updated_at = excluded.updated_at
                     """, (
                         str(dep_id),
@@ -517,6 +559,8 @@ class DatabaseManager:
                         1 if info.get("is_dlc") else 0,
                         info.get("oslist"),
                         info.get("osarch"),
+                        info.get("releasestate", "released"),
+                        info.get("release_src"),
                         now
                     ))
                 self.conn.commit()
@@ -524,10 +568,57 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"[DBManager] Failed to save depot enrichments for {appid}: {e}")
 
+    def update_release_states(self, appid: str, states: Dict[str, Tuple[str, str]], names: Optional[Dict[str, str]] = None) -> None:
+        """Set verified release states ``{dlc_or_depot_id: (state, source)}`` for one base app.
+
+        Only the release columns change on existing rows; ids without a row get a
+        minimal DLC row so the state survives (e.g. DLCs Steam does not publish).
+        """
+        if not self.conn or not states:
+            return
+        aid = str(appid)
+        try:
+            with self._conn_lock:
+                self._depot_enrichments_cache.pop(aid, None)
+                cur = self.conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS depot_enrichments (
+                        depot_id TEXT PRIMARY KEY, appid TEXT, name TEXT, size_str TEXT,
+                        size_bytes INTEGER, dl_str TEXT, is_dlc INTEGER, oslist TEXT,
+                        osarch TEXT, updated_at INTEGER
+                    )
+                """)
+                for col in ("releasestate", "release_src"):
+                    try:
+                        cur.execute(f"ALTER TABLE depot_enrichments ADD COLUMN {col} TEXT")
+                    except Exception as _silent_err:
+                        logger.debug("[db_manager] update_release_states: ignored %s", _silent_err, exc_info=False)
+                now = int(time.time())
+                for did, (state, src) in states.items():
+                    did = str(did)
+                    cur.execute(
+                        "UPDATE depot_enrichments SET releasestate = ?, release_src = ?, updated_at = ? WHERE depot_id = ?",
+                        (state, src, now, did),
+                    )
+                    if cur.rowcount == 0:
+                        nm = (names or {}).get(did) or f"DLC {did}"
+                        cur.execute(
+                            "INSERT OR IGNORE INTO depot_enrichments (depot_id, appid, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, release_src, updated_at) "
+                            "VALUES (?, ?, ?, '0 B', 0, '', 1, NULL, NULL, ?, ?, ?)",
+                            (did, aid, nm, state, src, now),
+                        )
+                self.conn.commit()
+        except Exception as e:
+            logger.debug(f"[DBManager] Failed to update release states for {appid}: {e}")
+
     def get_depot_enrichments(self, appid: str) -> Dict[str, dict]:
         """Returns cached depot enrichments for an appid, or empty dict if none."""
         if not self.conn:
             return {}
+        aid = str(appid)
+        with self._conn_lock:
+            if aid in self._depot_enrichments_cache:
+                return copy.deepcopy(self._depot_enrichments_cache[aid])
         try:
             with self._conn_lock:
                 cur = self.conn.cursor()
@@ -547,14 +638,22 @@ class DatabaseManager:
                 """)
                 try:
                     cur.execute("ALTER TABLE depot_enrichments ADD COLUMN osarch TEXT")
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
+                try:
+                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN releasestate TEXT")
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
+                try:
+                    cur.execute("ALTER TABLE depot_enrichments ADD COLUMN release_src TEXT")
+                except Exception as _silent_err:
+                    logger.debug("[db_manager] get_depot_enrichments: ignored %s", _silent_err, exc_info=False)
 
                 cur.execute("""
-                    SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch
+                    SELECT depot_id, name, size_str, size_bytes, dl_str, is_dlc, oslist, osarch, releasestate, release_src
                     FROM depot_enrichments
                     WHERE appid = ?
-                """, (str(appid),))
+                """, (aid,))
                 rows = cur.fetchall()
                 results = {}
                 for r in rows:
@@ -566,9 +665,14 @@ class DatabaseManager:
                         "dl_str": r[4],
                         "is_dlc": bool(r[5]),
                         "oslist": r[6],
-                        "osarch": r[7] if len(r) > 7 else None
+                        "osarch": r[7] if len(r) > 7 else None,
+                        "releasestate": r[8] if len(r) > 8 and r[8] else "released",
+                        # Where the release state came from: "pics", "store", "none"
+                        # (not on Steam at all) or None (legacy row, never verified).
+                        "release_src": r[9] if len(r) > 9 else None,
                     }
-                return results
+                self._depot_enrichments_cache[aid] = results
+                return copy.deepcopy(results)
         except Exception as e:
             logger.debug(f"[DBManager] Failed to read depot enrichments for {appid}: {e}")
             return {}

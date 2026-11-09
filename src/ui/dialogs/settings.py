@@ -3,8 +3,8 @@ import os
 import sys
 from typing import Any, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QFont, QMovie
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QSize
+from PyQt6.QtGui import QColor, QFont, QMovie, QPainter
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -79,12 +79,12 @@ class SettingsDialog(QDialog):
         self.hide_macos_depots_checkbox = None
         self.hide_android_depots_checkbox = None
         self.show_hidden_depots_selector_checkbox = None
+        self.new_depot_selector_checkbox = None
         self.achievements_checkbox = None
         self.auto_apply_goldberg_checkbox = None
         self.sls_mode_checkbox = None
         self.sls_config_management_checkbox = None
         self.prompt_steam_restart_checkbox = None
-        self.ignore_slssteam_updater_checkbox = None
         self.block_steam_updates_checkbox = None
         self.download_slssteam_button = None
         self.slssteam_status_label = None
@@ -135,10 +135,11 @@ class SettingsDialog(QDialog):
         self._original_ignore_online_fixes = self.settings.value("luatools_ignore_online_fixes", False, type=bool)
         self._original_steam_username = self.settings.value("steam_username", "", type=str)
         from utils.helpers import decrypt_string
-        # Recover the in-session password if one was entered earlier in this
-        # run. Nothing is read from (or written to) disk for the password.
+        # Recover session password or saved encrypted password
         self._original_steam_password = decrypt_string(
             self.settings.value("steam_password_session_only", "", type=str)
+        ) or decrypt_string(
+            self.settings.value("steam_password", "", type=str)
         )
 
         self._user_accent_color = self.settings.value(
@@ -192,67 +193,12 @@ class SettingsDialog(QDialog):
 
     def _setup_ui(self) -> None:
         """Initialize the UI layout."""
-        ac = self.accent_color
-        from utils.color_utils import get_dark_container_color
-        sel_bg_hex = get_dark_container_color(ac)
-
         bg_col = self.settings.value("background_color", "#141416")
         self.setStyleSheet(f"""
             QDialog {{
                 background-color: {bg_col};
                 color: #FFFFFF;
                 border: 1px solid rgba(255, 255, 255, 0.15);
-            }}
-            QComboBox {{
-                background-color: rgba(255, 255, 255, 0.08) !important;
-                border: 1px solid rgba(255, 255, 255, 0.22) !important;
-                border-radius: 7px !important;
-                color: #FFFFFF !important;
-                padding: 4px 26px 4px 10px !important;
-                font-size: 9pt !important;
-                font-weight: 500 !important;
-                min-height: 20px !important;
-            }}
-            QComboBox:hover {{
-                background-color: rgba(255, 255, 255, 0.14) !important;
-                border-color: rgba(255, 255, 255, 0.38) !important;
-            }}
-            QComboBox:focus {{
-                border: 2px solid {self.accent_color} !important;
-            }}
-            QComboBox::drop-down {{
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 22px;
-                border: none;
-                background: transparent;
-            }}
-            QComboBox::down-arrow {{
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid rgba(255, 255, 255, 0.85);
-                width: 0;
-                height: 0;
-                margin-right: 8px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #1b1b1f;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                border-radius: 8px;
-                selection-background-color: {sel_bg_hex};
-                selection-color: #FFFFFF;
-                outline: 0px;
-                padding: 4px;
-            }}
-            QComboBox QAbstractItemView::item {{
-                min-height: 28px;
-                padding: 4px 12px;
-                color: #E0E0E0;
-            }}
-            QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
-                background-color: {sel_bg_hex} !important;
-                color: #FFFFFF !important;
             }}
             QLineEdit {{
                 background-color: rgba(255, 255, 255, 0.07) !important;
@@ -326,7 +272,6 @@ class SettingsDialog(QDialog):
 
         self._create_nav_layout()
         self._setup_tabs()
-        self._create_dialog_buttons()
 
     def _create_nav_layout(self) -> None:
         """Build the left-sidebar + stacked-page layout."""
@@ -339,7 +284,7 @@ class SettingsDialog(QDialog):
 
         # Left nav sidebar
         self._nav_list = QListWidget()
-        self._nav_list.setFixedWidth(148)
+        self._nav_list.setFixedWidth(130)
         self._nav_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._nav_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -354,52 +299,90 @@ class SettingsDialog(QDialog):
                 background-color: rgba(0, 0, 0, 0.28);
                 border: none;
                 border-right: 1px solid rgba(255, 255, 255, 0.08);
-                padding: 6px 0px;
+                padding: 4px 0px;
                 outline: none;
             }}
             QListWidget::item {{
                 color: #EDEDED;
-                padding: 8px 14px;
+                padding-left: 10px;
+                padding-right: 8px;
                 border: none;
                 font-size: 12pt;
                 font-weight: 600;
                 letter-spacing: 0.2px;
-                border-radius: 0px;
+                border-radius: 6px;
+                margin: 2px 6px;
             }}
             QListWidget::item:hover {{
                 background-color: rgba(255, 255, 255, 0.08);
                 color: #FFFFFF;
             }}
             QListWidget::item:selected {{
-                background-color: rgba(255, 255, 255, 0.05);
-                color: {ac};
-                border-left: 3.5px solid {ac};
-                padding-left: 12px;
+                background-color: {ac};
+                color: #121212;
+                border: none;
                 font-weight: 700;
+            }}
+            QListWidget::item:selected:hover {{
+                background-color: {ac};
+                color: #121212;
             }}
         """)
 
         # Right stacked widget
         self._page_stack = QStackedWidget()
         self._page_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._page_stack.setStyleSheet("background: transparent;")
 
         content_row.addWidget(self._nav_list)
         content_row.addWidget(self._page_stack)
 
         class _TabShim:
-            def __init__(self, nav_list, stack):
+            def __init__(self, nav_list, stack, dialog):
                 self._nav = nav_list
                 self._stack = stack
+                self._dialog = dialog
                 self._tabs: dict[str, int] = {}
                 self.currentChanged = nav_list.currentRowChanged
 
+            def addLazyTab(self, label, build):
+                """Register a page that is built the first time it is shown."""
+                holder = QWidget()
+                holder.setStyleSheet("background: transparent;")
+                lay = QVBoxLayout(holder)
+                lay.setContentsMargins(0, 0, 0, 0)
+                holder._lazy_build = build
+                return self.addTab(holder, label)
+
+            def ensure_built(self, index):
+                holder = self._stack.widget(index)
+                build = getattr(holder, "_lazy_build", None)
+                if build is None:
+                    return
+                holder._lazy_build = None
+                self._capture = holder
+                try:
+                    build()
+                except Exception:
+                    import logging as _lg
+                    _lg.getLogger(__name__).exception("[Settings] Building page %s failed", self.tabText(index))
+                finally:
+                    self._capture = None
+                self._dialog._after_page_built(self.tabText(index))
+
             def addTab(self, widget, label):
+                capture = getattr(self, "_capture", None)
+                if capture is not None:
+                    # A lazy page's creator adding its real widget: put it in the holder.
+                    capture.layout().addWidget(widget)
+                    return self._stack.indexOf(capture)
                 idx = self._stack.addWidget(widget)
                 item = QListWidgetItem(label)
                 item.setFont(self._nav.font())
                 item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                 self._nav.addItem(item)
                 self._tabs[label] = idx
+                self._dialog._update_nav_item_sizes()
                 return idx
 
             def count(self):
@@ -413,6 +396,7 @@ class SettingsDialog(QDialog):
                 return self._stack.widget(index)
 
             def setCurrentIndex(self, index):
+                self.ensure_built(index)
                 self._nav.setCurrentRow(index)
                 self._stack.setCurrentIndex(index)
 
@@ -438,15 +422,35 @@ class SettingsDialog(QDialog):
                     for label, i in self._tabs.items()
                     if i != index
                 }
+                self._dialog._update_nav_item_sizes()
 
-        self.tab_widget = _TabShim(self._nav_list, self._page_stack)
+            def setTabVisible(self, index: int, visible: bool) -> None:
+                """Show or hide a tab by index in the navigation list."""
+                item = self._nav.item(index)
+                if item:
+                    item.setHidden(not visible)
+                    if not visible and self._nav.currentRow() == index:
+                        for i in range(self._nav.count()):
+                            cand = self._nav.item(i)
+                            if cand and not cand.isHidden():
+                                self.setCurrentIndex(i)
+                                break
+                    self._dialog._update_nav_item_sizes()
 
-        # Wire navigation clicks
+            def isTabVisible(self, index: int) -> bool:
+                """Return whether the tab at index is visible."""
+                item = self._nav.item(index)
+                return not item.isHidden() if item else False
+
+        self.tab_widget = _TabShim(self._nav_list, self._page_stack, self)
+
+        # Wire navigation clicks (build a lazy page before it is shown)
+        self._nav_list.currentRowChanged.connect(self.tab_widget.ensure_built)
         self._nav_list.currentRowChanged.connect(self._page_stack.setCurrentIndex)
-        self._nav_list.currentRowChanged.connect(lambda _idx: self._position_floating_buttons())
 
         content_widget = QWidget()
         content_widget.setLayout(content_row)
+        content_widget.setStyleSheet("background: transparent;")
         content_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.main_layout.addWidget(content_widget, 1)
 
@@ -477,31 +481,49 @@ class SettingsDialog(QDialog):
 
         return card, card_layout
 
+    def _build_companions_tab(self):
+        # Imported when the page is first opened, like every page's contents.
+        from ui.dialogs.settings_tabs.companions_tab import create_companions_tab
+
+        # Like every page creator: hand the page to addTab, which puts it in
+        # the lazy holder.
+        self.tab_widget.addTab(create_companions_tab(self), "Companions")
+
     def _setup_tabs(self) -> None:
-        """Initialize and add all settings tabs."""
-        tabs.create_assela_tab(self)
-        tabs.create_downloads_tab(self)
-        tabs.create_advanced_tab(self)
-        tabs.create_morrenus_tab(self)
-        create_sls_tab(self)
-        tabs.create_at0m_tab(self)
-        tabs.create_health_tab(self)
-        tabs.create_tools_tab(self)
-        tabs.create_style_tab(self)
+        """Register all settings pages. Each is built the first time it is opened,
+        so opening Settings only pays for the page it lands on."""
+        add = self.tab_widget.addLazyTab
+        add("ASSella", lambda: tabs.create_assela_tab(self))
+        add("Downloads", lambda: tabs.create_downloads_tab(self))
+        add("Advanced", lambda: tabs.create_advanced_tab(self))
+        add("Integrations", lambda: tabs.create_morrenus_tab(self))
+        add("SLS", lambda: create_sls_tab(self))
+        add("at0-m", lambda: tabs.create_at0m_tab(self))
+        add("Companions", self._build_companions_tab)
+        add("Health", lambda: tabs.create_health_tab(self))
+        add("Tools", lambda: tabs.create_tools_tab(self))
+        add("Theme", lambda: tabs.create_style_tab(self))
 
         # Modular Settings tab unlocked via Konami cheat code
         if self.settings.value("konami_settings_unlocked", False, type=bool):
-            tabs.create_mrc_settings_tab(self)
+            add("Testing", lambda: tabs.create_mrc_settings_tab(self))
 
         # LuaTools Settings tab unlocked via search secret keyword
         if self.settings.value("luatools_unlocked", False, type=bool):
-            self.tab_widget.addTab(tabs.create_luatools_tab(self), "LuaTools")
+            add("LuaTools", lambda: self.tab_widget.addTab(tabs.create_luatools_tab(self), "LuaTools"))
 
         # Tab changed listener
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
-        # Initialize button state after all tabs have been populated
-        self._update_achievements_button_state()
+    def _after_page_built(self, label: str) -> None:
+        """Wiring that needs widgets from a page, run once that page exists."""
+        try:
+            self._update_achievements_button_state()
+        except Exception as _silent_err:
+            logger.debug("[settings] _after_page_built: ignored %s", _silent_err, exc_info=False)
+        if self.experimental_acf_independent_checkbox is None or getattr(self, "_acf_gate_done", False):
+            return
+        self._acf_gate_done = True
 
         # Sanity check: Check SLS requirements to enable/disable experimental_acf_independent_checkbox
         try:
@@ -537,8 +559,12 @@ class SettingsDialog(QDialog):
             if (self.experimental_acf_independent_checkbox is not None
                     and self.experimental_acf_independent_checkbox.isChecked()):
                 self._on_experimental_acf_toggled(True)
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[settings] _after_page_built: ignored %s", _silent_err, exc_info=False)
+
+    def update_plugins_tab_visibility(self) -> None:
+        """Retained for backward compatibility; plugins are now inside at0-m."""
+        pass
 
     def _on_tab_changed(self, index: int) -> None:
         """Handle tab change events."""
@@ -557,97 +583,42 @@ class SettingsDialog(QDialog):
 
         elif tab_name == "LuaTools":
             if hasattr(self, "update_luatools_ui_status"):
-                # The page is on screen now, so it is the right moment to spend
-                # one network refresh proving the stored token still works.
                 self.update_luatools_ui_status(validate=True)
 
-    def _create_dialog_buttons(self) -> None:
-        """Create floating Ok/Cancel buttons with shadow in bottom right."""
-        self.button_container = QWidget(self)
-        self.button_container.setObjectName("FloatingSettingsButtons")
-        self.button_container.setStyleSheet("background: transparent;")
-        btn_layout = QHBoxLayout(self.button_container)
-        btn_layout.setContentsMargins(0, 0, 0, 0)
-        btn_layout.setSpacing(8)
+    def _update_nav_item_sizes(self) -> None:
+        """Dynamically distribute height across visible navigation items to fill sidebar cleanly."""
+        if not hasattr(self, "_nav_list") or not self._nav_list:
+            return
+        visible_items = [
+            self._nav_list.item(i)
+            for i in range(self._nav_list.count())
+            if not self._nav_list.item(i).isHidden()
+        ]
+        if not visible_items:
+            return
+        total_height = self._nav_list.viewport().height()
+        if total_height <= 0:
+            total_height = self._nav_list.height()
+        if total_height <= 0:
+            return
 
-        self.btn_ok = QPushButton("✓  OK", self.button_container)
-        self.btn_ok.setObjectName("SettingsOkButton")
-        self.btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_ok.setFixedSize(88, 32)
-        self.btn_ok.setStyleSheet(f"""
-            QPushButton#SettingsOkButton {{
-                background-color: {self.accent_color};
-                color: #000000;
-                font-weight: bold;
-                font-size: 9.5pt;
-                border-radius: 14px;
-                border: none;
-            }}
-            QPushButton#SettingsOkButton:hover {{
-                background-color: #FFFFFF;
-                color: #000000;
-            }}
-            QPushButton#SettingsOkButton:pressed {{
-                background-color: rgba(255, 255, 255, 0.85);
-            }}
-        """)
-        shadow_ok = QGraphicsDropShadowEffect(self.btn_ok)
-        shadow_ok.setBlurRadius(16)
-        shadow_ok.setColor(QColor(0, 0, 0, 190))
-        shadow_ok.setOffset(0, 3)
-        self.btn_ok.setGraphicsEffect(shadow_ok)
-        self.btn_ok.clicked.connect(self.accept)
+        count = len(visible_items)
+        base_h = max(42, total_height // count)
+        remainder = total_height - (base_h * count) if base_h * count < total_height else 0
 
-        self.btn_cancel = QPushButton("✕  Cancel", self.button_container)
-        self.btn_cancel.setObjectName("SettingsCancelButton")
-        self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_cancel.setFixedSize(88, 32)
-        self.btn_cancel.setStyleSheet(f"""
-            QPushButton#SettingsCancelButton {{
-                background-color: {self.accent_color};
-                color: #000000;
-                font-weight: bold;
-                font-size: 9.5pt;
-                border-radius: 14px;
-                border: none;
-            }}
-            QPushButton#SettingsCancelButton:hover {{
-                background-color: #FFFFFF;
-                color: #000000;
-            }}
-            QPushButton#SettingsCancelButton:pressed {{
-                background-color: rgba(255, 255, 255, 0.85);
-            }}
-        """)
-        shadow_cancel = QGraphicsDropShadowEffect(self.btn_cancel)
-        shadow_cancel.setBlurRadius(16)
-        shadow_cancel.setColor(QColor(0, 0, 0, 190))
-        shadow_cancel.setOffset(0, 3)
-        self.btn_cancel.setGraphicsEffect(shadow_cancel)
-        self.btn_cancel.clicked.connect(self.reject)
-
-        btn_layout.addWidget(self.btn_ok)
-        btn_layout.addWidget(self.btn_cancel)
-
-        self.button_container.adjustSize()
-        self._position_floating_buttons()
-
-    def _position_floating_buttons(self) -> None:
-        """Position floating buttons over the bottom right corner of the dialog."""
-        if hasattr(self, "button_container") and self.button_container:
-            self.button_container.adjustSize()
-            x = self.width() - self.button_container.width() - 16
-            y = self.height() - self.button_container.height() - 12
-            self.button_container.move(x, y)
-            self.button_container.raise_()
+        w = self._nav_list.width()
+        for i, item in enumerate(visible_items):
+            extra = 1 if i < remainder else 0
+            item.setSizeHint(QSize(w - 12, base_h + extra))
+            item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._position_floating_buttons()
+        self._update_nav_item_sizes()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self._position_floating_buttons()
+        QTimer.singleShot(0, self._update_nav_item_sizes)
 
     # ── Signal Handlers & Delegation Slots ────────────────────────────────
     @pyqtSlot(object)
@@ -737,6 +708,19 @@ class SettingsDialog(QDialog):
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
         tabs.paint_origins_overlay(self, event)
+        preset = self.settings.value("material_preset", "ocean", type=str) if self.settings else "ocean"
+        if preset == "christmas":
+            if not hasattr(self, "_snow_engine") or self._snow_engine is None:
+                from ui.particles.snow_engine import SnowEngine
+                self._snow_engine = SnowEngine(self, flake_count=65)
+                self._snow_engine.start()
+            elif not self._snow_engine.is_running():
+                self._snow_engine.start()
+            painter = QPainter(self)
+            self._snow_engine.paint(painter, self.width(), self.height())
+        else:
+            if hasattr(self, "_snow_engine") and self._snow_engine and self._snow_engine.is_running():
+                self._snow_engine.stop()
 
     # ── Tools Delegations ─────────────────────────────────────────────────
     def run_schema_grabber_manually(self) -> None:
@@ -782,36 +766,22 @@ class SettingsDialog(QDialog):
         return tabs.launch_terminal_command(cmd, cwd, needs_env)
 
     @staticmethod
-    def _manage_registry(filename: str, success_msg: str) -> None:
-        tabs.manage_registry(filename, success_msg)
-
-    @staticmethod
-    def register_registry_entries() -> None:
-        tabs.register_registry_entries()
-
-    @staticmethod
-    def remove_registry_entries() -> None:
-        tabs.remove_registry_entries()
-
-    @staticmethod
     def _toggle_api_key_visibility(input_field, toggle_btn) -> None:
         tabs.toggle_api_key_visibility(input_field, toggle_btn)
 
     # ── Dialog Lifecycle & Persistence ────────────────────────────────────
     def _stop_background_workers(self, timeout_ms: int = 5000) -> None:
-        """Wait out any running QThread before this dialog is destroyed.
-
-        A QThread that is still running when its parent QObject is destroyed
-        makes Qt abort the whole process ("QThread: Destroyed while thread is
-        still running") - a hard crash, not an exception, so nothing upstream
-        can catch it. The optional-components card starts a background manifest
-        fetch as soon as the Tools tab is shown, so closing Settings quickly
-        after opening that tab hits this reliably.
-        """
+        """Wait out any running QThread before this dialog is destroyed."""
+        if hasattr(self, "_snow_engine") and self._snow_engine:
+            self._snow_engine.stop()
         workers = []
         worker = getattr(self, "_manifest_worker", None)
         if worker is not None:
             workers.append(worker)
+        for name in ("_sgdb_check_thread", "_plugin_manifest_worker"):
+            extra = getattr(self, name, None)
+            if extra is not None:
+                workers.append(extra)
         for worker in (getattr(self, "_component_workers", None) or {}).values():
             if worker is not None:
                 workers.append(worker)
@@ -820,9 +790,9 @@ class SettingsDialog(QDialog):
             try:
                 if w.isRunning():
                     w.requestInterruption()
-            except RuntimeError:
+            except RuntimeError as _silent_err:
                 # Already torn down; nothing to wait for.
-                pass
+                logger.debug("[settings] _stop_background_workers: ignored %s", _silent_err, exc_info=False)
 
         for w in workers:
             try:
@@ -832,28 +802,20 @@ class SettingsDialog(QDialog):
                         "detaching it so Qt does not abort on teardown.",
                         timeout_ms,
                     )
-            except RuntimeError:
-                pass
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _stop_background_workers: ignored %s", _silent_err, exc_info=False)
 
-    def closeEvent(self, event) -> None:
-        """Ensure no worker thread outlives this dialog."""
-        self._stop_background_workers()
-        super().closeEvent(event)
-
-    def accept(self) -> None:
-        """Save all settings and close."""
+    def _save_all_settings(self) -> None:
+        """Save all dialog settings to QSettings and disk."""
         try:
             if hasattr(self, "service_poll_timer") and self.service_poll_timer:
                 self.service_poll_timer.stop()
-            self._stop_background_workers()
             self._save_general_settings()
             self._save_download_settings()
             self._save_vapor_settings()
-            if not self._save_style_settings():
-                return
+            self._save_style_settings()
             self.settings.sync()
-            logger.info("All settings saved.")
-            super().accept()
+            logger.info("All settings saved on close.")
         except Exception as e:
             import traceback
             logger.error(f"Error saving settings: {e}\n{traceback.format_exc()}")
@@ -863,8 +825,37 @@ class SettingsDialog(QDialog):
                 f"An error occurred while saving settings:\n{e}\n\nSee log file for details."
             )
 
+    # Settings has no Save / Cancel buttons: every way of closing it (the
+    # power button, Esc, the window manager) saves. QDialog.closeEvent() calls
+    # reject() on a visible dialog, so closing used to save and then
+    # immediately run the "cancel" revert below, silently undoing the Hubcap
+    # key, title bar position, Remember origins, Simplify Denuvo, ignore
+    # online fixes, Workshop downloader, All games online and title bar
+    # search changes. All three paths now go through accept().
+    def closeEvent(self, event) -> None:
+        """Save settings and ensure no worker thread outlives this dialog."""
+        if self.isVisible() and not getattr(self, "_closing_saved", False):
+            self.accept()
+        event.accept()
+
+    def accept(self) -> None:
+        """Save all settings and close."""
+        if getattr(self, "_closing_saved", False):
+            return
+        self._closing_saved = True
+        self._save_all_settings()
+        self._stop_background_workers()
+        if hasattr(self, "_origins_movie") and self._origins_movie:
+            self._origins_movie.stop()
+            self._origins_movie = None
+        super().accept()
+
     def reject(self) -> None:
-        """Revert settings on cancel."""
+        """Esc / close: same as accept (there is no Cancel)."""
+        self.accept()
+
+    def _revert_to_original(self) -> None:
+        """Undo the live-applied settings. Unused while Settings has no Cancel button."""
         self._stop_background_workers()
         self.settings.setValue("morrenus_api_key", self._original_morrenus_key)
         self.settings.setValue("titlebar_position", self._original_titlebar_position)
@@ -900,7 +891,6 @@ class SettingsDialog(QDialog):
 
         if hasattr(self, "service_poll_timer") and self.service_poll_timer:
             self.service_poll_timer.stop()
-        super().reject()
 
     def _save_general_settings(self) -> None:
         if hasattr(self, "api_key_input") and self.api_key_input is not None:
@@ -910,31 +900,20 @@ class SettingsDialog(QDialog):
         if hasattr(self, "steam_username_input") and self.steam_username_input is not None:
             self.settings.setValue("steam_username", self.steam_username_input.text().strip())
         if hasattr(self, "steam_password_input") and self.steam_password_input is not None:
-            # The Steam password is no longer persisted. schema-grabber is a
-            # deprecated achievement feature that is rarely used, and storing a
-            # long-lived Steam credential buys very little in exchange for the
-            # risk of it sitting on disk (encrypted only with a machine-derived
-            # key, which is reversible by anyone who can read the file).
-            # Background achievement fetches that need it will ask instead.
             new_pass = self.steam_password_input.text()
             if new_pass:
                 try:
                     from utils.helpers import encrypt_string
                     self._session_steam_password = new_pass
-                    # Keep the field populated for this session only.
+                    self.settings.setValue("steam_password", encrypt_string(new_pass))
                     self.settings.setValue("steam_password_session_only", encrypt_string(new_pass))
-                    self.settings.remove("steam_password")
-                    logger.info(
-                        "[Settings] Steam password kept for this session only "
-                        "(not persisted to disk)."
-                    )
+                    logger.info("[Settings] Saved encrypted Steam password locally.")
                 except Exception as e:
-                    logger.warning(f"Could not prepare session Steam password: {e}")
-        # Always ensure any previously-persisted password is gone.
-        try:
-            self.settings.remove("steam_password")
-        except Exception:
-            pass
+                    logger.warning(f"Could not encrypt Steam password: {e}")
+            elif new_pass == "":
+                # User deliberately cleared the password field
+                self.settings.remove("steam_password")
+                self.settings.remove("steam_password_session_only")
         if hasattr(self, "log_level_combo") and self.log_level_combo is not None:
             self.settings.setValue("log_filter_level", self.log_level_combo.currentText())
         if hasattr(self, "log_category_combo") and self.log_category_combo is not None:
@@ -948,8 +927,8 @@ class SettingsDialog(QDialog):
         try:
             from utils.logger import update_log_filters
             update_log_filters()
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[settings] _save_general_settings: ignored %s", _silent_err, exc_info=False)
 
     def _save_download_settings(self) -> None:
         if self.sls_mode_checkbox is not None:
@@ -960,9 +939,12 @@ class SettingsDialog(QDialog):
                 self.sls_config_management_checkbox.isChecked(),
             )
         if hasattr(self, "dl_location_combo") and self.dl_location_combo is not None:
-            self.settings.setValue(
-                "default_download_directory", self.dl_location_combo.currentData() or ""
-            )
+            data = self.dl_location_combo.currentData() or ""
+            if data != "custom":
+                from utils.library_choice import set_preferences
+
+                ask_cb = getattr(self, "ask_library_checkbox", None)
+                set_preferences(data, ask_cb.isChecked() if ask_cb is not None else not data, self.settings)
         if hasattr(self, "library_mode_checkbox") and self.library_mode_checkbox is not None:
             self.settings.setValue("library_mode", self.library_mode_checkbox.isChecked())
         if hasattr(self, "auto_skip_single_choice_checkbox") and self.auto_skip_single_choice_checkbox is not None:
@@ -1003,11 +985,6 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "prompt_steam_restart",
                 self.prompt_steam_restart_checkbox.isChecked(),
-            )
-        if self.ignore_slssteam_updater_checkbox is not None:
-            self.settings.setValue(
-                "ignore_slssteam_updater",
-                self.ignore_slssteam_updater_checkbox.isChecked(),
             )
         if hasattr(self, "achievements_checkbox") and self.achievements_checkbox is not None:
             self.settings.setValue(
@@ -1130,8 +1107,8 @@ class SettingsDialog(QDialog):
         if hasattr(self, "max_downloads_slider") and self.max_downloads_slider:
             try:
                 val = max(1, min(30, int(self.max_downloads_slider.value())))
-            except (ValueError, TypeError):
-                pass
+            except (ValueError, TypeError) as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
         self.settings.setValue("max_downloads", val)
         if hasattr(self, "auto_tune_checkbox") and self.auto_tune_checkbox is not None:
             self.settings.setValue(
@@ -1150,18 +1127,23 @@ class SettingsDialog(QDialog):
         if hasattr(self, "hide_macos_depots_checkbox") and self.hide_macos_depots_checkbox is not None:
             try:
                 self.settings.setValue("hide_macos_depots", self.hide_macos_depots_checkbox.isChecked())
-            except RuntimeError:
-                pass
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
         if hasattr(self, "hide_android_depots_checkbox") and self.hide_android_depots_checkbox is not None:
             try:
                 self.settings.setValue("hide_android_depots", self.hide_android_depots_checkbox.isChecked())
-            except RuntimeError:
-                pass
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
         if hasattr(self, "show_hidden_depots_selector_checkbox") and self.show_hidden_depots_selector_checkbox is not None:
             try:
                 self.settings.setValue("show_hidden_depots_in_selector", self.show_hidden_depots_selector_checkbox.isChecked())
-            except RuntimeError:
-                pass
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
+        if getattr(self, "new_depot_selector_checkbox", None) is not None:
+            try:
+                self.settings.setValue("use_new_depot_selector", self.new_depot_selector_checkbox.isChecked())
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
         if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo is not None:
             mode = self.isp_gateway_combo.currentData() or "auto"
             self.settings.setValue("isp_bypass_mode", mode)
@@ -1170,8 +1152,8 @@ class SettingsDialog(QDialog):
                 try:
                     from utils.isp_bypass import TorManager
                     TorManager.stop_tor()
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
 
         if hasattr(self, "experimental_acf_independent_checkbox") and self.experimental_acf_independent_checkbox is not None:
             is_enabled = self.experimental_acf_independent_checkbox.isChecked()
@@ -1181,8 +1163,8 @@ class SettingsDialog(QDialog):
                 try:
                     from utils.yaml_config_manager import ensure_slssteam_prerequisites
                     ensure_slssteam_prerequisites()
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
 
     def _save_vapor_settings(self) -> None:
         """Save all at0-m / Vapor settings."""

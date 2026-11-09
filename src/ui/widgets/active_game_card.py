@@ -15,6 +15,7 @@ class ActiveGameCard(QFrame):
         self.appid = None
         self.game_name = "Installing Game..."
         self.pixmap = None
+        self._scaled_pixmap = None
         self.accent_color = "#C06C84"
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -47,6 +48,10 @@ class ActiveGameCard(QFrame):
         lay.addWidget(self.sub_lbl)
         lay.addStretch()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._scaled_pixmap = None
+
     def set_game(self, appid: str, game_name: str, accent_color: str = None):
         self.appid = str(appid) if appid else None
         self.game_name = game_name or "Installing Game..."
@@ -59,6 +64,7 @@ class ActiveGameCard(QFrame):
         from utils.image_fetcher import ImageFetcher
         from PyQt6.QtGui import QPixmap
         self.pixmap = None
+        self._scaled_pixmap = None
         if self.appid and self.appid not in ("0", "unknown", "N/A"):
             cache_path = ImageFetcher.get_cache_path(self.appid)
             if cache_path.exists():
@@ -100,13 +106,13 @@ class ActiveGameCard(QFrame):
             entry = build_lookup.get(bid)
             if entry and entry.get("date"):
                 return str(entry["date"]).strip()
-            # If not in SteamDB cache, try PICS branches timeupdated
+            # If not in SteamDB cache, try PICS branches timeupdated from local DatabaseManager cache
             if aid and str(aid).isdigit() and int(aid) > 0:
                 try:
-                    from core.steam_api import get_depot_info_from_api
+                    from managers.db_manager import DatabaseManager
                     from datetime import datetime, timezone
-                    p_info = get_depot_info_from_api(int(aid))
-                    if p_info and "branches" in p_info:
+                    p_info = DatabaseManager().get_app_info(str(aid), bypass_expiration=True)
+                    if p_info and "branches" in p_info and isinstance(p_info["branches"], dict):
                         for b_data in p_info["branches"].values():
                             if isinstance(b_data, dict) and str(b_data.get("buildid")) == str(bid):
                                 tu = b_data.get("timeupdated")
@@ -192,14 +198,20 @@ class ActiveGameCard(QFrame):
                 )
 
     def paintEvent(self, event):
-        from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen
+        from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen, QPixmap
         from PyQt6.QtCore import QRect
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
         rect = self.rect()
-        bg_color = QColor(18, 18, 22, 230)
+        pal = self.palette()
+        win_col = pal.color(pal.ColorRole.Window)
+        if win_col.isValid():
+            bg_color = QColor(win_col.red(), win_col.green(), win_col.blue(), 230)
+        else:
+            bg_color = QColor(18, 18, 22, 230)
 
         path = QPainterPath()
         path.addRoundedRect(float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 6.0, 6.0)
@@ -211,22 +223,41 @@ class ActiveGameCard(QFrame):
 
         if self.pixmap and not self.pixmap.isNull():
             img_h = rect.height()
-            img_w = int(img_h * (self.pixmap.width() / self.pixmap.height()))
+            img_w = int(img_h * (self.pixmap.width() / max(self.pixmap.height(), 1)))
             target_rect = QRect(rect.width() - img_w, 0, img_w, rect.height())
-            painter.drawPixmap(target_rect, self.pixmap)
 
-            # Gradient scrim overlay across the image
-            fade_w = min(img_w, max(140, int(rect.width() * 0.75)))
-            gradient = QLinearGradient(rect.width() - img_w, 0, rect.width(), 0)
-            gradient.setColorAt(0.0, bg_color)
-            gradient.setColorAt(0.45, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 215))
-            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 50))
+            if self._scaled_pixmap is None or self._scaled_pixmap.size() != target_rect.size():
+                scaled = self.pixmap.scaled(
+                    target_rect.size(),
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                faded = QPixmap(scaled.size())
+                faded.fill(Qt.GlobalColor.transparent)
+                p = QPainter(faded)
+                p.drawPixmap(0, 0, scaled)
+                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
 
-            painter.setBrush(QBrush(gradient))
-            painter.drawRect(rect)
+                fade_w = min(int(scaled.width() * 0.45), 140)
+                alpha_grad = QLinearGradient(0, 0, fade_w, 0)
+                alpha_grad.setColorAt(0.0, QColor(0, 0, 0, 0))
+                alpha_grad.setColorAt(0.25, QColor(0, 0, 0, 90))
+                alpha_grad.setColorAt(1.0, QColor(0, 0, 0, 255))
+                p.fillRect(0, 0, fade_w, scaled.height(), alpha_grad)
+                p.end()
+                self._scaled_pixmap = faded
+
+            painter.drawPixmap(target_rect, self._scaled_pixmap)
+
+            # Subtle darkening scrim strictly within the image section
+            scrim = QLinearGradient(float(target_rect.left()), 0.0, float(target_rect.right()), 0.0)
+            scrim.setColorAt(0.0, QColor(0, 0, 0, 0))
+            scrim.setColorAt(0.5, QColor(0, 0, 0, 60))
+            scrim.setColorAt(1.0, QColor(0, 0, 0, 140))
+            painter.fillRect(target_rect, scrim)
 
         painter.setClipping(False)
-        painter.setPen(QPen(QColor(255, 255, 255, 15), 1))
+        border_col = QColor(255, 255, 255, 15) if bg_color.lightness() < 128 else QColor(0, 0, 0, 20)
+        painter.setPen(QPen(border_col, 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)
         painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)

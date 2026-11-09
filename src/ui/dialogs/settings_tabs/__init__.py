@@ -1,9 +1,24 @@
 from ui.dialogs.settings_tabs.morrenus_stats_widget import MorrenusStatsWidget
 from ui.dialogs.settings_tabs.windows_depot_warning import WindowsDepotWarningDialog
-from ui.dialogs.settings_tabs.morrenus_tab import create_morrenus_tab, create_api_key_setting, toggle_api_key_visibility
-from ui.dialogs.settings_tabs.assela_tab import create_assela_tab, uninstall_assela, test_single_gateway, handle_gateway_test_done, on_isp_gateway_changed
+from ui.dialogs.settings_tabs.morrenus_tab import (
+    create_morrenus_tab,
+    create_api_key_setting,
+    toggle_api_key_visibility,
+    test_single_gateway,
+    handle_gateway_test_done,
+    on_isp_gateway_changed,
+    create_isp_gateway_card,
+)
+from ui.dialogs.settings_tabs.assela_tab import create_assela_tab, uninstall_assela
 from ui.dialogs.settings_tabs.downloads_tab import create_downloads_tab
-from ui.dialogs.settings_tabs.advanced_tab import create_advanced_tab, goldberg_checked_warning, goldberg_checked_warning_from_mode, goldberg_warning_box, on_experimental_acf_toggled
+from ui.dialogs.settings_tabs.advanced_tab import (
+    create_advanced_tab,
+    goldberg_checked_warning,
+    goldberg_checked_warning_from_mode,
+    goldberg_warning_box,
+    on_experimental_acf_toggled,
+    steamless_unchecked_warning,
+)
 from ui.dialogs.settings_tabs.health_tab import (
     HealthStatusTile,
     create_health_tab,
@@ -30,9 +45,6 @@ from ui.dialogs.settings_tabs.tools_tab import (
     run_steamless_manually,
     run_steamless_aio_manually,
     browse_aio_script,
-    register_registry_entries,
-    remove_registry_entries,
-    manage_registry,
     update_achievements_button_state,
     update_asshead_status_ui,
     open_sls_config,
@@ -72,6 +84,7 @@ from ui.dialogs.settings_tabs.webui_tab import (
     update_service_status,
 )
 from ui.dialogs.settings_tabs.at0m_tab import create_at0m_tab, create_vapor_tab
+from ui.dialogs.settings_tabs.plugins_tab import create_plugins_tab
 from ui.dialogs.settings_tabs.mrc_settings_tab import create_mrc_settings_tab
 from ui.dialogs.settings_tabs.luatools_tab import create_luatools_tab
 
@@ -88,6 +101,7 @@ __all__ = [
     "create_style_tab",
     "create_webui_tab",
     "create_at0m_tab",
+    "create_plugins_tab",
     "create_vapor_tab",
     "create_mrc_settings_tab",
     "create_luatools_tab",
