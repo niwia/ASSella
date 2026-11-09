@@ -126,10 +126,10 @@ def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
     from utils.plugin_manager import deploy_plugin
     return deploy_plugin(plugin_filename)
 
-def deploy_all_sls_plugins() -> Tuple[bool, List[str]]:
+def deploy_all_sls_plugins(essential_only: bool = False) -> Tuple[bool, List[str]]:
     """Deploy the Katamari plugin family on demand."""
     from utils.plugin_manager import deploy_all_plugins
-    return deploy_all_plugins()
+    return deploy_all_plugins(essential_only=essential_only)
 
 def are_sls_plugins_deployed() -> bool:
     """Check if the required plugins exist in at least the primary SLSsteam plugins directory."""

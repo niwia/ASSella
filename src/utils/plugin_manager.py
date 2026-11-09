@@ -1177,13 +1177,19 @@ def get_default_interceptor_from_manifest() -> str:
     return "spacebunny.lua"
 
 
-def deploy_all_plugins(force_download: bool = False, only_if_missing: bool = False) -> Tuple[bool, List[str]]:
+def deploy_all_plugins(
+    force_download: bool = False,
+    only_if_missing: bool = False,
+    essential_only: bool = False,
+) -> Tuple[bool, List[str]]:
     """Install what the manifest wants installed.
 
     The active (or default) interceptor and every required plugin always;
     default-on plugins unless the user turned them off; optional plugins only
     when the user already has them (they are updated, never added). Plugins
     the manifest marks not deployable are skipped.
+    If ``essential_only`` is True, only the active interceptor and plugins
+    marked required in the manifest (SpaceBunny, Styx, Lobster) are deployed.
     """
     ensure_sls_plugin_config_sections()
     fetch_plugins_manifest(force_refresh=True)
@@ -1204,6 +1210,9 @@ def deploy_all_plugins(force_download: bool = False, only_if_missing: bool = Fal
     overall_ok = True
     for name in order:
         essential = name == active_interceptor or plugin_policy(name) == POLICY_REQUIRED
+        if essential_only and not essential:
+            logger.debug(f"[PluginManager] Skipping non-essential plugin {name} (essential_only=True)")
+            continue
         if not essential and not is_plugin_wanted(name):
             logger.debug(f"[PluginManager] Skipping {name} ({plugin_policy(name)})")
             continue

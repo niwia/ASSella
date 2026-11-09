@@ -1028,8 +1028,8 @@ class CanaryWelcomeDialog(QDialog):
         c_layout.addWidget(self.lbl_at0m_feedback)
 
         lbl_desc = QLabel(
-            "When enabled, the Katamari plugins (SpaceBunny, Styx, Katamari, Lobster, Lettuce) are deployed to your SLSsteam plugins "
-            "directory and Plugins: yes is set in config.yaml. You can also configure this later in Settings → at0-m."
+            "When enabled, essential plugins (SpaceBunny, Styx, Lobster) are deployed to your SLSsteam plugins "
+            "directory and Plugins: yes is set in config.yaml. You can configure additional plugins later in Settings → at0-m / Plugins."
         )
         lbl_desc.setWordWrap(True)
         lbl_desc.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8.5pt; border: none; background: transparent;")
@@ -1187,7 +1187,7 @@ class CanaryWelcomeDialog(QDialog):
                 from utils.yaml_config_manager import deploy_all_sls_plugins, update_yaml_boolean_value
 
                 update_yaml_boolean_value(cfg_path, "Plugins", True)
-                ok, msgs = deploy_all_sls_plugins()
+                ok, msgs = deploy_all_sls_plugins(essential_only=True)
                 problems = "" if ok else "\n".join(str(m) for m in msgs if "fail" in str(m).lower() or "could not" in str(m).lower())
                 self._at0m_deploy_signal.emit(ok, problems)
             except Exception as e:
@@ -1199,7 +1199,7 @@ class CanaryWelcomeDialog(QDialog):
     def _on_at0m_deploy_done(self, ok: bool, problems: str) -> None:
         self.toggle_enable_at0m.setEnabled(True)
         if ok:
-            self._at0m_feedback("Plugins installed and Plugins: yes set in config.yaml.")
+            self._at0m_feedback("Essential plugins (SpaceBunny, Styx, Lobster) installed and Plugins: yes set in config.yaml.")
             return
         # Neither R2 nor the packed plugins worked: undo and say why.
         try:
