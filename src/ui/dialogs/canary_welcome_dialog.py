@@ -410,8 +410,7 @@ class CanaryWelcomeDialog(QDialog):
         """)
         titles_layout.addWidget(self.awake_title_lbl)
 
-        _short_version = ".".join(app_version.split(".")[:2])
-        self.awake_sub_lbl = QLabel(f"Welcome to ASSella {_short_version}. Let's configure your setup.")
+        self.awake_sub_lbl = QLabel(f"Welcome to ASSella {app_version}. Let's configure your setup.")
         self.awake_sub_lbl.setStyleSheet("""
             color: rgba(255, 255, 255, 0.75);
             font-size: 9pt;
