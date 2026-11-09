@@ -701,6 +701,23 @@ class LibraryActionsMixin:
             remove_additional_app(config_path, appid)
             get_settings().setValue(f"dlc_only_mode/{appid}", True)
 
+            # Record in plugin_library so AT0-M knows about this depotless setup
+            try:
+                from utils.plugin_games import load_plugin_library, save_plugin_library
+                plib = load_plugin_library()
+                rec = plib.get(appid, {})
+                plib[appid] = {
+                    **rec,
+                    "name": name,
+                    "appid": appid,
+                    "is_atom": True,
+                    "is_dlc_only": True,
+                    "dlc_appids": sorted(set(rec.get("dlc_appids", [])) | set(dlc_dict.keys()), key=lambda x: int(x) if x.isdigit() else 0),
+                }
+                save_plugin_library(plib)
+            except Exception as _plib_err:
+                logger.debug(f"[Library] Error recording depotless AT0-M DLC setup in plugin_library: {_plib_err}")
+
             target_section = "DlcData" if mode == "dlc_data" else "AdditionalApps"
             ThemedMessageBox.information(
                 parent_widget,
@@ -728,7 +745,18 @@ class LibraryActionsMixin:
         if not appid_str:
             return None
 
-        # 1. Check AT0-M configuration:
+        # 1. Check ASSella (ACCELA) mode via existing .depot file:
+        # If a .depot file exists on disk with content, it was downloaded and managed
+        # by ASSella (AT0-M deletes .depot on handoff and never writes one).
+        try:
+            from utils.helpers import get_base_path
+            depot_file = Path(get_base_path()) / "depots" / f"{appid_str}.depot"
+            if depot_file.exists() and depot_file.stat().st_size > 0:
+                return "assella"
+        except Exception as e:
+            logger.debug(f"[DLCModeDetect] Error checking .depot file for {appid_str}: {e}")
+
+        # 2. Check AT0-M configuration in plugin_library:
         try:
             from utils.plugin_games import load_plugin_library
             plugin_lib = load_plugin_library()
@@ -738,50 +766,39 @@ class LibraryActionsMixin:
         except Exception as e:
             logger.debug(f"[DLCModeDetect] Error checking plugin_library for {appid_str}: {e}")
 
+        # 3. Check SLSsteam DlcData (used exclusively by AT0-M):
         try:
-            from utils.yaml_config_manager import (
-                get_user_config_path,
-                get_dlc_data,
-                get_additional_apps,
-                get_additional_depots,
-            )
+            from utils.yaml_config_manager import get_user_config_path, get_dlc_data
             cfg_path = get_user_config_path()
             if cfg_path and cfg_path.exists():
-                dlc_data = get_dlc_data(cfg_path, appid_str)
-                if dlc_data:
+                if get_dlc_data(cfg_path, appid_str):
                     return "native"
-
-                catalog = getattr(discovery, "catalog", {}) if discovery else {}
-                catalog_dlc_ids = {str(k).strip() for k in catalog.keys() if str(k).strip() != appid_str}
-                if catalog_dlc_ids:
-                    add_apps = set(get_additional_apps(cfg_path))
-                    if any(dlc_id in add_apps for dlc_id in catalog_dlc_ids):
-                        return "native"
-
-                cand_depots = getattr(discovery, "depots", []) if discovery else []
-                cand_depot_ids = {str(d.depot_id).strip() for d in cand_depots}
-                if cand_depot_ids:
-                    add_depots = set(get_additional_depots(cfg_path))
-                    if any(did in add_depots for did in cand_depot_ids):
-                        return "native"
         except Exception as e:
-            logger.debug(f"[DLCModeDetect] Error checking SLSsteam config for {appid_str}: {e}")
+            logger.debug(f"[DLCModeDetect] Error checking SLSsteam DlcData for {appid_str}: {e}")
 
-        # 2. Check ASSella (ACCELA) mode:
-        try:
-            from utils.helpers import get_base_path
-            depot_file = Path(get_base_path()) / "depots" / f"{appid_str}.depot"
-            if depot_file.exists() and depot_file.stat().st_size > 0:
-                return "assella"
-        except Exception as e:
-            logger.debug(f"[DLCModeDetect] Error checking .depot file for {appid_str}: {e}")
-
+        # 4. Check ASSella DLC-only mode setting:
         try:
             from utils.dlc_helpers import is_dlc_only_mode
             if is_dlc_only_mode(appid_str):
                 return "assella"
         except Exception as e:
             logger.debug(f"[DLCModeDetect] Error checking is_dlc_only_mode for {appid_str}: {e}")
+
+        # 5. Fallback for depot-less DLCs already registered in AdditionalApps:
+        # If there are NO sized content depots (depotless DLCs) and any DLC ID is in AdditionalApps:
+        try:
+            if discovery and not getattr(discovery, "has_sized_depots", True):
+                from utils.yaml_config_manager import get_user_config_path, get_additional_apps
+                cfg_path = get_user_config_path()
+                if cfg_path and cfg_path.exists():
+                    catalog = getattr(discovery, "catalog", {}) or {}
+                    catalog_dlc_ids = {str(k).strip() for k in catalog.keys() if str(k).strip() != appid_str}
+                    if catalog_dlc_ids:
+                        add_apps = set(get_additional_apps(cfg_path))
+                        if any(dlc_id in add_apps for dlc_id in catalog_dlc_ids):
+                            return "native"
+        except Exception as e:
+            logger.debug(f"[DLCModeDetect] Error checking depotless AdditionalApps for {appid_str}: {e}")
 
         return None
 

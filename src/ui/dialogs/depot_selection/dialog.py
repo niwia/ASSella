@@ -119,27 +119,13 @@ class DepotSelectionDialog(
         return super().__new__(cls)
 
     def __init__(
-        self,
-        app_id,
-        game_name,
-        depots,
-        header_url=None,
-        parent=None,
-        selected_depots=None,
-        show_storage=True,
-        is_single_depot=False,
-        missing_hubcap_depots=None,
-        missing_depots_info=None,
-        library_path=None,
-        refetched_depots=None,
-        branch="public",
-        branches=None,
-        current_build_id="",
-        lock_storage=False,
-        dlc_only_mode=False,
-        lock_dlc_only=False,
-        is_atom_mode=False,
-        **kwargs,
+        self, app_id, game_name, depots, header_url=None, parent=None,
+        selected_depots=None, show_storage=True, is_single_depot=False,
+        missing_hubcap_depots=None, missing_depots_info=None,
+        library_path=None, refetched_depots=None, branch="public",
+        branches=None, current_build_id="", lock_storage=False,
+        dlc_only_mode=False, lock_dlc_only=False, is_atom_mode=False,
+        dlc_catalog=None, editions=None, **kwargs,
     ):
         super().__init__(parent)
         self._init_state(
@@ -147,12 +133,12 @@ class DepotSelectionDialog(
             show_storage, is_single_depot, library_path, refetched_depots,
             branch, branches, current_build_id, missing_hubcap_depots,
             missing_depots_info,
-            lock_storage=lock_storage or kwargs.get("lock_storage", False),
-            dlc_only_mode=dlc_only_mode or kwargs.get("dlc_only_mode", False),
-            lock_dlc_only=lock_dlc_only or kwargs.get("lock_dlc_only", False),
-            dlc_catalog=kwargs.get("dlc_catalog") or {},
-            editions=kwargs.get("editions"),
-            is_atom_mode=is_atom_mode or kwargs.get("is_atom_mode", False),
+            lock_storage=lock_storage or kwargs.pop("lock_storage", False),
+            dlc_only_mode=dlc_only_mode or kwargs.pop("dlc_only_mode", False),
+            lock_dlc_only=lock_dlc_only or kwargs.pop("lock_dlc_only", False),
+            dlc_catalog=dlc_catalog or kwargs.pop("dlc_catalog", None) or {},
+            editions=editions or kwargs.pop("editions", None),
+            is_atom_mode=is_atom_mode or kwargs.pop("is_atom_mode", False),
             **kwargs,
         )
         self.resize(700, 540)
@@ -216,6 +202,7 @@ class DepotSelectionDialog(
         lock_dlc_only: bool = False,
         dlc_catalog: dict = None,
         editions: dict = None,
+        is_atom_mode: bool = False,
         **kwargs,
     ) -> None:
         """Store every constructor argument and wire up signals and timers.
@@ -239,7 +226,7 @@ class DepotSelectionDialog(
         self.preferred_library_path = library_path
         self.lock_storage = lock_storage
         self.lock_dlc_only = lock_dlc_only
-        self._is_atom_mode = bool(kwargs.get("is_atom_mode", False))
+        self._is_atom_mode = bool(is_atom_mode or kwargs.get("is_atom_mode", False))
         self._settings = get_settings()
         self._dlc_only_mode = bool(
             dlc_only_mode
