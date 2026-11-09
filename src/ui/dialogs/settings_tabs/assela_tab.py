@@ -136,6 +136,7 @@ def create_assela_tab(dialog) -> QWidget:
     dialog.download_animation_combo.addItem("Pokémon (Pokéball)", "pokemon")
     dialog.download_animation_combo.addItem("City Drive (Retro Car)", "car")
     dialog.download_animation_combo.addItem("Jack-o'-Lantern", "lantern")
+    dialog.download_animation_combo.addItem("Santa & Snowy Village", "santa")
     dialog.download_animation_combo.setFixedWidth(220)
 
     saved_anim = dialog.settings.value("download_animation", "standard", type=str)

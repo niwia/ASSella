@@ -1,4 +1,7 @@
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QMovie, QPainter
@@ -279,6 +282,22 @@ def create_style_tab(dialog) -> QWidget:
     )
     disp_layout.addWidget(dialog.adaptive_theming_checkbox)
 
+    dialog.seasonal_audio_checkbox = create_checkbox_setting(
+        "Seasonal Theme Audio",
+        "seasonal_audio_enabled",
+        False,
+        dialog,
+        "Play festive holiday chime audio when activating seasonal themes.",
+        show_description=False,
+    )
+    def _on_seasonal_audio_toggled(state):
+        is_checked = (state == Qt.CheckState.Checked.value or state is True)
+        dialog.settings.setValue("seasonal_audio_enabled", is_checked)
+        if is_checked:
+            play_seasonal_audio(dialog)
+    dialog.seasonal_audio_checkbox.stateChanged.connect(_on_seasonal_audio_toggled)
+    disp_layout.addWidget(dialog.seasonal_audio_checkbox)
+
     layout.addWidget(disp_card)
     layout.addStretch(1)
 
@@ -374,6 +393,27 @@ def on_preset_changed(dialog, index: int) -> None:
         app = QApplication.instance()
         if app:
             update_appearance(app, accent_hex, bg_hex)
+
+        if preset_type == "christmas" and dialog.settings.value("seasonal_audio_enabled", False, type=bool):
+            play_seasonal_audio(dialog)
+
+
+def play_seasonal_audio(parent=None) -> None:
+    """Play lightweight holiday chime if seasonal audio is enabled."""
+    try:
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtMultimedia import QSoundEffect
+        from utils.paths import Paths
+        chime_path = Paths.resource("christmas/jingle_chime.wav")
+        if chime_path.exists():
+            sound = QSoundEffect(parent)
+            sound.setSource(QUrl.fromLocalFile(str(chime_path)))
+            sound.setVolume(0.5)
+            if parent:
+                parent._seasonal_sound = sound
+            sound.play()
+    except Exception as e:
+        logger.debug(f"Seasonal audio playback skipped: {e}")
 
 
 def is_too_dark(color: QColor) -> bool:
@@ -492,6 +532,9 @@ def save_style_settings(dialog) -> bool:
 
     if hasattr(dialog, "adaptive_theming_checkbox") and dialog.adaptive_theming_checkbox is not None:
         dialog.settings.setValue("enable_adaptive_game_theming", dialog.adaptive_theming_checkbox.isChecked())
+
+    if hasattr(dialog, "seasonal_audio_checkbox") and dialog.seasonal_audio_checkbox is not None:
+        dialog.settings.setValue("seasonal_audio_enabled", dialog.seasonal_audio_checkbox.isChecked())
 
     if hasattr(dialog, "simplify_denuvo_status_checkbox") and dialog.simplify_denuvo_status_checkbox is not None:
         simplify = dialog.simplify_denuvo_status_checkbox.isChecked()

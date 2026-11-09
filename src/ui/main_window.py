@@ -2813,6 +2813,19 @@ class MainWindow(QMainWindow):
             bg_col = QColor(self.background_color or "#000000")
             painter.fillRect(rect, bg_col)
 
+        # Christmas snowfall particle simulation overlay
+        if preset == "christmas":
+            if not hasattr(self, "_snow_engine") or self._snow_engine is None:
+                from ui.particles.snow_engine import SnowEngine
+                self._snow_engine = SnowEngine(self, flake_count=85)
+                self._snow_engine.start()
+            elif not self._snow_engine.is_running():
+                self._snow_engine.start()
+            self._snow_engine.paint(painter, rect.width(), rect.height())
+        else:
+            if hasattr(self, "_snow_engine") and self._snow_engine and self._snow_engine.is_running():
+                self._snow_engine.stop()
+
     def reposition_titlebar(self, position: str) -> None:
         """Dynamically reposition the titlebar without restart."""
         if not hasattr(self, "bottom_titlebar") or not self.bottom_titlebar:

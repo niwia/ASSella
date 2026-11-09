@@ -154,6 +154,12 @@ def _apply_stylesheet(
     lit_svg = str(Paths.resource("halloween/pumpkin_lit.svg"))
     is_halloween = (preset == "halloween" or accent_color.name().lower() in ("#ffb77d", "#ff7518"))
 
+    christmas_unlit_svg = str(Paths.resource("christmas/candy_square_unlit.svg"))
+    christmas_lit_svg = str(Paths.resource("christmas/candy_square_lit.svg"))
+    christmas_radio_unlit = str(Paths.resource("christmas/candy_circle_unlit.svg"))
+    christmas_radio_lit = str(Paths.resource("christmas/candy_circle_lit.svg"))
+    is_christmas = (preset == "christmas" or accent_color.name().lower() in ("#e53935", "#d32f2f"))
+
     custom_unlit = settings.value("theme_checkbox_unlit", "", type=str) if settings else ""
     custom_lit = settings.value("theme_checkbox_lit", "", type=str) if settings else ""
 
@@ -169,6 +175,28 @@ def _apply_stylesheet(
         unlit_icon_path = unlit_svg
         lit_icon_path = lit_svg
         use_themed_checkbox = True
+    elif is_christmas and os.path.exists(christmas_unlit_svg) and os.path.exists(christmas_lit_svg):
+        unlit_icon_path = christmas_unlit_svg
+        lit_icon_path = christmas_lit_svg
+        use_themed_checkbox = True
+
+    radio_rules = ""
+    if is_christmas and os.path.exists(christmas_radio_unlit) and os.path.exists(christmas_radio_lit):
+        radio_rules = f"""
+        QRadioButton::indicator {{
+            width: 18px;
+            height: 18px;
+            background: transparent;
+            border: none;
+            image: url("{christmas_radio_unlit}");
+        }}
+
+        QRadioButton::indicator:checked {{
+            background: transparent;
+            border: none;
+            image: url("{christmas_radio_lit}");
+        }}
+        """
 
     if use_themed_checkbox:
         checkbox_css = f"""
@@ -198,7 +226,7 @@ def _apply_stylesheet(
             border: none;
             background: transparent;
         }}
-        """
+        """ + radio_rules
         list_indicator_css = ""
     else:
         checkbox_css = f"""

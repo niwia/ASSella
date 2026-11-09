@@ -177,6 +177,62 @@ class MiniSwitchToggle(QWidget):
 
         w = self.width()
         h = self.height()
+
+        try:
+            from utils.settings import get_settings
+            s = get_settings()
+            is_christmas = (
+                s.value("material_preset", "ocean", type=str) == "christmas"
+                or s.value("accent_color", "", type=str).lower() in ("#e53935", "#d32f2f")
+            )
+        except Exception:
+            is_christmas = False
+
+        if is_christmas and not self._greyscaled:
+            from PyQt6.QtGui import QPainterPath
+            from PyQt6.QtCore import QRectF
+
+            r = 4.0
+            track_rect = QRectF(1.0, 1.0, w - 2.0, h - 2.0)
+            inner_rect = QRectF(3.0, 3.0, w - 6.0, h - 6.0)
+
+            path = QPainterPath()
+            path.addRoundedRect(track_rect, r, r)
+            inner_path = QPainterPath()
+            inner_path.addRoundedRect(inner_rect, r - 1.0, r - 1.0)
+            border_path = path.subtracted(inner_path)
+
+            p.save()
+            p.setClipPath(border_path)
+            for x in range(-h, w + h, 5):
+                p.fillRect(x, 0, 2, h, QColor("#D32F2F"))
+                p.fillRect(x + 2, 0, 3, h, QColor("#FFFFFF"))
+            p.restore()
+
+            bg_col = QColor(140, 20, 20, 170) if self._checked else QColor("#0c1017")
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(bg_col))
+            p.drawRoundedRect(inner_rect, r - 1.0, r - 1.0)
+
+            if self._checked:
+                check_path = QPainterPath()
+                check_path.moveTo(6.0, h / 2.0)
+                check_path.lineTo(9.5, h / 2.0 + 3.0)
+                check_path.lineTo(14.5, h / 2.0 - 3.5)
+                p.strokePath(
+                    check_path,
+                    QPen(QColor("#FFFFFF"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin),
+                )
+
+            knob_d = 12.0
+            knob_y = (h - knob_d) / 2.0
+            knob_rect = QRectF(self._circle_pos, knob_y, knob_d, knob_d)
+            p.setPen(QPen(QColor("#D32F2F"), 1.0))
+            p.setBrush(QBrush(QColor("#FFFFFF")))
+            p.drawRoundedRect(knob_rect, 3.0, 3.0)
+            p.end()
+            return
+
         radius = h / 2.0
 
         if self._greyscaled:

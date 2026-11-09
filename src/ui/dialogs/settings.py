@@ -4,7 +4,7 @@ import sys
 from typing import Any, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QSize
-from PyQt6.QtGui import QColor, QFont, QMovie
+from PyQt6.QtGui import QColor, QFont, QMovie, QPainter
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -705,6 +705,19 @@ class SettingsDialog(QDialog):
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
         tabs.paint_origins_overlay(self, event)
+        preset = self.settings.value("material_preset", "ocean", type=str) if self.settings else "ocean"
+        if preset == "christmas":
+            if not hasattr(self, "_snow_engine") or self._snow_engine is None:
+                from ui.particles.snow_engine import SnowEngine
+                self._snow_engine = SnowEngine(self, flake_count=65)
+                self._snow_engine.start()
+            elif not self._snow_engine.is_running():
+                self._snow_engine.start()
+            painter = QPainter(self)
+            self._snow_engine.paint(painter, self.width(), self.height())
+        else:
+            if hasattr(self, "_snow_engine") and self._snow_engine and self._snow_engine.is_running():
+                self._snow_engine.stop()
 
     # ── Tools Delegations ─────────────────────────────────────────────────
     def run_schema_grabber_manually(self) -> None:
@@ -755,15 +768,9 @@ class SettingsDialog(QDialog):
 
     # ── Dialog Lifecycle & Persistence ────────────────────────────────────
     def _stop_background_workers(self, timeout_ms: int = 5000) -> None:
-        """Wait out any running QThread before this dialog is destroyed.
-
-        A QThread that is still running when its parent QObject is destroyed
-        makes Qt abort the whole process ("QThread: Destroyed while thread is
-        still running") - a hard crash, not an exception, so nothing upstream
-        can catch it. The optional-components card starts a background manifest
-        fetch as soon as the Tools tab is shown, so closing Settings quickly
-        after opening that tab hits this reliably.
-        """
+        """Wait out any running QThread before this dialog is destroyed."""
+        if hasattr(self, "_snow_engine") and self._snow_engine:
+            self._snow_engine.stop()
         workers = []
         worker = getattr(self, "_manifest_worker", None)
         if worker is not None:
