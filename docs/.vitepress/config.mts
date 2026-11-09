@@ -56,6 +56,7 @@ export default defineConfig({
             text: 'Guides',
             collapsed: false,
             items: [
+              { text: 'DLC-Only Mode', link: '/guides/dlc-only' },
               { text: 'Downgrade a Game', link: '/guides/downgrade' },
               { text: 'Pin a Build', link: '/guides/pin-build' },
               { text: 'Uninstall a Game', link: '/guides/uninstall' },

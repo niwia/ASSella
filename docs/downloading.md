@@ -12,6 +12,10 @@ ASSella can put a game on your system in two ways. Both start the same way: find
 
 You can move a game between the two later from its [Game Details](/game-details) page (**Move to AT0-M** / **Move to ASSella**).
 
+::: tip Already own the base game on Steam?
+If you only want to download or unlock DLCs for a game you already own, see our [DLC-Only Mode Guide](/guides/dlc-only).
+:::
+
 ::: tip Before you start
 Finish the [Installation Guide](/install) first: your Hubcap key must be saved in **Settings → Integrations**. For the AT0-M way, also turn on **Settings → at0-m → Enable plugins** ([AT0-M setup](/at0m)).
 :::
