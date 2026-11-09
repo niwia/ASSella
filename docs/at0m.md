@@ -30,7 +30,7 @@ Open **Settings → at0-m**. It has two sub-tabs.
 | :--- | :--- |
 | **Enable plugins** | The master switch. Installs the plugins and sets `Plugins: yes` in SLSsteam's `config.yaml`. Turn this on first. |
 | **Start download with Steam** | What Steam does after a game is registered. **Start auto**: starts downloading straight away. **Add only**: only adds it to your library, and you press *Install* yourself. **Always ask**: asks every time. |
-| **DLC-Only Download behaviour** | For games where you own the base game and only add DLC: download the DLC through Steam (**Start Native**), through ASSella (**Start ASSella**), or **Always ask**. |
+| **DLC-Only Download behaviour** | For games where you own the base game and only add DLC: download the DLC through Steam (**Start Native**), through ASSella (**Start ASSella**), or **Always ask**. See the [DLC-Only Mode guide](/guides/dlc-only). |
 | **Manage plugins** | One button per plugin. **Green** = installed and up to date. Click to check for updates, or to turn an optional plugin off. **Grey** = not installed (click to install) or not available yet. See [Plugins](/plugins). |
 | **Extras** | Optional plugins such as Lettuce. |
 | **I'm using custom plugins (Advanced)** | Only for people who run their own plugins. ASSella stops checking for its plugins. You're on your own with this one. |
@@ -92,7 +92,7 @@ What each plugin does: [Plugins](/plugins).
 
 ## Moving games between modes
 
-On a game's [Info tab](/game-details#info), **Move to AT0-M** hands an ASSella-downloaded game to Steam, and **Move to ASSella** does the reverse. If the game has a pinned build, DLC-only mode, an EOS proxy or Goldberg applied, ASSella shows what it will do about each one before moving.
+On a game's [Info tab](/game-details#info), **Move to AT0-M** hands an ASSella-downloaded game to Steam, and **Move to ASSella** does the reverse. If the game has a pinned build, [DLC-only mode](/guides/dlc-only), an EOS proxy or Goldberg applied, ASSella shows what it will do about each one before moving.
 
 ## Uran and Epsilon use the same setup
 
