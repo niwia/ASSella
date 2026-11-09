@@ -343,7 +343,6 @@ Lobster = {
         from ui.dialogs.platform_mismatch_dialog import (
             PlatformMismatchDialog,
             ACTION_PROCEED,
-            ACTION_FORCE_PROTON,
         )
         from ui.dialogs.library.widgets import GameItemWidget
 
@@ -357,14 +356,18 @@ Lobster = {
         }
         dlg = PlatformMismatchDialog(details=details)
         self.assertEqual(ACTION_PROCEED, 1)
-        self.assertEqual(ACTION_FORCE_PROTON, ACTION_PROCEED)
+        self.assertFalse(hasattr(dlg, "btn_force_proton"), "force-proton alias should be gone")
         self.assertEqual(dlg.btn_proceed.text(), "Proceed")
 
         # Find description label and verify text
         from PyQt6.QtWidgets import QLabel
-        desc_labels = [w for w in dlg.findChildren(QLabel) if "Only Windows keys are available" in w.text()]
-        self.assertTrue(len(desc_labels) > 0, "Expected description text to mention 'Only Windows keys are available'")
-        self.assertIn("Please switch to Proton in Steam compatibility options after install.", desc_labels[0].text())
+        desc_labels = [w for w in dlg.findChildren(QLabel) if "only contains the Windows files" in w.text()]
+        self.assertTrue(len(desc_labels) > 0, "Expected description text to mention the Windows-only package")
+        desc_text = desc_labels[0].text()
+        self.assertIn("select a compatibility tool (Proton)", desc_text)
+        self.assertIn("ASSella does not change this for you.", desc_text)
+        self.assertNotIn("will attempt to download", desc_text)
+        self.assertNotIn("Force Proton", desc_text)
 
         # 2. GameItemWidget: single DLC badge
         game_data = {

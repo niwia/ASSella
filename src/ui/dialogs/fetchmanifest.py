@@ -1362,7 +1362,6 @@ class FetchManifestDialog(QDialog):
             from ui.dialogs.platform_mismatch_dialog import (
                 PlatformMismatchDialog,
                 ACTION_PROCEED,
-                ACTION_FORCE_PROTON,
                 ACTION_ASSELLA_DOWNLOAD,
                 ACTION_CANCEL,
             )
@@ -1378,7 +1377,7 @@ class FetchManifestDialog(QDialog):
                 )
                 m_dlg.exec()
                 m_act = m_dlg.get_action()
-                if m_act in (ACTION_PROCEED, ACTION_FORCE_PROTON):
+                if m_act == ACTION_PROCEED:
                     # Proceed normally without forcing Proton or restarting Steam
                     pass
                 elif m_act == ACTION_ASSELLA_DOWNLOAD:
