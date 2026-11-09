@@ -40,7 +40,7 @@ What this game has in SLSsteam's config, in three lists:
 - **Depots registered** (`AdditionalDepots`) — the depots Steam may download.
 - **AES decryption keys** (`DecryptionKeys`) — the keys that unlock them.
 
-**View** is read-only. **Edit** turns the switches on — turning an app off also turns off its depots — then **Save** writes the changes. **Refetch keys** asks Hubcap again for keys that were missing, and offers DLC that became available. Depots shared with other games stay protected.
+**View** is read-only. **Edit** turns the switches on — turning an app off also turns off its depots — then **Save** writes the changes. **Refetch keys** asks Hubcap again for keys that were missing, and offers DLC that became available. Depots shared with other games stay protected. For games where you only own the base game, see [DLC-Only Mode](/guides/dlc-only).
 
 ---
 
@@ -64,7 +64,7 @@ ASSella reads SteamDB directly. **Byparr** (a helper that gets past SteamDB's bo
   - **Fix Installation** — repairs the install and makes Steam verify it.
   - **Desktop** — adds the game to your app menu with its SteamGridDB icon; the shortcut starts it through Steam. Click again (**Desktop: Remove**) to take it away. Linux, ASSella-managed games. To do this for every new download, turn on **Settings → Downloads → Create a desktop shortcut after install**.
 - **Utility & store links** — **Open Store**, **Open SteamDB**, **Copy App ID**, **Copy Path**.
-- **Move DLC to DlcData (Advanced)** — experimental: keeps DLC content in a separate folder. Use only when a guide tells you to.
+- **Move DLC to DlcData (Advanced)** — maps DLC entitlements to the game's AppID in SLSsteam's `DlcData` section to bypass Steam's 64 DLC limit. See the [DLC-Only Mode guide](/guides/dlc-only).
 
 ---
 
