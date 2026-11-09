@@ -264,7 +264,10 @@ jobs:
             cp -r squashfs-root/usr/bin AppDir/bin/zsync2-root/usr/bin
             cp -r squashfs-root/usr/lib AppDir/bin/zsync2-root/usr/lib
             rm -rf squashfs-root
-            printf '#!/bin/sh\n# Resolves its own location so the AppDir can be moved anywhere.\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/zsync2-root/usr/bin/zsync2" "$@"\n' > AppDir/bin/zsync
+            # Prepend the bundled lib dir to LD_LIBRARY_PATH: zsync2 ships its own
+            # OpenSSL 1.1/gcrypt, and RUNPATH ($ORIGIN/../lib) is only consulted
+            # after LD_LIBRARY_PATH, so an outer process could otherwise shadow them.
+            printf '#!/bin/sh\n# Resolves its own location so the AppDir can be moved anywhere.\nHERE="$(dirname "$(readlink -f "$0")")"\nexport LD_LIBRARY_PATH="$HERE/zsync2-root/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexec "$HERE/zsync2-root/usr/bin/zsync2" "$@"\n' > AppDir/bin/zsync
             chmod +x AppDir/bin/zsync
             # Prove the bundled fallback actually executes. A present-but-broken
             # binary silently disables delta updates for every user.

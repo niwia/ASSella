@@ -254,8 +254,18 @@ class AppUpdateManager(QObject):
                             # a copy: a failed sync must not damage the working install.
                             shutil.copy2(appimage_path, seed_copy)
 
+                            # Pass the target AppImage URL explicitly via -u. zsync2
+                            # (bundled since 3.1) reads -u as "the URL to get the
+                            # target file" and uses it to override the .zsync's own
+                            # URL header. Older releases filled that header with the
+                            # AppImageUpdate descriptor ("gh-releases-zsync|..."),
+                            # which zsync2 would otherwise treat as a relative path
+                            # and 404 on. (Stock zsync 0.6.2 gives -u a different
+                            # meaning — the referring URL — but it cannot read an
+                            # https control file at all, so it never reaches here.)
                             proc = subprocess.run(
-                                [zsync_bin, "-i", str(seed_copy), "-o", str(zsync_out),
+                                [zsync_bin, "-u", download_url,
+                                 "-i", str(seed_copy), "-o", str(zsync_out),
                                  f"{download_url}.zsync"],
                                 capture_output=True, text=True, timeout=1800,
                                 cwd=str(dest_dir),
