@@ -237,16 +237,42 @@ jobs:
             echo "appimageupdatetool bundled and verified executable."
           fi
 
-          # 6. Bundle zsync binary for delta-update fallback when appimageupdatetool
-          #    is unavailable. zsync is already installed in the CI image (see
-          #    "Install System Packaging Tools"). A bundled copy means users who
-          #    updated via full download never need to install it system-wide.
-          if [ -f "/usr/bin/zsync" ]; then
-            cp /usr/bin/zsync AppDir/bin/zsync
+          # 6. Bundle zsync2 binary for the delta-update fallback used when
+          #    appimageupdatetool is unavailable. Ubuntu's stock zsync links no
+          #    TLS library at all, so it cannot read an https:// control file
+          #    ("could not read control file from URL") — the fallback could
+          #    never work. zsync2 ships its own TLS and speaks the GitHub
+          #    Releases endpoints, so the fallback actually syncs. It is
+          #    installed under the name "zsync" because that is the path the app
+          #    probes (AppDir/bin/zsync); the full download stays the last resort.
+          if [ ! -f "AppDir/bin/zsync" ]; then
+            echo "Downloading zsync2..."
+            curl -fsSL --retry 3 -o /tmp/zsync2 \
+              "https://github.com/AppImageCommunity/zsync2/releases/download/2.0.0-alpha-1-20250926/zsync2-93-fc62ae7-x86_64.AppImage" \
+              || curl -fsSL --retry 3 -o /tmp/zsync2 \
+              "https://github.com/AppImage/zsync2/releases/download/2.0.0-alpha-1-20250926/zsync2-93-fc62ae7-x86_64.AppImage"
+            chmod +x /tmp/zsync2
+            # Verify the download is a real AppImage before shipping it.
+            if ! /tmp/zsync2 --appimage-extract >/dev/null 2>&1; then
+              echo "::error::zsync2 failed extraction — refusing to ship"
+              exit 1
+            fi
+            # zsync2 is not a static binary: it carries RUNPATH=$ORIGIN/../lib
+            # and loads its bundled OpenSSL/gcrypt from usr/lib. Preserve that
+            # layout and launch through a thin script at the probed path.
+            mkdir -p AppDir/bin/zsync2-root/usr
+            cp -r squashfs-root/usr/bin AppDir/bin/zsync2-root/usr/bin
+            cp -r squashfs-root/usr/lib AppDir/bin/zsync2-root/usr/lib
+            rm -rf squashfs-root
+            printf '#!/bin/sh\n# Resolves its own location so the AppDir can be moved anywhere.\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/zsync2-root/usr/bin/zsync2" "$@"\n' > AppDir/bin/zsync
             chmod +x AppDir/bin/zsync
-            echo "zsync bundled into AppDir/bin/zsync."
-          else
-            echo "::warning::zsync not found on build host — delta updates will fall back to full download."
+            # Prove the bundled fallback actually executes. A present-but-broken
+            # binary silently disables delta updates for every user.
+            if ! AppDir/bin/zsync -V >/dev/null 2>&1; then
+              echo "::error::Bundled zsync2 fails to execute — delta updates would silently fall back"
+              exit 1
+            fi
+            echo "zsync2 bundled as AppDir/bin/zsync and verified executable."
           fi
 
           # 8. Bundle Tor Executable
@@ -273,15 +299,16 @@ jobs:
           QT_QPA_PLATFORM=offscreen AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, rich, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
           test -x AppDir/bin/appimageupdatetool || { echo "::error::appimageupdatetool missing from AppDir"; exit 1; }
           echo "appimageupdatetool present and executable."
-          # zsync is optional — we bundle it when available so delta updates work
-          # even when the user has no system zsync. Its absence is a warning, not a
-          # fatal error: the full-download path still works.
+          # zsync2 fallback is optional — bundled above so delta updates work
+          # even when appimageupdatetool is unavailable. Its absence is a
+          # warning, not a fatal error: the app still falls back to a full
+          # download as the last resort.
           if [ -f "AppDir/bin/zsync" ]; then
             AppDir/bin/zsync -V >/dev/null 2>&1 || \
-              echo "::warning::Bundled zsync present but fails to execute"
-            echo "zsync bundled and verified executable."
+              echo "::warning::Bundled zsync2 present but fails to execute"
+            echo "zsync2 bundled and verified executable."
           else
-            echo "::warning::zsync not bundled — delta updates require system zsync or fall back to full download."
+            echo "::warning::zsync2 not bundled — delta updates fall back to full download."
           fi
 
       - name: Upload Assemble AppDir Log on Failure
