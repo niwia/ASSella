@@ -642,10 +642,10 @@ def execute_hubcap_request(
     # --- Mode: Explicit Single Gateway Selections ---
     if mode == "direct" or mode == "disabled":
         resp = session.request(method, url, headers=headers, params=params, timeout=timeout, stream=stream)
+        connection_status = "Direct"
         _check_and_raise_for_status(resp)
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Direct connection returned HTML/blocked payload (ISP block detected).")
-        connection_status = "Direct"
         return resp
 
     if mode == "doh":
@@ -661,10 +661,10 @@ def execute_hubcap_request(
         try:
             resp = session.request(method, url, headers=headers, params=params,
                                    timeout=timeout, stream=stream, verify=False)
+            connection_status = "DoH"
             _check_and_raise_for_status(resp)
             if not stream and is_html_or_blocked_payload(resp):
                 raise requests.exceptions.ConnectionError("DoH request returned empty or HTML payload.")
-            connection_status = "DoH"
             return resp
         finally:
             socket.getaddrinfo = orig_getaddrinfo
@@ -675,20 +675,20 @@ def execute_hubcap_request(
         tor_proxies = TorManager.get_tor_proxies()
         resp = session.request(method, url, headers=headers, params=params,
                                proxies=tor_proxies, timeout=timeout + 5, stream=stream, verify=False)
+        connection_status = "Tor"
         _check_and_raise_for_status(resp)
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Tor request returned empty or HTML payload.")
-        connection_status = "Tor"
         return resp
 
     if mode == "wirecutter":
         worker_url = rewrite_url_for_wirecutter(url)
         resp = session.request(method, worker_url, headers=headers, params=params,
                                timeout=timeout + 3, stream=stream, verify=False)
+        connection_status = "Wire"
         _check_and_raise_for_status(resp)
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Wirecutter request returned empty or HTML payload.")
-        connection_status = "Wire"
         return resp
 
     if mode in ("proxy", "custom_proxy"):
@@ -697,10 +697,10 @@ def execute_hubcap_request(
             raise requests.exceptions.ConnectionError("Custom proxy URL is not configured.")
         proxies = {"http": custom_p, "https": custom_p}
         resp = session.request(method, url, headers=headers, params=params, proxies=proxies, timeout=timeout + 5, stream=stream)
+        connection_status = "Proxy"
         _check_and_raise_for_status(resp)
         if not stream and is_html_or_blocked_payload(resp):
             raise requests.exceptions.ConnectionError("Custom proxy request returned empty or HTML payload.")
-        connection_status = "Proxy"
         return resp
 
     # --- Mode: 'auto' (Smart 4-Tier Fallback Pipeline) ---
@@ -716,13 +716,13 @@ def execute_hubcap_request(
             logger.debug(f"[ISPBypass] Trying direct request to {url}")
             probe_timeout = min(timeout, _DIRECT_PROBE_TIMEOUT)
             resp = session.request(method, url, headers=headers, params=params, timeout=probe_timeout, stream=stream)
+            connection_status = "Direct"
+            _direct_connection_failed = False
             _check_and_raise_for_status(resp)
 
             if not stream and is_html_or_blocked_payload(resp):
                 raise requests.exceptions.ConnectionError("Direct connection returned empty or HTML payload (ISP block detected).")
 
-            connection_status = "Direct"
-            _direct_connection_failed = False
             return resp
         except HubcapRateLimitError:
             # 429 rate limit applies to API key / IP — do not burn remaining fallback tiers
@@ -757,13 +757,13 @@ def execute_hubcap_request(
                     doh_headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; ASSella/2.6.2)"
 
             resp = session.request(method, url, headers=doh_headers, params=params, timeout=timeout, stream=stream, **bypass_kwargs)
+            connection_status = "DoH"
             _check_and_raise_for_status(resp)
 
             if not stream and is_html_or_blocked_payload(resp):
                 raise requests.exceptions.ConnectionError("DoH request returned empty or HTML payload.")
 
             logger.info(f"[ISPBypass] DoH request to {url} SUCCESSFUL!")
-            connection_status = "DoH"
             return resp
         except HubcapRateLimitError:
             raise
@@ -781,9 +781,9 @@ def execute_hubcap_request(
                 method, url, headers=headers, params=params, proxies=tor_proxies,
                 timeout=timeout + 5, stream=stream, **bypass_kwargs
             )
+            connection_status = "Tor"
             _check_and_raise_for_status(resp)
             logger.info(f"[ISPBypass] Tor request to {url} SUCCESSFUL!")
-            connection_status = "Tor"
             return resp
         except HubcapRateLimitError:
             raise
@@ -798,9 +798,9 @@ def execute_hubcap_request(
             method, worker_url, headers=headers, params=params,
             timeout=timeout + 3, stream=stream, **bypass_kwargs
         )
+        connection_status = "Wire"
         _check_and_raise_for_status(resp)
         logger.info(f"[ISPBypass] Wirecutter request to {worker_url} SUCCESSFUL!")
-        connection_status = "Wire"
         return resp
     except HubcapRateLimitError:
         raise

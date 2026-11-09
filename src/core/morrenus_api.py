@@ -457,6 +457,10 @@ def get_user_stats(force: bool = False) -> Dict:
     if isinstance(res, dict) and "error" not in res and res:
         _last_user_stats_fetch = now
         settings.setValue("last_cached_user_stats", res)
+        # Mark health check cache as healthy too since user stats succeeded
+        global _last_health_check_time, _cached_health_check
+        _last_health_check_time = now
+        _cached_health_check = {"status": "healthy", "source": "user_stats"}
         return res
 
     # On rate limit (429) or error, back off for 120s
@@ -552,21 +556,44 @@ def generate_single_manifest(
         return None, err
 
 
-def check_health() -> Dict:
+_last_health_check_time: float = 0.0
+_cached_health_check: Optional[Dict] = None
+_HEALTH_CACHE_TTL: float = 45.0
+
+
+def check_health(force: bool = False) -> Dict:
     """
-    Checks if the Hubcab API is healthy using the ISP bypass pipeline,
+    Checks if the Hubcap API is healthy using the ISP bypass pipeline,
     so users with ISP bypass enabled still get accurate health status.
-    Does not require an API key.
+    Does not require an API key. Caches successful check for 45s to avoid
+    burning requests against the 3 req/3s rate limit ceiling.
     """
+    global _last_health_check_time, _cached_health_check
+    now = time.time()
+    if not force and _cached_health_check and (now - _last_health_check_time < _HEALTH_CACHE_TTL):
+        logger.debug("[Hubcap] Using recently cached health check")
+        return _cached_health_check
+
     url = f"{BASE_URL}/health"
     try:
         from utils.isp_bypass import execute_hubcap_request, is_html_or_blocked_payload
-        response = execute_hubcap_request(get_session(), "GET", url, timeout=5)
+        response = execute_hubcap_request(get_session(), "GET", url, timeout=10)
         response.raise_for_status()
         if is_html_or_blocked_payload(response):
             return {"status": "unhealthy", "error": "Gateway returned HTML payload (ISP block detected). Switch ISP bypass in Settings."}
-        return response.json()
+        data = response.json()
+        _last_health_check_time = now
+        _cached_health_check = data
+        return data
     except Exception as e:
+        from utils.isp_bypass import HubcapRateLimitError
+        # A 429 rate limit response proves Hubcap API is alive and reachable!
+        if isinstance(e, HubcapRateLimitError) or getattr(getattr(e, "response", None), "status_code", None) == 429:
+            logger.info("[Hubcap] Health check encountered 429 rate limit - server is online and responding.")
+            rate_limited_health = {"status": "healthy", "rate_limited": True}
+            _last_health_check_time = now
+            _cached_health_check = rate_limited_health
+            return rate_limited_health
         error_msg = _handle_request_exception(e, "Health check")
         return {"status": "unhealthy", "error": error_msg}
 

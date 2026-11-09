@@ -1009,6 +1009,8 @@ class MainWindow(QMainWindow):
             self.game_manager.reset_up_to_date_for_recheck()
             self.game_manager.check_game_updates_async(is_periodic=True)
         self.check_tool_updates()
+        # Periodically refresh Hubcap connection & stats (every 5 mins)
+        self.refresh_hubcap_stats()
 
     def _setup_ui(self) -> None:
         """Setup the main UI components."""
@@ -1282,6 +1284,9 @@ class MainWindow(QMainWindow):
         hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.hubcap_api_value = QLabel("API: --/-- | --")
         self.hubcap_api_value.setStyleSheet(row_item_style)
+        self.hubcap_api_value.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hubcap_api_value.setToolTip("Hubcap API quota & key expiry. Click to refresh.")
+        self.hubcap_api_value.mousePressEvent = lambda e: self.refresh_hubcap_stats(force=True)
         hubcap_api_item = QHBoxLayout()
         hubcap_api_item.setSpacing(4)
         hubcap_api_item.addWidget(hubcap_api_lbl)
@@ -1370,6 +1375,9 @@ class MainWindow(QMainWindow):
         hubcap_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.hubcap_conn_value = QLabel("Connecting...")
         self.hubcap_conn_value.setStyleSheet(self._get_status_style("neutral"))
+        self.hubcap_conn_value.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hubcap_conn_value.setToolTip("Hubcap connection status. Click to recheck.")
+        self.hubcap_conn_value.mousePressEvent = lambda e: self.refresh_hubcap_stats(force=True)
         hubcap_conn_item = QHBoxLayout()
         hubcap_conn_item.setSpacing(4)
         hubcap_conn_item.addWidget(hubcap_conn_lbl)
@@ -1976,11 +1984,11 @@ class MainWindow(QMainWindow):
         # Also refresh Steam and SLS status locally
         self.refresh_system_status()
 
-        # Trigger background network checks if offline/connecting
+        # Trigger background network checks if offline/connecting or forced
         current_hubcap = self.hubcap_conn_value.text() if hasattr(self, "hubcap_conn_value") else "Connecting..."
         current_steam = self.steam_conn_value.text() if hasattr(self, "steam_conn_value") else "Connecting..."
-        if current_hubcap in ("Connecting...", "Offline") or current_steam in ("Connecting...", "Offline"):
-            self._check_network_connections_async()
+        if force or current_hubcap in ("Connecting...", "Offline") or current_steam in ("Connecting...", "Offline"):
+            self._check_network_connections_async(force=force)
 
         if not self.stats_task_runner:
             self.stats_task_runner = TaskRunner(self)
@@ -1995,18 +2003,18 @@ class MainWindow(QMainWindow):
             # Imported on the worker thread: morrenus_api takes ~0.1s to import.
             from core.morrenus_api import get_all_hubcap_stats as _fetch
 
-            return _fetch()
+            return _fetch(force=force)
 
         worker = self.stats_task_runner.run(get_all_hubcap_stats)
         worker.finished.connect(self._on_user_stats_loaded)
         worker.error.connect(self._on_user_stats_error)
 
-    def _check_network_connections_async(self) -> None:
+    def _check_network_connections_async(self, force: bool = False) -> None:
         """Run connection check once in background thread."""
         def run_check():
             try:
                 from utils.network_status import run_connection_check
-                steam_ok, hubcap_ok, hubcap_mode = run_connection_check()
+                steam_ok, hubcap_ok, hubcap_mode = run_connection_check(force=force)
             except Exception as e:
                 logger.error(f"Error running network connection check: {e}")
                 steam_ok, hubcap_ok, hubcap_mode = False, False, "Offline"
@@ -2114,6 +2122,18 @@ class MainWindow(QMainWindow):
         if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
             self.active_hubcap_label.setText(f"Hubcap: {quota_str}")
             self.active_hubcap_label.setToolTip(tooltip_str)
+
+        # Hubcap is confirmed reachable and functional: ensure visor connection label reflects Online
+        if hasattr(self, "hubcap_conn_value") and self.hubcap_conn_value:
+            from utils.isp_bypass import connection_status
+            mode = connection_status if connection_status in ("Direct", "DoH", "Tor", "Wire") else "Online"
+            lbl = f"Online ({mode})" if mode not in ("Online", "Direct") else "Online"
+            self.hubcap_conn_value.setText(lbl)
+            self.hubcap_conn_value.setStyleSheet(self._get_status_style("success"))
+
+        if getattr(self, "_tool_update_status", "checking") in ("checking", "offline"):
+            if not getattr(self, "_tool_update_check_running", False):
+                self.check_tool_updates()
 
     def _on_user_stats_error(self, err_tuple: tuple) -> None:
         """Handle async hubcap stats load error."""
