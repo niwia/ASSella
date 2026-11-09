@@ -772,8 +772,9 @@ class LibraryActionsMixin:
         #    cannot tell the two modes apart; the recorded source can.
         try:
             from utils.settings import get_settings
-            if get_settings().value(f"dlc_mode_source/{appid_str}", "", type=str) == "assella":
-                return "assella"
+            rec_mode = get_settings().value(f"dlc_mode_source/{appid_str}", "", type=str)
+            if rec_mode in ("assella", "native"):
+                return rec_mode
         except Exception as e:
             logger.debug(f"[DLCModeDetect] Error checking dlc_mode_source for {appid_str}: {e}")
 

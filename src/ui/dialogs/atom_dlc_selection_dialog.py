@@ -803,6 +803,7 @@ class AtomDlcSelectionDialog(QDialog):
 
             # Save setting
             self.settings.setValue(f"dlc_only_mode/{self.app_id}", True)
+            self.settings.setValue(f"dlc_mode_source/{self.app_id}", "native")
 
             ThemedMessageBox.information(
                 self,

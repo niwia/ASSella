@@ -308,6 +308,22 @@ class TestAtomDlcAndByparr(unittest.TestCase):
                 mode = actions_obj._detect_configured_dlc_mode(legacy_atom_appid)
                 self.assertEqual(mode, "native", "DlcData without a recorded ASSella mode stays AT0-M")
 
+            # 7. Recorded AT0-M mode returns native even when is_dlc_only_mode is True.
+            class _RecordedNativeSettings:
+                def value(self, key, default=None, type=None):
+                    if key.startswith("dlc_mode_source/"):
+                        return "native"
+                    return default
+
+            native_appid = "3333333"
+            with patch("utils.plugin_games.load_plugin_library", return_value={}), \
+                 patch("utils.helpers.get_base_path", return_value=Path(tmp_cfg_dir)), \
+                 patch("utils.settings.get_settings", return_value=_RecordedNativeSettings()), \
+                 patch("utils.yaml_config_manager.get_user_config_path", return_value=None), \
+                 patch("utils.dlc_helpers.is_dlc_only_mode", return_value=True):
+                mode = actions_obj._detect_configured_dlc_mode(native_appid)
+                self.assertEqual(mode, "native", "recorded native mode must beat is_dlc_only_mode")
+
         print("  [PASS] DLC mode memory detection verified")
 
     def test_05_plugin_version_extraction_and_display(self):

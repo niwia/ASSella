@@ -2085,6 +2085,7 @@ def build_depots_panel(dialog, mode: str = "details", on_registered=None) -> QWi
             save_plugin_library(plib)
             from utils.settings import get_settings
             get_settings().setValue(f"dlc_only_mode/{appid_str}", True)
+            get_settings().setValue(f"dlc_mode_source/{appid_str}", "native")
         except Exception as e:
             logger.error(f"[DepotsTab] Could not record AT0-M DLC setup for {appid_str}: {e}", exc_info=True)
 
