@@ -2435,7 +2435,19 @@ class LibraryActionsMixin:
             game_data["_is_verify"] = True
         self.settings.setValue(f"selected_branch/{app_id}", branch)
 
-        is_rollback = local_path_override is not None
+        is_pinned = bool(
+            self.settings.value(f"pin_build/{app_id}", False, type=bool)
+            or game_data.get("_pin_build")
+            or game_data.get("pin_build")
+        )
+        is_rollback = (
+            local_path_override is not None
+            or is_pinned
+            or bool(game_data.get("_is_rollback"))
+        )
+        if is_pinned:
+            game_data["_pin_build"] = True
+            game_data["_is_rollback"] = True
 
         # Curated / Recommended Builds Check ("Voices")
         if not download_only and not is_rollback:
