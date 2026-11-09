@@ -667,69 +667,66 @@ def update_appearance(
 
 
 def draw_christmas_titlebar(painter, w: int, h: int) -> None:
-    """Renders candy-cane striped background and dripping snow cap along the top edge."""
-    import math
+    """Renders organic dripping snow layer along the top edge of the titlebar."""
     from PyQt6.QtGui import QPainterPath, QColor, QPen, QPainter
     from PyQt6.QtCore import Qt
 
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-    # 1. Base Dark Holiday Red Fill
-    painter.fillRect(0, 0, w, h, QColor("#8A0E1A"))
-
-    # 2. Diagonal Candy-Cane Stripes (alternating #FF334B and #8A0E1A)
-    stripe_w = 12
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor("#FF334B"))
-    for sx in range(-h * 2, w + h * 2, stripe_w * 2):
-        stripe = QPainterPath()
-        stripe.moveTo(sx, h)
-        stripe.lineTo(sx + stripe_w, h)
-        stripe.lineTo(sx + stripe_w + h, 0)
-        stripe.lineTo(sx + h, 0)
-        stripe.closeSubpath()
-        painter.drawPath(stripe)
-
-    # Soft dark bottom border
-    painter.setPen(QPen(QColor(0, 0, 0, 110), 1))
-    painter.drawLine(0, h - 1, w, h - 1)
-
-    # 3. Fluffy Snowdrift Mound with Dripping Scallops along the Top
     snow = QPainterPath()
     snow.moveTo(0, 0)
+    snow.lineTo(0, 3.0)
+
+    # Varied, natural dripping pattern: (span_width, drip_depth)
+    drip_offsets = (
+        (16.0, 4.5), (14.0, 9.5), (20.0, 3.0), (12.0, 13.0),
+        (26.0, 4.0), (15.0, 8.0), (32.0, 3.5), (11.0, 11.5),
+        (18.0, 5.0), (22.0, 14.0), (28.0, 3.0), (13.0, 7.5),
+        (17.0, 12.0), (24.0, 4.0), (19.0, 8.5), (10.0, 10.0),
+    )
 
     x = 0.0
-    snow_base_y = 6.0
-    snow.lineTo(0, snow_base_y)
+    idx = 0
+    num_patterns = len(drip_offsets)
 
-    step = 28.0
     while x < w:
-        cx1 = x + step * 0.35
-        drip = 4.0 + (math.sin(x * 0.12) + 1.0) * 3.5
-        cy1 = snow_base_y + drip
-        cx2 = x + step * 0.65
-        cy2 = snow_base_y + drip
-        nx = min(float(w), x + step)
-        ny = snow_base_y + math.sin(nx * 0.08) * 1.5
-        snow.cubicTo(cx1, cy1, cx2, cy2, nx, ny)
+        span_w, drip_len = drip_offsets[idx % num_patterns]
+        idx += 1
+        nx = min(float(w), x + span_w)
+        actual_span = nx - x
+        mid_x = x + actual_span * 0.50
+
+        base_y = 2.5 + (idx % 3) * 0.7
+        tip_y = min(float(h - 8), base_y + drip_len)
+
+        # Smooth organic drip curve down to tip and back up
+        snow.cubicTo(
+            x + actual_span * 0.25, base_y + (tip_y - base_y) * 0.65,
+            mid_x - 1.2, tip_y,
+            mid_x, tip_y,
+        )
+        snow.cubicTo(
+            mid_x + 1.2, tip_y,
+            nx - actual_span * 0.25, base_y + (tip_y - base_y) * 0.65,
+            nx, base_y,
+        )
         x = nx
 
     snow.lineTo(w, 0)
     snow.closeSubpath()
 
-    # Snow shadow / frost outline underneath
-    shadow = QPainterPath(snow)
-    painter.setPen(QPen(QColor(210, 230, 245, 180), 2.0))
-    painter.drawPath(shadow)
+    # Soft cool shadow / frost rim underneath the drips
+    painter.setPen(QPen(QColor(180, 215, 245, 140), 1.5))
+    painter.drawPath(snow)
 
-    # Crisp pure white snow fill
+    # Crisp white snow fill
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QColor("#FFFFFF"))
     painter.drawPath(snow)
 
-    # Subtle glisten line on top edge
-    painter.setPen(QPen(QColor(255, 255, 255, 240), 1.2))
-    painter.drawLine(0, 1, w, 1)
+    # Subtle glisten line along the top window seam
+    painter.setPen(QPen(QColor(255, 255, 255, 220), 1.0))
+    painter.drawLine(0, 0, w, 0)
 
     painter.restore()

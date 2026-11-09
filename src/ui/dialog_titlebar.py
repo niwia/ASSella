@@ -94,14 +94,15 @@ class DialogTitleBar(QFrame):
         return btn
 
     def paintEvent(self, event) -> None:
-        settings = get_settings()
-        preset = settings.value("material_preset", "ocean", type=str)
-        if preset == "christmas":
-            painter = QPainter(self)
-            from ui.theme import draw_christmas_titlebar
-            draw_christmas_titlebar(painter, self.width(), self.height())
-        else:
-            super().paintEvent(event)
+        super().paintEvent(event)
+        try:
+            settings = get_settings()
+            if settings.value("material_preset", "ocean", type=str) == "christmas":
+                painter = QPainter(self)
+                from ui.theme import draw_christmas_titlebar
+                draw_christmas_titlebar(painter, self.width(), self.height())
+        except Exception as e:
+            logger.debug(f"Dialog titlebar holiday snow overlay skipped: {e}")
 
     def update_style(self) -> None:
         """Update colors and icons to match active theme settings."""
@@ -113,28 +114,15 @@ class DialogTitleBar(QFrame):
 
         # Subtle elevated background for the titlebar
         titlebar_bg = bg_color.lighter(108).name()
-        preset = settings.value("material_preset", "ocean", type=str)
 
-        if preset == "christmas":
-            accent = "#FFFFFF"
-            accent_color = QColor("#FFFFFF")
-            self.setStyleSheet(
-                """
-                DialogTitleBar {
-                    background-color: transparent;
-                    border: none;
-                }
-                """
-            )
-        else:
-            self.setStyleSheet(
-                f"""
-                DialogTitleBar {{
-                    background-color: {titlebar_bg};
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-                }}
-                """
-            )
+        self.setStyleSheet(
+            f"""
+            DialogTitleBar {{
+                background-color: {titlebar_bg};
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            }}
+            """
+        )
         self.title_label.setStyleSheet(f"color: {accent}; font-weight: bold; font-size: 9.5pt; border: none; background: transparent;")
 
         # Update button icons
