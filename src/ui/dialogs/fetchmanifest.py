@@ -95,7 +95,7 @@ from core.manifest_fetcher import verify_or_download_manifest
 logger = logging.getLogger(__name__)
 
 # Constants
-_API_STATS_CACHE_DURATION = 60  # seconds
+_API_STATS_CACHE_DURATION = 300  # seconds (5 minutes)
 
 # Global Cache State
 _api_stats_cache = {"data": None, "timestamp": 0.0}

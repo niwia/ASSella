@@ -1284,9 +1284,6 @@ class MainWindow(QMainWindow):
         hubcap_api_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.hubcap_api_value = QLabel("API: --/-- | --")
         self.hubcap_api_value.setStyleSheet(row_item_style)
-        self.hubcap_api_value.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.hubcap_api_value.setToolTip("Hubcap API quota & key expiry. Click to refresh.")
-        self.hubcap_api_value.mousePressEvent = lambda e: self.refresh_hubcap_stats(force=True)
         hubcap_api_item = QHBoxLayout()
         hubcap_api_item.setSpacing(4)
         hubcap_api_item.addWidget(hubcap_api_lbl)
@@ -1375,9 +1372,6 @@ class MainWindow(QMainWindow):
         hubcap_conn_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
         self.hubcap_conn_value = QLabel("Connecting...")
         self.hubcap_conn_value.setStyleSheet(self._get_status_style("neutral"))
-        self.hubcap_conn_value.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.hubcap_conn_value.setToolTip("Hubcap connection status. Click to recheck.")
-        self.hubcap_conn_value.mousePressEvent = lambda e: self.refresh_hubcap_stats(force=True)
         hubcap_conn_item = QHBoxLayout()
         hubcap_conn_item.setSpacing(4)
         hubcap_conn_item.addWidget(hubcap_conn_lbl)
@@ -1973,11 +1967,16 @@ class MainWindow(QMainWindow):
                 logger.info("[SteamDB Visor] SteamDB status updated to: Offline")
 
     def refresh_hubcap_stats(self, force: bool = False) -> None:
-        """Fetch user statistics from Hubcap API asynchronously."""
+        """Fetch user statistics from Hubcap API asynchronously.
+        When online, queries are throttled to once every 5 minutes (300s).
+        """
         now = time.time()
         last_refresh = getattr(self, "_last_hubcap_refresh_time", 0.0)
-        if not force and (now - last_refresh < 30.0):
-            logger.debug("[Hubcap] Skipping stats refresh - throttled (called <30s ago)")
+        current_hubcap = self.hubcap_conn_value.text() if hasattr(self, "hubcap_conn_value") else "Connecting..."
+        is_online = current_hubcap.startswith("Online")
+        throttle_interval = 300.0 if is_online else 30.0
+        if not force and (now - last_refresh < throttle_interval):
+            logger.debug(f"[Hubcap] Skipping stats refresh - throttled (called <{int(throttle_interval)}s ago)")
             return
         self._last_hubcap_refresh_time = now
 

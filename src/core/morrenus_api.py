@@ -295,7 +295,7 @@ def search_games(
 
 _last_user_stats_fetch: float = 0.0
 _last_generate_usage_fetch: float = 0.0
-_STATS_CACHE_TTL: float = 60.0  # 60s minimum interval between API calls to avoid 429
+_STATS_CACHE_TTL: float = 300.0  # 5-minute (300s) interval between API calls when online to avoid rate limits
 
 
 def is_stats_cache_from_previous_utc_day(cached_stats: Any) -> bool:
@@ -558,15 +558,16 @@ def generate_single_manifest(
 
 _last_health_check_time: float = 0.0
 _cached_health_check: Optional[Dict] = None
-_HEALTH_CACHE_TTL: float = 45.0
+_HEALTH_CACHE_TTL: float = 300.0  # 5-minute (300s) cache for confirmed healthy status
 
 
 def check_health(force: bool = False) -> Dict:
     """
     Checks if the Hubcap API is healthy using the ISP bypass pipeline,
     so users with ISP bypass enabled still get accurate health status.
-    Does not require an API key. Caches successful check for 45s to avoid
-    burning requests against the 3 req/3s rate limit ceiling.
+    Does not require an API key. Caches successful check for 5 minutes (300s)
+    to avoid burning requests against the rate limit ceiling.
+    Failed/unreachable checks are not cached to allow immediate retry.
     """
     global _last_health_check_time, _cached_health_check
     now = time.time()
@@ -580,6 +581,7 @@ def check_health(force: bool = False) -> Dict:
         response = execute_hubcap_request(get_session(), "GET", url, timeout=10)
         response.raise_for_status()
         if is_html_or_blocked_payload(response):
+            _cached_health_check = None
             return {"status": "unhealthy", "error": "Gateway returned HTML payload (ISP block detected). Switch ISP bypass in Settings."}
         data = response.json()
         _last_health_check_time = now
@@ -594,6 +596,7 @@ def check_health(force: bool = False) -> Dict:
             _last_health_check_time = now
             _cached_health_check = rate_limited_health
             return rate_limited_health
+        _cached_health_check = None  # Do not cache failure: allow immediate retry
         error_msg = _handle_request_exception(e, "Health check")
         return {"status": "unhealthy", "error": error_msg}
 
