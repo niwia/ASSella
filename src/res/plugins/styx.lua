@@ -1,7 +1,9 @@
--- styx.lua (2.2)
+-- styx.lua (2.4)
 --
--- ======================= 2.2 changes from 2.1 ==========================
---  49. Version bump; internal explanatory comments trimmed. Behavior unchanged.
+-- ======================= 2.4 changes from 2.3 ==========================
+--  55. Bound diagnostic ticket reads by both returned size and caller capacity.
+--  56. Skip packet-property access once the fallback ticket is warm.
+--      Everything from 2.3 is retained; ticket-size semantics are unchanged.
 --
 -- ======================= 2.1 changes from 0.4 ==========================
 --  44. Renamed to Styx.  Canonical files are styx.lua and styx.conf.lua; the
@@ -37,7 +39,7 @@ Styx = Styx or {
 	getTicketPtr   = nil,
 }
 
-Styx.VERSION = "2.2"
+Styx.VERSION = "2.4"
 
 KATAMARI = KATAMARI or { plugins = {} }
 KATAMARI.plugins.styx = {
@@ -157,7 +159,7 @@ S.failedApps = S.failedApps or {}
 
 local function notify(message)
 	if S.config.notify then
-		notify(message)
+		log.notify(message)
 	else
 		log.info(message)
 	end
@@ -324,17 +326,25 @@ local function overwriteAppId(pTicket, ticketSize, size, appOffset, appId)
 	return true
 end
 
-local function logTicketLayout(appId, pTicket, fallbackSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize, options)
+local function logTicketLayout(appId, pTicket, fallbackSize, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize, options)
 	if S.loggedOffsets[appId] then
 		return
 	end
 	S.loggedOffsets[appId] = true
 
-	local head = ffi.cast("uint32_t*", pTicket)
+	local length, version, ticketApp = "n/a", "n/a", "n/a"
+	local safeBytes = math.min(fallbackSize, ticketSize or fallbackSize)
+	if pTicket ~= nil and safeBytes >= 8 then
+		local head = ffi.cast("uint32_t*", pTicket)
+		length, version = head[0], head[1]
+		if safeBytes >= 20 then
+			ticketApp = head[4]
+		end
+	end
 	notify(string.format(
-		"[Styx] ticket for %d: size=%d len=%d ver=%d app=%d "
+		"[Styx] ticket for %d: size=%d len=%s ver=%s app=%s "
 			.. "appOff=%d steamOff=%d sigOff=%d sigSize=%d mode=%s expanded=%s",
-		appId, fallbackSize, head[0], head[1], head[4],
+		appId, fallbackSize, length, version, ticketApp,
 		pOffAppId[0], pOffSteamId[0], pOffSig[0], pOffSigSize[0],
 		options.mode, tostring(options.expanded)
 	))
@@ -352,18 +362,35 @@ local function spliceByMode(pTicket, ticketSize, fallbackSize, pOffAppId, pOffSt
 	end
 
 	if options.mode == "both" then
-		local ok, reason = overwriteAppId(pTicket, ticketSize, fallbackSize, pOffAppId[0], appId)
-		if not ok then
+		local safe, reason = ticketLayoutIsSafe(fallbackSize, ticketSize, sigOffset)
+		if not safe then
 			return false, reason
 		end
-		local inserted, result = spliceTicket(pTicket, ticketSize, fallbackSize, sigOffset, appId)
-		if not inserted then
-			return false, result
+		local appOffset = pOffAppId[0]
+		if appOffset < 0 or appOffset + 4 > fallbackSize or appOffset + 4 > ticketSize then
+			return false, "app id offset is outside the ticket or caller buffer"
 		end
+		if not validAppId(appId) then
+			return false, "fallback app id is invalid"
+		end
+		-- Build the combined mutation in a temporary buffer, so validation or
+		-- allocation failures cannot leave a partially overwritten ticket.
+		local newSize = fallbackSize + 4
+		local temporary = ffi.new("uint8_t[?]", newSize)
+		local source = ffi.cast("const uint8_t*", pTicket)
+		local destination = ffi.cast("uint8_t*", temporary)
+		ffi.copy(destination, source, fallbackSize)
+		local ok, overwriteReason = overwriteAppId(destination, newSize, fallbackSize, appOffset, appId)
+		if not ok then
+			return false, overwriteReason
+		end
+		ffi.C.memmove(destination + sigOffset + 4, destination + sigOffset, fallbackSize - sigOffset)
+		putLittleEndianU32(destination, sigOffset, appId)
+		ffi.copy(pTicket, destination, newSize)
 		pOffAppId[0] = sigOffset
 		pOffSig[0] = sigOffset + 4
 		if options.expanded then
-			return true, result
+			return true, newSize
 		end
 		return true, fallbackSize
 	end
@@ -529,7 +556,7 @@ local function handleTicket(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSt
 	S.fallbackReady = true
 
 	local options = runtimeOptions(appId)
-	logTicketLayout(appId, pTicket, fallbackSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize, options)
+	logTicketLayout(appId, pTicket, fallbackSize, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize, options)
 
 	local ok, result = spliceByMode(
 		pTicket, ticketSize, fallbackSize,
@@ -555,17 +582,18 @@ S.seenApps = S.seenApps or {}
 S.hkGetTicket = ffi.cast("GetTicket_t", function(
 	pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize
 )
-	if not S.seenApps[appId] then
-		S.seenApps[appId] = true
-		notify("[Styx] HK GetTicket: appId=" .. tostring(appId)
-			.. " ticketSize=" .. tostring(ticketSize))
-	end
-	debug("hkGetTicket appId=" .. tostring(appId) .. " ticketSize=" .. tostring(ticketSize))
-
 	local mutex = LuaMutex()
+	local previousInFallback = S.inFallback
 	local result = 0
 	local ok, err = pcall(function()
-		if S.inFallback then
+		if not S.seenApps[appId] then
+			S.seenApps[appId] = true
+			notify("[Styx] HK GetTicket: appId=" .. tostring(appId)
+				.. " ticketSize=" .. tostring(ticketSize))
+		end
+		debug("hkGetTicket appId=" .. tostring(appId) .. " ticketSize=" .. tostring(ticketSize))
+
+		if previousInFallback then
 			result = callOriginal(
 				pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize
 			)
@@ -574,12 +602,13 @@ S.hkGetTicket = ffi.cast("GetTicket_t", function(
 
 		S.inFallback = true
 		result = handleTicket(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize)
-		S.inFallback = false
 	end)
-	S.inFallback = false
+	S.inFallback = previousInFallback
 
 	if not ok then
-		warnOnce(appId, "hook error: " .. tostring(err))
+		pcall(function()
+			warnOnce(appId, "hook error: " .. tostring(err))
+		end)
 		result = 0
 	end
 
@@ -738,6 +767,10 @@ end
 -- Callbacks
 -- ---------------------------------------------------------------------------
 local function onNetworkPacket(pkt)
+	if S.active and S.fallbackReady then
+		return
+	end
+
 	local body = pkt and pkt.body
 	if not body then
 		return
@@ -793,6 +826,7 @@ SLS.registerCallback("Network::recvPkt", onNetworkPacket)
 SLS.registerCallback("SLSsteam::initialized", onInitialized)
 
 S.setup = true
+
 
 notify("styx.lua " .. Styx.VERSION .. " loaded — will warm spacewar ("
 	.. tostring(S.config.fallback_app) .. ") at init/accountInfo")
