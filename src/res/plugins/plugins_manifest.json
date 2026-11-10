@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
-  "serial": 20261107113859,
-  "updated_at": "2026-11-07T11:38:59Z",
+  "serial": 20261110130206,
+  "updated_at": "2026-11-10T13:02:06Z",
   "default_interceptor": "spacebunny.lua",
   "plugins": {
     "spacebunny.lua": {
@@ -20,12 +20,12 @@
     "styx.lua": {
       "name": "Styx",
       "filename": "styx.lua",
-      "version": "2.2",
+      "version": "2.4",
       "role": "ticket-splicer",
       "category": "companion",
       "description": "Ownership ticket splicer so apps added through AdditionalApps pass SteamStub DRM checks.",
-      "sha256": "3527b1525b2a7850ae9dfa7654bc243587b568b340e32e62d819eacca9fca2f7",
-      "size_bytes": 22234,
+      "sha256": "0be8867233bf9d15d12b1924c14b904600e1c8e2fc7748616e6e45dea785ce70",
+      "size_bytes": 23654,
       "required": true,
       "deployable": true
     },
