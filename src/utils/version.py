@@ -302,6 +302,7 @@ def _is_newer_release(
     remote_date: str,
     local_version: str,
     local_date: str,
+    channel: str = "stable",
 ) -> bool:
     """Decide whether a remote build is a genuine upgrade over the running one.
 
@@ -327,13 +328,19 @@ def _is_newer_release(
     r_dt, r_has_time = _parse_utc_timestamp(remote_date)
     l_dt, l_has_time = _parse_utc_timestamp(local_date)
 
-    # Rule 2: published strictly before this build was compiled.
+    # Rule 2: publication order on beta/canary; on stable, block older-dated builds.
+    is_pub_ordered = str(channel or "stable").strip().lower() in ("beta", "canary")
     if r_dt and l_dt:
         if r_has_time and l_has_time:
             if r_dt < l_dt:
                 return False
-        elif r_dt.date() < l_dt.date():
-            return False
+            if is_pub_ordered and r_dt > l_dt:
+                return True
+        else:
+            if r_dt.date() < l_dt.date():
+                return False
+            if is_pub_ordered and r_dt.date() > l_dt.date():
+                return True
 
     # Rule 3: the base version decides across version lines.
     if remote_parsed[:3] != local_parsed[:3]:
@@ -634,7 +641,11 @@ def check_for_updates(
                 "error": None,
             }
     else:
-        offerable = [c for c in candidates if _is_newer_release(c[0], c[1], local_clean, local_timestamp)]
+        offerable = [
+            c
+            for c in candidates
+            if _is_newer_release(c[0], c[1], local_clean, local_timestamp, channel=channel)
+        ]
         if offerable:
             best_offerable = max(offerable, key=lambda c: _candidate_sort_key(c, channel))
             return {

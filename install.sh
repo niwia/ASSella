@@ -43,28 +43,34 @@ PRIMARY_ICON_PATH="$ICON_DIR/assella.png"
 LEGACY_ICON_PATH="$ICON_DIR/accela.png"
 ICON_PATH="$PRIMARY_ICON_PATH"
 VERSION_FILE="$INSTALL_DESTINATION/version"
+VERSION_TS_FILE="$INSTALL_DESTINATION/version_published_at"
 NIXOS_LAUNCHER="$INSTALL_DESTINATION/launch_nixos.sh"
 
 TARGET_CHANNEL=""
 UPDATE_SERVER="auto"
 R2_RELEASES_PUBLIC_URL="https://pub-16d0a0f940ee42f89e73b896a22be434.r2.dev"
 LOCAL_VER="Unknown"
+LOCAL_PUBLISHED_AT=""
 LATEST_VER=""
 LATEST_URL=""
 LATEST_SHA256=""
 LATEST_SHA256_URL=""
+LATEST_PUBLISHED_AT=""
 BETA_VER=""
 BETA_URL=""
 BETA_SHA256=""
 BETA_SHA256_URL=""
+BETA_PUBLISHED_AT=""
 STABLE_VER=""
 STABLE_URL=""
 STABLE_SHA256=""
 STABLE_SHA256_URL=""
+STABLE_PUBLISHED_AT=""
 PRESELECTED_VER=""
 PRESELECTED_URL=""
 PRESELECTED_SHA256=""
 PRESELECTED_SHA256_URL=""
+PRESELECTED_PUBLISHED_AT=""
 ALLOW_DOWNGRADE=false
 FUSE_INSTALLED=false
 STEAM_TYPE="none"
@@ -343,12 +349,17 @@ check_headcrab_status() {
 
 get_local_version() {
     LOCAL_VER="Not Installed"
+    LOCAL_PUBLISHED_AT=""
     if [ -f "$VERSION_FILE" ]; then
         read -r LOCAL_VER < "$VERSION_FILE" || LOCAL_VER="Unknown"
         LOCAL_VER=$(printf '%s' "$LOCAL_VER" | tr -d '\r\n')
     elif [ -f "$INSTALL_DESTINATION/squashfs-root/bin/src/res/version" ]; then
         read -r LOCAL_VER < "$INSTALL_DESTINATION/squashfs-root/bin/src/res/version" || LOCAL_VER="Unknown"
         LOCAL_VER=$(printf '%s' "$LOCAL_VER" | tr -d '\r\n')
+    fi
+    if [ -n "${VERSION_TS_FILE:-}" ] && [ -f "$VERSION_TS_FILE" ]; then
+        read -r LOCAL_PUBLISHED_AT < "$VERSION_TS_FILE" || LOCAL_PUBLISHED_AT=""
+        LOCAL_PUBLISHED_AT=$(printf '%s' "$LOCAL_PUBLISHED_AT" | tr -d '\r\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
     fi
 }
 
@@ -725,8 +736,9 @@ try:
 
         sv = semver_key(tag, prerelease=bool(r.get("prerelease", False)))
         ts = ts_key(r)
+        ts_raw = str(r.get("published_at") or r.get("created_at") or "").strip()
         rank = (sv[:5], ts, sv[5]) if target_channel == "stable" else (ts, sv[:5], sv[5])
-        cand = (rank, tag, dl_url, sha256_val, sha_url)
+        cand = (rank, tag, dl_url, sha256_val, sha_url, ts_raw)
         if best is None or cand[0] > best[0]:
             best = cand
 
@@ -735,20 +747,23 @@ try:
         print(best[2])
         print(best[3])
         print(best[4])
+        print(best[5])
         sys.exit(0)
 except Exception:
     sys.exit(1)
 ' "$channel" "$strict_mode" 2>/dev/null || true)
         if [ -n "$parsed" ]; then
-            local tag_name dl_url sha_val sha_url
+            local tag_name dl_url sha_val sha_url ts_val
             tag_name=$(printf '%s\n' "$parsed" | sed -n '1p')
             dl_url=$(printf '%s\n' "$parsed" | sed -n '2p')
             sha_val=$(printf '%s\n' "$parsed" | sed -n '3p')
             sha_url=$(printf '%s\n' "$parsed" | sed -n '4p')
+            ts_val=$(printf '%s\n' "$parsed" | sed -n '5p')
             if [ -n "$tag_name" ]; then LATEST_VER="$tag_name"; fi
             if [ -n "$dl_url" ]; then LATEST_URL="$dl_url"; fi
             LATEST_SHA256="$sha_val"
             LATEST_SHA256_URL="$sha_url"
+            LATEST_PUBLISHED_AT="$ts_val"
             [ -n "$LATEST_URL" ] && return 0
         fi
     elif command -v jq &>/dev/null; then
@@ -829,18 +844,20 @@ except Exception:
             | sort_by(if $tc == "stable" then [.sv_num, .ts, .clean] else [.ts, .sv_num, .clean] end)
             | last
             | select(. != null)
-            | "\(.tag)\n\(.url)\n\(.sha)\n\(.sha_url)"
+            | "\(.tag)\n\(.url)\n\(.sha)\n\(.sha_url)\n\(.ts)"
         ' 2>/dev/null || true)
         if [ -n "$parsed" ]; then
-            local tag_name dl_url sha_val sha_url
+            local tag_name dl_url sha_val sha_url ts_val
             tag_name=$(printf '%s\n' "$parsed" | sed -n '1p')
             dl_url=$(printf '%s\n' "$parsed" | sed -n '2p')
             sha_val=$(printf '%s\n' "$parsed" | sed -n '3p')
             sha_url=$(printf '%s\n' "$parsed" | sed -n '4p')
+            ts_val=$(printf '%s\n' "$parsed" | sed -n '5p')
             if [ -n "$tag_name" ]; then LATEST_VER="$tag_name"; fi
             if [ -n "$dl_url" ]; then LATEST_URL="$dl_url"; fi
             LATEST_SHA256="$sha_val"
             LATEST_SHA256_URL="$sha_url"
+            LATEST_PUBLISHED_AT="$ts_val"
             [ -n "$LATEST_URL" ] && return 0
         fi
     fi
@@ -852,6 +869,7 @@ get_latest_github_version() {
     LATEST_URL=""
     LATEST_SHA256=""
     LATEST_SHA256_URL=""
+    LATEST_PUBLISHED_AT=""
     detect_channel
 
     if [ "$UPDATE_SERVER" = "auto" ] || [ "$UPDATE_SERVER" = "github" ]; then
@@ -880,28 +898,32 @@ resolve_beta_and_stable_releases() {
     BETA_URL=""
     BETA_SHA256=""
     BETA_SHA256_URL=""
+    BETA_PUBLISHED_AT=""
     STABLE_VER="Unavailable"
     STABLE_URL=""
     STABLE_SHA256=""
     STABLE_SHA256_URL=""
+    STABLE_PUBLISHED_AT=""
 
     local rel_json=""
     if [ "$UPDATE_SERVER" = "auto" ] || [ "$UPDATE_SERVER" = "github" ]; then
         rel_json=$(fetch_github_json "https://api.github.com/repos/niwia/ASSella/releases?per_page=100" || true)
         if [ -n "$rel_json" ]; then
-            LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+            LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""; LATEST_PUBLISHED_AT=""
             if _parse_release_manifest_json "$rel_json" "beta" "exact"; then
                 BETA_VER="$LATEST_VER"
                 BETA_URL="$LATEST_URL"
                 BETA_SHA256="$LATEST_SHA256"
                 BETA_SHA256_URL="$LATEST_SHA256_URL"
+                BETA_PUBLISHED_AT="$LATEST_PUBLISHED_AT"
             fi
-            LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+            LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""; LATEST_PUBLISHED_AT=""
             if _parse_release_manifest_json "$rel_json" "stable" "exact"; then
                 STABLE_VER="$LATEST_VER"
                 STABLE_URL="$LATEST_URL"
                 STABLE_SHA256="$LATEST_SHA256"
                 STABLE_SHA256_URL="$LATEST_SHA256_URL"
+                STABLE_PUBLISHED_AT="$LATEST_PUBLISHED_AT"
             fi
         fi
     fi
@@ -911,12 +933,13 @@ resolve_beta_and_stable_releases() {
             local r2_beta=""
             r2_beta=$(curl -fsSL --retry 2 --connect-timeout 5 --max-time 15 "${R2_RELEASES_PUBLIC_URL%/}/releases/channels/beta.json" 2>/dev/null || true)
             if [ -n "$r2_beta" ]; then
-                LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+                LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""; LATEST_PUBLISHED_AT=""
                 if _parse_release_manifest_json "$r2_beta" "beta" "exact"; then
                     BETA_VER="$LATEST_VER"
                     BETA_URL="$LATEST_URL"
                     BETA_SHA256="$LATEST_SHA256"
                     BETA_SHA256_URL="$LATEST_SHA256_URL"
+                    BETA_PUBLISHED_AT="$LATEST_PUBLISHED_AT"
                 fi
             fi
         fi
@@ -924,12 +947,13 @@ resolve_beta_and_stable_releases() {
             local r2_stable=""
             r2_stable=$(curl -fsSL --retry 2 --connect-timeout 5 --max-time 15 "${R2_RELEASES_PUBLIC_URL%/}/releases/channels/stable.json" 2>/dev/null || true)
             if [ -n "$r2_stable" ]; then
-                LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+                LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""; LATEST_PUBLISHED_AT=""
                 if _parse_release_manifest_json "$r2_stable" "stable" "exact"; then
                     STABLE_VER="$LATEST_VER"
                     STABLE_URL="$LATEST_URL"
                     STABLE_SHA256="$LATEST_SHA256"
                     STABLE_SHA256_URL="$LATEST_SHA256_URL"
+                    STABLE_PUBLISHED_AT="$LATEST_PUBLISHED_AT"
                 fi
             fi
         fi
@@ -940,21 +964,25 @@ resolve_beta_and_stable_releases() {
         LATEST_URL="$STABLE_URL"
         LATEST_SHA256="$STABLE_SHA256"
         LATEST_SHA256_URL="$STABLE_SHA256_URL"
+        LATEST_PUBLISHED_AT="$STABLE_PUBLISHED_AT"
     elif [ -n "$BETA_URL" ]; then
         LATEST_VER="$BETA_VER"
         LATEST_URL="$BETA_URL"
         LATEST_SHA256="$BETA_SHA256"
         LATEST_SHA256_URL="$BETA_SHA256_URL"
+        LATEST_PUBLISHED_AT="$BETA_PUBLISHED_AT"
     elif [ -n "$STABLE_URL" ]; then
         LATEST_VER="$STABLE_VER"
         LATEST_URL="$STABLE_URL"
         LATEST_SHA256="$STABLE_SHA256"
         LATEST_SHA256_URL="$STABLE_SHA256_URL"
+        LATEST_PUBLISHED_AT="$STABLE_PUBLISHED_AT"
     else
         LATEST_VER="Unknown"
         LATEST_URL=""
         LATEST_SHA256=""
         LATEST_SHA256_URL=""
+        LATEST_PUBLISHED_AT=""
     fi
 }
 
@@ -1048,6 +1076,134 @@ show_distro_guide() {
 # ------------------------------------------------------------------------------
 #  5. Main Installation & Update Engine
 # ------------------------------------------------------------------------------
+_utc_ts_cmp() {
+    local cand_ts="${1:-}"
+    local ref_ts="${2:-}"
+    if [ -z "$cand_ts" ] || [ -z "$ref_ts" ]; then
+        return 1
+    fi
+    if command -v python3 &>/dev/null; then
+        python3 -c '
+import re, sys
+from datetime import datetime, timezone
+
+def parse_utc(raw):
+    s = str(raw or "").strip()
+    if not s:
+        return None, False
+    norm = re.sub(r"[zZ]$", "+00:00", s)
+    has_time = ("T" in norm) or (" " in norm and ":" in norm)
+    try:
+        dt = datetime.fromisoformat(norm)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt, has_time
+    except ValueError:
+        pass
+    for fmt, ht in (
+        ("%Y-%m-%dT%H:%M:%S.%f%z", True),
+        ("%Y-%m-%dT%H:%M:%S%z", True),
+        ("%Y-%m-%dT%H:%M:%S.%f", True),
+        ("%Y-%m-%dT%H:%M:%S", True),
+        ("%Y-%m-%d %H:%M:%S", True),
+        ("%Y-%m-%d", False),
+    ):
+        try:
+            dt = datetime.strptime(norm, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            return dt, ht
+        except ValueError:
+            continue
+    return None, False
+
+dt1, ht1 = parse_utc(sys.argv[1])
+dt2, ht2 = parse_utc(sys.argv[2])
+if dt1 is None or dt2 is None:
+    sys.exit(1)
+if ht1 and ht2:
+    print("gt" if dt1 > dt2 else ("lt" if dt1 < dt2 else "eq"))
+else:
+    d1, d2 = dt1.date(), dt2.date()
+    print("gt" if d1 > d2 else ("lt" if d1 < d2 else "eq"))
+' "$cand_ts" "$ref_ts" 2>/dev/null
+        return $?
+    fi
+    if command -v awk &>/dev/null; then
+        awk -v a="$cand_ts" -v b="$ref_ts" '
+        function norm_ts(raw, out,    s, dpart, tpart) {
+            s = raw
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+            if (!match(s, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/)) return 0
+            dpart = substr(s, 1, 10)
+            gsub(/-/, "", dpart)
+            out["date"] = dpart
+            out["has_time"] = 0
+            out["full"] = dpart "000000"
+            if (match(s, /[T ][0-9]{2}:[0-9]{2}:[0-9]{2}/)) {
+                tpart = substr(s, RSTART + 1, 8)
+                gsub(/:/, "", tpart)
+                out["has_time"] = 1
+                out["full"] = dpart tpart
+            }
+            return 1
+        }
+        BEGIN {
+            if (!norm_ts(a, ta) || !norm_ts(b, tb)) exit 1
+            if (ta["has_time"] && tb["has_time"]) {
+                if (ta["full"] > tb["full"]) { print "gt"; exit 0 }
+                if (ta["full"] < tb["full"]) { print "lt"; exit 0 }
+                print "eq"; exit 0
+            }
+            if (ta["date"] > tb["date"]) { print "gt"; exit 0 }
+            if (ta["date"] < tb["date"]) { print "lt"; exit 0 }
+            print "eq"; exit 0
+        }'
+        return $?
+    fi
+    return 1
+}
+
+_release_satisfies_request() {
+    local channel
+    channel=$(printf '%s' "${1:-stable}" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+    local cand_tag="$2"
+    local req_tag="$3"
+    local cand_ts="${4:-}"
+    local req_ts="${5:-}"
+
+    if [ -z "$req_tag" ] || [ "$req_tag" = "Unknown" ]; then
+        return 0
+    fi
+    if [ -z "$cand_tag" ] || [ "$cand_tag" = "Unknown" ]; then
+        return 1
+    fi
+
+    local clean_cand clean_req
+    clean_cand=$(printf '%s' "$cand_tag" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^[vV]//' | tr '[:upper:]' '[:lower:]')
+    clean_req=$(printf '%s' "$req_tag" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^[vV]//' | tr '[:upper:]' '[:lower:]')
+    if [ -n "$clean_cand" ] && [ "$clean_cand" = "$clean_req" ]; then
+        return 0
+    fi
+
+    if [ "$channel" = "beta" ] || [ "$channel" = "canary" ]; then
+        if [ -n "$cand_ts" ] && [ -n "$req_ts" ]; then
+            local ts_cmp
+            ts_cmp=$(_utc_ts_cmp "$cand_ts" "$req_ts" || true)
+            case "$ts_cmp" in
+                gt) return 0 ;;
+                lt) return 1 ;;
+            esac
+        fi
+    fi
+
+    _release_tag_ge "$cand_tag" "$req_tag"
+}
+
 _release_tag_ge() {
     local cand_tag="$1"
     local req_tag="$2"
@@ -1148,6 +1304,7 @@ sys.exit(0 if key(sys.argv[1]) >= key(sys.argv[2]) else 1)
 _fallback_to_r2_release() {
     local channel="$1"
     local req_tag="$2"
+    local req_ts="${3:-}"
     if [ "$channel" != "stable" ] && [ "$channel" != "beta" ]; then
         return 1
     fi
@@ -1155,20 +1312,21 @@ _fallback_to_r2_release() {
     local prev_url="$LATEST_URL"
     local prev_sha="$LATEST_SHA256"
     local prev_sha_url="$LATEST_SHA256_URL"
+    local prev_ts="$LATEST_PUBLISHED_AT"
     local r2_manifest_url="${R2_RELEASES_PUBLIC_URL%/}/releases/channels/${channel}.json"
     local r2_json=""
     r2_json=$(curl -fsSL --retry 2 --connect-timeout 5 --max-time 15 "$r2_manifest_url" 2>/dev/null || true)
     if [ -z "$r2_json" ]; then
         return 1
     fi
-    LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+    LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""; LATEST_PUBLISHED_AT=""
     if ! _parse_release_manifest_json "$r2_json" "$channel" "exact"; then
-        LATEST_VER="$prev_ver"; LATEST_URL="$prev_url"; LATEST_SHA256="$prev_sha"; LATEST_SHA256_URL="$prev_sha_url"
+        LATEST_VER="$prev_ver"; LATEST_URL="$prev_url"; LATEST_SHA256="$prev_sha"; LATEST_SHA256_URL="$prev_sha_url"; LATEST_PUBLISHED_AT="$prev_ts"
         return 1
     fi
-    if [ -z "$LATEST_URL" ] || ! _release_tag_ge "$LATEST_VER" "$req_tag"; then
+    if [ -z "$LATEST_URL" ] || ! _release_satisfies_request "$channel" "$LATEST_VER" "$req_tag" "$LATEST_PUBLISHED_AT" "$req_ts"; then
         echo -e "${YELLOW}[WARN] R2 mirror holds ${LATEST_VER:-unknown}, older than requested ${req_tag:-unknown}.${NC}"
-        LATEST_VER="$prev_ver"; LATEST_URL="$prev_url"; LATEST_SHA256="$prev_sha"; LATEST_SHA256_URL="$prev_sha_url"
+        LATEST_VER="$prev_ver"; LATEST_URL="$prev_url"; LATEST_SHA256="$prev_sha"; LATEST_SHA256_URL="$prev_sha_url"; LATEST_PUBLISHED_AT="$prev_ts"
         return 1
     fi
     return 0
@@ -1283,7 +1441,7 @@ _attempt_download_and_verify() {
             if [ "${ASSELLA_REQUIRE_SHA256:-0}" != "1" ] && { [ "${SKIP_CHECKSUM:-false}" = true ] || [ "${ASSELLA_SKIP_CHECKSUM:-0}" = "1" ]; }; then
                 echo -e "${YELLOW}[WARN] Checksum mismatch bypassed via flag/environment.${NC}"
                 proceed="y"
-            elif [ "$allow_interactive" = true ] && { [ -t 0 ] || [ -r /dev/tty ]; }; then
+            elif [ "${ASSELLA_REQUIRE_SHA256:-0}" != "1" ] && [ "$allow_interactive" = true ] && { [ -t 0 ] || [ -r /dev/tty ]; }; then
                 proceed=$(prompt_user "Do you want to ignore the checksum mismatch and proceed anyway? [y/N]: " "n")
             fi
 
@@ -1333,10 +1491,12 @@ do_install() {
         LATEST_URL="${PRESELECTED_URL}"
         LATEST_SHA256="${PRESELECTED_SHA256:-}"
         LATEST_SHA256_URL="${PRESELECTED_SHA256_URL:-}"
+        LATEST_PUBLISHED_AT="${PRESELECTED_PUBLISHED_AT:-}"
         PRESELECTED_VER=""
         PRESELECTED_URL=""
         PRESELECTED_SHA256=""
         PRESELECTED_SHA256_URL=""
+        PRESELECTED_PUBLISHED_AT=""
     else
         get_latest_github_version
     fi
@@ -1346,10 +1506,10 @@ do_install() {
         pause_if_interactive
         return 1
     fi
-    if _is_installed_version "${LOCAL_VER:-}" && ! _release_tag_ge "$LATEST_VER" "$LOCAL_VER"; then
-        local local_ch target_ch
-        local_ch=$(_detect_branch_of_tag "$LOCAL_VER")
-        target_ch="${TARGET_CHANNEL:-$(_detect_branch_of_tag "$LATEST_VER")}"
+    local local_ch target_ch
+    local_ch=$(_detect_branch_of_tag "${LOCAL_VER:-}")
+    target_ch="${TARGET_CHANNEL:-$(_detect_branch_of_tag "$LATEST_VER")}"
+    if _is_installed_version "${LOCAL_VER:-}" && ! _release_satisfies_request "$target_ch" "$LATEST_VER" "$LOCAL_VER" "${LATEST_PUBLISHED_AT:-}" "${LOCAL_PUBLISHED_AT:-}"; then
         if [ "$local_ch" = "$target_ch" ] && [ "${ALLOW_DOWNGRADE:-false}" != true ]; then
             echo -e "${RED}[ERROR] Refusing same-channel downgrade from $LOCAL_VER to $LATEST_VER ($target_ch).${NC}"
             echo -e "${YELLOW}[INFO] Pass --allow-downgrade to force installing an older release.${NC}"
@@ -1384,7 +1544,8 @@ do_install() {
     if [ "$dl_rc" -ne 0 ] && [ "$can_try_r2" = true ]; then
         echo -e "${YELLOW}[WARN] Primary download/verification failed; trying Cloudflare R2 mirror...${NC}"
         local requested_ver="$LATEST_VER"
-        if _fallback_to_r2_release "$TARGET_CHANNEL" "$requested_ver"; then
+        local requested_ts="${LATEST_PUBLISHED_AT:-}"
+        if _fallback_to_r2_release "$TARGET_CHANNEL" "$requested_ver" "$requested_ts"; then
             echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER) from Cloudflare R2...${NC}"
             dl_rc=0
             _attempt_download_and_verify "$DL_TMP" "true" || dl_rc=$?
@@ -1429,6 +1590,13 @@ do_install() {
 
     # Save local version file
     echo "$LATEST_VER" > "$VERSION_FILE"
+    if [ -n "${LATEST_PUBLISHED_AT:-}" ]; then
+        echo "$LATEST_PUBLISHED_AT" > "$VERSION_TS_FILE"
+        LOCAL_PUBLISHED_AT="$LATEST_PUBLISHED_AT"
+    else
+        rm -f "$VERSION_TS_FILE"
+        LOCAL_PUBLISHED_AT=""
+    fi
 
     # Compatibility symlink ACCELA.AppImage -> ASSella.AppImage
     rm -f "$INSTALL_DESTINATION/ACCELA.AppImage"
@@ -1701,20 +1869,22 @@ interactive_flow() {
             PRESELECTED_URL="$BETA_URL"
             PRESELECTED_SHA256="${BETA_SHA256:-}"
             PRESELECTED_SHA256_URL="${BETA_SHA256_URL:-}"
+            PRESELECTED_PUBLISHED_AT="${BETA_PUBLISHED_AT:-}"
         elif [ "$chosen_ch" = "stable" ] && [ -n "${STABLE_URL:-}" ]; then
             PRESELECTED_VER="$STABLE_VER"
             PRESELECTED_URL="$STABLE_URL"
             PRESELECTED_SHA256="${STABLE_SHA256:-}"
             PRESELECTED_SHA256_URL="${STABLE_SHA256_URL:-}"
+            PRESELECTED_PUBLISHED_AT="${STABLE_PUBLISHED_AT:-}"
         fi
         local proceed_install="y"
-        if [ -n "${PRESELECTED_VER:-}" ] && _is_installed_version "${LOCAL_VER:-}" && ! _release_tag_ge "$PRESELECTED_VER" "$LOCAL_VER"; then
+        if [ -n "${PRESELECTED_VER:-}" ] && _is_installed_version "${LOCAL_VER:-}" && ! _release_satisfies_request "$TARGET_CHANNEL" "$PRESELECTED_VER" "$LOCAL_VER" "${PRESELECTED_PUBLISHED_AT:-}" "${LOCAL_PUBLISHED_AT:-}"; then
             echo -e "${YELLOW}[WARN] Selected release $PRESELECTED_VER ($TARGET_CHANNEL) is older than installed $LOCAL_VER.${NC}"
             proceed_install=$(prompt_user "Do you want to proceed with downgrading from $LOCAL_VER to $PRESELECTED_VER? [y/N]: " "n")
         fi
         if [[ "$proceed_install" =~ ^[yY] ]]; then
             local prev_allow_dg="$ALLOW_DOWNGRADE"
-            if [ -n "${PRESELECTED_VER:-}" ] && _is_installed_version "${LOCAL_VER:-}" && ! _release_tag_ge "$PRESELECTED_VER" "$LOCAL_VER"; then
+            if [ -n "${PRESELECTED_VER:-}" ] && _is_installed_version "${LOCAL_VER:-}" && ! _release_satisfies_request "$TARGET_CHANNEL" "$PRESELECTED_VER" "$LOCAL_VER" "${PRESELECTED_PUBLISHED_AT:-}" "${LOCAL_PUBLISHED_AT:-}"; then
                 ALLOW_DOWNGRADE=true
             fi
             do_install || true
@@ -1724,6 +1894,7 @@ interactive_flow() {
             PRESELECTED_URL=""
             PRESELECTED_SHA256=""
             PRESELECTED_SHA256_URL=""
+            PRESELECTED_PUBLISHED_AT=""
             echo -e "${YELLOW}[INFO] Downgrade cancelled. Skipping ASSella installation.${NC}"
         fi
     fi

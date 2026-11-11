@@ -28,6 +28,7 @@ from utils.settings import get_settings
 from utils.version import (
     _candidate_sort_key,
     _classify_release_entry,
+    _parse_utc_timestamp,
     _release_timestamp,
     app_version,
     extract_semver,
@@ -391,7 +392,13 @@ def _run_delta_subprocess(
                 logger.debug(f"Failed to close updater stdout pipe: {e}")
 
 
-def _tags_match_or_newer(remote_tag: str, requested_tag: str) -> bool:
+def _tags_match_or_newer(
+    remote_tag: str,
+    requested_tag: str,
+    channel: str = "stable",
+    remote_published_at: str = "",
+    requested_published_at: str = "",
+) -> bool:
     """True when ``remote_tag`` satisfies ``requested_tag`` without downgrading."""
     clean_req = str(requested_tag or "").strip()
     if not clean_req or clean_req == "latest":
@@ -401,6 +408,18 @@ def _tags_match_or_newer(remote_tag: str, requested_tag: str) -> bool:
         return False
     if clean_rem.lstrip("vV").lower() == clean_req.lstrip("vV").lower():
         return True
+
+    norm_channel = str(channel or "stable").strip().lower()
+    if norm_channel in ("beta", "canary") and remote_published_at and requested_published_at:
+        r_dt, r_has_time = _parse_utc_timestamp(remote_published_at)
+        q_dt, q_has_time = _parse_utc_timestamp(requested_published_at)
+        if r_dt and q_dt:
+            if r_has_time and q_has_time:
+                if r_dt != q_dt:
+                    return r_dt > q_dt
+            elif r_dt.date() != q_dt.date():
+                return r_dt.date() > q_dt.date()
+
     return parse_version(clean_rem) >= parse_version(clean_req)
 
 
@@ -540,7 +559,11 @@ def _fetch_github_release_data(tag: str, channel: Optional[str] = None) -> Dict[
     return data
 
 
-def _fetch_r2_release_data(channel: str, requested_tag: str) -> Dict[str, Any]:
+def _fetch_r2_release_data(
+    channel: str,
+    requested_tag: str,
+    requested_published_at: str = "",
+) -> Dict[str, Any]:
     """Fetch target release metadata strictly from the active channel's Cloudflare R2 manifest."""
     import json
 
@@ -570,7 +593,14 @@ def _fetch_r2_release_data(channel: str, requested_tag: str) -> Dict[str, Any]:
 
     if requested_tag:
         remote_tag = str(data.get("tag_name") or "").strip()
-        if not _tags_match_or_newer(remote_tag, requested_tag):
+        remote_published_at = _release_timestamp(data)
+        if not _tags_match_or_newer(
+            remote_tag,
+            requested_tag,
+            channel=channel,
+            remote_published_at=remote_published_at,
+            requested_published_at=requested_published_at,
+        ):
             raise RuntimeError(
                 f"R2 mirror currently holds {remote_tag or 'unknown'}, older than requested {requested_tag}."
             )
@@ -1013,12 +1043,14 @@ class AppUpdateManager(QObject):
             try:
                 outcome = None
                 gh_error: Optional[Exception] = None
+                requested_published_at = ""
 
                 if update_server in ("auto", "github"):
                     try:
                         if not cancel_event.is_set():
                             _invoke_progress("setLabelText", Q_ARG(str, "Fetching release info from GitHub..."))
                         gh_release = _fetch_github_release_data(tag, channel=channel)
+                        requested_published_at = _release_timestamp(gh_release)
                         outcome = _apply_from_release("github", gh_release, dest_dir, appimage_file, appimage_name)
                     except Exception as e:
                         if cancel_event.is_set() or update_server == "github":
@@ -1040,7 +1072,11 @@ class AppUpdateManager(QObject):
                         _invoke_progress("setLabelText", Q_ARG(str, msg))
                         _invoke_progress("setValue", Q_ARG(int, 4))
                     try:
-                        r2_release = _fetch_r2_release_data(channel, tag)
+                        r2_release = _fetch_r2_release_data(
+                            channel,
+                            tag,
+                            requested_published_at=requested_published_at,
+                        )
                         outcome = _apply_from_release("r2", r2_release, dest_dir, appimage_file, appimage_name)
                     except Exception as r2_err:
                         if gh_error is not None:

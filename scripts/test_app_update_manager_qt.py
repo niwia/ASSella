@@ -1499,6 +1499,111 @@ class AppUpdateProgressBridgeTests(unittest.TestCase):
         self.assertIn("v3.1.1 (stable) to v2.9.9beta (beta)", body)
         self.assertIn("downgrade", body.lower())
 
+    def test_beta_auto_fallback_accepts_newer_published_r2_and_rejects_older_r2(self):
+        """Beta auto-fallback uses publication order: newer v2.9.9beta beats v3.0.5-beta.1, older SemVer is rejected."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            appimage = Path(temp_dir) / "ASSella.AppImage"
+            appimage.write_bytes(b"old beta binary")
+            r2_bytes = b"r2 newer beta appimage payload"
+            r2_sha = hashlib.sha256(r2_bytes).hexdigest()
+
+            parent_ok = _make_parent("3.0.5-beta.1", update_server="auto", update_channel="beta")
+
+            def fake_urlopen_newer_r2(request, timeout=None):
+                url = getattr(request, "full_url", "") or ""
+                if "/releases/tags/v3.0.5-beta.1" in url:
+                    return _FakeResponse(json.dumps({
+                        "tag_name": "v3.0.5-beta.1",
+                        "prerelease": True,
+                        "target_commitish": "beta",
+                        "published_at": "2026-11-10T10:00:00Z",
+                        "assets": [{
+                            "name": "ASSella.AppImage",
+                            "browser_download_url": "https://github.com/v3.0.5-beta.1/ASSella.AppImage",
+                        }],
+                    }).encode())
+                if url == "https://github.com/v3.0.5-beta.1/ASSella.AppImage":
+                    raise urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+                if "/releases/channels/beta.json" in url:
+                    return _FakeResponse(json.dumps({
+                        "tag_name": "v2.9.9beta",
+                        "prerelease": True,
+                        "target_commitish": "beta",
+                        "published_at": "2026-11-11T15:19:00Z",
+                        "assets": [{
+                            "name": "ASSella.AppImage",
+                            "browser_download_url": "https://r2.test/beta/ASSella.AppImage",
+                            "sha256": r2_sha,
+                        }],
+                    }).encode())
+                if url == "https://r2.test/beta/ASSella.AppImage":
+                    return _FakeResponse(r2_bytes)
+                raise AssertionError(f"Unexpected HTTP call: {url}")
+
+            with (
+                patch.dict(os.environ, {"APPIMAGE": str(appimage)}),
+                patch("managers.app_update_manager._find_bundled_or_system_tool", return_value=""),
+                patch(
+                    "managers.app_update_manager.ThemedMessageBox.question",
+                    return_value=ThemedMessageBox.StandardButton.Yes,
+                ),
+                patch("managers.app_update_manager.urllib.request.urlopen", side_effect=fake_urlopen_newer_r2),
+            ):
+                AppUpdateManager(parent_ok).run_self_update()
+                _pump_until(self.app, parent_ok.finished.is_set)
+
+            self.assertTrue(parent_ok.succeeded, f"unexpected error: {parent_ok.error}")
+            self.assertEqual(appimage.read_bytes(), r2_bytes)
+
+            # Older-published R2 beta (even with higher SemVer v3.9.9-beta.1) must be rejected.
+            appimage.write_bytes(b"intact newer beta")
+            parent_old = _make_parent("3.0.5-beta.1", update_server="auto", update_channel="beta")
+
+            def fake_urlopen_older_r2(request, timeout=None):
+                url = getattr(request, "full_url", "") or ""
+                if "/releases/tags/v3.0.5-beta.1" in url:
+                    return _FakeResponse(json.dumps({
+                        "tag_name": "v3.0.5-beta.1",
+                        "prerelease": True,
+                        "target_commitish": "beta",
+                        "published_at": "2026-11-10T10:00:00Z",
+                        "assets": [{
+                            "name": "ASSella.AppImage",
+                            "browser_download_url": "https://github.com/v3.0.5-beta.1/ASSella.AppImage",
+                        }],
+                    }).encode())
+                if url == "https://github.com/v3.0.5-beta.1/ASSella.AppImage":
+                    raise urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+                if "/releases/channels/beta.json" in url:
+                    return _FakeResponse(json.dumps({
+                        "tag_name": "v3.9.9-beta.1",
+                        "prerelease": True,
+                        "target_commitish": "beta",
+                        "published_at": "2026-10-01T10:00:00Z",
+                        "assets": [{
+                            "name": "ASSella.AppImage",
+                            "browser_download_url": "https://r2.test/beta/old.AppImage",
+                            "sha256": r2_sha,
+                        }],
+                    }).encode())
+                raise AssertionError(f"Unexpected HTTP call: {url}")
+
+            with (
+                patch.dict(os.environ, {"APPIMAGE": str(appimage)}),
+                patch("managers.app_update_manager._find_bundled_or_system_tool", return_value=""),
+                patch(
+                    "managers.app_update_manager.ThemedMessageBox.question",
+                    return_value=ThemedMessageBox.StandardButton.Yes,
+                ),
+                patch("managers.app_update_manager.urllib.request.urlopen", side_effect=fake_urlopen_older_r2),
+            ):
+                AppUpdateManager(parent_old).run_self_update()
+                _pump_until(self.app, parent_old.finished.is_set)
+
+            self.assertFalse(parent_old.succeeded)
+            self.assertIn("older than", (parent_old.error or "").lower())
+            self.assertEqual(appimage.read_bytes(), b"intact newer beta")
+
 
 if __name__ == "__main__":
     unittest.main()

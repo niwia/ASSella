@@ -873,6 +873,69 @@ class TestBranchAndPrereleaseAwareness(UpdateCheckerTestCase):
         self.assertEqual(res["status"], "update_available")
         self.assertEqual(res["remote_version"], "2.9.9beta")
 
+    def test_beta_and_canary_offer_newer_published_lower_version_while_stable_stays_semver(self):
+        """Beta/canary upgrade across lower base version if published later; stable still uses SemVer."""
+        beta_releases = [
+            _release("v3.0.5-beta.1", published="2026-10-15T10:00:00Z", prerelease=True, target_commitish="beta"),
+            _release("v2.9.9beta", published="2026-11-11T15:19:00Z", prerelease=True, target_commitish="beta"),
+        ]
+        res_ts = self.run_check(
+            releases=beta_releases,
+            channel="beta",
+            current="3.0.5-beta.1",
+            build_date="2026-10-15T10:00:00Z",
+            update_server="github",
+        )
+        self.assertEqual(res_ts["status"], "update_available")
+        self.assertEqual(res_ts["remote_version"], "2.9.9beta")
+
+        res_date_only = self.run_check(
+            releases=beta_releases,
+            channel="beta",
+            current="3.0.5-beta.1",
+            build_date="2026-10-15",
+            update_server="github",
+        )
+        self.assertEqual(res_date_only["status"], "update_available")
+        self.assertEqual(res_date_only["remote_version"], "2.9.9beta")
+
+        res_latest_beta = self.run_check(
+            releases=beta_releases,
+            channel="beta",
+            current="2.9.9beta",
+            build_date="2026-11-11T15:19:00Z",
+            update_server="github",
+        )
+        self.assertEqual(res_latest_beta["status"], "up_to_date")
+
+        canary_releases = [
+            _release("v3.1.0-canary.1", published="2026-10-15T10:00:00Z", prerelease=True, target_commitish="canary"),
+            _release("v3.0.0-canary.2", published="2026-11-11T12:00:00Z", prerelease=True, target_commitish="canary"),
+        ]
+        res_canary = self.run_check(
+            releases=canary_releases,
+            channel="canary",
+            current="3.1.0-canary.1",
+            build_date="2026-10-15T10:00:00Z",
+            update_server="github",
+        )
+        self.assertEqual(res_canary["status"], "update_available")
+        self.assertEqual(res_canary["remote_version"], "3.0.0-canary.2")
+
+        stable_releases = [
+            _release("v3.0.3", published="2026-10-23T10:00:00Z", prerelease=False, target_commitish="main"),
+            _release("v3.0.2", published="2026-10-25T10:00:00Z", prerelease=False, target_commitish="main"),
+        ]
+        res_stable = self.run_check(
+            releases=stable_releases,
+            channel="main",
+            current="3.0.3",
+            build_date="2026-10-23T10:00:00Z",
+            update_server="github",
+        )
+        self.assertEqual(res_stable["status"], "up_to_date")
+        self.assertEqual(res_stable["remote_version"], "3.0.3")
+
 
 class TestBuildDateHelpers(unittest.TestCase):
     def test_default_build_date(self):

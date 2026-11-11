@@ -1091,7 +1091,7 @@ _attempt_download_and_verify() {
             if [ "${ASSELLA_REQUIRE_SHA256:-0}" != "1" ] && { [ "${SKIP_CHECKSUM:-false}" = true ] || [ "${ASSELLA_SKIP_CHECKSUM:-0}" = "1" ]; }; then
                 echo -e "${YELLOW}[WARN] Checksum mismatch bypassed via flag/environment.${NC}"
                 proceed="y"
-            elif [ "$allow_interactive" = true ] && { [ -t 0 ] || [ -r /dev/tty ]; }; then
+            elif [ "${ASSELLA_REQUIRE_SHA256:-0}" != "1" ] && [ "$allow_interactive" = true ] && { [ -t 0 ] || [ -r /dev/tty ]; }; then
                 proceed=$(prompt_user "Do you want to ignore the checksum mismatch and proceed anyway? [y/N]: " "n")
             fi
 

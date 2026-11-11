@@ -726,6 +726,144 @@ fi
     unset -f fetch_github_json
     grep -q 'https://github.com/niwia/ASSella/releases' "$out_log"
     test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "keep intact"
+
+    # 8) Beta publication-order upgrade & R2 fallback accept newer-published v2.9.9beta over v3.0.5-beta.1
+    _release_satisfies_request beta "v2.9.9beta" "v3.0.5-beta.1" "2026-11-11T15:19:00Z" "2026-10-15T10:00:00Z"
+    if _release_satisfies_request beta "v3.9.9beta" "v3.0.5-beta.1" "2026-10-01T10:00:00Z" "2026-11-10T10:00:00Z"; then
+        echo "Beta satisfaction guard must reject older-published higher SemVer on beta" >&2
+        exit 1
+    fi
+    if _release_satisfies_request stable "v2.9.9" "v3.0.5" "2026-11-11T15:19:00Z" "2026-10-15T10:00:00Z"; then
+        echo "Stable satisfaction guard must still reject lower SemVer" >&2
+        exit 1
+    fi
+
+    BETA_R2_GOOD="verified newer beta r2 payload"
+    BETA_R2_SHA=$(printf '%s' "$BETA_R2_GOOD" | sha256sum | awk '{print $1}')
+    fetch_github_json() {
+        printf '[{"tag_name":"v3.0.6-beta.1","prerelease":true,"draft":false,"target_commitish":"beta","published_at":"2026-11-10T12:00:00Z","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://github.invalid/v3.0.6-beta.1/ASSella.AppImage"}]}]'
+    }
+    curl() {
+        local out="" url="" write_code=false
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -o) out="$2"; shift 2 ;;
+                -w) write_code=true; shift 2 ;;
+                http://*|https://*) url="$1"; shift ;;
+                *) shift ;;
+            esac
+        done
+        case "$url" in
+            https://github.invalid/v3.0.6-beta.1/ASSella.AppImage)
+                [ "$write_code" = true ] && printf '403'
+                return 1
+                ;;
+            */releases/channels/beta.json)
+                local r2_body
+                r2_body=$(printf '{"tag_name":"v2.9.9beta","prerelease":true,"target_commitish":"beta","published_at":"2026-11-11T15:19:00Z","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://r2.example.invalid/beta/ASSella.AppImage","sha256":"%s"}]}' "$BETA_R2_SHA")
+                if [ -n "$out" ]; then printf '%s' "$r2_body" > "$out"; else printf '%s' "$r2_body"; fi
+                return 0
+                ;;
+            https://r2.example.invalid/beta/ASSella.AppImage)
+                [ -n "$out" ] && printf '%s' "$BETA_R2_GOOD" > "$out"
+                return 0
+                ;;
+            *)
+                [ "$write_code" = true ] && printf '404'
+                return 1
+                ;;
+        esac
+    }
+    UPDATE_SERVER="auto"
+    TARGET_CHANNEL="beta"
+    ALLOW_DOWNGRADE=false
+    LOCAL_VER="v3.0.5-beta.1"
+    LOCAL_PUBLISHED_AT="2026-10-15T10:00:00Z"
+    PRESELECTED_VER=""; PRESELECTED_URL=""; PRESELECTED_SHA256=""; PRESELECTED_SHA256_URL=""; PRESELECTED_PUBLISHED_AT=""
+    ASSELLA_NO_ZSYNC=1 do_install
+    test "$(sha256sum "$INSTALL_DESTINATION/ASSella.AppImage" | awk '{print $1}')" = "$BETA_R2_SHA"
+    test "$(cat "$VERSION_FILE")" = "v2.9.9beta"
+    test "$(cat "$VERSION_TS_FILE")" = "2026-11-11T15:19:00Z"
+    LOCAL_PUBLISHED_AT=""
+    get_local_version
+    test "$LOCAL_VER" = "v2.9.9beta"
+    test "$LOCAL_PUBLISHED_AT" = "2026-11-11T15:19:00Z"
+    unset -f fetch_github_json
+
+    # Older R2 beta release must still be rejected in _fallback_to_r2_release
+    curl() {
+        printf '{"tag_name":"v2.7.0beta","prerelease":true,"target_commitish":"beta","published_at":"2026-10-01T10:00:00Z","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://r2.example.invalid/beta/old.AppImage"}]}'
+    }
+    if _fallback_to_r2_release beta "v3.0.6-beta.1" "2026-11-10T12:00:00Z"; then
+        echo "_fallback_to_r2_release must reject older-published beta R2 release" >&2
+        exit 1
+    fi
+
+    # Verify _utc_ts_cmp & _release_satisfies_request also work on the awk fallback without python3 or xargs
+    AWK_ONLY_BIN="$TEST_HOME/awk_only_bin"
+    mkdir -p "$AWK_ONLY_BIN"
+    for cmd in awk sed tr printf cat; do
+        ln -sf "$(command -v "$cmd")" "$AWK_ONLY_BIN/$cmd"
+    done
+    (
+        PATH="$AWK_ONLY_BIN"
+        test "$(_utc_ts_cmp "2026-11-11T15:19:00Z" "2026-10-15T10:00:00Z")" = "gt"
+        test "$(_utc_ts_cmp "2026-10-01T10:00:00Z" "2026-11-10T10:00:00Z")" = "lt"
+        _release_satisfies_request beta "v2.9.9beta" "v3.0.5-beta.1" "2026-11-11T15:19:00Z" "2026-10-15T10:00:00Z"
+        if _release_satisfies_request beta "v3.9.9beta" "v3.0.5-beta.1" "2026-10-01T10:00:00Z" "2026-11-10T10:00:00Z"; then
+            echo "awk fallback must reject older-published beta release" >&2
+            exit 1
+        fi
+    )
+
+    # 9) ASSELLA_REQUIRE_SHA256=1 refuses interactive checksum mismatch bypass in install.sh
+    python3 - "$REPO_DIR/install.sh" "$INSTALL_DESTINATION" "$TEST_HOME/beta_pty.log" <<'PYEOF'
+import os, pty, subprocess, sys
+script_path, dest, log_path = sys.argv[1:]
+shell_cmd = f'''
+set -euo pipefail
+source "{script_path}"
+INSTALL_DESTINATION="{dest}"
+UPDATE_SERVER="github"
+ASSELLA_NO_ZSYNC=1
+prompt_user() {{ echo "y"; }}
+curl() {{
+    local out=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -o) out="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [ -n "$out" ] && printf 'tampered beta payload' > "$out"
+    return 0
+}}
+LATEST_VER="v2.9.9beta"
+LATEST_URL="https://github.invalid/v2.9.9beta/ASSella.AppImage"
+LATEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
+LATEST_SHA256_URL=""
+DL_TMP=$(mktemp)
+trap 'rm -f "$DL_TMP"' EXIT
+test -t 0
+if ! ASSELLA_REQUIRE_SHA256=0 _attempt_download_and_verify "$DL_TMP" "true"; then
+    echo "Expected interactive mismatch override when ASSELLA_REQUIRE_SHA256=0" >&2
+    exit 2
+fi
+if ASSELLA_REQUIRE_SHA256=1 _attempt_download_and_verify "$DL_TMP" "true"; then
+    echo "ASSELLA_REQUIRE_SHA256=1 must refuse interactive mismatch bypass" >&2
+    exit 3
+fi
+'''
+master, slave = pty.openpty()
+proc = subprocess.Popen(["bash", "-c", shell_cmd], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True)
+os.close(slave)
+out, _ = proc.communicate()
+os.close(master)
+open(log_path, "wb").write(out)
+if proc.returncode != 0:
+    sys.stdout.buffer.write(out)
+    sys.exit(proc.returncode)
+PYEOF
 )
 
 # Matching regression checks for install_stable.sh (SemVer ordering, malformed checksum refusal, offline no-hardcoded-fallback, same-channel downgrade)
@@ -847,6 +985,55 @@ fi
         grep -q 'https://github.com/niwia/ASSella/releases' "$out_stable_log"
     )
     test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "stable sentinel"
+
+    # Interactive ASSELLA_REQUIRE_SHA256=1 mismatch refuses bypass in install_stable.sh
+    python3 - "$REPO_DIR/install_stable.sh" "$INSTALL_DESTINATION" "$TEST_HOME/stable_pty.log" <<'PYEOF'
+import os, pty, subprocess, sys
+script_path, dest, log_path = sys.argv[1:]
+shell_cmd = f'''
+set -euo pipefail
+source "{script_path}"
+INSTALL_DESTINATION="{dest}"
+UPDATE_SERVER="github"
+ASSELLA_NO_ZSYNC=1
+prompt_user() {{ echo "y"; }}
+curl() {{
+    local out=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -o) out="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [ -n "$out" ] && printf 'tampered stable payload' > "$out"
+    return 0
+}}
+LATEST_VER="v4.0.0"
+LATEST_URL="https://github.invalid/v4.0.0/ASSella.AppImage"
+LATEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
+LATEST_SHA256_URL=""
+DL_TMP=$(mktemp)
+trap 'rm -f "$DL_TMP"' EXIT
+test -t 0
+if ! ASSELLA_REQUIRE_SHA256=0 _attempt_download_and_verify "$DL_TMP" "true"; then
+    echo "Expected interactive mismatch override when ASSELLA_REQUIRE_SHA256=0" >&2
+    exit 2
+fi
+if ASSELLA_REQUIRE_SHA256=1 _attempt_download_and_verify "$DL_TMP" "true"; then
+    echo "ASSELLA_REQUIRE_SHA256=1 must refuse interactive mismatch bypass in install_stable.sh" >&2
+    exit 3
+fi
+'''
+master, slave = pty.openpty()
+proc = subprocess.Popen(["bash", "-c", shell_cmd], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds=True)
+os.close(slave)
+out, _ = proc.communicate()
+os.close(master)
+open(log_path, "wb").write(out)
+if proc.returncode != 0:
+    sys.stdout.buffer.write(out)
+    sys.exit(proc.returncode)
+PYEOF
 )
 
 echo "desktop shortcut symlink-loop & robust installer regression: PASS"
