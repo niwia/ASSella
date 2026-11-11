@@ -87,6 +87,9 @@ class _FakeResponse:
 
 def _release_urlopen(tag_name="v3.0.4"):
     def _fake_urlopen(request, timeout=None):
+        url = getattr(request, "full_url", "") or ""
+        if url.endswith(".sha256"):
+            raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
         release = {
             "tag_name": tag_name,
             "assets": [{
@@ -1309,6 +1312,192 @@ class AppUpdateProgressBridgeTests(unittest.TestCase):
 
             self.assertTrue(parent.succeeded, f"unexpected error: {parent.error}")
             self.assertEqual(appimage.read_bytes(), full_bytes)
+
+    def test_malformed_and_timed_out_sha256_fail_strictly_and_auto_falls_back_to_r2(self):
+        """Malformed, timed-out, or missing-advertised .sha256 fails on github and falls back under auto."""
+        original_bytes = b"existing intact appimage"
+        r2_bytes = b"verified r2 appimage payload"
+        r2_sha = hashlib.sha256(r2_bytes).hexdigest()
+
+        for mode in ("malformed_sidecar", "timeout_sidecar", "advertised_404"):
+            with self.subTest(mode=mode):
+                parent = _make_parent("3.1.1", update_server="github", update_channel="stable")
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    appimage = Path(temp_dir) / "ASSella.AppImage"
+                    appimage.write_bytes(original_bytes)
+                    seen_urls = []
+
+                    def fake_urlopen_gh(request, timeout=None, _mode=mode, _seen=seen_urls):
+                        url = getattr(request, "full_url", "") or ""
+                        _seen.append(url)
+                        assets = [{
+                            "name": "ASSella.AppImage",
+                            "browser_download_url": "https://github.com/v3.1.1/ASSella.AppImage",
+                        }]
+                        if _mode == "advertised_404":
+                            assets.append({
+                                "name": "ASSella.AppImage.sha256",
+                                "browser_download_url": "https://github.com/v3.1.1/ASSella.AppImage.sha256",
+                            })
+                        release_obj = {
+                            "tag_name": "v3.1.1",
+                            "prerelease": False,
+                            "target_commitish": "main",
+                            "published_at": "2026-11-11T12:00:00Z",
+                            "assets": assets,
+                        }
+                        if "/releases/tags/v3.1.1" in url:
+                            return _FakeResponse(json.dumps(release_obj).encode())
+                        if "/releases?per_page=100" in url:
+                            return _FakeResponse(json.dumps([release_obj]).encode())
+                        if url == "https://github.com/v3.1.1/ASSella.AppImage":
+                            return _FakeResponse(b"unverified github bytes")
+                        if url == "https://github.com/v3.1.1/ASSella.AppImage.sha256":
+                            if _mode == "malformed_sidecar":
+                                return _FakeResponse(b"not-a-valid-sha256")
+                            if _mode == "timeout_sidecar":
+                                raise TimeoutError("sidecar timed out")
+                            raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+                        raise AssertionError(f"Unexpected HTTP call: {url}")
+
+                    with (
+                        patch.dict(os.environ, {"APPIMAGE": str(appimage)}),
+                        patch("managers.app_update_manager._find_bundled_or_system_tool", return_value=""),
+                        patch(
+                            "managers.app_update_manager.ThemedMessageBox.question",
+                            return_value=ThemedMessageBox.StandardButton.Yes,
+                        ),
+                        patch("managers.app_update_manager.urllib.request.urlopen", side_effect=fake_urlopen_gh),
+                    ):
+                        AppUpdateManager(parent).run_self_update()
+                        _pump_until(self.app, parent.finished.is_set)
+
+                    self.assertFalse(parent.succeeded)
+                    self.assertIn("https://github.com/v3.1.1/ASSella.AppImage.sha256", seen_urls)
+                    self.assertEqual(appimage.read_bytes(), original_bytes)
+                    if mode == "malformed_sidecar":
+                        self.assertIn("malformed", (parent.error or "").lower())
+                    elif mode == "timeout_sidecar":
+                        self.assertIn("sidecar timed out", parent.error or "")
+                    else:
+                        self.assertIn("404", parent.error or "")
+
+        # Under UPDATE_SERVER="auto", malformed GitHub .sha256 must trigger R2 fallback and verify!
+        parent_auto = _make_parent("3.1.1", update_server="auto", update_channel="stable")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            appimage = Path(temp_dir) / "ASSella.AppImage"
+            appimage.write_bytes(original_bytes)
+            seen_auto = []
+
+            def fake_urlopen_auto(request, timeout=None):
+                url = getattr(request, "full_url", "") or ""
+                seen_auto.append(url)
+                if "/releases/tags/v3.1.1" in url:
+                    return _FakeResponse(json.dumps({
+                        "tag_name": "v3.1.1",
+                        "prerelease": False,
+                        "target_commitish": "main",
+                        "assets": [
+                            {"name": "ASSella.AppImage", "browser_download_url": "https://github.com/v3.1.1/ASSella.AppImage"},
+                            {"name": "ASSella.AppImage.sha256", "browser_download_url": "https://github.com/v3.1.1/ASSella.AppImage.sha256"},
+                        ],
+                    }).encode())
+                if url == "https://github.com/v3.1.1/ASSella.AppImage":
+                    return _FakeResponse(b"github payload")
+                if url == "https://github.com/v3.1.1/ASSella.AppImage.sha256":
+                    return _FakeResponse(b"corrupt sha256 header")
+                if url.endswith("/releases/channels/stable.json"):
+                    return _FakeResponse(json.dumps({
+                        "tag_name": "v3.1.1",
+                        "prerelease": False,
+                        "assets": [{
+                            "name": "ASSella.AppImage",
+                            "browser_download_url": "https://r2.test/stable/ASSella.AppImage",
+                            "sha256": r2_sha,
+                        }],
+                    }).encode())
+                if url == "https://r2.test/stable/ASSella.AppImage":
+                    return _FakeResponse(r2_bytes)
+                raise AssertionError(f"Unexpected HTTP call: {url}")
+
+            with (
+                patch.dict(os.environ, {"APPIMAGE": str(appimage)}),
+                patch("managers.app_update_manager._find_bundled_or_system_tool", return_value=""),
+                patch(
+                    "managers.app_update_manager.ThemedMessageBox.question",
+                    return_value=ThemedMessageBox.StandardButton.Yes,
+                ),
+                patch("managers.app_update_manager.urllib.request.urlopen", side_effect=fake_urlopen_auto),
+            ):
+                AppUpdateManager(parent_auto).run_self_update()
+                _pump_until(self.app, parent_auto.finished.is_set)
+
+            self.assertTrue(parent_auto.succeeded, f"unexpected error: {parent_auto.error}")
+            self.assertIn("https://github.com/v3.1.1/ASSella.AppImage.sha256", seen_auto)
+            self.assertEqual(appimage.read_bytes(), r2_bytes)
+
+    def test_require_sha256_env_blocks_unverified_404_and_confirmation_warns_on_channel_downgrade(self):
+        """ASSELLA_REQUIRE_SHA256=1 rejects 404 sidecars; cross-channel downgrade shows explicit warning."""
+        parent = _make_parent("3.1.1", update_server="github", update_channel="stable")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            appimage = Path(temp_dir) / "ASSella.AppImage"
+            appimage.write_bytes(b"intact binary")
+            seen_urls = []
+
+            def fake_urlopen_404(request, timeout=None):
+                url = getattr(request, "full_url", "") or ""
+                seen_urls.append(url)
+                if "/releases/tags/v3.1.1" in url:
+                    return _FakeResponse(json.dumps({
+                        "tag_name": "v3.1.1",
+                        "prerelease": False,
+                        "target_commitish": "main",
+                        "assets": [{"name": "ASSella.AppImage", "browser_download_url": "https://github.com/v3.1.1/ASSella.AppImage"}],
+                    }).encode())
+                if url == "https://github.com/v3.1.1/ASSella.AppImage":
+                    return _FakeResponse(b"unsigned bytes")
+                if url == "https://github.com/v3.1.1/ASSella.AppImage.sha256":
+                    raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+                raise AssertionError(f"Unexpected HTTP call: {url}")
+
+            with (
+                patch.dict(os.environ, {"APPIMAGE": str(appimage), "ASSELLA_REQUIRE_SHA256": "1"}),
+                patch("managers.app_update_manager._find_bundled_or_system_tool", return_value=""),
+                patch(
+                    "managers.app_update_manager.ThemedMessageBox.question",
+                    return_value=ThemedMessageBox.StandardButton.Yes,
+                ),
+                patch("managers.app_update_manager.urllib.request.urlopen", side_effect=fake_urlopen_404),
+            ):
+                AppUpdateManager(parent).run_self_update()
+                _pump_until(self.app, parent.finished.is_set)
+
+            self.assertFalse(parent.succeeded)
+            self.assertIn("https://github.com/v3.1.1/ASSella.AppImage.sha256", seen_urls)
+            self.assertIn("HTTP 404", parent.error or "")
+            self.assertEqual(appimage.read_bytes(), b"intact binary")
+
+        # Confirmation dialog for stable 3.1.1 -> beta 2.9.9beta warns explicitly on switch & downgrade.
+        captured_prompts = []
+        parent_dg = _make_parent("2.9.9beta", update_server="github", update_channel="beta")
+        with (
+            patch.dict(os.environ, {"APPIMAGE": "/tmp/ASSella.AppImage"}),
+            patch("managers.app_update_manager.app_version", "3.1.1"),
+            patch("managers.app_update_manager.Path.exists", return_value=True),
+            patch("managers.app_update_manager.Path.is_file", return_value=True),
+            patch(
+                "managers.app_update_manager.ThemedMessageBox.question",
+                side_effect=lambda _p, title, body, *_a: captured_prompts.append((title, body))
+                or ThemedMessageBox.StandardButton.No,
+            ),
+        ):
+            AppUpdateManager(parent_dg).run_self_update()
+
+        self.assertEqual(len(captured_prompts), 1)
+        title, body = captured_prompts[0]
+        self.assertEqual(title, "Switch Channel & Downgrade")
+        self.assertIn("v3.1.1 (stable) to v2.9.9beta (beta)", body)
+        self.assertIn("downgrade", body.lower())
 
 
 if __name__ == "__main__":

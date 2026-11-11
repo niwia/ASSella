@@ -282,6 +282,87 @@ class ChannelMismatchError(RuntimeError):
     """Raised when an explicit release belongs to a different channel than requested."""
 
 
+class RollbackError(RuntimeError):
+    """Raised when mirroring would replace a newer R2 channel release with an older one."""
+
+
+def _parse_utc_epoch(raw: Any) -> float:
+    """Parse an ISO-8601 timestamp into UTC epoch seconds, or 0.0 if missing/invalid."""
+    text = str(raw or "").strip()
+    if not text:
+        return 0.0
+    try:
+        iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _version_sort_key(tag: str) -> Tuple[int, int, int, int, int]:
+    """Return a monotonic SemVer comparison key for release tags."""
+    clean = re.sub(r"^[0-9]{8}\+[a-zA-Z0-9._-]+-", "", str(tag or "").strip()).lstrip("vV")
+    m = re.match(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(.*)$", clean)
+    if not m:
+        return (0, 0, 0, -5, 0)
+    major = int(m.group(1) or 0)
+    minor = int(m.group(2) or 0)
+    patch = int(m.group(3) or 0)
+    suffix = (m.group(4) or "").strip().lower()
+    if not suffix:
+        return (major, minor, patch, 0, 0)
+    if "hotfix" in suffix:
+        hm = re.search(r"hotfix\D*(\d+)", suffix)
+        return (major, minor, patch, 1, int(hm.group(1)) if hm else 1)
+    nums = re.findall(r"\d+", suffix)
+    sub = int(nums[-1]) if nums else 1
+    if CANARY_TOKEN_RE.search(suffix):
+        weight = -4
+    elif re.search(r"(?<![a-z])dev(?![a-z])", suffix):
+        weight = -3
+    elif re.search(r"(?<![a-z])beta(?![a-z])", suffix):
+        weight = -2
+    elif re.search(r"(?<![a-z])(?:rc|release[_-]?candidate)(?![a-z])", suffix):
+        weight = -1
+    else:
+        weight = -5
+    return (major, minor, patch, weight, sub)
+
+
+def _check_r2_rollback(
+    *,
+    channel: str,
+    incoming_tag: str,
+    incoming_published: str,
+    remote_manifest: Optional[Dict[str, Any]],
+) -> None:
+    """Enforce per-channel monotonicity against the live R2 manifest."""
+    if not remote_manifest:
+        return
+    remote_tag = str(remote_manifest.get("tag_name") or "").strip()
+    if not remote_tag or remote_tag == incoming_tag:
+        return
+
+    if channel == "stable":
+        if _version_sort_key(incoming_tag) < _version_sort_key(remote_tag):
+            raise RollbackError(
+                f"Refusing to roll back R2 'stable' manifest from {remote_tag} to older {incoming_tag}; "
+                "pass --allow-rollback to override."
+            )
+        return
+
+    incoming_ts = _parse_utc_epoch(incoming_published)
+    remote_pub = str(remote_manifest.get("published_at") or remote_manifest.get("created_at") or "").strip()
+    remote_ts = _parse_utc_epoch(remote_pub)
+    if incoming_ts > 0 and remote_ts > 0 and incoming_ts < remote_ts:
+        raise RollbackError(
+            f"Refusing to roll back R2 '{channel}' manifest from {remote_tag} ({remote_pub}) "
+            f"to older {incoming_tag} ({incoming_published}); pass --allow-rollback to override."
+        )
+
+
 def select_github_release(
     releases: Sequence[Dict[str, Any]],
     *,
@@ -331,7 +412,22 @@ def select_github_release(
     if not matching:
         raise RuntimeError(f"No published {channel} release with AppImage assets found.")
 
-    matching.sort(key=lambda r: str(r.get("published_at") or r.get("created_at") or ""), reverse=True)
+    if channel == "stable":
+        matching.sort(
+            key=lambda r: (
+                _version_sort_key(str(r.get("tag_name") or "")),
+                _parse_utc_epoch(r.get("published_at") or r.get("created_at")),
+            ),
+            reverse=True,
+        )
+    else:
+        matching.sort(
+            key=lambda r: (
+                _parse_utc_epoch(r.get("published_at") or r.get("created_at")),
+                _version_sort_key(str(r.get("tag_name") or "")),
+            ),
+            reverse=True,
+        )
     return matching[0]
 
 
@@ -586,6 +682,8 @@ def sync_release_to_r2(
     assets: Sequence[LocalAsset],
     target_commitish: Optional[str] = None,
     skip_if_unchanged: bool = False,
+    allow_rollback: bool = False,
+    retain_previous: int = 0,
     dry_run: bool = False,
     log: Callable[[str], None] = print,
 ) -> Dict[str, Any]:
@@ -603,6 +701,7 @@ def sync_release_to_r2(
             f"Tag {clean_tag!r} (prerelease={prerelease}) resolved to {detected!r}, not {channel!r}"
         )
 
+    retain_count = max(0, int(retain_previous or 0))
     keep_prefix = f"releases/{channel}/{clean_tag}/"
     manifest = build_channel_manifest(
         channel=channel,
@@ -616,16 +715,54 @@ def sync_release_to_r2(
     )
 
     if dry_run:
+        if s3_client is not None and not allow_rollback:
+            remote_manifest = _fetch_remote_manifest(s3_client, settings.bucket, channel)
+            _check_r2_rollback(
+                channel=channel,
+                incoming_tag=clean_tag,
+                incoming_published=published_at,
+                remote_manifest=remote_manifest,
+            )
         log(f"[DRY-RUN] Would upload {len(assets)} assets to s3://{settings.bucket}/{keep_prefix}")
         for asset in assets:
             log(f"[DRY-RUN]   PUT {asset_key(channel, clean_tag, asset.name)} ({asset.size} bytes)")
         log(f"[DRY-RUN] Would upload manifest to s3://{settings.bucket}/{manifest_key(channel)}")
-        log(f"[DRY-RUN] Would prune keys under releases/{channel}/ outside {keep_prefix}")
+        log(f"[DRY-RUN] Would prune keys under releases/{channel}/ outside {keep_prefix} (retain_previous={retain_count})")
         return {"status": "dry_run", "manifest": manifest, "pruned": []}
+
+    remote_manifest = _fetch_remote_manifest(s3_client, settings.bucket, channel)
+    if not allow_rollback:
+        _check_r2_rollback(
+            channel=channel,
+            incoming_tag=clean_tag,
+            incoming_published=published_at,
+            remote_manifest=remote_manifest,
+        )
+
+    retained_tags: List[str] = []
+    if retain_count > 0 and remote_manifest:
+        raw_candidates: List[Any] = [remote_manifest.get("tag_name")]
+        prev_list = remote_manifest.get("retained_tags")
+        if isinstance(prev_list, list):
+            raw_candidates.extend(prev_list)
+        for cand in raw_candidates:
+            cand_tag = str(cand or "").strip()
+            if (
+                cand_tag
+                and cand_tag != clean_tag
+                and SAFE_TAG_RE.match(cand_tag)
+                and ".." not in cand_tag
+                and cand_tag not in retained_tags
+            ):
+                retained_tags.append(cand_tag)
+        retained_tags = retained_tags[:retain_count]
+    if retained_tags:
+        manifest["retained_tags"] = retained_tags
+
+    keep_prefixes = (keep_prefix, *(f"releases/{channel}/{t}/" for t in retained_tags))
 
     existing_keys = _list_channel_keys(s3_client, settings.bucket, channel)
     if skip_if_unchanged:
-        remote_manifest = _fetch_remote_manifest(s3_client, settings.bucket, channel)
         if _manifest_matches_assets(
             remote_manifest,
             tag=clean_tag,
@@ -634,7 +771,9 @@ def sync_release_to_r2(
             channel=channel,
         ):
             stale_keys = [
-                k for k in existing_keys if k.startswith(f"releases/{channel}/") and not k.startswith(keep_prefix)
+                k
+                for k in existing_keys
+                if k.startswith(f"releases/{channel}/") and not any(k.startswith(p) for p in keep_prefixes)
             ]
             if not stale_keys:
                 log(f"[SKIP] R2 already up to date for {channel} {clean_tag}.")
@@ -667,10 +806,12 @@ def sync_release_to_r2(
         CacheControl="no-cache, max-age=60",
     )
 
-    # 3. Prune older releases under releases/<channel>/ (keeps only current tag).
+    # 3. Prune older releases under releases/<channel>/ (keeping active + retained tags).
     all_channel_keys = _list_channel_keys(s3_client, settings.bucket, channel)
     stale = [
-        k for k in all_channel_keys if k.startswith(f"releases/{channel}/") and not k.startswith(keep_prefix)
+        k
+        for k in all_channel_keys
+        if k.startswith(f"releases/{channel}/") and not any(k.startswith(p) for p in keep_prefixes)
     ]
     pruned: List[str] = []
     for idx in range(0, len(stale), 1000):
@@ -711,6 +852,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Exit 0 instead of raising when an explicit --tag belongs to another channel",
     )
+    ap.add_argument(
+        "--allow-rollback",
+        action="store_true",
+        help="Allow overwriting a newer R2 channel release with an older release",
+    )
+    ap.add_argument(
+        "--retain-previous",
+        type=int,
+        default=0,
+        help="Number of prior release tag folders to retain under releases/<channel>/ before pruning",
+    )
     ap.add_argument("--dry-run", action="store_true", help="Validate inputs and print planned R2 operations only")
     return ap.parse_args(argv)
 
@@ -738,6 +890,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             assets=assets,
             target_commitish=target_branch,
             skip_if_unchanged=args.skip_if_unchanged,
+            allow_rollback=args.allow_rollback,
+            retain_previous=args.retain_previous,
             dry_run=args.dry_run,
         )
         return 0
@@ -796,6 +950,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             assets=assets,
             target_commitish=target_commitish,
             skip_if_unchanged=args.skip_if_unchanged,
+            allow_rollback=args.allow_rollback,
+            retain_previous=args.retain_previous,
             dry_run=args.dry_run,
         )
     return 0

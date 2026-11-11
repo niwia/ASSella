@@ -482,10 +482,13 @@ def _timestamp_sort_key(ts: str) -> float:
 
 
 def _candidate_sort_key(cand: Tuple[str, str], channel: str) -> Tuple[Any, ...]:
-    """Rank candidates within a channel by UTC publication timestamp first, then semver."""
+    """Rank candidates per channel: SemVer-first for stable, timestamp-first for beta/canary."""
     parsed = parse_version(cand[0])
+    ts = _timestamp_sort_key(cand[1])
+    if channel == "stable":
+        return (parsed[:3], parsed[3], parsed[4], ts)
     prefer_canary = 1 if (channel == "canary" and "canary" in cand[0].lower()) else 0
-    return (_timestamp_sort_key(cand[1]), parsed[:3], parsed[3], prefer_canary, parsed[4])
+    return (ts, parsed[:3], parsed[3], prefer_canary, parsed[4])
 
 
 def check_for_updates(

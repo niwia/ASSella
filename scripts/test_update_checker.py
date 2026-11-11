@@ -831,6 +831,48 @@ class TestBranchAndPrereleaseAwareness(UpdateCheckerTestCase):
         self.assertEqual(res_canary["status"], "update_available")
         self.assertEqual(res_canary["remote_version"], "3.0Release_candidate111026001")
 
+    def test_stable_prefers_highest_semver_over_later_published_date(self):
+        """Stable picks highest SemVer (v4.0.0) even if an older release (v3.9.9) was republished later."""
+        releases = [
+            _release("v3.9.9", published="2026-11-12T10:00:00Z", prerelease=False, target_commitish="main"),
+            _release("v4.0.0", published="2026-11-10T10:00:00Z", prerelease=False, target_commitish="main"),
+        ]
+        res_upgrade = self.run_check(
+            releases=releases,
+            channel="main",
+            current="3.9.8",
+            build_date="2026-11-01",
+            update_server="github",
+        )
+        self.assertEqual(res_upgrade["status"], "update_available")
+        self.assertEqual(res_upgrade["remote_version"], "4.0.0")
+
+        res_current = self.run_check(
+            releases=releases,
+            channel="main",
+            current="4.0.0",
+            build_date="2026-11-10",
+            update_server="github",
+        )
+        self.assertEqual(res_current["status"], "up_to_date")
+        self.assertEqual(res_current["remote_version"], "4.0.0")
+
+    def test_beta_keeps_newest_published_release_when_version_is_lower(self):
+        """Beta prefers latest published_at so v2.9.9beta stays selected over older v3.0.5-beta.1."""
+        releases = [
+            _release("v3.0.5-beta.1", published="2026-11-10T10:00:00Z", prerelease=True, target_commitish="beta"),
+            _release("v2.9.9beta", published="2026-11-11T15:00:00Z", prerelease=True, target_commitish="beta"),
+        ]
+        res = self.run_check(
+            releases=releases,
+            channel="beta",
+            current="2.7.0beta",
+            build_date="2026-06-01",
+            update_server="github",
+        )
+        self.assertEqual(res["status"], "update_available")
+        self.assertEqual(res["remote_version"], "2.9.9beta")
+
 
 class TestBuildDateHelpers(unittest.TestCase):
     def test_default_build_date(self):

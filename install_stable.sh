@@ -49,6 +49,8 @@ LOCAL_VER="Unknown"
 LATEST_VER=""
 LATEST_URL=""
 LATEST_SHA256=""
+LATEST_SHA256_URL=""
+ALLOW_DOWNGRADE=false
 FUSE_INSTALLED=false
 STEAM_TYPE="none"
 STEAM_DIR=""
@@ -309,6 +311,30 @@ get_local_version() {
     elif [ -f "$INSTALL_DESTINATION/squashfs-root/bin/src/res/version" ]; then
         read -r LOCAL_VER < "$INSTALL_DESTINATION/squashfs-root/bin/src/res/version" || LOCAL_VER="Unknown"
         LOCAL_VER=$(printf '%s' "$LOCAL_VER" | tr -d '\r\n')
+    fi
+}
+
+_is_installed_version() {
+    local ver="${1:-}"
+    local lower
+    lower=$(printf '%s' "$ver" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -n "$lower" ] && [ "$lower" != "unknown" ] && [ "$lower" != "not installed" ]
+}
+
+_detect_branch_of_tag() {
+    local lower_ver
+    lower_ver=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
+    lower_ver=$(printf '%s' "$lower_ver" | sed -E 's/^[0-9]{8}\+[a-z0-9._-]+-//; s/^[0-9]{8}[_-]//')
+    if [ -z "$lower_ver" ] || [ "$lower_ver" = "unknown" ] || [ "$lower_ver" = "not installed" ]; then
+        echo ""
+    elif printf '%s' "$lower_ver" | grep -qE '(^|[^a-z])(canary|testing|devtest|release[_-]?candidate)([^a-z]|$)'; then
+        echo "canary"
+    elif printf '%s' "$lower_ver" | grep -qE '(^|[^a-z])(beta|dev|rc|candidate)([^a-z]|$)'; then
+        echo "beta"
+    elif printf '%s' "$lower_ver" | grep -qE '^v?[0-9]+\.[0-9]+(\.[0-9]+)?([-._]?hotfix[0-9]*)?$'; then
+        echo "stable"
+    else
+        echo "beta"
     fi
 }
 
@@ -575,9 +601,9 @@ try:
         if not is_strict_stable_release(r):
             continue
         tag = str(r.get("tag_name", "")).strip()
-        for a in r.get("assets", []):
-            if not isinstance(a, dict):
-                continue
+        assets = [a for a in r.get("assets", []) if isinstance(a, dict)]
+        app_asset = None
+        for a in assets:
             name = str(a.get("name", ""))
             dl_url = str(a.get("browser_download_url", ""))
             if (
@@ -586,15 +612,52 @@ try:
                 and not name.lower().endswith(".zsync")
                 and not name.lower().endswith(".sha256")
             ):
-                sha256_val = str(a.get("sha256") or "").strip().lower()
-                if not re.fullmatch(r"[0-9a-f]{64}", sha256_val):
-                    sha256_val = ""
-                cand = (ts_key(r), semver_key(tag), tag, dl_url, sha256_val)
-                if best is None or cand[:2] > best[:2]:
-                    best = cand
+                app_asset = a
                 break
+        if app_asset is None:
+            continue
+
+        app_name = str(app_asset.get("name", ""))
+        dl_url = str(app_asset.get("browser_download_url", ""))
+        sha256_val = str(app_asset.get("sha256") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", sha256_val):
+            digest_val = str(app_asset.get("digest") or "").strip().lower()
+            if digest_val.startswith("sha256:"):
+                sha256_val = digest_val[len("sha256:"):].strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", sha256_val):
+            sha256_val = ""
+
+        sha_url = ""
+        exact_sha_name = (app_name + ".sha256").lower()
+        for a in assets:
+            aname = str(a.get("name", "")).lower()
+            aurl = str(a.get("browser_download_url", ""))
+            if aurl and aname == exact_sha_name:
+                sha_url = aurl
+                break
+        if not sha_url:
+            for a in assets:
+                aname = str(a.get("name", "")).lower()
+                aurl = str(a.get("browser_download_url", ""))
+                if aurl and aname.endswith(".appimage.sha256"):
+                    sha_url = aurl
+                    break
+        if not sha_url:
+            for a in assets:
+                aname = str(a.get("name", "")).lower()
+                aurl = str(a.get("browser_download_url", ""))
+                if aurl and aname.endswith(".sha256"):
+                    sha_url = aurl
+                    break
+
+        sv = semver_key(tag)
+        rank = (sv[:5], ts_key(r), sv[5])
+        cand = (rank, tag, dl_url, sha256_val, sha_url)
+        if best is None or cand[0] > best[0]:
+            best = cand
 
     if best is not None:
+        print(best[1])
         print(best[2])
         print(best[3])
         print(best[4])
@@ -603,13 +666,15 @@ except Exception:
     sys.exit(1)
 ' 2>/dev/null || true)
         if [ -n "$parsed" ]; then
-            local tag_name dl_url sha_val
+            local tag_name dl_url sha_val sha_url
             tag_name=$(printf '%s\n' "$parsed" | sed -n '1p')
             dl_url=$(printf '%s\n' "$parsed" | sed -n '2p')
             sha_val=$(printf '%s\n' "$parsed" | sed -n '3p')
+            sha_url=$(printf '%s\n' "$parsed" | sed -n '4p')
             if [ -n "$tag_name" ]; then LATEST_VER="$tag_name"; fi
             if [ -n "$dl_url" ]; then LATEST_URL="$dl_url"; fi
             LATEST_SHA256="$sha_val"
+            LATEST_SHA256_URL="$sha_url"
             [ -n "$LATEST_URL" ] && return 0
         fi
     elif command -v jq &>/dev/null; then
@@ -631,33 +696,64 @@ except Exception:
                      and ($mc == "" or $mc == "stable" or $mc == "main")
                      and ($br == "" or $br == "main")
                      and (($tag | sub("^[vV]"; "") | test("^[0-9]+\\.[0-9]+(\\.[0-9]+)?$")) or ($tl | test("(^|[-._[:space:]])hotfix([0-9]*|$)"))));
+            def semver_tuple:
+                (. // "" | gsub("^[[:space:]]+|[[:space:]]+$"; "") | sub("^[0-9]{8}\\+[a-zA-Z0-9._-]+-"; "") | sub("^[vV]"; "")) as $c
+                | ([$c | match("^([0-9]+)\\.([0-9]+)(?:\\.([0-9]+))?(.*)$") | .captures] | .[0]) as $caps
+                | if $caps == null then [-1, -1, -1, 0, 0, $c]
+                  else
+                    ($caps[3].string // "" | ascii_downcase) as $suf
+                    | [
+                        ($caps[0].string | tonumber),
+                        ($caps[1].string | tonumber),
+                        (($caps[2].string // "0") | tonumber),
+                        (if $suf == "" or ($suf | test("hotfix")) then 3 else 1 end),
+                        (if ($suf | test("hotfix")) then
+                           (([$suf | match("hotfix[^0-9]*([0-9]+)") | .captures[0].string | tonumber] | .[0]) // 1)
+                         else 0 end),
+                        $c
+                      ]
+                  end;
             (if type == "array" then . else [.] end)
             | map(
                 select(type == "object" and is_stable)
                 | . as $r
-                | ([ (.assets // [])[]
+                | (.assets // []) as $all_assets
+                | ([ $all_assets[]
                      | select(type == "object")
                      | (.name // "") as $n
                      | (.browser_download_url // "") as $u
                      | select(($u != "") and ($n | ascii_downcase | (endswith(".appimage") and (endswith(".zsync") | not) and (endswith(".sha256") | not))))
-                     | { url: $u, sha: ((.sha256 // "") | ascii_downcase | if test("^[0-9a-f]{64}$") then . else "" end) }
+                     | (((.sha256 // "") | ascii_downcase) as $s1
+                        | ((.digest // "") | ascii_downcase | sub("^sha256:"; "")) as $s2
+                        | (if ($s1 | test("^[0-9a-f]{64}$")) then $s1
+                           elif ($s2 | test("^[0-9a-f]{64}$")) then $s2
+                           else "" end)) as $sha
+                     | { name: $n, url: $u, sha: $sha }
                    ] | .[0]) as $asset
                 | select($asset != null)
-                | { ts: ($r.published_at // $r.created_at // ""), tag: $r.tag_name, url: $asset.url, sha: $asset.sha }
+                | (($asset.name | ascii_downcase) as $an
+                   | (([ $all_assets[] | select(type == "object") | select(((.name // "" | ascii_downcase) == ($an + ".sha256")) and ((.browser_download_url // "") != "")) | .browser_download_url ][0])
+                      // ([ $all_assets[] | select(type == "object") | select(((.name // "" | ascii_downcase) | endswith(".appimage.sha256")) and ((.browser_download_url // "") != "")) | .browser_download_url ][0])
+                      // ([ $all_assets[] | select(type == "object") | select(((.name // "" | ascii_downcase) | endswith(".sha256")) and ((.browser_download_url // "") != "")) | .browser_download_url ][0])
+                      // "")) as $sha_url
+                | ($r.tag_name | semver_tuple) as $sv
+                | { ts: ($r.published_at // $r.created_at // ""), sv_num: $sv[0:5], clean: $sv[5], tag: $r.tag_name, url: $asset.url, sha: $asset.sha, sha_url: $sha_url }
             )
-            | sort_by(.ts)
+            | sort_by([.sv_num, .ts, .clean])
             | last
             | select(. != null)
-            | "\(.tag)\n\(.url)\n\(.sha)"
+            | "\(.tag)\n\(.url)\n\(.sha)\n\(.sha_url)"
         ' 2>/dev/null || true)
         if [ -n "$parsed" ]; then
-            local tag_name dl_url sha_val
+            local tag_name dl_url sha_val sha_url
             tag_name=$(printf '%s\n' "$parsed" | sed -n '1p')
             dl_url=$(printf '%s\n' "$parsed" | sed -n '2p')
             sha_val=$(printf '%s\n' "$parsed" | sed -n '3p')
+            sha_url=$(printf '%s\n' "$parsed" | sed -n '4p')
             if [ -n "$tag_name" ]; then LATEST_VER="$tag_name"; fi
             if [ -n "$dl_url" ]; then LATEST_URL="$dl_url"; fi
             LATEST_SHA256="$sha_val"
+            LATEST_SHA256_URL="$sha_url"
             [ -n "$LATEST_URL" ] && return 0
         fi
     fi
@@ -668,6 +764,7 @@ get_latest_github_version() {
     LATEST_VER="Unknown"
     LATEST_URL=""
     LATEST_SHA256=""
+    LATEST_SHA256_URL=""
     detect_channel
 
     if [ "$UPDATE_SERVER" = "auto" ] || [ "$UPDATE_SERVER" = "github" ]; then
@@ -685,12 +782,6 @@ get_latest_github_version() {
         if [ -n "$r2_json" ]; then
             _parse_release_manifest_json "$r2_json" || true
         fi
-    fi
-
-    # Stable fallback if GitHub API and R2 both fail (skip GitHub fallback when locked to R2)
-    if [ -z "$LATEST_URL" ] && [ "$UPDATE_SERVER" != "r2" ]; then
-        LATEST_VER="v3.1.0"
-        LATEST_URL="https://github.com/niwia/ASSella/releases/download/v3.1.0/ASSella.AppImage"
     fi
 }
 
@@ -817,6 +908,52 @@ sys.exit(0 if key(sys.argv[1]) >= key(sys.argv[2]) else 1)
 ' "$cand_tag" "$req_tag" 2>/dev/null
         return $?
     fi
+    if command -v awk &>/dev/null; then
+        awk -v a="$cand_tag" -v b="$req_tag" '
+        function parse_tag(raw, out,    s, tl, n, parts, suf, w, sub_n) {
+            s = raw
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+            sub(/^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\+[^-]+-/, "", s)
+            sub(/^[vV]/, "", s)
+            out[1] = 0; out[2] = 0; out[3] = 0; out[4] = 0; out[5] = 0
+            if (match(s, /^[0-9]+(\.[0-9]+)?(\.[0-9]+)?/)) {
+                n = split(substr(s, RSTART, RLENGTH), parts, ".")
+                if (n >= 1) out[1] = parts[1] + 0
+                if (n >= 2) out[2] = parts[2] + 0
+                if (n >= 3) out[3] = parts[3] + 0
+                suf = tolower(substr(s, RLENGTH + 1))
+            } else {
+                suf = ""
+            }
+            if (suf == "") {
+                out[4] = 0; out[5] = 0; return
+            }
+            if (index(suf, "hotfix") > 0) {
+                w = 1; sub_n = 1
+                if (match(suf, /hotfix[^0-9]*[0-9]+/)) {
+                    tl = substr(suf, RSTART, RLENGTH)
+                    sub(/hotfix[^0-9]*/, "", tl)
+                    sub_n = tl + 0
+                }
+                out[4] = w; out[5] = sub_n; return
+            }
+            sub_n = 1
+            while (match(suf, /[0-9]+/)) {
+                sub_n = substr(suf, RSTART, RLENGTH) + 0
+                suf = substr(suf, RSTART + RLENGTH)
+            }
+            out[4] = -1; out[5] = sub_n
+        }
+        BEGIN {
+            parse_tag(a, ka); parse_tag(b, kb)
+            for (i = 1; i <= 5; i++) {
+                if (ka[i] > kb[i]) exit 0
+                if (ka[i] < kb[i]) exit 1
+            }
+            exit 0
+        }'
+        return $?
+    fi
     [ "$(printf '%s' "${cand_tag#v}" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "${req_tag#v}" | tr '[:upper:]' '[:lower:]')" ]
 }
 
@@ -825,20 +962,21 @@ _fallback_to_r2_release() {
     local prev_ver="$LATEST_VER"
     local prev_url="$LATEST_URL"
     local prev_sha="$LATEST_SHA256"
+    local prev_sha_url="$LATEST_SHA256_URL"
     local r2_manifest_url="${R2_RELEASES_PUBLIC_URL%/}/releases/channels/stable.json"
     local r2_json=""
     r2_json=$(curl -fsSL --retry 2 --connect-timeout 5 --max-time 15 "$r2_manifest_url" 2>/dev/null || true)
     if [ -z "$r2_json" ]; then
         return 1
     fi
-    LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""
+    LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
     if ! _parse_release_manifest_json "$r2_json"; then
-        LATEST_VER="$prev_ver"; LATEST_URL="$prev_url"; LATEST_SHA256="$prev_sha"
+        LATEST_VER="$prev_ver"; LATEST_URL="$prev_url"; LATEST_SHA256="$prev_sha"; LATEST_SHA256_URL="$prev_sha_url"
         return 1
     fi
     if [ -z "$LATEST_URL" ] || ! _release_tag_ge "$LATEST_VER" "$req_tag"; then
         echo -e "${YELLOW}[WARN] R2 mirror holds ${LATEST_VER:-unknown}, older than requested ${req_tag:-unknown}.${NC}"
-        LATEST_VER="$prev_ver"; LATEST_URL="$prev_url"; LATEST_SHA256="$prev_sha"
+        LATEST_VER="$prev_ver"; LATEST_URL="$prev_url"; LATEST_SHA256="$prev_sha"; LATEST_SHA256_URL="$prev_sha_url"
         return 1
     fi
     return 0
@@ -895,12 +1033,34 @@ _attempt_download_and_verify() {
     # --- Integrity check -----------------------------------------------------
     local sha_state="missing"
     local expected_sha="" actual_sha=""
+    local sha_advertised=false
+    if [ -n "${LATEST_SHA256_URL:-}" ] || [ -n "${LATEST_SHA256:-}" ]; then
+        sha_advertised=true
+    fi
+    local sha_url="${LATEST_SHA256_URL:-${LATEST_URL}.sha256}"
 
-    if curl -fsL --retry 3 --retry-delay 2 --max-time 20 -o "$DL_TMP.sha256" "${LATEST_URL}.sha256" 2>/dev/null; then
-        expected_sha=$(grep -oiE '[a-f0-9]{64}' "$DL_TMP.sha256" | head -n1 || true)
-        [ -z "$expected_sha" ] && sha_state="malformed"
-    elif [ -n "${LATEST_SHA256:-}" ]; then
+    if [ -n "${LATEST_SHA256:-}" ]; then
         expected_sha=$(printf '%s' "${LATEST_SHA256}" | grep -oiE '^[a-f0-9]{64}$' | head -n1 || true)
+        [ -z "$expected_sha" ] && sha_state="malformed"
+    fi
+    if [ -z "$expected_sha" ] && [ "$sha_state" != "malformed" ]; then
+        local sha_http="000"
+        local sha_curl_rc=0
+        sha_http=$(curl -sL --retry 3 --retry-delay 2 --max-time 20 -o "$DL_TMP.sha256" -w '%{http_code}' "$sha_url" 2>/dev/null) || sha_curl_rc=$?
+        if [ "$sha_curl_rc" -eq 0 ] && { [ "$sha_http" = "200" ] || { [ -z "$sha_http" ] && [ -f "$DL_TMP.sha256" ]; }; }; then
+            if [ "$(wc -c < "$DL_TMP.sha256" 2>/dev/null || echo 0)" -gt 65536 ]; then
+                sha_state="malformed"
+            else
+                expected_sha=$(grep -oiE '(^|[^a-f0-9])[a-f0-9]{64}([^a-f0-9]|$)' "$DL_TMP.sha256" | grep -oiE '[a-f0-9]{64}' | head -n1 || true)
+                [ -z "$expected_sha" ] && sha_state="malformed"
+            fi
+        elif [ "$sha_curl_rc" -eq 0 ] && [ "$sha_http" = "404" ]; then
+            if [ "$sha_advertised" = true ]; then
+                sha_state="fetch_error"
+            fi
+        else
+            sha_state="fetch_error"
+        fi
     fi
     if [ -n "$expected_sha" ]; then
         if command -v sha256sum &>/dev/null; then
@@ -928,7 +1088,7 @@ _attempt_download_and_verify() {
             echo -e "${RED}  expected: $expected_sha${NC}"
             echo -e "${RED}  actual:   $actual_sha${NC}"
             local proceed="n"
-            if [ "${SKIP_CHECKSUM:-false}" = true ] || [ "${ASSELLA_SKIP_CHECKSUM:-0}" = "1" ]; then
+            if [ "${ASSELLA_REQUIRE_SHA256:-0}" != "1" ] && { [ "${SKIP_CHECKSUM:-false}" = true ] || [ "${ASSELLA_SKIP_CHECKSUM:-0}" = "1" ]; }; then
                 echo -e "${YELLOW}[WARN] Checksum mismatch bypassed via flag/environment.${NC}"
                 proceed="y"
             elif [ "$allow_interactive" = true ] && { [ -t 0 ] || [ -r /dev/tty ]; }; then
@@ -942,9 +1102,14 @@ _attempt_download_and_verify() {
             rm -f "$DL_TMP"
             return 3
             ;;
-        malformed|notool)
-            echo -e "${RED}[WARN] Checksum file unusable ($sha_state); cannot verify integrity.${NC}"
-            return 0
+        malformed|notool|fetch_error)
+            echo -e "${RED}[ERROR] Cannot verify checksum ($sha_state).${NC}"
+            if [ "${ASSELLA_REQUIRE_SHA256:-0}" != "1" ] && { [ "${SKIP_CHECKSUM:-false}" = true ] || [ "${ASSELLA_SKIP_CHECKSUM:-0}" = "1" ]; }; then
+                echo -e "${YELLOW}[WARN] Checksum verification bypassed via flag/environment ($sha_state).${NC}"
+                return 0
+            fi
+            rm -f "$DL_TMP"
+            return 3
             ;;
         missing)
             echo -e "${YELLOW}[WARN] No published .sha256 for this release; integrity NOT verified.${NC}"
@@ -974,8 +1139,22 @@ do_install() {
     get_latest_github_version
     if [ -z "$LATEST_URL" ] || [ "$LATEST_VER" = "Unknown" ]; then
         echo -e "${RED}[ERROR] Could not resolve a stable release download URL from update server '$UPDATE_SERVER'.${NC}"
+        echo -e "${YELLOW}[INFO] Please download manually from: https://github.com/niwia/ASSella/releases${NC}"
         pause_if_interactive
         return 1
+    fi
+    if _is_installed_version "${LOCAL_VER:-}" && ! _release_tag_ge "$LATEST_VER" "$LOCAL_VER"; then
+        local local_ch target_ch
+        local_ch=$(_detect_branch_of_tag "$LOCAL_VER")
+        target_ch="stable"
+        if [ "$local_ch" = "$target_ch" ] && [ "${ALLOW_DOWNGRADE:-false}" != true ]; then
+            echo -e "${RED}[ERROR] Refusing same-channel downgrade from $LOCAL_VER to $LATEST_VER ($target_ch).${NC}"
+            echo -e "${YELLOW}[INFO] Pass --allow-downgrade to force installing an older release.${NC}"
+            pause_if_interactive
+            return 1
+        elif [ "$local_ch" != "$target_ch" ]; then
+            echo -e "${YELLOW}[WARN] Switching channel ($local_ch -> $target_ch): installing $LATEST_VER over $LOCAL_VER.${NC}"
+        fi
     fi
     echo -e "${YELLOW}[INFO] Downloading ASSella.AppImage ($LATEST_VER)...${NC}"
 
@@ -1011,6 +1190,7 @@ do_install() {
 
     if [ "$dl_rc" -ne 0 ]; then
         rm -f "$DL_TMP"
+        echo -e "${YELLOW}[INFO] Manual download available at: https://github.com/niwia/ASSella/releases${NC}"
         echo -e "${RED}Refusing to install. Existing installation left untouched.${NC}"
         pause_if_interactive
         return 1
@@ -1272,10 +1452,21 @@ interactive_flow() {
     echo -e "  Latest Available:    ${GREEN}$LATEST_VER${NC} (${CYAN}Channel: $TARGET_CHANNEL${NC})"
 
     local install_prompt="Do you want to install / update ASSella? [Y/n]: "
+    local default_inst="y"
+    local is_downgrade=false
+    if [ -n "${LATEST_URL:-}" ] && [ "$LATEST_VER" != "Unknown" ] && _is_installed_version "${LOCAL_VER:-}" && ! _release_tag_ge "$LATEST_VER" "$LOCAL_VER"; then
+        is_downgrade=true
+        echo -e "${YELLOW}[WARN] $LATEST_VER is older than currently installed $LOCAL_VER.${NC}"
+        install_prompt="Do you want to downgrade from $LOCAL_VER to $LATEST_VER? [y/N]: "
+        default_inst="n"
+    fi
     local run_install=""
-    run_install=$(prompt_user "$install_prompt" "y")
+    run_install=$(prompt_user "$install_prompt" "$default_inst")
     if [[ "$run_install" =~ ^[yY] ]]; then
-        do_install
+        local prev_allow_dg="$ALLOW_DOWNGRADE"
+        [ "$is_downgrade" = true ] && ALLOW_DOWNGRADE=true
+        do_install || true
+        ALLOW_DOWNGRADE="$prev_allow_dg"
     else
         echo -e "${YELLOW}[INFO] Skipping ASSella installation.${NC}"
     fi
@@ -1428,6 +1619,9 @@ main() {
             --skip-checksum|--ignore-checksum|--no-verify)
                 SKIP_CHECKSUM=true
                 ;;
+            --allow-downgrade)
+                ALLOW_DOWNGRADE=true
+                ;;
             --help|-h)
                 action="help"
                 ;;
@@ -1468,6 +1662,7 @@ main() {
             get_latest_github_version
             if [ -z "$LATEST_URL" ] || [ "$LATEST_VER" = "Unknown" ]; then
                 echo -e "${RED}[ERROR] Could not check updates from '$UPDATE_SERVER' ($TARGET_CHANNEL).${NC}"
+                echo -e "${YELLOW}[INFO] Download manually from: https://github.com/niwia/ASSella/releases${NC}"
                 exit 1
             elif [ "$LOCAL_VER" != "$LATEST_VER" ]; then
                 do_install
@@ -1501,6 +1696,7 @@ main() {
             echo "  --restore        Restore original ACCELA backup"
             echo "  --uninstall      Uninstall ASSella"
             echo "  --skip-checksum  Ignore checksum mismatch and proceed with installation"
+            echo "  --allow-downgrade Allow installing an older stable release"
             echo "  --help, -h       Display this help message"
             ;;
     esac

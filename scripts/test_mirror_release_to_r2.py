@@ -355,6 +355,168 @@ class MirrorReleaseToR2Tests(unittest.TestCase):
             self.assertEqual(manifest["tag_name"], "v2.9.9beta")
             self.assertEqual(manifest.get("target_commitish"), "beta")
 
+    def test_select_github_release_per_channel_ordering(self) -> None:
+        releases = [
+            {
+                "tag_name": "v4.0.0",
+                "prerelease": False,
+                "draft": False,
+                "target_commitish": "main",
+                "published_at": "2026-11-10T10:00:00Z",
+                "assets": [{"name": "ASSella.AppImage"}],
+            },
+            {
+                "tag_name": "v3.9.9",
+                "prerelease": False,
+                "draft": False,
+                "target_commitish": "main",
+                "published_at": "2026-11-12T10:00:00Z",
+                "assets": [{"name": "ASSella.AppImage"}],
+            },
+            {
+                "tag_name": "v3.0.5-beta.1",
+                "prerelease": True,
+                "draft": False,
+                "target_commitish": "beta",
+                "published_at": "2026-11-10T10:00:00Z",
+                "assets": [{"name": "ASSella.AppImage"}],
+            },
+            {
+                "tag_name": "v2.9.9beta",
+                "prerelease": True,
+                "draft": False,
+                "target_commitish": "beta",
+                "published_at": "2026-11-11T15:00:00Z",
+                "assets": [{"name": "ASSella.AppImage"}],
+            },
+        ]
+        self.assertEqual(m2r.select_github_release(releases, channel="stable")["tag_name"], "v4.0.0")
+        self.assertEqual(m2r.select_github_release(releases, channel="beta")["tag_name"], "v2.9.9beta")
+
+    def test_r2_rollback_guard_channel_aware_and_override(self) -> None:
+        s3 = FakeS3Client()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_fake_release_dir(tmp_path, "v4.0.0")
+            m2r.sync_release_to_r2(
+                s3_client=s3,
+                settings=self.settings,
+                channel="stable",
+                tag="v4.0.0",
+                release_name="ASSella v4.0.0",
+                published_at="2026-11-10T10:00:00Z",
+                prerelease=False,
+                assets=m2r.collect_local_assets(tmp_path, "v4.0.0"),
+                log=lambda _msg: None,
+            )
+
+            # Republished v3.9.9 must not roll back live v4.0.0 on stable unless allow_rollback=True.
+            _write_fake_release_dir(tmp_path, "v3.9.9")
+            with self.assertRaises(m2r.RollbackError):
+                m2r.sync_release_to_r2(
+                    s3_client=s3,
+                    settings=self.settings,
+                    channel="stable",
+                    tag="v3.9.9",
+                    release_name="ASSella v3.9.9",
+                    published_at="2026-11-12T10:00:00Z",
+                    prerelease=False,
+                    assets=m2r.collect_local_assets(tmp_path, "v3.9.9"),
+                    log=lambda _msg: None,
+                )
+            stable_manifest = json.loads(s3.objects["releases/channels/stable.json"].decode("utf-8"))
+            self.assertEqual(stable_manifest["tag_name"], "v4.0.0")
+
+            res_override = m2r.sync_release_to_r2(
+                s3_client=s3,
+                settings=self.settings,
+                channel="stable",
+                tag="v3.9.9",
+                release_name="ASSella v3.9.9",
+                published_at="2026-11-12T10:00:00Z",
+                prerelease=False,
+                assets=m2r.collect_local_assets(tmp_path, "v3.9.9"),
+                allow_rollback=True,
+                log=lambda _msg: None,
+            )
+            self.assertEqual(res_override["status"], "updated")
+
+            # Beta allows lower SemVer (v2.9.9beta) if published_at is newer than live v3.0.5-beta.1,
+            # but rejects an older published_at unless allow_rollback=True.
+            _write_fake_release_dir(tmp_path, "v3.0.5-beta.1")
+            m2r.sync_release_to_r2(
+                s3_client=s3,
+                settings=self.settings,
+                channel="beta",
+                tag="v3.0.5-beta.1",
+                release_name="ASSella v3.0.5-beta.1",
+                published_at="2026-11-10T10:00:00Z",
+                prerelease=True,
+                assets=m2r.collect_local_assets(tmp_path, "v3.0.5-beta.1"),
+                target_commitish="beta",
+                log=lambda _msg: None,
+            )
+            _write_fake_release_dir(tmp_path, "v2.9.9beta")
+            res_beta = m2r.sync_release_to_r2(
+                s3_client=s3,
+                settings=self.settings,
+                channel="beta",
+                tag="v2.9.9beta",
+                release_name="ASSella v2.9.9beta",
+                published_at="2026-11-11T15:00:00Z",
+                prerelease=True,
+                assets=m2r.collect_local_assets(tmp_path, "v2.9.9beta"),
+                target_commitish="beta",
+                log=lambda _msg: None,
+            )
+            self.assertEqual(res_beta["status"], "updated")
+
+            _write_fake_release_dir(tmp_path, "v2.7.0beta")
+            with self.assertRaises(m2r.RollbackError):
+                m2r.sync_release_to_r2(
+                    s3_client=s3,
+                    settings=self.settings,
+                    channel="beta",
+                    tag="v2.7.0beta",
+                    release_name="ASSella v2.7.0beta",
+                    published_at="2026-11-09T10:00:00Z",
+                    prerelease=True,
+                    assets=m2r.collect_local_assets(tmp_path, "v2.7.0beta"),
+                    target_commitish="beta",
+                    log=lambda _msg: None,
+                )
+
+    def test_retain_previous_tags_keeps_n_prior_releases(self) -> None:
+        s3 = FakeS3Client()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            for idx, (tag, ts) in enumerate(
+                [
+                    ("v3.1.0", "2026-11-09T10:00:00Z"),
+                    ("v3.1.1", "2026-11-10T10:00:00Z"),
+                    ("v3.1.2", "2026-11-11T10:00:00Z"),
+                ],
+                start=1,
+            ):
+                _write_fake_release_dir(tmp_path, tag)
+                m2r.sync_release_to_r2(
+                    s3_client=s3,
+                    settings=self.settings,
+                    channel="stable",
+                    tag=tag,
+                    release_name=f"ASSella {tag}",
+                    published_at=ts,
+                    prerelease=False,
+                    assets=m2r.collect_local_assets(tmp_path, tag),
+                    retain_previous=1,
+                    log=lambda _msg: None,
+                )
+            manifest = json.loads(s3.objects["releases/channels/stable.json"].decode("utf-8"))
+            self.assertEqual(manifest["retained_tags"], ["v3.1.1"])
+            self.assertIn("releases/stable/v3.1.2/ASSella.AppImage", s3.objects)
+            self.assertIn("releases/stable/v3.1.1/ASSella.AppImage", s3.objects)
+            self.assertNotIn("releases/stable/v3.1.0/ASSella.AppImage", s3.objects)
+
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MirrorReleaseToR2Tests)

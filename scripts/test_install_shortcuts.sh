@@ -488,5 +488,366 @@ fi
     fi
 )
 
+# Verify per-channel ordering (stable=SemVer-first, beta=published_at-first), strict checksum failures,
+# no stale hardcoded fallback, and same-channel downgrade guards in BOTH install.sh and install_stable.sh.
+(
+    source "$REPO_DIR/install.sh"
+    trap 'cleanup; rm -rf "$TEST_HOME"' EXIT INT TERM
+
+    MIXED_ORDER_JSON='[
+      {"tag_name":"v4.0.0","prerelease":false,"draft":false,"target_commitish":"main","published_at":"2026-11-10T10:00:00Z","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://example.invalid/v4.0.0/ASSella.AppImage","digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},{"name":"ASSella.AppImage.sha256","browser_download_url":"https://example.invalid/v4.0.0/ASSella.AppImage.sha256"}]},
+      {"tag_name":"v3.9.9","prerelease":false,"draft":false,"target_commitish":"main","published_at":"2026-11-12T10:00:00Z","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://example.invalid/v3.9.9/ASSella.AppImage"}]},
+      {"tag_name":"v3.0.5-beta.1","prerelease":true,"draft":false,"target_commitish":"beta","published_at":"2026-11-10T10:00:00Z","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://example.invalid/v3.0.5-beta.1/ASSella.AppImage"}]},
+      {"tag_name":"v2.9.9beta","prerelease":true,"draft":false,"target_commitish":"beta","published_at":"2026-11-11T15:00:00Z","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://example.invalid/v2.9.9beta/ASSella.AppImage"}]}
+    ]'
+
+    # install.sh python3 path: stable prefers v4.0.0 over later v3.9.9; beta keeps newer-published v2.9.9beta
+    LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+    _parse_release_manifest_json "$MIXED_ORDER_JSON" "stable"
+    test "$LATEST_VER" = "v4.0.0"
+    test "$LATEST_SHA256" = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    test "$LATEST_SHA256_URL" = "https://example.invalid/v4.0.0/ASSella.AppImage.sha256"
+
+    LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+    _parse_release_manifest_json "$MIXED_ORDER_JSON" "beta"
+    test "$LATEST_VER" = "v2.9.9beta"
+
+    if command -v jq &>/dev/null; then
+        JQ_ORD_BIN="$TEST_HOME/jq_order_bin"
+        mkdir -p "$JQ_ORD_BIN"
+        for cmd in jq grep sed awk cut tr printf cat; do
+            ln -sf "$(command -v "$cmd")" "$JQ_ORD_BIN/$cmd"
+        done
+        (
+            PATH="$JQ_ORD_BIN"
+            LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+            _parse_release_manifest_json "$MIXED_ORDER_JSON" "stable"
+            test "$LATEST_VER" = "v4.0.0"
+            test "$LATEST_SHA256" = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            test "$LATEST_SHA256_URL" = "https://example.invalid/v4.0.0/ASSella.AppImage.sha256"
+
+            LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+            _parse_release_manifest_json "$MIXED_ORDER_JSON" "beta"
+            test "$LATEST_VER" = "v2.9.9beta"
+        )
+    fi
+
+    # Strict checksum & fallback checks (malformed, advertised-404, notool, ASSELLA_REQUIRE_SHA256=1)
+    mkdir -p "$INSTALL_DESTINATION"
+    printf 'existing sentinel appimage' > "$INSTALL_DESTINATION/ASSella.AppImage"
+    R2_GOOD="verified r2 replacement"
+    R2_GOOD_SHA=$(printf '%s' "$R2_GOOD" | sha256sum | awk '{print $1}')
+
+    # 1) Malformed .sha256 with UPDATE_SERVER=github refuses install and keeps existing binary intact
+    curl() {
+        local out="" url="" write_code=false
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -o) out="$2"; shift 2 ;;
+                -w) write_code=true; shift 2 ;;
+                http://*|https://*) url="$1"; shift ;;
+                *) shift ;;
+            esac
+        done
+        if [[ "$url" == *.sha256 ]]; then
+            [ -n "$out" ] && printf 'malformed garbage' > "$out"
+            [ "$write_code" = true ] && printf '200'
+            return 0
+        fi
+        [ -n "$out" ] && printf 'gh unsigned payload' > "$out"
+        [ "$write_code" = true ] && printf '200'
+        return 0
+    }
+    UPDATE_SERVER="github"
+    TARGET_CHANNEL="stable"
+    ALLOW_DOWNGRADE=false
+    LOCAL_VER="v3.1.0"
+    PRESELECTED_VER="v3.1.1"
+    PRESELECTED_URL="https://github.invalid/v3.1.1/ASSella.AppImage"
+    PRESELECTED_SHA256=""
+    PRESELECTED_SHA256_URL=""
+    if do_install; then
+        echo "Malformed .sha256 must abort installation on UPDATE_SERVER=github" >&2
+        exit 1
+    fi
+    test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "existing sentinel appimage"
+
+    # 2) Advertised .sha256 returning 404 refuses install on UPDATE_SERVER=github
+    curl() {
+        local out="" url="" write_code=false
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -o) out="$2"; shift 2 ;;
+                -w) write_code=true; shift 2 ;;
+                http://*|https://*) url="$1"; shift ;;
+                *) shift ;;
+            esac
+        done
+        if [[ "$url" == *.sha256 ]]; then
+            [ "$write_code" = true ] && printf '404'
+            return 0
+        fi
+        [ -n "$out" ] && printf 'gh payload' > "$out"
+        return 0
+    }
+    PRESELECTED_VER="v3.1.1"
+    PRESELECTED_URL="https://github.invalid/v3.1.1/ASSella.AppImage"
+    PRESELECTED_SHA256=""
+    PRESELECTED_SHA256_URL="https://github.invalid/v3.1.1/ASSella.AppImage.sha256"
+    if do_install; then
+        echo "Advertised .sha256 HTTP 404 must abort installation" >&2
+        exit 1
+    fi
+    test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "existing sentinel appimage"
+
+    # 3) ASSELLA_REQUIRE_SHA256=1 blocks unadvertised 404 sidecar
+    PRESELECTED_VER="v3.1.1"
+    PRESELECTED_URL="https://github.invalid/v3.1.1/ASSella.AppImage"
+    PRESELECTED_SHA256=""
+    PRESELECTED_SHA256_URL=""
+    if ASSELLA_REQUIRE_SHA256=1 do_install; then
+        echo "ASSELLA_REQUIRE_SHA256=1 must block missing .sha256" >&2
+        exit 1
+    fi
+    test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "existing sentinel appimage"
+
+    # 4) Missing hash tools (notool) aborts when a checksum is present
+    NOHASH_BIN="$TEST_HOME/nohash_bin"
+    mkdir -p "$NOHASH_BIN"
+    for cmd in bash mv rm mkdir mktemp dirname awk grep sed tr printf wc cat head; do
+        if command -v "$cmd" &>/dev/null; then
+            ln -sf "$(command -v "$cmd")" "$NOHASH_BIN/$cmd"
+        fi
+    done
+    (
+        PATH="$NOHASH_BIN"
+        PRESELECTED_VER="v3.1.1"
+        PRESELECTED_URL="https://github.invalid/v3.1.1/ASSella.AppImage"
+        PRESELECTED_SHA256="$R2_GOOD_SHA"
+        PRESELECTED_SHA256_URL=""
+        if do_install; then
+            echo "notool (no sha256sum/shasum) must fail verification" >&2
+            exit 1
+        fi
+    )
+    test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "existing sentinel appimage"
+
+    # 5) Same-channel downgrade refused unless ALLOW_DOWNGRADE=true
+    LOCAL_VER="v3.1.1"
+    TARGET_CHANNEL="stable"
+    ALLOW_DOWNGRADE=false
+    PRESELECTED_VER="v3.1.0"
+    PRESELECTED_URL="https://github.invalid/v3.1.0/ASSella.AppImage"
+    PRESELECTED_SHA256="$R2_GOOD_SHA"
+    if do_install; then
+        echo "Same-channel downgrade v3.1.1 -> v3.1.0 must be refused without --allow-downgrade" >&2
+        exit 1
+    fi
+    test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "existing sentinel appimage"
+
+    (
+        curl() {
+            local out="" url=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    -o) out="$2"; shift 2 ;;
+                    http://*|https://*) url="$1"; shift ;;
+                    *) shift ;;
+                esac
+            done
+            [ -n "$out" ] && printf '%s' "$R2_GOOD" > "$out"
+            return 0
+        }
+        ALLOW_DOWNGRADE=true
+        PRESELECTED_VER="v3.1.0"
+        PRESELECTED_URL="https://github.invalid/v3.1.0/ASSella.AppImage"
+        PRESELECTED_SHA256="$R2_GOOD_SHA"
+        ASSELLA_NO_ZSYNC=1 do_install
+        test "$(sha256sum "$INSTALL_DESTINATION/ASSella.AppImage" | awk '{print $1}')" = "$R2_GOOD_SHA"
+    )
+    printf 'existing sentinel appimage' > "$INSTALL_DESTINATION/ASSella.AppImage"
+
+    # 6) Under UPDATE_SERVER=auto, malformed GitHub .sha256 triggers R2 fallback and installs verified binary
+    curl() {
+        local out="" url="" write_code=false
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -o) out="$2"; shift 2 ;;
+                -w) write_code=true; shift 2 ;;
+                http://*|https://*) url="$1"; shift ;;
+                *) shift ;;
+            esac
+        done
+        case "$url" in
+            https://github.invalid/v3.1.1/ASSella.AppImage.sha256)
+                [ -n "$out" ] && printf 'invalid checksum text' > "$out"
+                [ "$write_code" = true ] && printf '200'
+                return 0
+                ;;
+            https://github.invalid/v3.1.1/ASSella.AppImage)
+                [ -n "$out" ] && printf 'gh unverified' > "$out"
+                return 0
+                ;;
+            */releases/channels/stable.json)
+                local r2_body
+                r2_body=$(printf '{"tag_name":"v3.1.1","prerelease":false,"target_commitish":"main","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://r2.example.invalid/stable/ASSella.AppImage","sha256":"%s"}]}' "$R2_GOOD_SHA")
+                if [ -n "$out" ]; then printf '%s' "$r2_body" > "$out"; else printf '%s' "$r2_body"; fi
+                return 0
+                ;;
+            https://r2.example.invalid/stable/ASSella.AppImage)
+                [ -n "$out" ] && printf '%s' "$R2_GOOD" > "$out"
+                return 0
+                ;;
+            *)
+                [ "$write_code" = true ] && printf '404'
+                return 1
+                ;;
+        esac
+    }
+    UPDATE_SERVER="auto"
+    TARGET_CHANNEL="stable"
+    LOCAL_VER="v3.1.0"
+    PRESELECTED_VER="v3.1.1"
+    PRESELECTED_URL="https://github.invalid/v3.1.1/ASSella.AppImage"
+    PRESELECTED_SHA256=""
+    PRESELECTED_SHA256_URL="https://github.invalid/v3.1.1/ASSella.AppImage.sha256"
+    ASSELLA_NO_ZSYNC=1 do_install
+    test "$(sha256sum "$INSTALL_DESTINATION/ASSella.AppImage" | awk '{print $1}')" = "$R2_GOOD_SHA"
+
+    # 7) When both GitHub API and R2 fail, do_install fails clearly (linking GitHub Releases) with no hardcoded fallback
+    printf 'keep intact' > "$INSTALL_DESTINATION/ASSella.AppImage"
+    fetch_github_json() { return 1; }
+    curl() { return 1; }
+    out_log="$TEST_HOME/offline_err.log"
+    if do_install >"$out_log" 2>&1; then
+        echo "Offline do_install must fail instead of falling back to hardcoded stale tag" >&2
+        exit 1
+    fi
+    unset -f fetch_github_json
+    grep -q 'https://github.com/niwia/ASSella/releases' "$out_log"
+    test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "keep intact"
+)
+
+# Matching regression checks for install_stable.sh (SemVer ordering, malformed checksum refusal, offline no-hardcoded-fallback, same-channel downgrade)
+(
+    source "$REPO_DIR/install_stable.sh"
+    trap 'cleanup; rm -rf "$TEST_HOME"' EXIT INT TERM
+
+    STABLE_ORDER_JSON='[
+      {"tag_name":"v4.0.0","prerelease":false,"draft":false,"target_commitish":"main","published_at":"2026-11-10T10:00:00Z","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://example.invalid/v4.0.0/ASSella.AppImage","digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},{"name":"ASSella.AppImage.sha256","browser_download_url":"https://example.invalid/v4.0.0/ASSella.AppImage.sha256"}]},
+      {"tag_name":"v3.9.9","prerelease":false,"draft":false,"target_commitish":"main","published_at":"2026-11-12T10:00:00Z","assets":[{"name":"ASSella.AppImage","browser_download_url":"https://example.invalid/v3.9.9/ASSella.AppImage"}]}
+    ]'
+    LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+    _parse_release_manifest_json "$STABLE_ORDER_JSON"
+    test "$LATEST_VER" = "v4.0.0"
+    test "$LATEST_SHA256" = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    test "$LATEST_SHA256_URL" = "https://example.invalid/v4.0.0/ASSella.AppImage.sha256"
+
+    if command -v jq &>/dev/null; then
+        JQ_STABLE_BIN="$TEST_HOME/jq_stable_ord_bin"
+        mkdir -p "$JQ_STABLE_BIN"
+        for cmd in jq grep sed awk cut tr printf cat; do
+            ln -sf "$(command -v "$cmd")" "$JQ_STABLE_BIN/$cmd"
+        done
+        (
+            PATH="$JQ_STABLE_BIN"
+            LATEST_VER=""; LATEST_URL=""; LATEST_SHA256=""; LATEST_SHA256_URL=""
+            _parse_release_manifest_json "$STABLE_ORDER_JSON"
+            test "$LATEST_VER" = "v4.0.0"
+            test "$LATEST_SHA256" = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            test "$LATEST_SHA256_URL" = "https://example.invalid/v4.0.0/ASSella.AppImage.sha256"
+        )
+    fi
+
+    mkdir -p "$INSTALL_DESTINATION"
+    printf 'stable sentinel' > "$INSTALL_DESTINATION/ASSella.AppImage"
+
+    # Malformed .sha256 in install_stable.sh fails strictly
+    (
+        get_latest_github_version() {
+            LATEST_VER="v4.0.0"
+            LATEST_URL="https://github.invalid/v4.0.0/ASSella.AppImage"
+            LATEST_SHA256=""
+            LATEST_SHA256_URL="https://github.invalid/v4.0.0/ASSella.AppImage.sha256"
+        }
+        curl() {
+            local out="" url="" write_code=false
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    -o) out="$2"; shift 2 ;;
+                    -w) write_code=true; shift 2 ;;
+                    http://*|https://*) url="$1"; shift ;;
+                    *) shift ;;
+                esac
+            done
+            if [[ "$url" == *.sha256 ]]; then
+                [ -n "$out" ] && printf 'bad sha' > "$out"
+                [ "$write_code" = true ] && printf '200'
+                return 0
+            fi
+            [ -n "$out" ] && printf 'payload' > "$out"
+            return 0
+        }
+        UPDATE_SERVER="github"
+        LOCAL_VER="v3.1.1"
+        if do_install; then
+            echo "install_stable.sh must refuse malformed .sha256" >&2
+            exit 1
+        fi
+    )
+    test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "stable sentinel"
+
+    # Same-channel downgrade refused in install_stable.sh unless ALLOW_DOWNGRADE=true
+    (
+        PAYLOAD_STABLE="verified stable downgrade"
+        PAYLOAD_STABLE_SHA=$(printf '%s' "$PAYLOAD_STABLE" | sha256sum | awk '{print $1}')
+        get_latest_github_version() {
+            LATEST_VER="v3.1.0"
+            LATEST_URL="https://github.invalid/v3.1.0/ASSella.AppImage"
+            LATEST_SHA256="$PAYLOAD_STABLE_SHA"
+            LATEST_SHA256_URL=""
+        }
+        curl() {
+            local out="" url=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    -o) out="$2"; shift 2 ;;
+                    http://*|https://*) url="$1"; shift ;;
+                    *) shift ;;
+                esac
+            done
+            [ -n "$out" ] && printf '%s' "$PAYLOAD_STABLE" > "$out"
+            return 0
+        }
+        UPDATE_SERVER="github"
+        LOCAL_VER="v3.1.1"
+        ALLOW_DOWNGRADE=false
+        if do_install; then
+            echo "install_stable.sh must refuse same-channel downgrade v3.1.1 -> v3.1.0" >&2
+            exit 1
+        fi
+        test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "stable sentinel"
+
+        ALLOW_DOWNGRADE=true
+        ASSELLA_NO_ZSYNC=1 do_install
+        test "$(sha256sum "$INSTALL_DESTINATION/ASSella.AppImage" | awk '{print $1}')" = "$PAYLOAD_STABLE_SHA"
+    )
+    printf 'stable sentinel' > "$INSTALL_DESTINATION/ASSella.AppImage"
+
+    # Offline GitHub + R2 fails cleanly with GitHub Releases link
+    (
+        fetch_github_json() { return 1; }
+        curl() { return 1; }
+        UPDATE_SERVER="auto"
+        out_stable_log="$TEST_HOME/stable_offline_err.log"
+        if do_install >"$out_stable_log" 2>&1; then
+            echo "install_stable.sh must fail offline without stale fallback" >&2
+            exit 1
+        fi
+        grep -q 'https://github.com/niwia/ASSella/releases' "$out_stable_log"
+    )
+    test "$(cat "$INSTALL_DESTINATION/ASSella.AppImage")" = "stable sentinel"
+)
+
 echo "desktop shortcut symlink-loop & robust installer regression: PASS"
 

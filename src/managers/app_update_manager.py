@@ -31,6 +31,7 @@ from utils.version import (
     _release_timestamp,
     app_version,
     extract_semver,
+    get_branch_from_version,
     get_effective_update_channel,
     get_r2_channel_manifest_url,
     normalize_update_server,
@@ -424,7 +425,12 @@ def _extract_release_assets(release_data: Dict[str, Any]) -> Tuple[str, Optional
         if low.endswith(".zsync") or low.endswith(".sha256"):
             continue
         if low.endswith(".appimage"):
-            sha = str(asset.get("sha256") or "").strip().lower() or None
+            raw_sha = str(asset.get("sha256") or "").strip().lower()
+            if not raw_sha:
+                raw_digest = str(asset.get("digest") or "").strip().lower()
+                if raw_digest.startswith("sha256:"):
+                    raw_sha = raw_digest[len("sha256:"):].strip()
+            sha = raw_sha if re.fullmatch(r"[0-9a-f]{64}", raw_sha) else None
             if name == "ASSella.AppImage":
                 download_url = url
                 appimage_sha = sha
@@ -441,6 +447,29 @@ def _extract_release_assets(release_data: Dict[str, Any]) -> Tuple[str, Optional
         zsync_url = f"{download_url}.zsync"
 
     return download_url, zsync_url, appimage_sha
+
+
+def _resolve_sha256_sidecar(release_data: Dict[str, Any], download_url: str) -> Tuple[Optional[str], bool]:
+    """Return ``(sidecar_url, advertised)`` for the selected release AppImage asset."""
+    if not download_url:
+        return None, False
+    dl_basename = download_url.rstrip("/").rsplit("/", 1)[-1].lower()
+    preferred = f"{dl_basename}.sha256" if dl_basename else "assella.appimage.sha256"
+    fallback_sha_url: Optional[str] = None
+    for asset in release_data.get("assets", []):
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name", "")).strip().lower()
+        url = str(asset.get("browser_download_url", "") or "").strip()
+        if not name or not url or not name.endswith(".sha256") or name.endswith(".zsync.sha256"):
+            continue
+        if name == preferred:
+            return url, True
+        if name == "assella.appimage.sha256" and fallback_sha_url is None:
+            fallback_sha_url = url
+    if fallback_sha_url:
+        return fallback_sha_url, True
+    return f"{download_url}.sha256", False
 
 
 def _fetch_github_release_data(tag: str, channel: Optional[str] = None) -> Dict[str, Any]:
@@ -568,28 +597,36 @@ def _verify_sha256_file(
     expected_hex: Optional[str],
     sidecar_url: Optional[str],
     cancel_event: threading.Event,
+    require_checksum: bool = False,
 ) -> None:
     """Verify ``file_path`` against manifest SHA-256 or a remote ``.sha256`` sidecar."""
     expected = (expected_hex or "").strip().lower() or None
+    strict = bool(require_checksum or (os.environ.get("ASSELLA_REQUIRE_SHA256") == "1"))
 
     if not expected and sidecar_url:
         try:
             sha_req = urllib.request.Request(sidecar_url, headers={"User-Agent": "ASSella-Updater"})
             with urllib.request.urlopen(sha_req, timeout=30) as sha_resp:
                 published = sha_resp.read().decode("utf-8", "replace")
-            match = re.search(r"[a-fA-F0-9]{64}", published)
-            if match:
-                expected = match.group(0).lower()
+            match = re.search(r"(?<![a-fA-F0-9])[a-fA-F0-9]{64}(?![a-fA-F0-9])", published)
+            if not match:
+                raise RuntimeError("Checksum file is malformed or missing a SHA-256 digest.")
+            expected = match.group(0).lower()
         except urllib.error.HTTPError as he:
-            if he.code == 404:
+            if he.code == 404 and not strict:
                 logger.warning("No published .sha256 for this release; skipping verification.")
                 return
+            if he.code == 404:
+                raise RuntimeError("Published .sha256 checksum was not found (HTTP 404).") from he
+            raise RuntimeError(f"Checksum fetch failed: HTTP {he.code} ({he.reason}).") from he
+        except RuntimeError:
             raise
         except Exception as ve:
-            logger.warning(f"Checksum verification skipped: {ve}")
-            return
+            raise RuntimeError(f"Could not fetch SHA-256 checksum ({ve}).") from ve
 
     if not expected:
+        if strict:
+            raise RuntimeError("SHA-256 verification required, but no checksum is available.")
         logger.warning("No published .sha256 for this release; skipping verification.")
         return
 
@@ -691,13 +728,38 @@ class AppUpdateManager(QObject):
                 )
 
             if not skip_prompt:
+                local_clean = extract_semver(app_version)
+                local_branch = get_branch_from_version(app_version)
+                local_channel = "stable" if local_branch == "main" else local_branch
+                is_cross_channel = local_channel != channel
+                is_downgrade = False
+                if tag and local_clean:
+                    t_ver = parse_version(tag)
+                    l_ver = parse_version(local_clean)
+                    is_downgrade = (t_ver[:3] < l_ver[:3]) or (t_ver[:3] == l_ver[:3] and t_ver < l_ver)
+
+                if is_cross_channel and is_downgrade:
+                    dlg_title = "Switch Channel & Downgrade"
+                elif is_cross_channel:
+                    dlg_title = "Switch Update Channel"
+                else:
+                    dlg_title = "Install Update"
+
+                target_label = tag or f"latest ({channel})"
+                downgrade_note = (
+                    "\nWarning: This switches to an older version line (downgrade).\n"
+                    if is_downgrade
+                    else ""
+                )
                 reply = ThemedMessageBox.question(
-                    self._parent, "Install Update",
-                    f"A new version of ASSella is available ({tag or 'the latest build'}).\n\n"
+                    self._parent,
+                    dlg_title,
+                    f"Update ASSella from v{local_clean} ({local_channel}) to {target_label} ({channel})?\n"
+                    f"{downgrade_note}\n"
                     "Would you like to download and install it now?\n"
                     "The app will need to be restarted after the update.",
                     ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-                    ThemedMessageBox.StandardButton.Yes
+                    ThemedMessageBox.StandardButton.Yes,
                 )
                 if reply != ThemedMessageBox.StandardButton.Yes:
                     self._clear_active_state()
@@ -753,6 +815,7 @@ class AppUpdateManager(QObject):
                     f"(channel '{rel_ch or 'unknown'}') while active channel is '{channel}'."
                 )
             download_url, zsync_url, expected_sha = _extract_release_assets(release_data)
+            sidecar_url, sha_advertised = _resolve_sha256_sidecar(release_data, download_url)
             if cancel_event.is_set():
                 return "cancelled"
 
@@ -795,8 +858,9 @@ class AppUpdateManager(QObject):
                             _verify_sha256_file(
                                 target,
                                 expected_hex=expected_sha,
-                                sidecar_url=f"{download_url}.sha256" if download_url else None,
+                                sidecar_url=sidecar_url,
                                 cancel_event=cancel_event,
+                                require_checksum=sha_advertised,
                             )
                             if cancel_event.is_set():
                                 return "cancelled"
@@ -857,8 +921,9 @@ class AppUpdateManager(QObject):
                             _verify_sha256_file(
                                 zsync_out,
                                 expected_hex=expected_sha,
-                                sidecar_url=f"{download_url}.sha256" if download_url else None,
+                                sidecar_url=sidecar_url,
                                 cancel_event=cancel_event,
+                                require_checksum=sha_advertised,
                             )
                             if cancel_event.is_set():
                                 return "cancelled"
@@ -925,8 +990,9 @@ class AppUpdateManager(QObject):
             _verify_sha256_file(
                 tmp_path,
                 expected_hex=expected_sha,
-                sidecar_url=f"{download_url}.sha256",
+                sidecar_url=sidecar_url,
                 cancel_event=cancel_event,
+                require_checksum=sha_advertised,
             )
             if cancel_event.is_set():
                 return "cancelled"

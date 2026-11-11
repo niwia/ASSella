@@ -28,6 +28,11 @@ on:
         required: false
         default: false
         type: boolean
+      allow_rollback:
+        description: 'Allow overwriting R2 channel manifest with an older release'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: mirror-releases-r2-${{ github.event.inputs.channel || (github.event.release.prerelease == true && 'beta' || 'stable') }}
@@ -72,6 +77,7 @@ jobs:
           RELEASE_BRANCH: ${{ github.event.release.target_commitish }}
           INPUT_FORCE: ${{ github.event.inputs.force }}
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+          INPUT_ALLOW_ROLLBACK: ${{ github.event.inputs.allow_rollback }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "release" ]; then
@@ -84,7 +90,7 @@ jobs:
             TARGET_CHANNEL="${INPUT_CHANNEL:-stable}"
           fi
 
-          CMD=(python3 scripts/mirror_release_to_r2.py --channel "$TARGET_CHANNEL" --from-github)
+          CMD=(python3 scripts/mirror_release_to_r2.py --channel "$TARGET_CHANNEL" --from-github --retain-previous 1)
 
           TARGET_TAG="${INPUT_TAG:-${RELEASE_TAG:-}}"
           if [ -n "$TARGET_TAG" ]; then
@@ -96,6 +102,10 @@ jobs:
 
           if [ "${INPUT_FORCE:-false}" != "true" ]; then
             CMD+=(--skip-if-unchanged)
+          fi
+
+          if [ "${INPUT_ALLOW_ROLLBACK:-false}" = "true" ]; then
+            CMD+=(--allow-rollback)
           fi
 
           if [ "${INPUT_DRY_RUN:-false}" = "true" ]; then
