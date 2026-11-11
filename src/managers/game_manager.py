@@ -879,6 +879,15 @@ class GameManager(QObject):
         if owned_appids is None:
             owned_appids = self._get_owned_steam_appids()
 
+        decryption_keys = {}
+        try:
+            from utils.yaml_config_manager import get_user_config_path, get_decryption_keys
+            cfg_path = get_user_config_path()
+            if cfg_path and cfg_path.exists():
+                decryption_keys = dict(get_decryption_keys(cfg_path) or {})
+        except Exception as e:
+            logger.debug(f"Could not read DecryptionKeys during library scan: {e}")
+
         plugin_games_dict = {}
         dlc_to_base = {}
         try:
@@ -911,19 +920,22 @@ class GameManager(QObject):
 
                         marker_path = self._get_accela_marker_path(game_path)
                         is_vapor = False
+                        in_add_apps = False
 
                         if not marker_path:
-                            # Check if this game is unlocked via Vapor/SLSsteam AdditionalApps or plugin_library
+                            # Check if this game is unlocked via SLSsteam AdditionalApps or plugin_library
                             acf_entry = acf_cache.get(game_name) or acf_cache.get(game_name.lower())
                             if acf_entry:
                                 appid_str = str(acf_entry[1])
-                                is_managed_target = (
-                                    appid_str in additional_apps
-                                    or appid_str in plugin_games_dict
+                                is_atom_target = (
+                                    appid_str in plugin_games_dict
                                     or appid_str in dlc_to_base.values()
                                 )
-                                if is_managed_target:
-                                    is_vapor = True
+                                in_add_apps = appid_str in additional_apps
+                                if is_atom_target or in_add_apps:
+                                    # Only plugin/AT0-M targets start as Vapor; plain AdditionalApps
+                                    # entries without DecryptionKeys classify as ACCELA in _collect_game_data.
+                                    is_vapor = is_atom_target
                                 elif appid_str in owned_appids:
                                     logger.debug(f"  Skipped owned Steam game: {game_name} ({appid_str})")
                                     continue
@@ -942,6 +954,10 @@ class GameManager(QObject):
                             marker_path=marker_path,
                             acf_cache=acf_cache,
                             is_vapor=is_vapor,
+                            in_additional_apps=in_add_apps,
+                            owned_appids=owned_appids,
+                            cfg_apps=additional_apps,
+                            cfg_keys=decryption_keys,
                         )
                         if game_data:
                             scanned_games.append(game_data)
@@ -949,8 +965,8 @@ class GameManager(QObject):
                             games_found += 1
                             logger.debug(
                                 "  Found %s game: %s",
-                                "Vapor" if is_vapor else ("ACCELA" if marker_path else "Steam"),
-                                game_name,
+                                game_data.get("source", "Vapor" if is_vapor else ("ACCELA" if marker_path else "Steam")),
+                                game_data.get("game_name", game_name),
                             )
                     except OSError as e:
                         # Skip entries that can't be accessed
@@ -961,12 +977,9 @@ class GameManager(QObject):
             logger.error(f"Error scanning {common_path}: {e}")
 
         # Second pass: directly discover any game in SLSsteam AdditionalApps or plugin_library
-        # whose appmanifest resides in this library, verifying the installdir exists and has content,
-        # skipping any legitimately owned Steam games.
+        # whose appmanifest resides in this library, verifying the installdir exists and has content.
         all_target_apps = set(additional_apps) | set(plugin_games_dict.keys()) | set(dlc_to_base.values())
         for appid_str in all_target_apps:
-            if appid_str in owned_appids and appid_str not in plugin_games_dict and appid_str not in dlc_to_base.values():
-                continue
             acf_info = acf_cache.get(f"appid:{appid_str}")
             if not acf_info:
                 continue
@@ -979,6 +992,10 @@ class GameManager(QObject):
             if not os.path.isdir(game_path) or not self._has_game_content(game_path):
                 continue
 
+            is_atom_target = (
+                appid_str in plugin_games_dict
+                or appid_str in dlc_to_base.values()
+            )
             game_data = self._collect_game_data(
                 game_path,
                 installdir,
@@ -986,13 +1003,20 @@ class GameManager(QObject):
                 steam_install_path,
                 marker_path=None,
                 acf_cache=acf_cache,
-                is_vapor=True,
+                is_vapor=is_atom_target,
+                in_additional_apps=(appid_str in additional_apps),
+                owned_appids=owned_appids,
+                cfg_apps=additional_apps,
+                cfg_keys=decryption_keys,
             )
             if game_data:
                 scanned_games.append(game_data)
                 seen_paths.add(game_path)
                 games_found += 1
-                logger.debug(f"  Found Vapor game via manifest lookup: {installdir} ({appid_str})")
+                logger.debug(
+                    f"  Found {game_data.get('source', 'managed')} game via manifest lookup: "
+                    f"{game_data.get('game_name', installdir)} ({appid_str})"
+                )
 
         return games_found
 
@@ -1267,6 +1291,10 @@ class GameManager(QObject):
         marker_path=None,
         acf_cache=None,
         is_vapor=False,
+        in_additional_apps=False,
+        owned_appids=None,
+        cfg_apps=None,
+        cfg_keys=None,
     ):
         """
         Collect game data from installation directory.
@@ -1276,29 +1304,17 @@ class GameManager(QObject):
             if self._scan_cancelled:
                 return None
 
+            from utils.library_rules import (
+                extract_depot_ids_from_file,
+                has_decryption_key_for_game,
+                is_placeholder_game_name,
+                resolve_best_game_name,
+            )
+
             # Try to read appmanifest to get AppID and other metadata
             appmanifest_path, appid = self._parse_acf_for_appid(library_path, game_name, acf_cache=acf_cache)
 
-            # A DLC-only install writes into the Steam folder and leaves a
-            # `.DepotDownloader` marker behind, but the base game is still
-            # Steam's. The marker must not move such a game out of the Steam
-            # tab and into the ACCELA tab.
-            is_dlc_only = False
-            if appid and appid not in ("0", "N/A", "unknown"):
-                try:
-                    from utils.dlc_helpers import is_dlc_only_mode
-                    is_dlc_only = bool(is_dlc_only_mode(appid))
-                except Exception as e:
-                    logger.debug(f"  DLC-only check failed for {appid}: {e}")
-
-            # A DLC-only game must never sit in AdditionalApps, or SLSsteam
-            # unlocks the base game. Undo any stale entry left by older builds.
-            if is_dlc_only:
-                self._scrub_dlc_only_base_appid(appid)
-
             marker_path = marker_path or self._get_accela_marker_path(game_path)
-            is_accela_install = bool(marker_path) and not is_dlc_only
-            is_managed = is_accela_install or is_vapor
 
             # Try to load metadata.json if ACF is missing/invalid, only when experimental mode is enabled
             try:
@@ -1338,31 +1354,99 @@ class GameManager(QObject):
 
             is_plugin_game = bool(plugin_record)
 
-            # Smart correlation: If not in plugin library and no physical marker, check if configured in SLSsteam with DecryptionKeys
-            if not is_plugin_game and not is_accela_install and not is_dlc_only and appid and appid not in ("0", "N/A", "unknown"):
+            # Load AdditionalApps & DecryptionKeys once if not supplied by _scan_library.
+            resolved_cfg_apps = set(str(x).strip() for x in (cfg_apps or ()))
+            resolved_cfg_keys = dict(cfg_keys or {})
+            if cfg_apps is None or cfg_keys is None:
                 try:
-                    from utils.yaml_config_manager import get_user_config_path, get_additional_apps, get_decryption_keys
+                    from utils.yaml_config_manager import (
+                        get_user_config_path,
+                        get_additional_apps,
+                        get_decryption_keys,
+                    )
                     cfg_path = get_user_config_path()
                     if cfg_path and cfg_path.exists():
-                        cfg_apps = set(get_additional_apps(cfg_path))
-                        if appid in cfg_apps:
-                            cfg_keys = get_decryption_keys(cfg_path)
-                            if appid in cfg_keys:
-                                is_plugin_game = True
-                            else:
-                                from managers.db_manager import DatabaseManager
-                                c_info = DatabaseManager().get_app_info(appid) or {}
-                                c_deps = c_info.get("depots") or {}
-                                from utils.plugin_games import SHARED_REDISTS
-                                for did in c_deps.keys():
-                                    if str(did) in cfg_keys and str(did) not in SHARED_REDISTS:
-                                        is_plugin_game = True
-                                        break
+                        if cfg_apps is None:
+                            resolved_cfg_apps = {
+                                str(x).strip() for x in (get_additional_apps(cfg_path) or []) if str(x).strip()
+                            }
+                        if cfg_keys is None:
+                            resolved_cfg_keys = dict(get_decryption_keys(cfg_path) or {})
                 except Exception as _e:
-                    logger.debug(f"[GameManager] Smart config correlation check error for {appid}: {_e}")
+                    logger.debug(f"[GameManager] Config load error for {appid}: {_e}")
+
+            valid_appid = bool(appid and appid not in ("0", "N/A", "unknown"))
+            in_add = bool(in_additional_apps or (valid_appid and str(appid) in resolved_cfg_apps))
+
+            # A DLC-only install writes into the Steam folder and leaves a
+            # `.DepotDownloader` marker behind, but the base game is still
+            # Steam's. The marker must not move an owned game out of the Steam
+            # tab and into the ACCELA tab.
+            is_dlc_only = False
+            if valid_appid:
+                try:
+                    from utils.dlc_helpers import is_dlc_only_mode
+                    raw_dlc_only = bool(is_dlc_only_mode(appid))
+                    # Unowned installs carrying a physical .assella marker fall back to ASSella
+                    # without mutating persisted dlc_only_mode QSettings.
+                    is_unowned_physical_accela = (
+                        bool(marker_path)
+                        and owned_appids is not None
+                        and str(appid) not in owned_appids
+                        and not is_vapor
+                        and not plugin_record
+                    )
+                    is_dlc_only = False if is_unowned_physical_accela else raw_dlc_only
+                except Exception as e:
+                    logger.debug(f"  DLC-only check failed for {appid}: {e}")
+
+            # A DLC-only game must never sit in AdditionalApps, or SLSsteam
+            # unlocks the base game. Undo any stale entry left by older builds.
+            if is_dlc_only:
+                self._scrub_dlc_only_base_appid(appid)
+                in_add = False
+
+            # Collect known depot IDs for this game (local .depot, plugin_library, metadata, SQLite DB)
+            depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot" if valid_appid else None
+            depot_file_ids = extract_depot_ids_from_file(str(depot_file)) if depot_file else []
+
+            has_key_in_config = False
+            if valid_appid and resolved_cfg_keys:
+                known_depot_ids = list(depot_file_ids)
+                if isinstance(plugin_record, dict):
+                    p_deps = plugin_record.get("depots") or []
+                    known_depot_ids.extend(p_deps.keys() if isinstance(p_deps, dict) else p_deps)
+                if isinstance(meta_data, dict):
+                    m_deps = meta_data.get("depots") or []
+                    known_depot_ids.extend(m_deps.keys() if isinstance(m_deps, dict) else m_deps)
+                has_key_in_config = has_decryption_key_for_game(appid, resolved_cfg_keys, known_depot_ids)
+                if not has_key_in_config and in_add:
+                    try:
+                        from managers.db_manager import DatabaseManager
+                        c_info = DatabaseManager().get_app_info(appid, bypass_expiration=True) or {}
+                        c_deps = c_info.get("depots") or {}
+                        if isinstance(c_deps, dict) and c_deps:
+                            has_key_in_config = has_decryption_key_for_game(
+                                appid, resolved_cfg_keys, c_deps.keys()
+                            )
+                    except Exception as _e:
+                        logger.debug(f"[GameManager] Depot DB lookup skipped for {appid}: {_e}")
+
+            # Core classification rules:
+            # - In AdditionalApps + (AppKey or non-shared depot key in DecryptionKeys) -> AT0-M
+            # - In AdditionalApps without keys (and no active plugin record) -> ASSella
+            # - Physical .assella marker -> ASSella (subject to timestamp resolution if plugin_record also exists)
+            if is_dlc_only:
+                is_accela_install = False
+            elif marker_path:
+                is_accela_install = True
+            else:
+                if not is_plugin_game and in_add and has_key_in_config:
+                    is_plugin_game = True
+                is_accela_install = bool(in_add and not (is_vapor or is_plugin_game))
 
             # Smart Conflict Resolution between ACCELA physical marker and AT0-M plugin record
-            if is_accela_install and is_plugin_game:
+            if is_accela_install and is_plugin_game and plugin_record:
                 plugin_ts = 0
                 try:
                     plugin_ts = float(plugin_record.get("updated_at") or 0)
@@ -1441,48 +1525,60 @@ class GameManager(QObject):
                 "is_dlc_only": is_dlc_only,
             }
 
-            # Detect DLC-only installations by comparing the saved main depot against base game depots
-            if (is_accela_install or is_dlc_only) and appid and appid not in ("0", "N/A", "unknown"):
-                depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
-                if depot_file.exists():
+            # Detect DLC-only installations by checking ALL saved non-shared depots against base game depots.
+            # Guard against falsely flipping unowned installs with a physical .assella marker to Steam DLC-only.
+            is_unowned_marker_install = bool(
+                marker_path
+                and owned_appids is not None
+                and valid_appid
+                and str(appid) not in owned_appids
+            )
+            if (is_accela_install or is_dlc_only) and valid_appid and not is_unowned_marker_install:
+                if depot_file and depot_file.exists() and depot_file_ids:
                     try:
-                        content = depot_file.read_text().strip()
-                        parts = content.split(":", 2)
-                        if parts and parts[0].strip():
-                            main_depot_id = parts[0].strip()
-                            from managers.db_manager import DatabaseManager
-                            db = DatabaseManager()
-                            app_info = db.get_app_info(appid)
-                            if app_info and app_info.get("depots"):
-                                depots_map = app_info.get("depots", {})
-                                d_meta = depots_map.get(main_depot_id, {})
-                                from utils.dlc_helpers import is_dlc_depot
+                        from managers.db_manager import DatabaseManager
+                        from utils.dlc_helpers import is_dlc_depot
+                        from utils.yaml_config_manager import SHARED_REDISTS
+
+                        valid_depots = [
+                            did for did in depot_file_ids
+                            if did not in SHARED_REDISTS
+                        ]
+                        db = DatabaseManager()
+                        app_info = db.get_app_info(appid, bypass_expiration=True)
+                        if valid_depots and app_info and app_info.get("depots"):
+                            depots_map = app_info.get("depots", {})
+                            all_depots_dlc = True
+                            for did in valid_depots:
+                                d_meta = depots_map.get(did, {})
                                 desc = str(d_meta.get("desc") or d_meta.get("name") or "")
-                                if (
-                                    main_depot_id not in depots_map
-                                    or is_dlc_depot(main_depot_id, desc=desc, base_appid=appid, depot_meta=d_meta)
+                                if did in depots_map and not is_dlc_depot(
+                                    did, desc=desc, base_appid=appid, depot_meta=d_meta
                                 ):
-                                    # It's not in the base game depots -> it's a DLC
-                                    game_data["is_dlc_only"] = True
-                                    game_data["is_accela_install"] = False
-                                    game_data["is_vapor"] = False
-                                    game_data["is_atom"] = False
-                                    game_data["source"] = "Steam"
-                                    self._scrub_dlc_only_base_appid(appid)
-                                    try:
-                                        from utils.settings import get_settings
-                                        get_settings().setValue(f"dlc_only_mode/{appid}", True)
-                                    except Exception as e:
-                                        logger.debug(f"  Could not persist dlc_only_mode for {appid}: {e}")
-                                    # A DLC-only Steam game keeps its base-game name:
-                                    # the library card marks the mode with a chip.
-                                    # Legacy ACCELA installs still carry the suffix.
-                                    if is_accela_install and not appmanifest_path:
-                                        dlc_info = db.get_app_info(main_depot_id)
-                                        if dlc_info and dlc_info.get("name"):
-                                            game_data["game_name"] = f"{dlc_info['name']} [DLC]"
-                                        else:
-                                            game_data["game_name"] = f"{game_name} [DLC]"
+                                    all_depots_dlc = False
+                                    break
+                            if all_depots_dlc:
+                                main_depot_id = valid_depots[0]
+                                game_data["is_dlc_only"] = True
+                                game_data["is_accela_install"] = False
+                                game_data["is_vapor"] = False
+                                game_data["is_atom"] = False
+                                game_data["source"] = "Steam"
+                                self._scrub_dlc_only_base_appid(appid)
+                                try:
+                                    from utils.settings import get_settings
+                                    get_settings().setValue(f"dlc_only_mode/{appid}", True)
+                                except Exception as e:
+                                    logger.debug(f"  Could not persist dlc_only_mode for {appid}: {e}")
+                                # A DLC-only Steam game keeps its base-game name:
+                                # the library card marks the mode with a chip.
+                                # Legacy ACCELA installs still carry the suffix.
+                                if is_accela_install and not appmanifest_path:
+                                    dlc_info = db.get_app_info(main_depot_id, bypass_expiration=True)
+                                    if dlc_info and dlc_info.get("name"):
+                                        game_data["game_name"] = f"{dlc_info['name']} [DLC]"
+                                    else:
+                                        game_data["game_name"] = f"{game_name} [DLC]"
                     except Exception as e:
                         logger.error(f"Error checking DLC-only status for {appid}: {e}")
 
@@ -1524,7 +1620,9 @@ class GameManager(QObject):
 
             # Fall back to metadata.json fields if ACF is not available
             if not acf_size_available and meta_data:
-                if "game_name" in meta_data and not game_data.get("game_name"):
+                if "game_name" in meta_data and (
+                    not game_data.get("game_name") or is_placeholder_game_name(game_data.get("game_name"), appid)
+                ):
                     game_data["game_name"] = meta_data["game_name"]
                 if meta_data.get("buildid"):
                     game_data["buildid"] = str(meta_data["buildid"]).strip()
@@ -1535,6 +1633,22 @@ class GameManager(QObject):
                     acf_size_available = True
                     game_data["size_on_disk"] = size_on_disk
                     logger.debug(f"Using ACCELA metadata SizeOnDisk for {game_name}: {size_on_disk} bytes")
+
+            # Resolve placeholder titles (e.g. `appid_108600` written inside ACF) from
+            # plugin_library, metadata.json, or local steam_headers.db before returning.
+            if game_data.pop("_acf_placeholder_name", False) or is_placeholder_game_name(
+                game_data.get("game_name"), appid
+            ):
+                plugin_name = plugin_record.get("name") if isinstance(plugin_record, dict) else None
+                meta_name = meta_data.get("game_name") if isinstance(meta_data, dict) else None
+                resolved_name = resolve_best_game_name(
+                    appid,
+                    (plugin_name, meta_name),
+                    fallback_installdir=install_dir,
+                )
+                if resolved_name:
+                    game_data["game_name"] = resolved_name
+                    game_name = resolved_name
 
             # Check persistent games cache for size before falling back to manual calculation
             if not acf_size_available and hasattr(self, "games_cache"):
@@ -1698,10 +1812,22 @@ class GameManager(QObject):
             with open(appmanifest_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-                # Extract name using regex
+                # Extract name using regex; ignore synthetic placeholders like "appid_108600"
+                # so callers resolve the real title from plugin_library / local steam_headers.db.
                 name_match = re.search(r'"name"\s+"([^"]+)"', content)
                 if name_match:
-                    game_data["game_name"] = name_match.group(1)
+                    from utils.library_rules import is_placeholder_game_name, resolve_best_game_name
+                    acf_name = name_match.group(1).strip()
+                    aid_val = game_data.get("appid")
+                    if is_placeholder_game_name(acf_name, aid_val):
+                        game_data["_acf_placeholder_name"] = True
+                        game_data["game_name"] = resolve_best_game_name(
+                            aid_val,
+                            (),
+                            fallback_installdir=str(game_data.get("install_dir") or game_data.get("game_name") or ""),
+                        )
+                    else:
+                        game_data["game_name"] = acf_name
 
                 # Extract buildid using regex
                 buildid_match = re.search(r'"buildid"\s+"([^"]+)"', content)

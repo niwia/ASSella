@@ -64,24 +64,11 @@ def load_hero_image(dialog) -> None:
 
 def _svg_icon(path: str, size: QSize, widget=None) -> QIcon:
     """An SVG rendered at the device pixel ratio (QIcon(svg) can come out soft)."""
-    try:
-        from PyQt6.QtGui import QPainter
-        from PyQt6.QtSvg import QSvgRenderer
+    from utils.color_utils import render_svg_pixmap
 
-        dpr = widget.devicePixelRatioF() if widget is not None else 1.0
-        dpr = max(1.0, dpr)
-        px = QPixmap(round(size.width() * dpr), round(size.height() * dpr))
-        px.fill(Qt.GlobalColor.transparent)
-        r = QSvgRenderer(path)
-        if not r.isValid():
-            return QIcon(path)
-        p = QPainter(px)
-        r.render(p)
-        p.end()
-        px.setDevicePixelRatio(dpr)
-        return QIcon(px)
-    except Exception:
-        return QIcon(path)
+    dpr = max(1.0, widget.devicePixelRatioF()) if widget is not None else 1.0
+    px = render_svg_pixmap(path, size.width(), size.height(), dpr=dpr)
+    return QIcon(px) if not px.isNull() else QIcon(path)
 
 
 _PROTONDB_BADGE_QSS = (
@@ -112,21 +99,31 @@ def _is_atom_game(dialog) -> bool:
     )
 
 
-def _mode_logo_pixmap(is_atom: bool, size: int = 18) -> QPixmap:
-    """Steam logo for AT0-M games, ASSella logo for ASSella-managed ones."""
+def _mode_logo_pixmap(is_atom: bool, size: int = 18, dpr: float = 1.0) -> QPixmap:
+    """Steam logo for AT0-M games, scalable ASSella SVG logo (with PNG fallback) for ASSella-managed ones."""
     from pathlib import Path
+    from utils.color_utils import render_svg_pixmap
     from utils.helpers import get_base_path
 
-    name = "steam.png" if is_atom else "accela.png"
-    for c in (
-        Path(__file__).resolve().parents[3] / "res" / "logo" / name,
-        get_base_path() / "Logo" / name,
-    ):
-        if c.is_file():
-            px = QPixmap(str(c))
-            if not px.isNull():
-                return px.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
+    names = ("steam.png",) if is_atom else ("icon.svg", "accela.png")
+    res_dir = Path(__file__).resolve().parents[3] / "res" / "logo"
+    user_dir = get_base_path() / "Logo"
+    for name in names:
+        for base_dir in (res_dir, user_dir):
+            c = base_dir / name
+            if not c.is_file():
+                continue
+            if c.suffix.lower() == ".svg":
+                px = render_svg_pixmap(str(c), size, dpr=dpr)
+                if not px.isNull():
+                    return px
+            else:
+                px = QPixmap(str(c))
+                if not px.isNull():
+                    return px.scaled(
+                        size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
     return QPixmap()
 
 
@@ -436,7 +433,7 @@ def init_hero_v2(dialog, root) -> None:
 
     dialog.mode_logo_lbl = QLabel()
     dialog.mode_logo_lbl.setStyleSheet("background: transparent;")
-    px = _mode_logo_pixmap(is_atom)
+    px = _mode_logo_pixmap(is_atom, dpr=max(1.0, dialog.devicePixelRatioF()))
     if not px.isNull():
         dialog.mode_logo_lbl.setPixmap(px)
     dialog.mode_logo_lbl.setToolTip(

@@ -335,12 +335,11 @@ class DepotSelectionDialog(
             if id_item is None:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander", "unreleased"):
+            if role in ("missing", "expander", "unreleased", "dlc_base_locked"):
                 continue
-            # Strictly exclude depotless DlcData items and Steam-owned depots from download queue
+            # Exclude depotless DlcData items from download queue
             is_depotless = bool(id_item.data(Qt.ItemDataRole.UserRole + 21))
-            is_owned = bool(id_item.data(Qt.ItemDataRole.UserRole + 25))
-            if is_depotless or is_owned:
+            if is_depotless:
                 continue
             if id_item.checkState() == Qt.CheckState.Checked:
                 depot_id = str(id_item.data(Qt.ItemDataRole.UserRole) or "").strip()
@@ -349,7 +348,7 @@ class DepotSelectionDialog(
         return selected
 
     def get_selected_dlc_data(self) -> Dict[str, str]:
-        """Returns {dlc_app_id: dlc_name} for checked DLC rows in Col 0 that are not owned legitimately."""
+        """Returns {dlc_app_id: dlc_name} for checked DLC rows in Col 0."""
         checked = {}
         import re
         for r in range(self.table_widget.rowCount()):
@@ -359,10 +358,7 @@ class DepotSelectionDialog(
             if id_item.checkState() != Qt.CheckState.Checked:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander", "unreleased"):
-                continue
-            if id_item.data(Qt.ItemDataRole.UserRole + 25):
-                # Owned legitimately on Steam
+            if role in ("missing", "expander", "unreleased", "dlc_base_locked"):
                 continue
 
             is_depotless = bool(id_item.data(Qt.ItemDataRole.UserRole + 21))

@@ -80,6 +80,7 @@ class SettingsDialog(QDialog):
         self.hide_android_depots_checkbox = None
         self.show_hidden_depots_selector_checkbox = None
         self.new_depot_selector_checkbox = None
+        self.ignore_steam_demos_checkbox = None
         self.achievements_checkbox = None
         self.auto_apply_goldberg_checkbox = None
         self.sls_mode_checkbox = None
@@ -1142,6 +1143,11 @@ class SettingsDialog(QDialog):
         if getattr(self, "new_depot_selector_checkbox", None) is not None:
             try:
                 self.settings.setValue("use_new_depot_selector", self.new_depot_selector_checkbox.isChecked())
+            except RuntimeError as _silent_err:
+                logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
+        if getattr(self, "ignore_steam_demos_checkbox", None) is not None:
+            try:
+                self.settings.setValue("ignore_steam_demos", self.ignore_steam_demos_checkbox.isChecked())
             except RuntimeError as _silent_err:
                 logger.debug("[settings] _save_download_settings: ignored %s", _silent_err, exc_info=False)
         if hasattr(self, "isp_gateway_combo") and self.isp_gateway_combo is not None:

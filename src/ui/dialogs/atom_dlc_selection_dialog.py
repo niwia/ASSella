@@ -40,7 +40,7 @@ from ui.dialogs.game_details.depots_tab import (
     ALL_SHARED_REDISTS,
 )
 from ui.assets import DEPOT_BLACKLIST
-from ui.dialogs.themed_message_box import ThemedMessageBox
+from ui.dialogs.themed_message_box import ThemedMessageBox, confirm_steam_owned_override
 from utils.dlc_helpers import (
     get_owned_dlcs_from_steam,
     build_app_to_depots_map,
@@ -59,6 +59,7 @@ from utils.yaml_config_manager import (
     ensure_sls_plugin_config_sections,
     get_additional_apps,
     get_additional_depots,
+    get_decryption_keys,
     get_dlc_data,
     get_user_config_path,
     remove_additional_app,
@@ -106,6 +107,7 @@ class AtomDlcSelectionDialog(QDialog):
         self.key_toggles: Dict[str, MiniSwitchToggle] = {}
 
         self._internal_bulk_update = False
+        self._suppress_owned_confirm = False
         self._registered_success = False
 
         self._build_ui()
@@ -158,7 +160,7 @@ class AtomDlcSelectionDialog(QDialog):
         sub_lbl = QLabel(
             f"Select which DLCs to unlock and register for <b>{self.game_name}</b> ({self.app_id}) in AT0-M.<br/>"
             "<span style='color: rgba(255, 255, 255, 0.55); font-size: 8pt;'>"
-            "Owned DLCs and depots are greyscaled and preserved without modifying your legitimate licenses.</span>"
+            "Items suspected to be owned on Steam start unchecked and ask for confirmation before enabling.</span>"
         )
         sub_lbl.setWordWrap(True)
         sub_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.85); font-size: 8.5pt; line-height: 1.4;")
@@ -287,6 +289,7 @@ class AtomDlcSelectionDialog(QDialog):
         cfg_path = get_user_config_path()
         live_apps = set(get_additional_apps(cfg_path)) if cfg_path and cfg_path.exists() else set()
         live_depots = set(get_additional_depots(cfg_path)) if cfg_path and cfg_path.exists() else set()
+        live_keys = set(get_decryption_keys(cfg_path).keys()) if cfg_path and cfg_path.exists() else set()
         live_dlc_data = set(get_dlc_data(cfg_path, self.app_id).keys()) if cfg_path and cfg_path.exists() else set()
         try:
             steam_owned = get_owned_dlcs_from_steam(self.app_id)
@@ -306,11 +309,13 @@ class AtomDlcSelectionDialog(QDialog):
 
         dlcs_map: Dict[str, Dict[str, Any]] = {}
         for aid, aname in raw_catalog.items():
-            is_owned = (aid in live_apps or aid in live_dlc_data or aid in steam_owned)
+            in_live = (aid in live_apps or aid in live_dlc_data)
+            is_steam_owned = (aid in steam_owned)
             dlcs_map[aid] = {
                 "id": aid,
                 "name": aname,
-                "is_owned": is_owned,
+                "is_owned": is_steam_owned,
+                "in_live": in_live,
             }
 
         candidate_depots = getattr(self.discovery, "depots", []) or []
@@ -367,13 +372,14 @@ class AtomDlcSelectionDialog(QDialog):
                 continue
 
             parent_dlc_owned = dlcs_map.get(dlc_id, {}).get("is_owned", False)
-            is_owned = parent_dlc_owned or (did in live_depots) or (did in steam_owned)
+            is_owned = parent_dlc_owned or (did in steam_owned)
 
             depots_map[did] = {
                 "id": did,
                 "name": getattr(cd, "name", None) or f"Depot {did}",
                 "dlc_appid": dlc_id,
                 "is_owned": is_owned,
+                "in_live": (did in live_depots),
                 "is_missing": did in missing_depot_ids,
                 "missing_status": missing_info.get(did, {}).get("status", "unknown") if did in missing_depot_ids else None,
                 "missing_tag": missing_info.get(did, {}).get("tag", "[No Key]") if did in missing_depot_ids else None,
@@ -393,7 +399,7 @@ class AtomDlcSelectionDialog(QDialog):
                 continue
 
             parent_dlc_owned = dlcs_map.get(dlc_id, {}).get("is_owned", False)
-            is_owned = parent_dlc_owned or (did_str in live_depots) or (did_str in steam_owned)
+            is_owned = parent_dlc_owned or (did_str in steam_owned)
 
             dname = dinfo.get("name") or dinfo.get("desc") or f"Depot {did_str}"
             is_miss = did_str in missing_depot_ids
@@ -406,6 +412,7 @@ class AtomDlcSelectionDialog(QDialog):
                 "name": dname,
                 "dlc_appid": dlc_id,
                 "is_owned": is_owned,
+                "in_live": (did_str in live_depots),
                 "is_missing": is_miss,
                 "missing_status": m_stat,
                 "missing_tag": m_tag,
@@ -422,6 +429,7 @@ class AtomDlcSelectionDialog(QDialog):
                 "key": k_val,
                 "desc": dinfo.get("name", ""),
                 "is_owned": dinfo.get("is_owned", False),
+                "in_live": (did in live_keys),
                 "is_missing": is_miss,
                 "missing_status": dinfo.get("missing_status"),
                 "missing_tag": dinfo.get("missing_tag", "[No Key]"),
@@ -449,42 +457,45 @@ class AtomDlcSelectionDialog(QDialog):
             dinfo = dlcs[dlc_id]
             dlc_name = dinfo["name"]
             is_owned = dinfo["is_owned"]
+            initial_checked = bool(dinfo.get("in_live")) if is_owned else True
 
             id_item = QTableWidgetItem(dlc_id)
+            id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             if is_owned:
-                id_item.setFlags(Qt.ItemFlag.NoItemFlags)
                 id_item.setForeground(darker_grey)
-                tip = f"{dlc_name} ({dlc_id})\nOwned on Steam"
+                tip = f"{dlc_name} ({dlc_id})\nOwned on Steam (toggle ON to override with warning)"
                 id_item.setToolTip(tip)
 
                 name_item = QTableWidgetItem(f"{dlc_name} (Owned)")
-                name_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                name_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 name_font = name_item.font()
                 name_font.setItalic(True)
                 name_item.setFont(name_font)
                 name_item.setForeground(darker_grey)
                 name_item.setToolTip(tip)
-
-                toggle = MiniSwitchToggle(checked=True, read_only=True, greyscaled=True)
-                toggle.setEnabled(False)
-                toggle.setToolTip("Owned on Steam")
             else:
-                id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 name_item = QTableWidgetItem(dlc_name)
                 name_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 name_item.setToolTip(f"{dlc_name} ({dlc_id})")
-                toggle = MiniSwitchToggle(checked=True, read_only=False, greyscaled=False)
-                self.desired_apps[dlc_id] = True
 
-                def _make_app_cb(aid: str):
-                    def _cb(checked: bool):
-                        self.desired_apps[aid] = checked
-                        self._cascade_app_toggle(aid, checked)
-                        self._update_summary()
-                        self._sync_bulk_bars()
-                    return _cb
+            toggle = MiniSwitchToggle(checked=initial_checked, read_only=False, greyscaled=False)
+            if is_owned:
+                toggle.setToolTip("Suspected owned on Steam — warns before enabling")
+            self.desired_apps[dlc_id] = initial_checked
 
-                toggle.toggled.connect(_make_app_cb(dlc_id))
+            def _make_app_cb(aid: str, owned_flag: bool, sw: MiniSwitchToggle):
+                def _cb(checked: bool):
+                    if checked and owned_flag and not self._suppress_owned_confirm:
+                        if not confirm_steam_owned_override(self):
+                            self._revert_toggle(sw, False)
+                            return
+                    self.desired_apps[aid] = checked
+                    self._cascade_app_toggle(aid, checked)
+                    self._update_summary()
+                    self._sync_bulk_bars()
+                return _cb
+
+            toggle.toggled.connect(_make_app_cb(dlc_id, is_owned, toggle))
 
             self.apps_table.setItem(row, 0, id_item)
             self.apps_table.setItem(row, 1, name_item)
@@ -505,26 +516,9 @@ class AtomDlcSelectionDialog(QDialog):
             is_missing = dinfo.get("is_missing", False)
 
             id_item = QTableWidgetItem(did)
+            id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
 
-            if is_owned:
-                id_item.setFlags(Qt.ItemFlag.NoItemFlags)
-                id_item.setForeground(darker_grey)
-                tip = f"Depot {did} ({dinfo['name']})\nOwned on Steam"
-                id_item.setToolTip(tip)
-
-                desc_item = QTableWidgetItem(f"{dinfo['name']} (Owned)")
-                desc_item.setFlags(Qt.ItemFlag.NoItemFlags)
-                desc_font = desc_item.font()
-                desc_font.setItalic(True)
-                desc_item.setFont(desc_font)
-                desc_item.setForeground(darker_grey)
-                desc_item.setToolTip(tip)
-
-                toggle = MiniSwitchToggle(checked=True, read_only=True, greyscaled=True)
-                toggle.setEnabled(False)
-                toggle.setToolTip("Owned on Steam")
-            elif is_missing:
-                id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            if is_missing:
                 id_item.setForeground(QColor(130, 130, 130))
                 font = id_item.font()
                 font.setItalic(True)
@@ -553,21 +547,41 @@ class AtomDlcSelectionDialog(QDialog):
                 toggle.setEnabled(False)
                 toggle.setToolTip("Depot decryption key is missing from Hubcap.")
             else:
-                id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                desc_item = QTableWidgetItem(dinfo["name"])
-                desc_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                desc_item.setToolTip(dinfo["name"])
-                toggle = MiniSwitchToggle(checked=True, read_only=False, greyscaled=False)
-                self.desired_depots[did] = True
+                initial_checked = bool(dinfo.get("in_live")) if is_owned else True
+                if is_owned:
+                    id_item.setForeground(darker_grey)
+                    tip = f"Depot {did} ({dinfo['name']})\nOwned on Steam (toggle ON to override with warning)"
+                    id_item.setToolTip(tip)
 
-                def _make_depot_cb(depot_id: str):
+                    desc_item = QTableWidgetItem(f"{dinfo['name']} (Owned)")
+                    desc_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    desc_font = desc_item.font()
+                    desc_font.setItalic(True)
+                    desc_item.setFont(desc_font)
+                    desc_item.setForeground(darker_grey)
+                    desc_item.setToolTip(tip)
+                else:
+                    desc_item = QTableWidgetItem(dinfo["name"])
+                    desc_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    desc_item.setToolTip(dinfo["name"])
+
+                toggle = MiniSwitchToggle(checked=initial_checked, read_only=False, greyscaled=False)
+                if is_owned:
+                    toggle.setToolTip("Suspected owned on Steam — warns before enabling")
+                self.desired_depots[did] = initial_checked
+
+                def _make_depot_cb(depot_id: str, owned_flag: bool, sw: MiniSwitchToggle):
                     def _cb(checked: bool):
+                        if checked and owned_flag and not self._suppress_owned_confirm:
+                            if not confirm_steam_owned_override(self):
+                                self._revert_toggle(sw, False)
+                                return
                         self.desired_depots[depot_id] = checked
                         self._update_summary()
                         self._sync_bulk_bars()
                     return _cb
 
-                toggle.toggled.connect(_make_depot_cb(did))
+                toggle.toggled.connect(_make_depot_cb(did, is_owned, toggle))
 
             self.depots_table.setItem(row, 0, id_item)
             self.depots_table.setItem(row, 1, desc_item)
@@ -588,28 +602,9 @@ class AtomDlcSelectionDialog(QDialog):
             is_missing = kinfo.get("is_missing", False)
 
             id_item = QTableWidgetItem(kid)
+            id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
 
-            if is_owned:
-                raw_key = kinfo.get("key", "")
-                short_key = f"{raw_key[:15]}..." if len(raw_key) > 15 else (raw_key or "N/A")
-                id_item.setFlags(Qt.ItemFlag.NoItemFlags)
-                id_item.setForeground(darker_grey)
-                tip = f"AES Key for {kinfo.get('desc', kid)}\nOwned on Steam"
-                id_item.setToolTip(tip)
-
-                key_item = QTableWidgetItem(f"{short_key} (Owned)")
-                key_item.setFlags(Qt.ItemFlag.NoItemFlags)
-                key_font = key_item.font()
-                key_font.setItalic(True)
-                key_item.setFont(key_font)
-                key_item.setForeground(darker_grey)
-                key_item.setToolTip(tip)
-
-                toggle = MiniSwitchToggle(checked=True, read_only=True, greyscaled=True)
-                toggle.setEnabled(False)
-                toggle.setToolTip("Owned on Steam")
-            elif is_missing:
-                id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            if is_missing:
                 id_item.setForeground(QColor(130, 130, 130))
                 font = id_item.font()
                 font.setItalic(True)
@@ -627,23 +622,42 @@ class AtomDlcSelectionDialog(QDialog):
                 toggle = MiniSwitchToggle(checked=False, read_only=True, greyscaled=False)
                 toggle.setEnabled(False)
             else:
-                id_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 raw_key = kinfo.get("key", "")
                 short_key = f"{raw_key[:15]}..." if len(raw_key) > 15 else (raw_key or "N/A")
-                key_item = QTableWidgetItem(short_key)
-                key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                key_item.setToolTip(f"AES Key for {kinfo.get('desc', kid)}")
+                initial_checked = bool(kinfo.get("in_live")) if is_owned else True
+                if is_owned:
+                    id_item.setForeground(darker_grey)
+                    tip = f"AES Key for {kinfo.get('desc', kid)}\nOwned on Steam (toggle ON to override with warning)"
+                    id_item.setToolTip(tip)
 
-                toggle = MiniSwitchToggle(checked=True, read_only=False, greyscaled=False)
-                self.desired_keys[kid] = True
+                    key_item = QTableWidgetItem(f"{short_key} (Owned)")
+                    key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    key_font = key_item.font()
+                    key_font.setItalic(True)
+                    key_item.setFont(key_font)
+                    key_item.setForeground(darker_grey)
+                    key_item.setToolTip(tip)
+                else:
+                    key_item = QTableWidgetItem(short_key)
+                    key_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    key_item.setToolTip(f"AES Key for {kinfo.get('desc', kid)}")
 
-                def _make_key_cb(key_id: str):
+                toggle = MiniSwitchToggle(checked=initial_checked, read_only=False, greyscaled=False)
+                if is_owned:
+                    toggle.setToolTip("Suspected owned on Steam — warns before enabling")
+                self.desired_keys[kid] = initial_checked
+
+                def _make_key_cb(key_id: str, owned_flag: bool, sw: MiniSwitchToggle):
                     def _cb(checked: bool):
+                        if checked and owned_flag and not self._suppress_owned_confirm:
+                            if not confirm_steam_owned_override(self):
+                                self._revert_toggle(sw, False)
+                                return
                         self.desired_keys[key_id] = checked
                         self._sync_bulk_bars()
                     return _cb
 
-                toggle.toggled.connect(_make_key_cb(kid))
+                toggle.toggled.connect(_make_key_cb(kid, is_owned, toggle))
 
             self.keys_table.setItem(row, 0, id_item)
             self.keys_table.setItem(row, 1, key_item)
@@ -656,29 +670,40 @@ class AtomDlcSelectionDialog(QDialog):
         self._update_summary()
         self._sync_bulk_bars()
 
+    @staticmethod
+    def _revert_toggle(toggle: MiniSwitchToggle, state: bool) -> None:
+        toggle.blockSignals(True)
+        toggle.setChecked(state, animate=False)
+        toggle.blockSignals(False)
+
     def _cascade_app_toggle(self, aid: str, checked: bool):
-        """When an unowned DLC AppID is toggled, update its mapped unowned depots and keys."""
+        """When a DLC AppID is toggled, update its mapped non-missing depots and keys."""
         depots = self._data.get("depots", {})
-        for did, dinfo in depots.items():
-            if str(dinfo.get("dlc_appid")) == str(aid) and not dinfo.get("is_owned") and not dinfo.get("is_missing"):
-                if did in self.depot_toggles and self.depot_toggles[did].isEnabled():
-                    self.depot_toggles[did].setChecked(checked, animate=True)
-                    self.desired_depots[did] = checked
-                if did in self.key_toggles and self.key_toggles[did].isEnabled():
-                    self.key_toggles[did].setChecked(checked, animate=True)
-                    self.desired_keys[did] = checked
+        prev_suppress = self._suppress_owned_confirm
+        self._suppress_owned_confirm = True
+        try:
+            for did, dinfo in depots.items():
+                if str(dinfo.get("dlc_appid")) == str(aid) and not dinfo.get("is_missing"):
+                    if did in self.depot_toggles and self.depot_toggles[did].isEnabled():
+                        self.depot_toggles[did].setChecked(checked, animate=True)
+                        self.desired_depots[did] = checked
+                    if did in self.key_toggles and self.key_toggles[did].isEnabled():
+                        self.key_toggles[did].setChecked(checked, animate=True)
+                        self.desired_keys[did] = checked
+        finally:
+            self._suppress_owned_confirm = prev_suppress
 
     def _update_summary(self):
-        unowned_dlcs = [a for a, info in self._data.get("dlcs", {}).items() if not info.get("is_owned")]
-        sel_dlcs = sum(1 for a in unowned_dlcs if self.desired_apps.get(a, False))
-        tot_dlcs = len(unowned_dlcs)
-        owned_dlcs = len(self._data.get("dlcs", {})) - tot_dlcs
+        all_dlcs = list(self._data.get("dlcs", {}).keys())
+        sel_dlcs = sum(1 for a in all_dlcs if self.desired_apps.get(a, False))
+        tot_dlcs = len(all_dlcs)
+        owned_dlcs = sum(1 for info in self._data.get("dlcs", {}).values() if info.get("is_owned"))
 
-        unowned_depots = [d for d, info in self._data.get("depots", {}).items() if not info.get("is_owned")]
-        sel_depots = sum(1 for d in unowned_depots if self.desired_depots.get(d, False))
+        valid_depots = [d for d, info in self._data.get("depots", {}).items() if not info.get("is_missing")]
+        sel_depots = sum(1 for d in valid_depots if self.desired_depots.get(d, False))
 
-        owned_txt = f" ({owned_dlcs} owned on Steam)" if owned_dlcs > 0 else ""
-        self.summary_lbl.setText(f"Unowned DLCs to register: <b>{sel_dlcs}/{tot_dlcs}</b>, Depots: <b>{sel_depots}</b>{owned_txt}")
+        owned_txt = f" ({owned_dlcs} suspected owned on Steam)" if owned_dlcs > 0 else ""
+        self.summary_lbl.setText(f"DLCs to register: <b>{sel_dlcs}/{tot_dlcs}</b>, Depots: <b>{sel_depots}</b>{owned_txt}")
         self.register_btn.setText(f"Register to AT0-M ({sel_dlcs} DLCs)")
         self.register_btn.setEnabled(sel_dlcs > 0 or sel_depots > 0)
 
@@ -687,67 +712,92 @@ class AtomDlcSelectionDialog(QDialog):
             return
         self._internal_bulk_update = True
         try:
-            unowned_app_ids = [a for a, info in self._data.get("dlcs", {}).items() if not info.get("is_owned")]
-            if len(self._data.get("dlcs", {})) >= 5 and unowned_app_ids:
-                all_apps_on = all(self.desired_apps.get(a, False) for a in unowned_app_ids)
+            all_app_ids = list(self._data.get("dlcs", {}).keys())
+            if len(all_app_ids) >= 5 and all_app_ids:
+                all_apps_on = all(self.desired_apps.get(a, False) for a in all_app_ids)
                 self.apps_bulk_toggle.setChecked(all_apps_on, animate=False)
 
-            valid_depot_ids = [d for d, info in self._data.get("depots", {}).items() if not info.get("is_owned") and not info.get("is_missing")]
+            valid_depot_ids = [d for d, info in self._data.get("depots", {}).items() if not info.get("is_missing")]
             if len(self._data.get("depots", {})) >= 5 and valid_depot_ids:
                 all_depots_on = all(self.desired_depots.get(d, False) for d in valid_depot_ids)
                 self.depots_bulk_toggle.setChecked(all_depots_on, animate=False)
 
-            valid_key_ids = [k for k, info in self._data.get("keys", {}).items() if not info.get("is_owned") and not info.get("is_missing") and info.get("key")]
+            valid_key_ids = [k for k, info in self._data.get("keys", {}).items() if not info.get("is_missing") and info.get("key")]
             if len(self._data.get("keys", {})) >= 5 and valid_key_ids:
                 all_keys_on = all(self.desired_keys.get(k, False) for k in valid_key_ids)
                 self.keys_bulk_toggle.setChecked(all_keys_on, animate=False)
         finally:
             self._internal_bulk_update = False
 
-    def _on_bulk_toggle_apps(self, checked: bool):
+    def _bulk_toggle_section(
+        self,
+        checked: bool,
+        meta_map: Dict[str, Dict[str, Any]],
+        toggles_map: Dict[str, MiniSwitchToggle],
+        desired_map: Dict[str, bool],
+        bulk_toggle: MiniSwitchToggle,
+    ) -> None:
         if self._internal_bulk_update:
             return
-        for aid, toggle in self.app_toggles.items():
-            if toggle.isEnabled():
-                toggle.setChecked(checked, animate=True)
+        if checked and any(
+            meta.get("is_owned") and not meta.get("is_missing")
+            and item_id in toggles_map and toggles_map[item_id].isEnabled()
+            and not desired_map.get(item_id, False)
+            for item_id, meta in meta_map.items()
+        ):
+            if not confirm_steam_owned_override(self):
+                self._internal_bulk_update = True
+                try:
+                    self._revert_toggle(bulk_toggle, False)
+                finally:
+                    self._internal_bulk_update = False
+                return
+
+        prev_suppress = self._suppress_owned_confirm
+        self._suppress_owned_confirm = True
+        try:
+            for item_id, toggle in toggles_map.items():
+                if toggle.isEnabled():
+                    toggle.setChecked(checked, animate=True)
+        finally:
+            self._suppress_owned_confirm = prev_suppress
         self._update_summary()
+
+    def _on_bulk_toggle_apps(self, checked: bool):
+        self._bulk_toggle_section(
+            checked, self._data.get("dlcs", {}), self.app_toggles, self.desired_apps, self.apps_bulk_toggle
+        )
 
     def _on_bulk_toggle_depots(self, checked: bool):
-        if self._internal_bulk_update:
-            return
-        for did, toggle in self.depot_toggles.items():
-            if toggle.isEnabled():
-                toggle.setChecked(checked, animate=True)
-        self._update_summary()
+        self._bulk_toggle_section(
+            checked, self._data.get("depots", {}), self.depot_toggles, self.desired_depots, self.depots_bulk_toggle
+        )
 
     def _on_bulk_toggle_keys(self, checked: bool):
-        if self._internal_bulk_update:
-            return
-        for kid, toggle in self.key_toggles.items():
-            if toggle.isEnabled():
-                toggle.setChecked(checked, animate=True)
-        self._update_summary()
+        self._bulk_toggle_section(
+            checked, self._data.get("keys", {}), self.key_toggles, self.desired_keys, self.keys_bulk_toggle
+        )
 
     def _on_register_clicked(self):
         """Write configuration to SLSsteam config.yaml and register in plugin_games.json."""
         selected_dlcs = {
             aid: self._data["dlcs"][aid]["name"]
             for aid, v in self.desired_apps.items()
-            if v and not self._data["dlcs"][aid].get("is_owned")
+            if v
         }
         selected_depots = {
             did: self._data["depots"][did]["name"]
             for did, v in self.desired_depots.items()
-            if v and not self._data["depots"][did].get("is_owned")
+            if v and not self._data["depots"][did].get("is_missing")
         }
         selected_keys = {
             kid: self._data["keys"][kid]["key"]
             for kid, v in self.desired_keys.items()
-            if v and not self._data["keys"][kid].get("is_owned") and self._data["keys"][kid].get("key")
+            if v and self._data["keys"][kid].get("key")
         }
 
         if not selected_dlcs and not selected_depots:
-            ThemedMessageBox.information(self, "Nothing Selected", "No unowned DLCs or depots are selected to register.")
+            ThemedMessageBox.information(self, "Nothing Selected", "No DLCs or depots are selected to register.")
             return
 
         cfg_path = get_user_config_path()

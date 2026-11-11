@@ -224,12 +224,14 @@ class DownloadBackendDialog(QDialog):
         assella_vbox.setSpacing(6)
         assella_vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # ASSella Logo
+        # ASSella Logo (prefer scalable SVG with PNG fallback)
         self.assella_icon_lbl = QLabel()
         self.assella_icon_lbl.setObjectName("assella_icon_lbl")
-        assella_pix = self._load_logo("accela.png")
+        assella_pix = self._load_logo("icon.svg", size=46)
+        if assella_pix.isNull():
+            assella_pix = self._load_logo("accela.png", size=46)
         if not assella_pix.isNull():
-            self.assella_icon_lbl.setPixmap(assella_pix.scaled(46, 46, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self.assella_icon_lbl.setPixmap(assella_pix)
         assella_vbox.addWidget(self.assella_icon_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
 
         assella_name = QLabel("ASSella")
@@ -381,7 +383,7 @@ class DownloadBackendDialog(QDialog):
 
         self._update_cards_ui()
 
-    def _load_logo(self, filename: str) -> QPixmap:
+    def _load_logo(self, filename: str, size: int = 0) -> QPixmap:
         """Load logo from bundled src/res/logo or ~/.local/share/ACCELA/Logo."""
         candidates = [
             Path(__file__).resolve().parent.parent.parent / "res" / "logo" / filename,
@@ -390,7 +392,25 @@ class DownloadBackendDialog(QDialog):
         ]
         for c in candidates:
             if c.is_file():
-                return QPixmap(str(c))
+                if c.suffix.lower() == ".svg":
+                    from utils.color_utils import render_svg_pixmap
+                    px = render_svg_pixmap(
+                        str(c),
+                        size or 46,
+                        dpr=max(1.0, self.devicePixelRatioF()),
+                    )
+                    if not px.isNull():
+                        return px
+                else:
+                    px = QPixmap(str(c))
+                    if not px.isNull():
+                        if size > 0:
+                            return px.scaled(
+                                size, size,
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation,
+                            )
+                        return px
         return QPixmap()
 
     def _select_backend(self, backend: int):

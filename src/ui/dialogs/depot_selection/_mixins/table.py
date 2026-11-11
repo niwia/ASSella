@@ -448,9 +448,10 @@ class DepotTableMixin:
                 dlc_cand = ""
             is_base = is_base_game_main_depot(depot_id, config_text, str(self.app_id)) or (not is_dlc and not dlc_cand)
 
+            is_dlc_base = bool(is_dlc_mode and is_base)
             is_base_owned = getattr(self, "_is_base_owned", False)
             is_steam_owned = (
-                ((is_dlc_mode or is_base_owned) and is_base)
+                (is_base_owned and is_base)
                 or (dlc_cand and dlc_cand in steam_owned)
                 or (str(depot_id) in steam_owned)
             )
@@ -469,12 +470,14 @@ class DepotTableMixin:
             id_item = NumericTableWidgetItem(str(depot_id), id_val, tier=0)
             id_item.setData(Qt.ItemDataRole.UserRole, str(depot_id))
             id_item.setData(Qt.ItemDataRole.UserRole + 1, dlc_cand if dlc_cand else str(depot_id))
-            id_item.setData(Qt.ItemDataRole.UserRole + 2, "normal")
+            id_item.setData(Qt.ItemDataRole.UserRole + 2, "dlc_base_locked" if is_dlc_base else "normal")
             id_item.setData(Qt.ItemDataRole.UserRole + 21, False)
             id_item.setData(Qt.ItemDataRole.UserRole + 22, [str(depot_id)])
 
             if is_depot_unreleased:
                 status_key = "unreleased"
+            elif is_dlc_base:
+                status_key = "dlc_base_locked"
             elif is_steam_owned:
                 status_key = "owned"
             elif is_injected:
@@ -488,12 +491,23 @@ class DepotTableMixin:
                 id_item.setFlags(Qt.ItemFlag.NoItemFlags)
                 id_item.setForeground(darker_grey)
                 id_item.setToolTip(unreleased_tooltip(str(depot_id)))
-            elif is_steam_owned:
-                id_item.setData(Qt.ItemDataRole.UserRole + 25, True)
-                id_item.setCheckState(Qt.CheckState.Checked)
+            elif is_dlc_base:
+                id_item.setCheckState(Qt.CheckState.Unchecked)
                 id_item.setFlags(Qt.ItemFlag.NoItemFlags)
                 id_item.setForeground(darker_grey)
-                id_item.setToolTip("Owned legitimately on Steam")
+                id_item.setToolTip("Base game is excluded in DLC-Only Mode.")
+            elif is_steam_owned:
+                id_item.setData(Qt.ItemDataRole.UserRole + 25, True)
+                is_checked = bool(
+                    is_injected
+                    or (self.selected_depots is not None and str(depot_id) in pre_selected_set)
+                )
+                id_item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
+                id_item.setFlags(id_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsUserCheckable)
+                id_item.setForeground(darker_grey)
+                id_item.setToolTip(
+                    "ASSella suspects this depot is owned on Steam. Toggle only if you do not own it on Steam."
+                )
             else:
                 is_checked = True if self.is_single_depot else (str(depot_id) in pre_selected_set)
                 id_item.setCheckState(Qt.CheckState.Checked if is_checked else Qt.CheckState.Unchecked)
@@ -509,6 +523,8 @@ class DepotTableMixin:
 
             if is_depot_unreleased and not config_text.startswith("[Unreleased]"):
                 config_text = f"[Unreleased]  {config_text}"
+            elif is_dlc_base and not config_text.startswith("[DLC-Only"):
+                config_text = f"[Base Excluded]  {config_text}"
             elif is_steam_owned and not config_text.startswith("[Steam Owned]"):
                 config_text = f"[Steam Owned]  {config_text}"
 
@@ -520,10 +536,20 @@ class DepotTableMixin:
                 u_cfg_font.setItalic(True)
                 config_item.setFont(u_cfg_font)
                 config_item.setToolTip(unreleased_tooltip(str(depot_id)))
-            elif is_steam_owned:
+            elif is_dlc_base:
                 config_item.setFlags(Qt.ItemFlag.NoItemFlags)
                 config_item.setForeground(darker_grey)
-                config_item.setToolTip("Owned legitimately on Steam")
+                config_item.setToolTip("Base game is excluded in DLC-Only Mode.")
+            elif is_steam_owned:
+                config_item.setFlags(config_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                config_item.setForeground(darker_grey)
+                config_item.setToolTip(
+                    "ASSella suspects this depot is owned on Steam. Toggle only if you do not own it on Steam."
+                )
+                from utils.depot_tag_helpers import get_os_icon
+                os_ic = get_os_icon(depot_data.get("oslist"), tint_color=darker_grey)
+                if os_ic:
+                    config_item.setIcon(os_ic)
             else:
                 config_item.setFlags(config_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 active_tint = QColor(self.accent_color) if hasattr(self, "accent_color") and self.accent_color else self.palette().color(QPalette.ColorRole.Text)
@@ -540,8 +566,11 @@ class DepotTableMixin:
                 sz_f = size_item.font()
                 sz_f.setItalic(True)
                 size_item.setFont(sz_f)
-            elif is_steam_owned:
+            elif is_dlc_base:
                 size_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                size_item.setForeground(darker_grey)
+            elif is_steam_owned:
+                size_item.setFlags(size_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 size_item.setForeground(darker_grey)
             else:
                 size_item.setFlags(size_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -573,12 +602,20 @@ class DepotTableMixin:
             d_id_item.setData(Qt.ItemDataRole.UserRole + 21, True)  # Is DlcData
             d_id_item.setData(Qt.ItemDataRole.UserRole + 22, [dlc_app_id])
 
+            cfg_text = f"[Steam Owned] [DLC]  {dlc_title}" if is_steam_owned else f"[DLC]  {dlc_title}"
+
             if is_steam_owned:
                 d_id_item.setData(Qt.ItemDataRole.UserRole + 25, True)
-                d_id_item.setCheckState(Qt.CheckState.Checked)
-                d_id_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                is_chk = bool(
+                    is_injected
+                    or (self.selected_depots is not None and dlc_app_id in pre_selected_set)
+                )
+                d_id_item.setCheckState(Qt.CheckState.Checked if is_chk else Qt.CheckState.Unchecked)
+                d_id_item.setFlags(d_id_item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsUserCheckable)
                 d_id_item.setForeground(darker_grey)
-                d_id_item.setToolTip("Owned legitimately on Steam")
+                d_id_item.setToolTip(
+                    "ASSella suspects this DLC is owned on Steam. Toggle only if you do not own it on Steam."
+                )
             else:
                 if self.selected_depots is not None:
                     is_chk = (dlc_app_id in injected_dlcs) or (dlc_app_id in pre_selected_set)
@@ -590,9 +627,11 @@ class DepotTableMixin:
 
             d_cfg_item = ConfigTableWidgetItem(cfg_text, tier=0)
             if is_steam_owned:
-                d_cfg_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                d_cfg_item.setFlags(d_cfg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 d_cfg_item.setForeground(darker_grey)
-                d_cfg_item.setToolTip("Owned legitimately on Steam")
+                d_cfg_item.setToolTip(
+                    "ASSella suspects this DLC is owned on Steam. Toggle only if you do not own it on Steam."
+                )
             else:
                 d_cfg_item.setFlags(d_cfg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
@@ -601,7 +640,7 @@ class DepotTableMixin:
             sz_font.setItalic(True)
             d_size_item.setFont(sz_font)
             if is_steam_owned:
-                d_size_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                d_size_item.setFlags(d_size_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 d_size_item.setForeground(darker_grey)
             else:
                 d_size_item.setFlags(d_size_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -946,9 +985,8 @@ class DepotTableMixin:
                 continue
 
             is_depotless = bool(id_item.data(Qt.ItemDataRole.UserRole + 21))
-            is_owned = bool(id_item.data(Qt.ItemDataRole.UserRole + 25))
 
-            if not is_depotless and not is_owned and (id_item.flags() & Qt.ItemFlag.ItemIsEnabled):
+            if not is_depotless and (id_item.flags() & Qt.ItemFlag.ItemIsEnabled):
                 total_count += 1
                 if id_item.checkState() == Qt.CheckState.Checked:
                     sel_count += 1
@@ -956,7 +994,7 @@ class DepotTableMixin:
                     if size_item and hasattr(size_item, "sort_value"):
                         total_bytes += int(size_item.sort_value or 0)
 
-            if is_depotless and not is_owned and (id_item.flags() & Qt.ItemFlag.ItemIsEnabled):
+            if is_depotless and (id_item.flags() & Qt.ItemFlag.ItemIsEnabled):
                 dlcdata_total += 1
                 if id_item.checkState() == Qt.CheckState.Checked:
                     dlcdata_sel += 1

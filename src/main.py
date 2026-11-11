@@ -112,10 +112,11 @@ def main():
     # can safely post to the GUI event loop.
     import utils.main_thread  # noqa: F401
 
-    # Set default window icon for all dialogs and sub-windows
-    icon_path = Paths.resource("logo/icon.ico")
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+    # Set default window icon for all dialogs and sub-windows (prefer SVG with ICO/PNG fallback)
+    from utils.color_utils import load_assella_app_icon
+    app_icon = load_assella_app_icon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
 
     # -------------------------------------------------------------------------
     # Argument Parsing

@@ -124,7 +124,7 @@ class TestAtomDlcAndByparr(unittest.TestCase):
         print("  [PASS] Hubcap retired, Lettuce registered")
 
     def test_03_atom_dlc_dialog_structure_and_filters(self):
-        """Verify AtomDlcSelectionDialog sets up tables, filters owned items, and hides bulk bars < 5."""
+        """Verify AtomDlcSelectionDialog sets up tables, unlocks owned items with warning, and hides bulk bars < 5."""
         base_appid = "123456"
         disc = DlcDiscovery(
             appid=base_appid,
@@ -160,7 +160,7 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             }
         }
 
-        # Mock Steam ticket ownership to include 100001 as already owned
+        # Mock Steam ticket ownership to include 100001 as suspected Steam-owned
         with patch("ui.dialogs.atom_dlc_selection_dialog.get_owned_dlcs_from_steam", return_value={"100001"}):
             dlg = AtomDlcSelectionDialog(
                 parent=None,
@@ -171,7 +171,7 @@ class TestAtomDlcAndByparr(unittest.TestCase):
                 manifest_data=manifest_data,
             )
 
-            # 1. Base appid (123456) MUST NOT be in apps table, while owned DLC (100001) is present but greyscaled
+            # 1. Base appid (123456) MUST NOT be in apps table; owned DLC (100001) is present, tagged (Owned), and interactive
             app_ids_in_table = [dlg.apps_table.item(r, 0).text() for r in range(dlg.apps_table.rowCount())]
             self.assertNotIn("123456", app_ids_in_table)
             self.assertIn("100001", app_ids_in_table)
@@ -179,10 +179,11 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             self.assertIn("100003", app_ids_in_table)
             self.assertEqual(len(app_ids_in_table), 3)
 
-            # Owned DLC 100001 toggle must be disabled/read-only and greyscaled
+            # Owned DLC 100001 starts unchecked & interactive (not greyscaled), tagged (Owned)
             toggle_100001 = dlg.app_toggles["100001"]
-            self.assertFalse(toggle_100001.isEnabled())
-            self.assertTrue(toggle_100001.isGreyscaled())
+            self.assertTrue(toggle_100001.isEnabled())
+            self.assertFalse(toggle_100001.isGreyscaled())
+            self.assertFalse(toggle_100001.isChecked())
             self.assertIn("(Owned)", dlg.apps_table.item(0, 1).text())
             self.assertTrue(dlg.apps_table.item(0, 1).font().italic())
 
@@ -194,7 +195,7 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             # 2. Bulk bar should be hidden because count is < 5 (3 items)
             self.assertFalse(dlg.apps_bulk_bar.isVisible())
 
-            # 3. Depots: 200001 belongs to owned DLC 100001 -> greyscaled with locked toggle
+            # 3. Depots: 200001 belongs to owned DLC 100001 -> interactive, starts unchecked, tagged (Owned)
             # 200002 is missing key -> disabled with tag '[No Key]'
             # 200003 is valid -> enabled
             depot_ids_in_table = [dlg.depots_table.item(r, 0).text() for r in range(dlg.depots_table.rowCount())]
@@ -202,12 +203,33 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             self.assertIn("200002", depot_ids_in_table)
             self.assertIn("200003", depot_ids_in_table)
 
-            # 200001 owned depot toggle should be disabled/locked and greyscaled
             toggle_200001 = dlg.depot_toggles["200001"]
-            self.assertFalse(toggle_200001.isEnabled())
-            self.assertTrue(toggle_200001.isGreyscaled())
+            self.assertTrue(toggle_200001.isEnabled())
+            self.assertFalse(toggle_200001.isGreyscaled())
+            self.assertFalse(toggle_200001.isChecked())
             self.assertIn("(Owned)", dlg.depots_table.item(0, 1).text())
             self.assertTrue(dlg.depots_table.item(0, 1).font().italic())
+
+            # Cancelling the warning leaves owned DLC and its depot unchecked
+            with patch("ui.dialogs.atom_dlc_selection_dialog.confirm_steam_owned_override", return_value=False) as mock_cancel:
+                toggle_100001.setChecked(True, animate=False)
+                self.assertEqual(mock_cancel.call_count, 1)
+                self.assertFalse(toggle_100001.isChecked())
+                self.assertFalse(toggle_200001.isChecked())
+
+            # Proceeding warns ONCE and cascades cleanly to owned depot 200001
+            with patch("ui.dialogs.atom_dlc_selection_dialog.confirm_steam_owned_override", return_value=True) as mock_proceed:
+                toggle_100001.setChecked(True, animate=False)
+                self.assertEqual(mock_proceed.call_count, 1)
+                self.assertTrue(toggle_100001.isChecked())
+                self.assertTrue(toggle_200001.isChecked())
+
+            # Toggling OFF never prompts
+            with patch("ui.dialogs.atom_dlc_selection_dialog.confirm_steam_owned_override") as mock_off:
+                toggle_100001.setChecked(False, animate=False)
+                mock_off.assert_not_called()
+                self.assertFalse(toggle_100001.isChecked())
+                self.assertFalse(toggle_200001.isChecked())
 
             # 200002 toggle should be disabled (missing key)
             toggle_200002 = dlg.depot_toggles["200002"]
@@ -224,7 +246,7 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             self.assertEqual(dlg.width(), 620)
             self.assertEqual(dlg.height(), 500)
 
-            print("  [PASS] AtomDlcSelectionDialog structure, owned DLC greyscaling, and toggle state verified")
+            print("  [PASS] AtomDlcSelectionDialog structure, owned DLC override warning, and cascade verified")
 
     def test_04_dlc_mode_memory_detection(self):
         """Verify _detect_configured_dlc_mode detects AT0-M vs ASSella vs unconfigured."""

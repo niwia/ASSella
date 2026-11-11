@@ -610,6 +610,14 @@ def create_downloads_tab(dialog) -> QWidget:
         "their depots on the right. Still being polished; turn off to use the classic list.",
     )
     sel_card_lay.addWidget(dialog.new_depot_selector_checkbox)
+    dialog.ignore_steam_demos_checkbox = create_checkbox_setting(
+        "Ignore demos from Steam DLC mode",
+        "ignore_steam_demos",
+        False,
+        dialog,
+        "Hide Steam tab games whose names end with Demo or _demo when browsing Steam DLC mode.",
+    )
+    sel_card_lay.addWidget(dialog.ignore_steam_demos_checkbox)
     hide_layout.addWidget(sel_card)
 
     hide_layout.addStretch()

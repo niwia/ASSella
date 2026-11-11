@@ -1,6 +1,7 @@
 import logging
 import os
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QListWidgetItem
@@ -268,7 +269,46 @@ class LibraryFilterSortMixin:
         active_tab = getattr(self, "_active_tab", TAB_ACCELA)
         all_manager_games = self.game_manager.get_all_games() if self.game_manager else []
         steam_games = getattr(self, "_steam_tab_games", [])
+        mgr_by_appid = {
+            str(g.get("appid", "")).strip(): g
+            for g in all_manager_games
+            if g.get("appid") not in (None, "", "0", "N/A", "unknown")
+        }
 
+        additional_apps = set()
+        try:
+            from utils.yaml_config_manager import get_user_config_path
+            from utils.yaml.apps import get_additional_apps
+
+            cfg_path = get_user_config_path()
+            if cfg_path and cfg_path.exists():
+                additional_apps = {
+                    str(a).strip() for a in (get_additional_apps(cfg_path) or []) if str(a).strip()
+                }
+        except Exception as _silent_err:
+            logger.debug("[Library] Could not read AdditionalApps in filter_sort: %s", _silent_err)
+
+        owned_appids = set()
+        try:
+            from core.steam_helpers import get_owned_steam_appids
+
+            owned_appids = {str(a).strip() for a in (get_owned_steam_appids() or ()) if str(a).strip()}
+        except Exception as _silent_err:
+            logger.debug("[Library] Could not read owned Steam appids in filter_sort: %s", _silent_err)
+
+        ignore_demos = False
+        try:
+            from utils.settings import get_settings
+
+            ignore_demos = bool(get_settings().value("ignore_steam_demos", False, type=bool))
+        except Exception as _silent_err:
+            logger.debug("[Library] Could not read ignore_steam_demos setting: %s", _silent_err)
+
+        from utils.library_rules import (
+            is_demo_game_name,
+            is_placeholder_game_name,
+            resolve_best_game_name,
+        )
 
         # Collect all AppIDs managed exclusively by ACCELA or AT0-M so they don't appear in Steam tab
         managed_appids = set()
@@ -282,40 +322,65 @@ class LibraryFilterSortMixin:
                         continue
                 if g.get("is_accela_install") or g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"):
                     managed_appids.add(aid)
+        managed_appids.update(additional_apps)
         try:
             from utils.plugin_games import load_plugin_library
             for p_aid in load_plugin_library().keys():
                 managed_appids.add(str(p_aid).strip())
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[Library] Could not read plugin_library in filter_sort: %s", _silent_err)
 
-        # Steam tab games: unmanaged Steam games AND ASSella DLC-only games (excluding AT0-M games)
+        # Steam tab games: owned Steam games not in AdditionalApps, plus owned ASSella DLC-only games
         seen_steam_aids = set()
         steam_unmanaged = []
+
+        def _prepare_steam_entry(raw_g: Dict[str, Any], aid: str) -> Optional[Dict[str, Any]]:
+            if not aid or aid in seen_steam_aids:
+                return None
+            if aid in additional_apps or aid not in owned_appids:
+                return None
+            entry = dict(raw_g)
+            mgr = mgr_by_appid.get(aid)
+            if int(entry.get("size_on_disk") or 0) <= 0 and mgr and int(mgr.get("size_on_disk") or 0) > 0:
+                entry["size_on_disk"] = mgr["size_on_disk"]
+            if is_placeholder_game_name(entry.get("game_name"), aid):
+                entry["game_name"] = resolve_best_game_name(
+                    aid,
+                    (mgr.get("game_name") if mgr else None, entry.get("game_name")),
+                    fallback_installdir=str(entry.get("install_dir") or ""),
+                )
+            if ignore_demos and is_demo_game_name(entry.get("game_name")):
+                return None
+            return entry
+
         for g in steam_games:
             aid = str(g.get("appid", "")).strip()
             is_atom_game = bool(g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game") or aid in managed_appids)
             is_assella_dlc_only = game_is_dlc_only(g) and not is_atom_game
             if is_assella_dlc_only:
-                steam_unmanaged.append(g)
-                if aid:
+                prepared = _prepare_steam_entry(g, aid)
+                if prepared is not None:
+                    steam_unmanaged.append(prepared)
                     seen_steam_aids.add(aid)
             elif (
                 aid not in managed_appids
                 and not g.get("is_accela_install")
                 and not g.get("is_atom")
             ):
-                steam_unmanaged.append(g)
-                if aid:
+                prepared = _prepare_steam_entry(g, aid)
+                if prepared is not None:
+                    steam_unmanaged.append(prepared)
                     seen_steam_aids.add(aid)
 
-        # Include any ASSella DLC-only games from manager that might not have been in steam_games
+        # Include any owned ASSella DLC-only games from manager that might not have been in steam_games
         for g in all_manager_games:
             aid = str(g.get("appid", "")).strip()
             is_atom_game = bool(g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game") or aid in managed_appids)
             if aid and game_is_dlc_only(g) and not is_atom_game and aid not in seen_steam_aids:
-                steam_unmanaged.append(g)
-                seen_steam_aids.add(aid)
+                prepared = _prepare_steam_entry(g, aid)
+                if prepared is not None:
+                    steam_unmanaged.append(prepared)
+                    seen_steam_aids.add(aid)
 
         # Update tab counts on the bar
         accela_total = sum(
