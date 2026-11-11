@@ -604,3 +604,28 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Mirror Stable Release to Cloudflare R2
+        if: >-
+          github.repository == 'niwia/ASSella' &&
+          steps.meta.outputs.channel == 'stable' &&
+          steps.meta.outputs.publish == 'true' &&
+          steps.meta.outputs.draft != 'true' &&
+          steps.meta.outputs.prerelease != 'true' &&
+          (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
+        env:
+          R2_RELEASES_ENDPOINT: ${{ secrets.R2_RELEASES_ENDPOINT }}
+          R2_RELEASES_BUCKET: ${{ secrets.R2_RELEASES_BUCKET }}
+          R2_RELEASES_ACCESS_KEY_ID: ${{ secrets.R2_RELEASES_ACCESS_KEY_ID }}
+          R2_RELEASES_SECRET_ACCESS_KEY: ${{ secrets.R2_RELEASES_SECRET_ACCESS_KEY }}
+          R2_RELEASES_PUBLIC_URL: ${{ secrets.R2_RELEASES_PUBLIC_URL }}
+        run: |
+          if [ -z "${R2_RELEASES_BUCKET:-}" ] || [ -z "${R2_RELEASES_ACCESS_KEY_ID:-}" ]; then
+            echo "R2 release secrets not configured; skipping R2 mirror."
+            exit 0
+          fi
+          pip install --no-input boto3
+          python3 scripts/mirror_release_to_r2.py \
+            --channel stable \
+            --tag "${{ steps.meta.outputs.tag }}" \
+            --release-name "ASSella ${{ steps.meta.outputs.tag }}" \
+            --dir .

@@ -1,0 +1,84 @@
+name: Mirror Stable Release to Cloudflare R2
+
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Stable release tag to mirror (leave blank for latest stable release)'
+        required: false
+        default: ''
+        type: string
+      force:
+        description: 'Force re-upload even if R2 already matches the same tag and checksums'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Validate and print planned operations without uploading to R2'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: mirror-releases-r2-stable
+  cancel-in-progress: false
+
+jobs:
+  mirror-stable:
+    name: Mirror Latest Stable Release to R2
+    runs-on: ubuntu-22.04
+    if: >-
+      github.repository == 'niwia/ASSella' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event.release.draft == false && github.event.release.prerelease == false)
+      )
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install boto3
+        run: pip install --no-input boto3
+
+      - name: Mirror Stable Release Assets to R2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          R2_RELEASES_ENDPOINT: ${{ secrets.R2_RELEASES_ENDPOINT }}
+          R2_RELEASES_BUCKET: ${{ secrets.R2_RELEASES_BUCKET }}
+          R2_RELEASES_ACCESS_KEY_ID: ${{ secrets.R2_RELEASES_ACCESS_KEY_ID }}
+          R2_RELEASES_SECRET_ACCESS_KEY: ${{ secrets.R2_RELEASES_SECRET_ACCESS_KEY }}
+          R2_RELEASES_PUBLIC_URL: ${{ secrets.R2_RELEASES_PUBLIC_URL }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_FORCE: ${{ github.event.inputs.force }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          CMD=(python3 scripts/mirror_release_to_r2.py --channel stable --from-github)
+
+          TARGET_TAG="${INPUT_TAG:-${RELEASE_TAG:-}}"
+          if [ -n "$TARGET_TAG" ]; then
+            CMD+=(--tag "$TARGET_TAG")
+          fi
+          if [ "${{ github.event_name }}" = "release" ]; then
+            CMD+=(--skip-wrong-channel)
+          fi
+
+          if [ "${INPUT_FORCE:-false}" != "true" ]; then
+            CMD+=(--skip-if-unchanged)
+          fi
+
+          if [ "${INPUT_DRY_RUN:-false}" = "true" ]; then
+            CMD+=(--dry-run)
+          fi
+
+          exec "${CMD[@]}"
