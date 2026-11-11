@@ -1,0 +1,79 @@
+name: Mirror to GitLab & Codeberg
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - '**'
+  delete:
+  schedule:
+    # Periodic catch-up so bot-pushed commits (sync-arm64, sync-shared-assets, gh-pages)
+    # that do not fire GitHub push triggers still sync cleanly to the mirrors.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: mirror-repos-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: Mirror (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    if: github.repository == 'niwia/ASSella'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GitLab
+            url: https://gitlab.com/badniwia/ASSella.git
+            user_secret: GITLAB_USERNAME
+            token_secret: GITLAB_TOKEN
+          - name: Codeberg
+            url: https://codeberg.org/bakabaka1/ASSella.git
+            user_secret: CODEBERG_USER
+            token_secret: CODEBERG_TOKEN
+
+    steps:
+      - name: Fetch bare repository (branches & tags only)
+        env:
+          SOURCE_URL: https://github.com/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/mirror.git"
+          git init --bare "$RUNNER_TEMP/mirror.git"
+          git --git-dir="$RUNNER_TEMP/mirror.git" remote add origin "$SOURCE_URL"
+          # Fetch only branches and tags; exclude refs/pull/* which GitLab/Codeberg reject.
+          git --git-dir="$RUNNER_TEMP/mirror.git" fetch --prune origin \
+            '+refs/heads/*:refs/heads/*' \
+            '+refs/tags/*:refs/tags/*'
+
+      - name: Force mirror branches & tags to ${{ matrix.name }}
+        env:
+          TARGET_NAME: ${{ matrix.name }}
+          TARGET_URL: ${{ matrix.url }}
+          MIRROR_USER: ${{ secrets[matrix.user_secret] }}
+          MIRROR_TOKEN: ${{ secrets[matrix.token_secret] }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MIRROR_USER" ] || [ -z "$MIRROR_TOKEN" ]; then
+            echo "::error::Missing required secret (${{ matrix.user_secret }} or ${{ matrix.token_secret }}) for $TARGET_NAME."
+            exit 1
+          fi
+
+          ASKPASS="$RUNNER_TEMP/git-askpass.sh"
+          cat <<'EOF' > "$ASKPASS"
+          #!/bin/sh
+          case "$1" in
+            *sername*) printf '%s\n' "$MIRROR_USER" ;;
+            *assword*) printf '%s\n' "$MIRROR_TOKEN" ;;
+          esac
+          EOF
+          chmod 700 "$ASKPASS"
+          trap 'rm -f "$ASKPASS" && rm -rf "$RUNNER_TEMP/mirror.git"' EXIT
+
+          GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$ASKPASS" \
+            git --git-dir="$RUNNER_TEMP/mirror.git" push --force --prune "$TARGET_URL" \
+              '+refs/heads/*:refs/heads/*' \
+              '+refs/tags/*:refs/tags/*'
