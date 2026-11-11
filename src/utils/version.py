@@ -2,11 +2,27 @@ import json
 import logging
 import re
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils.paths import Paths
 
 logger = logging.getLogger(__name__)
+
+R2_RELEASES_PUBLIC_URL = "https://pub-16d0a0f940ee42f89e73b896a22be434.r2.dev"
+VALID_UPDATE_SERVERS = ("auto", "github", "r2")
+
+
+def normalize_update_server(raw: Optional[str] = None) -> str:
+    """Return a valid update server preference ('auto', 'github', or 'r2')."""
+    val = (raw or "").strip().lower()
+    return val if val in VALID_UPDATE_SERVERS else "auto"
+
+
+def get_r2_channel_manifest_url(channel: str) -> str:
+    """Return the Cloudflare R2 release manifest URL for a channel."""
+    clean = (channel or "stable").strip().lower() or "stable"
+    return f"{R2_RELEASES_PUBLIC_URL.rstrip('/')}/releases/channels/{clean}.json"
 
 
 def _load_version() -> str:
@@ -27,11 +43,12 @@ def _load_version() -> str:
 
 app_version = _load_version()
 
-# Build date of this release (ISO). The release pipeline does not stamp the
-# version file, so this constant is the authoritative build date and has to be
-# bumped together with src/res/version. A version file that does carry a build
-# stamp ('20261022+ASSella-3.0.1') wins over it - see get_build_date().
-BUILD_DATE = "2026-11-09"
+# Authoritative build date and UTC timestamp (ISO-8601). The release workflow
+# stamps both constants into the packaged AppImage; during dev runs they must be
+# kept aligned with src/res/version. A dated version stamp ('20261022+ASSella-3.0.1')
+# overrides them with its calendar date - see get_build_date() / get_build_timestamp().
+BUILD_DATE = "2026-11-11"
+BUILD_TIMESTAMP = "2026-11-11T15:19:00Z"
 
 
 def _stamp_date(raw: str) -> str:
@@ -46,9 +63,53 @@ def _stamp_date(raw: str) -> str:
     return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
 
 
-def get_build_date() -> str:
-    """Return the ISO build date (YYYY-MM-DD) of the running build."""
-    return _stamp_date(app_version) or BUILD_DATE
+def _parse_utc_timestamp(raw: str) -> Tuple[Optional[datetime], bool]:
+    """Parse an ISO date or UTC ISO-8601 datetime into ``(dt_utc, has_time)``."""
+    s = (raw or "").strip()
+    if not s:
+        return None, False
+    if len(s) == 10 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc), False
+        except ValueError:
+            return None, False
+    try:
+        iso = s[:-1] + "+00:00" if s.endswith("Z") else s
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        has_time = ("T" in s or "t" in s or " " in s)
+        return dt, has_time
+    except ValueError as e:
+        logger.debug(f"ISO timestamp parse fallback for {s!r}: {e}")
+    if len(s) >= 10 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", s[:10]):
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc), False
+        except ValueError:
+            return None, False
+    return None, False
+
+
+def get_build_date(version_str: Optional[str] = None) -> str:
+    """Return the ISO build date (YYYY-MM-DD) of the running build or version string."""
+    return _stamp_date(version_str or app_version) or BUILD_DATE
+
+
+def get_build_timestamp(version_str: Optional[str] = None) -> str:
+    """Return the authoritative UTC ISO-8601 timestamp or ISO date for the running build.
+
+    Prefers an explicit ``YYYYMMDD+`` stamp on ``version_str`` when present.
+    If ``BUILD_DATE`` was overridden independently of ``BUILD_TIMESTAMP`` (e.g.
+    in unit tests), honors ``BUILD_DATE`` so date-only fixtures keep working.
+    """
+    stamped = _stamp_date(version_str or app_version)
+    if stamped:
+        return stamped
+    if BUILD_TIMESTAMP and BUILD_DATE == BUILD_TIMESTAMP[:10]:
+        return BUILD_TIMESTAMP
+    return BUILD_DATE
 
 
 def get_build_date_display() -> str:
@@ -179,13 +240,13 @@ def parse_version(v_str: str) -> Tuple[int, int, int, int, int]:
             hm = re.search(r'\d+', pre_type + pre_extra)
             pre_num = _normalize_build_num(hm.group(0)) if hm else 1
         elif pre_type or pre_extra:
-            if any(x in pre_extra for x in ("canary", "testing", "alpha", "test", "devtest")):
+            if _CANARY_TAG_RE.search(pre_extra):
                 pre_val = -4
-            elif "dev" in pre_extra:
+            elif re.search(r"(?<![a-z])dev(?![a-z])", pre_extra):
                 pre_val = -3
-            elif "beta" in pre_extra:
+            elif re.search(r"(?<![a-z])beta(?![a-z])", pre_extra):
                 pre_val = -2
-            elif "rc" in pre_extra or "release_candidate" in pre_extra:
+            elif re.search(r"(?<![a-z])(?:rc|release[_-]?candidate)(?![a-z])", pre_extra):
                 pre_val = -1
             else:
                 pre_val = -5
@@ -202,9 +263,9 @@ def parse_version(v_str: str) -> Tuple[int, int, int, int, int]:
 def get_branch_from_version(ver_str: str) -> str:
     """Determine the release branch label from a version string."""
     v = extract_semver(ver_str).lower()
-    if any(x in v for x in ("canary", "testing", "alpha", "test", "devtest")):
+    if _CANARY_TAG_RE.search(v):
         return "canary"
-    elif any(x in v for x in ("beta", "dev", "rc", "candidate")):
+    elif _BETA_TAG_RE.search(v):
         return "beta"
     return "main"
 
@@ -220,9 +281,20 @@ def get_effective_update_channel(configured_channel: Optional[str] = None, curre
 
 
 def _release_date(release: Dict[str, Any]) -> str:
-    """Return the publication date (YYYY-MM-DD) of a GitHub release, '' when unknown."""
+    """Return the publication date (YYYY-MM-DD) of a release, '' when unknown."""
     raw = str(release.get("published_at") or release.get("created_at") or "").strip()
     return raw[:10] if len(raw) >= 10 else ""
+
+
+def _release_timestamp(release: Dict[str, Any]) -> str:
+    """Return the normalized UTC ISO timestamp (or YYYY-MM-DD date) of a release."""
+    raw = str(release.get("published_at") or release.get("created_at") or "").strip()
+    if len(raw) < 10:
+        return ""
+    dt, has_time = _parse_utc_timestamp(raw)
+    if dt is None:
+        return raw[:10]
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if has_time else dt.strftime("%Y-%m-%d")
 
 
 def _is_newer_release(
@@ -235,49 +307,207 @@ def _is_newer_release(
 
     Three rules, applied in order:
 
-      1. The same version string is never an upgrade - that is the build that is
-         already running, and offering it would nag on every check.
-      2. A release published before this build was compiled is never an upgrade,
-         whatever its version number is: it is an older build.
+      1. The exact same version string (or equal parsed tuple) is never an upgrade —
+         that is the build already running, and offering it would nag on every check.
+      2. A release published strictly before this build was compiled (full UTC
+         date-time when both carry timestamps, otherwise calendar date) is never
+         an upgrade, whatever its version number is.
       3. Across version lines the base version (major.minor.patch) decides, so a
          channel switch can never offer a downgrade ('2.7.0beta' over '3.0.1').
-         Within one base version the publication date decides, because a
-         pre-release of that base ranks below the release it precedes.
+         Within one base version a strictly later calendar day decides, while
+         same-day releases fall through to parsed semver precedence / build numbers.
     """
-    if not remote_version:
-        return False
-    if remote_version == local_version:
+    if not remote_version or remote_version == local_version:
         return False
 
     remote_parsed = parse_version(remote_version)
     local_parsed = parse_version(local_version)
-
-    # Rule 2: published before this build was compiled.
-    if remote_date and local_date and remote_date < local_date:
+    if remote_parsed == local_parsed:
         return False
+    r_dt, r_has_time = _parse_utc_timestamp(remote_date)
+    l_dt, l_has_time = _parse_utc_timestamp(local_date)
+
+    # Rule 2: published strictly before this build was compiled.
+    if r_dt and l_dt:
+        if r_has_time and l_has_time:
+            if r_dt < l_dt:
+                return False
+        elif r_dt.date() < l_dt.date():
+            return False
 
     # Rule 3: the base version decides across version lines.
     if remote_parsed[:3] != local_parsed[:3]:
         return remote_parsed[:3] > local_parsed[:3]
 
-    # Same base version: the publication date decides, a dated release is newer
-    # than the build it was compared against.
-    if remote_date and local_date:
-        return remote_date >= local_date
+    # Same base version: only let distinct calendar days override parsed semver;
+    # same-day releases fall through to parsed pre-release weights / build numbers.
+    if r_dt and l_dt and r_dt.date() != l_dt.date():
+        return r_dt.date() > l_dt.date()
     return remote_parsed > local_parsed
+
+
+_CANARY_TAG_TOKENS = ("canary", "testing", "devtest", "release_candidate", "releasecandidate")
+_BETA_TAG_TOKENS = ("beta", "dev", "rc", "candidate")
+_CANARY_TAG_RE = re.compile(
+    r"(?<![a-z])(canary|testing|devtest|release[_-]?candidate)(?![a-z])",
+    re.IGNORECASE,
+)
+_BETA_TAG_RE = re.compile(
+    r"(?<![a-z])(beta|dev|rc|candidate)(?![a-z])",
+    re.IGNORECASE,
+)
+
+
+def _normalize_release_branch(target_commitish: Any) -> str:
+    """Return a normalized branch name from ``target_commitish``, or ``''`` for unset/SHAs."""
+    raw = str(target_commitish or "").strip().lower()
+    if not raw:
+        return ""
+    if raw.startswith("refs/heads/"):
+        raw = raw[len("refs/heads/"):]
+    if raw in ("main", "master"):
+        return "main"
+    # Full or abbreviated commit SHAs identify commits, not release branches.
+    if len(raw) >= 7 and re.fullmatch(r"[0-9a-f]{7,40}", raw):
+        return ""
+    return raw
+
+
+def _classify_release_entry(release: Dict[str, Any]) -> Optional[str]:
+    """Classify a GitHub release dict or R2 channel manifest into a channel.
+
+    Combines tag tokens, GitHub's ``prerelease`` boolean, ``target_commitish``
+    branch metadata, and optional R2 manifest ``channel`` so releases stay
+    strictly isolated between ``stable``, ``beta``, and ``canary``.
+    """
+    if not isinstance(release, dict) or release.get("draft"):
+        return None
+    tag = str(release.get("tag_name") or release.get("version") or "").strip()
+    if not tag:
+        return None
+    tag_lower = tag.lower()
+    prerelease = bool(release.get("prerelease", False))
+    target_branch = _normalize_release_branch(release.get("target_commitish"))
+    manifest_channel = str(release.get("channel") or "").strip().lower()
+
+    has_canary_tag = bool(_CANARY_TAG_RE.search(tag_lower))
+    has_beta_tag = bool(_BETA_TAG_RE.search(tag_lower)) and not has_canary_tag
+
+    if has_canary_tag or target_branch == "canary" or manifest_channel == "canary":
+        return "canary" if prerelease else None
+
+    if has_beta_tag or manifest_channel == "beta" or (prerelease and target_branch in ("", "beta", "main")):
+        return "beta"
+
+    if target_branch and target_branch != "main":
+        return None
+    if manifest_channel and manifest_channel not in ("stable", "main"):
+        return None
+
+    clean_tag = tag.lstrip("vV")
+    is_clean_semver = bool(re.match(r"^\d+\.\d+(\.\d+)?$", clean_tag))
+    is_hotfix = bool(re.search(r"\bhotfix\b|[-._]hotfix\d*", tag_lower))
+    if is_clean_semver or is_hotfix:
+        return "stable"
+    return None
+
+
+def _parse_release_candidates(releases: List[Dict[str, Any]], channel: str) -> List[Tuple[str, str]]:
+    """Filter release entries strictly to the requested channel and require a real AppImage asset."""
+    norm_channel = str(channel or "stable").strip().lower()
+    if norm_channel in ("main", "master", ""):
+        norm_channel = "stable"
+
+    candidates: List[Tuple[str, str]] = []
+    for r in releases:
+        if not isinstance(r, dict) or r.get("draft"):
+            continue
+        tag = str(r.get("tag_name") or r.get("version") or "").strip()
+        if not tag:
+            continue
+
+        release_channel = _classify_release_entry(r)
+        if release_channel != norm_channel:
+            continue
+
+        assets = [a.get("name", "") for a in r.get("assets", []) if isinstance(a, dict)]
+        has_appimage = any(
+            a.lower().endswith(".appimage")
+            and not a.lower().endswith(".zsync")
+            and not a.lower().endswith(".sha256")
+            for a in assets
+        )
+
+        if has_appimage:
+            candidates.append((extract_semver(tag), _release_timestamp(r) or _release_date(r)))
+    return candidates
+
+
+def _fetch_github_releases(timeout: int) -> List[Dict[str, Any]]:
+    api_url = "https://api.github.com/repos/niwia/ASSella/releases?per_page=100"
+    req = urllib.request.Request(
+        api_url,
+        headers={
+            "User-Agent": "ASSella-Updater",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+        if not isinstance(data, list):
+            raise ValueError("Unexpected response format from GitHub Releases API")
+        return data
+
+
+def _fetch_r2_channel_manifest(channel: str, timeout: int) -> Dict[str, Any]:
+    manifest_url = get_r2_channel_manifest_url(channel)
+    req = urllib.request.Request(
+        manifest_url,
+        headers={
+            "User-Agent": "ASSella-Updater",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+        if not isinstance(data, dict) or not data.get("tag_name"):
+            raise ValueError("Invalid R2 channel manifest payload")
+        return data
+
+
+def _timestamp_sort_key(ts: str) -> float:
+    """Convert an ISO timestamp or date string into a sortable UTC epoch float."""
+    dt, _ = _parse_utc_timestamp(ts)
+    return dt.timestamp() if dt else 0.0
+
+
+def _candidate_sort_key(cand: Tuple[str, str], channel: str) -> Tuple[Any, ...]:
+    """Rank candidates within a channel by UTC publication timestamp first, then semver."""
+    parsed = parse_version(cand[0])
+    prefer_canary = 1 if (channel == "canary" and "canary" in cand[0].lower()) else 0
+    return (_timestamp_sort_key(cand[1]), parsed[:3], parsed[3], prefer_canary, parsed[4])
 
 
 def check_for_updates(
     configured_channel: Optional[str] = None,
     current_version: Optional[str] = None,
     timeout: int = 10,
+    update_server: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Check GitHub for ASSella application updates.
+    Check for ASSella application updates using GitHub and/or Cloudflare R2.
 
-    A release is only offered when it genuinely ranks above the running build
-    (see _is_newer_release): a channel switch never offers a downgrade, and a
-    release published before this build was compiled is ignored.
+    update_server controls source selection:
+      - 'auto': try GitHub Releases API first, fall back to R2 channel manifest,
+        and finally GitHub raw branch version file.
+      - 'github': try GitHub Releases API -> GitHub raw branch version file only.
+      - 'r2': query Cloudflare R2 channel manifest only.
+
+    A release is only offered when it belongs strictly to the selected channel.
+    When staying on the running build's own channel, both full UTC build timestamp
+    and version precedence are enforced (see _is_newer_release). When actively
+    switching to a different branch, the target branch's latest release is
+    offered directly (is_cross_channel=True).
 
     Returns dict:
       - status: 'update_available' | 'up_to_date' | 'offline'
@@ -286,102 +516,100 @@ def check_for_updates(
       - channel: str ('stable' | 'beta' | 'canary')
       - is_cross_channel: bool (label: the configured channel differs from the
         channel of the running build)
+      - source: 'github' | 'r2' | 'github_raw' | None
+      - update_server: 'auto' | 'github' | 'r2'
       - error: str or None
     """
     cur = current_version or app_version
     local_clean = extract_semver(cur)
-    local_date = get_build_date()
+    local_timestamp = get_build_timestamp(cur)
     channel = get_effective_update_channel(configured_channel, cur)
-    candidates: List[Tuple[str, str]] = []  # (version, publication date)
+    server = normalize_update_server(update_server)
+    candidates: List[Tuple[str, str]] = []  # (version, UTC publication timestamp)
+    resolved_source: Optional[str] = None
+    gh_responded = False
+    api_responded = False
     last_error = None
 
-    # 1. Primary check: GitHub Releases API
-    try:
-        api_url = "https://api.github.com/repos/niwia/ASSella/releases"
-        req = urllib.request.Request(
-            api_url,
-            headers={
-                "User-Agent": "ASSella-Updater",
-                "Accept": "application/vnd.github+json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            releases = json.loads(response.read().decode("utf-8"))
-            for r in releases:
-                tag = str(r.get("tag_name", "")).strip()
-                tag_lower = tag.lower()
+    # 1. GitHub Releases API (skipped in explicit 'r2' mode)
+    if server in ("auto", "github"):
+        try:
+            releases = _fetch_github_releases(timeout)
+            gh_responded = True
+            api_responded = True
+            resolved_source = "github"
+            candidates = _parse_release_candidates(releases, channel)
+        except Exception as e:
+            last_error = str(e)
+            logger.debug(f"[Updater] GitHub Releases API check error: {e}")
 
-                is_canary = any(x in tag_lower for x in ("canary", "testing", "alpha", "test", "devtest"))
-                is_beta = any(x in tag_lower for x in ("beta", "dev", "rc", "candidate")) and not is_canary
+    # 2. Cloudflare R2 channel manifest (primary in 'r2' mode; fallback in 'auto'
+    #    when GitHub errored OR yielded no usable candidates for this channel).
+    #    R2 only mirrors 'stable' and 'beta'; 'canary' remains GitHub-only.
+    if not candidates and server in ("auto", "r2"):
+        if channel in ("stable", "beta"):
+            try:
+                manifest = _fetch_r2_channel_manifest(channel, timeout)
+                if isinstance(manifest, dict):
+                    r2_candidates = _parse_release_candidates([manifest], channel)
+                    if not gh_responded or r2_candidates:
+                        api_responded = True
+                        resolved_source = "r2"
+                        candidates = r2_candidates
+            except Exception as e:
+                last_error = str(e)
+                logger.debug(f"[Updater] R2 release check error ({channel}): {e}")
+        elif server == "r2":
+            last_error = "Cloudflare R2 does not host canary releases."
 
-                # Decouple stable release detection from GitHub's manual 'prerelease' flag,
-                # while allowing hotfixes on the stable channel.
-                clean_tag = tag.lstrip("vV")
-                is_clean_semver = bool(re.match(r"^\d+\.\d+(\.\d+)?$", clean_tag))
-                is_hotfix = bool(re.search(r"\bhotfix\b|[-._]hotfix\d*", tag_lower))
-                is_stable = (is_clean_semver or is_hotfix) and not is_canary and not is_beta
-
-                # Channel filtering
-                if channel == "stable" and not is_stable:
-                    continue
-                elif channel == "beta" and not is_beta and not is_stable:
-                    continue
-                elif channel == "canary" and not is_canary:
-                    continue
-
-                assets = [a.get("name", "") for a in r.get("assets", []) if isinstance(a, dict)]
-                has_appimage = any(
-                    a.lower().endswith(".appimage")
-                    and not a.lower().endswith(".zsync")
-                    and not a.lower().endswith(".sha256")
-                    for a in assets
-                )
-
-                if has_appimage:
-                    candidates.append((extract_semver(tag), _release_date(r)))
-    except Exception as e:
-        last_error = str(e)
-        logger.debug(f"[Updater] GitHub Releases API check error: {e}")
-
-    # 2. Fallback check: raw version file on GitHub branch. Only reached when the
-    #    releases API yielded nothing for this channel; the file carries no
-    #    publication date, so the version comparison has to carry the decision.
-    if not candidates:
+    # 3. Fallback check: raw version file on GitHub branch. Only reached in
+    #    'auto'/'github' modes when releases endpoints errored/failed to respond.
+    if not api_responded and server in ("auto", "github"):
         try:
             branch = channel if channel in ("beta", "canary") else "main"
             url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"
             req = urllib.request.Request(url, headers={"User-Agent": "ASSella-Updater"})
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 remote_raw = response.read().decode("utf-8").strip()
-                candidates.append((extract_semver(remote_raw), _stamp_date(remote_raw)))
+                api_responded = True
+                resolved_source = "github_raw"
+                remote_ver = extract_semver(remote_raw)
+                if remote_ver:
+                    candidates.append((remote_ver, _stamp_date(remote_raw)))
         except Exception as e:
             last_error = str(e)
             logger.debug(f"[Updater] Fallback raw version check error: {e}")
 
     if not candidates:
+        if api_responded:
+            return {
+                "status": "up_to_date",
+                "remote_version": None,
+                "local_version": local_clean,
+                "channel": channel,
+                "is_cross_channel": False,
+                "source": resolved_source,
+                "update_server": server,
+                "error": None,
+            }
         return {
             "status": "offline",
             "remote_version": None,
             "local_version": local_clean,
             "channel": channel,
             "is_cross_channel": False,
+            "source": None,
+            "update_server": server,
             "error": last_error or "Could not determine latest version.",
         }
 
-    # The newest candidate that is a genuine upgrade over the running build. A
-    # candidate that only looks newer (older build date, lower base version) is
-    # never offered - that is what used to make a channel switch ask the user to
-    # "update" to an older build.
-    offerable = [c for c in candidates if _is_newer_release(c[0], c[1], local_clean, local_date)]
-    best = max(
-        offerable or candidates,
-        key=lambda c: (parse_version(c[0])[:3], parse_version(c[0]), c[1]),
-    )
+    best = max(candidates, key=lambda c: _candidate_sort_key(c, channel))
     remote_clean = best[0]
 
-    is_local_canary = any(x in local_clean.lower() for x in ("canary", "testing", "devtest"))
-    is_local_beta = any(x in local_clean.lower() for x in ("beta", "dev", "rc")) and not is_local_canary
-    is_local_stable = not is_local_canary and not is_local_beta
+    local_branch = get_branch_from_version(local_clean)
+    is_local_canary = local_branch == "canary"
+    is_local_beta = local_branch == "beta"
+    is_local_stable = local_branch == "main"
 
     channel_mismatch = (
         (channel == "stable" and not is_local_stable)
@@ -389,15 +617,33 @@ def check_for_updates(
         or (channel == "canary" and not is_local_canary)
     )
 
-    if offerable:
-        return {
-            "status": "update_available",
-            "remote_version": remote_clean,
-            "local_version": local_clean,
-            "channel": channel,
-            "is_cross_channel": bool(channel_mismatch),
-            "error": None,
-        }
+    if channel_mismatch:
+        same_ver = (remote_clean == local_clean or parse_version(remote_clean) == parse_version(local_clean))
+        if not same_ver:
+            return {
+                "status": "update_available",
+                "remote_version": remote_clean,
+                "local_version": local_clean,
+                "channel": channel,
+                "is_cross_channel": True,
+                "source": resolved_source,
+                "update_server": server,
+                "error": None,
+            }
+    else:
+        offerable = [c for c in candidates if _is_newer_release(c[0], c[1], local_clean, local_timestamp)]
+        if offerable:
+            best_offerable = max(offerable, key=lambda c: _candidate_sort_key(c, channel))
+            return {
+                "status": "update_available",
+                "remote_version": best_offerable[0],
+                "local_version": local_clean,
+                "channel": channel,
+                "is_cross_channel": False,
+                "source": resolved_source,
+                "update_server": server,
+                "error": None,
+            }
 
     return {
         "status": "up_to_date",
@@ -405,6 +651,8 @@ def check_for_updates(
         "local_version": local_clean,
         "channel": channel,
         "is_cross_channel": False,
+        "source": resolved_source,
+        "update_server": server,
         "error": None,
     }
 

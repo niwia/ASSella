@@ -99,9 +99,24 @@ class MirrorReleaseToR2Tests(unittest.TestCase):
     def test_channel_classification_and_tag_validation(self) -> None:
         self.assertEqual(m2r.classify_release_channel("v3.1.0", prerelease=False), "stable")
         self.assertEqual(m2r.classify_release_channel("v3.1.0-hotfix1", prerelease=False), "stable")
-        self.assertEqual(m2r.classify_release_channel("v3.1.0", prerelease=True), None)
+        self.assertEqual(m2r.classify_release_channel("v3.1.0", prerelease=True), "beta")
+        self.assertIsNone(
+            m2r.classify_release_channel("v3.1.0", prerelease=True, target_commitish="arm64")
+        )
         self.assertEqual(m2r.classify_release_channel("v3.1.0-beta.1", prerelease=True), "beta")
         self.assertEqual(m2r.classify_release_channel("v3.1.0-canary.2", prerelease=True), "canary")
+        self.assertNotEqual(m2r.classify_release_channel("v3.1.0-alpha.1", prerelease=False), "canary")
+        self.assertEqual(m2r.classify_release_channel("v3.1.0-alpha.1", prerelease=True), "beta")
+        self.assertNotEqual(m2r.classify_release_channel("v3.1.0-latest", prerelease=True), "canary")
+        self.assertIsNone(m2r.classify_release_channel("v3.1.0-latest", prerelease=False))
+        self.assertEqual(
+            m2r.classify_release_channel("v3.0Release_candidate111026001", prerelease=True),
+            "canary",
+        )
+        self.assertEqual(
+            m2r.classify_release_channel("v3.0.0testing051026003", prerelease=True),
+            "canary",
+        )
         with self.assertRaises(ValueError):
             m2r.validate_tag("../etc/passwd")
         with self.assertRaises(ValueError):
@@ -244,6 +259,101 @@ class MirrorReleaseToR2Tests(unittest.TestCase):
             ]
         )
         self.assertEqual(rc, 0)
+
+    def test_branch_awareness_prevents_non_main_branch_on_stable(self) -> None:
+        # Non-prerelease clean tags on beta/canary (such as historical v3.0.1) are excluded
+        # from both stable and beta so v2.7.0beta remains Beta's latest until v2.9.9beta.
+        self.assertIsNone(
+            m2r.classify_release_channel("v3.0.1", prerelease=False, target_commitish="beta")
+        )
+        self.assertIsNone(
+            m2r.classify_release_channel("v3.1.2", prerelease=False, target_commitish="beta")
+        )
+        self.assertEqual(
+            m2r.classify_release_channel("v2.9.9beta", prerelease=True, target_commitish="beta"),
+            "beta",
+        )
+        self.assertEqual(
+            m2r.classify_release_channel("v3.1.2", prerelease=True, target_commitish="beta"),
+            "beta",
+        )
+        self.assertIsNone(
+            m2r.classify_release_channel("v3.1.2", prerelease=False, target_commitish="refs/heads/canary")
+        )
+        self.assertEqual(
+            m2r.classify_release_channel("v3.1.2", prerelease=True, target_commitish="refs/heads/canary"),
+            "canary",
+        )
+        self.assertIsNone(
+            m2r.classify_release_channel("v3.1.2", prerelease=False, target_commitish="arm64")
+        )
+        self.assertEqual(
+            m2r.classify_release_channel(
+                "v3.1.2",
+                prerelease=False,
+                target_commitish="0123456789abcdef0123456789abcdef01234567",
+            ),
+            "stable",
+        )
+
+        releases = [
+            {
+                "tag_name": "v3.0.1",
+                "prerelease": False,
+                "draft": False,
+                "target_commitish": "beta",
+                "published_at": "2026-10-22T15:04:23Z",
+                "assets": [{"name": "ASSella.AppImage"}],
+            },
+            {
+                "tag_name": "v2.9.9beta",
+                "prerelease": True,
+                "draft": False,
+                "target_commitish": "beta",
+                "published_at": "2026-11-11T15:19:00Z",
+                "assets": [{"name": "ASSella.AppImage"}],
+            },
+            {
+                "tag_name": "v3.1.0",
+                "prerelease": False,
+                "draft": False,
+                "target_commitish": "main",
+                "published_at": "2026-11-09T22:45:12Z",
+                "assets": [{"name": "ASSella.AppImage"}],
+            },
+        ]
+        self.assertEqual(m2r.select_github_release(releases, channel="stable")["tag_name"], "v3.1.0")
+        self.assertEqual(m2r.select_github_release(releases, channel="beta")["tag_name"], "v2.9.9beta")
+
+    def test_beta_channel_mirror_generates_beta_manifest(self) -> None:
+        s3 = FakeS3Client()
+        s3.objects["releases/stable/v3.1.0/ASSella.AppImage"] = b"stable-untouched"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_fake_release_dir(tmp_path, "v2.9.9beta")
+            assets = m2r.collect_local_assets(tmp_path, "v2.9.9beta")
+            res = m2r.sync_release_to_r2(
+                s3_client=s3,
+                settings=self.settings,
+                channel="beta",
+                tag="v2.9.9beta",
+                release_name="ASSella v2.9.9beta",
+                published_at="2026-11-11T15:00:00Z",
+                prerelease=True,
+                assets=assets,
+                target_commitish="beta",
+                skip_if_unchanged=True,
+                log=lambda _msg: None,
+            )
+            self.assertEqual(res["status"], "updated")
+            self.assertIn("releases/channels/beta.json", s3.objects)
+            self.assertIn("releases/beta/v2.9.9beta/ASSella.AppImage", s3.objects)
+            self.assertIn("releases/stable/v3.1.0/ASSella.AppImage", s3.objects)
+            manifest = json.loads(s3.objects["releases/channels/beta.json"].decode("utf-8"))
+            self.assertEqual(manifest["channel"], "beta")
+            self.assertTrue(manifest["prerelease"])
+            self.assertEqual(manifest["tag_name"], "v2.9.9beta")
+            self.assertEqual(manifest.get("target_commitish"), "beta")
 
 
 if __name__ == "__main__":

@@ -152,8 +152,14 @@ jobs:
           # and .desktop entries still reference it.
           cp AppDir/assella.desktop AppDir/ACCELA.desktop
           
-          # Copy icon. Prefer icon.png (500x500) and keep the legacy accela.png name so
-          # existing desktop entries and icon caches still resolve.
+          # Copy icons: bundle scalable SVG alongside PNG fallback (and legacy accela aliases) so
+          # AppImage extractors, desktop entries and .DirIcon all resolve cleanly.
+          if [ -f "src/res/logo/icon.svg" ]; then
+            cp "src/res/logo/icon.svg" AppDir/assella.svg
+            cp "src/res/logo/icon.svg" AppDir/accela.svg
+            mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps
+            cp "src/res/logo/icon.svg" AppDir/usr/share/icons/hicolor/scalable/apps/assella.svg
+          fi
           if [ -f "src/res/logo/icon.png" ]; then
             cp "src/res/logo/icon.png" AppDir/assella.png
             cp "src/res/logo/icon.png" AppDir/.DirIcon
@@ -197,6 +203,9 @@ jobs:
           find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           # Optional components (Goldberg, Steamless, SLScheevo) are downloaded on demand from R2
           rm -rf AppDir/bin/src/deps/Goldberg AppDir/bin/src/deps/Steamless AppDir/bin/src/deps/SLScheevo AppDir/bin/src/deps/schema-grabber
+          BUILD_DATE_UTC="$(date -u +%Y-%m-%d)"
+          BUILD_TS_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 -c 'import re, sys; p = "AppDir/bin/src/utils/version.py"; t = open(p, "r", encoding="utf-8").read(); t = re.sub(r"^BUILD_DATE\s*=.*$", f"BUILD_DATE = \"{sys.argv[1]}\"", t, flags=re.M); t = re.sub(r"^BUILD_TIMESTAMP\s*=.*$", f"BUILD_TIMESTAMP = \"{sys.argv[2]}\"", t, flags=re.M); open(p, "w", encoding="utf-8").write(t); print(f"Stamped {p}: {sys.argv[1]} / {sys.argv[2]}")' "$BUILD_DATE_UTC" "$BUILD_TS_UTC"
 
           # 5. Bundle appimageupdatetool (AppImageUpdate) for in-app delta updates.
           # Ships as a self-contained AppImage in bin/; the app extracts and runs
@@ -335,7 +344,7 @@ jobs:
           # result in HTTP 404.
           case "$CHANNEL" in
             stable) UPDATE_TAG="latest" ;;
-            *)      UPDATE_TAG="latest-all" ;;
+            *)      UPDATE_TAG="latest-pre" ;;
           esac
 
           UPDATE_INFO="gh-releases-zsync|niwia|ASSella|${UPDATE_TAG}|ASSella.AppImage.zsync"
@@ -526,6 +535,7 @@ jobs:
 
           # 2. Bin files (requirements, icon, run launcher)
           cp requirements.txt "${PKG_NAME}/bin/"
+          [ -f "src/res/logo/icon.svg" ] && cp "src/res/logo/icon.svg" "${PKG_NAME}/bin/icon.svg"
           if [ -f "src/res/logo/icon.png" ]; then
             cp "src/res/logo/icon.png" "${PKG_NAME}/bin/icon.png"
           elif [ -f "src/res/logo/accela.png" ]; then
@@ -604,13 +614,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Mirror Stable Release to Cloudflare R2
+      - name: Mirror Release to Cloudflare R2
         if: >-
           github.repository == 'niwia/ASSella' &&
-          steps.meta.outputs.channel == 'stable' &&
+          (
+            (steps.meta.outputs.channel == 'stable' && steps.meta.outputs.prerelease != 'true') ||
+            steps.meta.outputs.channel == 'beta'
+          ) &&
           steps.meta.outputs.publish == 'true' &&
           steps.meta.outputs.draft != 'true' &&
-          steps.meta.outputs.prerelease != 'true' &&
           (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
         env:
           R2_RELEASES_ENDPOINT: ${{ secrets.R2_RELEASES_ENDPOINT }}
@@ -624,8 +636,13 @@ jobs:
             exit 0
           fi
           pip install --no-input boto3
+          TARGET_BRANCH="main"
+          if [ "${{ steps.meta.outputs.channel }}" = "beta" ]; then
+            TARGET_BRANCH="beta"
+          fi
           python3 scripts/mirror_release_to_r2.py \
-            --channel stable \
+            --channel "${{ steps.meta.outputs.channel }}" \
+            --target-commitish "$TARGET_BRANCH" \
             --tag "${{ steps.meta.outputs.tag }}" \
             --release-name "ASSella ${{ steps.meta.outputs.tag }}" \
             --dir .

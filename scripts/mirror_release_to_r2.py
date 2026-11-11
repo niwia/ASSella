@@ -40,11 +40,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-ALLOWED_CHANNELS = ("stable",)
+ALLOWED_CHANNELS = ("stable", "beta")
 DEFAULT_REPO = "niwia/ASSella"
 SAFE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-CANARY_TOKENS = ("canary", "testing", "alpha", "test", "devtest", "release_candidate", "releasecandidate")
+CANARY_TOKENS = ("canary", "testing", "devtest", "release_candidate", "releasecandidate")
 BETA_TOKENS = ("beta", "dev", "rc", "candidate")
+CANARY_TOKEN_RE = re.compile(
+    r"(?<![a-z])(canary|testing|devtest|release[_-]?candidate)(?![a-z])",
+    re.IGNORECASE,
+)
+BETA_TOKEN_RE = re.compile(
+    r"(?<![a-z])(beta|dev|rc|candidate)(?![a-z])",
+    re.IGNORECASE,
+)
 
 CONTENT_TYPES = {
     ".appimage": "application/octet-stream",
@@ -125,17 +133,38 @@ def validate_tag(tag: str) -> str:
     return clean
 
 
-def classify_release_channel(tag: str, prerelease: bool = False) -> Optional[str]:
-    """Classify a release tag into ``stable``, ``beta``, or ``canary``."""
+def _normalize_release_branch(target_commitish: Optional[str]) -> str:
+    """Return normalized branch from ``target_commitish``, or ``''`` for unset/SHAs."""
+    raw = str(target_commitish or "").strip().lower()
+    if not raw:
+        return ""
+    if raw.startswith("refs/heads/"):
+        raw = raw[len("refs/heads/"):]
+    if raw in ("main", "master"):
+        return "main"
+    if len(raw) >= 7 and re.fullmatch(r"[0-9a-f]{7,40}", raw):
+        return ""
+    return raw
+
+
+def classify_release_channel(
+    tag: str,
+    prerelease: bool = False,
+    target_commitish: Optional[str] = None,
+) -> Optional[str]:
+    """Classify a release tag/branch/prerelease tuple into ``stable``, ``beta``, or ``canary``."""
     clean = str(tag or "").strip()
     if not clean:
         return None
     lower = clean.lower()
-    if any(tok in lower for tok in CANARY_TOKENS):
-        return "canary"
-    if any(tok in lower for tok in BETA_TOKENS):
+    branch = _normalize_release_branch(target_commitish)
+    if CANARY_TOKEN_RE.search(lower) or branch == "canary":
+        return "canary" if prerelease else None
+    if BETA_TOKEN_RE.search(lower) or (prerelease and branch in ("", "beta", "main")):
         return "beta"
     if prerelease:
+        return None
+    if branch and branch != "main":
         return None
     stripped = clean.lstrip("vV")
     is_clean_semver = bool(re.match(r"^\d+\.\d+(\.\d+)?$", stripped))
@@ -249,6 +278,10 @@ def _download_with_retries(
     raise RuntimeError(f"Failed to download {url}: {last_err}")
 
 
+class ChannelMismatchError(RuntimeError):
+    """Raised when an explicit release belongs to a different channel than requested."""
+
+
 def select_github_release(
     releases: Sequence[Dict[str, Any]],
     *,
@@ -262,9 +295,13 @@ def select_github_release(
             if str(rel.get("tag_name", "")).strip() == wanted:
                 if rel.get("draft"):
                     raise RuntimeError(f"Release {wanted} is marked as draft.")
-                detected = classify_release_channel(wanted, prerelease=bool(rel.get("prerelease")))
+                detected = classify_release_channel(
+                    wanted,
+                    prerelease=bool(rel.get("prerelease")),
+                    target_commitish=rel.get("target_commitish"),
+                )
                 if detected != channel:
-                    raise RuntimeError(
+                    raise ChannelMismatchError(
                         f"Release {wanted} belongs to channel {detected!r}, not {channel!r}."
                     )
                 return rel
@@ -277,7 +314,14 @@ def select_github_release(
         rtag = str(rel.get("tag_name", "")).strip()
         if not rtag or not SAFE_TAG_RE.match(rtag):
             continue
-        if classify_release_channel(rtag, prerelease=bool(rel.get("prerelease"))) != channel:
+        if (
+            classify_release_channel(
+                rtag,
+                prerelease=bool(rel.get("prerelease")),
+                target_commitish=rel.get("target_commitish"),
+            )
+            != channel
+        ):
             continue
         assets = [a for a in rel.get("assets", []) if isinstance(a, dict)]
         if not any(is_appimage_asset(str(a.get("name", ""))) for a in assets):
@@ -305,7 +349,7 @@ def fetch_github_release(
         rel = _http_get_json(url, token=token)
         return select_github_release([rel], channel=channel, tag=clean_tag)
 
-    url = f"https://api.github.com/repos/{repo}/releases?per_page=50"
+    url = f"https://api.github.com/repos/{repo}/releases?per_page=100"
     releases = _http_get_json(url, token=token)
     if not isinstance(releases, list):
         raise RuntimeError("Unexpected response from GitHub Releases API.")
@@ -408,13 +452,14 @@ def build_channel_manifest(
     prerelease: bool,
     public_url: str,
     assets: Sequence[LocalAsset],
+    target_commitish: Optional[str] = None,
     mirrored_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a GitHub-compatible release manifest for ``releases/channels/<channel>.json``."""
     base = public_url.rstrip("/")
     stamp = mirrored_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     clean_ver = tag.lstrip("vV")
-    return {
+    manifest: Dict[str, Any] = {
         "schema": 1,
         "channel": channel,
         "tag_name": tag,
@@ -435,6 +480,9 @@ def build_channel_manifest(
             for asset in sorted(assets, key=lambda a: (0 if a.name == "ASSella.AppImage" else 1, a.name))
         ],
     }
+    if target_commitish:
+        manifest["target_commitish"] = target_commitish
+    return manifest
 
 
 def create_r2_client(settings: R2Settings):
@@ -536,6 +584,7 @@ def sync_release_to_r2(
     published_at: str,
     prerelease: bool,
     assets: Sequence[LocalAsset],
+    target_commitish: Optional[str] = None,
     skip_if_unchanged: bool = False,
     dry_run: bool = False,
     log: Callable[[str], None] = print,
@@ -544,7 +593,11 @@ def sync_release_to_r2(
     if channel not in ALLOWED_CHANNELS:
         raise ValueError(f"Unsupported channel {channel!r}; allowed: {ALLOWED_CHANNELS}")
     clean_tag = validate_tag(tag)
-    detected = classify_release_channel(clean_tag, prerelease=prerelease)
+    detected = classify_release_channel(
+        clean_tag,
+        prerelease=prerelease,
+        target_commitish=target_commitish,
+    )
     if detected != channel:
         raise ValueError(
             f"Tag {clean_tag!r} (prerelease={prerelease}) resolved to {detected!r}, not {channel!r}"
@@ -559,6 +612,7 @@ def sync_release_to_r2(
         prerelease=prerelease,
         public_url=settings.public_url,
         assets=assets,
+        target_commitish=target_commitish,
     )
 
     if dry_run:
@@ -646,6 +700,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     ap.add_argument("--published-at", default="", help="ISO-8601 release timestamp override for --dir mode")
     ap.add_argument("--release-name", default="", help="Human-readable release title override for --dir mode")
+    ap.add_argument("--target-commitish", default="", help="Optional branch name override for classification/manifest")
     ap.add_argument(
         "--skip-if-unchanged",
         action="store_true",
@@ -669,6 +724,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         tag = validate_tag(args.tag)
         published_at = args.published_at.strip() or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         release_name = args.release_name.strip() or f"ASSella {tag}"
+        target_branch = args.target_commitish.strip() or None
+        is_prerelease = args.channel != "stable"
         assets = collect_local_assets(args.dir, tag)
         sync_release_to_r2(
             s3_client=s3_client,
@@ -677,8 +734,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             tag=tag,
             release_name=release_name,
             published_at=published_at,
-            prerelease=False,
+            prerelease=is_prerelease,
             assets=assets,
+            target_commitish=target_branch,
             skip_if_unchanged=args.skip_if_unchanged,
             dry_run=args.dry_run,
         )
@@ -689,23 +747,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if explicit_tag and args.skip_wrong_channel:
         clean = validate_tag(explicit_tag)
         detected = classify_release_channel(clean, prerelease=False)
-        if detected != args.channel:
+        if (
+            detected is not None
+            and detected != args.channel
+            and not (args.channel == "beta" and detected == "stable")
+        ):
             print(f"[SKIP] Release {clean} belongs to channel {detected!r}, not {args.channel!r}.")
             return 0
 
-    rel = fetch_github_release(
-        repo=args.repo,
-        channel=args.channel,
-        tag=explicit_tag,
-        token=gh_token,
-    )
+    try:
+        rel = fetch_github_release(
+            repo=args.repo,
+            channel=args.channel,
+            tag=explicit_tag,
+            token=gh_token,
+        )
+    except ChannelMismatchError as exc:
+        if args.skip_wrong_channel:
+            print(f"[SKIP] {exc}")
+            return 0
+        raise
     tag = validate_tag(str(rel.get("tag_name", "")))
     published_at = str(rel.get("published_at") or rel.get("created_at") or "")
     release_name = str(rel.get("name") or f"ASSella {tag}")
     prerelease = bool(rel.get("prerelease"))
+    target_commitish = str(rel.get("target_commitish") or "").strip() or None
 
-    if args.skip_wrong_channel and classify_release_channel(tag, prerelease=prerelease) != args.channel:
-        print(f"[SKIP] Release {tag} (prerelease={prerelease}) is not {args.channel}.")
+    if (
+        args.skip_wrong_channel
+        and classify_release_channel(tag, prerelease=prerelease, target_commitish=target_commitish) != args.channel
+    ):
+        print(
+            f"[SKIP] Release {tag} (prerelease={prerelease}, branch={target_commitish or 'unset'}) "
+            f"is not {args.channel}."
+        )
         return 0
 
     with tempfile.TemporaryDirectory(prefix="assella-r2-mirror-") as tmp:
@@ -719,6 +794,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             published_at=published_at,
             prerelease=prerelease,
             assets=assets,
+            target_commitish=target_commitish,
             skip_if_unchanged=args.skip_if_unchanged,
             dry_run=args.dry_run,
         )

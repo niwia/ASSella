@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 from PyQt6.QtCore import QMetaObject, QObject, Qt, Q_ARG
 try:
@@ -24,7 +24,18 @@ from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from utils.paths import Paths
-from utils.version import app_version
+from utils.settings import get_settings
+from utils.version import (
+    _candidate_sort_key,
+    _classify_release_entry,
+    _release_timestamp,
+    app_version,
+    extract_semver,
+    get_effective_update_channel,
+    get_r2_channel_manifest_url,
+    normalize_update_server,
+    parse_version,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +43,10 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _DELTA_PROGRESS_RE = re.compile(
     r"(?P<pct>\d+(?:\.\d+)?)%\s*done"
     r"(?:\s*\(\s*(?P<done>\d+(?:\.\d+)?)\s+of\s+(?P<total>\d+(?:\.\d+)?)\s*(?P<unit>[KMGT]?i?B)\s*\))?"
+)
+_ZSYNC_BAR_RE = re.compile(
+    r"[#-]{3,}\s+(?P<pct>\d+(?:\.\d+)?)%"
+    r"(?:\s+(?P<rate>\d+(?:\.\d+)?\s*[kKMGT]?i?B(?:ps|/s)))?"
 )
 
 
@@ -131,8 +146,8 @@ def _terminate_process(proc, started_new_session: bool = False) -> None:
     try:
         if proc.poll() is not None:
             return
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Could not poll delta updater before termination: {e}")
 
     pid = getattr(proc, "pid", None)
     use_pgid = False
@@ -151,22 +166,16 @@ def _terminate_process(proc, started_new_session: bool = False) -> None:
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 getattr(proc, fallback_method)()
-            except Exception:
-                pass
-        except Exception:
-            pass
+            except Exception as e:
+                logger.debug(f"Fallback process {fallback_method} failed: {e}")
+        except Exception as e:
+            logger.debug(f"Process signal {sig} failed: {e}")
         try:
             proc.wait(timeout=2)
             return
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Process wait after signal {sig} did not complete cleanly: {e}")
             continue
-
-
-def extract_semver(raw: str) -> str:
-    """Strip build-date prefix (e.g. '20260608+ASSella-') returning just the version tag."""
-    if "+ASSella-" in raw:
-        return raw.split("+ASSella-", 1)[1].strip()
-    return raw.strip()
 
 
 class _DeltaProgressTracker:
@@ -193,8 +202,8 @@ class _DeltaProgressTracker:
                 Qt.ConnectionType.QueuedConnection,
                 Q_ARG(int, val),
             )
-        except RuntimeError:
-            pass
+        except RuntimeError as e:
+            logger.debug(f"Progress dialog unavailable during setValue: {e}")
 
     def _emit_label(self, text: str, force: bool = False) -> None:
         if not text or text == self.last_label or self.cancel_event.is_set() or not _is_qt_alive(self.progress):
@@ -211,8 +220,8 @@ class _DeltaProgressTracker:
                 Qt.ConnectionType.QueuedConnection,
                 Q_ARG(str, text),
             )
-        except RuntimeError:
-            pass
+        except RuntimeError as e:
+            logger.debug(f"Progress dialog unavailable during setLabelText: {e}")
 
     def feed(self, raw_segment: str, final_line: bool = True) -> None:
         clean = _ANSI_ESCAPE_RE.sub("", raw_segment).strip()
@@ -242,6 +251,16 @@ class _DeltaProgressTracker:
                 if milestone in (25, 50, 75, 100) and milestone > self.last_milestone:
                     logger.info(f"[{self.tool_name}] {clean}")
                     self.last_milestone = milestone
+            return
+
+        bar_match = _ZSYNC_BAR_RE.search(clean)
+        if bar_match:
+            pct = min(100.0, max(0.0, float(bar_match.group("pct"))))
+            bar_val = max(self.last_bar_val, min(98, 2 + int(pct * 0.96)))
+            self._emit_bar(bar_val)
+            rate = (bar_match.group("rate") or "").strip()
+            label = f"Delta update: {pct:.1f}% ({rate})" if rate else f"Delta update: {pct:.1f}%"
+            self._emit_label(label, force=(pct >= 99.9))
             return
 
         if not final_line:
@@ -367,8 +386,219 @@ def _run_delta_subprocess(
         if proc.stdout is not None:
             try:
                 proc.stdout.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to close updater stdout pipe: {e}")
+
+
+def _tags_match_or_newer(remote_tag: str, requested_tag: str) -> bool:
+    """True when ``remote_tag`` satisfies ``requested_tag`` without downgrading."""
+    clean_req = str(requested_tag or "").strip()
+    if not clean_req or clean_req == "latest":
+        return True
+    clean_rem = str(remote_tag or "").strip()
+    if not clean_rem:
+        return False
+    if clean_rem.lstrip("vV").lower() == clean_req.lstrip("vV").lower():
+        return True
+    return parse_version(clean_rem) >= parse_version(clean_req)
+
+
+def _extract_release_assets(release_data: Dict[str, Any]) -> Tuple[str, Optional[str], Optional[str]]:
+    """Extract (appimage_url, zsync_url, expected_sha256) from a GitHub/R2 release dict."""
+    download_url: Optional[str] = None
+    appimage_sha: Optional[str] = None
+    appimage_candidates: list[Tuple[str, Optional[str]]] = []
+    zsync_url: Optional[str] = None
+
+    for asset in release_data.get("assets", []):
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name", ""))
+        url = str(asset.get("browser_download_url", "") or "").strip()
+        if not name or not url:
+            continue
+        low = name.lower()
+        if low == "assella.appimage.zsync" or (low.endswith(".appimage.zsync") and not zsync_url):
+            zsync_url = url
+            continue
+        if low.endswith(".zsync") or low.endswith(".sha256"):
+            continue
+        if low.endswith(".appimage"):
+            sha = str(asset.get("sha256") or "").strip().lower() or None
+            if name == "ASSella.AppImage":
+                download_url = url
+                appimage_sha = sha
+                continue
+            appimage_candidates.append((url, sha))
+
+    if not download_url and appimage_candidates:
+        download_url, appimage_sha = appimage_candidates[0]
+
+    if not download_url:
+        raise RuntimeError("No AppImage asset found in the release.")
+
+    if not zsync_url:
+        zsync_url = f"{download_url}.zsync"
+
+    return download_url, zsync_url, appimage_sha
+
+
+def _fetch_github_release_data(tag: str, channel: Optional[str] = None) -> Dict[str, Any]:
+    """Fetch target release metadata from the GitHub Releases API, scoped to ``channel``."""
+    import json
+
+    norm_channel = str(channel or "").strip().lower()
+    if norm_channel in ("main", "master"):
+        norm_channel = "stable"
+
+    headers = {"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
+    if not tag or tag == "latest":
+        api_url = "https://api.github.com/repos/niwia/ASSella/releases?per_page=100"
+        req = urllib.request.Request(api_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            releases_list = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(releases_list, list):
+            return {}
+        eligible = [r for r in releases_list if isinstance(r, dict) and not r.get("draft")]
+        if norm_channel:
+            eligible = [r for r in eligible if _classify_release_entry(r) == norm_channel]
+            with_appimage = []
+            for r in eligible:
+                try:
+                    _extract_release_assets(r)
+                    with_appimage.append(r)
+                except RuntimeError:
+                    pass
+            if with_appimage:
+                eligible = with_appimage
+            if not eligible:
+                raise RuntimeError(f"No GitHub release found for channel '{norm_channel}'.")
+            return max(
+                eligible,
+                key=lambda r: _candidate_sort_key(
+                    (extract_semver(str(r.get("tag_name") or "")), _release_timestamp(r)),
+                    norm_channel,
+                ),
+            )
+        return eligible[0] if eligible else {}
+
+    def _fetch_by_tag(t: str) -> Dict[str, Any]:
+        url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{t}"
+        r_req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(r_req, timeout=15) as r_resp:
+            return json.loads(r_resp.read().decode("utf-8"))
+
+    try:
+        data = _fetch_by_tag(tag)
+    except urllib.error.HTTPError as err:
+        if err.code == 404:
+            alt_tag = tag[1:] if tag.startswith("v") else f"v{tag}"
+            logger.info(f"Release tag {tag} returned 404, retrying with alternate tag: {alt_tag}")
+            data = _fetch_by_tag(alt_tag)
+        else:
+            raise
+
+    if isinstance(data, dict) and tag and not data.get("tag_name"):
+        data = {**data, "tag_name": tag}
+
+    if norm_channel and isinstance(data, dict):
+        actual_channel = _classify_release_entry(data)
+        if actual_channel != norm_channel:
+            raise RuntimeError(
+                f"GitHub release '{data.get('tag_name') or tag}' belongs to channel "
+                f"'{actual_channel or 'unknown'}', expected '{norm_channel}'."
+            )
+    return data
+
+
+def _fetch_r2_release_data(channel: str, requested_tag: str) -> Dict[str, Any]:
+    """Fetch target release metadata strictly from the active channel's Cloudflare R2 manifest."""
+    import json
+
+    norm_channel = str(channel or "stable").strip().lower()
+    if norm_channel in ("main", "master", ""):
+        norm_channel = "stable"
+    if norm_channel not in ("stable", "beta"):
+        raise RuntimeError(f"Cloudflare R2 does not host '{norm_channel}' releases.")
+
+    manifest_url = get_r2_channel_manifest_url(norm_channel)
+    req = urllib.request.Request(
+        manifest_url,
+        headers={"User-Agent": "ASSella-Updater", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    if not isinstance(data, dict) or not data.get("assets"):
+        raise RuntimeError(f"Invalid R2 release manifest for channel '{norm_channel}'.")
+
+    actual_channel = _classify_release_entry(data)
+    if actual_channel != norm_channel:
+        raise RuntimeError(
+            f"R2 '{norm_channel}' manifest holds '{data.get('tag_name') or 'unknown'}' "
+            f"(channel '{actual_channel or 'unknown'}'), expected '{norm_channel}'."
+        )
+
+    if requested_tag:
+        remote_tag = str(data.get("tag_name") or "").strip()
+        if not _tags_match_or_newer(remote_tag, requested_tag):
+            raise RuntimeError(
+                f"R2 mirror currently holds {remote_tag or 'unknown'}, older than requested {requested_tag}."
+            )
+
+    return data
+
+
+def _compute_file_sha256(file_path: Path, cancel_event: threading.Event) -> Optional[str]:
+    """Compute lowercase SHA-256 hex digest of ``file_path``, or None if cancelled."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            if cancel_event.is_set():
+                return None
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_sha256_file(
+    file_path: Path,
+    *,
+    expected_hex: Optional[str],
+    sidecar_url: Optional[str],
+    cancel_event: threading.Event,
+) -> None:
+    """Verify ``file_path`` against manifest SHA-256 or a remote ``.sha256`` sidecar."""
+    expected = (expected_hex or "").strip().lower() or None
+
+    if not expected and sidecar_url:
+        try:
+            sha_req = urllib.request.Request(sidecar_url, headers={"User-Agent": "ASSella-Updater"})
+            with urllib.request.urlopen(sha_req, timeout=30) as sha_resp:
+                published = sha_resp.read().decode("utf-8", "replace")
+            match = re.search(r"[a-fA-F0-9]{64}", published)
+            if match:
+                expected = match.group(0).lower()
+        except urllib.error.HTTPError as he:
+            if he.code == 404:
+                logger.warning("No published .sha256 for this release; skipping verification.")
+                return
+            raise
+        except Exception as ve:
+            logger.warning(f"Checksum verification skipped: {ve}")
+            return
+
+    if not expected:
+        logger.warning("No published .sha256 for this release; skipping verification.")
+        return
+
+    actual = _compute_file_sha256(file_path, cancel_event)
+    if actual is None:
+        return
+    if actual != expected:
+        raise RuntimeError(f"Checksum mismatch — expected {expected[:16]}…, got {actual[:16]}…")
+    logger.info(f"SHA-256 verified: {actual}")
 
 
 class AppUpdateManager(QObject):
@@ -381,14 +611,35 @@ class AppUpdateManager(QObject):
         self._lock = threading.Lock()
         self._updating = False
         self._active_progress: Optional[ThemedProgressDialog] = None
+        self._last_failed_server: Optional[str] = None
 
     def _clear_active_state(self) -> None:
         with self._lock:
             self._updating = False
             self._active_progress = None
 
-    def run_self_update(self) -> None:
-        """Install update using delta ZSync (appimageupdatetool), with full-download fallback."""
+    def _get_update_preferences(self) -> Tuple[str, str]:
+        """Resolve effective (channel, update_server) from parent settings on the GUI thread."""
+        settings = getattr(self._parent, "settings", None)
+        if settings is None:
+            settings = get_settings()
+        try:
+            raw_channel = str(settings.value("update_channel", "") or "").strip().lower()
+        except Exception as e:
+            logger.debug(f"Could not read update_channel setting: {e}")
+            raw_channel = ""
+        try:
+            raw_server = str(settings.value("update_server", "auto") or "auto").strip().lower()
+        except Exception as e:
+            logger.debug(f"Could not read update_server setting: {e}")
+            raw_server = "auto"
+
+        channel = get_effective_update_channel(raw_channel, app_version)
+        server = normalize_update_server(raw_server)
+        return channel, server
+
+    def run_self_update(self, server_override: Optional[str] = None, skip_prompt: bool = False) -> None:
+        """Install update using delta ZSync (appimageupdatetool/zsync2), with full-download fallback."""
         with self._lock:
             if self._updating:
                 logger.info("Self-update already in progress; ignoring duplicate request.")
@@ -396,12 +647,13 @@ class AppUpdateManager(QObject):
                     try:
                         self._active_progress.raise_()
                         self._active_progress.activateWindow()
-                    except RuntimeError:
-                        pass
+                    except RuntimeError as e:
+                        logger.debug(f"Could not raise active progress dialog: {e}")
                 return
             self._updating = True
 
         try:
+            self._last_failed_server = None
             # Resolve the installed AppImage target (following symlinks so shutil.move
             # updates the real binary instead of overwriting a launcher symlink).
             appimage_path = _resolve_appimage_path()
@@ -413,33 +665,46 @@ class AppUpdateManager(QObject):
                 )
                 return
 
+            channel, update_server = self._get_update_preferences()
+            if server_override:
+                update_server = normalize_update_server(server_override)
             remote_version = getattr(self._parent, "_latest_remote_version", None)
-            # Normalise the tag to exactly one leading "v". Release tags in this repo
-            # are inconsistently prefixed ("v2.7.0beta" vs "2.7.0beta"), and naively
-            # prefixing produced "vv2.7.0beta", which GitHub answers with HTTP 404.
-            if remote_version:
-                tag = remote_version if str(remote_version).startswith("v") else f"v{remote_version}"
-            else:
-                # "latest" is unsafe here: every release is marked prerelease, and
-                # /releases/latest excludes prereleases, so it resolves to 404.
-                # Fall back to the newest release in our own channel instead.
-                tag = ""
+            remote_channel = str(getattr(self._parent, "_latest_update_channel", "") or "").strip().lower()
+            # Normalise the tag to exactly one leading "v" and discard stale cached tags
+            # whose channel does not match the currently selected update channel.
+            tag = ""
+            if remote_version and (not remote_channel or remote_channel == channel):
+                synthetic_channel = _classify_release_entry({
+                    "tag_name": str(remote_version),
+                    "prerelease": (channel != "stable"),
+                    "target_commitish": ("main" if channel == "stable" else channel),
+                })
+                if synthetic_channel == channel:
+                    tag = remote_version if str(remote_version).startswith("v") else f"v{remote_version}"
+                else:
+                    logger.info(
+                        f"Ignoring cached tag '{remote_version}' ({synthetic_channel}) for active channel '{channel}'."
+                    )
+            elif remote_version and remote_channel != channel:
+                logger.info(
+                    f"Ignoring cached tag '{remote_version}' from channel '{remote_channel}' for active channel '{channel}'."
+                )
 
-            extract_semver(app_version)
+            if not skip_prompt:
+                reply = ThemedMessageBox.question(
+                    self._parent, "Install Update",
+                    f"A new version of ASSella is available ({tag or 'the latest build'}).\n\n"
+                    "Would you like to download and install it now?\n"
+                    "The app will need to be restarted after the update.",
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.Yes
+                )
+                if reply != ThemedMessageBox.StandardButton.Yes:
+                    self._clear_active_state()
+                    return
 
-            reply = ThemedMessageBox.question(
-                self._parent, "Install Update",
-                f"A new version of ASSella is available ({tag or 'the latest build'}).\n\n"
-                "Would you like to download and install it now?\n"
-                "The app will need to be restarted after the update.",
-                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-                ThemedMessageBox.StandardButton.Yes
-            )
-            if reply != ThemedMessageBox.StandardButton.Yes:
-                self._clear_active_state()
-                return
-
-            progress = ThemedProgressDialog("Connecting to GitHub...", "Cancel", 0, 100, self._parent)
+            initial_label = "Connecting to Cloudflare R2..." if update_server == "r2" else "Connecting to GitHub..."
+            progress = ThemedProgressDialog(initial_label, "Cancel", 0, 100, self._parent)
             progress.setWindowTitle("Downloading Update")
             progress.setWindowModality(Qt.WindowModality.WindowModal)
             progress.setMinimumDuration(0)
@@ -462,118 +727,61 @@ class AppUpdateManager(QObject):
                 return
             try:
                 QMetaObject.invokeMethod(progress, method, Qt.ConnectionType.QueuedConnection, *qargs)
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                logger.debug(f"Progress dialog gone before {method}: {e}")
 
         def _invoke_parent(slot_name: str, *qargs) -> None:
             if not _is_qt_alive(self._parent):
                 return
             try:
                 QMetaObject.invokeMethod(self._parent, slot_name, Qt.ConnectionType.QueuedConnection, *qargs)
-            except RuntimeError:
-                pass
+            except RuntimeError as e:
+                logger.debug(f"Parent window gone before {slot_name}: {e}")
 
-        def _download_worker():
-            import json
+        def _apply_from_release(
+            source: str,
+            release_data: Dict[str, Any],
+            dest_dir: Path,
+            appimage_file: Path,
+            appimage_name: str,
+        ) -> str:
+            """Apply delta or full download from a single resolved source ('github' or 'r2')."""
+            rel_ch = _classify_release_entry(release_data)
+            if rel_ch != channel:
+                raise RuntimeError(
+                    f"Refusing {source} release '{release_data.get('tag_name') or 'unknown'}' "
+                    f"(channel '{rel_ch or 'unknown'}') while active channel is '{channel}'."
+                )
+            download_url, zsync_url, expected_sha = _extract_release_assets(release_data)
+            if cancel_event.is_set():
+                return "cancelled"
 
-            tmp_path = None
-            appimage_file = Path(appimage_path)
-            dest_dir = appimage_file.parent
-            appimage_name = appimage_file.name
-            logger.info("Self-update starting: attempting zsync delta, full download as fallback.")
+            _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
 
-            try:
-                if not cancel_event.is_set():
-                    _invoke_progress("setLabelText", Q_ARG(str, "Fetching release info from GitHub..."))
+            delta_ok = False
+            tmp_path: Optional[Path] = None
 
-                if tag == "latest":
-                    api_url = "https://api.github.com/repos/niwia/ASSella/releases"
-                    req = urllib.request.Request(
-                        api_url,
-                        headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                    )
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        releases_list = json.loads(resp.read().decode("utf-8"))
-                        release_data = releases_list[0] if releases_list else {}
-                else:
-                    api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{tag}"
-                    req = urllib.request.Request(
-                        api_url,
-                        headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                    )
-                    try:
-                        with urllib.request.urlopen(req, timeout=15) as resp:
-                            release_data = json.loads(resp.read().decode("utf-8"))
-                    except urllib.error.HTTPError as err:
-                        if err.code == 404 and tag != "latest":
-                            alt_tag = tag[1:] if tag.startswith("v") else f"v{tag}"
-                            alt_api_url = f"https://api.github.com/repos/niwia/ASSella/releases/tags/{alt_tag}"
-                            logger.info(f"Release tag {tag} returned 404, retrying with alternate tag: {alt_tag}")
-                            req_alt = urllib.request.Request(
-                                alt_api_url,
-                                headers={"User-Agent": "ASSella-Updater", "Accept": "application/vnd.github+json"}
-                            )
-                            with urllib.request.urlopen(req_alt, timeout=15) as resp:
-                                release_data = json.loads(resp.read().decode("utf-8"))
-                        else:
-                            raise
-
-                download_url = None
-                appimage_candidates = []
-                for asset in release_data.get("assets", []):
-                    name = asset.get("name", "")
-                    if name.lower().endswith(".zsync") or name.lower().endswith(".sha256"):
-                        continue
-                    if name.lower().endswith(".appimage"):
-                        if name == "ASSella.AppImage":
-                            download_url = asset.get("browser_download_url")
-                            break
-                        appimage_candidates.append(asset.get("browser_download_url"))
-
-                if not download_url and appimage_candidates:
-                    download_url = appimage_candidates[0]
-
-                if not download_url:
-                    raise RuntimeError("No AppImage asset found in the release.")
-
-                if cancel_event.is_set():
-                    return
-
-                # Clear stale .autoupdate/.part files from any earlier interrupted attempt.
-                _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
-
-                # --- Delta (appimageupdatetool, then zsync) ----------------
-                # Prefer the bundled AppImageUpdate, which reads the update string
-                # embedded in the AppImage and resolves the correct channel-scoped
-                # release tag on its own. Fall back to the zsync CLI if present,
-                # then to a full download. Every failure mode is non-fatal.
-                delta_ok = False
-
-                # 1. Bundled appimageupdatetool
+            # 1. Bundled appimageupdatetool (GitHub transport only: explicit channel-verified -u tag)
+            if source == "github":
                 try:
-                    # Inside an AppImage, BASE_DIR is <mount>/bin/src while helper
-                    # binaries sit at <mount>/bin/ (resolved via APPDIR first).
                     updater = _find_bundled_or_system_tool("appimageupdatetool")
+                    target_tag = str(release_data.get("tag_name") or (tag if tag != "latest" else "")).strip()
                     if not updater or not os.path.exists(appimage_path):
                         logger.info("appimageupdatetool unavailable; trying zsync/full download.")
+                    elif not target_tag:
+                        logger.info("No channel-verified release tag for appimageupdatetool -u; trying zsync/full download.")
                     else:
                         if not cancel_event.is_set():
                             _invoke_progress("setLabelText", Q_ARG(str, "Delta update via AppImageUpdate..."))
-                        # appimageupdatetool with -O overwrites its target in place;
-                        # work on a copy so a failed run cannot damage the working
-                        # install. Without -O it creates a new file and leaves the
-                        # original untouched, so -O is required for the success
-                        # check below to see the updated content.
-                        # Pass -u with the resolved release tag so the updater
-                        # targets the intended release even if the AppImage's
-                        # embedded update string has an unresolvable wildcard tag.
                         target = dest_dir / f"{appimage_name}.autoupdate"
                         shutil.copy2(appimage_path, target)
-                        cmd = [updater, "-O"]
-                        target_tag = release_data.get("tag_name") or (tag if tag != "latest" else "")
-                        if target_tag:
-                            cmd.extend(["-u", f"gh-releases-zsync|niwia|ASSella|{target_tag}|ASSella.AppImage.zsync"])
-                        cmd.append(str(target))
+                        cmd = [
+                            updater,
+                            "-O",
+                            "-u",
+                            f"gh-releases-zsync|niwia|ASSella|{target_tag}|ASSella.AppImage.zsync",
+                            str(target),
+                        ]
                         rc, was_cancelled = _run_delta_subprocess(
                             cmd,
                             tool_name="appimageupdatetool",
@@ -582,8 +790,16 @@ class AppUpdateManager(QObject):
                             timeout=3600,
                         )
                         if was_cancelled:
-                            return
+                            return "cancelled"
                         if rc == 0 and target.exists() and target.stat().st_size > 0:
+                            _verify_sha256_file(
+                                target,
+                                expected_hex=expected_sha,
+                                sidecar_url=f"{download_url}.sha256" if download_url else None,
+                                cancel_event=cancel_event,
+                            )
+                            if cancel_event.is_set():
+                                return "cancelled"
                             tmp_path = target
                             delta_ok = True
                             logger.info(
@@ -593,174 +809,180 @@ class AppUpdateManager(QObject):
                                 dest_dir, appimage_name, installed_path=appimage_file, keep=target
                             )
                         else:
-                            logger.warning(
-                                f"appimageupdatetool returned rc={rc}; falling back."
-                            )
+                            logger.warning(f"appimageupdatetool returned rc={rc}; falling back.")
                             _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
                 except Exception as e:
                     logger.warning(f"appimageupdatetool delta failed ({e}); falling back.")
                     _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
 
-                # 2. zsync CLI — prefer bundled copy inside the AppImage, then system PATH
-                if not delta_ok:
-                    if cancel_event.is_set():
-                        return
-                    try:
-                        zsync_bin = _find_bundled_or_system_tool("zsync")
-                        if not zsync_bin:
-                            logger.info("zsync binary not found; using full download.")
-                        elif not os.path.exists(appimage_path):
-                            logger.info("No installed AppImage to delta against; using full download.")
-                        else:
-                            if not cancel_event.is_set():
-                                _invoke_progress("setLabelText", Q_ARG(str, "Delta update via zsync..."))
-                            seed_copy = dest_dir / f"{appimage_name}.zsync-seed"
-                            zsync_out = dest_dir / f"{appimage_name}.zsync-out"
-                            # zsync rewrites its input file in place, so seed it from
-                            # a copy: a failed sync must not damage the working install.
-                            shutil.copy2(appimage_path, seed_copy)
-
-                            # Pass the target AppImage URL explicitly via -u. zsync2
-                            # (bundled since 3.1) reads -u as "the URL to get the
-                            # target file" and uses it to override the .zsync's own
-                            # URL header. Older releases filled that header with the
-                            # AppImageUpdate descriptor ("gh-releases-zsync|..."),
-                            # which zsync2 would otherwise treat as a relative path
-                            # and 404 on. (Stock zsync 0.6.2 gives -u a different
-                            # meaning — the referring URL — but it cannot read an
-                            # https control file at all, so it never reaches here.)
-                            rc, was_cancelled = _run_delta_subprocess(
-                                [
-                                    zsync_bin, "-u", download_url,
-                                    "-i", str(seed_copy), "-o", str(zsync_out),
-                                    f"{download_url}.zsync",
-                                ],
-                                tool_name="zsync",
-                                cancel_event=cancel_event,
-                                progress=progress,
-                                timeout=1800,
-                                cwd=str(dest_dir),
-                            )
-                            if was_cancelled:
-                                return
-
-                            if rc == 0 and zsync_out.exists() and zsync_out.stat().st_size > 0:
-                                tmp_path = zsync_out
-                                delta_ok = True
-                                logger.info(
-                                    f"zsync delta produced {zsync_out.stat().st_size} bytes; "
-                                    "skipping full download."
-                                )
-                                _cleanup_scratch_files(
-                                    dest_dir, appimage_name, installed_path=appimage_file, keep=zsync_out
-                                )
-                            else:
-                                logger.warning(
-                                    f"zsync delta failed (rc={rc}); falling back to full download."
-                                )
-                                _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
-                    except Exception as e:
-                        logger.warning(f"zsync delta attempt failed ({e}); falling back to full download.")
-                        _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
-
+            # 2. Bundled zsync2 CLI — works with both GitHub Releases and Cloudflare R2
+            if not delta_ok:
                 if cancel_event.is_set():
-                    return
-
-                if delta_ok and tmp_path is not None:
-                    try:
-                        os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-                        shutil.move(str(tmp_path), appimage_path)
-                        tmp_path = None
-                        _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
-                        _invoke_progress("setValue", Q_ARG(int, 100))
-                        _invoke_progress("finish")
-                        self._clear_active_state()
-                        _invoke_parent("_on_update_success")
-                        return
-                    except Exception as e:
-                        logger.error(f"Failed to install zsync delta: {e}", exc_info=True)
-                        tmp_path = None
-                        _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
-
-                logger.info(f"Self-update fallback: downloading from {download_url}")
-                if cancel_event.is_set():
-                    return
-                tmp_path = dest_dir / f"{appimage_name}.part"
-
-                _invoke_progress("setLabelText", Q_ARG(str, "Downloading full AppImage..."))
-                _invoke_progress("setValue", Q_ARG(int, 10))
-
-                req2 = urllib.request.Request(download_url, headers={"User-Agent": "ASSella-Updater"})
-                with urllib.request.urlopen(req2, timeout=60) as response:
-                    total = int(response.headers.get("Content-Length", 0))
-                    downloaded = 0
-                    chunk_size = 512 * 1024
-                    with open(tmp_path, "wb") as f:
-                        while True:
-                            if cancel_event.is_set():
-                                return
-                            chunk = response.read(chunk_size)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if total > 0 and not cancel_event.is_set():
-                                pct = 10 + int((downloaded / total) * 85)
-                                _invoke_progress("setValue", Q_ARG(int, min(pct, 94)))
-                                mb_done = downloaded / 1_048_576
-                                mb_total = total / 1_048_576
-                                _invoke_progress(
-                                    "setLabelText",
-                                    Q_ARG(str, f"Downloading... {mb_done:.1f} / {mb_total:.1f} MB"),
-                                )
-
-                if cancel_event.is_set():
-                    return
-
-                os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-
-                # Verify the downloaded bytes against the release's published
-                # SHA-256 before overwriting the working install. A delta or
-                # truncated download must never be installed as-is.
+                    return "cancelled"
                 try:
-                    sha_url = f"{download_url}.sha256"
-                    sha_req = urllib.request.Request(sha_url, headers={"User-Agent": "ASSella-Updater"})
-                    with urllib.request.urlopen(sha_req, timeout=30) as sha_resp:
-                        published = sha_resp.read().decode("utf-8", "replace")
-                    import hashlib
-                    m = re.search(r"[a-fA-F0-9]{64}", published)
-                    if m:
-                        expected = m.group(0).lower()
-                        digest = hashlib.sha256()
-                        with open(tmp_path, "rb") as fh:
-                            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                                if cancel_event.is_set():
-                                    return
-                                digest.update(chunk)
-                        actual = digest.hexdigest()
-                        if actual != expected:
-                            raise RuntimeError(
-                                f"Checksum mismatch — expected {expected[:16]}…, got {actual[:16]}…"
-                            )
-                        logger.info(f"SHA-256 verified: {actual}")
+                    zsync_bin = (
+                        _find_bundled_or_system_tool("zsync2")
+                        or _find_bundled_or_system_tool("zsync")
+                    )
+                    if not zsync_bin:
+                        logger.info("zsync binary not found; using full download.")
+                    elif not os.path.exists(appimage_path):
+                        logger.info("No installed AppImage to delta against; using full download.")
                     else:
-                        logger.warning("No published .sha256 for this release; skipping verification.")
-                except urllib.error.HTTPError as he:
-                    if he.code == 404:
-                        logger.warning("No published .sha256 for this release; skipping verification.")
-                    else:
-                        raise
-                except RuntimeError:
-                    raise
-                except Exception as ve:
-                    logger.warning(f"Checksum verification skipped: {ve}")
+                        if not cancel_event.is_set():
+                            src_label = "Cloudflare R2" if source == "r2" else "zsync"
+                            _invoke_progress("setLabelText", Q_ARG(str, f"Delta update via {src_label}..."))
+                        seed_copy = dest_dir / f"{appimage_name}.zsync-seed"
+                        zsync_out = dest_dir / f"{appimage_name}.zsync-out"
+                        shutil.copy2(appimage_path, seed_copy)
 
-                if cancel_event.is_set():
+                        # Pass the target AppImage URL explicitly via -u so zsync2
+                        # overrides the URL inside .zsync regardless of host/mirror.
+                        rc, was_cancelled = _run_delta_subprocess(
+                            [
+                                zsync_bin, "-u", download_url,
+                                "-i", str(seed_copy), "-o", str(zsync_out),
+                                zsync_url or f"{download_url}.zsync",
+                            ],
+                            tool_name="zsync",
+                            cancel_event=cancel_event,
+                            progress=progress,
+                            timeout=1800,
+                            cwd=str(dest_dir),
+                        )
+                        if was_cancelled:
+                            return "cancelled"
+
+                        if rc == 0 and zsync_out.exists() and zsync_out.stat().st_size > 0:
+                            _verify_sha256_file(
+                                zsync_out,
+                                expected_hex=expected_sha,
+                                sidecar_url=f"{download_url}.sha256" if download_url else None,
+                                cancel_event=cancel_event,
+                            )
+                            if cancel_event.is_set():
+                                return "cancelled"
+                            tmp_path = zsync_out
+                            delta_ok = True
+                            logger.info(
+                                f"zsync delta produced {zsync_out.stat().st_size} bytes ({source}); "
+                                "skipping full download."
+                            )
+                            _cleanup_scratch_files(
+                                dest_dir, appimage_name, installed_path=appimage_file, keep=zsync_out
+                            )
+                        else:
+                            logger.warning(f"zsync delta failed (rc={rc}, source={source}); falling back to full download.")
+                            _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
+                except Exception as e:
+                    logger.warning(f"zsync delta attempt failed ({e}, source={source}); falling back to full download.")
+                    _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
+
+            if cancel_event.is_set():
+                return "cancelled"
+
+            if delta_ok and tmp_path is not None:
+                os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+                shutil.move(str(tmp_path), appimage_path)
+                _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
+                return "installed"
+
+            logger.info(f"Self-update full download ({source}): {download_url}")
+            tmp_path = dest_dir / f"{appimage_name}.part"
+
+            dl_label = "Downloading full AppImage from R2..." if source == "r2" else "Downloading full AppImage..."
+            _invoke_progress("setLabelText", Q_ARG(str, dl_label))
+            _invoke_progress("setValue", Q_ARG(int, 10))
+
+            req2 = urllib.request.Request(download_url, headers={"User-Agent": "ASSella-Updater"})
+            with urllib.request.urlopen(req2, timeout=60) as response:
+                total = int(response.headers.get("Content-Length", 0))
+                downloaded = 0
+                chunk_size = 512 * 1024
+                with open(tmp_path, "wb") as f:
+                    while True:
+                        if cancel_event.is_set():
+                            return "cancelled"
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0 and not cancel_event.is_set():
+                            pct = 10 + int((downloaded / total) * 85)
+                            _invoke_progress("setValue", Q_ARG(int, min(pct, 94)))
+                            mb_done = downloaded / 1_048_576
+                            mb_total = total / 1_048_576
+                            _invoke_progress(
+                                "setLabelText",
+                                Q_ARG(str, f"Downloading... {mb_done:.1f} / {mb_total:.1f} MB"),
+                            )
+
+            if cancel_event.is_set():
+                return "cancelled"
+
+            os.chmod(tmp_path, os.stat(tmp_path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            _verify_sha256_file(
+                tmp_path,
+                expected_hex=expected_sha,
+                sidecar_url=f"{download_url}.sha256",
+                cancel_event=cancel_event,
+            )
+            if cancel_event.is_set():
+                return "cancelled"
+
+            shutil.move(str(tmp_path), appimage_path)
+            _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
+            return "installed"
+
+        def _download_worker():
+            appimage_file = Path(appimage_path)
+            dest_dir = appimage_file.parent
+            appimage_name = appimage_file.name
+            logger.info(
+                f"Self-update starting (server={update_server}, channel={channel}): "
+                "attempting delta update, full download as fallback."
+            )
+
+            try:
+                outcome = None
+                gh_error: Optional[Exception] = None
+
+                if update_server in ("auto", "github"):
+                    try:
+                        if not cancel_event.is_set():
+                            _invoke_progress("setLabelText", Q_ARG(str, "Fetching release info from GitHub..."))
+                        gh_release = _fetch_github_release_data(tag, channel=channel)
+                        outcome = _apply_from_release("github", gh_release, dest_dir, appimage_file, appimage_name)
+                    except Exception as e:
+                        if cancel_event.is_set() or update_server == "github":
+                            raise
+                        gh_error = e
+                        logger.warning(f"GitHub update failed ({e}); falling back to Cloudflare R2.")
+                        _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
+
+                if outcome == "cancelled" or cancel_event.is_set():
                     return
 
-                shutil.move(str(tmp_path), appimage_path)
-                tmp_path = None
-                _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
+                if outcome != "installed" and update_server in ("auto", "r2"):
+                    if not cancel_event.is_set():
+                        msg = (
+                            "GitHub unavailable, fetching from Cloudflare R2..."
+                            if gh_error is not None
+                            else "Fetching release info from Cloudflare R2..."
+                        )
+                        _invoke_progress("setLabelText", Q_ARG(str, msg))
+                        _invoke_progress("setValue", Q_ARG(int, 4))
+                    try:
+                        r2_release = _fetch_r2_release_data(channel, tag)
+                        outcome = _apply_from_release("r2", r2_release, dest_dir, appimage_file, appimage_name)
+                    except Exception as r2_err:
+                        if gh_error is not None:
+                            raise RuntimeError(f"GitHub failed ({gh_error}); R2 fallback failed ({r2_err})") from r2_err
+                        raise
+
+                if outcome == "cancelled" or cancel_event.is_set():
+                    return
 
                 _invoke_progress("setValue", Q_ARG(int, 100))
                 _invoke_progress("finish")
@@ -769,6 +991,7 @@ class AppUpdateManager(QObject):
 
             except Exception as e:
                 logger.error(f"Self-update failed: {e}", exc_info=True)
+                self._last_failed_server = update_server
                 _cleanup_scratch_files(dest_dir, appimage_name, installed_path=appimage_file)
                 _invoke_progress("finish")
                 self._clear_active_state()
