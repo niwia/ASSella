@@ -1036,5 +1036,39 @@ if proc.returncode != 0:
 PYEOF
 )
 
+# Regression for CI runners without libfuse2: detect_distro_family & FUSE warnings
+# must never fail with "DISTRO_ID: unbound variable" under set -u even when
+# detect_distro was skipped or DISTRO_* were unset.
+(
+    unset DISTRO_ID DISTRO_NAME DISTRO_LIKE || true
+    FUSE_INSTALLED=false
+    IS_NIXOS=false
+    family=$(detect_distro_family)
+    test -n "$family"
+    check_fuse_status() { FUSE_INSTALLED=false; }
+    out_fuse=$(check_and_warn_fuse)
+    unset -f check_fuse_status
+    DISTRO_ID="ubuntu"
+    DISTRO_NAME="Ubuntu 22.04"
+    DISTRO_LIKE="debian"
+    test "$(detect_distro_family)" = "debian"
+)
+(
+    source "$REPO_DIR/install_stable.sh"
+    trap 'cleanup; rm -rf "$TEST_HOME"' EXIT INT TERM
+    unset DISTRO_ID DISTRO_NAME DISTRO_LIKE || true
+    FUSE_INSTALLED=false
+    IS_NIXOS=false
+    family=$(detect_distro_family)
+    test -n "$family"
+    check_fuse_status() { FUSE_INSTALLED=false; }
+    out_fuse=$(check_and_warn_fuse)
+    unset -f check_fuse_status
+    DISTRO_ID="fedora"
+    DISTRO_NAME="Fedora"
+    DISTRO_LIKE=""
+    test "$(detect_distro_family)" = "fedora"
+)
+
 echo "desktop shortcut symlink-loop & robust installer regression: PASS"
 
