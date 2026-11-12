@@ -1,10 +1,12 @@
+import logging
 import os
 import sys
-import logging
-import time
 import threading
+import time
+import uuid
+
+from PyQt6.QtCore import Q_ARG, QMetaObject, QObject, Qt, QTimer, pyqtSlot
 from ui.dialogs.themed_message_box import ThemedMessageBox
-from PyQt6.QtCore import Qt, QMetaObject, Q_ARG, QTimer, QObject, pyqtSlot
 
 from core import steam_helpers
 
@@ -20,67 +22,148 @@ class JobQueueManager(QObject):
         self.steam_restart_prompt_pending = False
         self.is_showing_completion_dialog = False
 
-    def add_workshop_job(self, wids, api_key, max_downloads, cellid, steam_integration, dest_path):
-        """Add a Workshop job to the queue with descriptive name resolution"""
+    def add_workshop_job(
+        self,
+        wids,
+        api_key,
+        max_downloads,
+        cellid,
+        steam_integration,
+        dest_path,
+    ):
+        """Add a Workshop job to the queue and asynchronously resolve its descriptive title."""
         display_name = f"Workshop Mod ({len(wids)} items)"
-        parent_game_name = ""
+        job_id = uuid.uuid4().hex
 
-        try:
-            if wids:
-                import requests
-                wid_first = wids[0]
-                url = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
-                r = requests.post(url, data={"itemcount": 1, "publishedfileids[0]": wid_first}, timeout=4)
-                if r.status_code == 200:
-                    det = r.json().get("response", {}).get("publishedfiledetails", [{}])[0]
-                    title = det.get("title")
-                    consumer_appid = str(det.get("consumer_app_id", ""))
-                    if self.main_window and getattr(self.main_window, "game_manager", None):
-                        game = self.main_window.game_manager.get_game(consumer_appid)
-                        if game:
-                            parent_game_name = game.get("game_name", "")
-
-                    if title:
-                        if len(wids) > 1:
-                            display_name = f"Workshop: {title} & {len(wids) - 1} more"
-                        else:
-                            display_name = f"Workshop: {title}"
-                        if parent_game_name:
-                            display_name += f" ({parent_game_name})"
-        except Exception as e:
-            logger.debug(f"Could not resolve workshop title for queue display: {e}")
-
+        workshop_data = {
+            "job_id": job_id,
+            "wids": wids,
+            "api_key": api_key,
+            "max_downloads": max_downloads,
+            "cellid": cellid,
+            "steam_integration": steam_integration,
+            "dest_path": dest_path,
+            "display_name": display_name,
+        }
         job = {
+            "id": job_id,
             "type": "workshop",
             "metadata": {"game_name": display_name},
-            "workshop_data": {
-                "wids": wids,
-                "api_key": api_key,
-                "max_downloads": max_downloads,
-                "cellid": cellid,
-                "steam_integration": steam_integration,
-                "dest_path": dest_path,
-                "display_name": display_name,
-            }
+            "workshop_data": workshop_data,
         }
         self.job_queue.append(job)
-        logger.info(f"Added new Workshop job '{display_name}' to queue with {len(wids)} items.")
+        logger.info(
+            f"Added new Workshop job '{display_name}' to queue with {len(wids)} items."
+        )
 
         self._update_ui_state()
 
         if not self.main_window.task_manager.is_processing:
             logger.info("Not processing, starting new Workshop job from queue.")
-            if hasattr(self.main_window, "log_output") and self.main_window.log_output:
+            if (
+                hasattr(self.main_window, "log_output")
+                and self.main_window.log_output
+            ):
                 self.main_window.log_output.clear()
             self._start_next_job()
         else:
             logger.info("App is busy, Workshop job added to queue.")
 
+        if wids:
+            threading.Thread(
+                target=self._resolve_workshop_title_async,
+                args=(job_id, list(wids)),
+                daemon=True,
+            ).start()
+
+    def _resolve_workshop_title_async(
+        self, job_id: str, wids: list
+    ) -> None:
+        """Fetch Workshop item details in a background thread without blocking the GUI."""
+        try:
+            import requests
+
+            wid_first = wids[0]
+            url = "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
+            r = requests.post(
+                url,
+                data={"itemcount": 1, "publishedfileids[0]": wid_first},
+                timeout=4,
+            )
+            if r.status_code == 200:
+                det = (
+                    r.json()
+                    .get("response", {})
+                    .get("publishedfiledetails", [{}])[0]
+                )
+                title = det.get("title")
+                consumer_appid = str(det.get("consumer_app_id", ""))
+                if title:
+                    QMetaObject.invokeMethod(
+                        self,
+                        "_on_workshop_title_resolved",
+                        Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(str, job_id),
+                        Q_ARG(str, str(title)),
+                        Q_ARG(str, consumer_appid),
+                        Q_ARG(int, len(wids)),
+                    )
+        except Exception as e:
+            logger.debug(
+                f"Could not resolve workshop title for queue display: {e}"
+            )
+
+    @pyqtSlot(str, str, str, int)
+    def _on_workshop_title_resolved(
+        self, job_id: str, title: str, consumer_appid: str, total_wids: int
+    ) -> None:
+        """Update queued or active Workshop job display name on the main thread."""
+        parent_game_name = ""
+        if self.main_window and getattr(self.main_window, "game_manager", None):
+            game = self.main_window.game_manager.get_game(consumer_appid)
+            if game:
+                parent_game_name = game.get("game_name", "")
+
+        if total_wids > 1:
+            display_name = f"Workshop: {title} & {total_wids - 1} more"
+        else:
+            display_name = f"Workshop: {title}"
+        if parent_game_name:
+            display_name += f" ({parent_game_name})"
+
+        # Update if still waiting in the queue
+        updated_in_queue = False
+        for job in self.job_queue:
+            if job.get("id") == job_id:
+                job["metadata"]["game_name"] = display_name
+                job["workshop_data"]["display_name"] = display_name
+                updated_in_queue = True
+                break
+
+        if updated_in_queue:
+            self._update_queue_display()
+
+        # Update if already popped and actively running in TaskManager
+        tm = getattr(self.main_window, "task_manager", None)
+        if tm and tm.is_processing and tm.workshop_task is not None:
+            if isinstance(tm.game_data, dict) and tm.game_data.get("appid") == "Workshop":
+                tm.current_job = display_name
+                if isinstance(tm.current_job_metadata, dict):
+                    tm.current_job_metadata["game_name"] = display_name
+                tm.game_data["game_name"] = display_name
+                st = getattr(self.main_window, "simplified_terminal", None)
+                if st:
+                    if hasattr(st, "dl_text_2_0") and st.dl_text_2_0:
+                        st.dl_text_2_0.setText(f"Downloading {display_name}")
+                    if hasattr(st, "active_game_card") and st.active_game_card:
+                        if hasattr(st.active_game_card, "title_label"):
+                            st.active_game_card.title_label.setText(display_name)
+
     def add_job(self, file_path, metadata=None):
         """Add a job to the queue (Thread-Safe)"""
         if threading.current_thread() is not threading.main_thread():
-            # Marshal to main thread, passing metadata as well
             import json as _json
+
             try:
                 meta_str = _json.dumps(metadata or {})
             except Exception:
@@ -100,6 +183,7 @@ class JobQueueManager(QObject):
     def _add_job_on_main_thread(self, file_path: str, meta_str: str) -> None:
         """Slot that runs on the main thread to safely add a job."""
         import json as _json
+
         try:
             metadata = _json.loads(meta_str)
         except Exception:
@@ -109,7 +193,9 @@ class JobQueueManager(QObject):
     def _do_add_job(self, file_path: str, metadata: dict) -> None:
         """Internal: actually add the job on the main thread."""
         if not os.path.exists(file_path):
-            logger.error(f"Failed to add job: file {file_path} does not exist.")
+            logger.error(
+                f"Failed to add job: file {file_path} does not exist."
+            )
             ThemedMessageBox.critical(
                 self.main_window,
                 "Error",
@@ -125,7 +211,10 @@ class JobQueueManager(QObject):
 
         if not self.main_window.task_manager.is_processing:
             logger.info("Not processing, starting new job from queue.")
-            if hasattr(self.main_window, "log_output") and self.main_window.log_output:
+            if (
+                hasattr(self.main_window, "log_output")
+                and self.main_window.log_output
+            ):
                 self.main_window.log_output.clear()
             self._start_next_job()
         else:
@@ -138,7 +227,9 @@ class JobQueueManager(QObject):
             item = self.job_queue.pop(current_row)
             self.job_queue.insert(current_row - 1, item)
             self._update_queue_display()
-            self.main_window.ui_state.queue_list_widget.setCurrentRow(current_row - 1)
+            self.main_window.ui_state.queue_list_widget.setCurrentRow(
+                current_row - 1
+            )
 
     def move_item_down(self):
         """Move selected queue item down"""
@@ -147,7 +238,9 @@ class JobQueueManager(QObject):
             item = self.job_queue.pop(current_row)
             self.job_queue.insert(current_row + 1, item)
             self._update_queue_display()
-            self.main_window.ui_state.queue_list_widget.setCurrentRow(current_row + 1)
+            self.main_window.ui_state.queue_list_widget.setCurrentRow(
+                current_row + 1
+            )
 
     def remove_item(self):
         """Remove selected queue item"""
@@ -158,13 +251,21 @@ class JobQueueManager(QObject):
 
         try:
             removed_job = self.job_queue.pop(current_row)
+            job_label = removed_job.get("path") or removed_job.get(
+                "workshop_data", {}
+            ).get("display_name", "Workshop Job")
             logger.info(
-                f"Removed job from queue: {os.path.basename(removed_job['path'])}"
+                f"Removed job from queue: {os.path.basename(str(job_label))}"
             )
             self._update_queue_display()
 
-            if current_row < self.main_window.ui_state.queue_list_widget.count():
-                self.main_window.ui_state.queue_list_widget.setCurrentRow(current_row)
+            if (
+                current_row
+                < self.main_window.ui_state.queue_list_widget.count()
+            ):
+                self.main_window.ui_state.queue_list_widget.setCurrentRow(
+                    current_row
+                )
             elif self.main_window.ui_state.queue_list_widget.count() > 0:
                 self.main_window.ui_state.queue_list_widget.setCurrentRow(
                     current_row - 1
@@ -186,11 +287,15 @@ class JobQueueManager(QObject):
 
         if next_job.get("type") == "workshop":
             workshop_data = next_job["workshop_data"]
-            self.main_window.task_manager.start_workshop_download(workshop_data)
+            self.main_window.task_manager.start_workshop_download(
+                workshop_data
+            )
         else:
             file_path = next_job["path"]
             metadata = next_job.get("metadata", {})
-            self.main_window.task_manager.start_zip_processing(file_path, metadata)
+            self.main_window.task_manager.start_zip_processing(
+                file_path, metadata
+            )
 
     def _handle_queue_completion(self):
         """Handle when queue is empty"""
@@ -211,17 +316,28 @@ class JobQueueManager(QObject):
                 )
 
                 if prompt_steam_restart:
-                    QTimer.singleShot(0, lambda count=self.jobs_completed_count: self._prompt_for_steam_restart(count))
+                    QTimer.singleShot(
+                        0,
+                        lambda count=self.jobs_completed_count: self._prompt_for_steam_restart(
+                            count
+                        ),
+                    )
                 else:
                     logger.info(
                         "Steam restart prompt disabled by settings. Skipping prompt."
                     )
             elif self.jobs_completed_count > 0:
-                logger.info(f"Queue Finished: All {self.jobs_completed_count} job(s) have finished successfully!")
+                logger.info(
+                    f"Queue Finished: All {self.jobs_completed_count} job(s) have finished successfully!"
+                )
 
-            # Trigger consolidated library scan now that all queued jobs have completed
-            if hasattr(self.main_window, "game_manager") and self.main_window.game_manager:
-                logger.info("[JobQueue] Queue completed: Triggering consolidated library scan.")
+            if (
+                hasattr(self.main_window, "game_manager")
+                and self.main_window.game_manager
+            ):
+                logger.info(
+                    "[JobQueue] Queue completed: Triggering consolidated library scan."
+                )
                 self.main_window.game_manager.scan_steam_libraries_async()
 
             self.jobs_completed_count = 0
@@ -236,7 +352,9 @@ class JobQueueManager(QObject):
         has_jobs = len(self.job_queue) > 0
         is_processing = self.main_window.task_manager.is_processing
 
-        self.main_window.ui_state.update_queue_visibility(is_processing, has_jobs)
+        self.main_window.ui_state.update_queue_visibility(
+            is_processing, has_jobs
+        )
         self._update_queue_display()
 
     def _update_queue_display(self):
@@ -253,10 +371,14 @@ class JobQueueManager(QObject):
                 game_name = job.get("metadata", {}).get("game_name")
                 if not game_name:
                     filename = os.path.basename(job["path"])
-                    if filename.startswith("accela_fetch_") and filename.endswith(".zip"):
+                    if filename.startswith(
+                        "accela_fetch_"
+                    ) and filename.endswith(".zip"):
                         appid = filename[13:-4]
                         if self.main_window.game_manager:
-                            game = self.main_window.game_manager.get_game(appid)
+                            game = self.main_window.game_manager.get_game(
+                                appid
+                            )
                             if game:
                                 game_name = game.get("game_name")
                 if not game_name:
@@ -271,10 +393,16 @@ class JobQueueManager(QObject):
             and not self.main_window.task_manager.is_awaiting_zip_task_stop
             and not self.main_window.task_manager.is_awaiting_speed_monitor_stop
             and not self.main_window.task_manager.is_awaiting_download_stop
-            and not getattr(self.main_window.task_manager, "is_awaiting_workshop_stop", False)
+            and not getattr(
+                self.main_window.task_manager,
+                "is_awaiting_workshop_stop",
+                False,
+            )
             and not self.main_window.task_manager.achievement_task_runner
         ):
-            logger.debug("All thread cleanup flags are clear. Safe to start next job.")
+            logger.debug(
+                "All thread cleanup flags are clear. Safe to start next job."
+            )
             self._start_next_job()
         else:
             logger.debug(
@@ -297,7 +425,9 @@ class JobQueueManager(QObject):
 
         prefix = ""
         if completed_count > 0:
-            prefix = f"All {completed_count} job(s) have finished successfully!\n\n"
+            prefix = (
+                f"All {completed_count} job(s) have finished successfully!\n\n"
+            )
 
         prompt_text = f"{prefix}Steam-integrated changes were created. Would you like to {action_word} Steam now to apply them?"
 
@@ -305,14 +435,16 @@ class JobQueueManager(QObject):
             self.main_window,
             Title,
             prompt_text,
-            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes
+            | ThemedMessageBox.StandardButton.No,
             ThemedMessageBox.StandardButton.No,
         )
 
         if reply == ThemedMessageBox.StandardButton.Yes:
             logger.info(f"User agreed to {action_word} Steam.")
-            # Run heavy lifting in background
-            threading.Thread(target=self._perform_steam_restart, daemon=True).start()
+            threading.Thread(
+                target=self._perform_steam_restart, daemon=True
+            ).start()
 
     def _perform_steam_restart(self):
         """Execute Steam restart logic in background thread"""
@@ -331,7 +463,9 @@ class JobQueueManager(QObject):
                         Qt.ConnectionType.QueuedConnection,
                     )
                 elif result == "SUCCESS":
-                    logger.info("Steam started successfully with cached libraries.")
+                    logger.info(
+                        "Steam started successfully with cached libraries."
+                    )
                 else:
                     logger.warning("Failed to start Steam.")
                     self._show_message_safe(
@@ -340,7 +474,6 @@ class JobQueueManager(QObject):
                     )
 
             else:
-                # Windows
                 steam_path = steam_helpers.find_steam_install()
                 if steam_path:
                     logger.info("Closing Steam...")

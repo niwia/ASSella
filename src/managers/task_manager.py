@@ -1,19 +1,26 @@
+import json
 import logging
 import os
 import re
 import shutil
 import sys
-import time
 import tempfile
 import threading
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
-import json
-import urllib.request
-import urllib.error
 
 # QObject and pyqtSlot for robust threading
-from PyQt6.QtCore import QTimer, Qt, QObject, pyqtSlot, pyqtSignal, QFileSystemWatcher
+from PyQt6.QtCore import (
+    QFileSystemWatcher,
+    QObject,
+    Qt,
+    QTimer,
+    pyqtSignal,
+    pyqtSlot,
+)
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
@@ -23,17 +30,14 @@ except ImportError:
     psutil = None
 
 from core import steam_helpers
-
-from utils.steam_manifest import get_game_directory
-from utils.yaml_config_manager import is_slssteam_mode_enabled
-
-from utils.task_runner import TaskRunner
-
 from managers.achievements import AchievementsMixin
 from managers.emulation.chmod import ChmodMixin
 from managers.emulation.goldberg import GoldbergMixin
 from managers.emulation.steamless import SteamlessMixin
 from managers.finalize import PostInstallMixin
+from utils.steam_manifest import get_game_directory
+from utils.task_runner import TaskRunner
+from utils.yaml_config_manager import is_slssteam_mode_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +86,6 @@ class TaskManager(
         self.achievement_task_runner = None
         self.achievement_worker = None
         self.steamless_task = None
-        self.slssteam_download_task = None
-        self.slssteam_download_runner = None
-
 
         # Processing state
         self.is_processing = False
@@ -167,7 +168,9 @@ class TaskManager(
             found_any = True
             oslist = (d_data.get("oslist") or "").lower()
             desc = (d_data.get("desc") or "").lower()
-            is_linux = (oslist == "linux") or ("[linux]" in desc) or ("linux" in desc)
+            is_linux = (
+                (oslist == "linux") or ("[linux]" in desc) or ("linux" in desc)
+            )
             if not is_linux:
                 return False
         # Only return True if we actually verified at least one depot is Linux
@@ -180,26 +183,44 @@ class TaskManager(
         return self._is_selected_depots_linux(selected_depots)
 
     def _init_simplified_stages(self, selected_depots=None):
-        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+        if (
+            self.main_window
+            and hasattr(self.main_window, "simplified_terminal")
+            and self.main_window.simplified_terminal
+        ):
             st = self.main_window.simplified_terminal
             st.reset_stages()
 
             # Check Steamless status
-            auto_run_steamless = self.settings.value("auto_run_steamless_post_install", True, type=bool)
-            steamless_enabled = auto_run_steamless and self.settings.value("use_steamless", False, type=bool)
-            steamless_aio_enabled = auto_run_steamless and self.settings.value("use_steamless_aio", False, type=bool)
-            
-            depots_to_check = selected_depots or (self.game_data.get("selected_depots_list") if self.game_data else None)
-            
+            auto_run_steamless = self.settings.value(
+                "auto_run_steamless_post_install", True, type=bool
+            )
+            steamless_enabled = auto_run_steamless and self.settings.value(
+                "use_steamless", False, type=bool
+            )
+            steamless_aio_enabled = auto_run_steamless and self.settings.value(
+                "use_steamless_aio", False, type=bool
+            )
+
+            depots_to_check = selected_depots or (
+                self.game_data.get("selected_depots_list")
+                if self.game_data
+                else None
+            )
+
             if not (steamless_enabled or steamless_aio_enabled):
                 st.set_stage_status("steamless", "skipped")
-            elif depots_to_check and self._is_selected_depots_linux(depots_to_check):
+            elif depots_to_check and self._is_selected_depots_linux(
+                depots_to_check
+            ):
                 st.set_stage_status("steamless", "skipped_linux")
             else:
                 st.set_stage_status("steamless", "pending")
 
             # Check Achievements status
-            achievements_enabled = self.settings.value("generate_achievements", False, type=bool)
+            achievements_enabled = self.settings.value(
+                "generate_achievements", False, type=bool
+            )
             if not achievements_enabled:
                 st.set_stage_status("achievements", "skipped")
             else:
@@ -216,16 +237,26 @@ class TaskManager(
         # proceed directly to depot selection without flashing the download screen
         preprocessed = (metadata or {}).get("preprocessed_game_data")
         if preprocessed:
-            logger.info(f"Using preprocessed package data for {zip_path}; launching depot selection directly.")
-            QTimer.singleShot(0, lambda data=preprocessed: self._on_zip_processed(data))
+            logger.info(
+                f"Using preprocessed package data for {zip_path}; launching depot selection directly."
+            )
+            QTimer.singleShot(
+                0, lambda data=preprocessed: self._on_zip_processed(data)
+            )
             return
 
         self._init_simplified_stages()
-        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+        if (
+            self.main_window
+            and hasattr(self.main_window, "simplified_terminal")
+            and self.main_window.simplified_terminal
+        ):
             st = self.main_window.simplified_terminal
             if hasattr(st, "dl_text_2_0") and st.dl_text_2_0:
                 st.dl_text_2_0.setText("Extracting Manifest Files")
-            game_name = (metadata or {}).get("game_name") or os.path.basename(zip_path)
+            game_name = (metadata or {}).get("game_name") or os.path.basename(
+                zip_path
+            )
             appid_val = str((metadata or {}).get("appid") or "")
             st.set_stage_status("download", "in_progress")
             st.show_active_job(game_name, appid=appid_val)
@@ -244,13 +275,21 @@ class TaskManager(
         self.is_awaiting_zip_task_stop = True
         self.zip_task_runner.cleanup_complete.connect(self._on_zip_task_stopped)
 
-        worker = self.zip_task_runner.run(self.zip_task.run, zip_path, self.current_job_metadata)
+        worker = self.zip_task_runner.run(
+            self.zip_task.run, zip_path, self.current_job_metadata
+        )
         worker.finished.connect(self._on_zip_processed)
         worker.error.connect(self._handle_task_error)
 
     def _on_zip_processed(self, game_data):
-        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
-            self.main_window.simplified_terminal.set_stage_status("download", "completed")
+        if (
+            self.main_window
+            and hasattr(self.main_window, "simplified_terminal")
+            and self.main_window.simplified_terminal
+        ):
+            self.main_window.simplified_terminal.set_stage_status(
+                "download", "completed"
+            )
 
         self.main_window.progress_bar.setRange(0, 100)
         self.main_window.progress_bar.setValue(100)
@@ -261,10 +300,14 @@ class TaskManager(
             if game_data:
                 if "manifests" in game_data:
                     if not merged.get("_smart_update"):
-                        merged.setdefault("manifests", {}).update(game_data.get("manifests", {}))
+                        merged.setdefault("manifests", {}).update(
+                            game_data.get("manifests", {})
+                        )
                     else:
                         for m_k, m_v in game_data.get("manifests", {}).items():
-                            merged.setdefault("manifests", {}).setdefault(m_k, m_v)
+                            merged.setdefault("manifests", {}).setdefault(
+                                m_k, m_v
+                            )
 
                 # Deep merge for depots: ensure freshly parsed depot keys and info from game_data
                 # are always preserved and never clobbered by keyless metadata (e.g. from Steam .acf)
@@ -275,7 +318,13 @@ class TaskManager(
                             merged_depots[d_id] = dict(d_info)
                         else:
                             merged_item = dict(merged_depots[d_id])
-                            merged_item.update({k: v for k, v in d_info.items() if v is not None})
+                            merged_item.update(
+                                {
+                                    k: v
+                                    for k, v in d_info.items()
+                                    if v is not None
+                                }
+                            )
                             if not merged_item.get("key") and d_info.get("key"):
                                 merged_item["key"] = d_info["key"]
                             merged_depots[d_id] = merged_item
@@ -289,7 +338,12 @@ class TaskManager(
 
                 # If game_data has a freshly parsed buildid and this is not a rollback/pin,
                 # adopt the fresh buildid from the zip package over stale metadata
-                if game_data.get("buildid") and not merged.get("pin_build") and not merged.get("is_rollback") and not merged.get("_is_rollback"):
+                if (
+                    game_data.get("buildid")
+                    and not merged.get("pin_build")
+                    and not merged.get("is_rollback")
+                    and not merged.get("_is_rollback")
+                ):
                     merged["buildid"] = game_data["buildid"]
 
             game_data = merged
@@ -301,13 +355,24 @@ class TaskManager(
                         game_data["manifests"] = {}
                     for d_id, m_id in overrides.items():
                         game_data["manifests"][str(d_id)] = str(m_id)
-                        if "depots" in game_data and str(d_id) in game_data["depots"]:
-                            if isinstance(game_data["depots"][str(d_id)], dict):
-                                game_data["depots"][str(d_id)]["manifest_id"] = str(m_id)
-                    logger.info(f"[TaskManager] Applied manifest overrides: {overrides}")
+                        if (
+                            "depots" in game_data
+                            and str(d_id) in game_data["depots"]
+                        ):
+                            if isinstance(
+                                game_data["depots"][str(d_id)], dict
+                            ):
+                                game_data["depots"][str(d_id)][
+                                    "manifest_id"
+                                ] = str(m_id)
+                    logger.info(
+                        f"[TaskManager] Applied manifest overrides: {overrides}"
+                    )
 
             if merged.get("pin_build"):
-                pinned_bid = merged.get("pinned_build_id") or merged.get("buildid")
+                pinned_bid = merged.get("pinned_build_id") or merged.get(
+                    "buildid"
+                )
                 if pinned_bid:
                     game_data["buildid"] = str(pinned_bid)
                     game_data["_is_rollback"] = True
@@ -315,32 +380,47 @@ class TaskManager(
         self.game_data = game_data
 
         if self.game_data and self.game_data.get("depots"):
-
-            pre_selected = (self.current_job_metadata or {}).get("selected_depots_list")
+            pre_selected = (self.current_job_metadata or {}).get(
+                "selected_depots_list"
+            )
             if pre_selected:
                 self.game_data["selected_depots_list"] = pre_selected
-                pre_dlcs = (self.current_job_metadata or {}).get("selected_dlc_appids")
+                pre_dlcs = (self.current_job_metadata or {}).get(
+                    "selected_dlc_appids"
+                )
                 if pre_dlcs is not None:
                     self.game_data["selected_dlc_appids"] = pre_dlcs
-                library_dest = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path")
+                library_dest = (self.current_job_metadata or {}).get(
+                    "library_path"
+                ) or (self.game_data or {}).get("library_path")
                 # Persist confirmed pre-selection so future updates recall it
                 appid = str((self.game_data or {}).get("appid", ""))
                 depots = (self.game_data or {}).get("depots") or {}
                 if appid and pre_selected:
                     try:
-                        import json
                         self.settings.setValue(
                             f"depot_selection/{appid}",
-                            json.dumps({
-                                "selected": pre_selected,
-                                "all_available": list(depots.keys()),
-                                "descriptions": {d: depots.get(d, {}).get("desc", "") for d in pre_selected}
-                            })
+                            json.dumps(
+                                {
+                                    "selected": pre_selected,
+                                    "all_available": list(depots.keys()),
+                                    "descriptions": {
+                                        d: depots.get(d, {}).get("desc", "")
+                                        for d in pre_selected
+                                    },
+                                }
+                            ),
                         )
-                        logger.info(f"Persisted pre-selected depot selection for AppID {appid}: {pre_selected}")
+                        logger.info(
+                            f"Persisted pre-selected depot selection for AppID {appid}: {pre_selected}"
+                        )
                     except Exception as e:
-                        logger.warning(f"Failed to cache pre-selected depot selection: {e}")
-                self._start_download_with_destination(pre_selected, library_dest)
+                        logger.warning(
+                            f"Failed to cache pre-selected depot selection: {e}"
+                        )
+                self._start_download_with_destination(
+                    pre_selected, library_dest
+                )
             else:
                 self._show_depot_selection_dialog()
         else:
@@ -380,25 +460,31 @@ class TaskManager(
                     saved_selection = [str(d) for d in acf_installed]
 
         from utils.paths import is_valid_download_directory
+
         auto_skip_single_choice = self.settings.value(
             "auto_skip_single_choice", True, type=bool
         )
-        default_dl = self.settings.value("default_download_directory", "", type=str)
-        has_default_dl = bool(default_dl and is_valid_download_directory(default_dl))
-        missing_depots = (self.game_data or {}).get("missing_depots_from_hubcap") or []
-        is_single = (len(depots) == 1)
+        default_dl = self.settings.value(
+            "default_download_directory", "", type=str
+        )
+        has_default_dl = bool(
+            default_dl and is_valid_download_directory(default_dl)
+        )
+        missing_depots = (self.game_data or {}).get(
+            "missing_depots_from_hubcap"
+        ) or []
+        is_single = len(depots) == 1
 
-        enable_at0m = (
-            sys.platform == "linux"
-            and self.settings.value(
-                "enable_at0m",
-                self.settings.value("enable_vapor", True, type=bool),
-                type=bool,
-            )
+        enable_at0m = sys.platform == "linux" and self.settings.value(
+            "enable_at0m",
+            self.settings.value("enable_vapor", True, type=bool),
+            type=bool,
         )
         at0m_action = self.settings.value(
             "at0m_default_download_action",
-            self.settings.value("vapor_default_download_action", "ask", type=str),
+            self.settings.value(
+                "vapor_default_download_action", "ask", type=str
+            ),
             type=str,
         )
         is_vapor_native = enable_at0m and (at0m_action == "native")
@@ -411,15 +497,23 @@ class TaskManager(
             self._start_download_with_destination(selected_depots, "")
             return
 
-        # Show 3-second countdown timer ONLY if single depot AND auto_skip is enabled AND a default download directory is set!
-        # If user chose "Ask Every Time" (has_default_dl is False), always open minimal depot selection directly so they can choose their drive.
-        # DLC-only games must always get the depot selector (never the countdown).
         from utils.dlc_helpers import is_dlc_only_context
-        is_dlc_only = is_dlc_only_context(appid, self.game_data, self.current_job_metadata)
-        show_timer = (is_single and auto_skip_single_choice and has_default_dl and not is_dlc_only)
+
+        is_dlc_only = is_dlc_only_context(
+            appid, self.game_data, self.current_job_metadata
+        )
+        show_timer = (
+            is_single
+            and auto_skip_single_choice
+            and has_default_dl
+            and not is_dlc_only
+        )
 
         if show_timer:
-            from ui.dialogs.single_depot_timer_dialog import SingleDepotTimerDialog
+            from ui.dialogs.single_depot_timer_dialog import (
+                SingleDepotTimerDialog,
+            )
+
             dlg = SingleDepotTimerDialog(
                 self.main_window,
                 "Single Depot Option",
@@ -436,36 +530,55 @@ class TaskManager(
                     try:
                         self.settings.setValue(
                             f"depot_selection/{appid}",
-                            json.dumps({
-                                "selected": selected_depots,
-                                "all_available": list(depots.keys()),
-                                "descriptions": {d: depots.get(d, {}).get("desc", "") for d in selected_depots}
-                            })
+                            json.dumps(
+                                {
+                                    "selected": selected_depots,
+                                    "all_available": list(depots.keys()),
+                                    "descriptions": {
+                                        d: depots.get(d, {}).get("desc", "")
+                                        for d in selected_depots
+                                    },
+                                }
+                            ),
                         )
                     except Exception as e:
-                        logger.warning(f"Failed to cache single-depot selection: {e}")
-                single_dest = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path") or default_dl
-                self._start_download_with_destination(selected_depots, single_dest)
+                        logger.warning(
+                            f"Failed to cache single-depot selection: {e}"
+                        )
+                single_dest = (
+                    (self.current_job_metadata or {}).get("library_path")
+                    or (self.game_data or {}).get("library_path")
+                    or default_dl
+                )
+                self._start_download_with_destination(
+                    selected_depots, single_dest
+                )
                 return
             elif res == SingleDepotTimerDialog.ACTION_MANUAL:
-                # User selected Manual: continue below to open minimal DepotSelectionDialog
                 pass
             else:
                 self.job_finished()
                 return
 
-        pref_lib = (self.current_job_metadata or {}).get("library_path") or (self.game_data or {}).get("library_path")
+        pref_lib = (self.current_job_metadata or {}).get("library_path") or (
+            self.game_data or {}
+        ).get("library_path")
         show_storage = not is_vapor_native
-        # Lock storage to the existing install location when this job targets
-        # an already-installed game (update / verify / DLC). Fresh installs
-        # stay unlocked so the user can pick a drive.
         lock_storage_tm = False
         try:
             gm_tm = getattr(self.main_window, "game_manager", None)
-            get_game_tm = getattr(gm_tm, "get_game", None) if gm_tm is not None else None
-            if callable(get_game_tm) and appid and appid not in ("0", "N/A", "unknown"):
+            get_game_tm = (
+                getattr(gm_tm, "get_game", None) if gm_tm is not None else None
+            )
+            if (
+                callable(get_game_tm)
+                and appid
+                and appid not in ("0", "N/A", "unknown")
+            ):
                 known_tm = get_game_tm(str(appid))
-                lock_storage_tm = bool(isinstance(known_tm, dict) and known_tm.get("library_path"))
+                lock_storage_tm = bool(
+                    isinstance(known_tm, dict) and known_tm.get("library_path")
+                )
         except Exception as e:
             logger.debug(f"[TaskManager] storage lock check failed: {e}")
         self.main_window.ui_state.depot_dialog = DepotSelectionDialog(
@@ -477,7 +590,9 @@ class TaskManager(
             selected_depots=saved_selection,
             is_single_depot=is_single,
             missing_hubcap_depots=missing_depots,
-            missing_depots_info=(self.game_data or {}).get("missing_depots_info"),
+            missing_depots_info=(self.game_data or {}).get(
+                "missing_depots_info"
+            ),
             library_path=pref_lib,
             refetched_depots=(self.game_data or {}).get("refetched_depots"),
             show_storage=show_storage,
@@ -499,7 +614,9 @@ class TaskManager(
             )
             if self.game_data:
                 self.game_data["selected_depots_list"] = selected_depots
-                self.game_data["selected_dlc_appids"] = list(selected_dlc_data.keys())
+                self.game_data["selected_dlc_appids"] = list(
+                    selected_dlc_data.keys()
+                )
                 if selected_files:
                     self.game_data["selected_files_list"] = selected_files
 
@@ -508,8 +625,9 @@ class TaskManager(
                 return
 
             if self.settings.value("demo_mode", False, type=bool):
-                logger.info("[DemoMode] Demo Mode active: reached depot selection successfully. Skipping download and caching.")
-                from ui.dialogs.themed_message_box import ThemedMessageBox
+                logger.info(
+                    "[DemoMode] Demo Mode active: reached depot selection successfully. Skipping download and caching."
+                )
                 ThemedMessageBox.information(
                     self.main_window,
                     "Demo Mode Active",
@@ -524,17 +642,26 @@ class TaskManager(
                 try:
                     self.settings.setValue(
                         f"depot_selection/{appid}",
-                        json.dumps({
-                            "selected": selected_depots,
-                            "all_available": list(depots.keys()),
-                            "descriptions": {d: depots.get(d, {}).get("desc", "") for d in selected_depots}
-                        })
+                        json.dumps(
+                            {
+                                "selected": selected_depots,
+                                "all_available": list(depots.keys()),
+                                "descriptions": {
+                                    d: depots.get(d, {}).get("desc", "")
+                                    for d in selected_depots
+                                },
+                            }
+                        ),
                     )
-                    logger.info(f"Saved depot selection for AppID {appid}: {selected_depots}")
+                    logger.info(
+                        f"Saved depot selection for AppID {appid}: {selected_depots}"
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to cache depot selection: {e}")
 
-            self._start_download_with_destination(selected_depots, selected_storage)
+            self._start_download_with_destination(
+                selected_depots, selected_storage
+            )
         else:
             # User cancelled — do NOT save anything
             self.job_finished()
@@ -549,9 +676,14 @@ class TaskManager(
 
     def _get_destination_path(self):
         from utils.paths import is_valid_download_directory
+
         current_job_metadata = self.current_job_metadata or {}
-        existing_library_path = current_job_metadata.get("library_path") or (self.game_data or {}).get("library_path")
-        if existing_library_path and is_valid_download_directory(existing_library_path):
+        existing_library_path = current_job_metadata.get("library_path") or (
+            self.game_data or {}
+        ).get("library_path")
+        if existing_library_path and is_valid_download_directory(
+            existing_library_path
+        ):
             if is_slssteam_mode_enabled():
                 self._handle_slssteam_mode()
             return existing_library_path
@@ -565,7 +697,9 @@ class TaskManager(
         slssteam_mode = is_slssteam_mode_enabled()
         library_mode = self.settings.value("library_mode", False, type=bool)
         from_web = current_job_metadata.get("from_web_ui", False)
-        is_headless = os.environ.get("QT_QPA_PLATFORM") == "offscreen" or (self.main_window and not self.main_window.isVisible())
+        is_headless = os.environ.get("QT_QPA_PLATFORM") == "offscreen" or (
+            self.main_window and not self.main_window.isVisible()
+        )
 
         if slssteam_mode:
             self._handle_slssteam_mode()
@@ -577,7 +711,9 @@ class TaskManager(
                 libraries = steam_helpers.get_steam_libraries()
                 if libraries:
                     return libraries[0]
-                default_dir = os.path.expanduser("~/.local/share/ACCELA/downloads")
+                default_dir = os.path.expanduser(
+                    "~/.local/share/ACCELA/downloads"
+                )
                 os.makedirs(default_dir, exist_ok=True)
                 return default_dir
             return ThemedFileDialog.getExistingDirectory(
@@ -595,15 +731,21 @@ class TaskManager(
             )
             if auto_skip_single_choice and len(libraries) == 1:
                 return libraries[0]
-            
+
             current_job_metadata = self.current_job_metadata or {}
             from_web = current_job_metadata.get("from_web_ui", False)
-            is_headless = os.environ.get("QT_QPA_PLATFORM") == "offscreen" or (self.main_window and not self.main_window.isVisible())
+            is_headless = os.environ.get("QT_QPA_PLATFORM") == "offscreen" or (
+                self.main_window and not self.main_window.isVisible()
+            )
             if from_web or is_headless:
                 return libraries[0]
 
-            accent_c = self.settings.value("accent_color", "#6c5ce7", type=str)
-            dialog = SteamLibraryDialog(libraries, self.main_window, accent_color=accent_c)
+            accent_c = self.settings.value(
+                "accent_color", "#6c5ce7", type=str
+            )
+            dialog = SteamLibraryDialog(
+                libraries, self.main_window, accent_color=accent_c
+            )
             if dialog.exec():
                 return dialog.get_selected_path()
             else:
@@ -611,17 +753,20 @@ class TaskManager(
         else:
             current_job_metadata = self.current_job_metadata or {}
             from_web = current_job_metadata.get("from_web_ui", False)
-            is_headless = os.environ.get("QT_QPA_PLATFORM") == "offscreen" or (self.main_window and not self.main_window.isVisible())
+            is_headless = os.environ.get("QT_QPA_PLATFORM") == "offscreen" or (
+                self.main_window and not self.main_window.isVisible()
+            )
             if from_web or is_headless:
-                default_dir = os.path.expanduser("~/.local/share/ACCELA/downloads")
+                default_dir = os.path.expanduser(
+                    "~/.local/share/ACCELA/downloads"
+                )
                 os.makedirs(default_dir, exist_ok=True)
                 return default_dir
-            from ui.dialogs.themed_message_box import ThemedMessageBox
             ThemedMessageBox.warning(
                 self.main_window,
                 "No Steam Library Found",
                 "Steam has not initialized any library folders yet.\n\n"
-                "Please install at least one free game using the Steam client to generate your library folders, then restart ASSella to continue."
+                "Please install at least one free game using the Steam client to generate your library folders, then restart ASSella to continue.",
             )
             return None
 
@@ -634,7 +779,9 @@ class TaskManager(
             return
 
         if sys.platform == "win32" and game_data.get("dlcs"):
-            dlc_dialog = DlcSelectionDialog(game_data["dlcs"], self.main_window)
+            dlc_dialog = DlcSelectionDialog(
+                game_data["dlcs"], self.main_window
+            )
             if dlc_dialog.exec():
                 game_data["selected_dlcs"] = dlc_dialog.get_selected_dlcs()
 
@@ -657,7 +804,6 @@ class TaskManager(
         self._pre_existing_install = False
         if dest_path and self.game_data:
             try:
-                # Check for appmanifest file
                 steamapps_dir = os.path.join(dest_path, "steamapps")
                 acf_path = os.path.join(
                     steamapps_dir,
@@ -666,14 +812,15 @@ class TaskManager(
                 if os.path.exists(acf_path):
                     self._pre_existing_install = True
                 else:
-                    # Check if game folder exists and is non-empty
                     game_dir = get_game_directory(dest_path, self.game_data)
                     if os.path.isdir(game_dir):
                         with os.scandir(game_dir) as entries:
                             if any(entries):
                                 self._pre_existing_install = True
             except Exception as e:
-                logger.error(f"Error checking pre-existing installation status: {e}")
+                logger.error(
+                    f"Error checking pre-existing installation status: {e}"
+                )
 
         self._last_steamless_success = None
         self._last_slscheevo_success = None
@@ -698,10 +845,17 @@ class TaskManager(
         self._last_total_size = 0
         self._last_uncompressed_size = 0
         self._last_download_avg_speed = 0.0
-        # Determine labels based on job type
-        job_type = self.game_data.get("job_type", "download") if self.game_data else "download"
+        job_type = (
+            self.game_data.get("job_type", "download")
+            if self.game_data
+            else "download"
+        )
         action_verb = "Validating" if job_type == "verify" else "Downloading"
-        action_noun = "Validating Game Files" if job_type == "verify" else "Downloading Game Files"
+        action_noun = (
+            "Validating Game Files"
+            if job_type == "verify"
+            else "Downloading Game Files"
+        )
 
         self._last_ddm_status = "in_progress"
         self._last_ddm_status_text = f"{action_verb}..."
@@ -717,7 +871,11 @@ class TaskManager(
         )
 
         self._init_simplified_stages(selected_depots)
-        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+        if (
+            self.main_window
+            and hasattr(self.main_window, "simplified_terminal")
+            and self.main_window.simplified_terminal
+        ):
             st = self.main_window.simplified_terminal
             if hasattr(st, "dl_text_2_0") and st.dl_text_2_0:
                 st.dl_text_2_0.setText(action_noun)
@@ -731,33 +889,46 @@ class TaskManager(
         self.main_window.speed_label.setVisible(True)
 
         # ── Choose download backend ──────────────────────────────────────────
-        enable_at0m = (
-            sys.platform == "linux"
-            and self.settings.value(
-                "enable_at0m",
-                self.settings.value("enable_vapor", True, type=bool),
-                type=bool,
-            )
+        enable_at0m = sys.platform == "linux" and self.settings.value(
+            "enable_at0m",
+            self.settings.value("enable_vapor", True, type=bool),
+            type=bool,
         )
         at0m_action = self.settings.value(
             "at0m_default_download_action",
-            self.settings.value("vapor_default_download_action", "ask", type=str),
+            self.settings.value(
+                "vapor_default_download_action", "ask", type=str
+            ),
             type=str,
         )
-        legacy_native = self.settings.value("use_native_steam_download", True, type=bool)
+        legacy_native = self.settings.value(
+            "use_native_steam_download", True, type=bool
+        )
 
-        explicit_backend = self.game_data.get("download_backend") if self.game_data else None
-        appid_str = str(self.game_data.get("appid", "")).strip() if self.game_data else ""
-        game_title = self.game_data.get("game_name", f"App {appid_str}") if self.game_data else f"App {appid_str}"
+        explicit_backend = (
+            self.game_data.get("download_backend") if self.game_data else None
+        )
+        appid_str = (
+            str(self.game_data.get("appid", "")).strip()
+            if self.game_data
+            else ""
+        )
+        game_title = (
+            self.game_data.get("game_name", f"App {appid_str}")
+            if self.game_data
+            else f"App {appid_str}"
+        )
         accent_c = getattr(self.main_window, "accent_color", "#6c5ce7")
 
         use_native_steam = False
         action_mode = "ask"
 
-        # Check explicit requested backend or rollback / downgrade flags first
         is_rollback_requested = bool(
             (self.game_data and self.game_data.get("_is_rollback"))
-            or (self.current_job_metadata and self.current_job_metadata.get("is_rollback"))
+            or (
+                self.current_job_metadata
+                and self.current_job_metadata.get("is_rollback")
+            )
         )
 
         if explicit_backend == "assella" or is_rollback_requested:
@@ -767,11 +938,12 @@ class TaskManager(
             )
             use_native_steam = False
         elif explicit_backend == "native":
-            logger.info(f"[TaskManager] Job explicitly requested Native Steam for '{game_title}'")
+            logger.info(
+                f"[TaskManager] Job explicitly requested Native Steam for '{game_title}'"
+            )
             use_native_steam = True
             action_mode = "handoff"
         elif getattr(self, "_pre_existing_install", False):
-            # Check how this existing installation was managed
             is_plugin_game = False
             if self.game_data:
                 if (
@@ -784,6 +956,7 @@ class TaskManager(
                 elif appid_str and appid_str not in ("0", "N/A", "unknown"):
                     try:
                         from utils.plugin_games import get_plugin_game
+
                         if get_plugin_game(appid_str):
                             is_plugin_game = True
                     except Exception:
@@ -791,16 +964,22 @@ class TaskManager(
 
             is_accela_game = False
             if self.game_data:
-                if (
-                    self.game_data.get("source") == "ACCELA"
-                    or self.game_data.get("accela_marker_path")
-                ):
+                if self.game_data.get(
+                    "source"
+                ) == "ACCELA" or self.game_data.get("accela_marker_path"):
                     is_accela_game = True
                 else:
                     try:
                         game_dir = get_game_directory(dest_path, self.game_data)
                         if game_dir and os.path.isdir(game_dir):
-                            for m in (".assella", ".ASSELLA", ".accela", ".depotdownloader", ".ACCELA", ".DepotDownloader"):
+                            for m in (
+                                ".assella",
+                                ".ASSELLA",
+                                ".accela",
+                                ".depotdownloader",
+                                ".ACCELA",
+                                ".DepotDownloader",
+                            ):
                                 if os.path.exists(os.path.join(game_dir, m)):
                                     is_accela_game = True
                                     break
@@ -828,11 +1007,12 @@ class TaskManager(
                 use_native_steam = False
             else:  # "ask"
                 from ui.dialogs.download_backend_dialog import (
-                    DownloadBackendDialog,
-                    BACKEND_CANCEL,
                     BACKEND_ASSELLA,
+                    BACKEND_CANCEL,
                     BACKEND_NATIVE_STEAM,
+                    DownloadBackendDialog,
                 )
+
                 dlg = DownloadBackendDialog(
                     parent=self.main_window,
                     app_id=appid_str,
@@ -842,7 +1022,9 @@ class TaskManager(
                 dlg.exec()
                 choice = dlg.get_choice()
                 if choice == BACKEND_CANCEL:
-                    logger.info("[TaskManager] User cancelled download backend selection")
+                    logger.info(
+                        "[TaskManager] User cancelled download backend selection"
+                    )
                     self.job_finished()
                     return
                 elif choice == BACKEND_ASSELLA:
@@ -851,31 +1033,40 @@ class TaskManager(
                     use_native_steam = True
                     start_mode = self.settings.value(
                         "at0m_start_download_action",
-                        self.settings.value("vapor_start_download_action", "ask", type=str),
+                        self.settings.value(
+                            "vapor_start_download_action", "ask", type=str
+                        ),
                         type=str,
                     )
                     action_mode = start_mode or "ask"
         elif legacy_native:
             use_native_steam = True
-            action_mode = self.settings.value("at0m_start_download_action", self.settings.value("vapor_start_download_action", "ask", type=str), type=str)
+            action_mode = self.settings.value(
+                "at0m_start_download_action",
+                self.settings.value(
+                    "vapor_start_download_action", "ask", type=str
+                ),
+                type=str,
+            )
 
         if use_native_steam:
-            # Check platform compatibility (Linux host vs Windows-only depots in package)
             try:
                 from core.native_steam.compat_tool import (
                     check_native_steam_platform_mismatch,
-                    force_proton_for_app,
                 )
                 from ui.dialogs.platform_mismatch_dialog import (
-                    PlatformMismatchDialog,
-                    ACTION_PROCEED,
                     ACTION_ASSELLA_DOWNLOAD,
                     ACTION_CANCEL,
+                    ACTION_PROCEED,
+                    PlatformMismatchDialog,
                 )
-                is_mismatch, mismatch_details = check_native_steam_platform_mismatch(
-                    appid=appid_str,
-                    available_depots=selected_depots,
-                    game_name=game_title,
+
+                is_mismatch, mismatch_details = (
+                    check_native_steam_platform_mismatch(
+                        appid=appid_str,
+                        available_depots=selected_depots,
+                        game_name=game_title,
+                    )
                 )
                 if is_mismatch:
                     m_dlg = PlatformMismatchDialog(
@@ -886,29 +1077,32 @@ class TaskManager(
                     m_dlg.exec()
                     m_act = m_dlg.get_action()
                     if m_act == ACTION_PROCEED:
-                        # Proceed normally without forcing Proton or restarting Steam
                         pass
                     elif m_act == ACTION_ASSELLA_DOWNLOAD:
                         use_native_steam = False
                     else:  # ACTION_CANCEL
-                        logger.info("[TaskManager] User cancelled download on platform mismatch")
+                        logger.info(
+                            "[TaskManager] User cancelled download on platform mismatch"
+                        )
                         self.job_finished()
                         return
             except Exception as e:
-                logger.debug(f"[TaskManager] Error during platform mismatch check: {e}")
+                logger.debug(
+                    f"[TaskManager] Error during platform mismatch check: {e}"
+                )
 
         if use_native_steam:
-            # Enforce that dest_path is strictly a valid Steam library
             steam_libs = steam_helpers.get_steam_libraries()
             if not steam_libs:
-                from ui.dialogs.themed_message_box import ThemedMessageBox
                 ThemedMessageBox.warning(
                     self.main_window,
                     "No Steam Library Found",
                     "Steam has not initialized any library folders yet.\n\n"
-                    "Please install at least one free game using the Steam client to generate your library folders, then restart ASSella to continue."
+                    "Please install at least one free game using the Steam client to generate your library folders, then restart ASSella to continue.",
                 )
-                logger.warning("[TaskManager] Aborting native Steam download: No Steam libraries found.")
+                logger.warning(
+                    "[TaskManager] Aborting native Steam download: No Steam libraries found."
+                )
                 self.job_finished()
                 return
 
@@ -916,7 +1110,9 @@ class TaskManager(
 
             norm_libs = {os.path.normpath(p): p for p in steam_libs}
             remembered = remembered_library(steam_libs, self.settings)
-            if remembered and (not dest_path or os.path.normpath(dest_path) not in norm_libs):
+            if remembered and (
+                not dest_path or os.path.normpath(dest_path) not in norm_libs
+            ):
                 dest_path = remembered
                 self.current_dest_path = dest_path
 
@@ -926,21 +1122,27 @@ class TaskManager(
                     self.current_dest_path = dest_path
                 else:
                     from ui.dialogs.steamlibrary import SteamLibraryDialog
-                    lib_dlg = SteamLibraryDialog(steam_libs, self.main_window, accent_color=accent_c)
+
+                    lib_dlg = SteamLibraryDialog(
+                        steam_libs, self.main_window, accent_color=accent_c
+                    )
                     if lib_dlg.exec() and lib_dlg.get_selected_path():
                         dest_path = lib_dlg.get_selected_path()
                         self.current_dest_path = dest_path
                     else:
-                        logger.info("[TaskManager] User cancelled Steam library selection")
+                        logger.info(
+                            "[TaskManager] User cancelled Steam library selection"
+                        )
                         self.job_finished()
                         return
 
             if action_mode == "ask":
                 from ui.dialogs.native_steam_action_dialog import (
-                    NativeSteamActionDialog,
-                    ACTION_TRACK,
                     ACTION_CANCEL,
+                    ACTION_TRACK,
+                    NativeSteamActionDialog,
                 )
+
                 dlg = NativeSteamActionDialog(
                     parent=self.main_window,
                     app_id=appid_str,
@@ -950,22 +1152,41 @@ class TaskManager(
                 dlg.exec()
                 action = dlg.get_action()
                 if action == ACTION_CANCEL:
-                    logger.info("[TaskManager] User cancelled native Steam download action dialog")
+                    logger.info(
+                        "[TaskManager] User cancelled native Steam download action dialog"
+                    )
                     self.job_finished()
                     return
                 if dlg.should_remember():
-                    saved_val = "immediate" if action == ACTION_TRACK else "add_only"
-                    self.settings.setValue("at0m_start_download_action", saved_val)
-                    self.settings.setValue("vapor_start_download_action", saved_val)
-                    logger.info(f"[TaskManager] Remembered default native Steam action: {saved_val}")
+                    saved_val = (
+                        "immediate" if action == ACTION_TRACK else "add_only"
+                    )
+                    self.settings.setValue(
+                        "at0m_start_download_action", saved_val
+                    )
+                    self.settings.setValue(
+                        "vapor_start_download_action", saved_val
+                    )
+                    logger.info(
+                        f"[TaskManager] Remembered default native Steam action: {saved_val}"
+                    )
                 chosen_action = "track" if action == ACTION_TRACK else "handoff"
             else:
-                chosen_action = "track" if action_mode == "immediate" else "handoff"
+                chosen_action = (
+                    "track" if action_mode == "immediate" else "handoff"
+                )
 
             if chosen_action == "handoff":
-                from core.native_steam.native_steam_handoff import perform_steam_handoff
+                from core.native_steam.native_steam_handoff import (
+                    perform_steam_handoff,
+                )
+
                 logger.info("[TaskManager] Initiating instant Steam handoff")
-                game_name = self.game_data.get("game_name", "Game") if self.game_data else "Game"
+                game_name = (
+                    self.game_data.get("game_name", "Game")
+                    if self.game_data
+                    else "Game"
+                )
 
                 def _update_handoff_progress(msg: str):
                     logger.info(f"[Handoff] {msg}")
@@ -974,7 +1195,9 @@ class TaskManager(
                 _update_handoff_progress(f"Handing off {game_name} to Steam...")
                 auto_inst = self.settings.value(
                     "at0m_start_download_immediately",
-                    self.settings.value("vapor_start_download_immediately", True, type=bool),
+                    self.settings.value(
+                        "vapor_start_download_immediately", True, type=bool
+                    ),
                     type=bool,
                 )
                 ok, msg = perform_steam_handoff(
@@ -988,16 +1211,26 @@ class TaskManager(
                 self._is_handoff_job = True
                 if ok:
                     logger.info(f"[TaskManager] Handoff complete: {msg}")
-                    if auto_inst and self.game_data and self.game_data.get("appid"):
-                        self._start_vapor_install_watcher(str(self.game_data.get("appid")))
+                    if (
+                        auto_inst
+                        and self.game_data
+                        and self.game_data.get("appid")
+                    ):
+                        self._start_vapor_install_watcher(
+                            str(self.game_data.get("appid"))
+                        )
                 else:
                     logger.error(f"[TaskManager] Handoff failed: {msg}")
 
                 self.job_finished()
                 return
             else:
-                logger.info("[TaskManager] Using monitored native Steam client download backend")
-                from core.tasks.native_steam_download_task import NativeSteamDownloadTask
+                logger.info(
+                    "[TaskManager] Using monitored native Steam client download backend"
+                )
+                from core.tasks.native_steam_download_task import (
+                    NativeSteamDownloadTask,
+                )
 
                 self.download_task = NativeSteamDownloadTask()
         else:
@@ -1007,24 +1240,24 @@ class TaskManager(
         self.download_task.progress.connect(logger.info)
         self.download_task.progress_percentage.connect(
             self.main_window.progress_bar.setValue,
-            Qt.ConnectionType.QueuedConnection
+            Qt.ConnectionType.QueuedConnection,
         )
         self.download_task.speed_update.connect(
             self.main_window.speed_label.setText,
-            Qt.ConnectionType.QueuedConnection
+            Qt.ConnectionType.QueuedConnection,
         )
         self.download_task.completed.connect(
-            self._on_download_complete,
-            Qt.ConnectionType.QueuedConnection
+            self._on_download_complete, Qt.ConnectionType.QueuedConnection
         )
         self.download_task.error.connect(
-            self._handle_task_error,
-            Qt.ConnectionType.QueuedConnection
+            self._handle_task_error, Qt.ConnectionType.QueuedConnection
         )
 
         self.download_runner = TaskRunner()
         self.is_awaiting_download_stop = True
-        self.download_runner.cleanup_complete.connect(self._on_download_task_stopped)
+        self.download_runner.cleanup_complete.connect(
+            self._on_download_task_stopped
+        )
         worker = self.download_runner.run(
             self.download_task.run, self.game_data, selected_depots, dest_path
         )
@@ -1058,7 +1291,11 @@ class TaskManager(
         pass
 
     def _stop_speed_monitor(self):
-        if self.main_window and hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
+        if (
+            self.main_window
+            and hasattr(self.main_window, "speed_label")
+            and self.main_window.speed_label
+        ):
             self.main_window.speed_label.setText("")
         self.is_awaiting_speed_monitor_stop = False
 
@@ -1096,7 +1333,11 @@ class TaskManager(
         self._job_steps_completed.clear()
 
         self._init_simplified_stages()
-        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+        if (
+            self.main_window
+            and hasattr(self.main_window, "simplified_terminal")
+            and self.main_window.simplified_terminal
+        ):
             st = self.main_window.simplified_terminal
             if hasattr(st, "dl_text_2_0") and st.dl_text_2_0:
                 st.dl_text_2_0.setText(f"Downloading {display_name}")
@@ -1113,20 +1354,21 @@ class TaskManager(
         self.workshop_task.progress.connect(logger.info)
         self.workshop_task.progress_percentage.connect(
             self.main_window.progress_bar.setValue,
-            Qt.ConnectionType.QueuedConnection
+            Qt.ConnectionType.QueuedConnection,
         )
         self.workshop_task.completed.connect(
             self._on_workshop_download_complete,
-            Qt.ConnectionType.QueuedConnection
+            Qt.ConnectionType.QueuedConnection,
         )
         self.workshop_task.error.connect(
-            self._handle_task_error,
-            Qt.ConnectionType.QueuedConnection
+            self._handle_task_error, Qt.ConnectionType.QueuedConnection
         )
 
         self.workshop_runner = TaskRunner()
         self.is_awaiting_workshop_stop = True
-        self.workshop_runner.cleanup_complete.connect(self._on_workshop_task_stopped)
+        self.workshop_runner.cleanup_complete.connect(
+            self._on_workshop_task_stopped
+        )
         worker = self.workshop_runner.run(
             self.workshop_task.run, workshop_data
         )
@@ -1144,10 +1386,15 @@ class TaskManager(
         """
         try:
             from core.steam_helpers import get_steam_env
+
             env = get_steam_env()
-            steamapps_dirs = [Path(p) for p in env.steamapps_paths if os.path.exists(p)]
+            steamapps_dirs = [
+                Path(p) for p in env.steamapps_paths if os.path.exists(p)
+            ]
             if not steamapps_dirs:
-                logger.debug(f"[VaporWatcher] No steamapps directories found for AppID {appid}")
+                logger.debug(
+                    f"[VaporWatcher] No steamapps directories found for AppID {appid}"
+                )
                 return
 
             watcher = QFileSystemWatcher(self)
@@ -1160,12 +1407,10 @@ class TaskManager(
 
             watcher.addPaths(paths_to_watch)
 
-            # 30-minute safety timeout
             timeout_timer = QTimer(self)
             timeout_timer.setSingleShot(True)
             timeout_timer.setInterval(1800 * 1000)
 
-            # Periodic 15-second heartbeat for non-inotify mounts (e.g. exFAT/NFS)
             poll_timer = QTimer(self)
             poll_timer.setInterval(15 * 1000)
 
@@ -1178,7 +1423,9 @@ class TaskManager(
                     watcher.directoryChanged.disconnect()
                     watcher.fileChanged.disconnect()
                 except Exception as ex:
-                    logger.debug(f"[VaporWatcher] Cleanup error for {appid}: {ex}")
+                    logger.debug(
+                        f"[VaporWatcher] Cleanup error for {appid}: {ex}"
+                    )
                 watcher.deleteLater()
                 timeout_timer.deleteLater()
                 poll_timer.deleteLater()
@@ -1189,23 +1436,33 @@ class TaskManager(
                     if not acf_path.exists():
                         continue
 
-                    # If file newly appeared, make sure it is directly watched too
                     str_acf = str(acf_path)
                     if str_acf not in watcher.files():
                         try:
                             watcher.addPath(str_acf)
                         except Exception as add_err:
-                            logger.debug(f"[VaporWatcher] Could not add path {str_acf}: {add_err}")
+                            logger.debug(
+                                f"[VaporWatcher] Could not add path {str_acf}: {add_err}"
+                            )
 
                     try:
-                        text = acf_path.read_text(encoding="utf-8", errors="ignore")
+                        text = acf_path.read_text(
+                            encoding="utf-8", errors="ignore"
+                        )
                         m = re.search(r'"StateFlags"\s+"(\d+)"', text)
                         if m and m.group(1) == "4":
-                            # Validate against 0-byte ghost installs
                             m_size = re.search(r'"SizeOnDisk"\s+"(\d+)"', text)
                             size_on_disk = int(m_size.group(1)) if m_size else 0
-                            m_depots = re.search(r'"InstalledDepots"\s*\{([^}]*)\}', text, re.DOTALL)
-                            depot_matches = re.findall(r'"(\d+)"\s*\{', m_depots.group(1)) if m_depots else []
+                            m_depots = re.search(
+                                r'"InstalledDepots"\s*\{([^}]*)\}',
+                                text,
+                                re.DOTALL,
+                            )
+                            depot_matches = (
+                                re.findall(r'"(\d+)"\s*\{', m_depots.group(1))
+                                if m_depots
+                                else []
+                            )
 
                             if size_on_disk == 0 or not depot_matches:
                                 logger.warning(
@@ -1221,13 +1478,20 @@ class TaskManager(
                                 "Marking up_to_date and refreshing library..."
                             )
                             try:
-                                from utils.update_status_cache import get_update_cache
+                                from utils.update_status_cache import (
+                                    get_update_cache,
+                                )
+
                                 cache = get_update_cache()
                                 cache.set_status(appid, "up_to_date")
                                 cache.save_async()
-                                logger.info(f"[VaporWatcher] Set up_to_date for appid={appid} after confirmed Steam download")
+                                logger.info(
+                                    f"[VaporWatcher] Set up_to_date for appid={appid} after confirmed Steam download"
+                                )
                             except Exception as _cache_err:
-                                logger.debug(f"[VaporWatcher] Error updating status cache for {appid}: {_cache_err}")
+                                logger.debug(
+                                    f"[VaporWatcher] Error updating status cache for {appid}: {_cache_err}"
+                                )
 
                             if (
                                 self.main_window
@@ -1239,7 +1503,9 @@ class TaskManager(
                             _cleanup()
                             return
                     except Exception as read_err:
-                        logger.debug(f"[VaporWatcher] Error reading {acf_path}: {read_err}")
+                        logger.debug(
+                            f"[VaporWatcher] Error reading {acf_path}: {read_err}"
+                        )
 
             def _on_timeout():
                 logger.warning(
@@ -1256,17 +1522,26 @@ class TaskManager(
             timeout_timer.start()
             poll_timer.start()
 
-            # Immediate initial check in case Steam already finished before watcher started
             _check_acf()
 
         except Exception as e:
-            logger.debug(f"[VaporWatcher] Error setting up watcher for AppID {appid}: {e}")
+            logger.debug(
+                f"[VaporWatcher] Error setting up watcher for AppID {appid}: {e}"
+            )
 
     @pyqtSlot(str)
     def _on_handoff_status_updated(self, msg: str):
-        if self.main_window and hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
+        if (
+            self.main_window
+            and hasattr(self.main_window, "speed_label")
+            and self.main_window.speed_label
+        ):
             self.main_window.speed_label.setText(msg)
-        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+        if (
+            self.main_window
+            and hasattr(self.main_window, "simplified_terminal")
+            and self.main_window.simplified_terminal
+        ):
             st = self.main_window.simplified_terminal
             if hasattr(st, "active_game_card") and st.active_game_card:
                 st.active_game_card.set_sub_status(msg)
@@ -1291,28 +1566,32 @@ class TaskManager(
         """
         app_id_str = str(app_id).strip()
         name = game_name or f"App {app_id_str}"
-        logger.info(f"[TaskManager] start_native_steam_handoff: {name} ({app_id_str}), auto_install={auto_install}")
+        logger.info(
+            f"[TaskManager] start_native_steam_handoff: {name} ({app_id_str}), auto_install={auto_install}"
+        )
 
         # Direct-call safeguard: platform compatibility check
         try:
             from core.native_steam.compat_tool import (
                 check_native_steam_platform_mismatch,
-                force_proton_for_app,
             )
             from ui.dialogs.platform_mismatch_dialog import (
-                PlatformMismatchDialog,
-                ACTION_PROCEED,
                 ACTION_ASSELLA_DOWNLOAD,
                 ACTION_CANCEL,
+                ACTION_PROCEED,
+                PlatformMismatchDialog,
             )
+
             if platform_checked:
                 logger.debug(
                     f"[TaskManager] Platform mismatch already handled for {app_id_str}; skipping duplicate prompt"
                 )
             else:
-                is_mismatch, mismatch_details = check_native_steam_platform_mismatch(
-                    appid=app_id_str,
-                    game_name=name,
+                is_mismatch, mismatch_details = (
+                    check_native_steam_platform_mismatch(
+                        appid=app_id_str,
+                        game_name=name,
+                    )
                 )
                 if is_mismatch:
                     m_dlg = PlatformMismatchDialog(
@@ -1322,29 +1601,33 @@ class TaskManager(
                     m_dlg.exec()
                     m_act = m_dlg.get_action()
                     if m_act == ACTION_PROCEED:
-                        # Proceed normally without forcing Proton or restarting Steam
                         pass
                     elif m_act == ACTION_ASSELLA_DOWNLOAD:
-                        logger.info(f"[TaskManager] User chose ASSella downloader for {app_id_str}")
-                        if self.main_window and hasattr(self.main_window, "open_download_dialog"):
+                        logger.info(
+                            f"[TaskManager] User chose ASSella downloader for {app_id_str}"
+                        )
+                        if self.main_window and hasattr(
+                            self.main_window, "open_download_dialog"
+                        ):
                             self.main_window.open_download_dialog(app_id_str)
                         return
                     else:  # ACTION_CANCEL
-                        logger.info(f"[TaskManager] Handoff cancelled due to platform mismatch: {app_id_str}")
+                        logger.info(
+                            f"[TaskManager] Handoff cancelled due to platform mismatch: {app_id_str}"
+                        )
                         return
         except Exception as e:
-            logger.debug(f"[TaskManager] Error checking mismatch in start_native_steam_handoff: {e}")
+            logger.debug(
+                f"[TaskManager] Error checking mismatch in start_native_steam_handoff: {e}"
+            )
 
-        # Direct-call safeguard: ensure a valid Steam library is targeted
-        from core import steam_helpers
         steam_libs = steam_helpers.get_steam_libraries()
         if not steam_libs:
-            from ui.dialogs.themed_message_box import ThemedMessageBox
             ThemedMessageBox.warning(
                 self.main_window,
                 "No Steam Library Found",
                 "Steam has not initialized any library folders yet.\n\n"
-                "Please install at least one free game using the Steam client to generate your library folders, then restart ASSella to continue."
+                "Please install at least one free game using the Steam client to generate your library folders, then restart ASSella to continue.",
             )
             return
 
@@ -1352,27 +1635,43 @@ class TaskManager(
 
         norm_libs = {os.path.normpath(p): p for p in steam_libs}
         remembered = remembered_library(steam_libs, self.settings)
-        if remembered and (not library_path or os.path.normpath(library_path) not in norm_libs):
+        if remembered and (
+            not library_path
+            or os.path.normpath(library_path) not in norm_libs
+        ):
             library_path = remembered
 
-        if not library_path or os.path.normpath(library_path) not in norm_libs:
+        if (
+            not library_path
+            or os.path.normpath(library_path) not in norm_libs
+        ):
             if len(steam_libs) == 1:
                 library_path = steam_libs[0]
             else:
                 from ui.dialogs.steamlibrary import SteamLibraryDialog
-                accent_c = self.settings.value("accent_color", "#6c5ce7", type=str)
-                lib_dlg = SteamLibraryDialog(steam_libs, self.main_window, accent_color=accent_c)
+
+                accent_c = self.settings.value(
+                    "accent_color", "#6c5ce7", type=str
+                )
+                lib_dlg = SteamLibraryDialog(
+                    steam_libs, self.main_window, accent_color=accent_c
+                )
                 if lib_dlg.exec() and lib_dlg.get_selected_path():
                     library_path = lib_dlg.get_selected_path()
                 else:
-                    logger.info("[TaskManager] User cancelled Steam library selection")
+                    logger.info(
+                        "[TaskManager] User cancelled Steam library selection"
+                    )
                     return
 
-        # Check settings for pinned build if not passed explicitly
         if not pin_build:
-            pin_build = self.settings.value(f"pin_build/{app_id_str}", False, type=bool)
+            pin_build = self.settings.value(
+                f"pin_build/{app_id_str}", False, type=bool
+            )
             if pin_build and not build_id:
-                build_id = self.settings.value(f"pinned_build_id/{app_id_str}", "", type=str)
+                build_id = self.settings.value(
+                    f"pinned_build_id/{app_id_str}", "", type=str
+                )
 
         self.is_processing = True
         self._is_handoff_job = True
@@ -1385,27 +1684,48 @@ class TaskManager(
             "buildid": build_id,
         }
         self.current_job = f"steam_handoff_{app_id_str}"
-        self.current_job_metadata = {"appid": app_id_str, "game_name": name, "auto_install": auto_install}
+        self.current_job_metadata = {
+            "appid": app_id_str,
+            "game_name": name,
+            "auto_install": auto_install,
+        }
 
         if self.main_window:
-            if hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+            if (
+                hasattr(self.main_window, "simplified_terminal")
+                and self.main_window.simplified_terminal
+            ):
                 st = self.main_window.simplified_terminal
                 st.show_active_job(name, appid=app_id_str)
                 st.set_stage_status("download", "running")
                 if hasattr(st, "active_game_card") and st.active_game_card:
-                    st.active_game_card.set_sub_status("Handing off to Steam...")
-            if hasattr(self.main_window, "progress_bar") and self.main_window.progress_bar:
+                    st.active_game_card.set_sub_status(
+                        "Handing off to Steam..."
+                    )
+            if (
+                hasattr(self.main_window, "progress_bar")
+                and self.main_window.progress_bar
+            ):
                 self.main_window.progress_bar.setVisible(True)
                 self.main_window.progress_bar.setRange(0, 0)
-            if hasattr(self.main_window, "speed_label") and self.main_window.speed_label:
+            if (
+                hasattr(self.main_window, "speed_label")
+                and self.main_window.speed_label
+            ):
                 self.main_window.speed_label.setVisible(True)
-                self.main_window.speed_label.setText(f"Handing off {name} to Steam...")
+                self.main_window.speed_label.setText(
+                    f"Handing off {name} to Steam..."
+                )
 
         def _do_handoff():
-            from core.native_steam.native_steam_handoff import perform_steam_handoff
+            from core.native_steam.native_steam_handoff import (
+                perform_steam_handoff,
+            )
+
             def _update_msg(msg: str):
                 logger.info(f"[Handoff] {msg}")
                 self.handoff_status_updated.emit(msg)
+
             return perform_steam_handoff(
                 self.game_data,
                 selected_depots=None,
@@ -1424,17 +1744,25 @@ class TaskManager(
             else:
                 logger.error(f"[TaskManager] Handoff failed: {msg}")
 
-            if self.main_window and hasattr(self.main_window, "progress_bar") and self.main_window.progress_bar:
+            if (
+                self.main_window
+                and hasattr(self.main_window, "progress_bar")
+                and self.main_window.progress_bar
+            ):
                 self.main_window.progress_bar.setRange(0, 100)
                 self.main_window.progress_bar.setValue(100 if ok else 0)
 
             self.job_finished()
 
-        from utils.task_runner import TaskRunner
         self._handoff_runner = TaskRunner(self)
         worker = self._handoff_runner.run(_do_handoff)
         worker.finished.connect(_on_handoff_finished)
-        worker.error.connect(lambda err: (logger.error(f"[TaskManager] Handoff error: {err}"), _on_handoff_finished((False, str(err)))))
+        worker.error.connect(
+            lambda err: (
+                logger.error(f"[TaskManager] Handoff error: {err}"),
+                _on_handoff_finished((False, str(err))),
+            )
+        )
 
     def _handle_task_error(self, error_info):
         if self.is_cancelling:
@@ -1459,7 +1787,9 @@ class TaskManager(
         )
 
         if self.game_data:
-            self._last_installed_game = self.game_data.get("game_name", "Unknown")
+            self._last_installed_game = self.game_data.get(
+                "game_name", "Unknown"
+            )
 
         is_handoff = getattr(self, "_is_handoff_job", False)
         if is_handoff:
@@ -1496,21 +1826,18 @@ class TaskManager(
             game_name = self.game_data.get("game_name", "Unknown")
             appid = self.game_data.get("appid", "N/A")
 
-            # Format download metrics
             download_duration = getattr(self, "_last_download_duration", 0)
             download_size = getattr(self, "_last_download_size", 0)
             total_size = getattr(self, "_last_total_size", 0)
             uncompressed_size = getattr(self, "_last_uncompressed_size", 0)
             avg_speed_bps = getattr(self, "_last_download_avg_speed", 0)
 
-            # Reset these variables for the next job
             self._last_download_duration = 0.0
             self._last_download_size = 0
             self._last_total_size = 0
             self._last_uncompressed_size = 0
             self._last_download_avg_speed = 0.0
 
-            # Format achievements
             last_ach_status = getattr(self, "_last_slscheevo_status", "")
             ach_count = getattr(self, "_game_achievements_count", None)
             if last_ach_status == "skipped_no_ach":
@@ -1519,15 +1846,22 @@ class TaskManager(
                 ach_status = "Skipped"
             else:
                 if self._last_slscheevo_success:
-                    ach_status = f"Generated ({ach_count})" if ach_count else "Generated"
+                    ach_status = (
+                        f"Generated ({ach_count})" if ach_count else "Generated"
+                    )
                 else:
                     ach_status = "Failed"
-                # Check for "no missing stats files"
                 sl_msg = getattr(self, "_last_slscheevo_message", "")
-                if "no missing stats" in sl_msg.lower() or "already exist" in sl_msg.lower():
-                    ach_status = f"Up-to-date ({ach_count})" if ach_count else "Up-to-date"
+                if (
+                    "no missing stats" in sl_msg.lower()
+                    or "already exist" in sl_msg.lower()
+                ):
+                    ach_status = (
+                        f"Up-to-date ({ach_count})"
+                        if ach_count
+                        else "Up-to-date"
+                    )
 
-            # Format steamless
             steamless_status = self.parse_steamless_result()
 
             history_entry = {
@@ -1545,9 +1879,14 @@ class TaskManager(
                 "handed_off": is_handoff,
             }
 
-            # Add to simplified terminal
-            if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
-                self.main_window.simplified_terminal.add_history_entry(history_entry)
+            if (
+                self.main_window
+                and hasattr(self.main_window, "simplified_terminal")
+                and self.main_window.simplified_terminal
+            ):
+                self.main_window.simplified_terminal.add_history_entry(
+                    history_entry
+                )
 
         logger.debug("Job finished; GIF animation removed.")
         self.main_window.progress_bar.setVisible(False)
@@ -1559,8 +1898,6 @@ class TaskManager(
         self.library_mode_was_active = False
         self.is_processing = False
 
-        # An optional component was requested automatically but is not
-        # downloaded. Offer it now that the job is done and the GUI is idle.
         pending_component = getattr(self, "_pending_component_prompt", None)
         if pending_component:
             self._pending_component_prompt = None
@@ -1573,22 +1910,25 @@ class TaskManager(
             except Exception as e:
                 logger.debug(f"Could not prompt for optional component: {e}")
 
-        # Release the shared Steam connection so it doesn't linger after download
         try:
             from core.steam_api import disconnect_shared_client
+
             disconnect_shared_client()
         except Exception as e:
             logger.debug(f"Error disconnecting shared client after job: {e}")
 
-        # Refresh stats after a job finishes, but ONLY if the job actually invoked
-        # Hubcap manifest generation/download endpoints to avoid hitting the 3/3/s rate limit.
         try:
             from core.morrenus_api import pop_hubcap_manifest_used
+
             if pop_hubcap_manifest_used():
-                if self.main_window and hasattr(self.main_window, "refresh_hubcap_stats"):
+                if self.main_window and hasattr(
+                    self.main_window, "refresh_hubcap_stats"
+                ):
                     self.main_window.refresh_hubcap_stats()
             else:
-                logger.debug("[Hubcap] Skipping post-job stats refresh (no Hubcap manifest quota was consumed)")
+                logger.debug(
+                    "[Hubcap] Skipping post-job stats refresh (no Hubcap manifest quota was consumed)"
+                )
         except Exception as e:
             logger.debug(f"[Hubcap] Error checking manifest usage flag: {e}")
 
@@ -1618,7 +1958,11 @@ class TaskManager(
         if self.zip_task_runner is None:
             self.is_awaiting_zip_task_stop = False
 
-        if self.main_window and hasattr(self.main_window, "simplified_terminal") and self.main_window.simplified_terminal:
+        if (
+            self.main_window
+            and hasattr(self.main_window, "simplified_terminal")
+            and self.main_window.simplified_terminal
+        ):
             self.main_window.simplified_terminal.show_idle()
 
         self.main_window.job_queue.check_if_safe_to_start_next_job()
@@ -1644,7 +1988,11 @@ class TaskManager(
             or steamless_status == "in_progress"
         ):
             overall_color = self.STATUS_IN_PROGRESS
-        elif ddm_status == "ok" or slscheevo_status == "ok" or steamless_status == "ok":
+        elif (
+            ddm_status == "ok"
+            or slscheevo_status == "ok"
+            or steamless_status == "ok"
+        ):
             overall_color = self.STATUS_OK
         else:
             overall_color = accent_color
@@ -1675,8 +2023,14 @@ class TaskManager(
                 self._stop_speed_monitor()
             else:
                 self.main_window.ui_state.set_pause_button_text("Pause")
-                job_type = self.game_data.get("job_type", "download") if self.game_data else "download"
-                action_verb = "Validating" if job_type == "verify" else "Downloading"
+                job_type = (
+                    self.game_data.get("job_type", "download")
+                    if self.game_data
+                    else "download"
+                )
+                action_verb = (
+                    "Validating" if job_type == "verify" else "Downloading"
+                )
                 self.main_window.drop_text_label.setText(
                     f"{action_verb}: {os.path.basename(self.current_job)}"
                 )
@@ -1690,7 +2044,8 @@ class TaskManager(
                 self.main_window,
                 "Cancel Job",
                 "Are you sure you want to cancel the Workshop download?",
-                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                ThemedMessageBox.StandardButton.Yes
+                | ThemedMessageBox.StandardButton.No,
                 ThemedMessageBox.StandardButton.No,
             )
             if reply == ThemedMessageBox.StandardButton.No:
@@ -1708,7 +2063,11 @@ class TaskManager(
 
         display_name = ""
         if self.game_data and isinstance(self.game_data, dict):
-            display_name = str(self.game_data.get("game_name") or self.game_data.get("name") or "").strip()
+            display_name = str(
+                self.game_data.get("game_name")
+                or self.game_data.get("name")
+                or ""
+            ).strip()
         if not display_name and self.current_job:
             display_name = os.path.basename(self.current_job)
 
@@ -1716,16 +2075,18 @@ class TaskManager(
             self.main_window,
             "Cancel Job",
             f"Are you sure you want to cancel the download for '{display_name}'?",
-            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes
+            | ThemedMessageBox.StandardButton.No,
             ThemedMessageBox.StandardButton.No,
         )
 
         if reply == ThemedMessageBox.StandardButton.No:
             return
 
-        logger.info(f"--- Cancelling job: {os.path.basename(self.current_job)} ---")
+        logger.info(
+            f"--- Cancelling job: {os.path.basename(self.current_job)} ---"
+        )
         self.is_cancelling = True
-        # Signal the finalize IO thread (if running) to abort immediately
         self._finalize_cancel_event.set()
         if self.download_runner is not None:
             self.is_awaiting_download_stop = True
@@ -1734,7 +2095,9 @@ class TaskManager(
         if existing_install:
             self._delete_files_on_cancel = False
         else:
-            self._delete_files_on_cancel = self._confirm_delete_on_cancel(existing_install)
+            self._delete_files_on_cancel = self._confirm_delete_on_cancel(
+                existing_install
+            )
 
         if self.download_task:
             self.download_task.stop()
@@ -1776,9 +2139,7 @@ class TaskManager(
 
     def _confirm_delete_on_cancel(self, existing_install: bool) -> bool:
         if existing_install:
-            message = (
-                "Existing installation detected. Delete files for this canceled job?"
-            )
+            message = "Existing installation detected. Delete files for this canceled job?"
             default_button = ThemedMessageBox.StandardButton.No
         else:
             message = "Delete partially downloaded files for this job?"
@@ -1788,7 +2149,8 @@ class TaskManager(
             self.main_window,
             "Cancel Download",
             message,
-            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            ThemedMessageBox.StandardButton.Yes
+            | ThemedMessageBox.StandardButton.No,
             default_button,
         )
         return reply == ThemedMessageBox.StandardButton.Yes
@@ -1796,7 +2158,9 @@ class TaskManager(
     def _kill_download_process(self):
         if self.download_task and self.download_task.process:
             if psutil is None:
-                logger.error("psutil unavailable; cannot terminate process safely.")
+                logger.error(
+                    "psutil unavailable; cannot terminate process safely."
+                )
                 return
             try:
                 p = psutil.Process(self.download_task.process.pid)
@@ -1819,13 +2183,17 @@ class TaskManager(
             return
 
         if getattr(self, "_pre_existing_install", False):
-            logger.info("Skipping cancelled job file cleanup: Pre-existing installation detected.")
+            logger.info(
+                "Skipping cancelled job file cleanup: Pre-existing installation detected."
+            )
             return
 
         try:
             steamapps_dir = os.path.join(self.current_dest_path, "steamapps")
             common_dir = os.path.join(steamapps_dir, "common")
-            game_dir = get_game_directory(self.current_dest_path, self.game_data)
+            game_dir = get_game_directory(
+                self.current_dest_path, self.game_data
+            )
             acf_path = os.path.join(
                 steamapps_dir, f"appmanifest_{self.game_data['appid']}.acf"
             )
@@ -1852,55 +2220,6 @@ class TaskManager(
 
         except OSError as e:
             logger.error(f"Failed during cancel cleanup: {e}")
-
-    def download_slssteam(self, steam_path=None):
-        if (
-            self.slssteam_download_task is not None
-            and self.slssteam_download_runner is not None
-        ):
-            return
-
-        # DownloadSLSsteamTask does not exist anywhere in the tree and nothing
-        # calls this method (download_slssteam_button is only ever set to None).
-        # Dead code kept for now rather than deleted blind - see #TODO(slssteam-dl).
-        self.slssteam_download_task = DownloadSLSsteamTask(steam_path=steam_path)  # noqa: F821
-        self.slssteam_download_task.progress.connect(self._handle_slssteam_progress)
-        self.slssteam_download_task.progress_percentage.connect(
-            self._handle_slssteam_progress_percentage
-        )
-        self.slssteam_download_task.completed.connect(
-            self._on_slssteam_download_complete
-        )
-        self.slssteam_download_task.error.connect(self._handle_slssteam_download_error)
-
-        self.slssteam_download_runner = TaskRunner()
-        worker = self.slssteam_download_runner.run(self.slssteam_download_task.run)
-        worker.error.connect(self._handle_task_error)
-
-    @staticmethod
-    def _handle_slssteam_progress(message):
-        logger.info(f"SLSsteam: {message}")
-
-    def _handle_slssteam_progress_percentage(self, percentage):
-        pass
-
-    def _on_slssteam_download_complete(self, message):
-        logger.info(f"SLSsteam download completed: {message}")
-        ThemedMessageBox.information(
-            self.main_window, "SLSsteam Installation Complete", message
-        )
-        self.slssteam_download_task = None
-        self.slssteam_download_runner = None
-
-    def _handle_slssteam_download_error(self):
-        logger.error("SLSsteam download failed")
-        ThemedMessageBox.critical(
-            self.main_window,
-            "Error",
-            "Failed to download SLSsteam. Check internet connection.",
-        )
-        self.slssteam_download_task = None
-        self.slssteam_download_runner = None
 
     def cleanup(self):
         """Clean up all tasks during shutdown"""
@@ -1965,7 +2284,9 @@ class TaskManager(
             "steamless_status_text": steamless_status_text,
         }
 
-    def _update_status_for_job(self, ddm_ok=True, slscheevo_ok=None, steamless_ok=None):
+    def _update_status_for_job(
+        self, ddm_ok=True, slscheevo_ok=None, steamless_ok=None
+    ):
         self._last_ddm_status = "ok" if ddm_ok else "error"
         self._last_ddm_status_text = "Completed" if ddm_ok else "Failed"
 
@@ -1977,10 +2298,20 @@ class TaskManager(
             if slscheevo_ok:
                 ach_count = getattr(self, "_game_achievements_count", None)
                 sl_msg = getattr(self, "_last_slscheevo_message", "")
-                if "already exist" in sl_msg.lower() or "no missing stats" in sl_msg.lower() or "already exists" in sl_msg.lower():
-                    self._last_slscheevo_status_text = f"Up-to-date ({ach_count})" if ach_count else "Up-to-date"
+                if (
+                    "already exist" in sl_msg.lower()
+                    or "no missing stats" in sl_msg.lower()
+                    or "already exists" in sl_msg.lower()
+                ):
+                    self._last_slscheevo_status_text = (
+                        f"Up-to-date ({ach_count})"
+                        if ach_count
+                        else "Up-to-date"
+                    )
                 else:
-                    self._last_slscheevo_status_text = f"Generated ({ach_count})" if ach_count else "Generated"
+                    self._last_slscheevo_status_text = (
+                        f"Generated ({ach_count})" if ach_count else "Generated"
+                    )
             else:
                 self._last_slscheevo_status_text = "Failed"
 
@@ -1990,5 +2321,7 @@ class TaskManager(
         else:
             log_text = "\n".join(self._steamless_progress_log).lower()
             is_linux_no_drm = "no suitable game executables found" in log_text
-            self._last_steamless_status = "ok" if (steamless_ok or is_linux_no_drm) else "error"
+            self._last_steamless_status = (
+                "ok" if (steamless_ok or is_linux_no_drm) else "error"
+            )
             self._last_steamless_status_text = self._get_steamless_status_text()
