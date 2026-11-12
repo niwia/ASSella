@@ -647,7 +647,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
                 tag = "shared"
             elif size_text.strip().lower() == "dlcdata":
                 tag = "license"
-            selectable = kind in ("normal", "hidden_depot") and not owned and enabled
+            selectable = kind in ("normal", "hidden_depot") and enabled
 
             g = groups.get(key)
             if g is None:
@@ -887,6 +887,8 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
         name.setMinimumHeight(24)
         lay.addWidget(name, 1, Qt.AlignmentFlag.AlignVCenter)
         if sel:
+            if all(d.tag == "owned" for d in g.depots):
+                lay.addWidget(_tag("owned"), 0, Qt.AlignmentFlag.AlignVCenter)
             total = g.picked_size or g.total_size
             if total >= 1_000_000:  # sub-MB entries are license stubs, not downloads
                 sz = QLabel(_fmt_size(total))
@@ -1023,9 +1025,18 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
             return
         sel = g.selectable
         target = g.checked_count < len(sel)
-        for d in sel:
-            if d.checked != target:
-                self._click_source_row(d.row)
+        if target and any(d.tag == "owned" and not d.checked for d in sel):
+            from ui.dialogs.themed_message_box import confirm_steam_owned_override
+            if not confirm_steam_owned_override(self):
+                self._fill_group_list()
+                return
+        self._suppress_owned_confirm = True
+        try:
+            for d in sel:
+                if d.checked != target:
+                    self._click_source_row(d.row)
+        finally:
+            self._suppress_owned_confirm = False
         if self._current_group != key:
             self._current_group = key
             self._scroll_to_highlight = True

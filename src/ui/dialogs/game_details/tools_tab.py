@@ -6,7 +6,8 @@ and Experimental DlcData configuration.
 
 import json
 import logging
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6 import sip
+from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget,
@@ -35,6 +36,157 @@ from utils.yaml_config_manager import (
 )
 
 logger = logging.getLogger(__name__)
+
+_STEAMLESS_AIO_LABEL = "Steamless (Python)"
+_STEAMLESS_CLI_LABEL = "Steamless (.NET CLI)"
+_STEAMLESS_OVERLAY_DELAY_MS = 400
+
+
+def _dismiss_steamless_loading(dialog) -> None:
+    """Stop deferred timer and dismiss any active Steamless loading overlay."""
+    timer = getattr(dialog, "_steamless_overlay_timer", None)
+    if timer is not None and not sip.isdeleted(timer):
+        timer.stop()
+
+    overlay = getattr(dialog, "_steamless_loading_overlay", None)
+    if overlay is not None and not sip.isdeleted(overlay):
+        try:
+            overlay.close()
+            overlay.deleteLater()
+        except (RuntimeError, AttributeError) as exc:
+            logger.debug("Could not dismiss Steamless loading overlay: %s", exc)
+    dialog._steamless_loading_overlay = None
+
+
+def _disconnect_steamless_signal(dialog) -> None:
+    """Disconnect any tracked Steamless completion callback from TaskManager."""
+    tm = getattr(dialog, "_steamless_tm_ref", None)
+    slot = getattr(dialog, "_steamless_done_slot", None)
+    if tm is not None and slot is not None:
+        sig = getattr(tm, "steamless_manual_finished", None)
+        if sig is not None:
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError) as exc:
+                logger.debug("Steamless signal disconnect ignored: %s", exc)
+    dialog._steamless_done_slot = None
+    dialog._steamless_tm_ref = None
+
+
+def _finish_steamless_ui(dialog) -> None:
+    """Restore button state and clear loading feedback when Steamless ends."""
+    if sip.isdeleted(dialog):
+        return
+    dialog._steamless_running = False
+    _dismiss_steamless_loading(dialog)
+    _disconnect_steamless_signal(dialog)
+
+    if (
+        hasattr(dialog, "b_steamless_aio")
+        and dialog.b_steamless_aio
+        and not sip.isdeleted(dialog.b_steamless_aio)
+    ):
+        dialog.b_steamless_aio.setText(_STEAMLESS_AIO_LABEL)
+    if (
+        hasattr(dialog, "b_steamless_cli")
+        and dialog.b_steamless_cli
+        and not sip.isdeleted(dialog.b_steamless_cli)
+    ):
+        dialog.b_steamless_cli.setText(_STEAMLESS_CLI_LABEL)
+    refresh_drm_emulation_state(dialog)
+
+
+def _show_steamless_overlay_if_running(dialog, accent_color: str) -> None:
+    """Reveal PixelLoadingOverlay only when Steamless runs longer than 400ms."""
+    if sip.isdeleted(dialog) or not getattr(dialog, "_steamless_running", False):
+        return
+    if getattr(dialog, "_steamless_loading_overlay", None) is not None:
+        return
+    try:
+        from ui.widgets.pixel_loader_overlay import PixelLoadingOverlay
+
+        overlay = PixelLoadingOverlay(
+            parent=dialog,
+            label="Scanning for SteamStub DRM...",
+            accent_color=accent_color,
+        )
+        dialog._steamless_loading_overlay = overlay
+        overlay.show_centered()
+    except Exception as exc:
+        logger.debug("Could not show Steamless loading overlay: %s", exc)
+
+
+def _launch_steamless_with_feedback(
+    dialog,
+    *,
+    use_aio: bool,
+    path: str,
+    name: str,
+    accent_color: str,
+) -> None:
+    """Run manual Steamless with instant button feedback and 400ms delayed overlay."""
+    if getattr(dialog, "_steamless_running", False):
+        return
+
+    if not use_aio and not require_component(dialog, "steamless"):
+        return
+
+    parent_win = getattr(dialog, "parent_window", None)
+    main_win = getattr(parent_win, "main_window", None) if parent_win else None
+    tm = getattr(main_win, "task_manager", None) if main_win else None
+    if tm is None:
+        return
+
+    done_sig = getattr(tm, "steamless_manual_finished", None)
+    can_track = done_sig is not None and hasattr(done_sig, "connect")
+
+    if can_track:
+        _disconnect_steamless_signal(dialog)
+        dialog._steamless_running = True
+        clicked_btn = dialog.b_steamless_aio if use_aio else dialog.b_steamless_cli
+        if hasattr(dialog, "b_steamless_aio") and dialog.b_steamless_aio:
+            dialog.b_steamless_aio.setEnabled(False)
+        if hasattr(dialog, "b_steamless_cli") and dialog.b_steamless_cli:
+            dialog.b_steamless_cli.setEnabled(False)
+        if clicked_btn and not sip.isdeleted(clicked_btn):
+            clicked_btn.setText("Scanning...")
+
+        def _on_done():
+            _finish_steamless_ui(dialog)
+
+        dialog._steamless_tm_ref = tm
+        dialog._steamless_done_slot = _on_done
+        done_sig.connect(_on_done)
+
+        if hasattr(dialog, "finished") and not getattr(dialog, "_steamless_cleanup_wired", False):
+            dialog._steamless_cleanup_wired = True
+            dialog.finished.connect(lambda _res=0: _finish_steamless_ui(dialog))
+
+        timer = getattr(dialog, "_steamless_overlay_timer", None)
+        if timer is None or sip.isdeleted(timer):
+            timer = QTimer(dialog)
+            timer.setSingleShot(True)
+            dialog._steamless_overlay_timer = timer
+        else:
+            try:
+                timer.timeout.disconnect()
+            except (RuntimeError, TypeError) as exc:
+                logger.debug("Steamless timer disconnect ignored: %s", exc)
+        timer.timeout.connect(
+            lambda ac_val=accent_color: _show_steamless_overlay_if_running(dialog, ac_val)
+        )
+        timer.start(_STEAMLESS_OVERLAY_DELAY_MS)
+
+    try:
+        appid_str = str(getattr(dialog, "appid", "") or "")
+        if use_aio:
+            tm.run_steamless_aio_for_game(path, name, appid=appid_str)
+        else:
+            tm.run_steamless_for_game(path, name, appid=appid_str)
+    except Exception:
+        if can_track:
+            _finish_steamless_ui(dialog)
+        raise
 
 
 def init_tools_tab(dialog) -> None:
@@ -91,7 +243,9 @@ def init_tools_tab(dialog) -> None:
         }}
     """)
     dialog.b_steamless_aio.clicked.connect(
-        lambda: dialog.parent_window.main_window.task_manager.run_steamless_aio_for_game(path, name)
+        lambda: _launch_steamless_with_feedback(
+            dialog, use_aio=True, path=path, name=name, accent_color=ac
+        )
     )
 
     dialog.b_steamless_cli = QPushButton("Steamless (.NET CLI)")
@@ -119,13 +273,11 @@ def init_tools_tab(dialog) -> None:
             color: rgba(255,255,255,0.25);
         }}
     """)
-    def _run_steamless_cli():
-        if not require_component(dialog, "steamless"):
-            return
-        if dialog.parent_window.main_window and dialog.parent_window.main_window.task_manager:
-            dialog.parent_window.main_window.task_manager.run_steamless_for_game(path, name)
-
-    dialog.b_steamless_cli.clicked.connect(_run_steamless_cli)
+    dialog.b_steamless_cli.clicked.connect(
+        lambda: _launch_steamless_with_feedback(
+            dialog, use_aio=False, path=path, name=name, accent_color=ac
+        )
+    )
     dialog.b_steamless = dialog.b_steamless_aio
 
     dialog.sl_row_widget = QWidget()
@@ -632,16 +784,17 @@ def refresh_drm_emulation_state(dialog, is_applied=None) -> None:
         return
 
     # Regular game mode - enable / configure buttons
+    steamless_busy = bool(getattr(dialog, "_steamless_running", False))
     if hasattr(dialog, "sl_row_widget") and dialog.sl_row_widget:
         dialog.sl_row_widget.setVisible(True)
     if hasattr(dialog, "b_steamless_aio") and dialog.b_steamless_aio:
-        dialog.b_steamless_aio.setEnabled(True)
+        dialog.b_steamless_aio.setEnabled(not steamless_busy)
         dialog.b_steamless_aio.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
     if hasattr(dialog, "b_steamless_cli") and dialog.b_steamless_cli:
-        dialog.b_steamless_cli.setEnabled(True)
+        dialog.b_steamless_cli.setEnabled(not steamless_busy)
         dialog.b_steamless_cli.setToolTip("Remove Steam DRM using .NET 9 Steamless CLI")
     if hasattr(dialog, "b_steamless") and dialog.b_steamless:
-        dialog.b_steamless.setEnabled(True)
+        dialog.b_steamless.setEnabled(not steamless_busy)
         dialog.b_steamless.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
     if hasattr(dialog, "fix_btn") and dialog.fix_btn:
         dialog.fix_btn.setEnabled(True)

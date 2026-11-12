@@ -57,8 +57,17 @@ class GamesCache:
             else:
                 raw_games = []
 
+            repaired = False
+            try:
+                from utils.library_rules import repair_cached_game_names
+                repaired = repair_cached_game_names(raw_games)
+            except Exception as _silent_err:
+                logger.debug("[GamesCache] repair_cached_game_names skipped: %s", _silent_err)
+
             with self._lock:
                 self._games = raw_games
+                if repaired:
+                    self._dirty = True
                 for g in raw_games:
                     size = g.get("size_on_disk", 0)
                     install_path = g.get("install_path")

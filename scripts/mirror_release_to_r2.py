@@ -40,11 +40,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-ALLOWED_CHANNELS = ("stable",)
+ALLOWED_CHANNELS = ("stable", "beta")
 DEFAULT_REPO = "niwia/ASSella"
 SAFE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-CANARY_TOKENS = ("canary", "testing", "alpha", "test", "devtest", "release_candidate", "releasecandidate")
+CANARY_TOKENS = ("canary", "testing", "devtest", "release_candidate", "releasecandidate")
 BETA_TOKENS = ("beta", "dev", "rc", "candidate")
+CANARY_TOKEN_RE = re.compile(
+    r"(?<![a-z])(canary|testing|devtest|release[_-]?candidate)(?![a-z])",
+    re.IGNORECASE,
+)
+BETA_TOKEN_RE = re.compile(
+    r"(?<![a-z])(beta|dev|rc|candidate)(?![a-z])",
+    re.IGNORECASE,
+)
 
 CONTENT_TYPES = {
     ".appimage": "application/octet-stream",
@@ -125,17 +133,38 @@ def validate_tag(tag: str) -> str:
     return clean
 
 
-def classify_release_channel(tag: str, prerelease: bool = False) -> Optional[str]:
-    """Classify a release tag into ``stable``, ``beta``, or ``canary``."""
+def _normalize_release_branch(target_commitish: Optional[str]) -> str:
+    """Return normalized branch from ``target_commitish``, or ``''`` for unset/SHAs."""
+    raw = str(target_commitish or "").strip().lower()
+    if not raw:
+        return ""
+    if raw.startswith("refs/heads/"):
+        raw = raw[len("refs/heads/"):]
+    if raw in ("main", "master"):
+        return "main"
+    if len(raw) >= 7 and re.fullmatch(r"[0-9a-f]{7,40}", raw):
+        return ""
+    return raw
+
+
+def classify_release_channel(
+    tag: str,
+    prerelease: bool = False,
+    target_commitish: Optional[str] = None,
+) -> Optional[str]:
+    """Classify a release tag/branch/prerelease tuple into ``stable``, ``beta``, or ``canary``."""
     clean = str(tag or "").strip()
     if not clean:
         return None
     lower = clean.lower()
-    if any(tok in lower for tok in CANARY_TOKENS):
-        return "canary"
-    if any(tok in lower for tok in BETA_TOKENS):
+    branch = _normalize_release_branch(target_commitish)
+    if CANARY_TOKEN_RE.search(lower) or branch == "canary":
+        return "canary" if prerelease else None
+    if BETA_TOKEN_RE.search(lower) or (prerelease and branch in ("", "beta", "main")):
         return "beta"
     if prerelease:
+        return None
+    if branch and branch != "main":
         return None
     stripped = clean.lstrip("vV")
     is_clean_semver = bool(re.match(r"^\d+\.\d+(\.\d+)?$", stripped))
@@ -249,6 +278,91 @@ def _download_with_retries(
     raise RuntimeError(f"Failed to download {url}: {last_err}")
 
 
+class ChannelMismatchError(RuntimeError):
+    """Raised when an explicit release belongs to a different channel than requested."""
+
+
+class RollbackError(RuntimeError):
+    """Raised when mirroring would replace a newer R2 channel release with an older one."""
+
+
+def _parse_utc_epoch(raw: Any) -> float:
+    """Parse an ISO-8601 timestamp into UTC epoch seconds, or 0.0 if missing/invalid."""
+    text = str(raw or "").strip()
+    if not text:
+        return 0.0
+    try:
+        iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _version_sort_key(tag: str) -> Tuple[int, int, int, int, int]:
+    """Return a monotonic SemVer comparison key for release tags."""
+    clean = re.sub(r"^[0-9]{8}\+[a-zA-Z0-9._-]+-", "", str(tag or "").strip()).lstrip("vV")
+    m = re.match(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?(.*)$", clean)
+    if not m:
+        return (0, 0, 0, -5, 0)
+    major = int(m.group(1) or 0)
+    minor = int(m.group(2) or 0)
+    patch = int(m.group(3) or 0)
+    suffix = (m.group(4) or "").strip().lower()
+    if not suffix:
+        return (major, minor, patch, 0, 0)
+    if "hotfix" in suffix:
+        hm = re.search(r"hotfix\D*(\d+)", suffix)
+        return (major, minor, patch, 1, int(hm.group(1)) if hm else 1)
+    nums = re.findall(r"\d+", suffix)
+    sub = int(nums[-1]) if nums else 1
+    if CANARY_TOKEN_RE.search(suffix):
+        weight = -4
+    elif re.search(r"(?<![a-z])dev(?![a-z])", suffix):
+        weight = -3
+    elif re.search(r"(?<![a-z])beta(?![a-z])", suffix):
+        weight = -2
+    elif re.search(r"(?<![a-z])(?:rc|release[_-]?candidate)(?![a-z])", suffix):
+        weight = -1
+    else:
+        weight = -5
+    return (major, minor, patch, weight, sub)
+
+
+def _check_r2_rollback(
+    *,
+    channel: str,
+    incoming_tag: str,
+    incoming_published: str,
+    remote_manifest: Optional[Dict[str, Any]],
+) -> None:
+    """Enforce per-channel monotonicity against the live R2 manifest."""
+    if not remote_manifest:
+        return
+    remote_tag = str(remote_manifest.get("tag_name") or "").strip()
+    if not remote_tag or remote_tag == incoming_tag:
+        return
+
+    if channel == "stable":
+        if _version_sort_key(incoming_tag) < _version_sort_key(remote_tag):
+            raise RollbackError(
+                f"Refusing to roll back R2 'stable' manifest from {remote_tag} to older {incoming_tag}; "
+                "pass --allow-rollback to override."
+            )
+        return
+
+    incoming_ts = _parse_utc_epoch(incoming_published)
+    remote_pub = str(remote_manifest.get("published_at") or remote_manifest.get("created_at") or "").strip()
+    remote_ts = _parse_utc_epoch(remote_pub)
+    if incoming_ts > 0 and remote_ts > 0 and incoming_ts < remote_ts:
+        raise RollbackError(
+            f"Refusing to roll back R2 '{channel}' manifest from {remote_tag} ({remote_pub}) "
+            f"to older {incoming_tag} ({incoming_published}); pass --allow-rollback to override."
+        )
+
+
 def select_github_release(
     releases: Sequence[Dict[str, Any]],
     *,
@@ -262,9 +376,13 @@ def select_github_release(
             if str(rel.get("tag_name", "")).strip() == wanted:
                 if rel.get("draft"):
                     raise RuntimeError(f"Release {wanted} is marked as draft.")
-                detected = classify_release_channel(wanted, prerelease=bool(rel.get("prerelease")))
+                detected = classify_release_channel(
+                    wanted,
+                    prerelease=bool(rel.get("prerelease")),
+                    target_commitish=rel.get("target_commitish"),
+                )
                 if detected != channel:
-                    raise RuntimeError(
+                    raise ChannelMismatchError(
                         f"Release {wanted} belongs to channel {detected!r}, not {channel!r}."
                     )
                 return rel
@@ -277,7 +395,14 @@ def select_github_release(
         rtag = str(rel.get("tag_name", "")).strip()
         if not rtag or not SAFE_TAG_RE.match(rtag):
             continue
-        if classify_release_channel(rtag, prerelease=bool(rel.get("prerelease"))) != channel:
+        if (
+            classify_release_channel(
+                rtag,
+                prerelease=bool(rel.get("prerelease")),
+                target_commitish=rel.get("target_commitish"),
+            )
+            != channel
+        ):
             continue
         assets = [a for a in rel.get("assets", []) if isinstance(a, dict)]
         if not any(is_appimage_asset(str(a.get("name", ""))) for a in assets):
@@ -287,7 +412,22 @@ def select_github_release(
     if not matching:
         raise RuntimeError(f"No published {channel} release with AppImage assets found.")
 
-    matching.sort(key=lambda r: str(r.get("published_at") or r.get("created_at") or ""), reverse=True)
+    if channel == "stable":
+        matching.sort(
+            key=lambda r: (
+                _version_sort_key(str(r.get("tag_name") or "")),
+                _parse_utc_epoch(r.get("published_at") or r.get("created_at")),
+            ),
+            reverse=True,
+        )
+    else:
+        matching.sort(
+            key=lambda r: (
+                _parse_utc_epoch(r.get("published_at") or r.get("created_at")),
+                _version_sort_key(str(r.get("tag_name") or "")),
+            ),
+            reverse=True,
+        )
     return matching[0]
 
 
@@ -305,7 +445,7 @@ def fetch_github_release(
         rel = _http_get_json(url, token=token)
         return select_github_release([rel], channel=channel, tag=clean_tag)
 
-    url = f"https://api.github.com/repos/{repo}/releases?per_page=50"
+    url = f"https://api.github.com/repos/{repo}/releases?per_page=100"
     releases = _http_get_json(url, token=token)
     if not isinstance(releases, list):
         raise RuntimeError("Unexpected response from GitHub Releases API.")
@@ -408,13 +548,14 @@ def build_channel_manifest(
     prerelease: bool,
     public_url: str,
     assets: Sequence[LocalAsset],
+    target_commitish: Optional[str] = None,
     mirrored_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a GitHub-compatible release manifest for ``releases/channels/<channel>.json``."""
     base = public_url.rstrip("/")
     stamp = mirrored_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     clean_ver = tag.lstrip("vV")
-    return {
+    manifest: Dict[str, Any] = {
         "schema": 1,
         "channel": channel,
         "tag_name": tag,
@@ -435,6 +576,9 @@ def build_channel_manifest(
             for asset in sorted(assets, key=lambda a: (0 if a.name == "ASSella.AppImage" else 1, a.name))
         ],
     }
+    if target_commitish:
+        manifest["target_commitish"] = target_commitish
+    return manifest
 
 
 def create_r2_client(settings: R2Settings):
@@ -536,7 +680,10 @@ def sync_release_to_r2(
     published_at: str,
     prerelease: bool,
     assets: Sequence[LocalAsset],
+    target_commitish: Optional[str] = None,
     skip_if_unchanged: bool = False,
+    allow_rollback: bool = False,
+    retain_previous: int = 0,
     dry_run: bool = False,
     log: Callable[[str], None] = print,
 ) -> Dict[str, Any]:
@@ -544,12 +691,17 @@ def sync_release_to_r2(
     if channel not in ALLOWED_CHANNELS:
         raise ValueError(f"Unsupported channel {channel!r}; allowed: {ALLOWED_CHANNELS}")
     clean_tag = validate_tag(tag)
-    detected = classify_release_channel(clean_tag, prerelease=prerelease)
+    detected = classify_release_channel(
+        clean_tag,
+        prerelease=prerelease,
+        target_commitish=target_commitish,
+    )
     if detected != channel:
         raise ValueError(
             f"Tag {clean_tag!r} (prerelease={prerelease}) resolved to {detected!r}, not {channel!r}"
         )
 
+    retain_count = max(0, int(retain_previous or 0))
     keep_prefix = f"releases/{channel}/{clean_tag}/"
     manifest = build_channel_manifest(
         channel=channel,
@@ -559,19 +711,58 @@ def sync_release_to_r2(
         prerelease=prerelease,
         public_url=settings.public_url,
         assets=assets,
+        target_commitish=target_commitish,
     )
 
     if dry_run:
+        if s3_client is not None and not allow_rollback:
+            remote_manifest = _fetch_remote_manifest(s3_client, settings.bucket, channel)
+            _check_r2_rollback(
+                channel=channel,
+                incoming_tag=clean_tag,
+                incoming_published=published_at,
+                remote_manifest=remote_manifest,
+            )
         log(f"[DRY-RUN] Would upload {len(assets)} assets to s3://{settings.bucket}/{keep_prefix}")
         for asset in assets:
             log(f"[DRY-RUN]   PUT {asset_key(channel, clean_tag, asset.name)} ({asset.size} bytes)")
         log(f"[DRY-RUN] Would upload manifest to s3://{settings.bucket}/{manifest_key(channel)}")
-        log(f"[DRY-RUN] Would prune keys under releases/{channel}/ outside {keep_prefix}")
+        log(f"[DRY-RUN] Would prune keys under releases/{channel}/ outside {keep_prefix} (retain_previous={retain_count})")
         return {"status": "dry_run", "manifest": manifest, "pruned": []}
+
+    remote_manifest = _fetch_remote_manifest(s3_client, settings.bucket, channel)
+    if not allow_rollback:
+        _check_r2_rollback(
+            channel=channel,
+            incoming_tag=clean_tag,
+            incoming_published=published_at,
+            remote_manifest=remote_manifest,
+        )
+
+    retained_tags: List[str] = []
+    if retain_count > 0 and remote_manifest:
+        raw_candidates: List[Any] = [remote_manifest.get("tag_name")]
+        prev_list = remote_manifest.get("retained_tags")
+        if isinstance(prev_list, list):
+            raw_candidates.extend(prev_list)
+        for cand in raw_candidates:
+            cand_tag = str(cand or "").strip()
+            if (
+                cand_tag
+                and cand_tag != clean_tag
+                and SAFE_TAG_RE.match(cand_tag)
+                and ".." not in cand_tag
+                and cand_tag not in retained_tags
+            ):
+                retained_tags.append(cand_tag)
+        retained_tags = retained_tags[:retain_count]
+    if retained_tags:
+        manifest["retained_tags"] = retained_tags
+
+    keep_prefixes = (keep_prefix, *(f"releases/{channel}/{t}/" for t in retained_tags))
 
     existing_keys = _list_channel_keys(s3_client, settings.bucket, channel)
     if skip_if_unchanged:
-        remote_manifest = _fetch_remote_manifest(s3_client, settings.bucket, channel)
         if _manifest_matches_assets(
             remote_manifest,
             tag=clean_tag,
@@ -580,7 +771,9 @@ def sync_release_to_r2(
             channel=channel,
         ):
             stale_keys = [
-                k for k in existing_keys if k.startswith(f"releases/{channel}/") and not k.startswith(keep_prefix)
+                k
+                for k in existing_keys
+                if k.startswith(f"releases/{channel}/") and not any(k.startswith(p) for p in keep_prefixes)
             ]
             if not stale_keys:
                 log(f"[SKIP] R2 already up to date for {channel} {clean_tag}.")
@@ -613,10 +806,12 @@ def sync_release_to_r2(
         CacheControl="no-cache, max-age=60",
     )
 
-    # 3. Prune older releases under releases/<channel>/ (keeps only current tag).
+    # 3. Prune older releases under releases/<channel>/ (keeping active + retained tags).
     all_channel_keys = _list_channel_keys(s3_client, settings.bucket, channel)
     stale = [
-        k for k in all_channel_keys if k.startswith(f"releases/{channel}/") and not k.startswith(keep_prefix)
+        k
+        for k in all_channel_keys
+        if k.startswith(f"releases/{channel}/") and not any(k.startswith(p) for p in keep_prefixes)
     ]
     pruned: List[str] = []
     for idx in range(0, len(stale), 1000):
@@ -646,6 +841,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     ap.add_argument("--published-at", default="", help="ISO-8601 release timestamp override for --dir mode")
     ap.add_argument("--release-name", default="", help="Human-readable release title override for --dir mode")
+    ap.add_argument("--target-commitish", default="", help="Optional branch name override for classification/manifest")
     ap.add_argument(
         "--skip-if-unchanged",
         action="store_true",
@@ -655,6 +851,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--skip-wrong-channel",
         action="store_true",
         help="Exit 0 instead of raising when an explicit --tag belongs to another channel",
+    )
+    ap.add_argument(
+        "--allow-rollback",
+        action="store_true",
+        help="Allow overwriting a newer R2 channel release with an older release",
+    )
+    ap.add_argument(
+        "--retain-previous",
+        type=int,
+        default=0,
+        help="Number of prior release tag folders to retain under releases/<channel>/ before pruning",
     )
     ap.add_argument("--dry-run", action="store_true", help="Validate inputs and print planned R2 operations only")
     return ap.parse_args(argv)
@@ -669,6 +876,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         tag = validate_tag(args.tag)
         published_at = args.published_at.strip() or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         release_name = args.release_name.strip() or f"ASSella {tag}"
+        target_branch = args.target_commitish.strip() or None
+        is_prerelease = args.channel != "stable"
         assets = collect_local_assets(args.dir, tag)
         sync_release_to_r2(
             s3_client=s3_client,
@@ -677,9 +886,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             tag=tag,
             release_name=release_name,
             published_at=published_at,
-            prerelease=False,
+            prerelease=is_prerelease,
             assets=assets,
+            target_commitish=target_branch,
             skip_if_unchanged=args.skip_if_unchanged,
+            allow_rollback=args.allow_rollback,
+            retain_previous=args.retain_previous,
             dry_run=args.dry_run,
         )
         return 0
@@ -689,23 +901,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if explicit_tag and args.skip_wrong_channel:
         clean = validate_tag(explicit_tag)
         detected = classify_release_channel(clean, prerelease=False)
-        if detected != args.channel:
+        if (
+            detected is not None
+            and detected != args.channel
+            and not (args.channel == "beta" and detected == "stable")
+        ):
             print(f"[SKIP] Release {clean} belongs to channel {detected!r}, not {args.channel!r}.")
             return 0
 
-    rel = fetch_github_release(
-        repo=args.repo,
-        channel=args.channel,
-        tag=explicit_tag,
-        token=gh_token,
-    )
+    try:
+        rel = fetch_github_release(
+            repo=args.repo,
+            channel=args.channel,
+            tag=explicit_tag,
+            token=gh_token,
+        )
+    except ChannelMismatchError as exc:
+        if args.skip_wrong_channel:
+            print(f"[SKIP] {exc}")
+            return 0
+        raise
     tag = validate_tag(str(rel.get("tag_name", "")))
     published_at = str(rel.get("published_at") or rel.get("created_at") or "")
     release_name = str(rel.get("name") or f"ASSella {tag}")
     prerelease = bool(rel.get("prerelease"))
+    target_commitish = str(rel.get("target_commitish") or "").strip() or None
 
-    if args.skip_wrong_channel and classify_release_channel(tag, prerelease=prerelease) != args.channel:
-        print(f"[SKIP] Release {tag} (prerelease={prerelease}) is not {args.channel}.")
+    if (
+        args.skip_wrong_channel
+        and classify_release_channel(tag, prerelease=prerelease, target_commitish=target_commitish) != args.channel
+    ):
+        print(
+            f"[SKIP] Release {tag} (prerelease={prerelease}, branch={target_commitish or 'unset'}) "
+            f"is not {args.channel}."
+        )
         return 0
 
     with tempfile.TemporaryDirectory(prefix="assella-r2-mirror-") as tmp:
@@ -719,7 +948,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             published_at=published_at,
             prerelease=prerelease,
             assets=assets,
+            target_commitish=target_commitish,
             skip_if_unchanged=args.skip_if_unchanged,
+            allow_rollback=args.allow_rollback,
+            retain_previous=args.retain_previous,
             dry_run=args.dry_run,
         )
     return 0

@@ -52,7 +52,12 @@ _RE_LASTUPDATED = re.compile(r'"LastUpdated"\s+"(\d+)"')
 _RE_STATEFLAGS = re.compile(r'"StateFlags"\s+"(\d+)"')
 
 
-def _parse_acf_file(acf_path: Path) -> Optional[Dict[str, Any]]:
+def _parse_acf_file(
+    acf_path: Path,
+    *,
+    db_manager: Any = None,
+    resolve_name: bool = True,
+) -> Optional[Dict[str, Any]]:
     """Parse essential fields from a single appmanifest_*.acf file."""
     try:
         content = acf_path.read_text(encoding="utf-8", errors="replace")
@@ -81,7 +86,7 @@ def _parse_acf_file(acf_path: Path) -> Optional[Dict[str, Any]]:
 
     # Name
     m_name = _RE_NAME.search(content)
-    game_name = m_name.group(1).strip() if m_name else ""
+    raw_name = m_name.group(1).strip() if m_name else ""
 
     # Installdir
     m_dir = _RE_INSTALLDIR.search(content)
@@ -89,11 +94,19 @@ def _parse_acf_file(acf_path: Path) -> Optional[Dict[str, Any]]:
     if not installdir:
         return None
 
-    if not game_name:
-        game_name = installdir
-
-    if _is_steam_tool(appid, game_name, installdir):
+    if _is_steam_tool(appid, raw_name or installdir, installdir):
         return None
+
+    game_name = raw_name or installdir
+    if resolve_name:
+        from utils.library_rules import is_placeholder_game_name, resolve_best_game_name
+        if is_placeholder_game_name(raw_name, appid):
+            game_name = resolve_best_game_name(
+                appid,
+                (raw_name,),
+                db_manager=db_manager,
+                fallback_installdir=installdir,
+            )
 
     # Size on disk
     m_size = _RE_SIZE.search(content)
@@ -110,6 +123,7 @@ def _parse_acf_file(acf_path: Path) -> Optional[Dict[str, Any]]:
     return {
         "appid": appid,
         "game_name": game_name,
+        "raw_acf_name": raw_name,
         "install_dir": installdir,
         "size_on_disk": size_on_disk,
         "buildid": buildid,
@@ -120,12 +134,22 @@ def _parse_acf_file(acf_path: Path) -> Optional[Dict[str, Any]]:
 
 def scan_acf_files(
     library_paths: Optional[List[str]] = None,
+    *,
+    owned_appids: Optional[set] = None,
+    additional_apps: Optional[set] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Rapidly scans steamapps/*.acf manifest files across all known Steam libraries.
-    Does not traverse game directories. Reads size, build ID, and install info directly from ACF.
-    Returns a list of game data dicts ready for display.
+    Scans steamapps/*.acf manifest files for legitimately owned Steam games.
+    Excludes ASSella/AT0-M AdditionalApps entries and unowned ACFs, resolves
+    placeholder `appid_<id>` names via local DB, and computes disk size when
+    ACF SizeOnDisk is 0.
     """
+    from utils.library_rules import (
+        compute_directory_size,
+        is_placeholder_game_name,
+        resolve_best_game_name,
+    )
+
     if library_paths is None:
         try:
             from core.steam_helpers import get_steam_libraries
@@ -135,15 +159,40 @@ def scan_acf_files(
             logger.warning(f"[ACFScanner] Could not get steam libraries: {e}")
             library_paths = []
 
+    if owned_appids is None:
+        try:
+            from core.steam_helpers import get_owned_steam_appids
+
+            owned_appids = {str(a).strip() for a in (get_owned_steam_appids() or ()) if str(a).strip()}
+        except Exception as e:
+            logger.debug(f"[ACFScanner] Could not get owned Steam appids: {e}")
+            owned_appids = set()
+
+    if additional_apps is None:
+        additional_apps = set()
+        try:
+            from utils.yaml_config_manager import get_user_config_path
+            from utils.yaml.apps import get_additional_apps
+
+            cfg_path = get_user_config_path()
+            if cfg_path and cfg_path.exists():
+                additional_apps = {
+                    str(a).strip() for a in (get_additional_apps(cfg_path) or []) if str(a).strip()
+                }
+        except Exception as e:
+            logger.debug(f"[ACFScanner] Could not read AdditionalApps: {e}")
+
     # Plugin library for marking AT0-M status
     plugin_games: Dict[str, Any] = {}
     try:
         from utils.plugin_games import get_all_plugin_games
 
         plugin_games = get_all_plugin_games()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[ACFScanner] Could not read plugin library: {e}")
 
+    db_mgr = None
+    db_attempted = False
     results: List[Dict[str, Any]] = []
     seen_appids: set = set()
 
@@ -161,12 +210,15 @@ def scan_acf_files(
                     continue
 
                 acf_path = Path(entry.path)
-                data = _parse_acf_file(acf_path)
+                data = _parse_acf_file(acf_path, resolve_name=False)
                 if not data:
                     continue
 
                 appid = data["appid"]
                 if appid in seen_appids:
+                    continue
+                # AdditionalApps belongs strictly to ASSella/AT0-M; Steam tab is strictly owned games.
+                if appid in additional_apps or appid not in owned_appids:
                     continue
 
                 installdir = data["install_dir"]
@@ -192,60 +244,43 @@ def scan_acf_files(
                     and plugin_record.get("is_accela") is not True
                 )
 
+                meta_data = None
+                meta_json = install_path / ".DepotDownloader" / "metadata.json"
+                if meta_json.exists():
+                    try:
+                        import json
+                        meta_data = json.loads(meta_json.read_text(encoding="utf-8"))
+                    except Exception as e:
+                        logger.debug(f"[ACFScanner] Failed reading {meta_json}: {e}")
+
                 if accela_marker_path and is_valid_plugin:
-                    # Conflict: both ACCELA marker and plugin record exist.
-                    # Compare timestamps to determine the most recent installation method.
-                    plugin_ts = 0
+                    plugin_ts = 0.0
                     try:
                         plugin_ts = float(plugin_record.get("updated_at") or 0)
                     except (ValueError, TypeError):
-                        plugin_ts = 0
+                        plugin_ts = 0.0
 
-                    marker_ts = 0
-                    meta_json = install_path / ".DepotDownloader" / "metadata.json"
-                    if meta_json.exists():
+                    marker_ts = 0.0
+                    if isinstance(meta_data, dict):
                         try:
-                            import json
-                            meta_data = json.loads(meta_json.read_text(encoding="utf-8"))
                             marker_ts = float(meta_data.get("last_updated") or 0)
-                        except Exception:
-                            pass
+                        except (ValueError, TypeError):
+                            marker_ts = 0.0
                     if marker_ts == 0:
                         try:
                             marker_ts = accela_marker_path.stat().st_mtime
                         except OSError:
-                            marker_ts = 0
+                            marker_ts = 0.0
 
                     if marker_ts >= plugin_ts:
-                        # Reinstalled via ASSella more recently -> ASSella wins, purge stale plugin record
-                        try:
-                            from utils.plugin_games import convert_plugin_game_to_accela
-                            convert_plugin_game_to_accela(appid)
-                        except Exception:
-                            pass
                         is_atom = False
                         is_accela = True
                     else:
-                        # Reinstalled via AT0-M more recently -> AT0-M wins, purge legacy marker
-                        try:
-                            import shutil
-                            if accela_marker_path.is_dir():
-                                shutil.rmtree(accela_marker_path, ignore_errors=True)
-                            else:
-                                accela_marker_path.unlink(missing_ok=True)
-                        except Exception:
-                            pass
                         is_atom = True
                         is_accela = False
                 elif accela_marker_path:
                     is_accela = True
                     is_atom = False
-                    if plugin_record and not is_valid_plugin:
-                        try:
-                            from utils.plugin_games import convert_plugin_game_to_accela
-                            convert_plugin_game_to_accela(appid)
-                        except Exception:
-                            pass
                 elif is_valid_plugin:
                     is_atom = True
                     is_accela = False
@@ -253,15 +288,43 @@ def scan_acf_files(
                     is_atom = False
                     is_accela = False
 
+                raw_name = data.get("raw_acf_name", "")
+                plugin_name = plugin_record.get("name") if isinstance(plugin_record, dict) else None
+                if is_placeholder_game_name(raw_name, appid):
+                    if not db_attempted:
+                        db_attempted = True
+                        try:
+                            from managers.db_manager import DatabaseManager
+                            db_mgr = DatabaseManager()
+                        except Exception as e:
+                            logger.debug(f"[ACFScanner] DatabaseManager unavailable: {e}")
+                    game_name = resolve_best_game_name(
+                        appid,
+                        (plugin_name, raw_name),
+                        db_manager=db_mgr,
+                        fallback_installdir=installdir,
+                    )
+                else:
+                    game_name = raw_name
+
+                size_on_disk = int(data.get("size_on_disk") or 0)
+                if size_on_disk <= 0 and isinstance(meta_data, dict):
+                    try:
+                        size_on_disk = int(meta_data.get("size_on_disk") or 0)
+                    except (ValueError, TypeError):
+                        size_on_disk = 0
+                if size_on_disk <= 0:
+                    size_on_disk = compute_directory_size(str(install_path))
+
                 source = "at0-m" if is_atom else ("ACCELA" if is_accela else "Steam")
 
                 game_data = {
                     "appid": appid,
-                    "game_name": data["game_name"],
+                    "game_name": game_name,
                     "install_dir": installdir,
                     "install_path": str(install_path),
                     "library_path": str(lib),
-                    "size_on_disk": data["size_on_disk"],
+                    "size_on_disk": size_on_disk,
                     "appmanifest_path": data["appmanifest_path"],
                     "buildid": data["buildid"],
                     "last_updated": data["last_updated"],
@@ -279,5 +342,5 @@ def scan_acf_files(
         except OSError as e:
             logger.warning(f"[ACFScanner] Error scanning {steamapps_path}: {e}")
 
-    logger.info(f"[ACFScanner] Scanned {len(results)} installed Steam games across {len(library_paths)} libraries")
+    logger.info(f"[ACFScanner] Scanned {len(results)} owned Steam games across {len(library_paths)} libraries")
     return results

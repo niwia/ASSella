@@ -94,7 +94,7 @@ class SelectionMixin:
             if not id_item:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander", "unreleased"):
+            if role in ("missing", "expander", "unreleased", "dlc_base_locked"):
                 continue
             depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
             data = selection_policy.depot_data(self.depots, depot_id)
@@ -120,10 +120,10 @@ class SelectionMixin:
             if id_item is None:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander", "unreleased"):
+            if role in ("missing", "expander", "unreleased", "dlc_base_locked"):
                 continue
             if id_item.data(Qt.ItemDataRole.UserRole + 25):
-                # Owned legitimately on Steam: remains checked & disabled
+                # Suspected Steam-owned: untouched by auto-presets; user toggles explicitly
                 continue
             depot_id = str(id_item.data(Qt.ItemDataRole.UserRole))
             is_wanted = (depot_id in wanted)
@@ -143,11 +143,11 @@ class SelectionMixin:
             return
 
         role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-        if role in ("missing", "unreleased"):
+        if role in ("missing", "unreleased", "dlc_base_locked"):
             return
 
         is_owned = bool(id_item.data(Qt.ItemDataRole.UserRole + 25))
-        if id_item.flags() == Qt.ItemFlag.NoItemFlags or is_owned:
+        if id_item.flags() == Qt.ItemFlag.NoItemFlags:
             sm = self.table_widget.selectionModel()
             if sm:
                 for c in range(self.table_widget.columnCount()):
@@ -175,8 +175,6 @@ class SelectionMixin:
             return
 
         modifiers = QApplication.keyboardModifiers()
-        self._user_interacted = True
-        self._has_saved_selection = True
 
         current_state = id_item.checkState()
         new_state = (
@@ -188,6 +186,33 @@ class SelectionMixin:
         if new_state == Qt.CheckState.Checked and not self._confirm_dlcdata_unlock(id_item):
             return
 
+        needs_owned_confirm = False
+        if not getattr(self, "_suppress_owned_confirm", False):
+            if new_state == Qt.CheckState.Checked and is_owned:
+                needs_owned_confirm = True
+            elif modifiers == Qt.KeyboardModifier.ShiftModifier and self.anchor_row != -1:
+                anchor_item = self.table_widget.item(self.anchor_row, 0)
+                target_state = anchor_item.checkState() if anchor_item else new_state
+                if target_state == Qt.CheckState.Checked:
+                    s_row, e_row = min(self.anchor_row, row), max(self.anchor_row, row)
+                    for r in range(s_row, e_row + 1):
+                        r_item = self.table_widget.item(r, 0)
+                        if (
+                            r_item is not None
+                            and r_item.data(Qt.ItemDataRole.UserRole + 2) in ("normal", "hidden_depot")
+                            and (r_item.flags() & Qt.ItemFlag.ItemIsEnabled)
+                            and bool(r_item.data(Qt.ItemDataRole.UserRole + 25))
+                            and r_item.checkState() != Qt.CheckState.Checked
+                        ):
+                            needs_owned_confirm = True
+                            break
+        if needs_owned_confirm:
+            from ui.dialogs.themed_message_box import confirm_steam_owned_override
+            if not confirm_steam_owned_override(self):
+                return
+
+        self._user_interacted = True
+        self._has_saved_selection = True
         id_item.setCheckState(new_state)
 
         if modifiers == Qt.KeyboardModifier.ShiftModifier:
@@ -205,8 +230,7 @@ class SelectionMixin:
                     r_item = self.table_widget.item(r, 0)
                     if r_item is not None:
                         r_role = r_item.data(Qt.ItemDataRole.UserRole + 2)
-                        r_owned = bool(r_item.data(Qt.ItemDataRole.UserRole + 25))
-                        if r_role in ("normal", "hidden_depot") and (r_item.flags() & Qt.ItemFlag.ItemIsEnabled) and not r_owned:
+                        if r_role in ("normal", "hidden_depot") and (r_item.flags() & Qt.ItemFlag.ItemIsEnabled):
                             r_item.setCheckState(target_state)
                 self.table_widget.blockSignals(False)
         else:
@@ -218,14 +242,14 @@ class SelectionMixin:
         self._update_table_headers()
 
     def _on_table_selection_changed(self):
-        """Immediately deselect any disabled or Steam-owned items so no highlight box appears."""
+        """Immediately deselect any disabled items so no highlight box appears."""
         sm = self.table_widget.selectionModel()
         if not sm:
             return
         to_deselect = []
         for idx in sm.selectedIndexes():
             item = self.table_widget.item(idx.row(), 0)
-            if item and (item.flags() == Qt.ItemFlag.NoItemFlags or item.data(Qt.ItemDataRole.UserRole + 25)):
+            if item and item.flags() == Qt.ItemFlag.NoItemFlags:
                 to_deselect.append(idx)
         if to_deselect:
             self.table_widget.blockSignals(True)
@@ -242,9 +266,7 @@ class SelectionMixin:
             if id_item is None:
                 continue
             role = id_item.data(Qt.ItemDataRole.UserRole + 2)
-            if role in ("missing", "expander", "unreleased"):
-                continue
-            if id_item.data(Qt.ItemDataRole.UserRole + 25):
+            if role in ("missing", "expander", "unreleased", "dlc_base_locked"):
                 continue
             if not (id_item.flags() & Qt.ItemFlag.ItemIsEnabled):
                 continue
@@ -282,6 +304,13 @@ class SelectionMixin:
                     if not self._confirm_dlcdata_unlock(it):
                         return
                     break
+            if any(
+                it.data(Qt.ItemDataRole.UserRole + 25) and it.checkState() != Qt.CheckState.Checked
+                for _i, it in rows
+            ):
+                from ui.dialogs.themed_message_box import confirm_steam_owned_override
+                if not confirm_steam_owned_override(self):
+                    return
         self._user_interacted = True
         self._has_saved_selection = True
         state = Qt.CheckState.Checked if check else Qt.CheckState.Unchecked

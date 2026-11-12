@@ -1,12 +1,20 @@
-name: Mirror Stable Release to Cloudflare R2
+name: Mirror Release to Cloudflare R2
 
 on:
   release:
     types: [published, edited]
   workflow_dispatch:
     inputs:
+      channel:
+        description: 'Release channel to mirror (stable or beta)'
+        required: false
+        default: 'stable'
+        type: choice
+        options:
+          - stable
+          - beta
       tag:
-        description: 'Stable release tag to mirror (leave blank for latest stable release)'
+        description: 'Release tag to mirror (leave blank for latest release in chosen channel)'
         required: false
         default: ''
         type: string
@@ -20,20 +28,25 @@ on:
         required: false
         default: false
         type: boolean
+      allow_rollback:
+        description: 'Allow overwriting R2 channel manifest with an older release'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
-  group: mirror-releases-r2-stable
+  group: mirror-releases-r2-${{ github.event.inputs.channel || (github.event.release.prerelease == true && 'beta' || 'stable') }}
   cancel-in-progress: false
 
 jobs:
-  mirror-stable:
-    name: Mirror Latest Stable Release to R2
+  mirror-release:
+    name: Mirror Latest Release to R2
     runs-on: ubuntu-22.04
     if: >-
       github.repository == 'niwia/ASSella' &&
       (
         github.event_name == 'workflow_dispatch' ||
-        (github.event.release.draft == false && github.event.release.prerelease == false)
+        github.event.release.draft == false
       )
     permissions:
       contents: read
@@ -49,7 +62,7 @@ jobs:
       - name: Install boto3
         run: pip install --no-input boto3
 
-      - name: Mirror Stable Release Assets to R2
+      - name: Mirror Release Assets to R2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           R2_RELEASES_ENDPOINT: ${{ secrets.R2_RELEASES_ENDPOINT }}
@@ -57,13 +70,27 @@ jobs:
           R2_RELEASES_ACCESS_KEY_ID: ${{ secrets.R2_RELEASES_ACCESS_KEY_ID }}
           R2_RELEASES_SECRET_ACCESS_KEY: ${{ secrets.R2_RELEASES_SECRET_ACCESS_KEY }}
           R2_RELEASES_PUBLIC_URL: ${{ secrets.R2_RELEASES_PUBLIC_URL }}
+          INPUT_CHANNEL: ${{ github.event.inputs.channel }}
           INPUT_TAG: ${{ github.event.inputs.tag }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_BRANCH: ${{ github.event.release.target_commitish }}
           INPUT_FORCE: ${{ github.event.inputs.force }}
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+          INPUT_ALLOW_ROLLBACK: ${{ github.event.inputs.allow_rollback }}
         run: |
           set -euo pipefail
-          CMD=(python3 scripts/mirror_release_to_r2.py --channel stable --from-github)
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TARGET_CHANNEL=$(python3 -c 'import os, sys; sys.path.insert(0, "scripts"); from mirror_release_to_r2 import classify_release_channel; print(classify_release_channel(os.environ.get("RELEASE_TAG", ""), prerelease=(os.environ.get("RELEASE_PRERELEASE", "").lower() == "true"), target_commitish=(os.environ.get("RELEASE_BRANCH", "") or None)) or "")')
+            if [ "$TARGET_CHANNEL" != "stable" ] && [ "$TARGET_CHANNEL" != "beta" ]; then
+              echo "[SKIP] Release '${RELEASE_TAG:-}' (prerelease=${RELEASE_PRERELEASE:-}, branch=${RELEASE_BRANCH:-}) resolved to '${TARGET_CHANNEL}', not mirrored to R2."
+              exit 0
+            fi
+          else
+            TARGET_CHANNEL="${INPUT_CHANNEL:-stable}"
+          fi
+
+          CMD=(python3 scripts/mirror_release_to_r2.py --channel "$TARGET_CHANNEL" --from-github --retain-previous 1)
 
           TARGET_TAG="${INPUT_TAG:-${RELEASE_TAG:-}}"
           if [ -n "$TARGET_TAG" ]; then
@@ -75,6 +102,10 @@ jobs:
 
           if [ "${INPUT_FORCE:-false}" != "true" ]; then
             CMD+=(--skip-if-unchanged)
+          fi
+
+          if [ "${INPUT_ALLOW_ROLLBACK:-false}" = "true" ]; then
+            CMD+=(--allow-rollback)
           fi
 
           if [ "${INPUT_DRY_RUN:-false}" = "true" ]; then

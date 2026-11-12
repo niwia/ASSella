@@ -29,6 +29,12 @@ class GoldbergMixin:
 
     _pending_component_prompt: Optional[str] = None
 
+    def _resolve_goldberg_parent(self):
+        """Return the currently active modal/window parent for dialog display."""
+        from ui.dialogs.dialog_raiser import resolve_dialog_parent
+
+        return resolve_dialog_parent(self.main_window)
+
     def _prompt_missing_component(self, key: str) -> None:
         """Show the 'download it in Settings -> Tools' dialog for a component.
 
@@ -37,7 +43,7 @@ class GoldbergMixin:
         """
         from ui.dialogs.settings_tabs.components_card import prompt_component_missing
 
-        prompt_component_missing(self.main_window, key)
+        prompt_component_missing(self._resolve_goldberg_parent(), key)
 
     def _finalize_goldberg(self, auto_apply: bool):
         # 5. Goldberg
@@ -82,7 +88,7 @@ class GoldbergMixin:
         if not target_dirs:
             if show_dialog:
                 ThemedMessageBox.information(
-                    self.main_window,
+                    self._resolve_goldberg_parent(),
                     "No Steam API Files Found",
                     "No steam_api.dll, steam_api64.dll, libsteam_api.so or libsteam_api64.so files were found.",
                 )
@@ -104,7 +110,7 @@ class GoldbergMixin:
 
         if show_dialog:
             ThemedMessageBox.information(
-                self.main_window,
+                self._resolve_goldberg_parent(),
                 "Apply Goldberg",
                 f"Applied Goldberg files to {processed} folder(s).",
             )
@@ -122,7 +128,7 @@ class GoldbergMixin:
         if not target_dirs:
             if show_dialog:
                 ThemedMessageBox.information(
-                    self.main_window,
+                    self._resolve_goldberg_parent(),
                     "No Backups Found",
                     "No .valve backup files were found.",
                 )
@@ -138,7 +144,7 @@ class GoldbergMixin:
 
         if show_dialog:
             ThemedMessageBox.information(
-                self.main_window,
+                self._resolve_goldberg_parent(),
                 "Remove Goldberg",
                 f"Restored originals in {processed} folder(s).",
             )

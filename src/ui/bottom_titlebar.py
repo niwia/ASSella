@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QGraphicsOpacityEffect,
 )
 
+from utils.color_utils import render_svg_pixmap
 from utils.helpers import get_base_path
 from utils.settings import get_settings
 from utils.version import app_version
@@ -25,6 +26,7 @@ from .assets import (
     BOOK_SVG,
     DISCORD_SVG,
     GEAR_SVG,
+    GITHUB_SVG,
     MAXIMIZE,
     MINIMIZE,
     POWER_SVG,
@@ -68,6 +70,7 @@ class BottomTitleBar(QFrame):
         self.search_controller = None
         self.logo_label: Optional[QLabel] = None
         self.version_label: Optional[ClickableLabel] = None
+        self.github_button: Optional[QPushButton] = None
 
         # Buttons
         self.status_button: Optional[QPushButton] = None
@@ -77,8 +80,6 @@ class BottomTitleBar(QFrame):
         self.minimize_button: Optional[QPushButton] = None
         self.maximize_button: Optional[QPushButton] = None
         self.close_button: Optional[QPushButton] = None
-
-        self.update_arrow_label: Optional[QLabel] = None
 
         self._setup_ui()
         self._apply_style()
@@ -143,12 +144,21 @@ class BottomTitleBar(QFrame):
 
         self.logo_label = QLabel()
         logo_path = Paths.resource("logo/icon.svg")
-        if logo_path and logo_path.exists():
-            pixmap = QPixmap(str(logo_path))
-            if not pixmap.isNull():
-                self.logo_label.setPixmap(
-                    pixmap.scaled(20, 20, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                )
+        pixmap = render_svg_pixmap(
+            str(logo_path), 20, dpr=max(1.0, self.devicePixelRatioF())
+        ) if logo_path and logo_path.exists() else QPixmap()
+        if pixmap.isNull():
+            for fallback_rel in ("logo/icon.png", "logo/accela.png"):
+                fb = Paths.resource(fallback_rel)
+                if fb and fb.exists():
+                    fb_pix = QPixmap(str(fb))
+                    if not fb_pix.isNull():
+                        pixmap = fb_pix.scaled(
+                            20, 20, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+                        )
+                        break
+        if not pixmap.isNull():
+            self.logo_label.setPixmap(pixmap)
         self.logo_label.setToolTip("ASSella")
         layout.addWidget(self.logo_label, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addSpacing(6)
@@ -165,19 +175,10 @@ class BottomTitleBar(QFrame):
         self.version_label.setToolTip("View credits")
         layout.addWidget(self.version_label, alignment=Qt.AlignmentFlag.AlignLeft)
 
-        self.update_arrow_label = ClickableLabel(
-            " ⬆ Update Available",
-            self.parent_window,
-            lambda: self.trigger_update_flow()
-        )
-        self.update_arrow_label.setStyleSheet("color: #E05A47; font-weight: bold;")
-        self.update_arrow_label.setToolTip("Click here to apply delta updates (ZSync) now.")
-        self.update_arrow_label.setVisible(False)
-        layout.addWidget(self.update_arrow_label, alignment=Qt.AlignmentFlag.AlignLeft)
-
-        # Pulse fading effect using QGraphicsOpacityEffect & QPropertyAnimation
+        # Pulse fading effect on the version label when an update is available
         self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.update_arrow_label.setGraphicsEffect(self.opacity_effect)
+        self.opacity_effect.setOpacity(1.0)
+        self.version_label.setGraphicsEffect(self.opacity_effect)
 
         self.fade_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
         self.fade_animation.setDuration(3000) # Super slow 3-second cycle
@@ -226,6 +227,12 @@ class BottomTitleBar(QFrame):
             DISCORD_SVG, self._open_discord, "Hubcap Manifest"
         )
         layout.addWidget(self.discord_button)
+
+        self.github_button = self._create_svg_button(
+            GITHUB_SVG, self._open_github_page, "Open ASSella on GitHub"
+        )
+        self.github_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout.addWidget(self.github_button)
 
         self.minimize_button = self._create_svg_button(
             MINIMIZE, self._minimize_window, "Minimize"
@@ -338,6 +345,7 @@ class BottomTitleBar(QFrame):
         """
 
         buttons = [
+            self.github_button,
             self.search_button,
             self.minimize_button,
             self.maximize_button,
@@ -357,6 +365,7 @@ class BottomTitleBar(QFrame):
         accent_color = settings.value("accent_color", "#C06C84")
 
         buttons = [
+            (self.github_button, GITHUB_SVG),
             (self.search_button, SEARCH_SVG),
             (self.minimize_button, MINIMIZE),
             (self.maximize_button, MAXIMIZE),
@@ -495,12 +504,21 @@ class BottomTitleBar(QFrame):
         """Close the window."""
         self.parent_window.close()
 
-    def _open_discord(self) -> None:
-        """Open the Hubcaps Manifest Discord server."""
+    @staticmethod
+    def _open_url(url: str) -> None:
+        """Open an external URL in the default browser."""
         from PyQt6.QtCore import QUrl
         from PyQt6.QtGui import QDesktopServices
 
-        QDesktopServices.openUrl(QUrl("https://discord.gg/hubcapsmanifest"))
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _open_discord(self) -> None:
+        """Open the Hubcaps Manifest Discord server."""
+        self._open_url("https://discord.gg/hubcapsmanifest")
+
+    def _open_github_page(self) -> None:
+        """Open the ASSella GitHub repository."""
+        self._open_url("https://github.com/niwia/ASSella")
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse press for window movement."""
@@ -530,13 +548,16 @@ class BottomTitleBar(QFrame):
         event.accept()
 
     def show_update_indicator(self, show: bool) -> None:
-        """Show or hide the update indicator and start/stop the pulse animation."""
-        if hasattr(self, "update_arrow_label") and self.update_arrow_label:
-            self.update_arrow_label.setVisible(show)
+        """Blink the version label when an update is available."""
+        if hasattr(self, "version_label") and self.version_label:
             if show:
+                self.version_label.setToolTip("Update available — click to view & install")
                 self.fade_animation.start()
             else:
                 self.fade_animation.stop()
+                if hasattr(self, "opacity_effect") and self.opacity_effect:
+                    self.opacity_effect.setOpacity(1.0)
+                self.version_label.setToolTip("View credits")
 
     def trigger_update_flow(self) -> None:
         """Triggers the self-update logic on the main window."""

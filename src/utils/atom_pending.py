@@ -100,12 +100,18 @@ def get_pending_atom_games(installed_appids: Iterable[str]) -> List[Dict[str, An
         if not appid.isdigit() or appid in installed or not isinstance(rec, dict):
             continue
         dlc_only = bool(rec.get("dlc_only"))
-        name = (rec.get("name") or "").strip() or f"App {appid}"
+        raw_rec_name = (rec.get("name") or "").strip()
         installdir = (rec.get("installdir") or "").strip()
 
         acf_path, acf_lib = _find_appmanifest(appid, libraries)
         acf = _read_acf(acf_path) if acf_path else {}
         installdir = installdir or acf.get("installdir", "")
+        from utils.library_rules import resolve_best_game_name
+        name = resolve_best_game_name(
+            appid,
+            (raw_rec_name, acf.get("name")),
+            fallback_installdir=installdir,
+        )
         install_path = ""
         if acf_lib and installdir:
             install_path = os.path.join(acf_lib, "steamapps", "common", installdir)

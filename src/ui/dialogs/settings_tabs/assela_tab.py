@@ -82,16 +82,62 @@ def create_assela_tab(dialog) -> QWidget:
     else:
         dialog.update_channel_combo.setCurrentIndex(0)
 
+    def _trigger_tool_update_recheck():
+        mw = getattr(dialog, "main_window", None)
+        if mw and hasattr(mw, "check_tool_updates"):
+            try:
+                mw.check_tool_updates(force=True)
+            except TypeError:
+                mw.check_tool_updates()
+
     def _on_channel_changed(idx):
         chosen = dialog.update_channel_combo.itemData(idx)
         dialog.settings.setValue("update_channel", chosen)
         dialog.settings.sync()
-        if hasattr(dialog, "main_window") and dialog.main_window and hasattr(dialog.main_window, "check_tool_updates"):
-            dialog.main_window.check_tool_updates()
+        mw = getattr(dialog, "main_window", None)
+        if mw is not None:
+            mw._latest_remote_version = ""
+            mw._latest_update_source = ""
+            mw._latest_update_channel = chosen or ""
+            mw._tool_update_available_flag = False
+            if hasattr(mw, "_update_tool_update_visibility"):
+                mw._update_tool_update_visibility()
+        _trigger_tool_update_recheck()
 
     dialog.update_channel_combo.currentIndexChanged.connect(_on_channel_changed)
     channel_row.addWidget(dialog.update_channel_combo)
     assella_lay.addLayout(channel_row)
+
+    # 1c. Update Server Selector
+    server_row = QHBoxLayout()
+    server_row.setContentsMargins(0, 2, 0, 2)
+    server_lbl = QLabel("Update Server:")
+    server_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
+    server_lbl.setToolTip(
+        "Choose where ASSella checks for and downloads app updates: Auto (GitHub first, R2 fallback on errors), GitHub only, or R2 only."
+    )
+    server_row.addWidget(server_lbl)
+    server_row.addStretch()
+
+    dialog.update_server_combo = ModernComboBox()
+    dialog.update_server_combo.addItem("Auto", "auto")
+    dialog.update_server_combo.addItem("GitHub", "github")
+    dialog.update_server_combo.addItem("R2", "r2")
+    dialog.update_server_combo.setFixedWidth(120)
+
+    saved_server = dialog.settings.value("update_server", "auto", type=str).strip().lower()
+    s_idx = dialog.update_server_combo.findData(saved_server)
+    dialog.update_server_combo.setCurrentIndex(s_idx if s_idx >= 0 else 0)
+
+    def _on_server_changed(idx):
+        chosen = dialog.update_server_combo.itemData(idx) or "auto"
+        dialog.settings.setValue("update_server", chosen)
+        dialog.settings.sync()
+        _trigger_tool_update_recheck()
+
+    dialog.update_server_combo.currentIndexChanged.connect(_on_server_changed)
+    server_row.addWidget(dialog.update_server_combo)
+    assella_lay.addLayout(server_row)
 
     if dialog.settings.value("use_experimental_ddm") is None:
         dialog.settings.setValue("use_experimental_ddm", True)

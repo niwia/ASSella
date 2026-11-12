@@ -48,6 +48,8 @@ class TaskManager(
 ):
     achievements_checked = pyqtSignal(bool, int)
     handoff_status_updated = pyqtSignal(str)
+    steamless_manual_started = pyqtSignal(str)
+    steamless_manual_finished = pyqtSignal()
 
     def __init__(self, main_window):
         super().__init__(parent=main_window)
@@ -103,9 +105,11 @@ class TaskManager(
         # Progress tracking
         self._steamless_progress_log = []
         self._steamless_game_name = ""
+        self._steamless_appid = ""
 
         # Status tracking
         self._last_steamless_success = None
+        self._last_steamless_summary: Optional[Dict[str, Any]] = None
         self._steamless_ran = False
         self._steamless_error = False
         self._last_slscheevo_success = None

@@ -455,4 +455,57 @@ def make_svg_icon(svg_path: str, color: str, size: int = 20):
         return QIcon()
 
 
+def render_svg_pixmap(
+    svg_path: str,
+    width: int,
+    height: Optional[int] = None,
+    dpr: float = 1.0,
+) -> QPixmap:
+    """Render an SVG file crisply at the requested logical size and device pixel ratio."""
+    try:
+        from PyQt6.QtGui import QPainter
+        from PyQt6.QtSvg import QSvgRenderer
+
+        target_h = width if height is None else height
+        safe_dpr = max(1.0, float(dpr or 1.0))
+        px = QPixmap(max(1, round(width * safe_dpr)), max(1, round(target_h * safe_dpr)))
+        px.fill(Qt.GlobalColor.transparent)
+        renderer = QSvgRenderer(str(svg_path))
+        if not renderer.isValid():
+            return QPixmap()
+        painter = QPainter(px)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        renderer.render(painter)
+        painter.end()
+        px.setDevicePixelRatio(safe_dpr)
+        return px
+    except Exception as e:
+        logger.debug(f"render_svg_pixmap: failed to render '{svg_path}': {e}")
+        return QPixmap()
+
+
+def load_assella_app_icon():
+    """Load the ASSella window/application QIcon, preferring icon.svg with ICO/PNG fallbacks."""
+    from PyQt6.QtGui import QIcon
+    from utils.paths import Paths
+
+    icon = QIcon()
+    svg_path = Paths.resource("logo/icon.svg")
+    if svg_path.exists():
+        for sz in (16, 24, 32, 48, 64, 128, 256):
+            px = render_svg_pixmap(str(svg_path), sz)
+            if not px.isNull():
+                icon.addPixmap(px)
+        if not icon.isNull():
+            return icon
+
+    for rel in ("logo/icon.ico", "logo/icon.png", "logo/accela.png"):
+        fallback = Paths.resource(rel)
+        if fallback.exists():
+            icon = QIcon(str(fallback))
+            if not icon.isNull():
+                return icon
+    return icon
+
+
 

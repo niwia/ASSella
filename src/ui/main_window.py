@@ -6,8 +6,9 @@ import time
 from collections import deque
 from typing import Dict, Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QMetaObject, Q_ARG
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QMetaObject, Q_ARG, QUrl
 from PyQt6.QtGui import (
+    QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
     QIcon,
@@ -45,7 +46,7 @@ from utils.web_server import WebServerManager, get_local_ip
 from utils.settings import get_settings
 from utils.task_runner import TaskRunner
 from datetime import datetime, timezone
-from utils.version import app_version, check_for_updates
+from utils.version import app_version, check_for_updates, get_effective_update_channel, normalize_update_server
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +249,9 @@ class MainWindow(QMainWindow):
         self._tool_update_status = "checking"
         self._tool_update_available_flag = False
         self._tool_update_check_running = False
+        self._tool_update_recheck = False
         self._latest_remote_version = ""
+        self._latest_update_source = ""
         # Track appids whose manifests have already been auto-fetched in this session
         self._autofetched_appids: set = set()
 
@@ -502,11 +505,12 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setGeometry(100, 100, 800, 350)
 
-        icon_path = Paths.resource("logo/icon.ico")
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
+        from utils.color_utils import load_assella_app_icon
+        app_icon = load_assella_app_icon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         else:
-            logger.warning(f"Could not find window icon at: {icon_path}")
+            logger.warning("Could not load window icon from logo/icon.svg or fallbacks.")
 
         if sys.platform == "win32":
             MainWindow._setup_windows_taskbar()
@@ -1820,26 +1824,32 @@ class MainWindow(QMainWindow):
         # ASSella Status
         if hasattr(self, "assella_status_value") and self.assella_status_value:
             tool_status = getattr(self, "_tool_update_status", "checking")
+            source_label = {
+                "github": "GitHub",
+                "r2": "R2",
+                "github_raw": "GitHub Raw",
+            }.get(getattr(self, "_latest_update_source", ""), "")
+            via_suffix = f" (via {source_label})" if source_label else ""
             if tool_status == "update_available":
                 self.assella_status_value.setText("Update!")
                 self.assella_status_value.setStyleSheet(self._get_status_style("warning"))
                 self.assella_status_value.setToolTip(
-                    f"New version available: {getattr(self, '_latest_remote_version', '')}"
+                    f"New version available: {getattr(self, '_latest_remote_version', '')}{via_suffix}"
                 )
             elif tool_status == "up_to_date":
                 self.assella_status_value.setText("Latest")
                 self.assella_status_value.setStyleSheet(self._get_status_style("success"))
-                self.assella_status_value.setToolTip(f"ASSella is up to date (v{app_version})")
+                self.assella_status_value.setToolTip(f"ASSella is up to date (v{app_version}{via_suffix})")
             elif tool_status in ("offline", "error", "cant_check"):
                 self.assella_status_value.setText("Can't Check")
                 self.assella_status_value.setStyleSheet(self._get_status_style("error"))
                 self.assella_status_value.setToolTip(
-                    f"Could not check for ASSella updates (Offline or GitHub unreachable)\nCurrent version: v{app_version}"
+                    f"Could not check for ASSella updates (update server unreachable)\nCurrent version: v{app_version}"
                 )
             else:
                 self.assella_status_value.setText("Checking...")
                 self.assella_status_value.setStyleSheet(self._get_status_style("neutral"))
-                self.assella_status_value.setToolTip("Checking GitHub for tool updates...")
+                self.assella_status_value.setToolTip("Checking for tool updates...")
 
         # Library Size Stats
         if hasattr(self, "library_size_value") and self.library_size_value:
@@ -2755,7 +2765,6 @@ class MainWindow(QMainWindow):
         super().paintEvent(event)
         from PyQt6.QtGui import QPainter, QLinearGradient, QPixmap
         from PyQt6.QtCore import Qt
-        from utils.paths import Paths
 
         settings = self.settings
         preset = settings.value("material_preset", "ocean", type=str) if settings else "ocean"
@@ -2857,43 +2866,65 @@ class MainWindow(QMainWindow):
         self.titlebar_position = position
         logger.info(f"Titlebar repositioned to: {position}")
 
-    def check_tool_updates(self) -> None:
-        """Start a background thread to check for tool self-updates from GitHub."""
+    def check_tool_updates(self, force: bool = False) -> None:
+        """Start a background thread to check for tool self-updates."""
         import threading
-        import urllib.request
 
         # Prevent multiple concurrent checks from running at the same time
         if self._tool_update_check_running:
+            if force:
+                self._tool_update_recheck = True
             logger.debug("Tool update check already in progress, skipping.")
             return
+        self._tool_update_recheck = False
         self._tool_update_check_running = True
         self._tool_update_status = "checking"
         self.refresh_system_status()
 
+        configured_channel = self.settings.value("update_channel", "").strip().lower()
+        configured_server = self.settings.value("update_server", "auto", type=str).strip().lower()
+        target_channel = get_effective_update_channel(configured_channel, app_version)
+        prev_channel = str(getattr(self, "_latest_update_channel", "") or "").strip().lower()
+        if prev_channel and prev_channel != target_channel:
+            self._latest_remote_version = ""
+            self._latest_update_source = ""
+            self._tool_update_available_flag = False
+            self._latest_update_channel = target_channel
+            self._update_tool_update_visibility()
+
         def _check_sync():
             status = "offline"
             remote_clean = None
+            remote_source = ""
+            remote_channel = target_channel
             try:
-                configured_channel = self.settings.value("update_channel", "").strip().lower()
-                res = check_for_updates(configured_channel=configured_channel, current_version=app_version)
+                res = check_for_updates(
+                    configured_channel=configured_channel,
+                    current_version=app_version,
+                    update_server=configured_server,
+                )
                 status = res["status"]
                 remote_clean = res["remote_version"]
+                remote_source = res.get("source") or ""
+                remote_channel = res.get("channel") or target_channel
                 if not configured_channel or configured_channel not in ("stable", "beta", "canary"):
                     self.settings.setValue("update_channel", res["channel"])
 
                 if status == "update_available":
                     if res.get("is_cross_channel"):
                         logger.info(
-                            f"Cross-channel update available: {remote_clean} (channel: {res['channel']}, current: {res['local_version']})"
+                            f"Cross-channel update available: {remote_clean} (channel: {res['channel']}, server: {remote_source or configured_server}, current: {res['local_version']})"
                         )
                     else:
-                        logger.info(f"Tool update available: {remote_clean} (current: {res['local_version']})")
+                        logger.info(
+                            f"Tool update available: {remote_clean} (server: {remote_source or configured_server}, current: {res['local_version']})"
+                        )
                 elif status == "up_to_date":
-                    logger.info(f"Tool is up to date ({res['local_version']})")
+                    logger.info(f"Tool is up to date ({res['local_version']}, via {remote_source or configured_server})")
                 else:
                     logger.debug(f"Tool update check offline/unresolved: {res.get('error')}")
             except Exception as e:
-                logger.warning(f"Failed to check tool updates from GitHub: {e}")
+                logger.warning(f"Failed to check tool updates: {e}")
                 status = "offline"
             finally:
                 self._tool_update_check_running = False
@@ -2902,23 +2933,49 @@ class MainWindow(QMainWindow):
                     "_on_tool_update_result",
                     Qt.ConnectionType.QueuedConnection,
                     Q_ARG(str, status),
-                    Q_ARG(str, remote_clean or "")
+                    Q_ARG(str, remote_clean or ""),
+                    Q_ARG(str, remote_source),
+                    Q_ARG(str, remote_channel),
                 )
 
         t = threading.Thread(target=_check_sync, daemon=True)
         t.start()
 
     @pyqtSlot(str, str)
-    def _on_tool_update_result(self, status: str, remote_version: str = "") -> None:
+    @pyqtSlot(str, str, str)
+    @pyqtSlot(str, str, str, str)
+    def _on_tool_update_result(
+        self,
+        status: str,
+        remote_version: str = "",
+        remote_source: str = "",
+        remote_channel: str = "",
+    ) -> None:
         """Slot triggered when tool self-update check finishes."""
+        active_channel = get_effective_update_channel(
+            str(self.settings.value("update_channel", "") or "").strip().lower(),
+            app_version,
+        )
+        if remote_channel and remote_channel != active_channel:
+            if getattr(self, "_tool_update_recheck", False):
+                self._tool_update_recheck = False
+                self.check_tool_updates()
+            return
         self._tool_update_status = status
+        self._latest_update_source = remote_source
+        if remote_channel:
+            self._latest_update_channel = remote_channel
         if status == "update_available":
             self._latest_remote_version = remote_version
             self._tool_update_available_flag = True
         else:
+            self._latest_remote_version = ""
             self._tool_update_available_flag = False
         self._update_tool_update_visibility()
         self.refresh_system_status()
+        if getattr(self, "_tool_update_recheck", False):
+            self._tool_update_recheck = False
+            self.check_tool_updates()
 
     @pyqtSlot(str)
     def _on_tool_update_available(self, remote_version: str = "") -> None:
@@ -2947,11 +3004,55 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_update_failed(self, error_msg: str) -> None:
-        ThemedMessageBox.warning(
-            self,
-            "Update Failed",
-            f"Failed to download or apply the update.\n\nError: {error_msg}"
+        mgr = getattr(self, "app_update_manager", None)
+        failed_server = getattr(mgr, "_last_failed_server", None) or normalize_update_server(
+            str(self.settings.value("update_server", "auto") or "auto")
         )
+        channel = get_effective_update_channel(
+            str(self.settings.value("update_channel", "") or "").strip().lower(),
+            app_version,
+        )
+        inst_branch = "main" if channel == "stable" else "beta"
+        releases_url = "https://github.com/niwia/ASSella/releases"
+        install_cmd = f"curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/{inst_branch}/install.sh | bash"
+        body = (
+            f"Failed to download or apply the update.\n\nError: {error_msg}\n\n"
+            f"GitHub Releases:\n{releases_url}\n\n"
+            f"Manual installer command:\n{install_cmd}"
+        )
+
+        if failed_server == "github" and channel in ("stable", "beta"):
+            choice = ThemedMessageBox.choices(
+                self,
+                "Update Failed",
+                body,
+                [("Try R2 Mirror", "r2"), ("Open GitHub Releases", "releases"), ("Close", "close")],
+                default="r2",
+                severity="warning",
+                informative=(
+                    "Update Server is set to GitHub only. You can retry with Cloudflare R2, "
+                    "or download manually / run install.sh from GitHub."
+                ),
+            )
+            if choice == "r2" and mgr is not None:
+                mgr.run_self_update(server_override="r2", skip_prompt=True)
+                return
+        else:
+            choice = ThemedMessageBox.choices(
+                self,
+                "Update Failed",
+                body,
+                [("Open GitHub Releases", "releases"), ("Close", "close")],
+                default="close",
+                severity="warning",
+                informative=(
+                    "Automatic delta and full-download sources failed. Please download the latest "
+                    "AppImage manually or run the install script from GitHub."
+                ),
+            )
+
+        if choice == "releases":
+            QDesktopServices.openUrl(QUrl(releases_url))
 
     @staticmethod
     def _cleanup_logging() -> None:
