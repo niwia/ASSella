@@ -382,14 +382,6 @@ class LibraryFilterSortMixin:
                     steam_unmanaged.append(prepared)
                     seen_steam_aids.add(aid)
 
-        # Update tab counts on the bar
-        accela_total = sum(
-            1
-            for g in all_manager_games
-            if g.get("is_accela_install")
-            and not game_is_dlc_only(g)
-            and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
-        )
         # AT0-M games that are registered but not on disk yet (added / queued in Steam).
         try:
             from utils.atom_pending import get_pending_atom_games
@@ -399,6 +391,24 @@ class LibraryFilterSortMixin:
             logger.debug(f"[Library] Pending AT0-M games unavailable: {e}")
             pending_atom = []
         self._pending_atom_games = pending_atom
+
+        # ASSella games that are in AdditionalApps but not on disk yet.
+        try:
+            from utils.assella_pending import get_pending_assella_games
+            installed_aids = {str(g.get("appid", "")).strip() for g in all_manager_games}
+            pending_assella = get_pending_assella_games(installed_aids)
+        except Exception as e:
+            logger.debug(f"[Library] Pending ASSella games unavailable: {e}")
+            pending_assella = []
+        self._pending_assella_games = pending_assella
+
+        accela_total = sum(
+            1
+            for g in all_manager_games
+            if g.get("is_accela_install")
+            and not game_is_dlc_only(g)
+            and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
+        ) + len(pending_assella)
         atom_total = sum(
             1
             for g in all_manager_games
@@ -427,7 +437,7 @@ class LibraryFilterSortMixin:
                 if g.get("is_accela_install")
                 and not game_is_dlc_only(g)
                 and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
-            ]
+            ] + list(pending_assella)
         
         games = self._sort_games(games)
 

@@ -187,6 +187,30 @@ class GameItemWidget(QWidget):
         self._init_ui(size_str)
         if game_data.get("atom_pending"):
             self._apply_pending()
+        elif game_data.get("assella_pending"):
+            self._apply_assella_pending()
+
+    def _apply_assella_pending(self) -> None:
+        """ASSella game that is registered in AdditionalApps but not downloaded."""
+        lbl = getattr(self, "status_label", None)
+        if lbl is not None:
+            lbl.setText("Not downloaded")
+            lbl.setVisible(True)
+            lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            color = self.accent_color or "#a1c9fd"
+            lbl.setStyleSheet(
+                f"color: {color}; background-color: rgba(255,255,255,0.06); border: 1px solid {color};"
+                " border-radius: 10px; padding: 3px 10px; font-size: 11px; font-weight: bold;"
+            )
+            lbl.setToolTip("In SLSsteam AdditionalApps; no game files on disk yet.")
+        ml = getattr(self, "manifest_label", None)
+        if ml is not None:
+            ml.setText("Not downloaded yet")
+            ml.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
+        for attr in ("pinned_build_label",):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setVisible(False)
 
     def _apply_pending(self) -> None:
         """AT0-M game that is registered but not downloaded: say so instead of a status."""
@@ -431,7 +455,7 @@ class GameItemWidget(QWidget):
         """Update the manifest status label in-place."""
         if not hasattr(self, "manifest_label") or not self.manifest_label:
             return
-        if self.game_data.get("atom_pending"):
+        if self.game_data.get("atom_pending") or self.game_data.get("assella_pending"):
             return
 
         appid = self.game_data.get("appid", "0")
@@ -525,6 +549,9 @@ class GameItemWidget(QWidget):
         """Update update and manifest status labels in-place."""
         if self.game_data.get("atom_pending"):
             self._apply_pending()
+            return
+        if self.game_data.get("assella_pending"):
+            self._apply_assella_pending()
             return
         is_accela = bool(self.game_data.get("accela_marker_path") or self.game_data.get("source") == "ACCELA")
         is_at0m_game = not is_accela and bool(

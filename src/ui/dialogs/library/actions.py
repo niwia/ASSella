@@ -323,6 +323,12 @@ class LibraryActionsMixin:
                 self._show_pending_atom_dialog(game_data)
             return
 
+        # Registered-but-not-downloaded ASSella game: its own dialog
+        if game_data.get("assella_pending"):
+            if not self._select_mode and not self._dialog_open:
+                self._show_pending_assella_dialog(game_data)
+            return
+
         # In select mode: toggle selection, don't open dialog
         if self._select_mode:
             appid = str(game_data.get("appid", "0"))
@@ -359,6 +365,23 @@ class LibraryActionsMixin:
             dlg.exec()
             if dlg.removed:
                 self._refresh_game_list()
+        finally:
+            self._dialog_open = False
+
+    def _show_pending_assella_dialog(self, game_data: dict) -> None:
+        from ui.dialogs.assella_pending_dialog import AssellaPendingDialog
+
+        self._dialog_open = True
+        try:
+            dlg = AssellaPendingDialog(game_data, self, getattr(self, "accent_color", "#a1c9fd"))
+            dlg.exec()
+            if getattr(dlg, "removed", False):
+                name = game_data.get("game_name") or f"App {game_data.get('appid')}"
+                if hasattr(self, "info_label") and self.info_label:
+                    self.info_label.setText(f"[OK] Removed {name} from AdditionalApps")
+                self._refresh_game_list()
+            elif getattr(dlg, "download_requested", False):
+                self._fetch_game_manifest(game_data)
         finally:
             self._dialog_open = False
 
@@ -1559,6 +1582,9 @@ class LibraryActionsMixin:
             return
         if game_data.get("atom_pending"):
             self._show_pending_atom_dialog(game_data)
+            return
+        if game_data.get("assella_pending"):
+            self._show_pending_assella_dialog(game_data)
             return
 
         # For Steam tab games, offer DLC download and open folder options
