@@ -57,6 +57,9 @@ STEAM_DIR=""
 SLS_CONFIG_DIR=""
 SLS_CONFIG_FILE=""
 HEADCRAB_INSTALLED=false
+DISTRO_ID="unknown"
+DISTRO_NAME="Generic Linux"
+DISTRO_LIKE=""
 IS_STEAM_DECK=false
 IS_NIXOS=false
 IS_CACHYOS=false
@@ -201,25 +204,27 @@ detect_distro() {
 
 detect_distro_family() {
     local family="unknown"
-    if [ "$IS_STEAM_DECK" = true ]; then
+    local distro_id="${DISTRO_ID:-unknown}"
+    local distro_like="${DISTRO_LIKE:-}"
+    if [ "${IS_STEAM_DECK:-false}" = true ]; then
         family="arch"
-    elif [ "$DISTRO_ID" = "bazzite" ] || [ "$DISTRO_ID" = "chimeraos" ] || [ "$DISTRO_ID" = "holoiso" ]; then
+    elif [ "$distro_id" = "bazzite" ] || [ "$distro_id" = "chimeraos" ] || [ "$distro_id" = "holoiso" ]; then
         family="arch"
-    elif [[ "$DISTRO_ID" == "fedora" || "$DISTRO_ID" == "rhel" || "$DISTRO_ID" == "centos" || "$DISTRO_ID" == "nobara" || "$DISTRO_LIKE" =~ "fedora" || "$DISTRO_LIKE" =~ "rhel" ]]; then
+    elif [[ "$distro_id" == "fedora" || "$distro_id" == "rhel" || "$distro_id" == "centos" || "$distro_id" == "nobara" || "$distro_like" =~ "fedora" || "$distro_like" =~ "rhel" ]]; then
         family="fedora"
-    elif [[ "$DISTRO_ID" == "debian" || "$DISTRO_ID" == "ubuntu" || "$DISTRO_ID" == "linuxmint" || "$DISTRO_ID" == "pop" || "$DISTRO_LIKE" =~ "debian" || "$DISTRO_LIKE" =~ "ubuntu" ]]; then
+    elif [[ "$distro_id" == "debian" || "$distro_id" == "ubuntu" || "$distro_id" == "linuxmint" || "$distro_id" == "pop" || "$distro_like" =~ "debian" || "$distro_like" =~ "ubuntu" ]]; then
         family="debian"
-    elif [[ "$DISTRO_ID" == "arch" || "$DISTRO_ID" == "cachyos" || "$DISTRO_ID" == "manjaro" || "$DISTRO_ID" == "endeavouros" || "$DISTRO_LIKE" =~ "arch" ]]; then
+    elif [[ "$distro_id" == "arch" || "$distro_id" == "cachyos" || "$distro_id" == "manjaro" || "$distro_id" == "endeavouros" || "$distro_like" =~ "arch" ]]; then
         family="arch"
-    elif [[ "$DISTRO_ID" =~ opensuse || "$DISTRO_ID" =~ suse || "$DISTRO_LIKE" =~ opensuse || "$DISTRO_LIKE" =~ suse ]]; then
+    elif [[ "$distro_id" =~ opensuse || "$distro_id" =~ suse || "$distro_like" =~ opensuse || "$distro_like" =~ suse ]]; then
         family="opensuse"
-    elif [[ "$DISTRO_ID" == "alpine" ]]; then
+    elif [[ "$distro_id" == "alpine" ]]; then
         family="alpine"
-    elif [[ "$DISTRO_ID" == "void" ]]; then
+    elif [[ "$distro_id" == "void" ]]; then
         family="void"
-    elif [[ "$DISTRO_ID" == "solus" ]]; then
+    elif [[ "$distro_id" == "solus" ]]; then
         family="solus"
-    elif [[ "$DISTRO_ID" == "gentoo" ]]; then
+    elif [[ "$distro_id" == "gentoo" ]]; then
         family="gentoo"
     fi
     echo "$family"
@@ -371,7 +376,7 @@ check_and_warn_fuse() {
     echo -e "ASSella AppImage requires fuse2 to run on your system."
 
     if [ -n "$cmd" ]; then
-        echo -e "If the AppImage does not launch, install fuse2 on ${BOLD}$DISTRO_NAME${NC}:"
+        echo -e "If the AppImage does not launch, install fuse2 on ${BOLD}${DISTRO_NAME:-Generic Linux}${NC}:"
         echo -e "  ${GREEN}$cmd${NC}\n"
     else
         echo -e "If the AppImage does not launch, please install fuse2 / libfuse2 using your package manager.\n"
@@ -857,7 +862,7 @@ show_distro_guide() {
         local family
         family=$(detect_distro_family)
         local cmd="${PKG_FUSE_CMD[$family]:-}"
-        echo -e "${CYAN}${BOLD}AppImage FUSE Requirements for $DISTRO_NAME:${NC}"
+        echo -e "${CYAN}${BOLD}AppImage FUSE Requirements for ${DISTRO_NAME:-Generic Linux}:${NC}"
         echo -e "Modern Linux systems require ${GREEN}fuse2${NC} (libfuse.so.2) to execute AppImages.\n"
         if [ -n "$cmd" ]; then
             echo -e "  ${BOLD}Install command:${NC}"
