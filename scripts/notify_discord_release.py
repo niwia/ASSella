@@ -202,8 +202,9 @@ def send_discord_notification(webhook_url: str, payload: dict) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send release announcement to Discord webhook")
-    parser.add_argument("--channel", default=os.getenv("RELEASE_CHANNEL", "stable"), help="Release channel")
+    parser.add_argument("--channel", default=os.getenv("RELEASE_CHANNEL", ""), help="Release channel")
     parser.add_argument("--tag", default=os.getenv("RELEASE_TAG", "v0.0.0"), help="Release tag")
+    parser.add_argument("--body", default=os.getenv("RELEASE_BODY", ""), help="Release notes text")
     parser.add_argument("--body-file", default=os.getenv("RELEASE_BODY_FILE", ""), help="Path to release notes file")
     parser.add_argument("--repo", default=os.getenv("GITHUB_REPOSITORY", "niwia/ASSella"), help="GitHub repository")
     parser.add_argument("--commit", default=os.getenv("GITHUB_SHA", ""), help="Commit SHA")
@@ -212,8 +213,19 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    body_text = ""
-    if args.body_file and Path(args.body_file).exists():
+    # Determine channel from tag if not provided
+    channel = args.channel.strip().lower()
+    lower_tag = args.tag.strip().lower()
+    if not channel or channel == "auto":
+        if "canary" in lower_tag or "testing" in lower_tag:
+            channel = "canary"
+        elif "beta" in lower_tag or "dev" in lower_tag or "rc" in lower_tag:
+            channel = "beta"
+        else:
+            channel = "stable"
+
+    body_text = args.body or ""
+    if not body_text and args.body_file and Path(args.body_file).exists():
         try:
             body_text = Path(args.body_file).read_text(encoding="utf-8", errors="ignore")
         except Exception as e:
@@ -221,7 +233,7 @@ def main() -> int:
 
     payload = build_payload(
         tag=args.tag,
-        channel=args.channel,
+        channel=channel,
         body=body_text,
         repo=args.repo,
         commit=args.commit,
@@ -232,7 +244,7 @@ def main() -> int:
         print("[DRY-RUN] Discord Payload:\n" + json.dumps(payload, indent=2))
         return 0
 
-    webhook_url = resolve_webhook_url(args.channel)
+    webhook_url = resolve_webhook_url(channel)
     if not webhook_url:
         logger.info(
             f"No Discord webhook configured for channel '{args.channel}'. "
