@@ -1,4 +1,7 @@
+import logging
 from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, pyqtProperty, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
@@ -306,8 +309,8 @@ class FontSelectionDialog(QDialog):
             from ui.theme import register_application_fonts
 
             register_application_fonts()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[FontSelectionDialog] Could not register application fonts: %s", e)
 
         from ui.dialogs.themed_dialog import install_themed_frame
 
