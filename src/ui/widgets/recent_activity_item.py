@@ -60,7 +60,7 @@ class RecentActivityItemWidget(QFrame):
 
                 if is_patch:
                     tot_str = SimplifiedTerminalWidget._format_size(total_size)
-                    stat_text = f"<span style='color: #2ECC71;'>Success</span> • {size_str} patch ({tot_str}) in {dur_str} ({speed_str})"
+                    stat_text = f"<span style='color: #2ECC71;'>Success</span> • {size_str} <i>patch</i> ({tot_str}) in {dur_str} ({speed_str})"
                 else:
                     stat_text = f"<span style='color: #2ECC71;'>Success</span> • {size_str} in {dur_str} ({speed_str})"
             elif total_size > 0:
@@ -75,6 +75,15 @@ class RecentActivityItemWidget(QFrame):
 
         ach_status = self.entry.get("ach_status", "Skipped")
         steamless_status = self.entry.get("steamless_status", "Skipped")
+        hide_ach_drm = (
+            str(ach_status).strip().lower() == "skipped"
+            and str(steamless_status).strip().lower() == "skipped"
+        )
+        ach_drm_html = (
+            ""
+            if hide_ach_drm
+            else f'<br/>\n            <span style="color: #AAAAAA; font-size: 8pt;">Ach: {ach_status} • DRM: {steamless_status}</span>'
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -87,9 +96,7 @@ class RecentActivityItemWidget(QFrame):
             <span style="color: #FFFFFF; font-weight: bold; font-size: 9pt;">{display_name}</span>
             <span style="color: #888888; font-size: 8pt; float: right;">[{time_str}]</span>
             <br/>
-            <span style="color: #DDDDDD; font-size: 8pt;">{stat_text}</span>
-            <br/>
-            <span style="color: #AAAAAA; font-size: 8pt;">Ach: {ach_status} • DRM: {steamless_status}</span>
+            <span style="color: #DDDDDD; font-size: 8pt;">{stat_text}</span>{ach_drm_html}
         </div>
         """)
         lbl.setWordWrap(True)

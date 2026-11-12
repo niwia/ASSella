@@ -96,6 +96,49 @@ class UpdatesPanel(QFrame):
             if main_win and hasattr(main_win, "position_update_all_btn"):
                 main_win.position_update_all_btn()
 
+def _build_faded_artwork(pixmap, target_size):
+    """Scale artwork to cover target_size and apply a smooth S-curve left fade."""
+    from PyQt6.QtGui import QPainter, QLinearGradient, QPixmap
+
+    if pixmap is None or pixmap.isNull() or target_size.width() <= 0 or target_size.height() <= 0:
+        return QPixmap()
+
+    scaled = pixmap.scaled(
+        target_size,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    sx = max(0, (scaled.width() - target_size.width()) // 2)
+    sy = max(0, (scaled.height() - target_size.height()) // 2)
+
+    faded = QPixmap(target_size)
+    faded.fill(Qt.GlobalColor.transparent)
+    p = QPainter(faded)
+    p.drawPixmap(0, 0, scaled, sx, sy, target_size.width(), target_size.height())
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+
+    # Multi-stop smoothstep S-curve alpha mask from left edge (0) to right edge (~238)
+    alpha_grad = QLinearGradient(0.0, 0.0, float(target_size.width()), 0.0)
+    fade_span = 0.72
+    steps = 10
+    for i in range(steps + 1):
+        u = i / steps
+        s = u * u * (3.0 - 2.0 * u)
+        alpha_grad.setColorAt(u * fade_span, QColor(0, 0, 0, int(round(s * 225))))
+    alpha_grad.setColorAt(1.0, QColor(0, 0, 0, 238))
+    p.fillRect(0, 0, target_size.width(), target_size.height(), alpha_grad)
+
+    # Subtle vertical edge softening so artwork blends smoothly near top/bottom borders
+    v_grad = QLinearGradient(0.0, 0.0, 0.0, float(target_size.height()))
+    v_grad.setColorAt(0.0, QColor(0, 0, 0, 200))
+    v_grad.setColorAt(0.16, QColor(0, 0, 0, 255))
+    v_grad.setColorAt(0.84, QColor(0, 0, 0, 255))
+    v_grad.setColorAt(1.0, QColor(0, 0, 0, 200))
+    p.fillRect(0, 0, target_size.width(), target_size.height(), v_grad)
+    p.end()
+    return faded
+
+
 class UpdateItemWidget(QFrame):
     """One row of the pending-updates list.
 
@@ -163,7 +206,7 @@ class UpdateItemWidget(QFrame):
             self.badge = QLabel(badge_text)
             self.badge.setStyleSheet(
                 f"color: {badge_color}; font-size: 8pt; font-weight: bold;"
-                f"background: transparent; border: 1px solid {badge_color};"
+                f"background: rgba(18, 18, 22, 195); border: 1px solid {badge_color};"
                 f"border-radius: 7px; padding: 1px 6px;"
             )
             self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -246,54 +289,43 @@ class UpdateItemWidget(QFrame):
             self.update()
 
     def paintEvent(self, event):
-        from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen, QPixmap
+        from PyQt6.QtGui import QPainter, QPainterPath, QPen
         from PyQt6.QtCore import QRect
-        
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+
         rect = self.rect()
-        bg_color = QColor(35, 35, 35) if self.underMouse() else QColor(25, 25, 25)
-        
+        hovered = self.underMouse()
+        bg_color = QColor(34, 34, 38) if hovered else QColor(24, 24, 27)
+
         path = QPainterPath()
         path.addRoundedRect(float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 6.0, 6.0)
         painter.setClipPath(path)
-        
+
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(bg_color)
         painter.drawRect(rect)
-        
+
         if self.pixmap and not self.pixmap.isNull():
-            img_h = rect.height()
-            img_w = int(img_h * (self.pixmap.width() / max(self.pixmap.height(), 1)))
-            target_rect = QRect(rect.width() - img_w, 0, img_w, rect.height())
+            natural_w = int(rect.height() * (self.pixmap.width() / max(self.pixmap.height(), 1)))
+            target_w = min(rect.width(), max(natural_w, int(rect.width() * 0.65)))
+            target_rect = QRect(rect.width() - target_w, 0, target_w, rect.height())
 
             if self._scaled_pixmap is None or self._scaled_pixmap.size() != target_rect.size():
-                scaled = self.pixmap.scaled(
-                    target_rect.size(),
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                faded = QPixmap(scaled.size())
-                faded.fill(Qt.GlobalColor.transparent)
-                p = QPainter(faded)
-                p.drawPixmap(0, 0, scaled)
-                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+                self._scaled_pixmap = _build_faded_artwork(self.pixmap, target_rect.size())
 
-                fade_w = min(int(scaled.width() * 0.5), 70)
-                alpha_grad = QLinearGradient(0.0, 0.0, float(fade_w), 0.0)
-                alpha_grad.setColorAt(0.0, QColor(0, 0, 0, 0))
-                alpha_grad.setColorAt(0.3, QColor(0, 0, 0, 80))
-                alpha_grad.setColorAt(1.0, QColor(0, 0, 0, 255))
-                p.fillRect(0, 0, fade_w, scaled.height(), alpha_grad)
-                p.end()
-                self._scaled_pixmap = faded
+            if not self._scaled_pixmap.isNull():
+                painter.setOpacity(0.92 if hovered else 0.78)
+                painter.drawPixmap(target_rect, self._scaled_pixmap)
+                painter.setOpacity(1.0)
 
-            painter.drawPixmap(target_rect, self._scaled_pixmap)
-            
         painter.setClipping(False)
-        if self.underMouse():
+        if hovered:
             pen_color = QColor(self.accent_color)
-            painter.setPen(QPen(pen_color, 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)
+            pen_color.setAlpha(200)
+        else:
+            pen_color = QColor(255, 255, 255, 16)
+        painter.setPen(QPen(pen_color, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)

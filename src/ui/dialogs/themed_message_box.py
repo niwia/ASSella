@@ -151,6 +151,11 @@ class ThemedMessageBox(QDialog):
 
         self._build_ui(title, text, buttons, default_button, severity, informative)
 
+        if parent is not None:
+            from ui.dialogs.dialog_raiser import DialogRaiser
+
+            DialogRaiser.attach(parent, self)
+
     def _build_ui(
         self,
         title: str,

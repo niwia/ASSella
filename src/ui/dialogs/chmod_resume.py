@@ -1,6 +1,6 @@
 import logging
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -23,7 +23,9 @@ class ChmodResumeDialog(QDialog):
         self.setWindowTitle("Make Executable Complete")
         self.setMinimumWidth(400)
         self.setMinimumHeight(300)
-        self.setModal(True)
+        self.setWindowModality(
+            Qt.WindowModality.WindowModal if parent is not None else Qt.WindowModality.ApplicationModal
+        )
 
         self._setup_ui(game_name, file_count, success)
 
@@ -94,3 +96,9 @@ class ChmodResumeDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.setCenterButtons(True)
         layout.addWidget(button_box)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        from ui.dialogs.dialog_raiser import focus_dialog_on_show
+
+        QTimer.singleShot(0, lambda: focus_dialog_on_show(self))

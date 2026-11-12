@@ -47,8 +47,10 @@ class ChmodMixin:
         if game_directory and os.path.exists(game_directory):
             return True
         if show_dialog:
+            from ui.dialogs.dialog_raiser import resolve_dialog_parent
+
             ThemedMessageBox.warning(
-                self.main_window,
+                resolve_dialog_parent(self.main_window),
                 "Directory Not Found",
                 f"Game directory not found: {game_directory}",
             )
@@ -128,10 +130,12 @@ class ChmodMixin:
 
         return chmod_count
     def _show_chmod_resume_dialog(self, game_name: str, file_count: int, dialog_class):
+        from ui.dialogs.dialog_raiser import resolve_dialog_parent
+
         dialog = dialog_class(
             game_name=game_name,
             file_count=file_count,
             success=True,
-            parent=self.main_window,
+            parent=resolve_dialog_parent(self.main_window),
         )
         dialog.exec()
