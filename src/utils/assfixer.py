@@ -674,8 +674,17 @@ class SimpleYAMLReader:
         v_part  = m.group(1).strip()
         comment = m.group(2)
 
-        if parent_key in NUMERIC_VALUE_MAP_KEYS and not v_part.isdigit():
-            warn(f"  {parent_key}: unexpected non-numeric value '{v_part}' — keeping as-is")
+        if parent_key in NUMERIC_VALUE_MAP_KEYS:
+            is_valid_numeric = v_part.isdigit() or (
+                v_part.startswith(("0x", "0X"))
+                and all(c in "0123456789abcdefABCDEF" for c in v_part[2:])
+            )
+            if not is_valid_numeric:
+                if v_part.startswith("TOKEN_") or "TEST" in v_part.upper():
+                    # Synthetic test placeholder leaked into config — safely prune it
+                    logger.debug(f"  {parent_key}: pruned invalid test token '{v_part}'")
+                    return None
+                warn(f"  {parent_key}: unexpected non-numeric value '{v_part}' — keeping as-is")
 
         if parent_key == "GameTitles":
             v_part = sanitize_title(v_part)

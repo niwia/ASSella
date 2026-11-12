@@ -523,6 +523,11 @@ def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool
                     for dlc_id in target_game.get("dlc_appids", []):
                         if dlc_id not in remaining_dlc_appids:
                             editor.remove_app(dlc_id)
+
+                # Remove depot AppTokens for unmounted depots
+                for did in target_depots:
+                    if did not in remaining_depots:
+                        editor.remove_app_token(did)
             else:
                 # Full unregistration/uninstall: remove from AdditionalApps
                 # 1a. Remove DLC AppIDs from AdditionalApps (DLC-only mode)
@@ -543,7 +548,7 @@ def unregister_plugin_game(appid: Union[str, int], keep_in_additional_apps: bool
                     editor.remove_fake_app_id(dlc_id)
                     editor.remove_app_token(dlc_id)
                     editor.remove_launch_option(dlc_id)
-                for did in target_game.get("depot_ids", []):
+                for did in target_depots:
                     editor.remove_app_token(did)
 
                 # 1d. Remove secondary sections (GameTitles, ManifestIds, CDKeys, etc.)

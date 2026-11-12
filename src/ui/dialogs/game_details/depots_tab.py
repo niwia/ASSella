@@ -43,6 +43,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ui.assets import DEPOT_BLACKLIST
+from ui.dialogs.game_details.hero_header import section_title
 from ui.dialogs.themed_message_box import ThemedMessageBox, confirm_steam_owned_override
 from utils.lua_parsing import iter_live_matches
 from utils.plugin_games import (
@@ -599,7 +600,6 @@ class DepotsTabController(QObject):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        from ui.dialogs.game_details.hero_header import section_title
         self.container.setStyleSheet("background: transparent;")
         tab_layout = QVBoxLayout(self.container)
         tab_layout.setContentsMargins(0, 0, 0, 0)
