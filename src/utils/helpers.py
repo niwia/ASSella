@@ -15,21 +15,22 @@ from typing import TYPE_CHECKING, Any, Optional, Tuple
 from utils.dlc_helpers import get_dlc_only_info, is_dlc_only_mode
 from utils.paths import Paths
 
-if TYPE_CHECKING:
-    from PyQt6.QtGui import QFont
-    from PyQt6.QtWidgets import (
-        QHBoxLayout,
-        QLabel,
-        QLineEdit,
-        QPushButton,
-        QSlider,
-        QWidget,
-    )
-    from ui.widgets.custom_widgets import (
-        CheckboxSetting,
-        FontSelectionDialog,
-        Material3Switch,
-    )
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
+from ui.widgets.custom_widgets import (
+    CheckboxSetting,
+    FontSelectionDialog,
+    Material3Switch,
+)
 
 logger = logging.getLogger(__name__)
 

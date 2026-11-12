@@ -8,26 +8,18 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 
 class TestPackage5Refactor(unittest.TestCase):
-    def test_helpers_lazy_qt_import(self):
-        """Verify importing helpers does not eagerly load PyQt6.QtWidgets if not loaded."""
-        # Check if PyQt6.QtWidgets is already in sys.modules, or test with clean subprocess
-        cmd = [
-            sys.executable,
-            "-c",
-            (
-                "import sys; "
-                "sys.path.insert(0, 'src'); "
-                "import utils.helpers as h; "
-                "assert 'PyQt6.QtWidgets' not in sys.modules, 'PyQt6.QtWidgets was loaded eagerly!';"
-                "from utils.helpers import Material3Switch, CheckboxSetting, FontSelectionDialog; "
-                "assert Material3Switch is not None; "
-                "assert 'PyQt6.QtWidgets' in sys.modules, 'PyQt6.QtWidgets should be loaded lazily!';"
-            ),
-        ]
-        import subprocess
+    def test_helpers_custom_widgets_export(self):
+        """Verify custom UI widgets are properly accessible and typed from helpers and custom_widgets."""
+        from ui.widgets.custom_widgets import CheckboxSetting, FontSelectionDialog, Material3Switch
+        from utils.helpers import (
+            CheckboxSetting as HCheckboxSetting,
+            FontSelectionDialog as HFontSelectionDialog,
+            Material3Switch as HMaterial3Switch,
+        )
 
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        self.assertEqual(res.returncode, 0, f"Subprocess failed:\n{res.stderr}")
+        self.assertIs(CheckboxSetting, HCheckboxSetting)
+        self.assertIs(FontSelectionDialog, HFontSelectionDialog)
+        self.assertIs(Material3Switch, HMaterial3Switch)
 
     def test_task_manager_dead_code_removed(self):
         """Verify task_manager no longer has DownloadSLSsteamTask references or attributes."""
