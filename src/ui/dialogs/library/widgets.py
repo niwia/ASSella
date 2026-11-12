@@ -3,7 +3,7 @@ import math
 from pathlib import Path
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QPixmap, QPainter, QBrush, QLinearGradient, QColor, QFontMetrics, QImage
+from PyQt6.QtGui import QColor, QFontMetrics, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -217,7 +217,7 @@ class GameItemWidget(QWidget):
         """Initialize the UI components."""
         layout = QHBoxLayout(self)
         layout.setContentsMargins(1, 1, 16, 1)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
 
         # Check setting
         applist_2_0_enabled = self.applist_2_0_enabled
@@ -232,7 +232,7 @@ class GameItemWidget(QWidget):
 
         # --- Image Section ---
         self.image_label = QLabel()
-        self.image_label.setFixedSize(220, 128)  # Fits perfectly in 130px card height minus borders
+        self.image_label.setFixedSize(260, 128)  # Matches 460x215 header aspect in 130px row height
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         name = self.game_data.get("game_name", "Unknown")
@@ -714,41 +714,37 @@ class GameItemWidget(QWidget):
             return False
 
     def set_image(self, pixmap: QPixmap) -> None:
-        """Sets the image on the label, scaling it nicely with right-fade blend."""
+        """Scale left header artwork and fade cleanly to the right with an S-curve mask."""
         if not pixmap or pixmap.isNull():
             return
 
-        target_size = self.image_label.size()
-        scaled = pixmap.scaled(
-            target_size,
-            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+        from ui.widgets.artwork_fade import build_faded_artwork
 
+        target_size = self.image_label.size()
+        source = pixmap
         if self._is_steam_tab and not self._dlc_mode_applied():
             # A Steam game that is not tracked in DLC mode is a catalogue
             # entry, not managed content: keep its artwork muted.
-            scaled = QPixmap.fromImage(
-                scaled.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
+            source = QPixmap.fromImage(
+                pixmap.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
             )
 
-        cropped_faded = QPixmap(target_size)
-        cropped_faded.fill(Qt.GlobalColor.transparent)
-
-        painter = QPainter(cropped_faded)
-        dx = (target_size.width() - scaled.width()) // 2
-        dy = (target_size.height() - scaled.height()) // 2
-        painter.drawPixmap(dx, dy, scaled)
-
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-        gradient = QLinearGradient(0, 0, target_size.width(), 0)
-        gradient.setColorAt(0.0, QColor(0, 0, 0, 255))
-        gradient.setColorAt(0.5, QColor(0, 0, 0, 255))
-        gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
-
-        painter.fillRect(cropped_faded.rect(), QBrush(gradient))
-        painter.end()
-
+        cropped_faded = build_faded_artwork(
+            source,
+            target_size,
+            direction="fade_out_right",
+            fade_start=0.28,
+            fade_end=0.98,
+            start_alpha=255,
+            end_alpha=0,
+            edge_alpha=215,
+            edge_span=0.12,
+            corner_radius=11.0,
+            round_corners="left",
+        )
+        # Clear placeholder tint once real artwork is loaded so the faded tail
+        # dissolves seamlessly into the row background without a rectangular seam.
+        self.image_label.setStyleSheet("background-color: transparent; border: none;")
         self.image_label.setPixmap(cropped_faded)
 
     def set_selected(self, selected: bool) -> None:
