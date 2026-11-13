@@ -102,6 +102,7 @@ class Worker(QObject):
 
 class TaskRunner(QObject):
     _active_runners = []
+    _retiring_threads = set()
     _shutdown_hooked = False
     cleanup_complete = pyqtSignal()
 
@@ -189,6 +190,13 @@ class TaskRunner(QObject):
                 logger.debug(f"Could not detach thread parent: {e}")
 
         if thread is not None and thread.isRunning():
+            TaskRunner._retiring_threads.add(thread)
+            try:
+                def _on_retired_finished(t=thread):
+                    TaskRunner._retiring_threads.discard(t)
+                thread.finished.connect(_on_retired_finished)
+            except (RuntimeError, Exception):
+                pass
             try:
                 thread.quit()
                 if wait_ms is None:
@@ -199,9 +207,12 @@ class TaskRunner(QObject):
                         logger.warning("Forcibly terminating thread on explicit request.")
                         thread.terminate()
                         thread.wait(500)
+                else:
+                    TaskRunner._retiring_threads.discard(thread)
             except (RuntimeError, Exception):
                 # Thread may have already been deleted by Qt
                 logger.debug("Thread was already deleted during stop()")
+                TaskRunner._retiring_threads.discard(thread)
         if self in TaskRunner._active_runners:
             TaskRunner._active_runners.remove(self)
 
