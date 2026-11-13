@@ -383,7 +383,7 @@ def create_isp_gateway_card(dialog) -> Tuple[QFrame, QVBoxLayout]:
     isp_row.setContentsMargins(0, 0, 0, 0)
     isp_lbl = QLabel("Hubcap Gateway Mode:")
     isp_lbl.setStyleSheet("color: #FFFFFF; font-size: 9.5pt; font-weight: 500; border: none; background: transparent;")
-    isp_lbl.setToolTip("Select how ASSella routes requests to Hubcap API (Auto Smart Fallback, Direct, DoH, Tor, or Wire).")
+    isp_lbl.setToolTip("Select how ASSella routes requests to Hubcap API (Auto Smart Fallback, Direct, DoH, Wirecutter, or Tor).")
     isp_row.addWidget(isp_lbl)
     isp_row.addStretch()
 

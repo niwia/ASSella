@@ -537,7 +537,7 @@ class CanaryWelcomeDialog(QDialog):
         info_layout.addWidget(self.lbl_user_and_quota)
 
         curr_mode = self.settings.value("isp_bypass_mode", "auto", type=str) or "auto"
-        self.lbl_connection_route = QLabel(f"Connection Route: {curr_mode.capitalize()} (Direct → DoH → Tor → Wirecutter)")
+        self.lbl_connection_route = QLabel(f"Connection Route: {curr_mode.capitalize()} (Direct → DoH → Wirecutter → Tor)")
         self.lbl_connection_route.setStyleSheet(f"font-size: 9pt; color: {self.accent_color};")
         info_layout.addWidget(self.lbl_connection_route)
 

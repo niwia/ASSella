@@ -6,6 +6,7 @@ strictly for Hubcap API requests (hubcapmanifest.com).
 """
 
 import atexit
+import contextlib
 import json
 import logging
 import os
@@ -32,8 +33,27 @@ TARGET_DOMAIN = "hubcapmanifest.com"
 DOH_CLOUDFLARE_URL = f"https://1.1.1.1/dns-query?name={TARGET_DOMAIN}&type=A"
 DOH_GOOGLE_URL = f"https://dns.google/resolve?name={TARGET_DOMAIN}&type=A"
 
+_REAL_SOCKET_GETADDRINFO = socket.getaddrinfo
+_doh_lock = threading.Lock()
+
 _tor_process: Optional[subprocess.Popen] = None
-_tor_lock = threading.Lock()
+_tor_lock = threading.RLock()
+
+
+@contextlib.contextmanager
+def _override_target_domain_ip(ip: str):
+    """Safely override DNS resolution for TARGET_DOMAIN with zero cross-thread pollution."""
+    with _doh_lock:
+        def _patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            if host == TARGET_DOMAIN:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (ip, port))]
+            return _REAL_SOCKET_GETADDRINFO(host, port, family, type, proto, flags)
+
+        socket.getaddrinfo = _patched_getaddrinfo
+        try:
+            yield
+        finally:
+            socket.getaddrinfo = _REAL_SOCKET_GETADDRINFO
 
 
 class TorManager:
@@ -81,7 +101,11 @@ class TorManager:
 
         with _tor_lock:
             if _tor_process and _tor_process.poll() is None:
-                return True
+                if cls.is_proxy_active(cls.TOR_HTTP_PORT) or cls.is_proxy_active(cls.TOR_SOCKS_PORT):
+                    return True
+                # Zombie process running without an active listener — clean it up
+                logger.warning("[ISPBypass] Detected unresponsive Tor process without active listener. Terminating...")
+                cls.stop_tor()
 
             # Locate tor executable
             tor_path = cls._find_tor_binary()
@@ -99,6 +123,8 @@ class TorManager:
 
                 cmd = [
                     tor_path,
+                    "--ClientOnly", "1",
+                    "--MaxMemInQueues", "256 MB",
                     "--SocksPort", str(cls.TOR_SOCKS_PORT),
                     "--HTTPTunnelPort", f"127.0.0.1:{cls.TOR_HTTP_PORT}",
                     "--DataDirectory", str(tor_data_dir),
@@ -123,11 +149,13 @@ class TorManager:
                         )
                         return True
 
-                logger.warning("[ISPBypass] Tor process started but listener did not open on 9080 within timeout.")
+                logger.warning("[ISPBypass] Tor process started but listener did not open on 9080 within timeout. Terminating...")
+                cls.stop_tor()
                 return False
 
             except Exception as e:
                 logger.error(f"[ISPBypass] Failed to start background Tor process: {e}")
+                cls.stop_tor()
                 return False
 
     @classmethod
@@ -459,21 +487,12 @@ def test_gateway_doh() -> Tuple[bool, str, int]:
         resolved_ip = resolve_doh(TARGET_DOMAIN)
         if not resolved_ip:
             return False, "ERR: DNS Fail", int((time.time() - t0) * 1000)
-        orig_getaddrinfo = socket.getaddrinfo
-        def doh_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-            if host == TARGET_DOMAIN:
-                return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (resolved_ip, port))]
-            return orig_getaddrinfo(host, port, family, type, proto, flags)
-
-        socket.getaddrinfo = doh_getaddrinfo
-        try:
+        with _override_target_domain_ip(resolved_ip):
             url = "https://hubcapmanifest.com/api/v1/health"
             resp = requests.get(url, headers=_health_test_headers(), timeout=6)
             resp.raise_for_status()
             latency = int((time.time() - t0) * 1000)
             return True, f"OK ({latency}ms)", latency
-        finally:
-            socket.getaddrinfo = orig_getaddrinfo
     except Exception as e:
         latency = int((time.time() - t0) * 1000)
         return False, categorize_error(e), latency
@@ -611,11 +630,11 @@ def execute_hubcap_request(
     """
     Executes a Hubcap request with user-selected mode and smart 4-tier fallback:
     Modes:
-      - 'auto'       : Direct -> DoH -> Tor -> Wirecutter
+      - 'auto'       : Direct -> DoH -> Wirecutter -> Tor
       - 'direct'     : Direct HTTPS only
       - 'doh'        : DoH only
-      - 'tor'        : Tor HTTP Tunnel only
       - 'wirecutter' : Wirecutter Proxy only
+      - 'tor'        : Tor HTTP Tunnel only
       - 'disabled'   : Direct HTTPS only
     """
     global connection_status, _direct_connection_failed, _last_direct_check_time
@@ -652,13 +671,7 @@ def execute_hubcap_request(
         resolved_ip = resolve_doh(TARGET_DOMAIN)
         if not resolved_ip:
             raise requests.exceptions.ConnectionError("DoH resolution failed for hubcapmanifest.com")
-        orig_getaddrinfo = socket.getaddrinfo
-        def doh_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-            if host == TARGET_DOMAIN:
-                return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (resolved_ip, port))]
-            return orig_getaddrinfo(host, port, family, type, proto, flags)
-        socket.getaddrinfo = doh_getaddrinfo
-        try:
+        with _override_target_domain_ip(resolved_ip):
             resp = session.request(method, url, headers=headers, params=params,
                                    timeout=timeout, stream=stream, verify=False)
             connection_status = "DoH"
@@ -666,8 +679,6 @@ def execute_hubcap_request(
             if not stream and is_html_or_blocked_payload(resp):
                 raise requests.exceptions.ConnectionError("DoH request returned empty or HTML payload.")
             return resp
-        finally:
-            socket.getaddrinfo = orig_getaddrinfo
 
     if mode == "tor":
         if not TorManager.start_tor_if_needed():
@@ -703,7 +714,7 @@ def execute_hubcap_request(
             raise requests.exceptions.ConnectionError("Custom proxy request returned empty or HTML payload.")
         return resp
 
-    # --- Mode: 'auto' (Smart 4-Tier Fallback Pipeline) ---
+    # --- Mode: 'auto' (Smart 4-Tier Fallback Pipeline: Direct -> DoH -> Wirecutter -> Tor) ---
     now = time.time()
     if _direct_connection_failed and now - _last_direct_check_time < 300:
         use_direct = False
@@ -738,14 +749,6 @@ def execute_hubcap_request(
     # 2. Tier 2: DoH (DNS-over-HTTPS) resolution
     resolved_ip = resolve_doh(TARGET_DOMAIN)
     if resolved_ip:
-        orig_getaddrinfo = socket.getaddrinfo
-
-        def doh_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-            if host == TARGET_DOMAIN:
-                return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (resolved_ip, port))]
-            return orig_getaddrinfo(host, port, family, type, proto, flags)
-
-        socket.getaddrinfo = doh_getaddrinfo
         try:
             logger.info(f"[ISPBypass] Attempting request via DoH IP override ({resolved_ip})...")
             doh_headers = dict(headers or {})
@@ -756,7 +759,8 @@ def execute_hubcap_request(
                 except Exception:
                     doh_headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; ASSella/2.6.2)"
 
-            resp = session.request(method, url, headers=doh_headers, params=params, timeout=timeout, stream=stream, **bypass_kwargs)
+            with _override_target_domain_ip(resolved_ip):
+                resp = session.request(method, url, headers=doh_headers, params=params, timeout=timeout, stream=stream, **bypass_kwargs)
             connection_status = "DoH"
             _check_and_raise_for_status(resp)
 
@@ -768,11 +772,26 @@ def execute_hubcap_request(
         except HubcapRateLimitError:
             raise
         except Exception as doh_err:
-            logger.warning(f"[ISPBypass] DoH request failed: {doh_err}. Initiating Tor fallback...")
-        finally:
-            socket.getaddrinfo = orig_getaddrinfo
+            logger.warning(f"[ISPBypass] DoH request failed: {doh_err}. Initiating Wirecutter fallback...")
 
-    # 3. Tier 3: Tor HTTP Tunnel Proxy Fallback
+    # 3. Tier 3: Wirecutter Cloudflare Worker Proxy Fallback
+    try:
+        worker_url = rewrite_url_for_wirecutter(url)
+        logger.info(f"[ISPBypass] Attempting request via Wirecutter/Worker proxy: {worker_url}...")
+        resp = session.request(
+            method, worker_url, headers=headers, params=params,
+            timeout=timeout + 3, stream=stream, **bypass_kwargs
+        )
+        connection_status = "Wire"
+        _check_and_raise_for_status(resp)
+        logger.info(f"[ISPBypass] Wirecutter request to {worker_url} SUCCESSFUL!")
+        return resp
+    except HubcapRateLimitError:
+        raise
+    except Exception as wc_err:
+        logger.warning(f"[ISPBypass] Wirecutter proxy request failed: {wc_err}. Initiating Tor fallback...")
+
+    # 4. Tier 4: Tor HTTP Tunnel Proxy Fallback (last resort)
     if TorManager.start_tor_if_needed():
         try:
             tor_proxies = TorManager.get_tor_proxies()
@@ -788,25 +807,8 @@ def execute_hubcap_request(
         except HubcapRateLimitError:
             raise
         except Exception as tor_err:
-            logger.error(f"[ISPBypass] Tor request failed: {tor_err}. Checking Wirecutter proxy...")
-
-    # 4. Tier 4: Wirecutter Cloudflare Worker Proxy Fallback
-    try:
-        worker_url = rewrite_url_for_wirecutter(url)
-        logger.info(f"[ISPBypass] Attempting request via Wirecutter/Worker proxy: {worker_url}...")
-        resp = session.request(
-            method, worker_url, headers=headers, params=params,
-            timeout=timeout + 3, stream=stream, **bypass_kwargs
-        )
-        connection_status = "Wire"
-        _check_and_raise_for_status(resp)
-        logger.info(f"[ISPBypass] Wirecutter request to {worker_url} SUCCESSFUL!")
-        return resp
-    except HubcapRateLimitError:
-        raise
-    except Exception as wc_err:
-        logger.error(f"[ISPBypass] Wirecutter proxy request failed: {wc_err}")
+            logger.error(f"[ISPBypass] Tor request failed: {tor_err}")
 
     # If all fallbacks failed, raise connection error
     connection_status = "Offline"
-    raise requests.exceptions.ConnectionError(f"All ISP Bypass fallbacks (Direct, DoH, Tor, Wirecutter) failed for {url}.")
+    raise requests.exceptions.ConnectionError(f"All ISP Bypass fallbacks (Direct, DoH, Wirecutter, Tor) failed for {url}.")
