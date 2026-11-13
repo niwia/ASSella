@@ -237,6 +237,16 @@ class GameManagerUpdatesMixin:
 
     def _start_at0m_update_check(self, force_refresh: bool = False) -> None:
         """Launch the AT0-M / DLC update checker (it runs in its own thread)."""
+        settings = get_settings()
+        if not settings.value("enable_at0m", settings.value("enable_vapor", False, type=bool), type=bool):
+            logger.debug("AT0-M mode is disabled in settings, skipping AT0-M update check.")
+            self._on_at0m_stage_finished()
+            return
+        if settings.value("at0m_disable_updates", settings.value("vapor_disable_updates", False, type=bool), type=bool):
+            logger.debug("AT0-M updates are disabled in settings, skipping AT0-M update check.")
+            self._on_at0m_stage_finished()
+            return
+
         try:
             from managers.at0m_update_checker import At0mUpdateChecker
 

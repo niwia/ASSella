@@ -47,8 +47,8 @@ app_version = _load_version()
 # stamps both constants into the packaged AppImage; during dev runs they must be
 # kept aligned with src/res/version. A dated version stamp ('20261022+ASSella-3.0.1')
 # overrides them with its calendar date - see get_build_date() / get_build_timestamp().
-BUILD_DATE = "2026-11-12"
-BUILD_TIMESTAMP = "2026-11-12T12:00:00Z"
+BUILD_DATE = "2026-11-14"
+BUILD_TIMESTAMP = "2026-11-14T03:00:00Z"
 
 
 def _stamp_date(raw: str) -> str:

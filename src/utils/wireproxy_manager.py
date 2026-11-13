@@ -17,6 +17,7 @@ from utils.kuroko import (
     ensure_wireproxy_binary,
     find_free_port,
     generate_warp_config,
+    get_endpoint_scores,
     get_kuroko,
     get_or_create_warp_config,
     get_wireproxy_manager,
@@ -24,6 +25,7 @@ from utils.kuroko import (
     measure_stealth_proxy_speed,
     prompt_stealth_fallback,
     resolve_stealth_proxy_url,
+    save_endpoint_score,
     test_stealth_proxy_connection,
 )
 
@@ -39,6 +41,7 @@ __all__ = [
     "ensure_wireproxy_binary",
     "find_free_port",
     "generate_warp_config",
+    "get_endpoint_scores",
     "get_kuroko",
     "get_or_create_warp_config",
     "get_wireproxy_manager",
@@ -46,5 +49,6 @@ __all__ = [
     "measure_stealth_proxy_speed",
     "prompt_stealth_fallback",
     "resolve_stealth_proxy_url",
+    "save_endpoint_score",
     "test_stealth_proxy_connection",
 ]

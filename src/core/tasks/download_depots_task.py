@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 import hashlib
 import random
 import re
@@ -114,7 +115,25 @@ class DownloadDepotsTask(QObject):
                 return
 
             settings = get_settings()
-            proxy_url = self._setup_stealth_proxy(settings)
+            try:
+                proxy_url = self._setup_stealth_proxy(settings)
+            except Exception as e:
+                logger.warning(f"[DownloadDepotsTask] Stealth proxy setup failed: {e}")
+                if not self._is_running:
+                    return
+                from utils.kuroko import prompt_stealth_fallback
+                if prompt_stealth_fallback(str(e)):
+                    self.progress.emit("[Warning] Stealth connection failed. Continuing with direct (non-stealth) connection per user request.")
+                    proxy_url = None
+                else:
+                    self._is_running = False
+                    self.progress.emit("Download cancelled due to stealth connection failure.")
+                    logger.info(f"[DownloadDepotsTask] User cancelled download on stealth failure: {e}")
+                    return
+
+            if not self._is_running:
+                logger.info("[DownloadDepotsTask] Download task stopped during stealth setup.")
+                return
 
             commands, skipped_depots, depot_sizes = self._prepare_downloads(
                 game_data, selected_depots, dest_path, proxy_url=proxy_url
@@ -223,7 +242,7 @@ class DownloadDepotsTask(QObject):
                 # Automatic LanCache fallback: if LanCache was used and failed, retry directly
                 if return_code != 0 and "-use-lancache" in current_cmd and self._is_running:
                     fallback_msg = (
-                        f"⚠️ LanCache download issue encountered for depot {depot_id} (exit code {return_code}). "
+                        f"LanCache download issue encountered for depot {depot_id} (exit code {return_code}). "
                         "Automatically falling back to direct connection without LanCache..."
                     )
                     self.progress.emit(fallback_msg)
@@ -233,6 +252,7 @@ class DownloadDepotsTask(QObject):
                     self.last_percentage = -1
                     self._is_validating = False
                     self._lancache_error_detected = False
+                    self._current_depot_network_error = ""
                     self._current_depot_downloaded_bytes = 0
                     self._current_depot_uncompressed_bytes = 0
 
@@ -286,11 +306,14 @@ class DownloadDepotsTask(QObject):
                         self.error.emit((RuntimeError, error_msg, None))
                         return
 
+                    if not self._is_running:
+                        return
+
                     # Check for mid-flight stealth proxy or network connection failure
                     is_stealth_active = bool(self._kuroko_manager or "-proxy" in current_cmd)
                     is_stealth_dropped = is_stealth_active and (
                         bool(self._current_depot_network_error)
-                        or (self._kuroko_manager and not self._kuroko_manager.is_running())
+                        or (self._kuroko_manager and not self._kuroko_manager.is_running)
                     )
 
                     if is_stealth_dropped:
@@ -302,7 +325,7 @@ class DownloadDepotsTask(QObject):
                         failed_over = False
                         if rotation_on:
                             from utils.kuroko import resolve_stealth_proxy_url
-                            self.progress.emit(f"⚠️ Stealth connection interrupted on depot {depot_id}. Attempting pool failover...")
+                            self.progress.emit(f"Stealth connection interrupted on depot {depot_id}. Attempting pool failover...")
                             prev_id = getattr(self._kuroko_manager, "endpoint_id", None)
                             self._cleanup_stealth_proxy()
                             try:
@@ -316,7 +339,7 @@ class DownloadDepotsTask(QObject):
                                             c[p_idx + 1] = active_url
                                         else:
                                             c.extend(["-proxy", active_url])
-                                    self.progress.emit(f"🔒 Failed over to new stealth endpoint: {active_url}. Resuming depot {depot_id}...")
+                                    self.progress.emit(f"Failed over to new stealth endpoint: {active_url}. Resuming depot {depot_id}...")
                                     self.last_percentage = -1
                                     self._is_validating = False
                                     self._current_depot_downloaded_bytes = 0
@@ -348,9 +371,11 @@ class DownloadDepotsTask(QObject):
 
                         # 2. If rotation failed or is disabled, prompt user with modal fallback
                         if not failed_over and return_code != 0:
+                            if not self._is_running:
+                                return
                             from utils.kuroko import prompt_stealth_fallback
                             if prompt_stealth_fallback(net_err):
-                                self.progress.emit(f"⚠️ Stealth dropped mid-download. Proceeding directly (non-stealth) for depot {depot_id}...")
+                                self.progress.emit(f"Stealth dropped mid-download. Proceeding directly (non-stealth) for depot {depot_id}...")
                                 self._cleanup_stealth_proxy()
                                 for c in commands[i:]:
                                     while "-proxy" in c:
@@ -381,11 +406,10 @@ class DownloadDepotsTask(QObject):
                                 return_code = self.process.poll() if self.process else 0
                                 self.process = None
                             else:
-                                error_msg = f"Download cancelled: Stealth connection dropped mid-download ({net_err})."
-                                self.progress.emit(f"ERROR: {error_msg}")
-                                logger.error(f"[DownloadDepotsTask] {error_msg}")
+                                self._is_running = False
+                                self.progress.emit("Download cancelled due to stealth connection failure.")
+                                logger.info(f"[DownloadDepotsTask] Download cancelled by user after stealth drop: {net_err}")
                                 self._cleanup_temp_files()
-                                self.error.emit((RuntimeError, error_msg, None))
                                 return
 
                     # Attempt smart recovery via wudrm / Steam CDN with fallbacks
@@ -401,7 +425,7 @@ class DownloadDepotsTask(QObject):
                     recovered_manifest = False
                     if cur_manifest_id and cur_manifest_file_path:
                         rec_msg = (
-                            f"⚠️ DepotDownloader failed for depot {depot_id} (exit code {return_code}). "
+                            f"DepotDownloader failed for depot {depot_id} (exit code {return_code}). "
                             f"Suspecting corrupted/poisoned manifest. Attempting fresh recovery via wudrm (Steam CDN)..."
                         )
                         self.progress.emit(rec_msg)
@@ -891,6 +915,7 @@ class DownloadDepotsTask(QObject):
                     if total_percentage != self.last_percentage:
                         self.progress_percentage.emit(total_percentage)
                         self.last_percentage = total_percentage
+                        self._current_depot_network_error = ""
 
                     # Real network chunk downloading phase
                     if self._last_speed_calc_time == 0.0:
@@ -947,6 +972,7 @@ class DownloadDepotsTask(QObject):
                     if int_percentage != self.last_percentage:
                         self.progress_percentage.emit(int_percentage)
                         self.last_percentage = int_percentage
+                        self._current_depot_network_error = ""
 
                     if self._last_speed_calc_time == 0.0:
                         self._last_speed_calc_time = current_time
@@ -1368,33 +1394,36 @@ class DownloadDepotsTask(QObject):
         """
         Configure userspace stealth proxy (Kuroko / custom SOCKS5) if enabled in settings.
         Returns the proxy URL to pass to DepotDownloader (-proxy <url>), or None if disabled.
-        Prompts user on GUI thread if initialization fails with fallback options.
+        Fails closed (raises RuntimeError) if proxy is enabled but fails to initialize.
         """
-        from utils.kuroko import resolve_stealth_proxy_url, prompt_stealth_fallback
+        from utils.kuroko import resolve_stealth_proxy_url
 
         self._proxy_info_tag = None
-        try:
-            proxy_url, manager = resolve_stealth_proxy_url(settings)
-        except Exception as e:
-            logger.warning(f"[DownloadDepotsTask] Stealth proxy setup failed: {e}")
-            if prompt_stealth_fallback(str(e)):
-                self.progress.emit("⚠️ Stealth connection failed. Continuing with direct (non-stealth) connection per user request.")
-                return None
-            else:
-                raise
-
+        proxy_url, manager = resolve_stealth_proxy_url(settings)
         if manager is not None:
             self._kuroko_manager = manager
-            mode = settings.value("stealth_proxy_mode", "warp", type=str).strip().lower()
-            mode_display = "WARP" if mode == "warp" else ("WireGuard" if mode == "wireguard" else mode.capitalize())
+            endpoint_id = getattr(manager, "endpoint_id", None)
+            if endpoint_id:
+                if endpoint_id == "warp":
+                    mode_display = "WARP"
+                elif endpoint_id.startswith("wg:"):
+                    prof_name = Path(endpoint_id[3:]).stem
+                    mode_display = f"WireGuard ({prof_name})"
+                elif endpoint_id.startswith("custom"):
+                    mode_display = "Custom"
+                else:
+                    mode_display = endpoint_id.capitalize()
+            else:
+                mode = settings.value("stealth_proxy_mode", "warp", type=str).strip().lower()
+                mode_display = "WARP" if mode == "warp" else ("WireGuard" if mode == "wireguard" else mode.capitalize())
             endpoint = manager.proxy_url.split("://")[-1]
             self._proxy_info_tag = f"[via Stealth: {mode_display} ({endpoint})]"
-            self.progress.emit(f"🔒 Stealth proxy active: {mode_display} ({manager.proxy_url})")
+            self.progress.emit(f"Stealth proxy active: {mode_display} ({manager.proxy_url})")
             logger.info(f"[DownloadDepotsTask] Stealth proxy active: mode={mode_display}, endpoint={manager.proxy_url}")
         elif proxy_url:
             endpoint = proxy_url.split("://")[-1]
             self._proxy_info_tag = f"[via Stealth: Proxy ({endpoint})]"
-            self.progress.emit(f"🔒 Routing download through custom proxy: {proxy_url}")
+            self.progress.emit(f"Routing download through custom proxy: {proxy_url}")
             logger.info(f"[DownloadDepotsTask] Custom proxy active: {proxy_url}")
         return proxy_url
 

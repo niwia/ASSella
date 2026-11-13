@@ -24,7 +24,7 @@ import urllib.request
 import weakref
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from utils.paths import Paths
 
@@ -572,32 +572,36 @@ class Kuroko:
                 self.stop()
                 raise
 
-            # Active probe: poll until SOCKS5 handshake succeeds or process dies
-            deadline = time.time() + startup_timeout
-            while time.time() < deadline:
-                poll_code = self._process.poll()
-                if poll_code is not None:
-                    stderr_out = ""
-                    if self._process.stderr:
-                        try:
-                            stderr_out = self._process.stderr.read().strip()
-                        except Exception as e:
-                            logger.debug(f"[Kuroko] Failed to read stderr: {e}")
-                    logger.error(f"[Kuroko] wireproxy exited prematurely with code {poll_code}: {stderr_out}")
-                    self.stop()
-                    return False
+        # Active probe outside global lock: poll until SOCKS5 handshake succeeds or process dies
+        deadline = time.time() + startup_timeout
+        while time.time() < deadline:
+            proc = self._process
+            if proc is None:
+                return False
+            poll_code = proc.poll()
+            if poll_code is not None:
+                stderr_out = ""
+                if proc.stderr:
+                    try:
+                        stderr_out = proc.stderr.read().strip()
+                    except Exception as e:
+                        logger.debug(f"[Kuroko] Failed to read stderr: {e}")
+                logger.error(f"[Kuroko] wireproxy exited prematurely with code {poll_code}: {stderr_out}")
+                self.stop()
+                return False
 
-                if self._check_socks5_ready(host, allocated_port):
-                    logger.info(
-                        f"[Kuroko] wireproxy listening on socks5h://{host}:{allocated_port} "
-                        f"(PID {self._process.pid})"
-                    )
-                    return True
-                time.sleep(0.05)
+            if self._check_socks5_ready(host, allocated_port):
+                pid = proc.pid if proc else 0
+                logger.info(
+                    f"[Kuroko] wireproxy listening on socks5h://{host}:{allocated_port} "
+                    f"(PID {pid})"
+                )
+                return True
+            time.sleep(0.05)
 
-            logger.error(f"[Kuroko] Timed out waiting for wireproxy SOCKS5 on {host}:{allocated_port}")
-            self.stop()
-            return False
+        logger.error(f"[Kuroko] Timed out waiting for wireproxy SOCKS5 on {host}:{allocated_port}")
+        self.stop()
+        return False
 
     # Alias for backward compatibility
     start_wireproxy = start
@@ -701,7 +705,7 @@ class Kuroko:
         return False, "Failed to verify connection through proxy across all verification endpoints."
 
     @staticmethod
-    def probe_alive(proxy_url: str, timeout: float = 3.5) -> bool:
+    def probe_alive(proxy_url: str, timeout: float = 4.5) -> bool:
         """
         Fast probe to verify remote tunnel transport is genuinely passing traffic.
         Because WireGuard is stateless UDP, local SOCKS5 binding alone does not prove
@@ -715,46 +719,50 @@ class Kuroko:
             "https://speed.cloudflare.com/__down?bytes=0",
             "https://1.1.1.1/cdn-cgi/trace",
         ]
-        try:
-            from curl_cffi import requests as cffi_requests
-            for u in probe_urls:
-                try:
-                    resp = cffi_requests.head(
-                        u,
-                        headers=headers,
-                        proxies={"http": proxy_url, "https": proxy_url},
-                        timeout=timeout,
-                    )
-                    if resp.status_code < 500:
-                        return True
-                except Exception as probe_err:
-                    logger.debug(f"[Kuroko] probe_alive cffi probe to {u} failed: {probe_err}")
-                    continue
-        except ImportError as e:
-            logger.debug(f"[Kuroko] probe_alive curl_cffi unavailable: {e}")
-
-        curl_bin = shutil.which("curl")
-        if curl_bin:
-            for u in probe_urls:
-                try:
-                    res = subprocess.run(
-                        [
-                            curl_bin, "-sS", "-I", "--max-time", str(int(timeout)),
-                            "-x", proxy_url,
-                            "-H", "Referer: https://speed.cloudflare.com/",
-                            "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                            "-o", "/dev/null",
+        for attempt in range(2):
+            try:
+                from curl_cffi import requests as cffi_requests
+                for u in probe_urls:
+                    try:
+                        resp = cffi_requests.head(
                             u,
-                        ],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=timeout + 1.0,
-                    )
-                    if res.returncode == 0:
-                        return True
-                except Exception as curl_err:
-                    logger.debug(f"[Kuroko] probe_alive curl probe to {u} failed: {curl_err}")
-                    continue
+                            headers=headers,
+                            proxies={"http": proxy_url, "https": proxy_url},
+                            timeout=timeout,
+                        )
+                        if resp.status_code < 500:
+                            return True
+                    except Exception as probe_err:
+                        logger.debug(f"[Kuroko] probe_alive cffi probe to {u} attempt {attempt + 1} failed: {probe_err}")
+                        continue
+            except ImportError as e:
+                logger.debug(f"[Kuroko] probe_alive curl_cffi unavailable: {e}")
+
+            curl_bin = shutil.which("curl")
+            if curl_bin:
+                for u in probe_urls:
+                    try:
+                        res = subprocess.run(
+                            [
+                                curl_bin, "-sS", "-I", "--max-time", str(int(timeout)),
+                                "-x", proxy_url,
+                                "-H", "Referer: https://speed.cloudflare.com/",
+                                "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                                "-o", "/dev/null",
+                                u,
+                            ],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=timeout + 1.0,
+                        )
+                        if res.returncode == 0:
+                            return True
+                    except Exception as curl_err:
+                        logger.debug(f"[Kuroko] probe_alive curl probe to {u} attempt {attempt + 1} failed: {curl_err}")
+                        continue
+
+            if attempt == 0:
+                time.sleep(0.3)
 
         return False
 
@@ -904,6 +912,64 @@ def probe_stealth_ready(proxy_url: str, timeout: float = 3.5) -> bool:
     return Kuroko.probe_alive(proxy_url, timeout=timeout)
 
 
+def save_endpoint_score(endpoint_id: str, ping_ms: int, speed_mbps: float, ok: bool, settings=None) -> None:
+    """Persist benchmark metrics for a candidate endpoint in QSettings."""
+    if not endpoint_id:
+        return
+    if settings is None:
+        from utils.settings import get_settings
+        settings = get_settings()
+    try:
+        raw = settings.value("stealth_endpoint_scores", "{}", type=str)
+        scores = json.loads(raw) if raw else {}
+    except Exception:
+        scores = {}
+    scores[endpoint_id] = {
+        "ping_ms": ping_ms,
+        "speed_mbps": speed_mbps,
+        "ok": ok,
+        "timestamp": int(time.time()),
+    }
+    try:
+        settings.setValue("stealth_endpoint_scores", json.dumps(scores))
+    except Exception as e:
+        logger.debug(f"[Kuroko] Failed to persist endpoint scores: {e}")
+
+
+def get_endpoint_scores(settings=None) -> Dict[str, Dict[str, Any]]:
+    """Return all cached endpoint benchmark scores."""
+    if settings is None:
+        from utils.settings import get_settings
+        settings = get_settings()
+    try:
+        raw = settings.value("stealth_endpoint_scores", "{}", type=str)
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+def _safe_wg_profiles(settings) -> list[str]:
+    """Safely extract the list of WireGuard profile filenames from QSettings."""
+    raw = settings.value("stealth_pool_wg_profiles", [])
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(x).strip() for x in parsed if str(x).strip()]
+            except Exception as e:
+                logger.debug(f"[Kuroko] Failed to parse stealth_pool_wg_profiles JSON string: {e}")
+        return [raw]
+    if isinstance(raw, (list, tuple)):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    return []
+
+
 def measure_stealth_proxy_speed(
     mode: str,
     wg_path: str = "",
@@ -916,16 +982,18 @@ def measure_stealth_proxy_speed(
     Returns (success: bool, ping_ms: int, speed_mbps: float, message: str).
     """
     mode = (mode or "warp").lower().strip()
+    res = (False, 0, 0.0, "Speed test uninitialized.")
     if mode == "warp":
         manager = Kuroko()
         try:
             cfg = get_or_create_warp_config()
             if not manager.start(cfg, port=0):
-                return False, 0, 0.0, "Failed to initialize Cloudflare WARP tunnel."
-            return manager.measure_speed(manager.proxy_url, timeout=timeout)
+                res = (False, 0, 0.0, "Failed to initialize Cloudflare WARP tunnel.")
+            else:
+                res = manager.measure_speed(manager.proxy_url, timeout=timeout)
         except Exception as e:
             logger.debug(f"[Kuroko] WARP speed test failed: {e}")
-            return False, 0, 0.0, f"WARP error: {e}"
+            res = (False, 0, 0.0, f"WARP error: {e}")
         finally:
             manager.stop()
 
@@ -936,11 +1004,12 @@ def measure_stealth_proxy_speed(
         manager = Kuroko()
         try:
             if not manager.start(conf_path, port=0):
-                return False, 0, 0.0, "Failed to start wireproxy with WireGuard config."
-            return manager.measure_speed(manager.proxy_url, timeout=timeout)
+                res = (False, 0, 0.0, "Failed to start wireproxy with WireGuard config.")
+            else:
+                res = manager.measure_speed(manager.proxy_url, timeout=timeout)
         except Exception as e:
             logger.debug(f"[Kuroko] WireGuard speed test failed: {e}")
-            return False, 0, 0.0, f"WireGuard error: {e}"
+            res = (False, 0, 0.0, f"WireGuard error: {e}")
         finally:
             manager.stop()
 
@@ -951,10 +1020,19 @@ def measure_stealth_proxy_speed(
         if "://" not in url:
             url = f"socks5://{url}"
         manager = Kuroko()
-        return manager.measure_speed(url, timeout=timeout)
+        res = manager.measure_speed(url, timeout=timeout)
 
     else:
         return False, 0, 0.0, f"Unsupported stealth mode: '{mode}'"
+
+    if res[0]:
+        if mode == "warp":
+            save_endpoint_score("warp", res[1], res[2], True)
+        elif mode == "wireguard" and wg_path:
+            save_endpoint_score(f"wg:{Path(wg_path).name}", res[1], res[2], True)
+        elif mode == "custom":
+            save_endpoint_score("custom", res[1], res[2], True)
+    return res
 
 
 class StealthPoolManager:
@@ -981,7 +1059,7 @@ class StealthPoolManager:
             })
 
         # 2. Imported WireGuard Profiles
-        raw_profiles = settings.value("stealth_pool_wg_profiles", [], type=list)
+        raw_profiles = _safe_wg_profiles(settings)
         p_dir = WireguardProfileManager.get_profiles_dir()
         for item in raw_profiles:
             fname = str(item).strip()
@@ -1016,21 +1094,37 @@ class StealthPoolManager:
 
     @classmethod
     def get_eligible_candidates(cls, settings=None) -> list[dict]:
-        """Return candidates that are not currently penalized by a recent failure cooldown."""
+        """Return candidates not in cooldown, sorted by cached benchmark score."""
         candidates = cls.get_pool_candidates(settings)
-        return [c for c in candidates if not is_endpoint_in_cooldown(c["id"])]
+        eligible = [c for c in candidates if not is_endpoint_in_cooldown(c["id"])]
+        scores = get_endpoint_scores(settings)
+
+        def _score_key(c: dict) -> float:
+            s = scores.get(c["id"])
+            if not s or not s.get("ok"):
+                return -9999.0
+            return float(s.get("speed_mbps", 0.0)) - (float(s.get("ping_ms", 0.0)) / 50.0)
+
+        eligible.sort(key=_score_key, reverse=True)
+        return eligible
 
     @classmethod
-    def benchmark_candidate(cls, candidate: dict, timeout: float = 8.0) -> Tuple[bool, int, float, str]:
+    def benchmark_candidate(cls, candidate: dict, timeout: float = 8.0, settings=None) -> Tuple[bool, int, float, str]:
         """Benchmark a candidate endpoint in isolation and return (ok, ping_ms, speed_mbps, msg)."""
         c_type = candidate.get("type", "warp")
+        c_id = candidate.get("id", c_type)
         if c_type == "warp":
-            return measure_stealth_proxy_speed("warp", timeout=timeout)
+            res = measure_stealth_proxy_speed("warp", timeout=timeout)
         elif c_type == "wireguard":
-            return measure_stealth_proxy_speed("wireguard", wg_path=candidate.get("config_path", ""), timeout=timeout)
+            res = measure_stealth_proxy_speed("wireguard", wg_path=candidate.get("config_path", ""), timeout=timeout)
         elif c_type == "custom":
-            return measure_stealth_proxy_speed("custom", custom_url=candidate.get("url", ""), timeout=timeout)
-        return False, 0, 0.0, f"Unknown candidate type: '{c_type}'"
+            res = measure_stealth_proxy_speed("custom", custom_url=candidate.get("url", ""), timeout=timeout)
+        else:
+            res = (False, 0, 0.0, f"Unknown candidate type: '{c_type}'")
+
+        ok, ping, speed, msg = res
+        save_endpoint_score(c_id, ping, speed, ok, settings=settings)
+        return res
 
     @classmethod
     def benchmark_all_candidates(cls, settings=None, progress_callback: Optional[Callable[[str, bool, int, float, str], None]] = None) -> list[dict]:
@@ -1043,7 +1137,7 @@ class StealthPoolManager:
         results = []
         for c in candidates:
             c_id = c["id"]
-            ok, ping, speed, msg = cls.benchmark_candidate(c)
+            ok, ping, speed, msg = cls.benchmark_candidate(c, settings=settings)
             c_copy = dict(c)
             c_copy["ok"] = ok
             c_copy["ping_ms"] = ping
@@ -1275,8 +1369,12 @@ def prompt_stealth_fallback(error_message: str) -> bool:
         finally:
             done_event.set()
 
-    post_to_main_thread(_show_dialog)
-    done_event.wait()
+    try:
+        post_to_main_thread(_show_dialog)
+        done_event.wait()
+    except Exception as e:
+        logger.error(f"[Kuroko] Error scheduling fallback dialog on main thread: {e}")
+        done_event.set()
 
     if choice[0] == "direct":
         logger.warning("[Kuroko] User opted to bypass failed stealth proxy and proceed with direct download.")

@@ -813,10 +813,18 @@ class At0mUpdateChecker(QObject):
                 total = len(all_games)
                 logger.info(f"[At0mChecker] Starting check for {total} AT0-M / DLC game(s)...")
 
+                settings = get_settings()
                 for idx, (aid, ginfo) in enumerate(all_games.items()):
                     if self._cancel_requested:
                         logger.info("[At0mChecker] Scan cancelled.")
                         break
+
+                    if settings.value(f"pin_build/{aid}", False, type=bool):
+                        logger.debug(f"[At0mChecker] Skipping pinned build game {aid}")
+                        continue
+                    if not force_refresh and settings.value(f"exclude_from_update_all/{aid}", False, type=bool):
+                        logger.debug(f"[At0mChecker] Skipping excluded game {aid}")
+                        continue
 
                     name = ginfo.get("name", "")
                     try:

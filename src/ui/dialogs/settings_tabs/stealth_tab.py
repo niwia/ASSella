@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import json
 from ui.dialogs.themed_file_dialog import ThemedFileDialog
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.sizes import size_control
@@ -25,6 +26,7 @@ from utils.helpers import create_checkbox_setting
 from utils.kuroko import (
     StealthPoolManager,
     WireguardProfileManager,
+    get_endpoint_scores,
     measure_stealth_proxy_speed,
     test_stealth_proxy_connection,
 )
@@ -32,6 +34,27 @@ from utils.main_thread import post_to_main_thread
 from utils.task_runner import TaskRunner
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_string_list(settings, key: str, default: Optional[list] = None) -> list[str]:
+    raw = settings.value(key, default or [])
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(x).strip() for x in parsed if str(x).strip()]
+            except Exception as e:
+                logger.debug("Failed to parse settings string list: %s", e)
+        return [raw]
+    if isinstance(raw, (list, tuple)):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    return []
 
 
 def _scrolled(page: QWidget) -> QScrollArea:
@@ -156,7 +179,6 @@ def create_stealth_subtab(dialog) -> QWidget:
     wg_layout.addWidget(wg_lbl)
 
     dialog.stealth_proxy_wg_edit = QLineEdit()
-    dialog.stealth_proxy_wg_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
     dialog.stealth_proxy_wg_edit.setPlaceholderText("/path/to/wireguard.conf")
     wg_saved_path = dialog.settings.value("stealth_proxy_wg_path", "", type=str)
     dialog.stealth_proxy_wg_edit.setText(wg_saved_path)
@@ -241,7 +263,6 @@ def create_stealth_subtab(dialog) -> QWidget:
     custom_layout.addWidget(custom_lbl)
 
     dialog.stealth_proxy_custom_edit = QLineEdit()
-    dialog.stealth_proxy_custom_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
     dialog.stealth_proxy_custom_edit.setPlaceholderText("socks5://127.0.0.1:1080 (or socks5://user:pass@host:port)")
     custom_saved_url = dialog.settings.value("stealth_proxy_custom_url", "socks5://127.0.0.1:1080", type=str)
     dialog.stealth_proxy_custom_edit.setText(custom_saved_url)
@@ -319,7 +340,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     """)
     single_action_row.addWidget(proxy_test_btn)
 
-    proxy_speed_btn = QPushButton("⚡ Speed Test")
+    proxy_speed_btn = QPushButton("Speed Test")
     proxy_speed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     proxy_speed_btn.setFixedWidth(110)
     proxy_speed_btn.setFixedHeight(30)
@@ -410,7 +431,7 @@ def create_stealth_subtab(dialog) -> QWidget:
             if isinstance(result, tuple) and len(result) == 4:
                 ok, ping_ms, speed_mbps, msg = result
                 if ok:
-                    single_status_lbl.setText(f"⚡ Ping: {ping_ms} ms | Speed: {speed_mbps} Mbps")
+                    single_status_lbl.setText(f"Ping: {ping_ms} ms | Speed: {speed_mbps} Mbps")
                     single_status_lbl.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: bold;")
                 else:
                     single_status_lbl.setText(f"Speed test failed: {msg}")
@@ -493,7 +514,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     """)
     pool_toolbar.addWidget(add_folder_btn)
 
-    benchmark_all_btn = QPushButton("⚡ Benchmark All")
+    benchmark_all_btn = QPushButton("Benchmark All")
     benchmark_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     benchmark_all_btn.setFixedHeight(28)
     benchmark_all_btn.setToolTip("Sequentially measures ping & 5 MB burst throughput across all active candidates")
@@ -551,15 +572,12 @@ def create_stealth_subtab(dialog) -> QWidget:
             child = pool_items_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
-            elif child.layout():
-                # recursively clear child layout
-                while child.layout().count():
-                    sub = child.layout().takeAt(0)
-                    if sub.widget():
-                        sub.widget().deleteLater()
+
+        cached_scores = get_endpoint_scores(dialog.settings)
 
         # Row 1: Cloudflare WARP
-        warp_row = QHBoxLayout()
+        warp_row_widget = QWidget()
+        warp_row = QHBoxLayout(warp_row_widget)
         warp_row.setContentsMargins(4, 2, 4, 2)
         warp_row.setSpacing(8)
 
@@ -578,8 +596,8 @@ def create_stealth_subtab(dialog) -> QWidget:
         w_test_btn.setStyleSheet("QPushButton { font-size: 8pt; padding: 2px 6px; }")
         warp_row.addWidget(w_test_btn)
 
-        w_speed_btn = QPushButton("⚡ Speed")
-        w_speed_btn.setFixedSize(62, 26)
+        w_speed_btn = QPushButton("Speed Test")
+        w_speed_btn.setFixedSize(76, 26)
         w_speed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         w_speed_btn.setStyleSheet("QPushButton { font-size: 8pt; padding: 2px 6px; }")
         warp_row.addWidget(w_speed_btn)
@@ -587,6 +605,10 @@ def create_stealth_subtab(dialog) -> QWidget:
         w_status_lbl = QLabel("Ready")
         w_status_lbl.setFixedWidth(190)
         w_status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8pt;")
+        warp_sc = cached_scores.get("warp")
+        if warp_sc and warp_sc.get("ok"):
+            w_status_lbl.setText(f"[OK] {warp_sc.get('ping_ms', 0)}ms | {warp_sc.get('speed_mbps', 0.0)} Mbps")
+            w_status_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: bold;")
         warp_row.addWidget(w_status_lbl)
 
         candidate_row_widgets["warp"] = {
@@ -605,16 +627,16 @@ def create_stealth_subtab(dialog) -> QWidget:
                 w_test_btn.setEnabled(True)
                 w_speed_btn.setEnabled(True)
                 if isinstance(res, tuple) and res[0]:
-                    w_status_lbl.setText(f"✓ {res[1]}")
+                    w_status_lbl.setText(f"[OK] {res[1]}")
                     w_status_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: bold;")
                 else:
                     err = res[1] if isinstance(res, tuple) else "Failed"
-                    w_status_lbl.setText(f"✗ {err[:28]}")
+                    w_status_lbl.setText(f"[Error] {err[:28]}")
                     w_status_lbl.setStyleSheet("color: #E57373; font-size: 8pt;")
 
             worker = dialog._stealth_task_runner.run(test_stealth_proxy_connection, "warp")
             worker.finished.connect(_done)
-            worker.error.connect(lambda _e: (w_test_btn.setEnabled(True), w_speed_btn.setEnabled(True), w_status_lbl.setText("✗ Error")))
+            worker.error.connect(lambda _e: (w_test_btn.setEnabled(True), w_speed_btn.setEnabled(True), w_status_lbl.setText("[Error]")))
 
         def _on_speed_warp():
             w_test_btn.setEnabled(False)
@@ -626,25 +648,24 @@ def create_stealth_subtab(dialog) -> QWidget:
                 w_test_btn.setEnabled(True)
                 w_speed_btn.setEnabled(True)
                 if isinstance(res, tuple) and res[0]:
-                    w_status_lbl.setText(f"⚡ {res[1]}ms | {res[2]} Mbps")
+                    w_status_lbl.setText(f"[OK] {res[1]}ms | {res[2]} Mbps")
                     w_status_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: bold;")
                 else:
                     err = res[3] if isinstance(res, tuple) and len(res) > 3 else "Failed"
-                    w_status_lbl.setText(f"✗ {err[:28]}")
+                    w_status_lbl.setText(f"[Error] {err[:28]}")
                     w_status_lbl.setStyleSheet("color: #E57373; font-size: 8pt;")
 
             worker = dialog._stealth_task_runner.run(measure_stealth_proxy_speed, "warp")
             worker.finished.connect(_done)
-            worker.error.connect(lambda _e: (w_test_btn.setEnabled(True), w_speed_btn.setEnabled(True), w_status_lbl.setText("✗ Error")))
+            worker.error.connect(lambda _e: (w_test_btn.setEnabled(True), w_speed_btn.setEnabled(True), w_status_lbl.setText("[Error]")))
 
         w_test_btn.clicked.connect(_on_test_warp)
         w_speed_btn.clicked.connect(_on_speed_warp)
-        pool_items_layout.addLayout(warp_row)
+        pool_items_layout.addWidget(warp_row_widget)
 
         # Rows 2..N: Imported WireGuard profiles
         profiles = WireguardProfileManager.list_profiles()
-        saved_wg_pool = dialog.settings.value("stealth_pool_wg_profiles", [], type=list)
-        # normalize to list of strings
+        saved_wg_pool = _safe_string_list(dialog.settings, "stealth_pool_wg_profiles")
         active_wg_set = set(str(x) for x in saved_wg_pool)
 
         for p_info in profiles:
@@ -652,7 +673,8 @@ def create_stealth_subtab(dialog) -> QWidget:
             fpath = p_info["path"]
             cand_id = f"wg:{fname}"
 
-            row = QHBoxLayout()
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
             row.setContentsMargins(4, 2, 4, 2)
             row.setSpacing(8)
 
@@ -663,7 +685,7 @@ def create_stealth_subtab(dialog) -> QWidget:
 
             def _make_wg_cb_handler(_fn, _checkbox):
                 def _handler(checked):
-                    cur_list = dialog.settings.value("stealth_pool_wg_profiles", [], type=list)
+                    cur_list = _safe_string_list(dialog.settings, "stealth_pool_wg_profiles")
                     cur_set = set(str(x) for x in cur_list)
                     if checked:
                         cur_set.add(_fn)
@@ -682,8 +704,8 @@ def create_stealth_subtab(dialog) -> QWidget:
             t_btn.setStyleSheet("QPushButton { font-size: 8pt; padding: 2px 6px; }")
             row.addWidget(t_btn)
 
-            s_btn = QPushButton("⚡ Speed")
-            s_btn.setFixedSize(62, 26)
+            s_btn = QPushButton("Speed Test")
+            s_btn.setFixedSize(76, 26)
             s_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             s_btn.setStyleSheet("QPushButton { font-size: 8pt; padding: 2px 6px; }")
             row.addWidget(s_btn)
@@ -691,9 +713,13 @@ def create_stealth_subtab(dialog) -> QWidget:
             s_lbl = QLabel("Ready")
             s_lbl.setFixedWidth(160)
             s_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8pt;")
+            wg_sc = cached_scores.get(cand_id)
+            if wg_sc and wg_sc.get("ok"):
+                s_lbl.setText(f"[OK] {wg_sc.get('ping_ms', 0)}ms | {wg_sc.get('speed_mbps', 0.0)} Mbps")
+                s_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: bold;")
             row.addWidget(s_lbl)
 
-            del_btn = QPushButton("✕")
+            del_btn = QPushButton("X")
             del_btn.setFixedSize(26, 26)
             del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             del_btn.setToolTip("Delete profile from storage")
@@ -730,16 +756,16 @@ def create_stealth_subtab(dialog) -> QWidget:
                         _btn_t.setEnabled(True)
                         _btn_s.setEnabled(True)
                         if isinstance(res, tuple) and res[0]:
-                            _lbl.setText(f"✓ {res[1]}")
+                            _lbl.setText(f"[OK] {res[1]}")
                             _lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: bold;")
                         else:
                             err = res[1] if isinstance(res, tuple) else "Failed"
-                            _lbl.setText(f"✗ {err[:24]}")
+                            _lbl.setText(f"[Error] {err[:24]}")
                             _lbl.setStyleSheet("color: #E57373; font-size: 8pt;")
 
                     worker = dialog._stealth_task_runner.run(test_stealth_proxy_connection, "wireguard", _path)
                     worker.finished.connect(_done)
-                    worker.error.connect(lambda _e: (_btn_t.setEnabled(True), _btn_s.setEnabled(True), _lbl.setText("✗ Error")))
+                    worker.error.connect(lambda _e: (_btn_t.setEnabled(True), _btn_s.setEnabled(True), _lbl.setText("[Error]")))
                 return _test
 
             def _make_wg_speed_handler(_path, _btn_t, _btn_s, _lbl):
@@ -753,16 +779,16 @@ def create_stealth_subtab(dialog) -> QWidget:
                         _btn_t.setEnabled(True)
                         _btn_s.setEnabled(True)
                         if isinstance(res, tuple) and res[0]:
-                            _lbl.setText(f"⚡ {res[1]}ms | {res[2]} Mbps")
+                            _lbl.setText(f"[OK] {res[1]}ms | {res[2]} Mbps")
                             _lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: bold;")
                         else:
                             err = res[3] if isinstance(res, tuple) and len(res) > 3 else "Failed"
-                            _lbl.setText(f"✗ {err[:24]}")
+                            _lbl.setText(f"[Error] {err[:24]}")
                             _lbl.setStyleSheet("color: #E57373; font-size: 8pt;")
 
                     worker = dialog._stealth_task_runner.run(measure_stealth_proxy_speed, "wireguard", _path)
                     worker.finished.connect(_done)
-                    worker.error.connect(lambda _e: (_btn_t.setEnabled(True), _btn_s.setEnabled(True), _lbl.setText("✗ Error")))
+                    worker.error.connect(lambda _e: (_btn_t.setEnabled(True), _btn_s.setEnabled(True), _lbl.setText("[Error]")))
                 return _speed
 
             def _make_delete_handler(_fn, _name):
@@ -776,7 +802,7 @@ def create_stealth_subtab(dialog) -> QWidget:
                     )
                     if reply == ThemedMessageBox.StandardButton.Yes:
                         WireguardProfileManager.delete_profile(_fn)
-                        cur_list = dialog.settings.value("stealth_pool_wg_profiles", [], type=list)
+                        cur_list = _safe_string_list(dialog.settings, "stealth_pool_wg_profiles")
                         cur_set = set(str(x) for x in cur_list)
                         cur_set.discard(_fn)
                         dialog.settings.setValue("stealth_pool_wg_profiles", sorted(list(cur_set)))
@@ -787,10 +813,11 @@ def create_stealth_subtab(dialog) -> QWidget:
             t_btn.clicked.connect(_make_wg_test_handler(fpath, t_btn, s_btn, s_lbl))
             s_btn.clicked.connect(_make_wg_speed_handler(fpath, t_btn, s_btn, s_lbl))
             del_btn.clicked.connect(_make_delete_handler(fname, p_info["name"]))
-            pool_items_layout.addLayout(row)
+            pool_items_layout.addWidget(row_widget)
 
         # Row N+1: Custom Proxy
-        custom_row = QHBoxLayout()
+        custom_row_widget = QWidget()
+        custom_row = QHBoxLayout(custom_row_widget)
         custom_row.setContentsMargins(4, 2, 4, 2)
         custom_row.setSpacing(8)
 
@@ -804,7 +831,6 @@ def create_stealth_subtab(dialog) -> QWidget:
         custom_row.addWidget(custom_cb)
 
         pool_custom_edit = QLineEdit()
-        pool_custom_edit.setAlignment(Qt.AlignmentFlag.AlignRight)
         pool_custom_edit.setPlaceholderText("socks5://127.0.0.1:1080")
         p_c_url = dialog.settings.value("stealth_proxy_custom_url", "socks5://127.0.0.1:1080", type=str)
         pool_custom_edit.setText(p_c_url)
@@ -836,8 +862,8 @@ def create_stealth_subtab(dialog) -> QWidget:
         c_test_btn.setStyleSheet("QPushButton { font-size: 8pt; padding: 2px 6px; }")
         custom_row.addWidget(c_test_btn)
 
-        c_speed_btn = QPushButton("⚡ Speed")
-        c_speed_btn.setFixedSize(62, 26)
+        c_speed_btn = QPushButton("Speed Test")
+        c_speed_btn.setFixedSize(76, 26)
         c_speed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         c_speed_btn.setStyleSheet("QPushButton { font-size: 8pt; padding: 2px 6px; }")
         custom_row.addWidget(c_speed_btn)
@@ -845,6 +871,10 @@ def create_stealth_subtab(dialog) -> QWidget:
         c_status_lbl = QLabel("Ready")
         c_status_lbl.setFixedWidth(190)
         c_status_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.6); font-size: 8pt;")
+        c_sc = cached_scores.get("custom")
+        if c_sc and c_sc.get("ok"):
+            c_status_lbl.setText(f"[OK] {c_sc.get('ping_ms', 0)}ms | {c_sc.get('speed_mbps', 0.0)} Mbps")
+            c_status_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: bold;")
         custom_row.addWidget(c_status_lbl)
 
         candidate_row_widgets["custom"] = {
@@ -863,16 +893,16 @@ def create_stealth_subtab(dialog) -> QWidget:
                 c_test_btn.setEnabled(True)
                 c_speed_btn.setEnabled(True)
                 if isinstance(res, tuple) and res[0]:
-                    c_status_lbl.setText(f"✓ {res[1]}")
+                    c_status_lbl.setText(f"[OK] {res[1]}")
                     c_status_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: bold;")
                 else:
                     err = res[1] if isinstance(res, tuple) else "Failed"
-                    c_status_lbl.setText(f"✗ {err[:28]}")
+                    c_status_lbl.setText(f"[Error] {err[:28]}")
                     c_status_lbl.setStyleSheet("color: #E57373; font-size: 8pt;")
 
             worker = dialog._stealth_task_runner.run(test_stealth_proxy_connection, "custom", "", pool_custom_edit.text().strip())
             worker.finished.connect(_done)
-            worker.error.connect(lambda _e: (c_test_btn.setEnabled(True), c_speed_btn.setEnabled(True), c_status_lbl.setText("✗ Error")))
+            worker.error.connect(lambda _e: (c_test_btn.setEnabled(True), c_speed_btn.setEnabled(True), c_status_lbl.setText("[Error]")))
 
         def _on_speed_custom():
             c_test_btn.setEnabled(False)
@@ -884,20 +914,20 @@ def create_stealth_subtab(dialog) -> QWidget:
                 c_test_btn.setEnabled(True)
                 c_speed_btn.setEnabled(True)
                 if isinstance(res, tuple) and res[0]:
-                    c_status_lbl.setText(f"⚡ {res[1]}ms | {res[2]} Mbps")
+                    c_status_lbl.setText(f"[OK] {res[1]}ms | {res[2]} Mbps")
                     c_status_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: bold;")
                 else:
                     err = res[3] if isinstance(res, tuple) and len(res) > 3 else "Failed"
-                    c_status_lbl.setText(f"✗ {err[:28]}")
+                    c_status_lbl.setText(f"[Error] {err[:28]}")
                     c_status_lbl.setStyleSheet("color: #E57373; font-size: 8pt;")
 
             worker = dialog._stealth_task_runner.run(measure_stealth_proxy_speed, "custom", "", pool_custom_edit.text().strip())
             worker.finished.connect(_done)
-            worker.error.connect(lambda _e: (c_test_btn.setEnabled(True), c_speed_btn.setEnabled(True), c_status_lbl.setText("✗ Error")))
+            worker.error.connect(lambda _e: (c_test_btn.setEnabled(True), c_speed_btn.setEnabled(True), c_status_lbl.setText("[Error]")))
 
         c_test_btn.clicked.connect(_on_test_custom)
         c_speed_btn.clicked.connect(_on_speed_custom)
-        pool_items_layout.addLayout(custom_row)
+        pool_items_layout.addWidget(custom_row_widget)
 
     # Initial pool UI population
     _refresh_pool_ui()
@@ -913,7 +943,7 @@ def create_stealth_subtab(dialog) -> QWidget:
         if path:
             imported = WireguardProfileManager.import_profile(path)
             if imported:
-                cur_list = dialog.settings.value("stealth_pool_wg_profiles", [], type=list)
+                cur_list = _safe_string_list(dialog.settings, "stealth_pool_wg_profiles")
                 cur_set = set(str(x) for x in cur_list)
                 cur_set.add(imported["filename"])
                 dialog.settings.setValue("stealth_pool_wg_profiles", sorted(list(cur_set)))
@@ -931,7 +961,7 @@ def create_stealth_subtab(dialog) -> QWidget:
         )
         if folder and os.path.isdir(folder):
             imported_count = 0
-            cur_list = dialog.settings.value("stealth_pool_wg_profiles", [], type=list)
+            cur_list = _safe_string_list(dialog.settings, "stealth_pool_wg_profiles")
             cur_set = set(str(x) for x in cur_list)
             for item in sorted(Path(folder).glob("*.conf")):
                 if item.is_file():
@@ -955,7 +985,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     def _on_benchmark_all():
         benchmark_all_btn.setEnabled(False)
         benchmark_summary_lbl.setVisible(True)
-        benchmark_summary_lbl.setText("⚡ Benchmarking candidates sequentially (5 MB burst)...")
+        benchmark_summary_lbl.setText("Benchmarking candidates sequentially (5 MB burst)...")
         benchmark_summary_lbl.setStyleSheet("color: #90CAF9; font-size: 8.5pt;")
 
         for cand_id, widgets in candidate_row_widgets.items():
@@ -969,10 +999,10 @@ def create_stealth_subtab(dialog) -> QWidget:
                 w = candidate_row_widgets.get(cand_id)
                 if w:
                     if ok:
-                        w["status_lbl"].setText(f"⚡ {ping_ms}ms | {speed_mbps} Mbps")
+                        w["status_lbl"].setText(f"[OK] {ping_ms}ms | {speed_mbps} Mbps")
                         w["status_lbl"].setStyleSheet("color: #81C784; font-size: 8pt; font-weight: bold;")
                     else:
-                        w["status_lbl"].setText(f"✗ {msg[:24]}")
+                        w["status_lbl"].setText(f"[Error] {msg[:24]}")
                         w["status_lbl"].setStyleSheet("color: #E57373; font-size: 8pt;")
             post_to_main_thread(_update_row)
 
@@ -988,10 +1018,10 @@ def create_stealth_subtab(dialog) -> QWidget:
                     f_name = fastest.get("name", "Fastest")
                     f_speed = fastest.get("speed_mbps", 0.0)
                     f_ping = fastest.get("ping_ms", 0)
-                    benchmark_summary_lbl.setText(f"✓ Benchmark complete. Fastest: {f_name} ({f_speed} Mbps, {f_ping}ms)")
+                    benchmark_summary_lbl.setText(f"Benchmark complete. Fastest: {f_name} ({f_speed} Mbps, {f_ping}ms)")
                     benchmark_summary_lbl.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: bold;")
                 else:
-                    benchmark_summary_lbl.setText("✗ All benchmarked endpoints failed connectivity verification.")
+                    benchmark_summary_lbl.setText("All benchmarked endpoints failed connectivity verification.")
                     benchmark_summary_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt; font-weight: bold;")
             else:
                 benchmark_summary_lbl.setText("Benchmark finished.")

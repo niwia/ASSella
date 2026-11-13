@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import re
 import subprocess
 import time
@@ -70,10 +71,10 @@ class DownloadWorkshopTask(QObject):
             if result and not err:
                 return result
             if err:
-                self.log(f"  ✗ Manifest request failed: {err}")
+                self.log(f"  [Error] Manifest request failed: {err}")
             return None
         except Exception as e:
-            self.log(f"  ✗ Manifest request error: {e}")
+            self.log(f"  [Error] Manifest request error: {e}")
             return None
 
     def key_exists(self, appid: str):
@@ -248,9 +249,9 @@ class DownloadWorkshopTask(QObject):
         now = int(time.time())
         try:
             self._write_acf(acf_path, appid, {wid: {"size": size, "timeupdated": now, "manifest": manifest_id}})
-            self.log(f"  ✓ ACF updated → {acf_path}")
+            self.log(f"  [OK] ACF updated -> {acf_path}")
         except Exception as e:
-            self.log(f"  ✗ Failed to update ACF: {e}")
+            self.log(f"  [Error] Failed to update ACF: {e}")
 
 
 
@@ -283,13 +284,13 @@ class DownloadWorkshopTask(QObject):
             )
             # Keep the queued cap if the stored best predates it.
             current_n = min(_cap, max(current_n, 1))
-            self.log(f"  → Auto-tune ON: starting at {current_n} concurrent chunks (cap {_cap}).")
+            self.log(f"  -> Auto-tune ON: starting at {current_n} concurrent chunks (cap {_cap}).")
         else:
             current_n = _cap
 
         dotnet_exe = get_dotnet_path()
         if not dotnet_exe:
-            self.log("  ✗ dotnet runtime not found. Please install .NET 9 runtime.")
+            self.log("  [Error] dotnet runtime not found. Please install .NET 9 runtime.")
             self.error.emit((RuntimeError, ".NET 9 runtime not found", None))
             return
 
@@ -299,23 +300,39 @@ class DownloadWorkshopTask(QObject):
             from utils.kuroko import resolve_stealth_proxy_url
             proxy_url, self._kuroko_manager = resolve_stealth_proxy_url(_settings)
             if self._kuroko_manager:
-                mode = _settings.value("stealth_proxy_mode", "warp", type=str).strip().lower()
-                mode_display = "WARP" if mode == "warp" else ("WireGuard" if mode == "wireguard" else mode.capitalize())
+                endpoint_id = getattr(self._kuroko_manager, "endpoint_id", None)
+                if endpoint_id:
+                    if endpoint_id == "warp":
+                        mode_display = "WARP"
+                    elif endpoint_id.startswith("wg:"):
+                        prof_name = Path(endpoint_id[3:]).stem
+                        mode_display = f"WireGuard ({prof_name})"
+                    elif endpoint_id.startswith("custom"):
+                        mode_display = "Custom"
+                    else:
+                        mode_display = endpoint_id.capitalize()
+                else:
+                    mode = _settings.value("stealth_proxy_mode", "warp", type=str).strip().lower()
+                    mode_display = "WARP" if mode == "warp" else ("WireGuard" if mode == "wireguard" else mode.capitalize())
                 endpoint = self._kuroko_manager.proxy_url.split("://")[-1]
                 self._proxy_info_tag = f"[via Stealth: {mode_display} ({endpoint})]"
-                self.log(f"  🔒 Stealth proxy active: {mode_display} ({self._kuroko_manager.proxy_url})")
+                self.log(f"  Stealth proxy active: {mode_display} ({self._kuroko_manager.proxy_url})")
             elif proxy_url:
                 endpoint = proxy_url.split("://")[-1]
                 self._proxy_info_tag = f"[via Stealth: Proxy ({endpoint})]"
-                self.log(f"  🔒 Routing download through custom proxy: {proxy_url}")
+                self.log(f"  Routing download through custom proxy: {proxy_url}")
         except Exception as e:
-            self.log(f"  ✗ Stealth proxy setup failed: {e}")
+            self.log(f"  [Error] Stealth proxy setup failed: {e}")
+            if not self._is_running:
+                return
             from utils.kuroko import prompt_stealth_fallback
             if prompt_stealth_fallback(str(e)):
-                self.log("  ⚠️ Stealth proxy failed. Proceeding with direct download per user request.")
+                self.log("  [Warning] Stealth proxy failed. Proceeding with direct download per user request.")
                 proxy_url = None
                 self._kuroko_manager = None
             else:
+                self._is_running = False
+                self.log("  Download cancelled due to stealth connection failure.")
                 self.error.emit((type(e), f"Stealth proxy error: {e}", None))
                 return
 
@@ -327,10 +344,10 @@ class DownloadWorkshopTask(QObject):
                 if not self._is_running:
                     break
 
-                self.log(f"\n{'─' * 52}\n  Workshop ID : {wid}\n  → Fetching manifest...")
+                self.log(f"\n{'─' * 52}\n  Workshop ID : {wid}\n  -> Fetching manifest...")
                 info = self.fetch_manifest(wid, api_key)
                 if not info:
-                    self.log("  ✗ Could not fetch manifest. Skipping.")
+                    self.log("  [Error] Could not fetch manifest. Skipping.")
                     continue
 
                 appid = info["appid"]
@@ -338,7 +355,7 @@ class DownloadWorkshopTask(QObject):
                 depot_key = info["depot_key"]
                 manifest_path = info["manifest_path"]
 
-                self.log(f"  ✓ App ID     : {appid}\n  ✓ Manifest ID: {manifest_id}\n  ✓ Manifest   : {manifest_path}")
+                self.log(f"  [OK] App ID     : {appid}\n  [OK] Manifest ID: {manifest_id}\n  [OK] Manifest   : {manifest_path}")
 
                 if not depot_key:
                     from core.at0m import _lookup_cached_depot_key
@@ -346,16 +363,16 @@ class DownloadWorkshopTask(QObject):
 
                 if not depot_key:
                     if self.key_exists(appid):
-                        self.log(f"  ✓ Depot key for App ID {appid} already cached in keys file.")
+                        self.log(f"  [OK] Depot key for App ID {appid} already cached in keys file.")
                     else:
-                        self.log("  ✗ No depot key found for App ID. Skipping.")
+                        self.log("  [Error] No depot key found for App ID. Skipping.")
                         continue
                 else:
                     if not self.key_exists(appid):
                         self.save_key(appid, depot_key)
-                        self.log(f"  ✓ Key saved  : {appid};{depot_key[:10]}…")
+                        self.log(f"  [OK] Key saved  : {appid};{depot_key[:10]}...")
                     else:
-                        self.log(f"  ✓ Depot key for App ID {appid} already cached.")
+                        self.log(f"  [OK] Depot key for App ID {appid} already cached.")
 
                 if steam_integration and dest_path:
                     out_dir = os.path.join(dest_path, "steamapps", "workshop", "content", appid, wid)
@@ -417,21 +434,21 @@ class DownloadWorkshopTask(QObject):
                     self.process = None
 
                     if proc.returncode == 0:
-                        self.log(f"  ✓ Download complete → {out_dir}")
+                        self.log(f"  [OK] Download complete -> {out_dir}")
                     else:
-                        self.log(f"  ✗ DepotDownloader exited with code {proc.returncode}.")
+                        self.log(f"  [Error] DepotDownloader exited with code {proc.returncode}.")
                         _errors = 1
                         if _auto_on:
                             try:
                                 current_n = _auto_tune.record_result(
                                     get_settings(), _best_key, current_n, 0.0, _cap, _errors, dest_path=dest_path
                                 )
-                                self.log(f"  → Auto-tune: trouble seen, next: {current_n} (cap {_cap}).")
+                                self.log(f"  -> Auto-tune: trouble seen, next: {current_n} (cap {_cap}).")
                             except Exception as _at_err:
                                 logger.debug(f"Auto-tune step failed: {_at_err}")
                         continue
                 except Exception as e:
-                    self.log(f"  ✗ Failed to launch DepotDownloader: {e}")
+                    self.log(f"  [Error] Failed to launch DepotDownloader: {e}")
                     if _auto_on:
                         try:
                             current_n = _auto_tune.record_result(
@@ -475,8 +492,8 @@ class DownloadWorkshopTask(QObject):
                     logger.debug(f"[WorkshopDownload] Error stopping stealth proxy manager: {e}")
 
         if not self._is_running:
-            self.log("\n  ✗ Download task cancelled by user.")
-            self.error.emit((RuntimeError, "Download task cancelled by user", None))
+            self.log("\n  Download task cancelled by user.")
+            self.completed.emit()
             return
 
         self.log(f"\n{'─' * 52}\n  All tasks finished.")
