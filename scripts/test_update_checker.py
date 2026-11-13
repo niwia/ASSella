@@ -939,11 +939,11 @@ class TestBranchAndPrereleaseAwareness(UpdateCheckerTestCase):
 
 class TestBuildDateHelpers(unittest.TestCase):
     def test_default_build_date(self):
-        self.assertEqual(version_mod.BUILD_DATE, "2026-11-11")
-        self.assertTrue(version_mod.BUILD_TIMESTAMP.startswith("2026-11-11T"))
-        self.assertEqual(get_build_date(), "2026-11-11")
+        self.assertEqual(version_mod.BUILD_DATE, "2026-11-12")
+        self.assertTrue(version_mod.BUILD_TIMESTAMP.startswith("2026-11-12T"))
+        self.assertEqual(get_build_date(), "2026-11-12")
         self.assertEqual(version_mod.get_build_timestamp(), version_mod.BUILD_TIMESTAMP)
-        self.assertEqual(get_build_date_display(), "11/11/2026")
+        self.assertEqual(get_build_date_display(), "12/11/2026")
 
     def test_version_file_matches_the_release(self):
         self.assertEqual(app_version, "2.9.9beta")
