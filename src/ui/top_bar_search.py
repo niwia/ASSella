@@ -109,6 +109,33 @@ class TopBarSearch:
         self.input.returnPressed.connect(self._on_return_pressed)
         self._apply_style()
 
+        from core.ratings import subscribe_ratings
+        subscribe_ratings(self._on_rating_updated)
+
+    def _on_rating_updated(self, appid: str = "*") -> None:
+        """Refresh ratings badges in the search dropdown if open."""
+        if not hasattr(self, "panel") or not self.panel.isVisible():
+            return
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self.panel) or sip.isdeleted(self.results):
+                return
+        except Exception as e:
+            logger.debug(f"[TopBarSearch] sip check failed: {e}")
+        for i in range(self.results.count()):
+            item = self.results.item(i)
+            if not item:
+                continue
+            data = item.data(Qt.ItemDataRole.UserRole)
+            item_appid = str(data[0]) if isinstance(data, (tuple, list)) and data else ""
+            if appid in ("*", item_appid):
+                widget = self.results.itemWidget(item)
+                if widget and hasattr(widget, "update_ratings"):
+                    try:
+                        widget.update_ratings()
+                    except Exception as e:
+                        logger.debug(f"[TopBarSearch] Could not update rating for {item_appid}: {e}")
+
     def _apply_style(self):
         settings = get_settings()
         background = settings.value("background_color", "#000000")

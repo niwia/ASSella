@@ -2,23 +2,27 @@
 ratings.py — Unified Denuvo + ProtonDB ratings module.
 
 Design principles:
+  - Pure core module: zero imports of PyQt6 or UI widget classes.
   - In-memory caches: JSON files are read once per session, never per-card.
   - Zero GUI-thread cost at widget construction time.
-  - Single background daemon worker (queue-based) for ProtonDB HTTP fetches —
-    no per-game thread spawning. Processes one appid at a time with a short
-    inter-request sleep to stay gentle on the network.
-  - Debounced UI refresh: all completed fetches coalesce into one repaint pass.
+  - Background daemon workers (queue-based) for ProtonDB HTTP fetches —
+    processes one appid at a time with a short inter-request sleep.
+  - Lightweight subscriber pattern with debounced main-thread notifications
+    per updated appid (or "*" for global Denuvo sync).
 """
 
+import inspect
+import json
 import logging
 import queue
-import time
-import json
-import requests
 import threading
+import time
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Callable, Dict, List, Optional, Set
 
+import requests
+
+from utils.helpers import get_data_file_path
 from utils.main_thread import post_to_main_thread
 
 logger = logging.getLogger(__name__)
@@ -26,28 +30,121 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Cache paths & expiry
 # ---------------------------------------------------------------------------
-from utils.helpers import get_data_file_path
 DENUVO_CACHE_PATH = get_data_file_path("denuvo_cache.json")
 PROTONDB_CACHE_PATH = get_data_file_path("protondb_cache.json")
 
-DENUVO_CACHE_EXPIRY          = 21600    # 6 hours
+DENUVO_CACHE_EXPIRY           = 21600   # 6 hours
 PROTONDB_CACHE_EXPIRY_SUCCESS = 604800  # 7 days
 PROTONDB_CACHE_EXPIRY_FAILURE = 86400   # 24 hours
 
-# Inter-request sleep inside the worker (milliseconds → seconds).
-# Keeps network impact minimal; 200 ms means ~5 req/s max.
+# Inter-request sleep inside the worker (seconds).
 _WORKER_SLEEP_S = 0.2
 
-# Debounce window before triggering a UI repaint after fetches arrive.
-_REFRESH_DEBOUNCE_MS = 500
+# Debounce window before notifying subscribers after fetches arrive (seconds).
+_REFRESH_DEBOUNCE_S = 0.5
 
 # ---------------------------------------------------------------------------
 # In-memory caches  (populated on first read, invalidated on write)
 # ---------------------------------------------------------------------------
-_denuvo_mem_cache: Optional[dict]  = None
+_denuvo_mem_cache: Optional[dict]   = None
 _protondb_mem_cache: Optional[dict] = None
 _denuvo_mem_lock   = threading.Lock()
 _protondb_mem_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Subscriber registry & debounced notification state
+# ---------------------------------------------------------------------------
+RatingCallback = Callable[[str], None]
+_subscribers: List[RatingCallback] = []
+_subscribers_lock = threading.Lock()
+
+_pending_updated_appids: Set[str] = set()
+_debounce_timer: Optional[threading.Timer] = None
+_refresh_lock = threading.Lock()
+
+
+def subscribe_ratings(callback: RatingCallback) -> None:
+    """Register a callback `fn(appid: str)` to be invoked on the main thread when ratings update."""
+    with _subscribers_lock:
+        if callback not in _subscribers:
+            _subscribers.append(callback)
+
+
+def unsubscribe_ratings(callback: RatingCallback) -> None:
+    """Remove a previously registered rating callback."""
+    with _subscribers_lock:
+        if callback in _subscribers:
+            _subscribers.remove(callback)
+
+
+def _invoke_subscriber(callback: RatingCallback, appid: str) -> None:
+    """Invoke subscriber with `appid`, falling back to 0-arg call if needed."""
+    try:
+        obj = getattr(callback, "__self__", None)
+        if obj is not None:
+            try:
+                from PyQt6 import sip
+                if sip.isdeleted(obj):
+                    unsubscribe_ratings(callback)
+                    return
+            except Exception as e:
+                logger.debug(f"[Ratings] Could not check sip lifecycle for subscriber: {e}")
+        sig = inspect.signature(callback)
+        params = [
+            p for p in sig.parameters.values()
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            or p.kind == inspect.Parameter.VAR_POSITIONAL
+        ]
+        if len(params) == 0:
+            callback()  # type: ignore[misc]
+        else:
+            callback(appid)
+    except Exception as e:
+        logger.debug(f"Rating subscriber error for appid {appid}: {e}")
+
+
+def notify_rating_updated(appid: str) -> None:
+    """Queue `appid` (or '*' for all) for a debounced main-thread subscriber notification."""
+    global _debounce_timer
+    if not appid:
+        return
+    with _refresh_lock:
+        _pending_updated_appids.add(str(appid))
+        if _debounce_timer is not None:
+            _debounce_timer.cancel()
+        _debounce_timer = threading.Timer(_REFRESH_DEBOUNCE_S, _on_debounce_timer_fired)
+        _debounce_timer.daemon = True
+        _debounce_timer.start()
+
+
+def _on_debounce_timer_fired() -> None:
+    """Timer thread callback -> bridges execution to the main GUI thread."""
+    try:
+        post_to_main_thread(_do_ratings_refresh)
+    except Exception as e:
+        logger.debug(f"Could not post ratings refresh to main thread: {e}")
+
+
+def _do_ratings_refresh() -> None:
+    """Flush pending updated appids and notify all registered subscribers on the main thread."""
+    with _refresh_lock:
+        if not _pending_updated_appids:
+            return
+        appids = set(_pending_updated_appids)
+        _pending_updated_appids.clear()
+
+    with _subscribers_lock:
+        callbacks = list(_subscribers)
+
+    if not callbacks:
+        return
+
+    # If a bulk update ("*") occurred alongside specific appids, "*" covers everything.
+    dispatch_targets = ["*"] if "*" in appids else sorted(appids)
+
+    for appid in dispatch_targets:
+        for cb in callbacks:
+            _invoke_subscriber(cb, appid)
 
 
 # ===========================================================================
@@ -114,7 +211,7 @@ def get_denuvo_status(appid: str) -> Optional[str]:
 
 
 def sync_denuvo_cache_and_config(main_window=None, force: bool = False) -> dict:
-    """Fetch Denuvo statuses, cache them, and update SLSsteam's DenuvoGames config."""
+    """Fetch Denuvo statuses, cache them, and notify subscribers."""
     cache        = _load_denuvo_cache()
     last_updated = cache.get("last_updated", 0)
     games_map    = cache.get("games", {})
@@ -150,6 +247,7 @@ def sync_denuvo_cache_and_config(main_window=None, force: bool = False) -> dict:
                 games_map = new_map
                 _save_denuvo_cache_data(games_map)
                 logger.info(f"Fetched {len(games_map)} Denuvo entries.")
+                notify_rating_updated("*")
             else:
                 success   = False
                 error_msg = f"HTTP {resp.status_code}"
@@ -158,8 +256,6 @@ def sync_denuvo_cache_and_config(main_window=None, force: bool = False) -> dict:
             success   = False
             error_msg = str(e)
             logger.warning(f"Denuvo API request failed: {e}")
-
-
 
     count = sum(1 for s in games_map.values() if s in ("uncracked", "hypervisor"))
     try:
@@ -218,7 +314,7 @@ def _save_protondb_entry(appid: str, tier: str, success: bool = True) -> None:
                 logger.warning(f"Error reading ProtonDB cache for merging: {e}")
 
         cache[str(appid)] = {"tier": tier, "timestamp": time.time(), "success": success}
-        
+
         # Update memory cache in place to avoid disk read on next lookup
         _protondb_mem_cache = cache
 
@@ -232,33 +328,24 @@ def _save_protondb_entry(appid: str, tier: str, success: bool = True) -> None:
             logger.warning(f"Failed to write ProtonDB cache entry for {appid}: {e}")
 
 
-
 # ---------------------------------------------------------------------------
-# Single background worker queue  (created lazily, lives for the session)
+# Background worker queue  (created lazily, lives for the session)
 # ---------------------------------------------------------------------------
 _fetch_queue: queue.Queue = queue.Queue()
 _worker_threads: list = []
 _worker_lock = threading.Lock()
 _WORKER_COUNT = 10   # parallel fetch workers; each sleeps between requests
 
-
-
 # Set of appids already queued (prevents duplicates without searching the queue)
 _queued_appids: set = set()
 _queued_lock = threading.Lock()
-
-# Debounce timer handle
-_refresh_timer = None
-_refresh_timer_lock = threading.Lock()
 
 
 def _ensure_worker_running() -> None:
     """Ensure up to _WORKER_COUNT background fetch workers are running."""
     global _worker_threads
     with _worker_lock:
-        # Prune finished threads
         _worker_threads = [t for t in _worker_threads if t.is_alive()]
-        # Start new workers up to the limit
         while len(_worker_threads) < _WORKER_COUNT:
             t = threading.Thread(
                 target=_worker_loop, daemon=True,
@@ -268,17 +355,15 @@ def _ensure_worker_running() -> None:
             _worker_threads.append(t)
 
 
-
 def _worker_loop() -> None:
     """
-    Daemon loop: dequeue one appid, fetch ProtonDB, save, sleep, repeat.
+    Daemon loop: dequeue one appid, fetch ProtonDB, save, notify, sleep, repeat.
     Exits when queue stays empty for > 10 s (naturally dies, restarted lazily).
     """
     while True:
         try:
             appid = _fetch_queue.get(timeout=10)
         except queue.Empty:
-            # No work for 10 s — let the thread die; it will restart next request.
             break
 
         try:
@@ -301,8 +386,8 @@ def _worker_loop() -> None:
             _fetch_queue.task_done()
             with _queued_lock:
                 _queued_appids.discard(appid)
-            # Schedule a debounced UI refresh on the GUI thread
-            _schedule_debounced_refresh()
+            # Schedule a debounced subscriber notification for this specific appid
+            notify_rating_updated(str(appid))
             # Brief sleep between requests — keeps network gentle
             time.sleep(_WORKER_SLEEP_S)
 
@@ -322,8 +407,9 @@ def get_protondb_tier(appid: str) -> Optional[str]:
     if not appid or appid in ("0", "N/A", "unknown") or not str(appid).isdigit():
         return "unknown"
 
+    appid_str = str(appid)
     cache = _load_protondb_cache()
-    entry = cache.get(str(appid))
+    entry = cache.get(appid_str)
     now   = time.time()
 
     if entry:
@@ -331,13 +417,11 @@ def get_protondb_tier(appid: str) -> Optional[str]:
         expiry  = (PROTONDB_CACHE_EXPIRY_SUCCESS if entry.get("success", True)
                    else PROTONDB_CACHE_EXPIRY_FAILURE)
         if now - ts < expiry:
-            return entry.get("tier", "unknown")   # fresh hit — instant, no network
-        # Expired stale entry: return old value AND queue a refresh
-        _enqueue_fetch(appid)
+            return entry.get("tier", "unknown")
+        _enqueue_fetch(appid_str)
         return entry.get("tier", "unknown")
 
-    # Cache miss: queue fetch, caller gets None → badge indicates fetching
-    _enqueue_fetch(appid)
+    _enqueue_fetch(appid_str)
     return None
 
 
@@ -351,11 +435,12 @@ def is_protondb_fetching(appid: str) -> bool:
 
 def _enqueue_fetch(appid: str) -> None:
     """Add *appid* to the worker queue if not already queued/in-flight."""
+    appid_str = str(appid)
     with _queued_lock:
-        if appid in _queued_appids:
+        if appid_str in _queued_appids:
             return
-        _queued_appids.add(appid)
-    _fetch_queue.put(appid)
+        _queued_appids.add(appid_str)
+    _fetch_queue.put(appid_str)
     _ensure_worker_running()
 
 
@@ -367,7 +452,6 @@ def prefetch_protondb_for_appids(appids: list) -> None:
     """
     Enqueue ProtonDB fetches for a list of appids that are NOT yet cached.
     Called once after the library list is drawn — zero cost at widget-init time.
-    Only uncached/expired items are queued; cached items are skipped entirely.
     """
     now   = time.time()
     cache = _load_protondb_cache()
@@ -375,77 +459,15 @@ def prefetch_protondb_for_appids(appids: list) -> None:
     for appid in appids:
         if not appid or appid in ("0", "N/A", "unknown") or not str(appid).isdigit():
             continue
-        entry = cache.get(str(appid))
+        appid_str = str(appid)
+        entry = cache.get(appid_str)
         if entry:
             ts     = entry.get("timestamp", 0)
             expiry = (PROTONDB_CACHE_EXPIRY_SUCCESS if entry.get("success", True)
                       else PROTONDB_CACHE_EXPIRY_FAILURE)
             if now - ts < expiry:
-                continue   # still fresh, skip
-        _enqueue_fetch(appid)
+                continue
+        _enqueue_fetch(appid_str)
         count += 1
     if count:
         logger.debug(f"Queued {count} ProtonDB fetches (sequential worker).")
-
-
-# ===========================================================================
-#  Debounced UI refresh  (safe to call from any thread)
-# ===========================================================================
-
-def _schedule_debounced_refresh() -> None:
-    """Post a debounced ratings-refresh onto the Qt main thread.
-
-    Safe to call from any thread: the worker loop calls this after every
-    fetch. NOTE: QTimer.singleShot must NOT be used here — the caller is a
-    worker thread with no event loop, so it would silently never fire.
-    """
-    from PyQt6.QtWidgets import QApplication
-
-    app = QApplication.instance()
-    if not app:
-        return
-
-    post_to_main_thread(_start_debounce_timer)
-
-
-def _start_debounce_timer() -> None:
-    """(Main thread) create/restart the persistent debounce timer."""
-    global _refresh_timer
-    from PyQt6.QtCore import QTimer
-
-    with _refresh_timer_lock:
-        if _refresh_timer is None:
-            _refresh_timer = QTimer()
-            _refresh_timer.setSingleShot(True)
-            _refresh_timer.timeout.connect(_do_ratings_refresh)
-        _refresh_timer.start(_REFRESH_DEBOUNCE_MS)  # restart window each time
-
-
-def _do_ratings_refresh() -> None:
-    """Repaint all visible rating badges. Runs on the GUI thread."""
-    from PyQt6.QtWidgets import QApplication
-    from ui.dialogs.gamelibrary import GameItemWidget
-    from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
-    from ui.dialogs.fetchmanifest import SearchItemWidget
-
-    app = QApplication.instance()
-    if not app:
-        return
-
-    try:
-        from PyQt6 import sip
-    except ImportError:
-        sip = None
-
-    for w in app.allWidgets():
-        try:
-            if sip and sip.isdeleted(w):
-                continue
-            if isinstance(w, GameItemWidget):
-                w.update_proton_badge()
-            elif isinstance(w, GameDetailsDialogV2):
-                w.update_title()
-            elif isinstance(w, SearchItemWidget):
-                w.update_ratings()
-        except Exception:
-            pass

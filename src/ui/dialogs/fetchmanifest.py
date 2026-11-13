@@ -165,6 +165,8 @@ class FetchManifestDialog(QDialog):
         self._init_ui()
         self._apply_view_mode_to_results()
         self._update_view_mode_button()
+        from core.ratings import subscribe_ratings
+        subscribe_ratings(self._on_rating_updated)
         logger.debug("FetchManifestDialog initialized.")
 
         self._request_api_status_update()
@@ -1287,6 +1289,8 @@ class FetchManifestDialog(QDialog):
                     tier = resp.json().get("tier", "unknown").lower()
                     ok = True
                 _save_protondb_entry(str(app_id), tier, ok)
+                from core.ratings import notify_rating_updated
+                notify_rating_updated(str(app_id))
             except Exception as e:
                 logger.debug(f"ProtonDB on-demand fetch failed for {app_id}: {e}")
 
@@ -2128,7 +2132,37 @@ class FetchManifestDialog(QDialog):
                 y = (self.height() - scaled_pixmap.height()) // 2
                 painter.drawPixmap(x, y, scaled_pixmap)
 
+    def _on_rating_updated(self, appid: str = "*") -> None:
+        """Refresh rating badges for matching search result widgets."""
+        if not hasattr(self, "results_list") or not self.results_list:
+            return
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self.results_list):
+                return
+        except ImportError:
+            sip = None
+
+        for i in range(self.results_list.count()):
+            item = self.results_list.item(i)
+            if not item:
+                continue
+            item_appid = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            if appid not in ("*", item_appid):
+                continue
+            widget = self.results_list.itemWidget(item)
+            if widget and hasattr(widget, "update_ratings"):
+                try:
+                    if sip and sip.isdeleted(widget):
+                        continue
+                    widget._is_fetching_proton = False
+                    widget.update_ratings()
+                except Exception as e:
+                    logger.debug(f"[FetchManifest] Could not update rating for {item_appid}: {e}")
+
     def accept(self):
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
         if hasattr(self, "_origins_movie") and self._origins_movie:
             self._origins_movie.stop()
             self._origins_movie = None
@@ -2138,6 +2172,8 @@ class FetchManifestDialog(QDialog):
         super().accept()
 
     def reject(self):
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
         if hasattr(self, "_origins_movie") and self._origins_movie:
             self._origins_movie.stop()
             self._origins_movie = None
@@ -2169,6 +2205,8 @@ class FetchManifestDialog(QDialog):
         super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
         self._dismiss_loading_overlay()
         if hasattr(self, "_origins_movie") and self._origins_movie:
             self._origins_movie.stop()

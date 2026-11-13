@@ -404,6 +404,9 @@ class GameLibraryDialog(
 
     def _connect_signals(self) -> None:
         """Connect GameManager and local signals."""
+        from core.ratings import subscribe_ratings
+        subscribe_ratings(self._on_rating_updated)
+
         if not self.game_manager:
             return
 
@@ -540,9 +543,44 @@ class GameLibraryDialog(
 
         self._show_game_details_dialog(game_data)
 
+    def _on_rating_updated(self, appid: str = "*") -> None:
+        """Refresh rating badge for a specific appid (or all items if '*')."""
+        if getattr(self, "_closing", False) or not hasattr(self, "games_list"):
+            return
+
+        if appid and appid != "*":
+            entry = self._items_by_appid.get(str(appid))
+            if entry:
+                widget = entry[1] if isinstance(entry, tuple) else self.games_list.itemWidget(entry)
+                if widget and hasattr(widget, "update_proton_badge"):
+                    try:
+                        widget.update_proton_badge()
+                    except Exception as e:
+                        logger.debug(f"[GameLibrary] Could not update proton badge for {appid}: {e}")
+                return
+
+        # Fallback for bulk updates ("*") or if _items_by_appid wasn't populated for this item
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            if not item:
+                continue
+            widget = self.games_list.itemWidget(item)
+            if not widget:
+                continue
+            if appid in ("*", None) or str(getattr(widget, "appid", "")) == str(appid):
+                try:
+                    if hasattr(widget, "update_denuvo_badge"):
+                        widget.update_denuvo_badge()
+                    if hasattr(widget, "update_proton_badge"):
+                        widget.update_proton_badge()
+                except Exception as e:
+                    logger.debug(f"[GameLibrary] Could not update badges for item {i}: {e}")
+
     def closeEvent(self, event) -> None:
         """Cleanup resources on close."""
         self._closing = True
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
         self._load_generation = getattr(self, "_load_generation", 0) + 1
         for fetcher in list(self._active_fetchers.values()):
             try:

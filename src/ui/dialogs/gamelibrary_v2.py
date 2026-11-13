@@ -199,6 +199,9 @@ class GameDetailsDialogV2(QDialog):
         self._apply_stylesheet()
         self._setup_ui()
 
+        from core.ratings import subscribe_ratings
+        subscribe_ratings(self._on_rating_updated)
+
         # Check workshop availability and downloaded content in background thread (only if enabled)
         if self.settings.value("enable_workshop_downloader", False, type=bool):
             from utils.workshop_helpers import check_game_workshop_available_async
@@ -958,7 +961,20 @@ class GameDetailsDialogV2(QDialog):
             if hasattr(self, "_luafix_bridge"):
                 self._luafix_bridge.loaded.emit(res_data)
 
+    def _on_rating_updated(self, appid: str = "*") -> None:
+        """Update header badges when this game's rating finishes fetching."""
+        try:
+            from PyQt6 import sip
+            if sip.isdeleted(self):
+                return
+        except Exception as e:
+            logger.debug(f"[GameDetails] sip check failed: {e}")
+        if appid in ("*", str(self.appid)):
+            self.update_title()
+
     def _cleanup_delegate(self):
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
         if getattr(self, "_library_delegate", None):
             try:
                 self._library_delegate.close()
