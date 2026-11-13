@@ -58,6 +58,7 @@ src/deps/Goldberg/
 src/deps/Steamless/
 src/deps/SLScheevo/
 src/deps/schema-grabber/
+src/deps/wireproxy
 
 # ── OS junk ─────────────────────────────────────────────────────────────────
 .DS_Store
