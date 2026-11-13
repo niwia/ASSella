@@ -111,6 +111,10 @@ class TaskRunner(QObject):
         self.worker = None
         self.destroyed.connect(self._on_destroyed)
 
+    def is_running(self) -> bool:
+        """Return True if the runner currently has an active thread running."""
+        return self._thread is not None and self._thread.isRunning()
+
     def run(self, target_func, *args, on_finished=None, on_error=None, on_completed=None, **kwargs):
         self._ensure_shutdown_hook()
 
@@ -118,7 +122,10 @@ class TaskRunner(QObject):
         if self._thread is not None and self._thread.isRunning():
             self.stop(wait_ms=300, terminate_on_timeout=False)
 
-        new_thread = QThread(self)
+        # Allocate QThread independently (no QObject parent) so that if TaskRunner
+        # is dereferenced or deleted while the worker finishes, QObject::deleteChildren
+        # cannot destroy a running QThread and trigger Qt qFatal/SIGABRT.
+        new_thread = QThread()
         new_worker = Worker(target_func, *args, **kwargs)
         self._thread = new_thread
         self.worker = new_worker
@@ -174,6 +181,12 @@ class TaskRunner(QObject):
                 worker.completed.disconnect()
             except (TypeError, RuntimeError):
                 pass
+
+        if thread is not None:
+            try:
+                thread.setParent(None)
+            except Exception as e:
+                logger.debug(f"Could not detach thread parent: {e}")
 
         if thread is not None and thread.isRunning():
             try:

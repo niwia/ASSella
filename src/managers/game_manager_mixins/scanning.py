@@ -33,7 +33,7 @@ class GameManagerScanningMixin:
         Start an async scan of Steam library directories for installed Steam games.
         The UI will update automatically when the scan completes via signals.
         """
-        if self.is_scanning or self.scan_runner is not None:
+        if self.is_scanning or (self.scan_runner is not None and self.scan_runner.is_running()):
             logger.info("Cancelling in-progress Steam library scan before starting a new scan")
             self.cancel_scan()
 
@@ -47,7 +47,8 @@ class GameManagerScanningMixin:
         def do_scan():
             return self._perform_scan(generation=generation)
 
-        self.scan_runner = TaskRunner()
+        if self.scan_runner is None:
+            self.scan_runner = TaskRunner()
         self.scan_runner.run(do_scan)
 
     def cancel_scan(self):
@@ -69,7 +70,6 @@ class GameManagerScanningMixin:
                 self.scan_runner.stop(wait_ms=0, terminate_on_timeout=False)
             except Exception as e:
                 logger.debug(f"Error stopping scan runner: {e}")
-            self.scan_runner = None
         self.is_scanning = False
 
     def _perform_scan(self, generation: int | None = None):
