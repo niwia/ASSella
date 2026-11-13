@@ -912,7 +912,14 @@ def probe_stealth_ready(proxy_url: str, timeout: float = 3.5) -> bool:
     return Kuroko.probe_alive(proxy_url, timeout=timeout)
 
 
-def save_endpoint_score(endpoint_id: str, ping_ms: int, speed_mbps: float, ok: bool, settings=None) -> None:
+def save_endpoint_score(
+    endpoint_id: str,
+    ping_ms: int,
+    speed_mbps: float,
+    ok: bool,
+    settings=None,
+    exit_label: str = "",
+) -> None:
     """Persist benchmark metrics for a candidate endpoint in QSettings."""
     if not endpoint_id:
         return
@@ -922,14 +929,22 @@ def save_endpoint_score(endpoint_id: str, ping_ms: int, speed_mbps: float, ok: b
     try:
         raw = settings.value("stealth_endpoint_scores", "{}", type=str)
         scores = json.loads(raw) if raw else {}
-    except Exception:
+    except Exception as e:
+        logger.debug(f"[Kuroko] Failed to load endpoint scores: {e}")
         scores = {}
-    scores[endpoint_id] = {
+
+    entry = {
         "ping_ms": ping_ms,
         "speed_mbps": speed_mbps,
         "ok": ok,
         "timestamp": int(time.time()),
     }
+    if exit_label:
+        entry["exit_label"] = exit_label
+    elif endpoint_id in scores and "exit_label" in scores[endpoint_id]:
+        entry["exit_label"] = scores[endpoint_id]["exit_label"]
+
+    scores[endpoint_id] = entry
     try:
         settings.setValue("stealth_endpoint_scores", json.dumps(scores))
     except Exception as e:
@@ -1035,6 +1050,84 @@ def measure_stealth_proxy_speed(
     return res
 
 
+def test_and_benchmark_endpoint(
+    mode: str,
+    wg_path: str = "",
+    custom_url: str = "",
+    timeout: float = 8.0,
+    settings=None,
+) -> Tuple[bool, str, int, float, str]:
+    """
+    Test connection and benchmark speed for an endpoint in a single ephemeral tunnel session.
+    1. Starts an ephemeral Kuroko tunnel once (or uses direct custom proxy).
+    2. Fetches exit IP/location via test_connection().
+    3. Runs the 5 MB burst measure_speed() test (RTT + throughput).
+    4. Stops the tunnel cleanly in finally:.
+    5. Persists the score in stealth_endpoint_scores.
+    Returns (ok: bool, exit_label: str, ping_ms: int, speed_mbps: float, error_msg: str).
+    """
+    mode = (mode or "warp").lower().strip()
+    if mode == "warp":
+        manager = Kuroko()
+        try:
+            cfg = get_or_create_warp_config()
+            if not manager.start(cfg, port=0):
+                return False, "", 0, 0.0, "Failed to start Cloudflare WARP tunnel."
+            ok_conn, exit_label = manager.test_connection(manager.proxy_url, timeout=timeout)
+            if not ok_conn:
+                return False, "", 0, 0.0, exit_label
+            ok_speed, ping_ms, speed_mbps, speed_msg = manager.measure_speed(manager.proxy_url, timeout=timeout)
+            save_endpoint_score("warp", ping_ms, speed_mbps, ok_speed or ping_ms > 0, settings=settings, exit_label=exit_label)
+            return True, exit_label, ping_ms, speed_mbps, "" if ok_speed else speed_msg
+        except Exception as e:
+            logger.debug(f"[Kuroko] WARP test & benchmark error: {e}")
+            return False, "", 0, 0.0, f"WARP error: {e}"
+        finally:
+            manager.stop()
+
+    elif mode == "wireguard":
+        conf_path = (wg_path or "").strip()
+        if not conf_path or not os.path.isfile(conf_path):
+            return False, "", 0, 0.0, f"WireGuard config not found: '{conf_path}'"
+        manager = Kuroko()
+        try:
+            if not manager.start(conf_path, port=0):
+                return False, "", 0, 0.0, "Failed to start WireGuard tunnel."
+            ok_conn, exit_label = manager.test_connection(manager.proxy_url, timeout=timeout)
+            if not ok_conn:
+                return False, "", 0, 0.0, exit_label
+            ok_speed, ping_ms, speed_mbps, speed_msg = manager.measure_speed(manager.proxy_url, timeout=timeout)
+            endpoint_id = f"wg:{Path(conf_path).name}"
+            save_endpoint_score(endpoint_id, ping_ms, speed_mbps, ok_speed or ping_ms > 0, settings=settings, exit_label=exit_label)
+            return True, exit_label, ping_ms, speed_mbps, "" if ok_speed else speed_msg
+        except Exception as e:
+            logger.debug(f"[Kuroko] WireGuard test & benchmark error: {e}")
+            return False, "", 0, 0.0, f"WireGuard error: {e}"
+        finally:
+            manager.stop()
+
+    elif mode == "custom":
+        url = (custom_url or "").strip()
+        if not url:
+            return False, "", 0, 0.0, "No custom proxy URL specified."
+        if "://" not in url:
+            url = f"socks5://{url}"
+        manager = Kuroko()
+        try:
+            ok_conn, exit_label = manager.test_connection(url, timeout=timeout)
+            if not ok_conn:
+                return False, "", 0, 0.0, exit_label
+            ok_speed, ping_ms, speed_mbps, speed_msg = manager.measure_speed(url, timeout=timeout)
+            save_endpoint_score("custom", ping_ms, speed_mbps, ok_speed or ping_ms > 0, settings=settings, exit_label=exit_label)
+            return True, exit_label, ping_ms, speed_mbps, "" if ok_speed else speed_msg
+        except Exception as e:
+            logger.debug(f"[Kuroko] Custom proxy test & benchmark error: {e}")
+            return False, "", 0, 0.0, f"Custom proxy error: {e}"
+
+    else:
+        return False, "", 0, 0.0, f"Unsupported stealth mode: '{mode}'"
+
+
 class StealthPoolManager:
     """Manages multi-endpoint rotation, sequential benchmarking, and smart failover."""
 
@@ -1109,44 +1202,63 @@ class StealthPoolManager:
         return eligible
 
     @classmethod
-    def benchmark_candidate(cls, candidate: dict, timeout: float = 8.0, settings=None) -> Tuple[bool, int, float, str]:
-        """Benchmark a candidate endpoint in isolation and return (ok, ping_ms, speed_mbps, msg)."""
+    def test_and_benchmark_candidate(
+        cls, candidate: dict, timeout: float = 8.0, settings=None
+    ) -> Tuple[bool, str, int, float, str]:
+        """Test connection and benchmark speed for a candidate in a single ephemeral tunnel session."""
         c_type = candidate.get("type", "warp")
         c_id = candidate.get("id", c_type)
         if c_type == "warp":
-            res = measure_stealth_proxy_speed("warp", timeout=timeout)
+            res = test_and_benchmark_endpoint("warp", timeout=timeout, settings=settings)
         elif c_type == "wireguard":
-            res = measure_stealth_proxy_speed("wireguard", wg_path=candidate.get("config_path", ""), timeout=timeout)
+            res = test_and_benchmark_endpoint(
+                "wireguard", wg_path=candidate.get("config_path", ""), timeout=timeout, settings=settings
+            )
         elif c_type == "custom":
-            res = measure_stealth_proxy_speed("custom", custom_url=candidate.get("url", ""), timeout=timeout)
+            res = test_and_benchmark_endpoint(
+                "custom", custom_url=candidate.get("url", ""), timeout=timeout, settings=settings
+            )
         else:
-            res = (False, 0, 0.0, f"Unknown candidate type: '{c_type}'")
-
-        ok, ping, speed, msg = res
-        save_endpoint_score(c_id, ping, speed, ok, settings=settings)
+            res = (False, "", 0, 0.0, f"Unknown candidate type: '{c_type}'")
         return res
 
     @classmethod
-    def benchmark_all_candidates(cls, settings=None, progress_callback: Optional[Callable[[str, bool, int, float, str], None]] = None) -> list[dict]:
+    def benchmark_candidate(cls, candidate: dict, timeout: float = 8.0, settings=None) -> Tuple[bool, int, float, str]:
+        """Benchmark a candidate endpoint in isolation and return (ok, ping_ms, speed_mbps, msg)."""
+        ok, exit_label, ping, speed, msg = cls.test_and_benchmark_candidate(candidate, timeout=timeout, settings=settings)
+        return ok, ping, speed, msg
+
+    @classmethod
+    def benchmark_all_candidates(
+        cls,
+        settings=None,
+        progress_callback: Optional[Callable[..., None]] = None,
+    ) -> list[dict]:
         """
         Sequentially benchmark all pool candidates to prevent home network saturation.
-        Calls progress_callback(candidate_id, success, ping_ms, speed_mbps, message) on each step.
+        Calls progress_callback(candidate_id, success, exit_label, ping_ms, speed_mbps, message) on each step.
         Returns the candidates list sorted by highest speed_mbps (and lowest ping_ms).
         """
         candidates = cls.get_pool_candidates(settings)
         results = []
         for c in candidates:
             c_id = c["id"]
-            ok, ping, speed, msg = cls.benchmark_candidate(c, settings=settings)
+            ok, exit_label, ping, speed, msg = cls.test_and_benchmark_candidate(c, settings=settings)
             c_copy = dict(c)
             c_copy["ok"] = ok
+            c_copy["exit_label"] = exit_label
             c_copy["ping_ms"] = ping
             c_copy["speed_mbps"] = speed
             c_copy["msg"] = msg
             results.append(c_copy)
             if progress_callback is not None:
                 try:
-                    progress_callback(c_id, ok, ping, speed, msg)
+                    import inspect
+                    sig = inspect.signature(progress_callback)
+                    if len(sig.parameters) == 5:
+                        progress_callback(c_id, ok, ping, speed, msg)
+                    else:
+                        progress_callback(c_id, ok, exit_label, ping, speed, msg)
                 except Exception as cb_err:
                     logger.debug(f"[Kuroko] Benchmark progress callback error: {cb_err}")
 

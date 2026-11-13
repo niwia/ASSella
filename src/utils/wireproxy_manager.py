@@ -26,6 +26,7 @@ from utils.kuroko import (
     prompt_stealth_fallback,
     resolve_stealth_proxy_url,
     save_endpoint_score,
+    test_and_benchmark_endpoint,
     test_stealth_proxy_connection,
 )
 
@@ -50,5 +51,6 @@ __all__ = [
     "prompt_stealth_fallback",
     "resolve_stealth_proxy_url",
     "save_endpoint_score",
+    "test_and_benchmark_endpoint",
     "test_stealth_proxy_connection",
 ]

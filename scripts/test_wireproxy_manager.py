@@ -143,6 +143,42 @@ BindAddress = 0.0.0.0:9999
         clear_endpoint_cooldowns()
         self.assertFalse(is_endpoint_in_cooldown("test_ep"))
 
+    def test_08_test_and_benchmark_endpoint(self):
+        """Verify unified test_and_benchmark_endpoint and StealthPoolManager candidate runner."""
+        from unittest.mock import MagicMock, patch
+        from utils.kuroko import StealthPoolManager, test_and_benchmark_endpoint
+
+        mock_manager = MagicMock()
+        mock_manager.proxy_url = "socks5h://127.0.0.1:40001"
+        mock_manager.test_connection.return_value = (True, "104.28.1.1 (Cloudflare WARP - US)")
+        mock_manager.measure_speed.return_value = (True, 42, 115.5, "Ping: 42ms | Speed: 115.5 Mbps")
+
+        with patch("utils.kuroko.Kuroko", return_value=mock_manager):
+            with patch("utils.kuroko.get_or_create_warp_config", return_value="[Interface]\nPrivateKey=abc\n"):
+                ok, exit_lbl, ping, speed, err = test_and_benchmark_endpoint("warp")
+                self.assertTrue(ok)
+                self.assertIn("Cloudflare WARP", exit_lbl)
+                self.assertEqual(ping, 42)
+                self.assertEqual(speed, 115.5)
+                self.assertEqual(err, "")
+                mock_manager.stop.assert_called_once()
+
+        # Test candidate benchmark runner
+        candidate = {
+            "id": "warp",
+            "type": "warp",
+            "name": "Cloudflare WARP (Auto)",
+            "config_path": "",
+            "url": "",
+        }
+        with patch("utils.kuroko.test_and_benchmark_endpoint", return_value=(True, "1.2.3.4 (Edge)", 30, 88.0, "")):
+            res = StealthPoolManager.test_and_benchmark_candidate(candidate)
+            self.assertEqual(len(res), 5)
+            self.assertTrue(res[0])
+            self.assertEqual(res[1], "1.2.3.4 (Edge)")
+            self.assertEqual(res[2], 30)
+            self.assertEqual(res[3], 88.0)
+
 
 if __name__ == "__main__":
     unittest.main()
