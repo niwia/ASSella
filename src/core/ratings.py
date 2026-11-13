@@ -84,7 +84,7 @@ def _invoke_subscriber(callback: RatingCallback, appid: str) -> None:
         if obj is not None:
             try:
                 from PyQt6 import sip
-                if sip.isdeleted(obj):
+                if isinstance(obj, sip.simplewrapper) and sip.isdeleted(obj):
                     unsubscribe_ratings(callback)
                     return
             except Exception as e:
