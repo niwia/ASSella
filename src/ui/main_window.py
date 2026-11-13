@@ -2,31 +2,37 @@ import atexit
 import logging
 import os
 import sys
+import tempfile
+import threading
 import time
+import traceback
+import zipfile
 from collections import deque
+from queue import Queue
 from typing import Dict, Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QMetaObject, Q_ARG, QUrl
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
-    QDesktopServices,
+    QColor,
     QDragEnterEvent,
     QDropEvent,
-    QIcon,
     QKeySequence,
+    QLinearGradient,
+    QPainter,
+    QPixmap,
     QShortcut,
-    QColor,
-    QFontMetrics,
 )
 from PyQt6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
-    QHBoxLayout,
-    QPushButton,
 )
-from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from managers.app_update_manager import AppUpdateManager
 from managers.game_manager import GameManager
@@ -34,6 +40,14 @@ from managers.job_queue_manager import JobQueueManager
 from managers.task_manager import TaskManager
 from managers.ui_state_manager import UIStateManager
 from ui.bottom_titlebar import BottomTitleBar
+from ui.dialogs.themed_message_box import ThemedMessageBox
+from ui.main_window_mixins import (
+    DIALOG_WAIT_SECONDS,
+    MainWindowSelfUpdateMixin,
+    MainWindowSystemStatusMixin,
+    MainWindowUpdateAllMixin,
+    MainWindowWebBridgeMixin,
+)
 from ui.widgets import (
     ResizeHandle,
     SimplifiedTerminalWidget,
@@ -41,24 +55,23 @@ from ui.widgets import (
 from ui.widgets.elided_label import ElidedLabel
 from utils.logger import qt_log_handler
 from utils.paths import Paths
-from queue import Queue
-from utils.web_server import WebServerManager, get_local_ip
-from utils.settings import get_settings
+from utils.settings import get_settings, is_canary_welcome_needed
 from utils.task_runner import TaskRunner
-from datetime import datetime, timezone
-from utils.version import app_version, check_for_updates, get_effective_update_channel, normalize_update_server
+from utils.web_server import WebServerManager
 
 logger = logging.getLogger(__name__)
 
-# How long Update All waits for the user to answer a depot-selection dialog
-# before giving up on that game. Must comfortably exceed human reaction time —
-# a short wait returns while the dialog is still open, which silently skips the
-# game while leaving a stale dialog on screen.
-DIALOG_WAIT_SECONDS = 300
+# Re-export backward-compatible base class alias if imported externally
+FramelessWindow = QMainWindow
 
 
-class MainWindow(QMainWindow):
-
+class MainWindow(
+    FramelessWindow,
+    MainWindowUpdateAllMixin,
+    MainWindowSystemStatusMixin,
+    MainWindowSelfUpdateMixin,
+    MainWindowWebBridgeMixin,
+):
     """Main application window."""
 
     refresh_system_status_signal = pyqtSignal()
@@ -219,7 +232,6 @@ class MainWindow(QMainWindow):
         self.denuvo_sync_value = None
         self._denuvo_sync_status = "Idle"
 
-
         self.progress_container = None
         self.progress_layout = None
         self.progress_bar = None
@@ -258,7 +270,7 @@ class MainWindow(QMainWindow):
         self._setup_window_properties()
         self._initialize_managers()
         self._setup_ui()
-        
+
         # Connect update progress signals after UI is initialized
         self.game_manager.update_check_progress.connect(
             self.simplified_terminal.set_updates_checking_progress
@@ -290,7 +302,6 @@ class MainWindow(QMainWindow):
             self._update_web_ui_status_label()
 
         # Trigger SLSsteam boot updates and config checks sequentially in a background thread
-        import threading
         from utils.assfixer import run_boot_config_check
 
         # Warm up Byparr and verify SteamDB Cloudflare bypass in the background.
@@ -299,7 +310,7 @@ class MainWindow(QMainWindow):
         # update check are still running is what made the window feel stuck
         # right after boot.
         self._schedule_steamdb_warmup()
-        
+
         def run_boot_checks():
             try:
                 from utils.slssteam_integration import check_slssteam_binary_is_latest
@@ -328,7 +339,10 @@ class MainWindow(QMainWindow):
             try:
                 from core.ratings import sync_denuvo_cache_and_config
                 if self.settings and not self.settings.value("denuvo_config_cleaned_v255", False, type=bool):
-                    from utils.yaml_config_manager import get_user_config_path, clean_denuvo_games_section
+                    from utils.yaml_config_manager import (
+                        clean_denuvo_games_section,
+                        get_user_config_path,
+                    )
                     cfg = get_user_config_path()
                     if cfg and cfg.exists():
                         clean_denuvo_games_section(cfg)
@@ -354,7 +368,6 @@ class MainWindow(QMainWindow):
         # older Training Wheels Protocol dialog, which was removed: every action
         # it offered (recommended settings, config check/repair, SLS install +
         # version tiles) already exists in Settings -> Health.
-        from utils.settings import is_canary_welcome_needed
         if is_canary_welcome_needed():
             QTimer.singleShot(1000, self._show_canary_welcome)
             QTimer.singleShot(4000, self._check_legacy_plugins_startup)
@@ -396,15 +409,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to display Canary Welcome dialog: {e}", exc_info=True)
 
-    def _prompt_experimental_features_once_if_needed(self):
+    def _prompt_experimental_features_once_if_needed(self) -> None:
         """Prompt user once on startup to try experimental features if not already enabled."""
         has_prompted = self.settings.value("has_prompted_experimental", False, type=bool)
         isp_bypass = self.settings.value("isp_bypass_hubcap", False, type=bool)
         sls_acf = self.settings.value("experimental_acf_independent", False, type=bool)
 
         if not has_prompted and (not isp_bypass or not sls_acf):
-            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QPushButton, QHBoxLayout
-
             dlg = QDialog(self)
             dlg.setWindowTitle("Experimental Features — Try & Feedback")
             dlg.setFixedWidth(540)
@@ -440,7 +451,7 @@ class MainWindow(QMainWindow):
             desc_lbl = QLabel(
                 "Enhance your download stability and Steam integration by testing our experimental features. "
                 "You can change these anytime in Settings -> Experimental.",
-                dlg
+                dlg,
             )
             desc_lbl.setWordWrap(True)
             desc_lbl.setStyleSheet("color: #a9b1d6; font-size: 12px; margin-bottom: 6px;")
@@ -453,7 +464,7 @@ class MainWindow(QMainWindow):
             isp_sub = QLabel(
                 "Bypasses ISP DNS censorship on Hubcap API requests using Google/Cloudflare DNS (1.1.1.1/8.8.8.8) "
                 "with background Tor fallback. (Only affects API calls, not game file downloads).",
-                dlg
+                dlg,
             )
             isp_sub.setWordWrap(True)
             isp_sub.setStyleSheet("color: #565f89; font-size: 11px; margin-left: 22px; margin-bottom: 8px;")
@@ -466,7 +477,7 @@ class MainWindow(QMainWindow):
             acf_sub = QLabel(
                 "Delegates .acf file creation and updates directly to Steam via SLSsteam API instead of writing them manually. "
                 "Fixes 'Content Encrypted' errors, play instantly without Steam restarts, and clean native uninstallation.",
-                dlg
+                dlg,
             )
             acf_sub.setWordWrap(True)
             acf_sub.setStyleSheet("color: #565f89; font-size: 11px; margin-left: 22px; margin-bottom: 12px;")
@@ -495,9 +506,8 @@ class MainWindow(QMainWindow):
                     try:
                         from utils.yaml_config_manager import ensure_slssteam_prerequisites
                         ensure_slssteam_prerequisites()
-                    except Exception:
-                        pass
-
+                    except Exception as e:
+                        logger.debug(f"[MainWindow] Could not ensure SLSsteam prerequisites: {e}")
 
     def _setup_window_properties(self) -> None:
         """Configure basic window properties."""
@@ -612,7 +622,7 @@ class MainWindow(QMainWindow):
 
         logger.info("Starting initial game library scan...")
         self.game_manager.scan_complete.connect(self._on_initial_scan_complete)
-        
+
         # Connect game manager signals to update the dashboard's elements & FAB loading state
         self.game_manager.library_updated.connect(self.update_dashboard_elements)
         self.game_manager.update_check_started.connect(
@@ -626,8 +636,6 @@ class MainWindow(QMainWindow):
         # AT0-M Sync: share the newest Hubcap key with katamari.conf.lua (which
         # Uran, Epsilon and the plugins read). Small file reads, off the GUI thread.
         if self.settings.value("atom_hubcap_sync_enabled", False, type=bool):
-            import threading
-
             def _sync_hubcap_key():
                 try:
                     from utils.sls_lua_config import sync_hubcap_api_key
@@ -645,135 +653,12 @@ class MainWindow(QMainWindow):
 
         self.game_manager.scan_steam_libraries_async()
 
-    def _process_web_commands(self) -> None:
-        while not self.web_command_queue.empty():
-            try:
-                cmd = self.web_command_queue.get_nowait()
-                cmd_type = cmd.get("type")
-                if cmd_type == "enqueue_job":
-                    path = cmd.get("path")
-                    metadata = cmd.get("metadata")
-                    logger.info(f"Main Window: Enqueueing job from Web UI for {metadata.get('game_name')}")
-                    self.job_queue.add_job(path, metadata)
-                elif cmd_type == "check_updates":
-                    logger.info("Main Window: Checking updates triggered from Web UI")
-                    if self.game_manager:
-                        self.game_manager.reset_up_to_date_for_recheck()
-                        self.game_manager.check_game_updates_async()
-            except Exception as e:
-                logger.error(f"Error processing web command: {e}")
-
-    def _refresh_web_status_snapshot(self) -> None:
-        """Publish the progress widgets' state for the web UI.
-
-        Runs on the GUI thread (driven by ``web_command_timer``) so the web
-        server never has to touch QWidget state from its request threads.
-        """
-        progress = 0
-        progress_visible = False
-        speed = ""
-        speed_visible = False
-
-        try:
-            if self.progress_bar is not None:
-                progress_visible = bool(self.progress_bar.isVisible())
-                progress = int(self.progress_bar.value())
-            if self.speed_label is not None:
-                speed_visible = bool(self.speed_label.isVisible())
-                # The label elides what it displays; the web UI wants the whole
-                # speed string.
-                speed = getattr(self.speed_label, "full_text", "") or self.speed_label.text()
-        except RuntimeError as exc:
-            # Widgets already destroyed (window tearing down).
-            logger.debug(f"Web status snapshot refresh skipped: {exc}")
-            return
-
-        self._web_status_snapshot = {
-            "progress": progress,
-            "progress_visible": progress_visible,
-            "speed": str(speed),
-            "speed_visible": speed_visible,
-        }
-
-    def get_web_status_snapshot(self) -> dict:
-        """Return a plain-Python copy of the published status snapshot.
-
-        Safe to call from any thread: it only reads a dict of primitives.
-        """
-        snapshot = getattr(self, "_web_status_snapshot", None) or {}
-        return dict(snapshot)
-
-    def toggle_web_server(self, enabled: bool, port: int = 8765) -> None:
-        if enabled:
-            if not self.web_server_manager.is_running():
-                # Loopback by default; LAN binding is an explicit opt-in.
-                allow_lan = self.settings.value("web_ui_allow_lan", False, type=bool)
-                host = "0.0.0.0" if allow_lan else "127.0.0.1"
-                if self.web_server_manager.start(host=host, port=port):
-                    self.web_command_timer.start(200)
-        else:
-            if self.web_server_manager.is_running():
-                self.web_server_manager.stop()
-                self.web_command_timer.stop()
-        self._update_web_ui_status_label()
-
-    def _update_web_ui_status_label(self) -> None:
-        if not hasattr(self, "web_ui_status_value") or not self.web_ui_status_value:
-            return
-        
-        port = self.settings.value("web_ui_port", 8765, type=int)
-        allow_lan = self.settings.value("web_ui_allow_lan", False, type=bool)
-        
-        # 1. Check if the local web server manager is running in this GUI instance
-        if self.web_server_manager and self.web_server_manager.is_running():
-            port = self.web_server_manager.server.port
-            token = self.web_server_manager.auth_token
-            # The UI is same-origin and already carries the token, so the plain
-            # loopback URL is enough here. LAN access needs the token in the URL.
-            if allow_lan:
-                self.web_ui_status_value.setText(f"http://{get_local_ip()}:{port}/?token={token}")
-                self.web_ui_status_value.setToolTip(
-                    "Anyone on your local network can open this link while the server is running.\n"
-                    "The token is regenerated every time the server starts."
-                )
-            else:
-                self.web_ui_status_value.setText(f"http://127.0.0.1:{port}")
-                self.web_ui_status_value.setToolTip(
-                    "Bound to localhost only. Enable LAN access in settings to reach this from another device."
-                )
-            self.web_ui_status_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-            return
-
-        # 2. Check if the systemd background user service is active (Linux only)
-        is_bg_active = False
-        if sys.platform == "linux":
-            try:
-                import subprocess
-                res = subprocess.run(
-                    ["systemctl", "--user", "is-active", "assella-testing.service"],
-                    capture_output=True,
-                    text=True,
-                    timeout=2.0,
-                )
-                if res.stdout.strip() == "active":
-                    is_bg_active = True
-            except Exception:
-                pass
-
-        if is_bg_active:
-            self.web_ui_status_value.setText(f"http://{get_local_ip()}:{port} (Service)")
-            self.web_ui_status_value.setStyleSheet("color: #44cc44; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-        else:
-            self.web_ui_status_value.setText("Disabled")
-            self.web_ui_status_value.setStyleSheet(f"color: {self.accent_color or '#C06C84'}; font-size: 11px; font-weight: bold; border: none; background: transparent;")
-
-
     def _on_initial_scan_complete(self, games_found: int) -> None:
         """Slot triggered when the initial library scan completes."""
         try:
             self.game_manager.scan_complete.disconnect(self._on_initial_scan_complete)
-        except TypeError:
-            pass  # Already disconnected or not connected
+        except TypeError as e:
+            logger.debug(f"[MainWindow] scan_complete signal already disconnected: {e}")
 
         # Routine network work that used to run next to the update check is
         # queued behind it, so the window settles first and the network is used
@@ -864,7 +749,6 @@ class MainWindow(QMainWindow):
         Progress messages are logged at INFO level so they appear in the main window pager.
         """
         from core.tasks.depot_key_migration_task import DepotKeyMigrationTask
-        from utils.task_runner import TaskRunner
 
         migration_task = DepotKeyMigrationTask()
 
@@ -883,8 +767,6 @@ class MainWindow(QMainWindow):
                 f"[Depot Key Cache] Migration done: {migrated} game(s) migrated, "
                 f"{skipped} skipped. Smart Update Mode is now available."
             )
-
-
 
     def _setup_system_status_timer(self) -> None:
         """Coalesce status-panel refreshes into one GUI pass per second.
@@ -930,9 +812,6 @@ class MainWindow(QMainWindow):
 
     def _log_gui_stall_stack(self, gap: float) -> None:
         """Print where the GUI thread was while the window was unresponsive."""
-        import threading
-        import traceback
-
         try:
             frame = sys._current_frames().get(threading.get_ident())
             if frame is None:
@@ -1044,11 +923,11 @@ class MainWindow(QMainWindow):
         )
         self.footer_widget.setFixedHeight(28)
         self.footer_widget.setStyleSheet("background: transparent; border: none;")
-        
+
         footer_layout = QHBoxLayout(self.footer_widget)
         footer_layout.setContentsMargins(15, 0, 15, 0)
         footer_layout.setSpacing(8)
-        
+
         self._quote_text, self._quote_source = self.quotes[0]
 
         self.quote_label = QLabel()
@@ -1148,67 +1027,6 @@ class MainWindow(QMainWindow):
         if titlebar and titlebar.search_controller:
             titlebar.search_controller.reposition()
 
-    def position_update_all_btn(self):
-        if hasattr(self, "simplified_terminal") and self.simplified_terminal:
-            term = self.simplified_terminal
-
-            # Don't reposition FABs when the active-job view is shown —
-            # panel_mid has zero/altered geometry then, causing incorrect placement.
-            if hasattr(term, "layout") and term.layout.currentIndex() != 0:
-                return
-
-            if not hasattr(term, "panel_mid") or not term.panel_mid:
-                return
-
-            w = term.panel_mid.width()
-            h = term.panel_mid.height()
-            if w < 50 or h < 50:
-                return
-
-            # Position refresh button
-            if hasattr(term, "refresh_updates_btn") and term.refresh_updates_btn:
-                # If update_all_btn is visible, place refresh to its left
-                if hasattr(term, "update_all_btn") and term.update_all_btn and term.update_all_btn.isVisible():
-                    term.update_all_btn.adjustSize()
-                    x_update = max(8, w - term.update_all_btn.width() - 16)
-                    y_update = max(8, h - term.update_all_btn.height() - 16)
-                    term.update_all_btn.move(x_update, y_update)
-                    term.update_all_btn.raise_()
-
-                    x_refresh = max(8, x_update - 36 - 8)
-                    y_refresh = max(8, h - 36 - 16)
-                    term.refresh_updates_btn.move(x_refresh, y_refresh)
-                else:
-                    x_refresh = max(8, w - 36 - 16)
-                    y_refresh = max(8, h - 36 - 16)
-                    term.refresh_updates_btn.move(x_refresh, y_refresh)
-
-                term.refresh_updates_btn.raise_()
-
-    def force_check_all_updates(self):
-        """Forces a clean re-check of updates for all games, ignoring cache."""
-        # Guard: don't allow update check while Update All is actively queueing
-        if getattr(self, "_update_all_running", False):
-            logger.info("Update All is running — ignoring manual update check request")
-            return
-        if self.game_manager:
-            logger.info("Forcing full updates check for all games (bypassing cache)")
-            if hasattr(self, "simplified_terminal") and self.simplified_terminal:
-                if hasattr(self.simplified_terminal, "refresh_updates_btn") and self.simplified_terminal.refresh_updates_btn:
-                    self.simplified_terminal.refresh_updates_btn.set_loading(True)
-            # Reset 'up_to_date' / 'cannot_determine' / 'checking' games to 'checking'
-            # so they are re-queried. Games already marked 'update_available' are
-            # intentionally left intact so the pending-updates list stays populated
-            # during the refresh — cache acts as a display layer throughout.
-            for g in self.game_manager.games:
-                if g.get("update_status") != "update_available":
-                    g["update_status"] = "checking"
-            self.game_manager.library_updated.emit()
-
-            # Start checks with force_refresh = True so update_available games are
-            # re-verified too, even though we kept their visual status intact above.
-            self.game_manager.check_game_updates_async(force_refresh=True)
-
     def _create_main_content(self) -> None:
         """Create the main content area with drop zone."""
         self.main_container = QWidget()
@@ -1234,8 +1052,6 @@ class MainWindow(QMainWindow):
         self.drop_zone_layout.setContentsMargins(0, 0, 0, 0)
         self.drop_zone_layout.setSpacing(0)
 
-
-
         # Status Pager Display
         from ui.status_pager import StatusPagerWidget
         self.status_pager = StatusPagerWidget(self)
@@ -1244,11 +1060,13 @@ class MainWindow(QMainWindow):
         class DropTextLabelWrapper:
             def __init__(self, pager):
                 self.pager = pager
+
             def setText(self, text, is_warning=False):
                 if is_warning:
                     self.pager.show_warning(text)
                 else:
                     self.pager.set_status(text)
+
             def setStyleSheet(self, style):
                 pass
 
@@ -1262,7 +1080,7 @@ class MainWindow(QMainWindow):
         )
         self.dashboard_widget.setMinimumHeight(65)
         self.dashboard_widget.setMaximumHeight(85)
-        
+
         self.dashboard_widget.setStyleSheet("""
             #dashboard_widget {
                 background-color: rgba(18, 18, 22, 235);
@@ -1359,7 +1177,8 @@ class MainWindow(QMainWindow):
         try:
             from core.steamdb_scraper import ByparrManager
             has_byparr = ByparrManager.find_byparr_dir() is not None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[MainWindow] Could not check Byparr directory during UI setup: {e}")
             has_byparr = False
         self.steamdb_container.setVisible(has_byparr)
 
@@ -1415,11 +1234,9 @@ class MainWindow(QMainWindow):
         library_item.addWidget(self.library_size_value)
         row2_layout.addLayout(library_item)
 
-
-
         row2_layout.addStretch()
         dash_main_layout.addLayout(row2_layout)
-        
+
         self.drop_zone_layout.addWidget(self.status_pager)
         self.drop_zone_layout.addWidget(self.dashboard_widget, 2)
         self.main_layout.addWidget(self.drop_zone_container, 1)
@@ -1522,7 +1339,7 @@ class MainWindow(QMainWindow):
                 color: rgba(255, 255, 255, 160);
             }}
         """
-        sep_style = f"color: rgba(255,255,255,60); font-size: 9pt; padding: 0;"
+        sep_style = "color: rgba(255,255,255,60); font-size: 9pt; padding: 0;"
         if self.media_pause_button:
             self.media_pause_button.setStyleSheet(btn_style)
         if self.media_cancel_button:
@@ -1553,7 +1370,6 @@ class MainWindow(QMainWindow):
         self.ui_state.fetch_dialog.exec()
         self.ui_state.fetch_dialog = None
 
-
     def open_game_library(self, show_details_for_appid: Optional[str] = None) -> None:
         from ui.dialogs.gamelibrary import GameLibraryDialog
 
@@ -1572,1070 +1388,6 @@ class MainWindow(QMainWindow):
         dialog = CreditsDialog(self)
         dialog.exec()
 
-    def check_steam_updates_blocked(self) -> bool:
-        """Check if steam updates are blocked via steam.cfg."""
-        from utils.steam_updates import are_steam_updates_blocked
-        return are_steam_updates_blocked()
-
-    def _get_status_style(self, state: str) -> str:
-        """
-        Returns the stylesheet string for bottom visor status values 
-        using theme-harmonized semantic colors.
-        """
-        accent_color = self.settings.value("accent_color", "#C06C84", type=str)
-        from utils.color_utils import get_semantic_colors
-        sem_colors = get_semantic_colors(accent_color)
-        
-        color_map = {
-            "success": sem_colors["success"],
-            "warning": sem_colors["warning"],
-            "error": sem_colors["error"],
-            "info": sem_colors["info"],
-            "neutral": "#888888"
-        }
-        
-        c = color_map.get(state.lower(), "#888888")
-        return f"color: {c} !important; font-size: 11px; font-weight: bold; border: none; background: transparent;"
-
-    @pyqtSlot()
-    def notify_sls_filewatcher_crashed(self) -> None:
-        """Update UI when SLSsteam filewatcher has crashed in Steam."""
-        warning_msg = "SLSsteam Filewatcher crashed in Steam . Restart Steam"
-        if hasattr(self, "status_pager") and self.status_pager:
-            self.status_pager.show_warning(warning_msg, 30)
-        elif hasattr(self, "drop_text_label") and self.drop_text_label:
-            self.drop_text_label.setText(warning_msg)
-
-        if hasattr(self, "active_game_card") and self.active_game_card:
-            self.active_game_card.set_sub_status(warning_msg, is_warning=True)
-
-        self.refresh_system_status_now()
-
-    @pyqtSlot()
-    def refresh_system_status(self) -> None:
-        """Schedule a refresh of the local Steam/SLS/ASSella status labels.
-
-        The actual work runs in _apply_system_status_refresh(), coalesced to at
-        most one pass per second. A bulk update check rebuilds the dashboard
-        hundreds of times and every rebuild re-probed the filesystem, which
-        starved the event loop exactly when the user is most likely to click
-        something.
-        """
-        import threading
-        if threading.current_thread() is not threading.main_thread():
-            if hasattr(self, "refresh_system_status_signal"):
-                self.refresh_system_status_signal.emit()
-            return
-
-        timer = getattr(self, "_system_status_timer", None)
-        if timer is None:
-            self._apply_system_status_refresh()
-            return
-        timer.start()
-
-    def refresh_system_status_now(self) -> None:
-        """Refresh the status labels right away, cancelling any pending pass."""
-        timer = getattr(self, "_system_status_timer", None)
-        if timer is not None:
-            timer.stop()
-        self._apply_system_status_refresh()
-
-    def _apply_system_status_refresh(self) -> None:
-        """Refresh local Steam updates, SLS, and ASSella status labels."""
-        if not hasattr(self, "steam_updates_value") or not self.steam_updates_value:
-            return
-
-        self._gui_phase = "status refresh"
-        try:
-            self._collect_system_status()
-        finally:
-            self._gui_phase = "idle"
-
-    def _collect_system_status(self) -> None:
-        """Collect and render the Steam/SLS/ASSella status labels."""
-        if not hasattr(self, "steam_updates_value") or not self.steam_updates_value:
-            return
-
-        blocked = self.check_steam_updates_blocked()
-        if blocked:
-            self.steam_updates_value.setText("Blocked")
-            self.steam_updates_value.setStyleSheet(self._get_status_style("success"))
-        else:
-            self.steam_updates_value.setText("Allowed")
-            self.steam_updates_value.setStyleSheet(self._get_status_style("warning"))
-            
-        # --- SLS Detection ---
-        from ui.dialogs.settings_sls import get_sls_paths
-        import os
-
-        sls_paths = get_sls_paths()
-        sls_detected = sls_paths.get("detected", False)
-        version_file_exists = os.path.exists(sls_paths.get("version_file", "")) if sls_detected else False
-
-        # --- SLS Detection & API Integration ---
-        from utils.slssteam_integration import (
-            is_slssteam_process_active,
-            is_steam_process_running,
-            is_sls_filewatcher_dead,
-        )
-        sls_active = self.settings.value("experimental_acf_independent", False, type=bool) if self.settings else False
-
-        # SLS Config Status (SLS Integration Status)
-        if hasattr(self, "sls_lbl") and self.sls_lbl:
-            self.sls_lbl.setEnabled(sls_active)
-        if hasattr(self, "sls_status_value") and self.sls_status_value:
-            self.sls_status_value.setEnabled(True)
-            if sls_active:
-                self.sls_status_value.setText("Active")
-                self.sls_status_value.setStyleSheet(self._get_status_style("success"))
-            else:
-                self.sls_status_value.setText("Disabled")
-                self.sls_status_value.setStyleSheet(self._get_status_style("neutral"))
-
-        # SLSsteam API Status (Active check of process)
-        if hasattr(self, "slssteam_lbl") and self.slssteam_lbl:
-            self.slssteam_lbl.setEnabled(True)
-        if hasattr(self, "slssteam_status_value") and self.slssteam_status_value:
-            self.slssteam_status_value.setEnabled(True)
-            if sls_active and is_slssteam_process_active():
-                self.slssteam_status_value.setText("Online")
-                self.slssteam_status_value.setStyleSheet(self._get_status_style("success"))
-            else:
-                self.slssteam_status_value.setText("Offline")
-                self.slssteam_status_value.setStyleSheet(self._get_status_style("error"))
-
-        # Steam Client Process Status
-        if hasattr(self, "steam_conn_value") and self.steam_conn_value:
-            self.steam_conn_value.setEnabled(True)
-            if not is_steam_process_running():
-                self.steam_conn_value.setText("Offline")
-                self.steam_conn_value.setStyleSheet(self._get_status_style("error"))
-                self.steam_conn_value.setToolTip("Steam client is not running.")
-            elif is_sls_filewatcher_dead():
-                self.steam_conn_value.setText("Restart")
-                self.steam_conn_value.setStyleSheet(self._get_status_style("warning"))
-                self.steam_conn_value.setToolTip(
-                    "Steam: Restart required\n"
-                    "• SLSsteam file watcher has crashed in Steam.\n"
-                    "• Restart Steam to reload game configs and licenses."
-                )
-            else:
-                from core.steam_helpers import get_installed_steam_client_version
-                client_ver = get_installed_steam_client_version()
-                disp_text = client_ver if client_ver else "Online"
-                self.steam_conn_value.setText(disp_text)
-                self.steam_conn_value.setStyleSheet(self._get_status_style("success"))
-                self.steam_conn_value.setToolTip(f"Steam client is running (Version: {disp_text}).")
-
-        # Health Visor Status (SLS binary + version + config + SLS API)
-        if hasattr(self, "health_status_value") and self.health_status_value:
-            try:
-                import utils.assfixer as assfixer
-                from utils.slssteam_integration import check_slssteam_binary_is_latest
-
-                sls_detected = sls_paths.get("detected", False)
-                # cached_only: this runs on the GUI thread and must never wait
-                # on the network. The background boot check fills the cache.
-                ver_res = check_slssteam_binary_is_latest(cached_only=True)
-                ver_status = ver_res.get("status", "error")
-                version_ok = (ver_status == "up_to_date")
-
-                cfg_boot_status = getattr(assfixer, "boot_status", None)
-                config_ok = (cfg_boot_status == "optimal")
-
-                sls_api_enabled = self.settings.value("experimental_acf_independent", False, type=bool) if self.settings else False
-                sls_api_active = sls_api_enabled and is_slssteam_process_active()
-                watcher_dead = is_sls_filewatcher_dead()
-
-                if cfg_boot_status in ("checking", None) or ver_status == "checking":
-                    self.health_status_value.setText("Checking...")
-                    self.health_status_value.setStyleSheet(self._get_status_style("neutral"))
-                    self.health_status_value.setToolTip("Checking System & SLS Health status...")
-                elif sls_detected and version_ok and config_ok and sls_api_active and not watcher_dead:
-                    self.health_status_value.setText("Good")
-                    self.health_status_value.setStyleSheet(self._get_status_style("success"))
-                    self.health_status_value.setToolTip(
-                        "Health: Good\n"
-                        "• SLSsteam Binary: Detected\n"
-                        f"• SLSsteam Version: Up to date ({ver_res.get('release_tag', '')})\n"
-                        "• SLS Config: Optimal\n"
-                        "• SLS Native API: Active\n\n"
-                        "Click to open Health settings."
-                    )
-                else:
-                    issues = []
-                    if not sls_detected:
-                        issues.append("SLSsteam binary not found")
-                    elif not version_ok:
-                        tag = ver_res.get("release_tag", "")
-                        issues.append(f"SLSsteam update available ({tag})" if tag else "SLSsteam outdated")
-                    if not config_ok:
-                        issues.append("SLS config needs repair/resync")
-                    if not sls_api_active:
-                        if not sls_api_enabled:
-                            issues.append("SLS Native API disabled in settings")
-                        elif not is_slssteam_process_active():
-                            if not is_steam_process_running():
-                                issues.append("Steam not running (SLS not injected)")
-                            else:
-                                issues.append("SLS process not injected into Steam")
-                    if watcher_dead:
-                        issues.append("SLS filewatcher crashed (Restart Steam)")
-
-                    self.health_status_value.setText("Attention" if issues else "Checking...")
-                    self.health_status_value.setStyleSheet(self._get_status_style("warning"))
-                    tooltip = "Health: Attention required\n" + "\n".join(f"• {iss}" for iss in issues) + "\n\nClick to open Health settings."
-                    self.health_status_value.setToolTip(tooltip)
-            except Exception as e:
-                logger.debug(f"Error updating Health visor status: {e}")
-                self.health_status_value.setText("Checking...")
-                self.health_status_value.setStyleSheet(self._get_status_style("neutral"))
-
-
-
-
-
-        # SteamDB Visor Sync
-        if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
-            try:
-                from core.steamdb_scraper import ByparrManager
-                has_byparr = ByparrManager.is_available()
-                if not has_byparr:
-                    self.steamdb_container.setVisible(False)
-                else:
-                    self.steamdb_container.setVisible(True)
-                    if ByparrManager.is_running():
-                        self.steamdb_status_value.setText("Ready")
-                        self.steamdb_status_value.setStyleSheet(self._get_status_style("success"))
-                        self.steamdb_status_value.setToolTip(
-                            "SteamDB: Cloudflare Turnstile bypass active via Byparr\n"
-                            "Version history, patch notes & depot enrichment enabled."
-                        )
-                    else:
-                        self.steamdb_status_value.setText("Offline")
-                        self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
-                        self.steamdb_status_value.setToolTip(
-                            "SteamDB: Solver is currently offline.\n"
-                            "It will start automatically when version history or builds are accessed."
-                        )
-            except Exception:
-                pass
-
-        # ASSella Status
-        if hasattr(self, "assella_status_value") and self.assella_status_value:
-            tool_status = getattr(self, "_tool_update_status", "checking")
-            source_label = {
-                "github": "GitHub",
-                "r2": "R2",
-                "github_raw": "GitHub Raw",
-            }.get(getattr(self, "_latest_update_source", ""), "")
-            via_suffix = f" (via {source_label})" if source_label else ""
-            if tool_status == "update_available":
-                self.assella_status_value.setText("Update!")
-                self.assella_status_value.setStyleSheet(self._get_status_style("warning"))
-                self.assella_status_value.setToolTip(
-                    f"New version available: {getattr(self, '_latest_remote_version', '')}{via_suffix}"
-                )
-            elif tool_status == "up_to_date":
-                self.assella_status_value.setText("Latest")
-                self.assella_status_value.setStyleSheet(self._get_status_style("success"))
-                self.assella_status_value.setToolTip(f"ASSella is up to date (v{app_version}{via_suffix})")
-            elif tool_status in ("offline", "error", "cant_check"):
-                self.assella_status_value.setText("Can't Check")
-                self.assella_status_value.setStyleSheet(self._get_status_style("error"))
-                self.assella_status_value.setToolTip(
-                    f"Could not check for ASSella updates (update server unreachable)\nCurrent version: v{app_version}"
-                )
-            else:
-                self.assella_status_value.setText("Checking...")
-                self.assella_status_value.setStyleSheet(self._get_status_style("neutral"))
-                self.assella_status_value.setToolTip("Checking for tool updates...")
-
-        # Library Size Stats
-        if hasattr(self, "library_size_value") and self.library_size_value:
-            if hasattr(self, "game_manager") and self.game_manager:
-                stats = self.game_manager.get_library_stats()
-                total_games = stats.get("total_games", 0)
-                total_bytes = stats.get("total_size", 0)
-                total_gb = total_bytes / 1_073_741_824
-                self.library_size_value.setText(f"{total_gb:.1f} GB ({total_games} games)")
-
-    def rotate_quote(self):
-        if not hasattr(self, "quote_label") or not self.quote_label:
-            return
-        current_text = self._quote_text
-        available_quotes = [q for q in self.quotes if q[0] != current_text]
-        if available_quotes:
-            import random
-            self._quote_text, self._quote_source = random.choice(available_quotes)
-            if hasattr(self, "quote_source_label") and self.quote_source_label:
-                self.quote_source_label.setText(f"— {self._quote_source}")
-            self._refresh_quote_display()
-
-    def _refresh_quote_display(self) -> None:
-        """Draw the rotating quote elided to the footer width.
-
-        Formats the quote inside typographic quotation marks and the source game in italics.
-        Eliding ensures long quotes never force minimum width on the window.
-        """
-        if not getattr(self, "quote_label", None) or not getattr(
-            self, "footer_widget", None
-        ):
-            return
-
-        layout = self.footer_widget.layout()
-        margins = layout.contentsMargins() if layout else None
-        left_m = margins.left() if margins else 15
-        right_m = margins.right() if margins else 15
-
-        # Available horizontal space inside the footer widget
-        available = max(100, self.footer_widget.width() - left_m - right_m)
-        metrics = QFontMetrics(self.quote_label.font())
-
-        source_str = f" — {self._quote_source}"
-        source_width = metrics.horizontalAdvance(source_str) + 30
-        max_quote_width = max(50, available - source_width)
-
-        elided_quote = metrics.elidedText(
-            self._quote_text, Qt.TextElideMode.ElideRight, max_quote_width
-        )
-        html = (
-            f'“{elided_quote}” &nbsp;—&nbsp; '
-            f'<i style="color: rgba(255, 255, 255, 0.55); font-style: italic;">{self._quote_source}</i>'
-        )
-        self.quote_label.setText(html)
-        tooltip = f'“{self._quote_text}” — {self._quote_source}'
-        self.quote_label.setToolTip(tooltip)
-
-    def check_steamdb_status(self) -> None:
-        """Asynchronously verify that SteamDB is accessible via fast-path or Byparr."""
-        if getattr(self, "_steamdb_check_running", False):
-            return
-
-        try:
-            from core.steamdb_scraper import ByparrManager, cffi_requests
-            has_solver = ByparrManager.is_available() or bool(cffi_requests)
-            if not has_solver:
-                if hasattr(self, "steamdb_container"):
-                    self.steamdb_container.setVisible(False)
-                return
-        except Exception:
-            return
-
-        self._steamdb_check_running = True
-        if hasattr(self, "steamdb_status_value") and self.steamdb_status_value:
-            self.steamdb_status_value.setText("Checking...")
-            self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
-            self.steamdb_status_value.setToolTip("Verifying SteamDB connection and bypass status...")
-
-        def _worker():
-            try:
-                from core.steamdb_scraper import verify_steamdb_status
-                ok, provider = verify_steamdb_status(timeout_seconds=5)
-                logger.info(f"[SteamDB Visor] verify_steamdb_status result: {ok} ({provider})")
-                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(ok, provider))
-            except Exception as e:
-                logger.debug(f"[SteamDB] Error during SteamDB status verification: {e}")
-                self._main_thread_callable.emit(lambda: self._on_steamdb_status_result(False, "Offline"))
-            finally:
-                self._steamdb_check_running = False
-
-        import threading
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _on_steamdb_status_result(self, is_working: bool, provider: str = "") -> None:
-        """Display SteamDB visor item if SteamDB is working/ready."""
-        self._steamdb_verified = is_working
-        if hasattr(self, "steamdb_container") and hasattr(self, "steamdb_status_value"):
-            try:
-                from core.steamdb_scraper import ByparrManager, cffi_requests
-                has_solver = ByparrManager.is_available() or bool(cffi_requests)
-            except Exception:
-                has_solver = False
-
-            if not has_solver:
-                self.steamdb_container.setVisible(False)
-                return
-
-            self.steamdb_container.setVisible(True)
-            if is_working:
-                self.steamdb_status_value.setText("Ready")
-                self.steamdb_status_value.setStyleSheet(self._get_status_style("success"))
-                mode_info = f" via {provider}" if provider else ""
-                self.steamdb_status_value.setToolTip(
-                    f"SteamDB: Active{mode_info}\n"
-                    "Version history, patch notes & depot enrichment enabled."
-                )
-                logger.info(f"[SteamDB Visor] SteamDB status updated to: Ready ({provider})")
-            else:
-                self.steamdb_status_value.setText("Offline")
-                self.steamdb_status_value.setStyleSheet(self._get_status_style("neutral"))
-                self.steamdb_status_value.setToolTip(
-                    "SteamDB: Service or solver is currently offline.\n"
-                    "It will start automatically when version history or builds are accessed."
-                )
-                logger.info("[SteamDB Visor] SteamDB status updated to: Offline")
-
-    def refresh_hubcap_stats(self, force: bool = False) -> None:
-        """Fetch user statistics from Hubcap API asynchronously.
-        When online, queries are throttled to once every 5 minutes (300s).
-        """
-        now = time.time()
-        last_refresh = getattr(self, "_last_hubcap_refresh_time", 0.0)
-        current_hubcap = self.hubcap_conn_value.text() if hasattr(self, "hubcap_conn_value") else "Connecting..."
-        is_online = current_hubcap.startswith("Online")
-        throttle_interval = 300.0 if is_online else 30.0
-        if not force and (now - last_refresh < throttle_interval):
-            logger.debug(f"[Hubcap] Skipping stats refresh - throttled (called <{int(throttle_interval)}s ago)")
-            return
-        self._last_hubcap_refresh_time = now
-
-        # Also refresh Steam and SLS status locally
-        self.refresh_system_status()
-
-        # Trigger background network checks if offline/connecting or forced
-        current_hubcap = self.hubcap_conn_value.text() if hasattr(self, "hubcap_conn_value") else "Connecting..."
-        current_steam = self.steam_conn_value.text() if hasattr(self, "steam_conn_value") else "Connecting..."
-        if force or current_hubcap in ("Connecting...", "Offline") or current_steam in ("Connecting...", "Offline"):
-            self._check_network_connections_async(force=force)
-
-        if not self.stats_task_runner:
-            self.stats_task_runner = TaskRunner(self)
-        
-        # Set stats text to loading
-        if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
-            self.hubcap_api_value.setText("Loading...")
-        if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-            self.active_hubcap_label.setText("Hubcap: Loading...")
-
-        def get_all_hubcap_stats():
-            # Imported on the worker thread: morrenus_api takes ~0.1s to import.
-            from core.morrenus_api import get_all_hubcap_stats as _fetch
-
-            return _fetch(force=force)
-
-        worker = self.stats_task_runner.run(get_all_hubcap_stats)
-        worker.finished.connect(self._on_user_stats_loaded)
-        worker.error.connect(self._on_user_stats_error)
-
-    def _check_network_connections_async(self, force: bool = False) -> None:
-        """Run connection check once in background thread."""
-        def run_check():
-            try:
-                from utils.network_status import run_connection_check
-                steam_ok, hubcap_ok, hubcap_mode = run_connection_check(force=force)
-            except Exception as e:
-                logger.error(f"Error running network connection check: {e}")
-                steam_ok, hubcap_ok, hubcap_mode = False, False, "Offline"
-
-            # Update values thread-safely via QMetaObject.invokeMethod
-            QMetaObject.invokeMethod(
-                self,
-                "_on_connections_checked",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(bool, steam_ok),
-                Q_ARG(bool, hubcap_ok),
-                Q_ARG(str, hubcap_mode)
-            )
-
-        import threading
-        threading.Thread(target=run_check, daemon=True).start()
-
-    @pyqtSlot(bool, bool, str)
-    def _on_connections_checked(self, steam_ok: bool, hubcap_ok: bool, hubcap_mode: str) -> None:
-        """Called thread-safely when background connection check completes."""
-        # 1. Update Hubcap connection label
-        if hasattr(self, "hubcap_conn_value") and self.hubcap_conn_value:
-            if hubcap_ok:
-                lbl = f"Online ({hubcap_mode})" if hubcap_mode and hubcap_mode not in ("Online", "Direct") else "Online"
-                if hubcap_mode == "Tor":
-                    lbl = "Online (Tor)"
-                elif hubcap_mode == "Wire":
-                    lbl = "Online (Wire)"
-                elif hubcap_mode == "DoH":
-                    lbl = "Online (DoH)"
-                elif hubcap_mode == "Direct":
-                    lbl = "Online (Direct)"
-                self.hubcap_conn_value.setText(lbl)
-                self.hubcap_conn_value.setStyleSheet(self._get_status_style("success"))
-            else:
-                self.hubcap_conn_value.setText("Offline")
-                self.hubcap_conn_value.setStyleSheet(self._get_status_style("error"))
-
-        # If online and tool update check is in checking/offline state, trigger check
-        if (steam_ok or hubcap_ok) and getattr(self, "_tool_update_status", "checking") in ("checking", "offline"):
-            if not getattr(self, "_tool_update_check_running", False):
-                self.check_tool_updates()
-
-
-
-    def _on_user_stats_loaded(self, result: dict) -> None:
-        """Handle async hubcap stats load success."""
-        if not isinstance(result, dict):
-            return
-
-        stats = result.get("user_stats", {})
-        gen_usage = result.get("gen_usage", {})
-
-        if not isinstance(stats, dict) or "error" in stats:
-            err_msg = stats.get("error", "Unknown error") if isinstance(stats, dict) else "Invalid response"
-            logger.warning(f"Failed to load Hubcap user stats: {err_msg}")
-            val = "No Key" if "key is not set" in err_msg.lower() else "Error"
-            if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
-                self.hubcap_api_value.setText(val)
-            if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-                self.active_hubcap_label.setText(f"Hubcap: {val}")
-            return
-
-        # 1. Daily usage (Manifests)
-        usage = stats.get("daily_usage", 0)
-        limit = stats.get("daily_limit", 55)
-
-        # 2. Key Expiry and color-coded status
-        from core.morrenus_api import compute_api_key_expiry_info
-
-        api_key = self.settings.value("morrenus_api_key", "", type=str) if self.settings else ""
-        expiry_info = compute_api_key_expiry_info(
-            stats.get("api_key_expires_at"),
-            api_key=api_key,
-            settings=self.settings,
-        )
-
-        time_text = expiry_info["text"]
-        accent_color = self.settings.value("accent_color", "#C06C84", type=str) if self.settings else "#C06C84"
-        from utils.color_utils import get_semantic_colors
-        sem_colors = get_semantic_colors(accent_color)
-        status_key = expiry_info.get("status", "success")
-        color = sem_colors.get(status_key, expiry_info.get("color", "#a8dab5"))
-
-        quota_str = f'API: {usage}/{limit} | <span style="color: {color}; font-weight: bold;">{time_text}</span>'
-
-        if expiry_info["is_lifetime"]:
-            exp_desc = "Lifetime key (Never expires)"
-        elif expiry_info["is_expired"]:
-            exp_desc = f"{expiry_info['formatted_date']} (Expired)"
-        elif expiry_info["hours"] <= 24:
-            exp_desc = f"{expiry_info['formatted_date']} ({time_text} remaining, {expiry_info['percentage']:.0f}% left)"
-        else:
-            exp_desc = f"{expiry_info['formatted_date']} ({expiry_info['days']}d remaining, {expiry_info['percentage']:.0f}% left)"
-
-        tooltip_str = (
-            f"Hubcap API:\n"
-            f"• Daily Manifests: {usage} / {limit} (resets at 00:00 UTC)\n"
-            f"• API Key Expiry: {exp_desc}"
-        )
-
-        if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
-            self.hubcap_api_value.setText(quota_str)
-            self.hubcap_api_value.setToolTip(tooltip_str)
-        if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-            self.active_hubcap_label.setText(f"Hubcap: {quota_str}")
-            self.active_hubcap_label.setToolTip(tooltip_str)
-
-        # Hubcap is confirmed reachable and functional: ensure visor connection label reflects Online
-        if hasattr(self, "hubcap_conn_value") and self.hubcap_conn_value:
-            from utils.isp_bypass import connection_status
-            mode = connection_status if connection_status in ("Direct", "DoH", "Tor", "Wire") else "Online"
-            lbl = f"Online ({mode})" if mode not in ("Online", "Direct") else "Online"
-            self.hubcap_conn_value.setText(lbl)
-            self.hubcap_conn_value.setStyleSheet(self._get_status_style("success"))
-
-        if getattr(self, "_tool_update_status", "checking") in ("checking", "offline"):
-            if not getattr(self, "_tool_update_check_running", False):
-                self.check_tool_updates()
-
-    def _on_user_stats_error(self, err_tuple: tuple) -> None:
-        """Handle async hubcap stats load error."""
-        logger.error(f"Async user stats load failed: {err_tuple[1]}")
-        if hasattr(self, "hubcap_api_value") and self.hubcap_api_value:
-            self.hubcap_api_value.setText("Error")
-        if hasattr(self, "active_hubcap_label") and self.active_hubcap_label:
-            self.active_hubcap_label.setText("Hubcap: Error")
-
-    def sync_at0m_keys(self, appid: str) -> None:
-        """Syncs the Hubcap decryption keys of a Steam-managed (AT0-M) game.
-
-        ASSella never downloads an AT0-M game - Steam does. What ASSella does
-        is make sure SLSsteam holds the decryption keys of the depots the game
-        needs, so Steam can actually decrypt them.
-        """
-        import threading
-
-        appid = str(appid)
-        running = getattr(self, "_at0m_key_syncs_running", None)
-        if running is None:
-            running = set()
-            self._at0m_key_syncs_running = running
-        if appid in running:
-            logger.info(f"[AT0-M] A key sync for {appid} is already running.")
-            return
-
-        gm = self.game_manager
-        game = gm.get_game(appid) if gm else None
-        name = (game or {}).get("game_name") or f"App {appid}"
-
-        running.add(appid)
-        self._refresh_at0m_sync_rows()
-
-        def _worker():
-            try:
-                from managers.at0m_update_checker import At0mUpdateChecker
-                ok, message = At0mUpdateChecker.get_instance().sync_keys(appid)
-            except Exception as e:
-                logger.error(f"[AT0-M] Key sync failed for {appid}: {e}", exc_info=True)
-                ok, message = False, str(e)
-            self._main_thread_callable.emit(
-                lambda: self._on_at0m_key_sync_finished(appid, ok, message, name)
-            )
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _refresh_at0m_sync_rows(self) -> None:
-        """Repaints the pending-updates list so a running sync shows as busy."""
-        if hasattr(self, "simplified_terminal") and self.simplified_terminal:
-            self.simplified_terminal.update_stats(immediate=True)
-
-    def _on_at0m_key_sync_finished(self, appid: str, ok: bool, message: str, name: str) -> None:
-        """Reports the outcome of a key sync to the user."""
-        running = getattr(self, "_at0m_key_syncs_running", None)
-        if running is not None:
-            running.discard(str(appid))
-
-        if ok:
-            if hasattr(self, "status_pager") and self.status_pager:
-                self.status_pager.set_status(f"KEYS SYNCED · {name}")
-            ThemedMessageBox.information(self, "Keys Synced", message)
-        else:
-            logger.warning(f"[AT0-M] Key sync failed for {name}: {message}")
-            ThemedMessageBox.warning(self, "Key Sync Failed", message)
-
-        self._refresh_at0m_sync_rows()
-
-    @pyqtSlot(str)
-    def _show_key_sync_notice(self, names_text: str) -> None:
-        """Tells the user that the keys are in place but Steam does the download."""
-        ThemedMessageBox.information(
-            self,
-            "Keys Synced",
-            f"Keys synced for:\n{names_text}\n\n"
-            f"Launch or update the game(s) in Steam to finish.",
-        )
-
-    def run_update_all_flow(self) -> None:
-        """Flow for updating all games that have update_available status."""
-        # Guard: prevent re-entrancy if a cycle is already running
-        if getattr(self, "_update_all_running", False):
-            return
-        # Guard: don't start Update All while an update check is still running
-        gm = self.game_manager
-        if gm and (getattr(gm, "manifest_check_task", None) is not None or getattr(gm, "manifest_check_runner", None) is not None):
-            ThemedMessageBox.information(self, "Update Check Running", "Please wait for the update check to finish before queuing updates.")
-            return
-        self._update_all_running = True
-
-        if not self.game_manager:
-            self._update_all_running = False
-            return
-
-        games = self.game_manager.get_all_games()
-        updateable_games = []
-        at0m_key_games = []
-        from utils.game_modes import is_atom_managed
-        for g in games:
-            if g.get("update_status") == "update_available":
-                appid = str(g.get("appid", ""))
-                if self.settings.value(f"exclude_from_update_all/{appid}", False, type=bool):
-                    continue
-                if self.settings.value(f"pin_build/{appid}", False, type=bool):
-                    continue
-                if is_atom_managed(g):
-                    # Steam-managed games are downloaded by Steam, never by
-                    # DepotDownloader. All ASSella does is sync the keys.
-                    at0m_key_games.append(g)
-                else:
-                    updateable_games.append(g)
-
-        if not updateable_games and not at0m_key_games:
-            self._update_all_running = False
-            ThemedMessageBox.information(
-                self,
-                "No Updates Available",
-                "All games in your library are up to date!",
-            )
-            return
-
-        total = len(updateable_games) + len(at0m_key_games)
-
-        # --- Immediate feedback: update button before the thread even starts ---
-        self._set_update_all_btn_preparing(0, total)
-
-        # Enqueue all updates directly on a background thread (no intermediate dialog)
-        import threading
-
-        def _do_update_all():
-            from pathlib import Path
-            from core import morrenus_api as _api
-            from utils.settings import get_settings
-            from core.tasks.process_zip_task import ProcessZipTask
-            from ui.dialogs.gamelibrary import format_game_display_name
-            import json
-
-            settings = get_settings()
-            queued = 0
-            skipped_names = []
-            synced_names = []
-            key_processed = 0
-
-            # --- Phase 1: sync the keys of the Steam-managed games ---
-            # Steam downloads those games itself, so all ASSella can do is
-            # make sure SLSsteam holds the decryption keys.
-            if at0m_key_games:
-                from managers.at0m_update_checker import At0mUpdateChecker
-                checker = At0mUpdateChecker.get_instance()
-                for key_game in at0m_key_games:
-                    key_appid = str(key_game.get("appid", "0"))
-                    key_name = format_game_display_name(key_game)
-                    self._set_update_all_btn_preparing(
-                        key_processed, total, current_name=key_name
-                    )
-                    logger.info(f"[Update All] Syncing keys for {key_name} ({key_appid})...")
-                    try:
-                        ok, message = checker.sync_keys(key_appid)
-                    except Exception as e:
-                        logger.error(f"[Update All] Key sync failed for {key_name}: {e}")
-                        ok, message = False, str(e)
-                    key_processed += 1
-                    if ok:
-                        synced_names.append(key_name)
-                        logger.info(f"[Update All] Keys synced for {key_name}")
-                    else:
-                        logger.warning(f"[Update All] Key sync failed for {key_name}: {message}")
-                        skipped_names.append(key_name)
-
-            for idx, game_data in enumerate(updateable_games):
-                appid = str(game_data.get("appid", "0"))
-                name = format_game_display_name(game_data)
-                update_status = game_data.get("update_status")
-                self._set_update_all_btn_preparing(key_processed + idx, total, current_name=name)
-                logger.info(f"[Update All] Preparing {name} ({idx + 1}/{total})...")
-                try:
-                    local_path = None
-                    branch = _api.get_selected_branch(appid)
-                    fpath = _api.get_manifest_zip_path(appid, branch)
-
-                    is_fresh = settings.value(f"manifest_is_fresh/{appid}", False, type=bool)
-                    if fpath.exists() and (update_status != "update_available" or is_fresh):
-                        local_path = str(fpath)
-
-                    parsed_data = None
-                    from managers.depot_key_manager import DepotKeyManager
-                    dkm = DepotKeyManager()
-
-                    # 1. Try Smart Update Path
-                    if dkm.has_depot_keys(appid):
-                        from core.tasks.smart_update_task import SmartUpdateTask
-                        task = SmartUpdateTask(appid, name, branch=branch)
-
-                        def on_finished(assembled):
-                            nonlocal parsed_data
-                            parsed_data = assembled
-
-                        task.finished.connect(on_finished)
-                        task.progress.connect(lambda msg: logger.info(f"[Update All] {msg}"))
-                        try:
-                            task.run()
-                        except Exception as e:
-                            logger.error(f"Smart update failed in Update All: {e}")
-
-                        if parsed_data:
-                            local_path = str(fpath)
-
-                    # 2. Fallback to Classic Path if Smart failed or no keys
-                    if not parsed_data:
-                        # Ensure we have a valid classic zip (must contain .lua)
-                        import zipfile
-                        def has_lua(zp):
-                            try:
-                                with zipfile.ZipFile(zp, "r") as z:
-                                    return any(f.endswith(".lua") for f in z.namelist())
-                            except Exception:
-                                return False
-
-                        if not local_path or not has_lua(local_path):
-                            logger.info(f"Update All: Fetching classic manifest for {name} (branch={branch})")
-                            if local_path and Path(local_path).exists():
-                                Path(local_path).unlink()  # Delete bad/lua-less zip
-                            fpath_val, error = _api.download_manifest(appid, branch=branch)
-                            if error or not fpath_val:
-                                logger.warning(f"Update All: manifest download failed for {name}: {error}")
-                                skipped_names.append(name)
-                                continue
-                            local_path = str(fpath_val)
-                            settings.setValue(f"manifest_is_fresh/{appid}", True)
-
-                        zip_task = ProcessZipTask()
-                        try:
-                            parsed_data = zip_task.run(local_path)
-                        except Exception as e:
-                            logger.error(f"Update All: Failed to process zip for {name}: {e}")
-                            skipped_names.append(name)
-                            continue
-
-                    metadata = dict(game_data)
-                    metadata.update({
-                        "appid": appid,
-                        "library_path": game_data.get("library_path"),
-                        "install_path": game_data.get("install_path"),
-                        "game_name": name,
-                        "branch": branch,
-                    })
-
-                    if parsed_data and parsed_data.get("depots"):
-                        depots = parsed_data.get("depots")
-                        selected_depots = None
-                        selected_dlc_appids = None
-                        val = settings.value(f"depot_selection/{appid}", "", type=str)
-                        should_prompt = True
-                        prev_selected = None
-
-                        if val:
-                            try:
-                                data = json.loads(val)
-                                cached_selected = data.get("selected", [])
-                                cached_all = data.get("all_available", [])
-                                prev_selected = cached_selected
-                                has_new_depot = any(d not in cached_all for d in depots)
-                                if has_new_depot:
-                                    # New depot added since last selection — clear cache and force re-prompt
-                                    logger.info(f"Update All: new depot detected for {name} (appid={appid}), prompting user")
-                                    settings.remove(f"depot_selection/{appid}")
-                                else:
-                                    selected_depots = [d for d in cached_selected if d in depots]
-                                    if selected_depots:
-                                        should_prompt = False
-                            except Exception:
-                                pass
-
-                        if should_prompt:
-                            auto_skip = settings.value("auto_skip_single_choice", True, type=bool)
-                            from utils.dlc_helpers import is_dlc_only_context
-                            if auto_skip and len(depots) == 1 and not is_dlc_only_context(appid):
-                                selected_depots = list(depots.keys())
-                            else:
-                                # Depot dialog must run on the main thread
-                                from ui.dialogs.depotselection import DepotSelectionDialog
-                                result_holder = [None, None]
-                                done_event = threading.Event()
-
-                                # Bind every loop-scoped value as a default
-                                # argument. The emit below is a queued
-                                # cross-thread signal, so if the 300ms wait below
-                                # times out the callback can still run after this
-                                # iteration has finished and the loop has moved
-                                # on — a plain closure would then build the dialog
-                                # from the *last* iteration's game.
-                                def _show_depot_dialog(
-                                    _appid=appid,
-                                    _game_name=parsed_data.get("game_name", name),
-                                    _depots=depots,
-                                    _header_url=parsed_data.get("header_url"),
-                                    _prev_selected=prev_selected,
-                                    _missing_hubcap=parsed_data.get("missing_depots_from_hubcap"),
-                                    _missing_info=parsed_data.get("missing_depots_info"),
-                                    _refetched=parsed_data.get("refetched_depots"),
-                                    _lib_path=game_data.get("library_path") or game_data.get("install_path"),
-                                    _result_holder=result_holder,
-                                    _done_event=done_event,
-                                ):
-                                    try:
-                                        depot_dialog = DepotSelectionDialog(
-                                            _appid,
-                                            _game_name,
-                                            _depots,
-                                            _header_url,
-                                            self,
-                                            selected_depots=_prev_selected,
-                                            is_single_depot=(len(_depots) == 1),
-                                            missing_hubcap_depots=_missing_hubcap,
-                                            missing_depots_info=_missing_info,
-                                            refetched_depots=_refetched,
-                                            library_path=_lib_path,
-                                            lock_storage=True,
-                                        )
-                                        if depot_dialog.exec():
-                                            _result_holder[0] = depot_dialog.get_selected_depots()
-                                            _result_holder[1] = list(
-                                                depot_dialog.get_selected_dlc_data().keys()
-                                            )
-                                    except Exception as err:
-                                        logger.error(
-                                            f"Error displaying depot selection dialog for {_appid} "
-                                            f"in Update All: {err}"
-                                        )
-                                    finally:
-                                        _done_event.set()
-
-                                self._main_thread_callable.emit(_show_depot_dialog)
-                                # The dialog is modal and needs real user
-                                # interaction, so this must wait far longer than
-                                # a dispatch timeout. A short wait here returned
-                                # before the user had chosen anything, which made
-                                # the game look uncancellable-free but actually
-                                # skipped it ("no depots selected") and left the
-                                # dialog running against a stale iteration.
-                                # Only a hard failure should give up early;
-                                # otherwise wait for the user.
-                                if not done_event.wait(timeout=DIALOG_WAIT_SECONDS):
-                                    logger.warning(
-                                        f"Update All: depot dialog for {appid} did not report back "
-                                        f"within {DIALOG_WAIT_SECONDS}s; skipping this game"
-                                    )
-                                    selected_depots = None
-                                else:
-                                    selected_depots = result_holder[0]
-                                    selected_dlc_appids = result_holder[1] or []
-
-                        if not selected_depots:
-                            logger.info(f"Update All: skipping {name} — depot selection cancelled or no depots selected")
-                            skipped_names.append(name)
-                            continue
-
-                        # Persist confirmed selection
-                        try:
-                            settings.setValue(
-                                f"depot_selection/{appid}",
-                                json.dumps({
-                                    "selected": selected_depots,
-                                    "all_available": list(depots.keys()),
-                                    "descriptions": {d_id: depots.get(d_id, {}).get("desc", "") for d_id in selected_depots}
-                                })
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to cache depot selection: {e}")
-
-                        metadata["selected_depots_list"] = selected_depots
-                        if selected_dlc_appids is not None:
-                            metadata["selected_dlc_appids"] = selected_dlc_appids
-
-                    self.job_queue.add_job(local_path, metadata)
-                    queued += 1
-                    logger.info(f"Update All queued: {name}")
-
-                    # Update button progress after each successful queue
-                    self._set_update_all_btn_preparing(key_processed + queued, total)
-
-                except Exception as e:
-                    logger.error(f"Update All failed for {name}: {e}", exc_info=True)
-                    skipped_names.append(name)
-
-            logger.info(f"[Update All]: queued {queued} of {total} games.")
-
-            # Release guard and refresh UI
-            self._update_all_running = False
-            from PyQt6.QtCore import QMetaObject, Qt
-            from PyQt6.QtCore import Q_ARG
-            QMetaObject.invokeMethod(self, "update_dashboard_elements", Qt.ConnectionType.QueuedConnection)
-
-            # Tell the user that the keys are in place but Steam does the download
-            if synced_names:
-                QMetaObject.invokeMethod(
-                    self,
-                    "_show_key_sync_notice",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, "\n".join(f"• {n}" for n in synced_names)),
-                )
-
-            # Notify user about any skipped games
-            if skipped_names and queued == 0:
-                QMetaObject.invokeMethod(
-                    self,
-                    "_show_update_all_skip_notice",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, "\n".join(f"• {n}" for n in skipped_names)),
-                    Q_ARG(bool, True),
-                    Q_ARG(bool, bool(at0m_key_games) and not updateable_games),
-                )
-            elif skipped_names:
-                QMetaObject.invokeMethod(
-                    self,
-                    "_show_update_all_skip_notice",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, "\n".join(f"• {n}" for n in skipped_names)),
-                    Q_ARG(bool, False),
-                    Q_ARG(bool, False),
-                )
-
-        threading.Thread(target=_do_update_all, daemon=True).start()
-
-    @pyqtSlot(object)
-    def _run_on_main_thread(self, fn) -> None:
-        """Slot to execute a callable on the main thread (connected via _main_thread_callable signal)."""
-        try:
-            fn()
-        except Exception as e:
-            logger.error(f"Error executing on main thread: {e}", exc_info=True)
-
-    def _set_update_all_btn_preparing(self, done: int, total: int, current_name: str = "") -> None:
-        """Thread-safe: update the Update All button to show preparation progress."""
-        import threading
-        if threading.current_thread() is not threading.main_thread():
-            QMetaObject.invokeMethod(
-                self,
-                "_set_update_all_btn_preparing_slot",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(int, done),
-                Q_ARG(int, total),
-                Q_ARG(str, current_name),
-            )
-        else:
-            self._set_update_all_btn_preparing_slot(done, total, current_name)
-
-    @pyqtSlot(int, int)
-    @pyqtSlot(int, int, str)
-    def _set_update_all_btn_preparing_slot(self, done: int, total: int, current_name: str = "") -> None:
-        """Main-thread slot: keep the Update All button disabled and greyed out while queueing updates."""
-        try:
-            # The button lives on the dashboard widget, not on the ui_state.
-            term = getattr(self, "simplified_terminal", None)
-            btn = getattr(term, "update_all_btn", None) if term else None
-            if btn:
-                btn.setEnabled(False)
-                if done < total:
-                    if current_name:
-                        btn.setToolTip(f"Preparing updates... ({done} of {total} ready - {current_name})")
-                    else:
-                        btn.setToolTip(f"Preparing updates... ({done} of {total} ready)")
-                else:
-                    btn.setToolTip("Queueing updates...")
-        except Exception:
-            pass
-
-    @pyqtSlot(str, bool)
-    @pyqtSlot(str, bool, bool)
-    def _show_update_all_skip_notice(self, names_text: str, all_skipped: bool, key_sync_only: bool = False) -> None:
-        """Show a non-blocking notice when some games were skipped in Update All."""
-        if key_sync_only:
-            ThemedMessageBox.warning(
-                self,
-                "Update All — Keys Not Synced",
-                f"The decryption keys could not be synced for:\n{names_text}\n\n"
-                f"Open the game individually to retry.",
-            )
-        elif all_skipped:
-            ThemedMessageBox.warning(
-                self,
-                "Update All — Manual Action Required",
-                f"All pending updates were skipped because they require manual depot selection.\n\n"
-                f"Please update these games individually:\n{names_text}",
-            )
-        else:
-            ThemedMessageBox.information(
-                self,
-                "Update All — Some Games Skipped",
-                f"Updates were queued, but the following game(s) need manual depot selection:\n\n"
-                f"{names_text}\n\nOpen them individually to install the update.",
-            )
-
     @pyqtSlot()
     def update_dashboard_elements(self) -> None:
         """Dynamically update dashboard elements and floating action button."""
@@ -2644,7 +1396,6 @@ class MainWindow(QMainWindow):
         self.refresh_system_status()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        import os
         if not event.mimeData().hasUrls():
             return
 
@@ -2666,15 +1417,11 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        import os
-        import tempfile
-        import zipfile
-        
         urls = event.mimeData().urls()
-        
+
         zips_to_queue = []
         files_to_zip = []
-        
+
         for url in urls:
             if not url.isLocalFile():
                 continue
@@ -2693,7 +1440,7 @@ class MainWindow(QMainWindow):
             try:
                 temp_fd, temp_path = tempfile.mkstemp(suffix=".zip")
                 os.close(temp_fd)
-                with zipfile.ZipFile(temp_path, 'w', zipfile.ZIP_DEFLATED) as zip_ref:
+                with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as zip_ref:
                     added_names = set()
                     for fpath in files_to_zip:
                         bname = os.path.basename(fpath)
@@ -2710,7 +1457,6 @@ class MainWindow(QMainWindow):
             return
 
         from ui.dialogs.zip_confirm_dialog import ZipImportConfirmationDialog
-        from PyQt6.QtWidgets import QDialog
 
         logger.info(f"Inspecting {len(zips_to_queue)} file(s) for import via drag-drop.")
         for job_path in zips_to_queue:
@@ -2737,19 +1483,19 @@ class MainWindow(QMainWindow):
             try:
                 from utils.isp_bypass import TorManager
                 TorManager.stop_tor()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[MainWindow] Error stopping TorManager on exit: {e}")
             try:
                 from core.steamdb_scraper import ByparrManager
                 ByparrManager.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[MainWindow] Error stopping ByparrManager on exit: {e}")
             # Signal SLS background retry workers to stop before teardown
             try:
                 from utils.slssteam_integration import register_shutdown
                 register_shutdown()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[MainWindow] Error registering SLS shutdown: {e}")
             from utils.update_status_cache import get_update_cache
             get_update_cache().save()  # Force synchronous save of status cache before exit
             MainWindow._cleanup_logging()
@@ -2761,11 +1507,8 @@ class MainWindow(QMainWindow):
 
         super().closeEvent(event)
 
-    def paintEvent(self, event):
+    def paintEvent(self, event) -> None:
         super().paintEvent(event)
-        from PyQt6.QtGui import QPainter, QLinearGradient, QPixmap
-        from PyQt6.QtCore import Qt
-
         settings = self.settings
         preset = settings.value("material_preset", "ocean", type=str) if settings else "ocean"
         custom_bg = settings.value("theme_background_image", "", type=str) if settings else ""
@@ -2791,7 +1534,12 @@ class MainWindow(QMainWindow):
                 bg_path_to_draw = str(christmas_bg)
 
         if bg_path_to_draw:
-            if not hasattr(self, "_active_bg_path") or self._active_bg_path != bg_path_to_draw or not hasattr(self, "_custom_bg_pixmap") or self._custom_bg_pixmap is None:
+            if (
+                not hasattr(self, "_active_bg_path")
+                or self._active_bg_path != bg_path_to_draw
+                or not hasattr(self, "_custom_bg_pixmap")
+                or self._custom_bg_pixmap is None
+            ):
                 self._active_bg_path = bg_path_to_draw
                 self._custom_bg_pixmap = QPixmap(bg_path_to_draw)
 
@@ -2865,194 +1613,6 @@ class MainWindow(QMainWindow):
 
         self.titlebar_position = position
         logger.info(f"Titlebar repositioned to: {position}")
-
-    def check_tool_updates(self, force: bool = False) -> None:
-        """Start a background thread to check for tool self-updates."""
-        import threading
-
-        # Prevent multiple concurrent checks from running at the same time
-        if self._tool_update_check_running:
-            if force:
-                self._tool_update_recheck = True
-            logger.debug("Tool update check already in progress, skipping.")
-            return
-        self._tool_update_recheck = False
-        self._tool_update_check_running = True
-        self._tool_update_status = "checking"
-        self.refresh_system_status()
-
-        configured_channel = self.settings.value("update_channel", "").strip().lower()
-        configured_server = self.settings.value("update_server", "auto", type=str).strip().lower()
-        target_channel = get_effective_update_channel(configured_channel, app_version)
-        prev_channel = str(getattr(self, "_latest_update_channel", "") or "").strip().lower()
-        if prev_channel and prev_channel != target_channel:
-            self._latest_remote_version = ""
-            self._latest_update_source = ""
-            self._tool_update_available_flag = False
-            self._latest_update_channel = target_channel
-            self._update_tool_update_visibility()
-
-        def _check_sync():
-            status = "offline"
-            remote_clean = None
-            remote_source = ""
-            remote_channel = target_channel
-            try:
-                res = check_for_updates(
-                    configured_channel=configured_channel,
-                    current_version=app_version,
-                    update_server=configured_server,
-                )
-                status = res["status"]
-                remote_clean = res["remote_version"]
-                remote_source = res.get("source") or ""
-                remote_channel = res.get("channel") or target_channel
-                if not configured_channel or configured_channel not in ("stable", "beta", "canary"):
-                    self.settings.setValue("update_channel", res["channel"])
-
-                if status == "update_available":
-                    if res.get("is_cross_channel"):
-                        logger.info(
-                            f"Cross-channel update available: {remote_clean} (channel: {res['channel']}, server: {remote_source or configured_server}, current: {res['local_version']})"
-                        )
-                    else:
-                        logger.info(
-                            f"Tool update available: {remote_clean} (server: {remote_source or configured_server}, current: {res['local_version']})"
-                        )
-                elif status == "up_to_date":
-                    logger.info(f"Tool is up to date ({res['local_version']}, via {remote_source or configured_server})")
-                else:
-                    logger.debug(f"Tool update check offline/unresolved: {res.get('error')}")
-            except Exception as e:
-                logger.warning(f"Failed to check tool updates: {e}")
-                status = "offline"
-            finally:
-                self._tool_update_check_running = False
-                QMetaObject.invokeMethod(
-                    self,
-                    "_on_tool_update_result",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, status),
-                    Q_ARG(str, remote_clean or ""),
-                    Q_ARG(str, remote_source),
-                    Q_ARG(str, remote_channel),
-                )
-
-        t = threading.Thread(target=_check_sync, daemon=True)
-        t.start()
-
-    @pyqtSlot(str, str)
-    @pyqtSlot(str, str, str)
-    @pyqtSlot(str, str, str, str)
-    def _on_tool_update_result(
-        self,
-        status: str,
-        remote_version: str = "",
-        remote_source: str = "",
-        remote_channel: str = "",
-    ) -> None:
-        """Slot triggered when tool self-update check finishes."""
-        active_channel = get_effective_update_channel(
-            str(self.settings.value("update_channel", "") or "").strip().lower(),
-            app_version,
-        )
-        if remote_channel and remote_channel != active_channel:
-            if getattr(self, "_tool_update_recheck", False):
-                self._tool_update_recheck = False
-                self.check_tool_updates()
-            return
-        self._tool_update_status = status
-        self._latest_update_source = remote_source
-        if remote_channel:
-            self._latest_update_channel = remote_channel
-        if status == "update_available":
-            self._latest_remote_version = remote_version
-            self._tool_update_available_flag = True
-        else:
-            self._latest_remote_version = ""
-            self._tool_update_available_flag = False
-        self._update_tool_update_visibility()
-        self.refresh_system_status()
-        if getattr(self, "_tool_update_recheck", False):
-            self._tool_update_recheck = False
-            self.check_tool_updates()
-
-    @pyqtSlot(str)
-    def _on_tool_update_available(self, remote_version: str = "") -> None:
-        """Slot triggered when a tool update is available (backward-compatibility)."""
-        self._on_tool_update_result("update_available", remote_version)
-
-    def _update_tool_update_visibility(self) -> None:
-        """Only show the update label when we are on the main/idle screen (layout index 0)."""
-        if hasattr(self, "bottom_titlebar") and self.bottom_titlebar:
-            show = getattr(self, "_tool_update_available_flag", False) and getattr(self, "simplified_terminal", None) and self.simplified_terminal.layout.currentIndex() == 0
-            self.bottom_titlebar.show_update_indicator(show)
-
-    def run_self_update(self) -> None:
-        """Install update via AppUpdateManager (delta first, full download fallback)."""
-        if self.app_update_manager:
-            self.app_update_manager.run_self_update()
-
-    @pyqtSlot()
-    def _on_update_success(self) -> None:
-        ThemedMessageBox.information(
-            self,
-            "Update Installed",
-            "The update has been downloaded and installed successfully.\n\n"
-            "Please restart ASSella to use the new version.",
-        )
-
-    @pyqtSlot(str)
-    def _on_update_failed(self, error_msg: str) -> None:
-        mgr = getattr(self, "app_update_manager", None)
-        failed_server = getattr(mgr, "_last_failed_server", None) or normalize_update_server(
-            str(self.settings.value("update_server", "auto") or "auto")
-        )
-        channel = get_effective_update_channel(
-            str(self.settings.value("update_channel", "") or "").strip().lower(),
-            app_version,
-        )
-        inst_branch = "main" if channel == "stable" else "beta"
-        releases_url = "https://github.com/niwia/ASSella/releases"
-        install_cmd = f"curl -fsSL https://raw.githubusercontent.com/niwia/ASSella/{inst_branch}/install.sh | bash"
-        body = (
-            f"Failed to download or apply the update.\n\nError: {error_msg}\n\n"
-            f"GitHub Releases:\n{releases_url}\n\n"
-            f"Manual installer command:\n{install_cmd}"
-        )
-
-        if failed_server == "github" and channel in ("stable", "beta"):
-            choice = ThemedMessageBox.choices(
-                self,
-                "Update Failed",
-                body,
-                [("Try R2 Mirror", "r2"), ("Open GitHub Releases", "releases"), ("Close", "close")],
-                default="r2",
-                severity="warning",
-                informative=(
-                    "Update Server is set to GitHub only. You can retry with Cloudflare R2, "
-                    "or download manually / run install.sh from GitHub."
-                ),
-            )
-            if choice == "r2" and mgr is not None:
-                mgr.run_self_update(server_override="r2", skip_prompt=True)
-                return
-        else:
-            choice = ThemedMessageBox.choices(
-                self,
-                "Update Failed",
-                body,
-                [("Open GitHub Releases", "releases"), ("Close", "close")],
-                default="close",
-                severity="warning",
-                informative=(
-                    "Automatic delta and full-download sources failed. Please download the latest "
-                    "AppImage manually or run the install script from GitHub."
-                ),
-            )
-
-        if choice == "releases":
-            QDesktopServices.openUrl(QUrl(releases_url))
 
     @staticmethod
     def _cleanup_logging() -> None:
