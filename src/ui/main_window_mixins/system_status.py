@@ -101,23 +101,29 @@ class MainWindowSystemStatusMixin:
                 self.stealth_status_value.setText("Inactive")
                 self.stealth_status_value.setStyleSheet(self._get_status_style("neutral"))
             else:
-                mode = st_settings.value("stealth_proxy_mode", "warp", type=str).lower().strip()
-                if mode == "warp":
-                    st_label = "WARP"
-                elif mode == "wireguard":
-                    st_label = "WireGuard"
-                elif mode == "custom":
-                    custom_url = st_settings.value("stealth_proxy_custom_url", "", type=str).strip().lower()
-                    if custom_url.startswith("socks5"):
-                        st_label = "SOCKS5"
-                    elif custom_url.startswith("https://"):
-                        st_label = "HTTPS"
-                    elif custom_url.startswith("http://"):
-                        st_label = "HTTP"
+                rotation = st_settings.value("stealth_rotation_enabled", False, type=bool)
+                if rotation:
+                    from utils.kuroko import StealthPoolManager
+                    candidates = StealthPoolManager.get_pool_candidates(st_settings)
+                    st_label = f"Pool ({len(candidates)})" if candidates else "Pool (Empty)"
+                else:
+                    mode = st_settings.value("stealth_proxy_mode", "warp", type=str).lower().strip()
+                    if mode == "warp":
+                        st_label = "WARP"
+                    elif mode == "wireguard":
+                        st_label = "WireGuard"
+                    elif mode == "custom":
+                        custom_url = st_settings.value("stealth_proxy_custom_url", "", type=str).strip().lower()
+                        if custom_url.startswith("socks5"):
+                            st_label = "SOCKS5"
+                        elif custom_url.startswith("https://"):
+                            st_label = "HTTPS"
+                        elif custom_url.startswith("http://"):
+                            st_label = "HTTP"
+                        else:
+                            st_label = "Active"
                     else:
                         st_label = "Active"
-                else:
-                    st_label = "Active"
                 self.stealth_status_value.setText(st_label)
                 self.stealth_status_value.setStyleSheet(self._get_status_style("success"))
 

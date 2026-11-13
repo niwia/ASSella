@@ -7,6 +7,8 @@ All functions and classes are re-exported here for backwards compatibility.
 from utils.kuroko import *  # noqa: F401, F403
 from utils.kuroko import (
     Kuroko,
+    StealthPoolManager,
+    WireguardProfileManager,
     WireproxyManager,
     _generate_x25519_keypair,
     assemble_kuroko_config,
@@ -18,12 +20,17 @@ from utils.kuroko import (
     get_kuroko,
     get_or_create_warp_config,
     get_wireproxy_manager,
+    is_network_or_proxy_error,
+    measure_stealth_proxy_speed,
+    prompt_stealth_fallback,
     resolve_stealth_proxy_url,
     test_stealth_proxy_connection,
 )
 
 __all__ = [
     "Kuroko",
+    "StealthPoolManager",
+    "WireguardProfileManager",
     "WireproxyManager",
     "_generate_x25519_keypair",
     "assemble_kuroko_config",
@@ -35,6 +42,9 @@ __all__ = [
     "get_kuroko",
     "get_or_create_warp_config",
     "get_wireproxy_manager",
+    "is_network_or_proxy_error",
+    "measure_stealth_proxy_speed",
+    "prompt_stealth_fallback",
     "resolve_stealth_proxy_url",
     "test_stealth_proxy_connection",
 ]

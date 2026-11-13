@@ -5,7 +5,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -31,7 +31,8 @@ class TestDownloadDepotsTaskProxy(unittest.TestCase):
         self.assertIsNone(proxy_url)
         self.assertIsNone(self.task._wireproxy_manager)
 
-    def test_02_custom_proxy_mode(self):
+    @patch("utils.kuroko.Kuroko.probe_alive", return_value=True)
+    def test_02_custom_proxy_mode(self, mock_probe):
         """When mode is custom, returns the configured proxy URL without spawning wireproxy."""
         mock_settings = MagicMock()
         mock_settings.value.side_effect = lambda key, default=None, type=None: {

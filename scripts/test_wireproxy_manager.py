@@ -85,6 +85,64 @@ BindAddress = 0.0.0.0:9999
             self.assertFalse(manager.is_running)
             print("[E2E] Stopped successfully and cleaned up.")
 
+    def test_05_profile_manager(self):
+        """Verify WireguardProfileManager imports with 0o600 permissions, lists, and deletes profiles."""
+        import tempfile
+        from utils.kuroko import WireguardProfileManager
+
+        with tempfile.NamedTemporaryFile("w", suffix=".conf", delete=False) as tf:
+            tf.write("[Interface]\nPrivateKey = fake\nAddress = 10.0.0.1/32\n")
+            temp_path = tf.name
+
+        try:
+            profile = WireguardProfileManager.import_profile(temp_path)
+            self.assertIsNotNone(profile)
+            fname = profile["filename"]
+            p_path = Path(profile["path"])
+            self.assertTrue(p_path.is_file())
+            # Enforce 0o600 permissions check
+            mode = p_path.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600, f"Expected 0o600 permissions on profile, got {oct(mode)}")
+
+            # Verify listed
+            profiles = WireguardProfileManager.list_profiles()
+            self.assertTrue(any(p["filename"] == fname for p in profiles))
+
+            # Delete
+            deleted = WireguardProfileManager.delete_profile(fname)
+            self.assertTrue(deleted)
+            self.assertFalse(p_path.exists())
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    def test_06_error_signatures(self):
+        """Verify is_network_or_proxy_error only triggers on transport/rate-limit errors."""
+        from utils.kuroko import is_network_or_proxy_error
+
+        # True cases
+        self.assertTrue(is_network_or_proxy_error("System.Net.Http.HttpRequestException: Connection reset by peer"))
+        self.assertTrue(is_network_or_proxy_error("RateLimitExceeded"))
+        self.assertTrue(is_network_or_proxy_error("HTTP 429 Too Many Requests"))
+        self.assertTrue(is_network_or_proxy_error("Unable to connect to the remote server"))
+        self.assertTrue(is_network_or_proxy_error("System.Net.Sockets.SocketException: Connection refused"))
+
+        # False cases (non-network)
+        self.assertFalse(is_network_or_proxy_error("AccessDenied: Depot decryption key is invalid"))
+        self.assertFalse(is_network_or_proxy_error("Missing depot key for depot 481"))
+        self.assertFalse(is_network_or_proxy_error("File already exists on disk"))
+
+    def test_07_cooldown_registry(self):
+        """Verify cooldown tracking and clearing."""
+        from utils.kuroko import is_endpoint_in_cooldown, mark_endpoint_cooldown, clear_endpoint_cooldowns
+
+        clear_endpoint_cooldowns()
+        self.assertFalse(is_endpoint_in_cooldown("test_ep"))
+        mark_endpoint_cooldown("test_ep")
+        self.assertTrue(is_endpoint_in_cooldown("test_ep"))
+        clear_endpoint_cooldowns()
+        self.assertFalse(is_endpoint_in_cooldown("test_ep"))
+
 
 if __name__ == "__main__":
     unittest.main()

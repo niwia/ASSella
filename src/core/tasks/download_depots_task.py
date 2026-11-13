@@ -72,6 +72,7 @@ class DownloadDepotsTask(QObject):
         self._current_depot_error_reason = ""
         self._current_depot_zero_downloaded = False
         self._current_depot_errors = 0
+        self._current_depot_network_error = ""
         self._auto_enabled = False
         self._auto_cap = 8
         self._auto_best_key = "auto_tune_best"
@@ -168,6 +169,7 @@ class DownloadDepotsTask(QObject):
                 self._current_depot_key_denied = False
                 self._current_depot_error_reason = ""
                 self._current_depot_zero_downloaded = False
+                self._current_depot_network_error = ""
                 self._current_depot_downloaded_bytes = 0
                 self._current_depot_uncompressed_bytes = 0
                 self._current_depot_errors = 0
@@ -283,6 +285,108 @@ class DownloadDepotsTask(QObject):
                         self._cleanup_temp_files()
                         self.error.emit((RuntimeError, error_msg, None))
                         return
+
+                    # Check for mid-flight stealth proxy or network connection failure
+                    is_stealth_active = bool(self._kuroko_manager or "-proxy" in current_cmd)
+                    is_stealth_dropped = is_stealth_active and (
+                        bool(self._current_depot_network_error)
+                        or (self._kuroko_manager and not self._kuroko_manager.is_running())
+                    )
+
+                    if is_stealth_dropped:
+                        net_err = self._current_depot_network_error or "Stealth connection dropped or timed out mid-download."
+                        logger.warning(f"[DownloadDepotsTask] Mid-flight stealth error on depot {depot_id}: {net_err}")
+
+                        # 1. Attempt automatic pool rotation failover if rotation is enabled
+                        rotation_on = settings.value("stealth_rotation_enabled", False, type=bool)
+                        failed_over = False
+                        if rotation_on:
+                            from utils.kuroko import resolve_stealth_proxy_url
+                            self.progress.emit(f"⚠️ Stealth connection interrupted on depot {depot_id}. Attempting pool failover...")
+                            prev_id = getattr(self._kuroko_manager, "endpoint_id", None)
+                            self._cleanup_stealth_proxy()
+                            try:
+                                new_url, new_mgr = resolve_stealth_proxy_url(settings, failover_from=prev_id)
+                                if new_mgr or new_url:
+                                    self._kuroko_manager = new_mgr
+                                    active_url = new_mgr.proxy_url if new_mgr else new_url
+                                    for c in commands[i:]:
+                                        if "-proxy" in c:
+                                            p_idx = c.index("-proxy")
+                                            c[p_idx + 1] = active_url
+                                        else:
+                                            c.extend(["-proxy", active_url])
+                                    self.progress.emit(f"🔒 Failed over to new stealth endpoint: {active_url}. Resuming depot {depot_id}...")
+                                    self.last_percentage = -1
+                                    self._is_validating = False
+                                    self._current_depot_downloaded_bytes = 0
+                                    self._current_depot_network_error = ""
+                                    self.process = subprocess.Popen(
+                                        current_cmd,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT,
+                                        text=False,
+                                        creationflags=creation_flags,
+                                        env=get_dotnet_env(),
+                                    )
+                                    self._read_process_output()
+                                    if self.process and self.process.stdout:
+                                        try:
+                                            self.process.stdout.close()
+                                        except OSError as e:
+                                            logger.debug(f"[DownloadDepotsTask] Pipe close error: {e}")
+                                    self._flush_log_buffer()
+                                    if not self._is_running:
+                                        self.completed.emit()
+                                        return
+                                    return_code = self.process.poll() if self.process else 0
+                                    self.process = None
+                                    if return_code == 0:
+                                        failed_over = True
+                            except Exception as failover_err:
+                                logger.warning(f"[DownloadDepotsTask] Stealth pool failover failed: {failover_err}")
+
+                        # 2. If rotation failed or is disabled, prompt user with modal fallback
+                        if not failed_over and return_code != 0:
+                            from utils.kuroko import prompt_stealth_fallback
+                            if prompt_stealth_fallback(net_err):
+                                self.progress.emit(f"⚠️ Stealth dropped mid-download. Proceeding directly (non-stealth) for depot {depot_id}...")
+                                self._cleanup_stealth_proxy()
+                                for c in commands[i:]:
+                                    while "-proxy" in c:
+                                        p_idx = c.index("-proxy")
+                                        del c[p_idx:p_idx + 2]
+                                self.last_percentage = -1
+                                self._is_validating = False
+                                self._current_depot_downloaded_bytes = 0
+                                self._current_depot_network_error = ""
+                                self.process = subprocess.Popen(
+                                    current_cmd,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT,
+                                    text=False,
+                                    creationflags=creation_flags,
+                                    env=get_dotnet_env(),
+                                )
+                                self._read_process_output()
+                                if self.process and self.process.stdout:
+                                    try:
+                                        self.process.stdout.close()
+                                    except OSError as e:
+                                        logger.debug(f"[DownloadDepotsTask] Pipe close error: {e}")
+                                self._flush_log_buffer()
+                                if not self._is_running:
+                                    self.completed.emit()
+                                    return
+                                return_code = self.process.poll() if self.process else 0
+                                self.process = None
+                            else:
+                                error_msg = f"Download cancelled: Stealth connection dropped mid-download ({net_err})."
+                                self.progress.emit(f"ERROR: {error_msg}")
+                                logger.error(f"[DownloadDepotsTask] {error_msg}")
+                                self._cleanup_temp_files()
+                                self.error.emit((RuntimeError, error_msg, None))
+                                return
 
                     # Attempt smart recovery via wudrm / Steam CDN with fallbacks
                     try:
@@ -723,6 +827,10 @@ class DownloadDepotsTask(QObject):
         if "no valid depot key" in lower_line or ("depot key" in lower_line and "accessdenied" in lower_line) or "result: accessdenied" in lower_line:
             self._current_depot_key_denied = True
             self._current_depot_error_reason = line
+        else:
+            from utils.kuroko import is_network_or_proxy_error
+            if is_network_or_proxy_error(line):
+                self._current_depot_network_error = line
         # Count chunk-level trouble for the auto-tune controller (back off fast).
         if (
             "failed to download chunk" in lower_line
@@ -1260,12 +1368,21 @@ class DownloadDepotsTask(QObject):
         """
         Configure userspace stealth proxy (Kuroko / custom SOCKS5) if enabled in settings.
         Returns the proxy URL to pass to DepotDownloader (-proxy <url>), or None if disabled.
-        Fails closed (raises RuntimeError) if proxy is enabled but fails to initialize.
+        Prompts user on GUI thread if initialization fails with fallback options.
         """
-        from utils.kuroko import resolve_stealth_proxy_url
+        from utils.kuroko import resolve_stealth_proxy_url, prompt_stealth_fallback
 
         self._proxy_info_tag = None
-        proxy_url, manager = resolve_stealth_proxy_url(settings)
+        try:
+            proxy_url, manager = resolve_stealth_proxy_url(settings)
+        except Exception as e:
+            logger.warning(f"[DownloadDepotsTask] Stealth proxy setup failed: {e}")
+            if prompt_stealth_fallback(str(e)):
+                self.progress.emit("⚠️ Stealth connection failed. Continuing with direct (non-stealth) connection per user request.")
+                return None
+            else:
+                raise
+
         if manager is not None:
             self._kuroko_manager = manager
             mode = settings.value("stealth_proxy_mode", "warp", type=str).strip().lower()

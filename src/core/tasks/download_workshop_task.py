@@ -310,8 +310,14 @@ class DownloadWorkshopTask(QObject):
                 self.log(f"  🔒 Routing download through custom proxy: {proxy_url}")
         except Exception as e:
             self.log(f"  ✗ Stealth proxy setup failed: {e}")
-            self.error.emit((type(e), f"Stealth proxy error: {e}", None))
-            return
+            from utils.kuroko import prompt_stealth_fallback
+            if prompt_stealth_fallback(str(e)):
+                self.log("  ⚠️ Stealth proxy failed. Proceeding with direct download per user request.")
+                proxy_url = None
+                self._kuroko_manager = None
+            else:
+                self.error.emit((type(e), f"Stealth proxy error: {e}", None))
+                return
 
         from utils.helpers import get_dotnet_env
         dotnet_env = get_dotnet_env()
