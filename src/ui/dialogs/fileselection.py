@@ -83,8 +83,8 @@ class DirectDownloadThread(QThread):
             if mgr is not None:
                 try:
                     mgr.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[FileSelection] Error stopping stealth proxy manager: {e}")
 
     def cancel(self):
         self._is_cancelled = True
@@ -97,8 +97,8 @@ class DirectDownloadThread(QThread):
         if mgr is not None:
             try:
                 mgr.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[FileSelection] Error stopping stealth proxy manager on cancel: {e}")
 
 
 _DIR_ROLE = Qt.ItemDataRole.UserRole + 2

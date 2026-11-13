@@ -57,8 +57,8 @@ class DownloadWorkshopTask(QObject):
         if manager is not None:
             try:
                 manager.stop()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[WorkshopDownload] Error stopping stealth proxy manager on cancel: {e}")
 
     def log(self, msg: str):
         self.progress.emit(msg)
@@ -465,8 +465,8 @@ class DownloadWorkshopTask(QObject):
             if manager is not None:
                 try:
                     manager.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[WorkshopDownload] Error stopping stealth proxy manager: {e}")
 
         if not self._is_running:
             self.log("\n  ✗ Download task cancelled by user.")

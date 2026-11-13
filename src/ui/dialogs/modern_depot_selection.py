@@ -1615,8 +1615,8 @@ class ModernDepotSelectionDialog(QDialog):
                     if mgr is not None:
                         try:
                             mgr.stop()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"[ModernDepotSelection] Error stopping stealth proxy manager: {e}")
 
         self._dump_thread = DumpThread()
 

@@ -12,6 +12,7 @@ the dialog should show when it did not work out, and the key file is cleaned up
 on every failure.
 """
 
+import logging
 import os
 import subprocess
 
@@ -20,6 +21,8 @@ from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
 
 from ui.dialogs.depot_selection.manifest_dump import ManifestDump, discard_keys_file
+
+logger = logging.getLogger(__name__)
 
 _MISSING_LISTING = "Failed to locate generated file list text file."
 
@@ -53,8 +56,8 @@ class _DumpThread(QThread):
             if mgr is not None:
                 try:
                     mgr.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[DumpRunner] Error stopping stealth proxy manager: {e}")
 
 
 class ManifestDumpRunner(QObject):

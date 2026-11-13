@@ -251,8 +251,8 @@ def find_free_port(preferred: int = 1080, host: str = "127.0.0.1") -> int:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind((host, preferred))
                 return preferred
-        except OSError:
-            pass
+        except OSError as e:
+            logger.debug(f"[Kuroko] Preferred port {preferred} is unavailable: {e}")
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
@@ -284,8 +284,8 @@ def ensure_wireproxy_binary(progress_callback: Optional[Callable[[str], None]] =
                 os.chmod(candidate, candidate.stat().st_mode | 0o755)
                 if os.access(candidate, os.X_OK):
                     return candidate
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug(f"[Kuroko] Failed to chmod candidate {candidate}: {e}")
 
     dest_path = candidate_paths[0]
 
@@ -442,8 +442,8 @@ class Kuroko:
                     if self._process.stderr:
                         try:
                             stderr_out = self._process.stderr.read().strip()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"[Kuroko] Failed to read stderr: {e}")
                     logger.error(f"[Kuroko] wireproxy exited prematurely with code {poll_code}: {stderr_out}")
                     self.stop()
                     return False
@@ -476,8 +476,8 @@ class Kuroko:
                     try:
                         proc.kill()
                         proc.wait(timeout=1.0)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[Kuroko] Failed to kill wireproxy: {e}")
 
         if self._temp_conf_path is not None:
             conf_path = self._temp_conf_path
@@ -538,8 +538,8 @@ class Kuroko:
                 except Exception as endpoint_err:
                     logger.debug(f"[Kuroko] Endpoint {url} failed: {endpoint_err}")
                     continue
-        except ImportError:
-            pass
+        except ImportError as e:
+            logger.debug(f"[Kuroko] curl_cffi not installed: {e}")
 
         # 2. Fallback: shell out to curl
         curl_bin = shutil.which("curl")

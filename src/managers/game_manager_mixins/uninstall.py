@@ -271,8 +271,8 @@ class GameManagerUninstallMixin:
                 if mgr is not None:
                     try:
                         mgr.stop()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[Uninstall] Error stopping stealth proxy manager: {e}")
 
     def _delete_dlc_depot_files(self, install_path, appid):
         """Finds and deletes files for all DLC depots listed in appid.depot."""

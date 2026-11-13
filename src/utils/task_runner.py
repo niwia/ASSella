@@ -195,24 +195,22 @@ class TaskRunner(QObject):
                 def _on_retired_finished(t=thread):
                     TaskRunner._retiring_threads.discard(t)
                 thread.finished.connect(_on_retired_finished)
-            except (RuntimeError, Exception):
-                pass
+            except (RuntimeError, Exception) as e:
+                logger.debug(f"Could not connect retired thread finished: {e}")
             try:
                 thread.quit()
                 if wait_ms is None:
                     wait_ms = 2000
-                if wait_ms > 0 and not thread.wait(wait_ms):
-                    logger.debug("Thread did not finish in time during stop(), letting it exit in background.")
-                    if terminate_on_timeout:
-                        logger.warning("Forcibly terminating thread on explicit request.")
-                        thread.terminate()
-                        thread.wait(500)
-                else:
-                    TaskRunner._retiring_threads.discard(thread)
-            except (RuntimeError, Exception):
-                # Thread may have already been deleted by Qt
-                logger.debug("Thread was already deleted during stop()")
-                TaskRunner._retiring_threads.discard(thread)
+                if wait_ms > 0:
+                    if thread.wait(wait_ms):
+                        TaskRunner._retiring_threads.discard(thread)
+                    else:
+                        logger.debug("Thread did not finish in time during stop(), letting it exit in background.")
+                # Note: When wait_ms <= 0 or wait timed out, the thread safely runs to completion
+                # in the background while retained in _retiring_threads, avoiding thread.terminate()
+                # which causes SIGABRT / C++ heap corruption on exit.
+            except (RuntimeError, Exception) as e:
+                logger.debug(f"Error during thread wait/quit in stop(): {e}")
         if self in TaskRunner._active_runners:
             TaskRunner._active_runners.remove(self)
 
@@ -243,16 +241,16 @@ class TaskRunner(QObject):
 
     def _on_destroyed(self, _obj=None):
         try:
-            self.stop(wait_ms=500, terminate_on_timeout=True)
-        except RuntimeError:
-            pass
+            self.stop(wait_ms=500, terminate_on_timeout=False)
+        except RuntimeError as e:
+            logger.debug(f"TaskRunner._on_destroyed ignored error: {e}")
 
     @classmethod
     def stop_all_active(cls):
         runners = list(cls._active_runners)
         for runner in runners:
             try:
-                runner.stop(wait_ms=500, terminate_on_timeout=True)
+                runner.stop(wait_ms=500, terminate_on_timeout=False)
             except RuntimeError as e:
                 logger.debug(f"Failed to stop TaskRunner during shutdown: {e}")
 

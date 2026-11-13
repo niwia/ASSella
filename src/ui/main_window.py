@@ -1505,12 +1505,18 @@ class MainWindow(
                 logger.debug(f"[MainWindow] Error registering SLS shutdown: {e}")
             from utils.update_status_cache import get_update_cache
             get_update_cache().save()  # Force synchronous save of status cache before exit
-            MainWindow._cleanup_logging()
+            try:
+                from utils.task_runner import TaskRunner
+                TaskRunner.stop_all_active()
+            except Exception as e:
+                logger.debug(f"[MainWindow] Error stopping active TaskRunners: {e}")
             self.task_manager.cleanup()
             self.job_queue.clear()
             self.game_manager.cleanup()
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
+        finally:
+            MainWindow._cleanup_logging()
 
         super().closeEvent(event)
 
