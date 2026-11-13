@@ -459,7 +459,13 @@ def create_downloads_tab(dialog) -> QWidget:
     # being squeezed (and clipped) when the window is short.
     dl_subtabs.addTab(_scrolled(general_widget), "General")
 
-    # ── Subtab 2: Depot selection ──
+    # ── Subtab 2: Stealth ──
+    from ui.dialogs.settings_tabs.stealth_tab import create_stealth_subtab
+
+    dialog.dl_subtabs = dl_subtabs
+    dialog.stealth_subtab_index = dl_subtabs.addTab(create_stealth_subtab(dialog), "Stealth")
+
+    # ── Subtab 3: Depot selection ──
     hide_widget = QWidget()
     hide_layout = QVBoxLayout(hide_widget)
     hide_layout.setContentsMargins(0, 8, 0, 0)
@@ -636,6 +642,9 @@ def create_downloads_tab(dialog) -> QWidget:
         cached_holder.layout().addWidget(create_cached_page(dialog))
 
     dl_subtabs.currentChanged.connect(_build_cached)
+
+    if getattr(dialog, "_initial_subtab", "") == "stealth" and hasattr(dialog, "stealth_subtab_index"):
+        dl_subtabs.setCurrentIndex(dialog.stealth_subtab_index)
 
     layout.addWidget(dl_subtabs)
     dialog.tab_widget.addTab(tab, "Downloads")

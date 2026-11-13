@@ -47,6 +47,10 @@ class SettingsDialog(QDialog):
         self.assfixer_repair_done_signal.connect(self._handle_assfixer_repair_done)
         self.sls_version_check_signal.connect(self._handle_sls_version_check_done)
         self._initial_tab = initial_tab
+        self._initial_subtab = ""
+        if str(self._initial_tab or "").lower() in ("stealth", "downloads:stealth"):
+            self._initial_tab = "downloads"
+            self._initial_subtab = "stealth"
         self.setWindowTitle("Settings")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setMinimumWidth(660)
@@ -112,6 +116,10 @@ class SettingsDialog(QDialog):
         self.vapor_download_action_combo = None
         self.vapor_start_immediate_checkbox = None
         self.vapor_start_mode_combo = None
+        self.enable_stealth_proxy_checkbox = None
+        self.stealth_proxy_mode_combo = None
+        self.stealth_proxy_wg_edit = None
+        self.stealth_proxy_custom_edit = None
         from utils.helpers import create_font_from_settings
         self.current_font = create_font_from_settings(self.settings)
         self.morrenus_stats_widget = None
@@ -982,6 +990,26 @@ class SettingsDialog(QDialog):
             self.settings.setValue(
                 "use_lancache",
                 self.use_lancache_checkbox.isChecked(),
+            )
+        if hasattr(self, "enable_stealth_proxy_checkbox") and self.enable_stealth_proxy_checkbox is not None:
+            self.settings.setValue(
+                "enable_stealth_proxy",
+                self.enable_stealth_proxy_checkbox.isChecked(),
+            )
+        if hasattr(self, "stealth_proxy_mode_combo") and self.stealth_proxy_mode_combo is not None:
+            self.settings.setValue(
+                "stealth_proxy_mode",
+                self.stealth_proxy_mode_combo.currentData() or "warp",
+            )
+        if hasattr(self, "stealth_proxy_wg_edit") and self.stealth_proxy_wg_edit is not None:
+            self.settings.setValue(
+                "stealth_proxy_wg_path",
+                self.stealth_proxy_wg_edit.text().strip(),
+            )
+        if hasattr(self, "stealth_proxy_custom_edit") and self.stealth_proxy_custom_edit is not None:
+            self.settings.setValue(
+                "stealth_proxy_custom_url",
+                self.stealth_proxy_custom_edit.text().strip(),
             )
         if hasattr(self, "prompt_steam_restart_checkbox") and self.prompt_steam_restart_checkbox is not None:
             self.settings.setValue(

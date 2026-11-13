@@ -84,10 +84,7 @@ class MainWindowSystemStatusMixin:
         self._apply_system_status_refresh()
 
     def _apply_system_status_refresh(self) -> None:
-        """Refresh local Steam updates, SLS, and ASSella status labels."""
-        if not hasattr(self, "steam_updates_value") or not self.steam_updates_value:
-            return
-
+        """Refresh local Stealth, SLS, and ASSella status labels."""
         self._gui_phase = "status refresh"
         try:
             self._collect_system_status()
@@ -95,17 +92,43 @@ class MainWindowSystemStatusMixin:
             self._gui_phase = "idle"
 
     def _collect_system_status(self) -> None:
-        """Collect and render the Steam/SLS/ASSella status labels."""
-        if not hasattr(self, "steam_updates_value") or not self.steam_updates_value:
-            return
+        """Collect and render the Stealth/SLS/ASSella status labels."""
+        if hasattr(self, "stealth_status_value") and self.stealth_status_value:
+            from utils.settings import get_settings
+            st_settings = get_settings()
+            st_enabled = st_settings.value("enable_stealth_proxy", False, type=bool)
+            if not st_enabled:
+                self.stealth_status_value.setText("Inactive")
+                self.stealth_status_value.setStyleSheet(self._get_status_style("neutral"))
+            else:
+                mode = st_settings.value("stealth_proxy_mode", "warp", type=str).lower().strip()
+                if mode == "warp":
+                    st_label = "WARP"
+                elif mode == "wireguard":
+                    st_label = "WireGuard"
+                elif mode == "custom":
+                    custom_url = st_settings.value("stealth_proxy_custom_url", "", type=str).strip().lower()
+                    if custom_url.startswith("socks5"):
+                        st_label = "SOCKS5"
+                    elif custom_url.startswith("https://"):
+                        st_label = "HTTPS"
+                    elif custom_url.startswith("http://"):
+                        st_label = "HTTP"
+                    else:
+                        st_label = "Active"
+                else:
+                    st_label = "Active"
+                self.stealth_status_value.setText(st_label)
+                self.stealth_status_value.setStyleSheet(self._get_status_style("success"))
 
-        blocked = self.check_steam_updates_blocked()
-        if blocked:
-            self.steam_updates_value.setText("Blocked")
-            self.steam_updates_value.setStyleSheet(self._get_status_style("success"))
-        else:
-            self.steam_updates_value.setText("Allowed")
-            self.steam_updates_value.setStyleSheet(self._get_status_style("warning"))
+        if hasattr(self, "steam_updates_value") and self.steam_updates_value:
+            blocked = self.check_steam_updates_blocked()
+            if blocked:
+                self.steam_updates_value.setText("Blocked")
+                self.steam_updates_value.setStyleSheet(self._get_status_style("success"))
+            else:
+                self.steam_updates_value.setText("Allowed")
+                self.steam_updates_value.setStyleSheet(self._get_status_style("warning"))
 
         # --- SLS Detection ---
         from ui.dialogs.settings_sls import get_sls_paths

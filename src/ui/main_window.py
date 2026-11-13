@@ -224,6 +224,7 @@ class MainWindow(
         self.expiry_value = None
         self.update_all_btn = None
         self.steam_updates_value = None
+        self.stealth_status_value = None
         self.sls_lbl = None
         self.sls_status_value = None
         self.slssteam_lbl = None
@@ -1201,16 +1202,22 @@ class MainWindow(
         hubcap_conn_item.addWidget(self.hubcap_conn_value)
         row2_layout.addLayout(hubcap_conn_item)
 
-        # 2. Steam Updates
-        steam_updates_lbl = QLabel("Steam Updates:")
-        steam_updates_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
-        self.steam_updates_value = QLabel("Checking...")
-        self.steam_updates_value.setStyleSheet(self._get_status_style("neutral"))
-        steam_updates_item = QHBoxLayout()
-        steam_updates_item.setSpacing(4)
-        steam_updates_item.addWidget(steam_updates_lbl)
-        steam_updates_item.addWidget(self.steam_updates_value)
-        row2_layout.addLayout(steam_updates_item)
+        # 2. Stealth Status
+        stealth_lbl = QLabel("Stealth:")
+        stealth_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.70); font-size: 11px; background: transparent; border: none;")
+        stealth_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        stealth_lbl.setToolTip("Click to open Stealth settings")
+        stealth_lbl.mousePressEvent = lambda e: self.open_settings(initial_tab="stealth")
+        self.stealth_status_value = QLabel("Checking...")
+        self.stealth_status_value.setStyleSheet(self._get_status_style("neutral"))
+        self.stealth_status_value.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stealth_status_value.setToolTip("Click to open Stealth settings")
+        self.stealth_status_value.mousePressEvent = lambda e: self.open_settings(initial_tab="stealth")
+        stealth_item = QHBoxLayout()
+        stealth_item.setSpacing(4)
+        stealth_item.addWidget(stealth_lbl)
+        stealth_item.addWidget(self.stealth_status_value)
+        row2_layout.addLayout(stealth_item)
 
         # 3. ASSella Status
         assella_lbl = QLabel("ASSella:")
