@@ -82,6 +82,7 @@ class SettingsDialog(QDialog):
         self.new_depot_selector_checkbox = None
         self.ignore_steam_demos_checkbox = None
         self.achievements_checkbox = None
+        self.rescan_library_checkbox = None
         self.auto_apply_goldberg_checkbox = None
         self.sls_mode_checkbox = None
         self.sls_config_management_checkbox = None
@@ -990,6 +991,10 @@ class SettingsDialog(QDialog):
         if hasattr(self, "achievements_checkbox") and self.achievements_checkbox is not None:
             self.settings.setValue(
                 "generate_achievements", self.achievements_checkbox.isChecked()
+            )
+        if hasattr(self, "rescan_library_checkbox") and self.rescan_library_checkbox is not None:
+            self.settings.setValue(
+                "rescan_library_after_download", self.rescan_library_checkbox.isChecked()
             )
         if self.auto_apply_goldberg_checkbox is not None:
             self.settings.setValue(

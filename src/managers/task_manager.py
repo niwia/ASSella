@@ -1493,8 +1493,12 @@ class TaskManager(
                                     f"[VaporWatcher] Error updating status cache for {appid}: {_cache_err}"
                                 )
 
+                            from utils.settings import get_settings
+                            should_rescan = get_settings().value("rescan_library_after_download", True, type=bool)
+
                             if (
-                                self.main_window
+                                should_rescan
+                                and self.main_window
                                 and hasattr(self.main_window, "game_manager")
                                 and self.main_window.game_manager
                             ):

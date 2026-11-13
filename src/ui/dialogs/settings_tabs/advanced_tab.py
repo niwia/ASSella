@@ -243,6 +243,16 @@ def create_advanced_tab(dialog) -> QWidget:
         lambda _checked: steamless_unchecked_warning(dialog)
     )
 
+    dialog.rescan_library_checkbox = create_checkbox_setting(
+        "Auto-rescan library after downloads finish",
+        "rescan_library_after_download",
+        True,
+        dialog,
+        "Automatically scans all Steam libraries and recalculates game sizes after a download completes. Uncheck to save disk I/O.",
+        show_description=False,
+    )
+    pp_layout.addWidget(dialog.rescan_library_checkbox)
+
     layout.addWidget(pp_card)
     layout.addStretch()
 

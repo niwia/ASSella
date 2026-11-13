@@ -331,14 +331,22 @@ class JobQueueManager(QObject):
                     f"Queue Finished: All {self.jobs_completed_count} job(s) have finished successfully!"
                 )
 
+            from utils.settings import get_settings
+            should_rescan = get_settings().value("rescan_library_after_download", True, type=bool)
+
             if (
-                hasattr(self.main_window, "game_manager")
+                should_rescan
+                and hasattr(self.main_window, "game_manager")
                 and self.main_window.game_manager
             ):
                 logger.info(
                     "[JobQueue] Queue completed: Triggering consolidated library scan."
                 )
                 self.main_window.game_manager.scan_steam_libraries_async()
+            else:
+                logger.info(
+                    f"[JobQueue] Queue completed: Skipping library scan (rescan_enabled={should_rescan})."
+                )
 
             self.jobs_completed_count = 0
         finally:

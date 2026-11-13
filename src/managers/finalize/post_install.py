@@ -593,7 +593,25 @@ class PostInstallMixin:
             if queue_mgr and getattr(queue_mgr, "job_queue", None):
                 has_queued_jobs = len(queue_mgr.job_queue) > 0
 
-            if has_queued_jobs:
+            from utils.settings import get_settings
+            should_rescan = get_settings().value("rescan_library_after_download", True, type=bool)
+
+            if not should_rescan:
+                logger.info(
+                    "[PostInstall] Post-download library rescan disabled by user settings. Skipping full library scan."
+                )
+                if hasattr(self.main_window, "game_manager") and self.main_window.game_manager and self.game_data:
+                    try:
+                        appid_str = str(self.game_data.get("appid", ""))
+                        gm = self.main_window.game_manager
+                        existing = gm.get_game(appid_str)
+                        if existing:
+                            gm.update_game(appid_str, self.game_data)
+                        else:
+                            gm.add_game(self.game_data)
+                    except Exception as _sync_err:
+                        logger.debug(f"[PostInstall] Could not update in-memory game record: {_sync_err}")
+            elif has_queued_jobs:
                 logger.info(
                     f"[PostInstall] Deferring library scan: {len(queue_mgr.job_queue)} job(s) remaining in queue."
                 )
