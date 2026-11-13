@@ -34,11 +34,27 @@ class _DumpThread(QThread):
         self._cmd = cmd
 
     def run(self):
+        proxy_mgr = None
         try:
-            subprocess.run(self._cmd, capture_output=True, text=True, check=True)
+            cmd = list(self._cmd)
+            from utils.kuroko import resolve_stealth_proxy_url
+            proxy_url, proxy_mgr = resolve_stealth_proxy_url()
+            if proxy_url:
+                cmd.extend(["-proxy", proxy_url])
+
+            from utils.helpers import get_dotnet_env
+            env = get_dotnet_env()
+            subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
             self.finished_signal.emit(True, "")
         except Exception as ex:
             self.finished_signal.emit(False, str(ex))
+        finally:
+            mgr, proxy_mgr = proxy_mgr, None
+            if mgr is not None:
+                try:
+                    mgr.stop()
+                except Exception:
+                    pass
 
 
 class ManifestDumpRunner(QObject):

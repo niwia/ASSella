@@ -75,11 +75,22 @@ class DownloadDepotsTask(QObject):
         self._auto_enabled = False
         self._auto_cap = 8
         self._auto_best_key = "auto_tune_best"
+        self._kuroko_manager = None
+        self._proxy_info_tag = None
 
     @property
     def is_running_flag(self) -> bool:
         """Property to access the private running state safely."""
         return self._is_running
+
+    @property
+    def _wireproxy_manager(self):
+        """Backward-compatibility alias for _kuroko_manager."""
+        return self._kuroko_manager
+
+    @_wireproxy_manager.setter
+    def _wireproxy_manager(self, value):
+        self._kuroko_manager = value
 
     def run(
         self, game_data: Dict[str, Any], selected_depots: List[str], dest_path: str
@@ -101,8 +112,11 @@ class DownloadDepotsTask(QObject):
                 self.error.emit((RuntimeError, ".NET 9 runtime not available", None))
                 return
 
+            settings = get_settings()
+            proxy_url = self._setup_stealth_proxy(settings)
+
             commands, skipped_depots, depot_sizes = self._prepare_downloads(
-                game_data, selected_depots, dest_path
+                game_data, selected_depots, dest_path, proxy_url=proxy_url
             )
 
             if not commands:
@@ -545,6 +559,14 @@ class DownloadDepotsTask(QObject):
             self.process = None
             self.error.emit((type(e), str(e), None))
             raise
+        except Exception as e:
+            self.progress.emit(f"An unexpected error occurred during download: {e}")
+            logger.error(f"Download task failed: {e}", exc_info=True)
+            self.process = None
+            self.error.emit((type(e), str(e), None))
+            raise
+        finally:
+            self._cleanup_stealth_proxy()
     def _read_process_output(self):
         """Reads process output in chunks, splitting on \\r and \\n for progress updates."""
         if not self.process or not self.process.stdout:
@@ -684,6 +706,10 @@ class DownloadDepotsTask(QObject):
         line = line.strip()
         if not line:
             return
+
+        # Tag depot lines with stealth proxy details without adding extra lines
+        if line.startswith("Downloading depot ") and getattr(self, "_proxy_info_tag", None):
+            line = f"{line} {self._proxy_info_tag}"
 
         # Add to buffer
         self._log_buffer.append(line)
@@ -850,7 +876,11 @@ class DownloadDepotsTask(QObject):
             self._flush_log_buffer()
 
     def _prepare_downloads(
-        self, game_data: Dict[str, Any], selected_depots: List[str], dest_path: str
+        self,
+        game_data: Dict[str, Any],
+        selected_depots: List[str],
+        dest_path: str,
+        proxy_url: Optional[str] = None,
     ) -> Tuple[List[List[str]], List[str], List[int]]:
         """
         Prepares the list of commands, identifies skipped depots, and gathers sizes.
@@ -1168,16 +1198,20 @@ class DownloadDepotsTask(QObject):
             if target_branch and target_branch != "public":
                 cmd_args.extend(["-branch", str(target_branch)])
 
-            # 1. LanCache support (configurable via settings; falls back to direct if LanCache fails)
+            # 1. LanCache support (only if stealth proxy is not active)
             use_lancache = settings.value("use_lancache", True, type=bool)
-            if use_lancache:
+            if use_lancache and not proxy_url:
                 cmd_args.append("-use-lancache")
 
-            # 2. Adaptive CDN latency probe support (default enabled)
+            # 2. Stealth proxy support (-proxy <url>)
+            if proxy_url:
+                cmd_args.extend(["-proxy", str(proxy_url)])
+
+            # 3. Adaptive CDN latency probe support (default enabled)
             if settings.value("probe_cdn", True, type=bool):
                 cmd_args.append("-probe-cdn")
 
-            # 3. LoginID session isolation (randomized 32-bit integer)
+            # 4. LoginID session isolation (randomized 32-bit integer)
             login_id = random.randint(1, 2147483647)
             cmd_args.extend(["-loginid", str(login_id)])
 
@@ -1222,10 +1256,53 @@ class DownloadDepotsTask(QObject):
 
         return commands, skipped_depots, depot_sizes
 
+    def _setup_stealth_proxy(self, settings) -> Optional[str]:
+        """
+        Configure userspace stealth proxy (Kuroko / custom SOCKS5) if enabled in settings.
+        Returns the proxy URL to pass to DepotDownloader (-proxy <url>), or None if disabled.
+        Fails closed (raises RuntimeError) if proxy is enabled but fails to initialize.
+        """
+        from utils.kuroko import resolve_stealth_proxy_url
+
+        self._proxy_info_tag = None
+        proxy_url, manager = resolve_stealth_proxy_url(settings)
+        if manager is not None:
+            self._kuroko_manager = manager
+            mode = settings.value("stealth_proxy_mode", "warp", type=str).strip().lower()
+            mode_display = "WARP" if mode == "warp" else ("WireGuard" if mode == "wireguard" else mode.capitalize())
+            endpoint = manager.proxy_url.split("://")[-1]
+            self._proxy_info_tag = f"[via Stealth: {mode_display} ({endpoint})]"
+            self.progress.emit(f"🔒 Stealth proxy active: {mode_display} ({manager.proxy_url})")
+            logger.info(f"[DownloadDepotsTask] Stealth proxy active: mode={mode_display}, endpoint={manager.proxy_url}")
+        elif proxy_url:
+            endpoint = proxy_url.split("://")[-1]
+            self._proxy_info_tag = f"[via Stealth: Proxy ({endpoint})]"
+            self.progress.emit(f"🔒 Routing download through custom proxy: {proxy_url}")
+            logger.info(f"[DownloadDepotsTask] Custom proxy active: {proxy_url}")
+        return proxy_url
+
+    def _cleanup_stealth_proxy(self):
+        """Shut down userspace Kuroko proxy if it was started by this download task."""
+        self._proxy_info_tag = None
+        manager, self._kuroko_manager = self._kuroko_manager, None
+        if manager is not None:
+            try:
+                manager.stop()
+                logger.info("[DownloadDepotsTask] Kuroko stealth proxy stopped.")
+            except Exception as e:
+                logger.debug(f"[DownloadDepotsTask] Error stopping Kuroko proxy: {e}")
+
     def stop(self):
         """Signals the task to stop."""
         logger.debug("Stop signal received by download task.")
         self._is_running = False
+        # Terminate dotnet first so it exits cleanly before its SOCKS5 socket disappears
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.terminate()
+            except Exception as e:
+                logger.debug(f"[DownloadDepotsTask] Error terminating process in stop(): {e}")
+        self._cleanup_stealth_proxy()
 
     def toggle_pause(self, pause: bool):
         """

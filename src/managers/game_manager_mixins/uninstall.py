@@ -209,7 +209,13 @@ class GameManagerUninstallMixin:
                 "-dir",
                 temp_dir,
             ]
+            proxy_mgr = None
             try:
+                from utils.kuroko import resolve_stealth_proxy_url
+                proxy_url, proxy_mgr = resolve_stealth_proxy_url()
+                if proxy_url:
+                    cmd.extend(["-proxy", proxy_url])
+
                 env = get_dotnet_env()
                 subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
                 txt_path = Path(temp_dir) / f"manifest_{dlc_appid}_{manifest_id}.txt"
@@ -260,6 +266,13 @@ class GameManagerUninstallMixin:
                 logger.error(
                     f"Failed to fetch manifest and delete files for DLC {dlc_appid}: {e}"
                 )
+            finally:
+                mgr, proxy_mgr = proxy_mgr, None
+                if mgr is not None:
+                    try:
+                        mgr.stop()
+                    except Exception:
+                        pass
 
     def _delete_dlc_depot_files(self, install_path, appid):
         """Finds and deletes files for all DLC depots listed in appid.depot."""

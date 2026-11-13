@@ -26,6 +26,7 @@ class DownloadWorkshopTask(QObject):
         super().__init__()
         self._is_running = True
         self.process: Optional[subprocess.Popen] = None
+        self._kuroko_manager = None
         self.ddm_exe = str(Paths.depot_downloader_dll())
         self.manifests_dir = os.path.join(get_base_path(), "manifests")
         self.keys_file = str(Paths.workshop_keys())
@@ -35,6 +36,15 @@ class DownloadWorkshopTask(QObject):
     def is_running_flag(self) -> bool:
         return self._is_running
 
+    @property
+    def _wireproxy_manager(self):
+        """Backward-compatibility alias for _kuroko_manager."""
+        return self._kuroko_manager
+
+    @_wireproxy_manager.setter
+    def _wireproxy_manager(self, value):
+        self._kuroko_manager = value
+
     def stop(self):
         logger.info("Stopping Workshop Download Task...")
         self._is_running = False
@@ -43,6 +53,12 @@ class DownloadWorkshopTask(QObject):
                 self.process.terminate()
             except Exception as e:
                 logger.error(f"Failed to terminate Workshop DepotDownloader: {e}")
+        manager, self._kuroko_manager = self._kuroko_manager, None
+        if manager is not None:
+            try:
+                manager.stop()
+            except Exception:
+                pass
 
     def log(self, msg: str):
         self.progress.emit(msg)
@@ -277,118 +293,147 @@ class DownloadWorkshopTask(QObject):
             self.error.emit((RuntimeError, ".NET 9 runtime not found", None))
             return
 
-        for idx, wid in enumerate(wids):
-            if not self._is_running:
-                break
+        proxy_url = None
+        self._proxy_info_tag = None
+        try:
+            from utils.kuroko import resolve_stealth_proxy_url
+            proxy_url, self._kuroko_manager = resolve_stealth_proxy_url(_settings)
+            if self._kuroko_manager:
+                mode = _settings.value("stealth_proxy_mode", "warp", type=str).strip().lower()
+                mode_display = "WARP" if mode == "warp" else ("WireGuard" if mode == "wireguard" else mode.capitalize())
+                endpoint = self._kuroko_manager.proxy_url.split("://")[-1]
+                self._proxy_info_tag = f"[via Stealth: {mode_display} ({endpoint})]"
+                self.log(f"  🔒 Stealth proxy active: {mode_display} ({self._kuroko_manager.proxy_url})")
+            elif proxy_url:
+                endpoint = proxy_url.split("://")[-1]
+                self._proxy_info_tag = f"[via Stealth: Proxy ({endpoint})]"
+                self.log(f"  🔒 Routing download through custom proxy: {proxy_url}")
+        except Exception as e:
+            self.log(f"  ✗ Stealth proxy setup failed: {e}")
+            self.error.emit((type(e), f"Stealth proxy error: {e}", None))
+            return
 
-            self.log(f"\n{'─' * 52}\n  Workshop ID : {wid}\n  → Fetching manifest...")
-            info = self.fetch_manifest(wid, api_key)
-            if not info:
-                self.log("  ✗ Could not fetch manifest. Skipping.")
-                continue
+        from utils.helpers import get_dotnet_env
+        dotnet_env = get_dotnet_env()
 
-            appid = info["appid"]
-            manifest_id = info["manifest_id"]
-            depot_key = info["depot_key"]
-            manifest_path = info["manifest_path"]
+        try:
+            for idx, wid in enumerate(wids):
+                if not self._is_running:
+                    break
 
-            self.log(f"  ✓ App ID     : {appid}\n  ✓ Manifest ID: {manifest_id}\n  ✓ Manifest   : {manifest_path}")
-
-            if not depot_key:
-                from core.at0m import _lookup_cached_depot_key
-                depot_key = _lookup_cached_depot_key(appid)
-
-            if not depot_key:
-                if self.key_exists(appid):
-                    self.log(f"  ✓ Depot key for App ID {appid} already cached in keys file.")
-                else:
-                    self.log("  ✗ No depot key found for App ID. Skipping.")
+                self.log(f"\n{'─' * 52}\n  Workshop ID : {wid}\n  → Fetching manifest...")
+                info = self.fetch_manifest(wid, api_key)
+                if not info:
+                    self.log("  ✗ Could not fetch manifest. Skipping.")
                     continue
-            else:
-                if not self.key_exists(appid):
-                    self.save_key(appid, depot_key)
-                    self.log(f"  ✓ Key saved  : {appid};{depot_key[:10]}…")
+
+                appid = info["appid"]
+                manifest_id = info["manifest_id"]
+                depot_key = info["depot_key"]
+                manifest_path = info["manifest_path"]
+
+                self.log(f"  ✓ App ID     : {appid}\n  ✓ Manifest ID: {manifest_id}\n  ✓ Manifest   : {manifest_path}")
+
+                if not depot_key:
+                    from core.at0m import _lookup_cached_depot_key
+                    depot_key = _lookup_cached_depot_key(appid)
+
+                if not depot_key:
+                    if self.key_exists(appid):
+                        self.log(f"  ✓ Depot key for App ID {appid} already cached in keys file.")
+                    else:
+                        self.log("  ✗ No depot key found for App ID. Skipping.")
+                        continue
                 else:
-                    self.log(f"  ✓ Depot key for App ID {appid} already cached.")
+                    if not self.key_exists(appid):
+                        self.save_key(appid, depot_key)
+                        self.log(f"  ✓ Key saved  : {appid};{depot_key[:10]}…")
+                    else:
+                        self.log(f"  ✓ Depot key for App ID {appid} already cached.")
 
-            if steam_integration and dest_path:
-                out_dir = os.path.join(dest_path, "steamapps", "workshop", "content", appid, wid)
-            else:
-                out_dir = os.path.join(dest_path, "mods", appid, wid)
-
-            _size_before = self._get_dir_size(out_dir) if os.path.isdir(out_dir) else 0
-            _t0 = time.time()
-            _errors = 0
-
-            cmd = [
-                dotnet_exe, self.ddm_exe,
-                "-app", appid,
-                "-ugc", wid,
-                "-manifestfile", manifest_path,
-                "-depotkeys", self.keys_file,
-                "-dir", out_dir,
-                "-max-downloads", str(current_n),
-            ]
-            if cellid:
-                cmd += ["-cellid", str(cellid)]
-
-            self.log(f"  → Running    : {' '.join(cmd)}")
-
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace"
-                )
-                self.process = proc
-                for line in proc.stdout:
-                    if not self._is_running:
-                        proc.terminate()
-                        break
-                    line_str = line.rstrip()
-                    self.log(f"    {line_str}")
-
-                    # Calculate dynamic multi-item progress
-                    match = percentage_regex.search(line_str)
-                    if match:
-                        try:
-                            item_percent = float(match.group(1))
-                            total_percent = int(((idx + (item_percent / 100.0)) / total_items) * 100)
-                            total_percent = max(0, min(100, total_percent))
-                            self.progress_percentage.emit(total_percent)
-                        except ValueError:
-                            pass
-
-                proc.wait()
-                self.process = None
-
-                if proc.returncode == 0:
-                    self.log(f"  ✓ Download complete → {out_dir}")
+                if steam_integration and dest_path:
+                    out_dir = os.path.join(dest_path, "steamapps", "workshop", "content", appid, wid)
                 else:
-                    self.log(f"  ✗ DepotDownloader exited with code {proc.returncode}.")
-                    _errors = 1
+                    out_dir = os.path.join(dest_path, "mods", appid, wid)
+
+                _size_before = self._get_dir_size(out_dir) if os.path.isdir(out_dir) else 0
+                _t0 = time.time()
+                _errors = 0
+
+                cmd = [
+                    dotnet_exe, self.ddm_exe,
+                    "-app", appid,
+                    "-ugc", wid,
+                    "-manifestfile", manifest_path,
+                    "-depotkeys", self.keys_file,
+                    "-dir", out_dir,
+                    "-max-downloads", str(current_n),
+                ]
+                if proxy_url:
+                    cmd.extend(["-proxy", str(proxy_url)])
+                if cellid:
+                    cmd += ["-cellid", str(cellid)]
+
+                self.log(f"  → Running    : {' '.join(cmd)}")
+
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        env=dotnet_env,
+                    )
+                    self.process = proc
+                    for line in proc.stdout:
+                        if not self._is_running:
+                            proc.terminate()
+                            break
+                        line_str = line.rstrip()
+                        if line_str.strip().startswith("Downloading depot ") and getattr(self, "_proxy_info_tag", None):
+                            line_str = f"{line_str.strip()} {self._proxy_info_tag}"
+                        self.log(f"    {line_str}")
+
+                        # Calculate dynamic multi-item progress
+                        match = percentage_regex.search(line_str)
+                        if match:
+                            try:
+                                item_percent = float(match.group(1))
+                                total_percent = int(((idx + (item_percent / 100.0)) / total_items) * 100)
+                                total_percent = max(0, min(100, total_percent))
+                                self.progress_percentage.emit(total_percent)
+                            except ValueError:
+                                pass
+
+                    proc.wait()
+                    self.process = None
+
+                    if proc.returncode == 0:
+                        self.log(f"  ✓ Download complete → {out_dir}")
+                    else:
+                        self.log(f"  ✗ DepotDownloader exited with code {proc.returncode}.")
+                        _errors = 1
+                        if _auto_on:
+                            try:
+                                current_n = _auto_tune.record_result(
+                                    get_settings(), _best_key, current_n, 0.0, _cap, _errors, dest_path=dest_path
+                                )
+                                self.log(f"  → Auto-tune: trouble seen, next: {current_n} (cap {_cap}).")
+                            except Exception as _at_err:
+                                logger.debug(f"Auto-tune step failed: {_at_err}")
+                        continue
+                except Exception as e:
+                    self.log(f"  ✗ Failed to launch DepotDownloader: {e}")
                     if _auto_on:
                         try:
                             current_n = _auto_tune.record_result(
-                                get_settings(), _best_key, current_n, 0.0, _cap, _errors, dest_path=dest_path
+                                get_settings(), _best_key, current_n, 0.0, _cap, 1, dest_path=dest_path
                             )
-                            self.log(f"  → Auto-tune: trouble seen, next: {current_n} (cap {_cap}).")
                         except Exception as _at_err:
                             logger.debug(f"Auto-tune step failed: {_at_err}")
                     continue
-            except Exception as e:
-                self.log(f"  ✗ Failed to launch DepotDownloader: {e}")
-                if _auto_on:
-                    try:
-                        current_n = _auto_tune.record_result(
-                            get_settings(), _best_key, current_n, 0.0, _cap, 1, dest_path=dest_path
-                        )
-                    except Exception as _at_err:
-                        logger.debug(f"Auto-tune step failed: {_at_err}")
-                continue
 
             if _auto_on:
                 try:
@@ -415,6 +460,13 @@ class DownloadWorkshopTask(QObject):
             if steam_integration and dest_path:
                 self.log("  → Applying Steam integration...")
                 self.apply_steam_integration(appid, wid, manifest_id, out_dir, dest_path)
+        finally:
+            manager, self._kuroko_manager = self._kuroko_manager, None
+            if manager is not None:
+                try:
+                    manager.stop()
+                except Exception:
+                    pass
 
         if not self._is_running:
             self.log("\n  ✗ Download task cancelled by user.")
