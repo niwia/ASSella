@@ -53,7 +53,7 @@ def test_connection(proxy_url: str, timeout: float = 6.0) -> Tuple[bool, str]:
     Uses fast probe_alive pre-check and multi-endpoint fallbacks.
     """
     # Fast-fail: if the tunnel cannot pass traffic, exit immediately (prevents 30s+ timeouts on dead peers)
-    if not probe_alive(proxy_url, timeout=min(3.0, timeout)):
+    if not probe_alive(proxy_url, timeout=min(5.0, timeout)):
         return False, "Proxy/tunnel is unreachable or timed out."
 
     endpoints = [
@@ -68,7 +68,7 @@ def test_connection(proxy_url: str, timeout: float = 6.0) -> Tuple[bool, str]:
         ),
     ]
 
-    per_req_timeout = min(3.5, timeout)
+    per_req_timeout = min(5.0, timeout)
 
     # 1. Prefer curl_cffi if installed
     try:
@@ -115,7 +115,7 @@ def test_connection(proxy_url: str, timeout: float = 6.0) -> Tuple[bool, str]:
     return False, "Failed to verify connection through proxy across all verification endpoints."
 
 
-def probe_alive(proxy_url: str, timeout: float = 3.5) -> bool:
+def probe_alive(proxy_url: str, timeout: float = 5.0) -> bool:
     """
     Fast probe to verify remote tunnel transport is genuinely passing traffic.
     Because WireGuard is stateless UDP, local SOCKS5 binding alone does not prove
@@ -126,8 +126,8 @@ def probe_alive(proxy_url: str, timeout: float = 3.5) -> bool:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     }
     probe_urls = [
+        "https://cp.cloudflare.com/generate_204",
         "https://speed.cloudflare.com/__down?bytes=0",
-        "https://1.1.1.1/cdn-cgi/trace",
     ]
     # 1. Prefer curl_cffi if installed (single pass; fallback to curl only on ImportError)
     try:

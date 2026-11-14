@@ -223,7 +223,7 @@ class Kuroko:
         return _test_connection(proxy_url, timeout=timeout)
 
     @staticmethod
-    def probe_alive(proxy_url: str, timeout: float = 3.5) -> bool:
+    def probe_alive(proxy_url: str, timeout: float = 5.0) -> bool:
         """Delegate fast live-peer transport check to probe.probe_alive."""
         from .probe import probe_alive as _probe_alive
 

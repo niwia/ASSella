@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -44,22 +45,33 @@ logger = logging.getLogger(__name__)
 _safe_string_list = safe_settings_string_list
 
 
-def _colored_svg_icon(path: Path, color: str, size: int = 14) -> QIcon:
-    """Render an SVG with currentColor replaced by the given color string."""
+def _colored_svg_icon(path: Path, color: str, size: int = 14, disabled_color: Optional[str] = "rgba(255, 255, 255, 0.3)") -> QIcon:
+    """Render an SVG with currentColor replaced by the given color string, supporting disabled state."""
     try:
         if not path or not path.exists():
             return QIcon()
         svg_str = path.read_text(encoding="utf-8")
+        icon = QIcon()
         recolored = svg_str.replace("currentColor", color)
         renderer = QSvgRenderer(recolored.encode("utf-8"))
-        if not renderer.isValid():
-            return QIcon()
-        pixmap = QPixmap(size, size)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        p = QPainter(pixmap)
-        renderer.render(p)
-        p.end()
-        return QIcon(pixmap)
+        if renderer.isValid():
+            pixmap = QPixmap(size, size)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pixmap)
+            renderer.render(p)
+            p.end()
+            icon.addPixmap(pixmap, QIcon.Mode.Normal)
+        if disabled_color:
+            recolored_dis = svg_str.replace("currentColor", disabled_color)
+            renderer_dis = QSvgRenderer(recolored_dis.encode("utf-8"))
+            if renderer_dis.isValid():
+                pixmap_dis = QPixmap(size, size)
+                pixmap_dis.fill(Qt.GlobalColor.transparent)
+                p = QPainter(pixmap_dis)
+                renderer_dis.render(p)
+                p.end()
+                icon.addPixmap(pixmap_dis, QIcon.Mode.Disabled)
+        return icon
     except Exception:
         return QIcon()
 
@@ -102,8 +114,16 @@ def create_stealth_subtab(dialog) -> QWidget:
 
     def _trigger_visor_refresh():
         try:
-            if hasattr(dialog, "parent") and dialog.parent() and hasattr(dialog.parent(), "refresh_system_status"):
-                dialog.parent().refresh_system_status()
+            mw = getattr(dialog, "main_window", None)
+            if not mw and hasattr(dialog, "parent") and callable(dialog.parent):
+                mw = dialog.parent()
+            if mw:
+                if hasattr(mw, "_collect_system_status"):
+                    mw._collect_system_status()
+                if hasattr(mw, "refresh_system_status_now"):
+                    mw.refresh_system_status_now()
+                elif hasattr(mw, "refresh_system_status"):
+                    mw.refresh_system_status()
         except Exception as e:
             logger.debug(f"[StealthTab] Error refreshing visor: {e}")
 
@@ -171,17 +191,20 @@ def create_stealth_subtab(dialog) -> QWidget:
 
     benchmark_all_btn = QPushButton("Benchmark All")
     benchmark_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    benchmark_all_btn.setFixedHeight(28)
+    benchmark_all_btn.setFixedHeight(26)
     benchmark_all_btn.setToolTip("Sequentially measures ping & 5 MB burst throughput across all active candidates")
     benchmark_all_btn.setStyleSheet(f"""
         QPushButton {{
             background-color: rgba(255, 255, 255, 0.08);
             border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 5px;
-            padding: 4px 12px;
+            padding: 0 12px;
             color: #FFFFFF;
-            font-size: 8.5pt;
+            font-size: 8pt;
             font-weight: 600;
+            height: 26px;
+            min-height: 26px;
+            max-height: 26px;
         }}
         QPushButton:hover {{
             background-color: rgba(255, 255, 255, 0.16);
@@ -189,7 +212,7 @@ def create_stealth_subtab(dialog) -> QWidget:
         }}
         QPushButton:disabled {{
             background-color: rgba(255, 255, 255, 0.04);
-            color: rgba(255, 255, 255, 0.4);
+            color: rgba(255, 255, 255, 0.35);
             border-color: rgba(255, 255, 255, 0.08);
         }}
     """)
@@ -212,16 +235,33 @@ def create_stealth_subtab(dialog) -> QWidget:
     cards_layout.setSpacing(12)
     layout.addWidget(cards_container)
 
+    cards_opacity = QGraphicsOpacityEffect(cards_container)
+    cards_container.setGraphicsEffect(cards_opacity)
+
+    sub_opacity = QGraphicsOpacityEffect(card_sub_options)
+    card_sub_options.setGraphicsEffect(sub_opacity)
+
     def _sync_master_enabled(enabled: bool):
         card_sub_options.setEnabled(enabled)
         cards_container.setEnabled(enabled)
-        dim_css = "" if enabled else "QWidget { opacity: 0.45; }"
-        card_sub_options.setStyleSheet(dim_css)
-        cards_container.setStyleSheet(dim_css)
+        if enabled:
+            cards_opacity.setOpacity(1.0)
+            sub_opacity.setOpacity(1.0)
+            cards_opacity.setEnabled(False)
+            sub_opacity.setEnabled(False)
+        else:
+            cards_opacity.setEnabled(True)
+            sub_opacity.setEnabled(True)
+            cards_opacity.setOpacity(0.35)
+            sub_opacity.setOpacity(0.35)
 
-    dialog.enable_stealth_proxy_checkbox.toggled.connect(
-        lambda c: (_sync_master_enabled(c), _trigger_visor_refresh())
-    )
+    def _on_master_toggle(enabled: bool):
+        dialog.settings.setValue("enable_stealth_proxy", enabled)
+        dialog.settings.sync()
+        _sync_master_enabled(enabled)
+        _trigger_visor_refresh()
+
+    dialog.enable_stealth_proxy_checkbox.toggled.connect(_on_master_toggle)
 
     # Cached endpoint benchmark scores
     init_scores = get_endpoint_scores(dialog.settings)
@@ -245,16 +285,23 @@ def create_stealth_subtab(dialog) -> QWidget:
                     background-color: #3b4261;
                     border: 1px solid #e0af68;
                     border-radius: 5px;
-                    padding: 3px 6px;
+                    padding: 0 6px;
                     color: #e0af68;
                     font-size: 8pt;
                     font-weight: bold;
-                    min-height: 24px;
+                    height: 26px;
+                    min-height: 26px;
+                    max-height: 26px;
+                }
+                QPushButton:disabled {
+                    background-color: rgba(255, 255, 255, 0.04);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    color: rgba(255, 255, 255, 0.35);
                 }
             """)
             if ip_lbl:
                 ip_lbl.setText("Testing...")
-                ip_lbl.setStyleSheet("color: #e0af68; font-size: 8pt; font-weight: 500;")
+                ip_lbl.setStyleSheet("color: #e0af68; font-size: 8pt; font-weight: 500; border: none; background: transparent;")
         elif state == "ok":
             btn.setEnabled(True)
             compact_txt = f"OK ({ping_ms} ms)" if ping_ms > 0 else "OK"
@@ -273,21 +320,28 @@ def create_stealth_subtab(dialog) -> QWidget:
                     background-color: #1b5e20;
                     border: 1px solid #4caf50;
                     border-radius: 5px;
-                    padding: 3px 6px;
+                    padding: 0 6px;
                     color: #a5d6a7;
                     font-size: 8pt;
                     font-weight: bold;
-                    min-height: 24px;
+                    height: 26px;
+                    min-height: 26px;
+                    max-height: 26px;
                 }
                 QPushButton:hover {
                     background-color: #2e7d32;
+                }
+                QPushButton:disabled {
+                    background-color: rgba(255, 255, 255, 0.04);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    color: rgba(255, 255, 255, 0.35);
                 }
             """)
             if ip_lbl:
                 ip_summary = _extract_ip_summary(exit_label)
                 ip_lbl.setText(ip_summary)
                 ip_lbl.setToolTip(f"Exit IP: {exit_label}")
-                ip_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: 500;")
+                ip_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: 500; border: none; background: transparent;")
         elif state == "error":
             btn.setEnabled(True)
             btn.setText("Failed")
@@ -298,14 +352,21 @@ def create_stealth_subtab(dialog) -> QWidget:
                     background-color: #5c1d1d;
                     border: 1px solid #e53935;
                     border-radius: 5px;
-                    padding: 3px 6px;
+                    padding: 0 6px;
                     color: #ef9a9a;
                     font-size: 8pt;
                     font-weight: bold;
-                    min-height: 24px;
+                    height: 26px;
+                    min-height: 26px;
+                    max-height: 26px;
                 }
                 QPushButton:hover {
                     background-color: #7f2626;
+                }
+                QPushButton:disabled {
+                    background-color: rgba(255, 255, 255, 0.04);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    color: rgba(255, 255, 255, 0.35);
                 }
             """)
             if ip_lbl:
@@ -319,15 +380,22 @@ def create_stealth_subtab(dialog) -> QWidget:
                     background-color: rgba(255, 255, 255, 0.08);
                     border: 1px solid rgba(255, 255, 255, 0.18);
                     border-radius: 5px;
-                    padding: 3px 6px;
+                    padding: 0 6px;
                     color: #FFFFFF;
                     font-size: 8pt;
                     font-weight: 500;
-                    min-height: 24px;
+                    height: 26px;
+                    min-height: 26px;
+                    max-height: 26px;
                 }}
                 QPushButton:hover {{
                     background-color: rgba(255, 255, 255, 0.16);
                     border-color: {accent_color};
+                }}
+                QPushButton:disabled {{
+                    background-color: rgba(255, 255, 255, 0.04);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    color: rgba(255, 255, 255, 0.35);
                 }}
             """)
             if ip_lbl:
@@ -396,13 +464,14 @@ def create_stealth_subtab(dialog) -> QWidget:
 
     warp_act_row = QHBoxLayout()
     warp_act_row.setSpacing(8)
+    warp_act_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
     warp_test_btn = QPushButton("Test")
-    warp_test_btn.setFixedSize(88, 26)
+    warp_test_btn.setFixedSize(100, 26)
     warp_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
     reset_warp_btn = QPushButton("Reset Key")
-    reset_warp_btn.setFixedSize(88, 26)
+    reset_warp_btn.setFixedSize(100, 26)
     reset_warp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     reset_warp_btn.setToolTip("Re-registers a fresh Cloudflare WARP identity if connection stalls or gets rate-limited")
     reset_warp_btn.setStyleSheet(f"""
@@ -410,20 +479,41 @@ def create_stealth_subtab(dialog) -> QWidget:
             background-color: rgba(255, 255, 255, 0.05);
             border: 1px solid rgba(255, 255, 255, 0.15);
             border-radius: 5px;
-            padding: 3px 8px;
+            padding: 0 8px;
             color: #CCCCCC;
             font-size: 8pt;
             font-weight: 500;
+            height: 26px;
+            min-height: 26px;
+            max-height: 26px;
         }}
         QPushButton:hover {{
             background-color: rgba(255, 255, 255, 0.12);
             border-color: {accent_color};
             color: #FFFFFF;
         }}
+        QPushButton:disabled {{
+            background-color: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: rgba(255, 255, 255, 0.35);
+        }}
     """)
 
     warp_ip_lbl = QLabel("")
-    warp_ip_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: 500;")
+    warp_ip_lbl.setFixedHeight(26)
+    warp_ip_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+    warp_ip_lbl.setStyleSheet("""
+        QLabel {
+            color: #81C784;
+            font-size: 8pt;
+            font-weight: 500;
+            border: none;
+            background: transparent;
+        }
+        QLabel:disabled {
+            color: rgba(255, 255, 255, 0.35);
+        }
+    """)
 
     _apply_cached_score(warp_test_btn, warp_ip_lbl, init_scores.get("warp"))
     warp_test_btn.clicked.connect(lambda: _run_unified_test("warp", "", "", warp_test_btn, warp_ip_lbl))
@@ -589,8 +679,9 @@ def create_stealth_subtab(dialog) -> QWidget:
                 fpath = p["path"]
 
                 row_frame = QFrame()
+                row_frame.setObjectName("profile_row_frame")
                 row_frame.setStyleSheet("""
-                    QFrame {
+                    QFrame#profile_row_frame {
                         background-color: rgba(255, 255, 255, 0.025);
                         border: 1px solid rgba(255, 255, 255, 0.07);
                         border-radius: 6px;
@@ -599,6 +690,7 @@ def create_stealth_subtab(dialog) -> QWidget:
                 r_lay = QHBoxLayout(row_frame)
                 r_lay.setContentsMargins(8, 4, 8, 4)
                 r_lay.setSpacing(8)
+                r_lay.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
                 # Single mode Radio
                 p_radio = QRadioButton()
@@ -629,12 +721,25 @@ def create_stealth_subtab(dialog) -> QWidget:
 
                 # Dynamic Test Button (Hubcap style)
                 p_test_btn = QPushButton("Test")
-                p_test_btn.setFixedSize(88, 26)
+                p_test_btn.setFixedSize(100, 26)
                 p_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
                 # Exit IP label
                 p_ip_lbl = QLabel("")
-                p_ip_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: 500;")
+                p_ip_lbl.setFixedHeight(26)
+                p_ip_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                p_ip_lbl.setStyleSheet("""
+                    QLabel {
+                        color: #81C784;
+                        font-size: 8pt;
+                        font-weight: 500;
+                        border: none;
+                        background: transparent;
+                    }
+                    QLabel:disabled {
+                        color: rgba(255, 255, 255, 0.35);
+                    }
+                """)
                 _apply_cached_score(p_test_btn, p_ip_lbl, scores.get(f"wg:{fname}"))
 
                 r_lay.addWidget(p_test_btn)
@@ -655,11 +760,18 @@ def create_stealth_subtab(dialog) -> QWidget:
                         background-color: transparent;
                         border: 1px solid rgba(229, 115, 115, 0.35);
                         border-radius: 4px;
-                        padding: 3px;
+                        padding: 0;
+                        height: 26px;
+                        min-height: 26px;
+                        max-height: 26px;
                     }
                     QPushButton:hover {
                         background-color: rgba(229, 115, 115, 0.2);
                         border-color: #E57373;
+                    }
+                    QPushButton:disabled {
+                        background-color: rgba(255, 255, 255, 0.04);
+                        border: 1px solid rgba(255, 255, 255, 0.08);
                     }
                 """)
                 r_lay.addWidget(p_del_btn)
@@ -701,6 +813,7 @@ def create_stealth_subtab(dialog) -> QWidget:
         # Add .conf and Import Folder buttons appear AFTER the last entry
         add_btns_row = QHBoxLayout()
         add_btns_row.setSpacing(8)
+        add_btns_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         add_btns_row.addStretch()
 
         add_conf_btn = QPushButton("+ Add .conf")
@@ -711,14 +824,22 @@ def create_stealth_subtab(dialog) -> QWidget:
                 background-color: rgba(255, 255, 255, 0.08);
                 border: 1px solid rgba(255, 255, 255, 0.18);
                 border-radius: 5px;
-                padding: 3px 8px;
+                padding: 0 8px;
                 color: #FFFFFF;
                 font-size: 8pt;
                 font-weight: 500;
+                height: 26px;
+                min-height: 26px;
+                max-height: 26px;
             }}
             QPushButton:hover {{
                 background-color: rgba(255, 255, 255, 0.16);
                 border-color: {accent_color};
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                color: rgba(255, 255, 255, 0.35);
             }}
         """)
         add_conf_btn.clicked.connect(_on_add_conf)
@@ -732,14 +853,22 @@ def create_stealth_subtab(dialog) -> QWidget:
                 background-color: rgba(255, 255, 255, 0.08);
                 border: 1px solid rgba(255, 255, 255, 0.18);
                 border-radius: 5px;
-                padding: 3px 8px;
+                padding: 0 8px;
                 color: #FFFFFF;
                 font-size: 8pt;
                 font-weight: 500;
+                height: 26px;
+                min-height: 26px;
+                max-height: 26px;
             }}
             QPushButton:hover {{
                 background-color: rgba(255, 255, 255, 0.16);
                 border-color: {accent_color};
+            }}
+            QPushButton:disabled {{
+                background-color: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                color: rgba(255, 255, 255, 0.35);
             }}
         """)
         import_folder_btn.clicked.connect(_on_import_folder)
@@ -752,6 +881,7 @@ def create_stealth_subtab(dialog) -> QWidget:
             dialog.settings.setValue("stealth_proxy_mode", "wireguard")
             dialog.settings.setValue("stealth_active_wg_profile", profile_fname)
             dialog.settings.setValue("stealth_proxy_wg_path", profile_path)
+            dialog.settings.sync()
             dialog.stealth_proxy_wg_edit.setText(profile_path)
             _trigger_visor_refresh()
 
@@ -763,6 +893,7 @@ def create_stealth_subtab(dialog) -> QWidget:
         else:
             cur_set.discard(profile_fname)
         dialog.settings.setValue("stealth_pool_wg_profiles", sorted(list(cur_set)))
+        dialog.settings.sync()
         _trigger_visor_refresh()
 
     # =========================================================================
@@ -784,7 +915,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     custom_check.setCursor(Qt.CursorShape.PointingHandCursor)
     custom_check.setStyleSheet("font-size: 9.5pt; font-weight: bold; color: #FFFFFF;")
     custom_check.setChecked(dialog.settings.value("stealth_pool_custom", False, type=bool))
-    custom_check.toggled.connect(lambda c: (dialog.settings.setValue("stealth_pool_custom", c), _trigger_visor_refresh()))
+    custom_check.toggled.connect(lambda c: (dialog.settings.setValue("stealth_pool_custom", c), dialog.settings.sync(), _trigger_visor_refresh()))
     custom_hdr.addWidget(custom_check)
 
     custom_hdr.addStretch()
@@ -827,13 +958,27 @@ def create_stealth_subtab(dialog) -> QWidget:
 
     custom_act_row = QHBoxLayout()
     custom_act_row.setSpacing(8)
+    custom_act_row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
     custom_test_btn = QPushButton("Test")
-    custom_test_btn.setFixedSize(88, 26)
+    custom_test_btn.setFixedSize(100, 26)
     custom_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
     custom_ip_lbl = QLabel("")
-    custom_ip_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: 500;")
+    custom_ip_lbl.setFixedHeight(26)
+    custom_ip_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+    custom_ip_lbl.setStyleSheet("""
+        QLabel {
+            color: #81C784;
+            font-size: 8pt;
+            font-weight: 500;
+            border: none;
+            background: transparent;
+        }
+        QLabel:disabled {
+            color: rgba(255, 255, 255, 0.35);
+        }
+    """)
     _apply_cached_score(custom_test_btn, custom_ip_lbl, init_scores.get("custom"))
 
     custom_test_btn.clicked.connect(
@@ -856,11 +1001,18 @@ def create_stealth_subtab(dialog) -> QWidget:
             background-color: transparent;
             border: 1px solid rgba(229, 115, 115, 0.35);
             border-radius: 4px;
-            padding: 3px;
+            padding: 0;
+            height: 26px;
+            min-height: 26px;
+            max-height: 26px;
         }
         QPushButton:hover {
             background-color: rgba(229, 115, 115, 0.2);
             border-color: #E57373;
+        }
+        QPushButton:disabled {
+            background-color: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
         }
     """)
     custom_clear_btn.clicked.connect(lambda: dialog.stealth_proxy_custom_edit.clear())
@@ -874,6 +1026,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     def _sync_custom_url_state(url_text: str):
         clean_url = url_text.strip()
         dialog.settings.setValue("stealth_proxy_custom_url", clean_url)
+        dialog.settings.sync()
         _trigger_visor_refresh()
         has_url = bool(clean_url)
         custom_check.setEnabled(has_url)
@@ -901,11 +1054,13 @@ def create_stealth_subtab(dialog) -> QWidget:
     def _on_warp_radio_toggled(checked):
         if checked:
             dialog.settings.setValue("stealth_proxy_mode", "warp")
+            dialog.settings.sync()
             _trigger_visor_refresh()
 
     def _on_custom_radio_toggled(checked):
         if checked:
             dialog.settings.setValue("stealth_proxy_mode", "custom")
+            dialog.settings.sync()
             _trigger_visor_refresh()
 
     warp_radio.toggled.connect(_on_warp_radio_toggled)
@@ -945,7 +1100,13 @@ def create_stealth_subtab(dialog) -> QWidget:
 
         _trigger_visor_refresh()
 
-    dialog.stealth_rotation_checkbox.toggled.connect(lambda _c: _update_mode_visibility())
+    def _on_rotation_toggled(checked: bool):
+        dialog.settings.setValue("stealth_rotation_enabled", checked)
+        dialog.settings.sync()
+        _update_mode_visibility()
+        _trigger_visor_refresh()
+
+    dialog.stealth_rotation_checkbox.toggled.connect(_on_rotation_toggled)
     _update_mode_visibility()
 
     # Benchmark All Handler
@@ -966,10 +1127,12 @@ def create_stealth_subtab(dialog) -> QWidget:
                         background-color: rgba(255, 255, 255, 0.04);
                         border: 1px solid rgba(255, 255, 255, 0.1);
                         border-radius: 5px;
-                        padding: 3px 6px;
+                        padding: 0 6px;
                         color: #B0BEC5;
                         font-size: 8pt;
-                        min-height: 24px;
+                        height: 26px;
+                        min-height: 26px;
+                        max-height: 26px;
                     }
                 """)
             if ip_lbl:
