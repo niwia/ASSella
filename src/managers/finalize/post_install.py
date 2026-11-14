@@ -180,7 +180,10 @@ class PostInstallMixin:
         # 4. Depot Info
         selected_depots = self.game_data.get("selected_depots_list", [])
         all_manifests = self.game_data.get("manifests", {})
-        if selected_depots and all_manifests:
+        # Write the depot file whenever we know the selection, even if no manifest
+        # map came back: otherwise a game with content changes but an empty
+        # ``manifests`` dict keeps the stale manifest ids from an older install.
+        if selected_depots:
             self._save_main_depot_info(self.game_data, selected_depots, all_manifests)
     def _persist_wrapper_metadata(self):
         """
@@ -675,10 +678,17 @@ class PostInstallMixin:
                         parts = [p.strip() for p in line.split(":")]
                         if len(parts) >= 2:
                             existing_entries[parts[0]] = line
-                except Exception:
-                    pass
+                except Exception as read_err:
+                    logger.debug(f"Could not read existing entries from {depot_file}: {read_err}")
 
-            # Add or update entries for ALL selected depots
+            # Add or update entries for ALL selected depots. A depot the user unticked
+            # is dropped: the selection is the download it represents now, and keeping
+            # the old line would make the checker compare a manifest nobody installed.
+            selected_set = {str(d) for d in selected_depots}
+            for did in list(existing_entries.keys()):
+                if did not in selected_set:
+                    existing_entries.pop(did, None)
+
             for depot_id_raw in selected_depots:
                 depot_id = str(depot_id_raw)
                 manifest_id = all_manifests.get(depot_id)
@@ -688,6 +698,15 @@ class PostInstallMixin:
                     existing_entries[depot_id] = f"{depot_id}: {manifest_id}: {access_token}"
                 else:
                     existing_entries[depot_id] = f"{depot_id}: {manifest_id}"
+
+            # Also update any existing depots that are present in all_manifests so
+            # tracked depots do not retain stale manifests after an update.
+            for did in list(existing_entries.keys()):
+                if did in all_manifests and all_manifests[did]:
+                    if access_token:
+                        existing_entries[did] = f"{did}: {all_manifests[did]}: {access_token}"
+                    else:
+                        existing_entries[did] = f"{did}: {all_manifests[did]}"
 
             with open(depot_file, "w") as f:
                 for entry_line in existing_entries.values():

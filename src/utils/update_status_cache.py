@@ -6,7 +6,7 @@ Persistent, disk-backed cache for game update statuses.
 Design goals:
  • Survives restarts — data written to a JSON file in the user's local data dir.
  • Smart expiry — "up_to_date" entries expire after CACHE_TTL_SECONDS (default 24h).
-   "update_available" entries never expire (cleared only after user downloads update).
+   "update_available" entries never expire but are re-validated once a day.
  • Thread-safe — uses a threading.Lock for all read/write access.
  • Non-blocking — cache file I/O is best-effort; failures are logged but do not crash.
 """
@@ -23,8 +23,13 @@ logger = logging.getLogger(__name__)
 
 # --- Constants ---
 # How long (in seconds) an "up_to_date" result is trusted before we re-check.
-# Default: 24 hours.  "update_available" never expires automatically.
 CACHE_TTL_SECONDS = 24 * 60 * 60
+
+# How long an "update_available" result is trusted before the periodic re-check
+# asks again. It is not an expiry: get_status() keeps serving the stale status
+# for display, but the checker re-validates once a day so a status that a broken
+# or interrupted update left behind cannot outlive the install it described.
+UPDATE_AVAILABLE_RECHECK_SECONDS = 24 * 60 * 60
 
 # Status values that are considered "conclusively known" and worth persisting
 PERSISTENT_STATUSES = {"update_available", "up_to_date"}
@@ -92,6 +97,19 @@ class UpdateStatusCache:
                 return None  # Let the checker re-validate
 
             return status
+
+    def needs_recheck(self, appid: str) -> bool:
+        """True when a cached "update_available" is old enough to re-validate.
+
+        The status stays visible in the UI while the checker runs; this only
+        decides whether the game belongs in the batch.
+        """
+        with self._lock:
+            entry = self._cache.get(str(appid))
+            if entry is None or entry.get("status") != "update_available":
+                return False
+            age = time.time() - entry.get("updated_at", 0)
+            return age > UPDATE_AVAILABLE_RECHECK_SECONDS
 
     def get_raw_status(self, appid: str) -> Optional[str]:
         """

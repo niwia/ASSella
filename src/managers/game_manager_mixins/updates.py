@@ -188,7 +188,14 @@ class GameManagerUpdatesMixin:
 
             status = g.get("update_status", "")
             if not force_refresh and status == UPDATE_STATUS["UPDATE_AVAILABLE"]:
-                continue
+                # A pending update is re-validated once a day instead of being
+                # trusted forever: an update that finished but never cleared the
+                # cache (or a false mismatch) must be able to resolve itself.
+                if not get_update_cache().needs_recheck(appid):
+                    continue
+                logger.info(
+                    f"Re-validating cached 'update_available' for {g.get('game_name')} ({appid})"
+                )
             games_to_check.append(g)
 
         self._games_to_check = games_to_check

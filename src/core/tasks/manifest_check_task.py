@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -11,6 +12,11 @@ from utils.branch_helpers import resolve_branch_manifest_gid
 from utils.helpers import get_base_path
 from utils.lua_parsing import iter_live_matches
 from utils.settings import get_settings
+from core.tasks.depot_reconcile import (
+    installed_manifest_id,
+    reconcile_saved_depots,
+    write_depot_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -567,6 +573,19 @@ class ManifestCheckTask(QObject):
             logger.info(f"[UpdateCheck {appid}] Cannot determine status: Local depot file ({depot_file}) is missing/empty and could not be recovered")
             return "cannot_determine"
 
+        # Reconcile the depot file against what is actually installed, so a depot
+        # from an older selection or a pre-update manifest id cannot be compared
+        # against Steam forever.
+        saved_depots, depot_file_needs_sync = reconcile_saved_depots(
+            saved_depots, game_data.get("install_path")
+        )
+        if depot_file_needs_sync and depot_file:
+            try:
+                write_depot_file(depot_file, saved_depots)
+                logger.info(f"[UpdateCheck {appid}] Synchronized depot file with active selection and manifests: {list(saved_depots.keys())}")
+            except OSError as sync_err:
+                logger.debug(f"[UpdateCheck {appid}] Could not sync updated depot file: {sync_err}")
+
         # Compare manifest IDs for each saved depot
         try:
             any_update_available = False
@@ -827,7 +846,6 @@ class ManifestCheckTask(QObject):
                     meta_json_path = Path(install_path) / ".DepotDownloader" / "metadata.json"
                     if meta_json_path.exists():
                         try:
-                            import json
                             m_dict = json.loads(meta_json_path.read_text(encoding="utf-8"))
                             if str(m_dict.get("buildid")) != str(branch_buildid):
                                 m_dict["buildid"] = str(branch_buildid)
@@ -891,32 +909,7 @@ class ManifestCheckTask(QObject):
 
     @staticmethod
     def _get_installed_depot_manifest(depot_id: str, game_data: dict) -> str:
-        install_path = game_data.get("install_path")
-        if not install_path or not os.path.exists(install_path):
-            return None
-
-        ddm_dir = os.path.join(install_path, ".DepotDownloader")
-        if not os.path.exists(ddm_dir):
-            return None
-
-        try:
-            candidates = [
-                fname for fname in os.listdir(ddm_dir)
-                if fname.startswith(f"{depot_id}_") and fname.endswith(".manifest")
-            ]
-            # Sort newest-first so we always use the most recently written manifest
-            candidates.sort(
-                key=lambda f: os.path.getmtime(os.path.join(ddm_dir, f)),
-                reverse=True,
-            )
-            for fname in candidates:
-                base = fname[:-9]  # strip ".manifest"
-                parts = base.split("_", 1)
-                if len(parts) == 2:
-                    return parts[1]
-        except Exception:
-            pass
-        return None
+        return installed_manifest_id(game_data.get("install_path"), str(depot_id))
 
     @staticmethod
     def _check_dlc_only_update(appid, selected_depot_ids, batched_results, game_data):
@@ -1015,6 +1008,23 @@ class ManifestCheckTask(QObject):
                                     recovered[str(did)] = mid
                 except Exception as e:
                     logger.debug(f"[UpdateCheck {appid}] Error recovering depots from ACF: {e}")
+
+        # Filter recovered depots with metadata.json if present
+        if recovered and install_path:
+            meta_json = Path(install_path) / ".DepotDownloader" / "metadata.json"
+            if meta_json.exists():
+                try:
+                    mdata = json.loads(meta_json.read_text(encoding="utf-8"))
+                    sel_list = mdata.get("selected_depots_list")
+                    if isinstance(sel_list, list) and sel_list:
+                        sel_set = {str(d) for d in sel_list}
+                        filtered_recovered = {
+                            did: mid for did, mid in recovered.items() if did in sel_set
+                        }
+                        if filtered_recovered:
+                            recovered = filtered_recovered
+                except Exception as meta_err:
+                    logger.debug(f"[UpdateCheck {appid}] Could not filter recovered depots with metadata.json: {meta_err}")
 
         # If recovered, write out the .depot file so subsequent checks are fast
         if recovered:
