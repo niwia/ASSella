@@ -89,6 +89,65 @@ class TestWipeSlsOnly(unittest.TestCase):
         acf_content = self.acf_path.read_text()
         self.assertIn('"StateFlags"\t\t"6"', acf_content)
 
+        # 5. Summary must be populated with structured categories
+        summary = LibraryActionsMixin.last_wipe_summary
+        self.assertIsNotNone(summary)
+        self.assertIn("[Cleaned]", summary)
+        self.assertIn("[Preserved & Adopted]", summary)
+        self.assertIn("100% intact", summary)
+
+    @patch("core.native_steam.native_steam_handoff.send_sls_api")
+    @patch("utils.plugin_games.unregister_plugin_game")
+    @patch("utils.yaml_config_manager.get_user_config_path")
+    @patch("core.steam_helpers.get_steam_libraries")
+    def test_standard_uninstall_summary_and_prefix_preservation(
+        self, mock_libs, mock_cfg_path, mock_unregister, mock_send_sls
+    ):
+        mock_libs.return_value = [str(self.library_path)]
+        mock_cfg = MagicMock()
+        mock_cfg.exists.return_value = False
+        mock_cfg_path.return_value = mock_cfg
+
+        # Create dummy compatdata
+        compatdata_dir = self.library_path / "steamapps" / "compatdata" / "12345"
+        compatdata_dir.mkdir(parents=True, exist_ok=True)
+        (compatdata_dir / "pfx.txt").write_text("dummy prefix")
+
+        from managers.game_manager_mixins.uninstall import GameManagerUninstallMixin
+
+        class DummyGameManager(GameManagerUninstallMixin):
+            def __init__(self):
+                self.games = []
+                self.last_uninstall_summary = None
+
+            def remove_game(self, appid):
+                pass
+
+        gm = DummyGameManager()
+
+        # Standard uninstall with remove_compatdata=False
+        success, err = gm.uninstall_game(
+            self.game_data, remove_compatdata=False, remove_saves=False
+        )
+        self.assertTrue(success, f"uninstall_game failed: {err}")
+
+        # 1. Game folder must be removed
+        self.assertFalse(self.install_path.exists())
+
+        # 2. ACF manifest must be removed
+        self.assertFalse(self.acf_path.exists())
+
+        # 3. Proton prefix must be PRESERVED!
+        self.assertTrue(compatdata_dir.exists())
+        self.assertTrue((compatdata_dir / "pfx.txt").exists())
+
+        # 4. Summary must explicitly show Removed vs Preserved
+        summary = gm.last_uninstall_summary
+        self.assertIsNotNone(summary)
+        self.assertIn("[Removed]", summary)
+        self.assertIn("[Preserved]", summary)
+        self.assertIn("Proton prefix (Windows saves)", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1720,13 +1720,46 @@ class LibraryActionsMixin:
         c_wipe_sls = opts.get("wipe_sls", False)
 
         if c_wipe_sls_only:
+            # Fallback path resolution for AT0-M titles
+            install_path = game_data.get("install_path")
+            if not install_path or not os.path.exists(install_path):
+                try:
+                    from utils.plugin_games import get_atom_game_install_info
+                    atom_info = get_atom_game_install_info(appid)
+                    if atom_info:
+                        install_path = atom_info.get("common_path") or atom_info.get("install_path")
+                except Exception as e:
+                    logger.debug(f"[LibraryActions] Could not resolve AT0-M install info: {e}")
+
+            compatdata_path = None
+            if platform.system() == "Linux" and appid and appid not in ("0", "N/A", "unknown"):
+                try:
+                    from core.steam_helpers import get_steam_libraries
+                    for lib in get_steam_libraries() or []:
+                        cp = os.path.join(lib, "steamapps", "compatdata", appid)
+                        if os.path.exists(cp):
+                            compatdata_path = cp
+                            break
+                except Exception as e:
+                    logger.debug(f"[LibraryActions] Error checking compatdata: {e}")
+
             confirm_title = "Take away my sins"
             confirm_msg = (
                 f"Are you sure you want to remove SLS integrations for '{game_name}'?\n\n"
-                "• Removes game from SLS config (SLS Online and EOS Proxy integrations will be reset as well)\n"
-                "• Removes AppTokens, .DepotDownloader folder, and .depot tracking\n\n"
-                "Note: Game files, saves, achievements, and Proton prefix will NOT be deleted."
+                "[Will Be Removed]\n"
+                "• SLSsteam configuration entries (AdditionalApps, Depots, DecryptionKeys)\n"
+                "• AT0-M plugin library registration\n"
+                "• ASSella markers (.assella, .DepotDownloader) and tracking metadata\n"
+                "• Injected proxy DLLs (EOS & Goldberg restored to genuine binaries)\n\n"
+                "[Will Be Preserved]\n"
+                f"• Game directory: {install_path or 'Intact'} (100% intact)\n"
+                "• Steam app manifest: Adopted natively (StateFlags=6)\n"
             )
+            if compatdata_path:
+                confirm_msg += f"• Proton prefix (Windows saves): {compatdata_path}\n"
+            else:
+                confirm_msg += "• Proton prefix: Intact / not modified\n"
+            confirm_msg += "• Steam Cloud saves & achievements (intact)\n"
             progress_title = "Removing integrations..."
         else:
             confirm_title = "Confirm Uninstall"
@@ -1758,8 +1791,10 @@ class LibraryActionsMixin:
     ) -> None:
         """Background task to uninstall game."""
         try:
+            self._last_uninstall_summary = None
             if c_wipe_sls_only:
                 success, err = self._wipe_sls_only(game_data)
+                self._last_uninstall_summary = getattr(LibraryActionsMixin, "last_wipe_summary", None)
                 if success and self.game_manager:
                     appid = str(game_data.get("appid", ""))
                     if appid:
@@ -1769,6 +1804,7 @@ class LibraryActionsMixin:
                     game_data, remove_compatdata=c_data, remove_saves=c_saves,
                     remove_sls=c_wipe_sls
                 )
+                self._last_uninstall_summary = getattr(self.game_manager, "last_uninstall_summary", None)
             self.uninstall_complete.emit(success, str(err) if err else "")
         except Exception as e:
             self.uninstall_complete.emit(False, str(e))
@@ -1781,7 +1817,14 @@ class LibraryActionsMixin:
 
         parent = self._dialog_parent()
         if success:
-            ThemedMessageBox.information(parent, "Success", "Operation completed.")
+            summary = getattr(self, "_last_uninstall_summary", None)
+            if not summary and hasattr(self, "game_manager"):
+                summary = getattr(self.game_manager, "last_uninstall_summary", None)
+            ThemedMessageBox.information(
+                parent,
+                "Uninstall Complete",
+                summary or "Operation completed successfully."
+            )
             if self._details_dialog:
                 try:
                     self._details_dialog.accept()
@@ -1790,6 +1833,8 @@ class LibraryActionsMixin:
             self._refresh_game_list()
         else:
             ThemedMessageBox.critical(parent, "Error", f"Failed: {error}")
+
+    last_wipe_summary = None
 
     @staticmethod
     def _wipe_sls_only(game_data: dict) -> tuple:
@@ -1800,6 +1845,15 @@ class LibraryActionsMixin:
         appid = str(game_data.get("appid", "")).strip()
         install_path = game_data.get("install_path", "")
         errors = []
+
+        if not install_path or not os.path.exists(install_path):
+            try:
+                from utils.plugin_games import get_atom_game_install_info
+                atom_info = get_atom_game_install_info(appid)
+                if atom_info:
+                    install_path = atom_info.get("common_path") or atom_info.get("install_path") or ""
+            except Exception as e:
+                logger.debug(f"Could not resolve AT0-M install info in wipe_sls_only: {e}")
 
         # 1. Discover all associated DLC AppIDs and Depot IDs
         target_ids = {appid} if appid and appid not in ("0", "N/A", "unknown") else set()
@@ -1914,6 +1968,7 @@ class LibraryActionsMixin:
             errors.append(f"SLS config: {e}")
 
         # Prime existing appmanifest ACF file for Steam native adoption if present
+        acf_adopted = False
         if appid and appid not in ("0", "N/A", "unknown"):
             try:
                 from core.steam_helpers import get_steam_libraries
@@ -1926,6 +1981,7 @@ class LibraryActionsMixin:
                     acf_path = Path(lib) / "steamapps" / f"appmanifest_{appid}.acf"
                     if acf_path.is_file():
                         set_acf_state_flags(acf_path, 6)
+                        acf_adopted = True
                         logger.info(f"I bought the game: Set StateFlags=6 on {acf_path} for Steam adoption")
             except Exception as acf_err:
                 logger.debug(f"Failed to prime ACF for {appid} in wipe_sls_only: {acf_err}")
@@ -2060,6 +2116,49 @@ class LibraryActionsMixin:
             usc.save()
         except Exception as _usc_err:
             logger.debug(f"Failed to clear update status cache in wipe_sls_only: {_usc_err}")
+
+        compatdata_path = None
+        if platform.system() == "Linux" and appid and appid not in ("0", "N/A", "unknown"):
+            try:
+                from core.steam_helpers import get_steam_libraries
+                for lib in get_steam_libraries() or []:
+                    cp = os.path.join(lib, "steamapps", "compatdata", appid)
+                    if os.path.exists(cp):
+                        compatdata_path = cp
+                        break
+            except Exception as e:
+                logger.debug(f"Error checking compatdata in wipe_sls_only: {e}")
+
+        summary_lines = [
+            f"Cleaned integrations for '{game_data.get('game_name', appid)}'.",
+            "",
+            "[Cleaned]",
+            "• SLSsteam configuration entries",
+            "• AT0-M plugin library registration",
+            "• ASSella & DepotDownloader markers",
+            f"• Depot tracking metadata ({appid}.depot)",
+        ]
+        if platform.system() == "Windows":
+            summary_lines.append("• GreenLuma AppList entries (if present)")
+        summary_lines.extend([
+            "",
+            "[Preserved & Adopted]",
+            f"• Game directory: {install_path or 'Intact'} (100% intact)",
+        ])
+        if acf_adopted:
+            summary_lines.append("• Steam app manifest: Primed for native verification (StateFlags=6)")
+        else:
+            summary_lines.append("• Steam app manifest: Steam will discover existing files upon install")
+        if compatdata_path:
+            summary_lines.append(f"• Proton prefix (Windows saves): {compatdata_path} (intact)")
+        else:
+            summary_lines.append("• Proton prefix: Intact / not modified")
+        summary_lines.extend([
+            "• Local & Steam Cloud saves (intact)",
+            "",
+            "Please restart Steam so your legitimate purchase can verify and adopt the installed files.",
+        ])
+        LibraryActionsMixin.last_wipe_summary = "\n".join(summary_lines)
 
         if errors:
             return False, "; ".join(errors)

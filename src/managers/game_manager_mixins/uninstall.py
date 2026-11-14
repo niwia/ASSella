@@ -35,6 +35,7 @@ class GameManagerUninstallMixin:
         """
         game_name = game_data.get("game_name", "Unknown")
         install_path = game_data.get("install_path")
+        library_path = game_data.get("library_path")
         appid = game_data.get("appid", "0")
 
         if not install_path or not os.path.exists(install_path):
@@ -46,6 +47,8 @@ class GameManagerUninstallMixin:
                     install_path = atom_info.get("common_path") or atom_info.get(
                         "install_path"
                     )
+                    if not library_path:
+                        library_path = atom_info.get("library_path")
             except Exception as e:
                 logger.debug(f"  AT0-M install info unavailable for {appid}: {e}")
 
@@ -80,69 +83,71 @@ class GameManagerUninstallMixin:
         confirm_msg = f"Are you sure you want to uninstall '{game_name}'?\n\n"
 
         if not appid or appid in ("0", "N/A", "unknown"):
-            confirm_msg += "⚠️ WARNING: AppID is unknown for this game.\n"
+            confirm_msg += "WARNING: AppID is unknown for this game.\n"
             if platform.system() == "Linux":
                 confirm_msg += "Compatdata and saves WILL NOT be removed.\n"
             elif platform.system() == "Windows" and is_accela_install:
                 confirm_msg += "GreenLuma AppList files WILL NOT be removed.\n"
             confirm_msg += "\n"
 
-        confirm_msg += "This will permanently delete:\n"
-        confirm_msg += f"• Game folder: {install_path}\n"
-
-        if appid and appid not in ("0", "N/A", "unknown"):
-            confirm_msg += f"• Steam app manifest ({appid}.acf)\n"
-
-        if (
-            platform.system() == "Linux"
-            and appid
-            and appid not in ("0", "N/A", "unknown")
-        ):
-            steam_libraries = get_steam_libraries()
-            if steam_libraries:
-                steam_dir = steam_libraries[0]
-                compatdata_path = os.path.join(
-                    steam_dir, "steamapps", "compatdata", appid
-                )
-                userdata_path = os.path.join(steam_dir, "userdata")
-
-                if remove_compatdata and os.path.exists(compatdata_path):
-                    confirm_msg += (
-                        f"• Proton/Wine compatibility data (includes Windows saves): {compatdata_path}\n"
-                    )
-
-                if remove_saves and os.path.exists(userdata_path):
-                    has_saves = False
+        # Discover paths for transparency
+        compatdata_path = None
+        has_saves = False
+        userdata_path = None
+        if platform.system() == "Linux" and appid and appid not in ("0", "N/A", "unknown"):
+            steam_libraries = get_steam_libraries() or []
+            if library_path and library_path not in steam_libraries:
+                steam_libraries.append(library_path)
+            for lib in steam_libraries:
+                cp = os.path.join(lib, "steamapps", "compatdata", appid)
+                if os.path.exists(cp):
+                    compatdata_path = cp
+                    break
+            for lib in steam_libraries:
+                up = os.path.join(lib, "userdata")
+                if os.path.exists(up):
+                    userdata_path = up
                     try:
-                        for user_dir in os.listdir(userdata_path):
-                            user_path = os.path.join(userdata_path, user_dir)
+                        for user_dir in os.listdir(up):
+                            user_path = os.path.join(up, user_dir)
                             if os.path.isdir(user_path):
-                                saves_path = os.path.join(user_path, appid, "remote")
-                                if os.path.exists(saves_path):
+                                sp = os.path.join(user_path, appid, "remote")
+                                if os.path.exists(sp):
                                     has_saves = True
                                     break
                     except OSError as e:
-                        logger.debug(f"  Steam Cloud save scan incomplete: {e}")
-
+                        logger.debug(f"Steam Cloud save scan incomplete: {e}")
                     if has_saves:
-                        confirm_msg += "• Steam Cloud saves from userdata folders\n"
+                        break
 
-                if not remove_compatdata and not remove_saves:
-                    confirm_msg += (
-                        "\nNote: Proton prefix, game saves, and Steam Cloud data will NOT be deleted.\n"
-                    )
-        elif (
+        confirm_msg += "[Will Be Removed]\n"
+        confirm_msg += f"• Game directory: {install_path or 'Unknown'}\n"
+        if appid and appid not in ("0", "N/A", "unknown"):
+            confirm_msg += f"• Steam app manifest: appmanifest_{appid}.acf\n"
+        confirm_msg += "• SLSsteam & AT0-M configuration entries\n"
+        if platform.system() == "Linux":
+            confirm_msg += "• Application shortcuts & icons\n"
+
+        if remove_compatdata:
+            if compatdata_path:
+                confirm_msg += f"• Proton prefix (Windows saves): {compatdata_path}\n"
+            else:
+                confirm_msg += "• Proton prefix (none found on disk)\n"
+
+        if remove_saves:
+            if has_saves:
+                confirm_msg += f"• Steam Cloud saves: {userdata_path}\n"
+            else:
+                confirm_msg += "• Steam Cloud saves (none found)\n"
+
+        if (
             platform.system() == "Windows"
             and is_accela_install
             and appid
             and appid not in ("0", "N/A", "unknown")
         ):
             wrapper_mode_enabled = is_greenluma_wrapper_mode_enabled()
-            if not wrapper_mode_enabled:
-                confirm_msg += (
-                    "• GreenLuma AppList cleanup skipped (Wrapper Mode is disabled)\n"
-                )
-            else:
+            if wrapper_mode_enabled:
                 steam_path = find_steam_install()
                 if steam_path:
                     app_list_dir = os.path.join(steam_path, "AppList")
@@ -156,29 +161,32 @@ class GameManagerUninstallMixin:
                                         appid_str
                                     )
                                 )
-
                             app_ids_to_check = [appid_str, *dlc_ids]
                             files_by_id = self._find_applist_files_for_ids(
                                 app_list_dir, app_ids_to_check
                             )
-
                             found_appid_files = files_by_id.get(appid_str, [])
                             found_dlc_files = []
                             for dlc_id in dlc_ids:
                                 found_dlc_files.extend(files_by_id.get(str(dlc_id), []))
-
-                            if found_appid_files:
-                                confirm_msg += (
-                                    "• GreenLuma AppList main file(s): "
-                                    f"{', '.join(found_appid_files)}\n"
-                                )
-                            if found_dlc_files:
-                                confirm_msg += (
-                                    "• GreenLuma AppList DLC file(s): "
-                                    f"{', '.join(found_dlc_files)}\n"
-                                )
+                            if found_appid_files or found_dlc_files:
+                                all_gl = found_appid_files + found_dlc_files
+                                confirm_msg += f"• GreenLuma AppList files: {', '.join(all_gl)}\n"
                         except OSError as e:
-                            logger.debug(f"  GreenLuma AppList scan incomplete: {e}")
+                            logger.debug(f"GreenLuma AppList scan incomplete: {e}")
+
+        confirm_msg += "\n[Will Be Preserved]\n"
+        if not remove_compatdata:
+            if compatdata_path:
+                confirm_msg += f"• Proton prefix (Windows saves): {compatdata_path}\n"
+            else:
+                confirm_msg += "• Proton prefix: Not found / not created\n"
+
+        if not remove_saves:
+            if has_saves:
+                confirm_msg += f"• Steam Cloud saves: {userdata_path}\n"
+            else:
+                confirm_msg += "• Steam Cloud saves: None found\n"
 
         confirm_msg += "\nThis action cannot be undone!"
         return confirm_msg
@@ -389,9 +397,14 @@ class GameManagerUninstallMixin:
                         )
 
             target_dlc_ids = game_data.get("_dlc_uninstall_ids")
+            removed_items = []
+            preserved_items = []
+
             if is_dlc_only:
                 if install_path and os.path.exists(install_path):
                     self._delete_dlc_depot_files(install_path, appid, target_dlc_ids=target_dlc_ids)
+                    removed_items.append("Selected DLC depot files")
+                    preserved_items.append(f"Base game directory: {install_path}")
                     try:
                         if os.path.isdir(install_path) and not os.listdir(install_path):
                             shutil.rmtree(install_path, ignore_errors=True)
@@ -425,6 +438,7 @@ class GameManagerUninstallMixin:
                 if install_path and os.path.exists(install_path):
                     shutil.rmtree(install_path, ignore_errors=True)
                     logger.info(f"Removed game folder: {install_path}")
+                    removed_items.append(f"Game folder: {install_path}")
 
                 try:
                     libs = get_steam_libraries() or []
@@ -435,6 +449,7 @@ class GameManagerUninstallMixin:
                         if dl_dir.exists():
                             shutil.rmtree(dl_dir, ignore_errors=True)
                             logger.info(f"Removed downloading folder: {dl_dir}")
+                            removed_items.append("Temporary download caches")
                         temp_dir = Path(lib) / "steamapps" / "temp" / str(appid)
                         if temp_dir.exists():
                             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -453,6 +468,7 @@ class GameManagerUninstallMixin:
                         if acf_file.exists():
                             acf_file.unlink(missing_ok=True)
                             logger.info(f"Removed ACF file: {acf_file}")
+                            removed_items.append(f"Steam app manifest: {acf_file.name}")
                 except Exception as e:
                     logger.debug(f"Error cleaning ACF file for {appid}: {e}")
 
@@ -469,6 +485,7 @@ class GameManagerUninstallMixin:
                     if not depot_has_remaining and depot_file.exists():
                         depot_file.unlink()
                         logger.info(f"Removed depot file: {depot_file}")
+                        removed_items.append(f"Depot tracking: {appid}.depot")
                     custom_depot = Path(get_base_path()) / "depots" / f"{appid}_custom.json"
                     if not depot_has_remaining and custom_depot.exists():
                         custom_depot.unlink()
@@ -479,8 +496,23 @@ class GameManagerUninstallMixin:
                     )
 
             if platform.system() == "Linux" and not is_dlc_only:
-                self._remove_linux_game_data(appid, remove_compatdata, remove_saves)
+                data_status = self._remove_linux_game_data(appid, remove_compatdata, remove_saves)
+                if remove_compatdata and data_status.get("compatdata_removed"):
+                    removed_items.append(f"Proton prefix (Windows saves): {data_status['compatdata_path']}")
+                elif data_status.get("compatdata_path"):
+                    preserved_items.append(f"Proton prefix (Windows saves): {data_status['compatdata_path']}")
+                else:
+                    preserved_items.append("Proton prefix: None found / not created")
+
+                if remove_saves and data_status.get("saves_removed"):
+                    removed_items.append(f"Steam Cloud userdata saves: {data_status['saves_path']}")
+                elif data_status.get("saves_path"):
+                    preserved_items.append(f"Steam Cloud userdata saves: {data_status['saves_path']}")
+                else:
+                    preserved_items.append("Steam Cloud userdata saves: None found")
+
                 self._remove_linux_shortcuts_and_icons(appid)
+                removed_items.append("Desktop application shortcuts & icons")
 
             if appid and appid not in ("0", "N/A", "unknown"):
                 # If partial DLC-only uninstall, only prune target_dlc_ids from config
@@ -601,6 +633,21 @@ class GameManagerUninstallMixin:
             except Exception as e:
                 logger.debug(f"Failed to clear update status cache for appid {appid}: {e}")
 
+            if appid and appid not in ("0", "N/A", "unknown"):
+                removed_items.append("SLSsteam & AT0-M configuration entries")
+
+            summary_lines = [
+                f"Uninstalled '{game_name}'.",
+                "",
+                "[Removed]",
+            ]
+            summary_lines.extend(f"• {item}" for item in removed_items)
+            if preserved_items:
+                summary_lines.extend(["", "[Preserved]"])
+                summary_lines.extend(f"• {item}" for item in preserved_items)
+
+            self.last_uninstall_summary = "\n".join(summary_lines)
+
             self.remove_game(appid)
             return True, None
 
@@ -611,51 +658,67 @@ class GameManagerUninstallMixin:
 
     @staticmethod
     def _remove_linux_game_data(appid, remove_compatdata, remove_saves):
-        """Remove Linux-specific game data (compatdata and Steam Cloud saves)."""
+        """Remove Linux-specific game data (compatdata and Steam Cloud saves). Returns dict of status."""
+        status = {
+            "compatdata_removed": False,
+            "compatdata_path": None,
+            "saves_removed": False,
+            "saves_path": None,
+        }
         if not appid or appid in ("0", "N/A", "unknown"):
             logger.warning(
                 f"Skipping compatdata/saves removal for invalid appid: {appid}"
             )
-            return
+            return status
 
         if not str(appid).isdigit():
             logger.error(
                 f"Invalid appid format: {appid}. Must be numeric. Skipping compatdata/saves removal."
             )
-            return
+            return status
 
-        steam_libraries = get_steam_libraries()
+        steam_libraries = get_steam_libraries() or []
         if not steam_libraries:
-            return
+            return status
 
-        steam_dir = steam_libraries[0]
-
-        if remove_compatdata:
-            compatdata_path = os.path.join(steam_dir, "steamapps", "compatdata", appid)
+        for lib in steam_libraries:
+            compatdata_path = os.path.join(lib, "steamapps", "compatdata", str(appid))
             if os.path.exists(compatdata_path):
-                try:
-                    shutil.rmtree(compatdata_path)
-                    logger.info(f"Removed compatdata: {compatdata_path}")
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to remove compatdata {compatdata_path}: {e}"
-                    )
+                status["compatdata_path"] = compatdata_path
+                if remove_compatdata:
+                    try:
+                        shutil.rmtree(compatdata_path)
+                        status["compatdata_removed"] = True
+                        logger.info(f"Removed compatdata: {compatdata_path}")
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to remove compatdata {compatdata_path}: {e}"
+                        )
+                break
 
-        if remove_saves:
-            userdata_path = os.path.join(steam_dir, "userdata")
+        for lib in steam_libraries:
+            userdata_path = os.path.join(lib, "userdata")
             if os.path.exists(userdata_path):
                 try:
                     for user_dir in os.listdir(userdata_path):
                         user_path = os.path.join(userdata_path, user_dir)
                         if os.path.isdir(user_path):
-                            saves_path = os.path.join(user_path, appid, "remote")
+                            saves_path = os.path.join(user_path, str(appid), "remote")
                             if os.path.exists(saves_path):
-                                shutil.rmtree(saves_path)
-                                logger.info(
-                                    f"Removed saves for user {user_dir}: {saves_path}"
-                                )
+                                status["saves_path"] = saves_path
+                                if remove_saves:
+                                    try:
+                                        shutil.rmtree(saves_path)
+                                        status["saves_removed"] = True
+                                        logger.info(
+                                            f"Removed saves for user {user_dir}: {saves_path}"
+                                        )
+                                    except Exception as e:
+                                        logger.warning(f"Failed to remove saves: {e}")
                 except Exception as e:
-                    logger.warning(f"Failed to remove saves: {e}")
+                    logger.debug(f"Error scanning userdata in {userdata_path}: {e}")
+
+        return status
 
     @staticmethod
     def _remove_linux_shortcuts_and_icons(appid):
