@@ -6,13 +6,10 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QApplication,
     QButtonGroup,
     QCheckBox,
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -43,23 +40,6 @@ logger = logging.getLogger(__name__)
 _safe_string_list = safe_settings_string_list
 
 
-def _format_cached_score(entry: Optional[dict]) -> str:
-    """Format an endpoint score entry into a human-readable summary string."""
-    if not entry or not entry.get("ok"):
-        return ""
-    parts = []
-    exit_label = entry.get("exit_label", "").strip()
-    if exit_label:
-        parts.append(exit_label)
-    ping = entry.get("ping_ms", 0)
-    if ping > 0:
-        parts.append(f"{ping} ms")
-    speed = entry.get("speed_mbps", 0.0)
-    if speed > 0.0:
-        parts.append(f"{speed} Mbps")
-    return " · ".join(parts)
-
-
 def _scrolled(page: QWidget) -> QScrollArea:
     """Wrap a settings page in a transparent scroll area."""
     area = QScrollArea()
@@ -69,183 +49,6 @@ def _scrolled(page: QWidget) -> QScrollArea:
     area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
     area.setWidget(page)
     return area
-
-
-class StealthSetupGuideDialog(QDialog):
-    """Clean themed dialog explaining the three supported stealth proxy methods with action buttons."""
-
-    def __init__(self, parent=None, on_profile_imported=None):
-        super().__init__(parent)
-        self.on_profile_imported = on_profile_imported
-        self.setWindowTitle("Stealth Setup Guide & Options")
-        self.setMinimumWidth(600)
-        self.setModal(True)
-
-        accent = getattr(parent, "accent_color", "#89B4FA") if parent else "#89B4FA"
-        self.setStyleSheet(f"""
-            QDialog {{
-                background-color: #1A1A20;
-                color: #E0E0E0;
-            }}
-            QLabel {{
-                color: #CCCCCC;
-                font-size: 8.5pt;
-                line-height: 1.4;
-            }}
-            QPushButton {{
-                background-color: rgba(255, 255, 255, 0.08);
-                border: 1px solid rgba(255, 255, 255, 0.18);
-                border-radius: 5px;
-                padding: 5px 12px;
-                color: #FFFFFF;
-                font-size: 8.5pt;
-                font-weight: 500;
-            }}
-            QPushButton:hover {{
-                background-color: rgba(255, 255, 255, 0.16);
-                border-color: {accent};
-            }}
-            QPushButton:pressed {{
-                background-color: rgba(255, 255, 255, 0.04);
-            }}
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(14)
-
-        # Title Header
-        title_lbl = QLabel("Stealth Proxy Setup Guide & Options")
-        title_lbl.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {accent};")
-        layout.addWidget(title_lbl)
-
-        desc_lbl = QLabel(
-            "ASSella routes depot downloads through rootless userspace tunnels without altering system routing "
-            "or requiring sudo privileges. Choose the option that fits your setup:"
-        )
-        desc_lbl.setWordWrap(True)
-        layout.addWidget(desc_lbl)
-
-        # Card 1: Cloudflare WARP
-        c1 = QFrame()
-        c1.setStyleSheet("QFrame { background-color: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px; }")
-        c1_lay = QVBoxLayout(c1)
-        c1_lay.setSpacing(6)
-        c1_title = QLabel("1. Automatic Cloudflare WARP (Zero-Config)")
-        c1_title.setStyleSheet("font-size: 9.5pt; font-weight: bold; color: #FFFFFF;")
-        c1_desc = QLabel(
-            "Built-in encrypted VPN connecting directly to Cloudflare's global edge network via userspace WireGuard. "
-            "Requires no account or configuration. Select Cloudflare WARP and start downloading immediately."
-        )
-        c1_desc.setWordWrap(True)
-        c1_lay.addWidget(c1_title)
-        c1_lay.addWidget(c1_desc)
-        layout.addWidget(c1)
-
-        # Card 2: Free WireGuard Configurations
-        c2 = QFrame()
-        c2.setStyleSheet("QFrame { background-color: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px; }")
-        c2_lay = QVBoxLayout(c2)
-        c2_lay.setSpacing(8)
-        c2_title = QLabel("2. Free WireGuard Configurations (.conf)")
-        c2_title.setStyleSheet("font-size: 9.5pt; font-weight: bold; color: #FFFFFF;")
-        c2_desc = QLabel(
-            "Download free or commercial WireGuard configuration files (.conf) from providers such as Proton VPN "
-            "(free tier includes Netherlands, USA, Japan, Romania, and Poland with unlimited data), Windscribe, or Mullvad. "
-            "Import them into ASSella to route traffic through specific regions."
-        )
-        c2_desc.setWordWrap(True)
-        c2_lay.addWidget(c2_title)
-        c2_lay.addWidget(c2_desc)
-
-        action_row = QHBoxLayout()
-        action_row.setSpacing(8)
-
-        import_conf_btn = QPushButton("+ Import .conf File")
-        import_conf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        action_row.addWidget(import_conf_btn)
-
-        copy_url_btn = QPushButton("Copy Proton VPN URL")
-        copy_url_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        action_row.addWidget(copy_url_btn)
-
-        open_url_btn = QPushButton("Open in Browser")
-        open_url_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        action_row.addWidget(open_url_btn)
-
-        action_row.addStretch()
-        c2_lay.addLayout(action_row)
-
-        self.guide_status_lbl = QLabel("")
-        self.guide_status_lbl.setStyleSheet(f"font-size: 8pt; color: {accent}; font-weight: 500;")
-        c2_lay.addWidget(self.guide_status_lbl)
-
-        layout.addWidget(c2)
-
-        # Card 3: Custom SOCKS5 / HTTP Proxy
-        c3 = QFrame()
-        c3.setStyleSheet("QFrame { background-color: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 10px; }")
-        c3_lay = QVBoxLayout(c3)
-        c3_lay.setSpacing(6)
-        c3_title = QLabel("3. Custom SOCKS5 / HTTP Proxy")
-        c3_title.setStyleSheet("font-size: 9.5pt; font-weight: bold; color: #FFFFFF;")
-        c3_desc = QLabel(
-            "Route traffic through an existing local or remote proxy. Supports Tor (socks5://127.0.0.1:9050), "
-            "SSH dynamic port forwards (ssh -D 1080 user@host), and authenticated corporate or private SOCKS5 proxies."
-        )
-        c3_desc.setWordWrap(True)
-        c3_lay.addWidget(c3_title)
-        c3_lay.addWidget(c3_desc)
-        layout.addWidget(c3)
-
-        # Connections
-        proton_url = "https://account.protonvpn.com/downloads#wireguard-configuration"
-
-        def _on_import():
-            path, _ = ThemedFileDialog.getOpenFileName(
-                self,
-                "Select WireGuard Configuration",
-                os.path.expanduser("~"),
-                "WireGuard Config (*.conf);;All Files (*)",
-            )
-            if path:
-                imported = WireguardProfileManager.import_profile(path)
-                if imported:
-                    self.guide_status_lbl.setText(f"Successfully imported: {imported['filename']}")
-                    if self.on_profile_imported:
-                        try:
-                            self.on_profile_imported(imported["filename"])
-                        except Exception as e:
-                            logger.debug(f"[StealthGuide] Callback error: {e}")
-
-        def _on_copy():
-            try:
-                cb = QApplication.clipboard()
-                if cb:
-                    cb.setText(proton_url)
-                self.guide_status_lbl.setText("Copied Proton VPN URL to clipboard.")
-            except Exception as e:
-                logger.debug(f"[StealthGuide] Copy error: {e}")
-
-        def _on_open():
-            try:
-                QDesktopServices.openUrl(QUrl(proton_url))
-            except Exception as e:
-                logger.debug(f"[StealthGuide] Open URL error: {e}")
-
-        import_conf_btn.clicked.connect(_on_import)
-        copy_url_btn.clicked.connect(_on_copy)
-        open_url_btn.clicked.connect(_on_open)
-
-        # Close Button
-        btn_box = QHBoxLayout()
-        btn_box.addStretch()
-        close_btn = QPushButton("Close")
-        close_btn.setFixedSize(90, 30)
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.clicked.connect(self.accept)
-        btn_box.addWidget(close_btn)
-        layout.addLayout(btn_box)
 
 
 def create_stealth_subtab(dialog) -> QWidget:
@@ -286,32 +89,13 @@ def create_stealth_subtab(dialog) -> QWidget:
     card_routing, card_routing_layout = dialog._create_card_frame("")
     card_routing_layout.setSpacing(10)
 
-    # Header Row with Setup Guide Button
+    # Header Row
     routing_hdr = QHBoxLayout()
     routing_hdr.setContentsMargins(0, 0, 0, 0)
     routing_title = QLabel("Stealth Routing (beta)")
     routing_title.setStyleSheet(f"font-size: 9.5pt; font-weight: bold; color: {accent_color}; border: none; background: transparent;")
     routing_hdr.addWidget(routing_title)
     routing_hdr.addStretch()
-
-    setup_guide_btn = QPushButton("Setup Options...")
-    setup_guide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    setup_guide_btn.setStyleSheet(f"""
-        QPushButton {{
-            background-color: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            border-radius: 5px;
-            padding: 3px 10px;
-            color: #FFFFFF;
-            font-size: 8.5pt;
-            font-weight: 500;
-        }}
-        QPushButton:hover {{
-            background-color: rgba(255, 255, 255, 0.16);
-            border-color: {accent_color};
-        }}
-    """)
-    routing_hdr.addWidget(setup_guide_btn)
     card_routing_layout.addLayout(routing_hdr)
 
     # Master Toggle
@@ -379,46 +163,127 @@ def create_stealth_subtab(dialog) -> QWidget:
     card_routing_layout.addWidget(benchmark_container)
     layout.addWidget(card_routing)
 
+    # Cached endpoint benchmark scores
+    init_scores = get_endpoint_scores(dialog.settings)
+
+    # Dynamic Button State Updater
+    def _update_test_button_state(btn: QPushButton, state: str, exit_label: str = "", ping_ms: int = 0, speed_mbps: float = 0.0, err_msg: str = ""):
+        if state == "testing":
+            btn.setEnabled(False)
+            btn.setText("Testing...")
+            btn.setToolTip("Benchmarking latency and 5 MB burst throughput...")
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(144, 202, 249, 0.15);
+                    border: 1px solid #90CAF9;
+                    border-radius: 5px;
+                    padding: 3px 8px;
+                    color: #90CAF9;
+                    font-size: 8pt;
+                    font-weight: 600;
+                    min-height: 24px;
+                }
+            """)
+        elif state == "ok":
+            btn.setEnabled(True)
+            parts = []
+            if ping_ms > 0:
+                parts.append(f"{ping_ms}ms")
+            if speed_mbps > 0.0:
+                parts.append(f"{speed_mbps:.1f} Mbps")
+            compact_txt = f"✓ {' · '.join(parts)}" if parts else "✓ Connected"
+            btn.setText(compact_txt)
+            tt_lines = []
+            if exit_label:
+                tt_lines.append(f"Exit: {exit_label}")
+            if ping_ms > 0:
+                tt_lines.append(f"Latency: {ping_ms} ms")
+            if speed_mbps > 0.0:
+                tt_lines.append(f"Throughput: {speed_mbps:.1f} Mbps")
+            tt_lines.append("\n(Click to re-test)")
+            btn.setToolTip("\n".join(tt_lines))
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(129, 199, 132, 0.12);
+                    border: 1px solid #81C784;
+                    border-radius: 5px;
+                    padding: 3px 8px;
+                    color: #81C784;
+                    font-size: 8pt;
+                    font-weight: 600;
+                    min-height: 24px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(129, 199, 132, 0.22);
+                    border-color: #A5D6A7;
+                }
+            """)
+        elif state == "error":
+            btn.setEnabled(True)
+            btn.setText("✕ Failed")
+            err = err_msg or "Connection verification failed"
+            btn.setToolTip(f"{err}\n\n(Click to retry)")
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(229, 115, 115, 0.12);
+                    border: 1px solid #E57373;
+                    border-radius: 5px;
+                    padding: 3px 8px;
+                    color: #E57373;
+                    font-size: 8pt;
+                    font-weight: 600;
+                    min-height: 24px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(229, 115, 115, 0.22);
+                    border-color: #EF5350;
+                }
+            """)
+        else:
+            btn.setEnabled(True)
+            btn.setText("Test Connection")
+            btn.setToolTip("Test connection and benchmark speed")
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: rgba(255, 255, 255, 0.08);
+                    border: 1px solid rgba(255, 255, 255, 0.18);
+                    border-radius: 5px;
+                    padding: 3px 8px;
+                    color: #FFFFFF;
+                    font-size: 8pt;
+                    font-weight: 500;
+                    min-height: 24px;
+                }}
+                QPushButton:hover {{
+                    background-color: rgba(255, 255, 255, 0.16);
+                    border-color: {accent_color};
+                }}
+            """)
+
+    def _apply_cached_score_to_btn(btn: QPushButton, score: Optional[dict]):
+        if score and score.get("ok"):
+            _update_test_button_state(
+                btn, "ok", score.get("exit_label", ""), score.get("ping_ms", 0), score.get("speed_mbps", 0.0)
+            )
+        else:
+            _update_test_button_state(btn, "idle")
+
     # Generic Unified Test Handler
-    def _run_unified_test(mode: str, wg_path: str, custom_url: str, test_btn: QPushButton, status_lbl: QLabel):
-        test_btn.setEnabled(False)
-        status_lbl.setText("Testing connection & speed...")
-        status_lbl.setStyleSheet("color: #90CAF9; font-size: 8.5pt;")
+    def _run_unified_test(mode: str, wg_path: str, custom_url: str, test_btn: QPushButton):
+        _update_test_button_state(test_btn, "testing")
 
         def _done(result):
-            test_btn.setEnabled(True)
             if isinstance(result, tuple) and len(result) == 5:
                 ok, exit_label, ping_ms, speed_mbps, err_msg = result
-                if ok:
-                    parts = []
-                    if exit_label:
-                        parts.append(exit_label)
-                    if ping_ms > 0:
-                        parts.append(f"{ping_ms} ms")
-                    if speed_mbps > 0.0:
-                        parts.append(f"{speed_mbps} Mbps")
-                    txt = " · ".join(parts) if parts else "Connected"
-                    status_lbl.setText(f"[OK] {txt}")
-                    status_lbl.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: 500;")
-                else:
-                    err = err_msg or "Connection verification failed"
-                    status_lbl.setText(f"[Error] {err[:45]}")
-                    status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt;")
+                _update_test_button_state(test_btn, "ok" if ok else "error", exit_label, ping_ms, speed_mbps, err_msg)
             else:
-                status_lbl.setText("[Error] Unexpected test result")
-                status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt;")
+                _update_test_button_state(test_btn, "error", err_msg="Unexpected test result")
 
         worker = dialog._stealth_task_runner.run(
             test_and_benchmark_endpoint, mode, wg_path, custom_url, 8.0, dialog.settings
         )
         worker.finished.connect(_done)
-        worker.error.connect(
-            lambda _e: (
-                test_btn.setEnabled(True),
-                status_lbl.setText("[Error] Test execution failed"),
-                status_lbl.setStyleSheet("color: #E57373; font-size: 8.5pt;"),
-            )
-        )
+        worker.error.connect(lambda _e: _update_test_button_state(test_btn, "error", err_msg="Test execution failed"))
 
     # =========================================================================
     # CARD A: Cloudflare WARP
@@ -457,20 +322,64 @@ def create_stealth_subtab(dialog) -> QWidget:
     card_warp_layout.addWidget(warp_desc)
 
     warp_act_row = QHBoxLayout()
-    warp_act_row.setSpacing(10)
+    warp_act_row.setSpacing(8)
 
     warp_test_btn = QPushButton("Test Connection")
-    warp_test_btn.setFixedSize(120, 28)
+    warp_test_btn.setMinimumWidth(110)
+    warp_test_btn.setMaximumWidth(150)
+    warp_test_btn.setFixedHeight(26)
     warp_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    _apply_cached_score_to_btn(warp_test_btn, init_scores.get("warp"))
+    warp_test_btn.clicked.connect(lambda: _run_unified_test("warp", "", "", warp_test_btn))
     warp_act_row.addWidget(warp_test_btn)
 
-    warp_status_lbl = QLabel("")
-    warp_status_lbl.setStyleSheet("font-size: 8.5pt;")
-    warp_act_row.addWidget(warp_status_lbl, 1)
+    reset_warp_btn = QPushButton("Reset Key")
+    reset_warp_btn.setFixedSize(78, 26)
+    reset_warp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    reset_warp_btn.setToolTip("Re-registers a fresh Cloudflare WARP identity if connection stalls or gets rate-limited")
+    reset_warp_btn.setStyleSheet(f"""
+        QPushButton {{
+            background-color: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 5px;
+            padding: 3px 8px;
+            color: #CCCCCC;
+            font-size: 8pt;
+            font-weight: 500;
+        }}
+        QPushButton:hover {{
+            background-color: rgba(255, 255, 255, 0.12);
+            border-color: {accent_color};
+            color: #FFFFFF;
+        }}
+    """)
+
+    def _on_reset_warp():
+        reset_warp_btn.setEnabled(False)
+        reset_warp_btn.setText("Resetting...")
+
+        def _bg_reset():
+            from utils.kuroko import get_or_create_warp_config
+            get_or_create_warp_config(force_refresh=True)
+            return test_and_benchmark_endpoint("warp", "", "", 8.0, dialog.settings)
+
+        def _on_reset_done(result):
+            reset_warp_btn.setEnabled(True)
+            reset_warp_btn.setText("Reset Key")
+            if isinstance(result, tuple) and len(result) == 5:
+                ok, exit_label, ping_ms, speed_mbps, err_msg = result
+                _update_test_button_state(warp_test_btn, "ok" if ok else "error", exit_label, ping_ms, speed_mbps, err_msg)
+
+        worker = dialog._stealth_task_runner.run(_bg_reset)
+        worker.finished.connect(_on_reset_done)
+        worker.error.connect(lambda _e: (reset_warp_btn.setEnabled(True), reset_warp_btn.setText("Reset Key")))
+
+    reset_warp_btn.clicked.connect(_on_reset_warp)
+    warp_act_row.addWidget(reset_warp_btn)
+    warp_act_row.addStretch()
     card_warp_layout.addLayout(warp_act_row)
 
-    warp_test_btn.clicked.connect(lambda: _run_unified_test("warp", "", "", warp_test_btn, warp_status_lbl))
-    candidate_row_widgets["warp"] = {"status_lbl": warp_status_lbl, "test_btn": warp_test_btn}
+    candidate_row_widgets["warp"] = warp_test_btn
     layout.addWidget(card_warp)
 
     # =========================================================================
@@ -604,25 +513,18 @@ def create_stealth_subtab(dialog) -> QWidget:
 
             r_lay.addStretch()
 
-            # Unified Test Button
+            # Dynamic Test Button
             p_test_btn = QPushButton("Test Connection")
-            p_test_btn.setFixedSize(110, 26)
+            p_test_btn.setMinimumWidth(110)
+            p_test_btn.setMaximumWidth(150)
+            p_test_btn.setFixedHeight(26)
             p_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            _apply_cached_score_to_btn(p_test_btn, scores.get(f"wg:{fname}"))
             r_lay.addWidget(p_test_btn)
-
-            # Status Label
-            p_status_lbl = QLabel("")
-            p_status_lbl.setStyleSheet("font-size: 8.5pt;")
-            cand_score = scores.get(f"wg:{fname}")
-            cached_text = _format_cached_score(cand_score)
-            if cached_text:
-                p_status_lbl.setText(f"[OK] {cached_text}")
-                p_status_lbl.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: 500;")
-            r_lay.addWidget(p_status_lbl)
 
             # Delete Button
             p_del_btn = QPushButton("Remove")
-            p_del_btn.setFixedSize(68, 26)
+            p_del_btn.setFixedSize(65, 26)
             p_del_btn.setToolTip(f"Remove profile '{fname}'")
             p_del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             p_del_btn.setStyleSheet("""
@@ -656,10 +558,10 @@ def create_stealth_subtab(dialog) -> QWidget:
             p_check.toggled.connect(_make_check_cb(fname))
 
             # Connect Test Button
-            def _make_test_cb(profile_path, test_btn_widget, status_lbl_widget):
-                return lambda: _run_unified_test("wireguard", profile_path, "", test_btn_widget, status_lbl_widget)
+            def _make_test_cb(profile_path, test_btn_widget):
+                return lambda: _run_unified_test("wireguard", profile_path, "", test_btn_widget)
 
-            p_test_btn.clicked.connect(_make_test_cb(fpath, p_test_btn, p_status_lbl))
+            p_test_btn.clicked.connect(_make_test_cb(fpath, p_test_btn))
 
             # Connect Delete Button
             def _make_del_cb(profile_fname):
@@ -670,13 +572,9 @@ def create_stealth_subtab(dialog) -> QWidget:
             profile_row_items[fname] = {
                 "radio": p_radio,
                 "check": p_check,
-                "status_lbl": p_status_lbl,
                 "test_btn": p_test_btn,
             }
-            candidate_row_widgets[f"wg:{fname}"] = {
-                "status_lbl": p_status_lbl,
-                "test_btn": p_test_btn,
-            }
+            candidate_row_widgets[f"wg:{fname}"] = p_test_btn
 
     def _on_wg_radio_toggled(profile_fname: str, profile_path: str, checked: bool):
         if checked:
@@ -838,35 +736,23 @@ def create_stealth_subtab(dialog) -> QWidget:
     custom_act_row.setSpacing(10)
 
     custom_test_btn = QPushButton("Test Connection")
-    custom_test_btn.setFixedSize(120, 28)
+    custom_test_btn.setMinimumWidth(110)
+    custom_test_btn.setMaximumWidth(150)
+    custom_test_btn.setFixedHeight(26)
     custom_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    _apply_cached_score_to_btn(custom_test_btn, init_scores.get("custom"))
+    custom_test_btn.clicked.connect(
+        lambda: _run_unified_test("custom", "", dialog.stealth_proxy_custom_edit.text().strip(), custom_test_btn)
+    )
     custom_act_row.addWidget(custom_test_btn)
-
-    custom_status_lbl = QLabel("")
-    custom_status_lbl.setStyleSheet("font-size: 8.5pt;")
-    custom_act_row.addWidget(custom_status_lbl, 1)
+    custom_act_row.addStretch()
     card_custom_layout.addLayout(custom_act_row)
 
-    custom_test_btn.clicked.connect(
-        lambda: _run_unified_test("custom", "", dialog.stealth_proxy_custom_edit.text().strip(), custom_test_btn, custom_status_lbl)
-    )
-    candidate_row_widgets["custom"] = {"status_lbl": custom_status_lbl, "test_btn": custom_test_btn}
+    candidate_row_widgets["custom"] = custom_test_btn
     layout.addWidget(card_custom)
 
     # Initial Population of WG Profiles
     _refresh_wg_profiles_ui()
-
-    # Pre-populate status labels with cached scores
-    init_scores = get_endpoint_scores(dialog.settings)
-    warp_cached = _format_cached_score(init_scores.get("warp"))
-    if warp_cached:
-        warp_status_lbl.setText(f"[OK] {warp_cached}")
-        warp_status_lbl.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: 500;")
-
-    custom_cached = _format_cached_score(init_scores.get("custom"))
-    if custom_cached:
-        custom_status_lbl.setText(f"[OK] {custom_cached}")
-        custom_status_lbl.setStyleSheet("color: #81C784; font-size: 8.5pt; font-weight: 500;")
 
     # Radio button selection handler for WARP and Custom
     def _on_warp_radio_toggled(checked):
@@ -924,33 +810,34 @@ def create_stealth_subtab(dialog) -> QWidget:
         benchmark_summary_lbl.setText("Testing candidates sequentially (5 MB burst)...")
         benchmark_summary_lbl.setStyleSheet("color: #90CAF9; font-size: 8.5pt;")
 
-        for cand_id, widgets in candidate_row_widgets.items():
-            if "status_lbl" in widgets:
-                widgets["status_lbl"].setText("Waiting...")
-                widgets["status_lbl"].setStyleSheet("color: #B0BEC5; font-size: 8pt;")
+        for btn in candidate_row_widgets.values():
+            if btn:
+                btn.setEnabled(False)
+                btn.setText("Waiting...")
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: rgba(255, 255, 255, 0.04);
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        border-radius: 5px;
+                        padding: 3px 8px;
+                        color: #B0BEC5;
+                        font-size: 8pt;
+                        min-height: 24px;
+                    }
+                """)
 
         def _progress_cb(cand_id, ok, exit_label, ping_ms, speed_mbps, msg):
             def _update_row():
-                w = candidate_row_widgets.get(cand_id)
-                if w and "status_lbl" in w:
-                    if ok:
-                        parts = []
-                        if exit_label:
-                            parts.append(exit_label)
-                        if ping_ms > 0:
-                            parts.append(f"{ping_ms} ms")
-                        if speed_mbps > 0.0:
-                            parts.append(f"{speed_mbps} Mbps")
-                        txt = " · ".join(parts) if parts else "OK"
-                        w["status_lbl"].setText(f"[OK] {txt}")
-                        w["status_lbl"].setStyleSheet("color: #81C784; font-size: 8pt; font-weight: 500;")
-                    else:
-                        w["status_lbl"].setText(f"[Error] {msg[:35]}")
-                        w["status_lbl"].setStyleSheet("color: #E57373; font-size: 8pt;")
+                btn = candidate_row_widgets.get(cand_id)
+                if btn:
+                    _update_test_button_state(btn, "ok" if ok else "error", exit_label, ping_ms, speed_mbps, msg)
             post_to_main_thread(_update_row)
 
         def _done_all(results):
             benchmark_all_btn.setEnabled(True)
+            for btn in candidate_row_widgets.values():
+                if btn:
+                    btn.setEnabled(True)
             if isinstance(results, list) and results:
                 successful = [r for r in results if r.get("ok")]
                 if successful:
@@ -973,13 +860,6 @@ def create_stealth_subtab(dialog) -> QWidget:
         worker.error.connect(lambda _e: (benchmark_all_btn.setEnabled(True), benchmark_summary_lbl.setText("Benchmark encountered an error.")))
 
     benchmark_all_btn.clicked.connect(_on_benchmark_all)
-
-    # Setup Guide Button Handler
-    def _open_setup_guide():
-        dlg = StealthSetupGuideDialog(dialog, on_profile_imported=lambda _fname: _refresh_wg_profiles_ui())
-        dlg.exec()
-
-    setup_guide_btn.clicked.connect(_open_setup_guide)
 
     layout.addStretch()
     return _scrolled(widget)
