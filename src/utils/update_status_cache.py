@@ -161,6 +161,20 @@ class UpdateStatusCache:
                 del self._cache[str(appid)]
                 self._dirty = True
 
+    def prune_orphans(self, valid_appids: set) -> int:
+        """Remove any cached entries whose AppIDs are not in valid_appids."""
+        with self._lock:
+            valid_set = {str(a) for a in valid_appids if str(a).strip()}
+            to_remove = [aid for aid in self._cache if aid not in valid_set]
+            for aid in to_remove:
+                del self._cache[aid]
+            if to_remove:
+                self._dirty = True
+        if to_remove:
+            self.save_async()
+            logger.info(f"[UpdateCache] Pruned {len(to_remove)} orphaned update status cache entries.")
+        return len(to_remove)
+
     def clear_all(self) -> None:
         """Remove all entries from the update status cache and persist immediately."""
         with self._lock:
@@ -294,3 +308,7 @@ def get_update_cache() -> UpdateStatusCache:
             if _instance is None:
                 _instance = UpdateStatusCache()
     return _instance
+
+
+# Backward compatibility alias
+get_update_status_cache = get_update_cache

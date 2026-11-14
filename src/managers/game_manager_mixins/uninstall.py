@@ -274,12 +274,14 @@ class GameManagerUninstallMixin:
                     except Exception as e:
                         logger.debug(f"[Uninstall] Error stopping stealth proxy manager: {e}")
 
-    def _delete_dlc_depot_files(self, install_path, appid):
-        """Finds and deletes files for all DLC depots listed in appid.depot."""
+    def _delete_dlc_depot_files(self, install_path, appid, target_dlc_ids=None):
+        """Finds and deletes files for DLC depots listed in appid.depot or target_dlc_ids."""
         depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
         if not depot_file.exists():
             return
 
+        target_set = {str(d).strip() for d in target_dlc_ids} if target_dlc_ids else None
+        remaining_lines = []
         try:
             lines = depot_file.read_text().splitlines()
             for line in lines:
@@ -290,9 +292,20 @@ class GameManagerUninstallMixin:
                 if len(parts) >= 2:
                     dlc_appid = parts[0].strip()
                     manifest_id = parts[1].strip()
+                    if target_set is not None and dlc_appid not in target_set:
+                        remaining_lines.append(line)
+                        continue
                     self._delete_single_dlc_depot(
                         install_path, appid, dlc_appid, manifest_id
                     )
+                else:
+                    remaining_lines.append(line)
+
+            if target_set is not None:
+                if remaining_lines:
+                    depot_file.write_text("\n".join(remaining_lines) + "\n")
+                else:
+                    depot_file.unlink(missing_ok=True)
         except Exception as e:
             logger.error(f"Failed to read/delete files from depot config: {e}")
 
@@ -375,9 +388,10 @@ class GameManagerUninstallMixin:
                             f"[GameManager] Could not check plugin game for DLC-only mode: {e}"
                         )
 
+            target_dlc_ids = game_data.get("_dlc_uninstall_ids")
             if is_dlc_only:
                 if install_path and os.path.exists(install_path):
-                    self._delete_dlc_depot_files(install_path, appid)
+                    self._delete_dlc_depot_files(install_path, appid, target_dlc_ids=target_dlc_ids)
                     try:
                         if os.path.isdir(install_path) and not os.listdir(install_path):
                             shutil.rmtree(install_path, ignore_errors=True)
@@ -389,6 +403,25 @@ class GameManagerUninstallMixin:
                             f"Could not remove empty folder {install_path}: {e}"
                         )
             else:
+                if remove_sls and install_path and os.path.exists(install_path):
+                    for m_name in (
+                        ".assella",
+                        ".ASSELLA",
+                        ".DepotDownloader",
+                        ".accela",
+                        ".ACCELA",
+                    ):
+                        m_path = os.path.join(install_path, m_name)
+                        if os.path.exists(m_path):
+                            try:
+                                if os.path.isdir(m_path):
+                                    shutil.rmtree(m_path)
+                                else:
+                                    os.remove(m_path)
+                                logger.info(f"Removed marker {m_name}: {m_path}")
+                            except Exception as e:
+                                logger.warning(f"Could not remove marker {m_name}: {e}")
+
                 if install_path and os.path.exists(install_path):
                     shutil.rmtree(install_path, ignore_errors=True)
                     logger.info(f"Removed game folder: {install_path}")
@@ -423,35 +456,23 @@ class GameManagerUninstallMixin:
                 except Exception as e:
                     logger.debug(f"Error cleaning ACF file for {appid}: {e}")
 
-            if remove_sls and install_path and os.path.exists(install_path):
-                for m_name in (
-                    ".assella",
-                    ".ASSELLA",
-                    ".DepotDownloader",
-                    ".accela",
-                    ".ACCELA",
-                ):
-                    m_path = os.path.join(install_path, m_name)
-                    if os.path.exists(m_path):
-                        try:
-                            if os.path.isdir(m_path):
-                                shutil.rmtree(m_path)
-                            else:
-                                os.remove(m_path)
-                            logger.info(f"Removed marker {m_name}: {m_path}")
-                        except Exception as e:
-                            logger.warning(f"Could not remove marker {m_name}: {e}")
+            depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
+            depot_has_remaining = (
+                is_dlc_only
+                and target_dlc_ids
+                and depot_file.exists()
+                and bool(depot_file.read_text().strip())
+            )
 
-            if (
-                game_data.get("is_accela_install")
-                and appid
-                and appid not in ("0", "N/A", "unknown")
-            ):
+            if appid and appid not in ("0", "N/A", "unknown"):
                 try:
-                    depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
-                    if depot_file.exists():
+                    if not depot_has_remaining and depot_file.exists():
                         depot_file.unlink()
                         logger.info(f"Removed depot file: {depot_file}")
+                    custom_depot = Path(get_base_path()) / "depots" / f"{appid}_custom.json"
+                    if not depot_has_remaining and custom_depot.exists():
+                        custom_depot.unlink()
+                        logger.info(f"Removed custom depot file: {custom_depot}")
                 except Exception as e:
                     logger.warning(
                         f"Failed to remove depot file for appid {appid}: {e}"
@@ -459,10 +480,30 @@ class GameManagerUninstallMixin:
 
             if platform.system() == "Linux" and not is_dlc_only:
                 self._remove_linux_game_data(appid, remove_compatdata, remove_saves)
-                if remove_shortcuts:
-                    self._remove_linux_shortcuts_and_icons(appid)
+                self._remove_linux_shortcuts_and_icons(appid)
 
             if appid and appid not in ("0", "N/A", "unknown"):
+                # If partial DLC-only uninstall, only prune target_dlc_ids from config
+                if is_dlc_only and target_dlc_ids and depot_has_remaining:
+                    config_path = get_user_config_path()
+                    if config_path.exists():
+                        try:
+                            from utils.yaml_config_manager import batch_config_edit
+
+                            with batch_config_edit(config_path) as editor:
+                                for did in target_dlc_ids:
+                                    did_str = str(did).strip()
+                                    editor.remove_app(did_str)
+                                    editor.remove_fake_app_id(did_str)
+                                    editor.remove_app_token(did_str)
+                                    editor.remove_depot(did_str, check_shared=True, excluding_appid=str(appid))
+                                    editor.remove_key(did_str, check_shared=True, excluding_appid=str(appid))
+                            logger.info(f"Removed partial DLC IDs {target_dlc_ids} from SLS config")
+                        except Exception as e:
+                            logger.warning(f"Error purging partial DLC config entries: {e}")
+                    logger.info(f"Partial DLC uninstall complete for {appid}; retaining base game in library.")
+                    return True, None
+
                 try:
                     from utils.plugin_games import unregister_plugin_game
 
@@ -535,10 +576,30 @@ class GameManagerUninstallMixin:
                     f"exclude_from_update_all/{appid}",
                     f"auto_update_manifest/{appid}",
                     f"game_update_status/{appid}",
+                    f"depot_selection/{appid}",
+                    f"dlc_only_mode/{appid}",
+                    f"at0m_no_depots/{appid}",
+                    f"auto_update_enabled/{appid}",
+                    f"last_checked_branch/{appid}",
+                    f"last_checked_branch_buildid/{appid}",
+                    f"last_checked_local_buildid/{appid}",
+                    f"latest_steam_timeupdated/{appid}",
+                    f"last_check_reason/{appid}",
                 ):
                     settings.remove(key)
+                for k in list(settings.allKeys()):
+                    if k.startswith(f"installed_buildid/{appid}/") or k.startswith(f"depot_selection/{appid}/"):
+                        settings.remove(k)
             except Exception as e:
                 logger.debug(f"Failed to clear settings keys for appid {appid}: {e}")
+
+            try:
+                from utils.update_status_cache import get_update_status_cache
+                usc = get_update_status_cache()
+                usc.clear_status(str(appid))
+                usc.save()
+            except Exception as e:
+                logger.debug(f"Failed to clear update status cache for appid {appid}: {e}")
 
             self.remove_game(appid)
             return True, None
@@ -653,6 +714,13 @@ class GameManagerUninstallMixin:
 
                 if icons_removed == 0:
                     logger.info(f"No icons found for AppID {appid}")
+
+            if desktop_files_removed > 0:
+                try:
+                    from utils.desktop_shortcuts import _refresh_menus
+                    _refresh_menus()
+                except Exception as _menu_err:
+                    logger.debug(f"[Shortcuts] Failed to refresh desktop menus: {_menu_err}")
 
         except OSError as e:
             logger.error(

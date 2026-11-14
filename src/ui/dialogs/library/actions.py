@@ -2017,6 +2017,16 @@ class LibraryActionsMixin:
         except Exception as _set_err:
             logger.debug(f"Failed to clear settings keys for appid {appid}: {_set_err}")
 
+        # 8. Clear update status cache for the game and its target IDs
+        try:
+            from utils.update_status_cache import get_update_status_cache
+            usc = get_update_status_cache()
+            for tid in target_ids:
+                usc.clear_status(str(tid))
+            usc.save()
+        except Exception as _usc_err:
+            logger.debug(f"Failed to clear update status cache in wipe_sls_only: {_usc_err}")
+
         if errors:
             return False, "; ".join(errors)
         return True, None

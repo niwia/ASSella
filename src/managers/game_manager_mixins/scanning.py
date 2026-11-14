@@ -163,6 +163,12 @@ class GameManagerScanningMixin:
         }
         logger.debug(f"Rebuilt _games_by_appid with {len(self._games_by_appid)} entries")
 
+        try:
+            from utils.update_status_cache import get_update_status_cache
+            get_update_status_cache().prune_orphans(set(self._games_by_appid.keys()))
+        except Exception as _e:
+            logger.debug(f"[Scanning] Prune orphaned update status cache failed: {_e}")
+
         if hasattr(self, "games_cache"):
             self.games_cache.save(self.games)
 
