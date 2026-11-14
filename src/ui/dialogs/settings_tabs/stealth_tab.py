@@ -32,6 +32,7 @@ from utils.kuroko import (
     StealthPoolManager,
     WireguardProfileManager,
     get_endpoint_scores,
+    safe_settings_string_list,
     test_and_benchmark_endpoint,
 )
 from utils.main_thread import post_to_main_thread
@@ -39,27 +40,7 @@ from utils.task_runner import TaskRunner
 
 logger = logging.getLogger(__name__)
 
-
-def _safe_string_list(settings, key: str, default: Optional[list] = None) -> list[str]:
-    """Safely retrieve a list of strings from QSettings across versions and platforms."""
-    raw = settings.value(key, default or [])
-    if raw is None:
-        return []
-    if isinstance(raw, str):
-        raw = raw.strip()
-        if not raw:
-            return []
-        if raw.startswith("[") and raw.endswith("]"):
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    return [str(x).strip() for x in parsed if str(x).strip()]
-            except Exception as e:
-                logger.debug("Failed to parse settings string list: %s", e)
-        return [raw]
-    if isinstance(raw, (list, tuple)):
-        return [str(x).strip() for x in raw if str(x).strip()]
-    return []
+_safe_string_list = safe_settings_string_list
 
 
 def _format_cached_score(entry: Optional[dict]) -> str:

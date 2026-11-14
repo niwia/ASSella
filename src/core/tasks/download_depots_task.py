@@ -339,6 +339,7 @@ class DownloadDepotsTask(QObject):
                                             c[p_idx + 1] = active_url
                                         else:
                                             c.extend(["-proxy", active_url])
+                                    current_cmd = commands[i]
                                     self.progress.emit(f"Failed over to new stealth endpoint: {active_url}. Resuming depot {depot_id}...")
                                     self.last_percentage = -1
                                     self._is_validating = False
@@ -380,7 +381,11 @@ class DownloadDepotsTask(QObject):
                                 for c in commands[i:]:
                                     while "-proxy" in c:
                                         p_idx = c.index("-proxy")
-                                        del c[p_idx:p_idx + 2]
+                                        if p_idx + 1 < len(c):
+                                            del c[p_idx:p_idx + 2]
+                                        else:
+                                            del c[p_idx]
+                                current_cmd = commands[i]
                                 self.last_percentage = -1
                                 self._is_validating = False
                                 self._current_depot_downloaded_bytes = 0

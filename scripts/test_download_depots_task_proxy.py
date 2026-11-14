@@ -103,7 +103,8 @@ class TestDownloadDepotsTaskProxy(unittest.TestCase):
         self.assertEqual(cmd[proxy_idx + 1], "socks5://127.0.0.1:11080")
         self.assertNotIn("-use-lancache", cmd)
 
-    def test_05_warp_proxy_mode_lifecycle(self):
+    @patch("utils.kuroko.Kuroko.probe_alive", return_value=True)
+    def test_05_warp_proxy_mode_lifecycle(self, mock_probe):
         """When mode is warp, starts wireproxy, sets _wireproxy_started=True, and stops on cleanup."""
         mock_settings = MagicMock()
         mock_settings.value.side_effect = lambda key, default=None, type=None: {
