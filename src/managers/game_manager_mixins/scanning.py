@@ -884,7 +884,10 @@ class GameManagerScanningMixin:
                 if acf_size_available:
                     size_on_disk = game_data["size_on_disk"]
 
-            if not acf_size_available and meta_data:
+            # For ACCELA-managed installs, metadata.json is the authoritative record of downloaded
+            # files and size. If Steam natively created an ACF that only contains a partial depot
+            # subset (e.g. 4 MB launcher stub vs 1.8 GB full game), metadata.json size takes precedence.
+            if meta_data:
                 if "game_name" in meta_data and (
                     not game_data.get("game_name")
                     or is_placeholder_game_name(game_data.get("game_name"), appid)
@@ -894,13 +897,29 @@ class GameManagerScanningMixin:
                     game_data["buildid"] = str(meta_data["buildid"]).strip()
                 if "last_updated" in meta_data:
                     game_data["last_updated"] = meta_data["last_updated"]
-                if meta_data.get("size_on_disk", 0) > 0:
-                    size_on_disk = int(meta_data["size_on_disk"])
+
+                meta_size = int(meta_data.get("size_on_disk", 0))
+                if meta_size > 0 and (is_accela_install or not acf_size_available or meta_size > size_on_disk):
+                    size_on_disk = meta_size
                     acf_size_available = True
                     game_data["size_on_disk"] = size_on_disk
                     logger.debug(
                         f"Using ACCELA metadata SizeOnDisk for {game_name}: {size_on_disk} bytes"
                     )
+
+            if is_accela_install and depot_file and depot_file.exists():
+                try:
+                    for line in depot_file.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if line and ":" in line:
+                            p = [x.strip() for x in line.split(":", 2)]
+                            if p[0].isdigit():
+                                did = p[0]
+                                mid = p[1] if len(p) > 1 else ""
+                                game_data.setdefault("installed_depots", {})[did] = {"manifest": mid}
+                                game_data.setdefault("depots", {})[did] = {"manifest": mid}
+                except Exception as e:
+                    logger.debug(f"Could not enrich depots from {depot_file}: {e}")
 
             if game_data.pop("_acf_placeholder_name", False) or is_placeholder_game_name(
                 game_data.get("game_name"), appid

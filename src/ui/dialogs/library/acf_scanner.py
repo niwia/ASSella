@@ -308,12 +308,16 @@ def scan_acf_files(
                     game_name = raw_name
 
                 size_on_disk = int(data.get("size_on_disk") or 0)
-                if size_on_disk <= 0 and isinstance(meta_data, dict):
+                meta_size = 0
+                if isinstance(meta_data, dict):
                     try:
-                        size_on_disk = int(meta_data.get("size_on_disk") or 0)
+                        meta_size = int(meta_data.get("size_on_disk") or 0)
                     except (ValueError, TypeError):
-                        size_on_disk = 0
-                if size_on_disk <= 0:
+                        meta_size = 0
+
+                if meta_size > 0 and (is_accela or size_on_disk <= 0 or meta_size > size_on_disk):
+                    size_on_disk = meta_size
+                elif size_on_disk <= 0:
                     size_on_disk = compute_directory_size(str(install_path))
 
                 source = "at0-m" if is_atom else ("ACCELA" if is_accela else "Steam")

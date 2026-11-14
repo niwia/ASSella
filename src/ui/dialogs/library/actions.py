@@ -2092,8 +2092,15 @@ class LibraryActionsMixin:
         elif acf_existed:
             try:
                 from utils.steam_acf import ensure_acf_has_installed_depots
+                from utils.dlc_helpers import get_saved_depot_selection
 
-                depot_ids = game_data.get("depot_ids") or []
+                depot_ids = (
+                    game_data.get("depot_ids")
+                    or game_data.get("selected_depots_list")
+                    or get_saved_depot_selection(appid)
+                    or list((game_data.get("installed_depots") or {}).keys())
+                    or []
+                )
                 status = ensure_acf_has_installed_depots(
                     acf, appid, depot_ids, game_data
                 )
