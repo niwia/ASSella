@@ -166,7 +166,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     # Cached endpoint benchmark scores
     init_scores = get_endpoint_scores(dialog.settings)
 
-    # Dynamic Button State Updater
+    # Dynamic Button State Updater (Hubcap style: compact button text with rich tooltips)
     def _update_test_button_state(btn: QPushButton, state: str, exit_label: str = "", ping_ms: int = 0, speed_mbps: float = 0.0, err_msg: str = ""):
         if state == "testing":
             btn.setEnabled(False)
@@ -174,24 +174,19 @@ def create_stealth_subtab(dialog) -> QWidget:
             btn.setToolTip("Benchmarking latency and 5 MB burst throughput...")
             btn.setStyleSheet("""
                 QPushButton {
-                    background-color: rgba(144, 202, 249, 0.15);
-                    border: 1px solid #90CAF9;
+                    background-color: #3b4261;
+                    border: 1px solid #e0af68;
                     border-radius: 5px;
-                    padding: 3px 8px;
-                    color: #90CAF9;
+                    padding: 3px 6px;
+                    color: #e0af68;
                     font-size: 8pt;
-                    font-weight: 600;
+                    font-weight: bold;
                     min-height: 24px;
                 }
             """)
         elif state == "ok":
             btn.setEnabled(True)
-            parts = []
-            if ping_ms > 0:
-                parts.append(f"{ping_ms}ms")
-            if speed_mbps > 0.0:
-                parts.append(f"{speed_mbps:.1f} Mbps")
-            compact_txt = f"✓ {' · '.join(parts)}" if parts else "✓ Connected"
+            compact_txt = f"OK ({ping_ms} ms)" if ping_ms > 0 else "OK"
             btn.setText(compact_txt)
             tt_lines = []
             if exit_label:
@@ -204,51 +199,49 @@ def create_stealth_subtab(dialog) -> QWidget:
             btn.setToolTip("\n".join(tt_lines))
             btn.setStyleSheet("""
                 QPushButton {
-                    background-color: rgba(129, 199, 132, 0.12);
-                    border: 1px solid #81C784;
+                    background-color: #1b5e20;
+                    border: 1px solid #4caf50;
                     border-radius: 5px;
-                    padding: 3px 8px;
-                    color: #81C784;
+                    padding: 3px 6px;
+                    color: #a5d6a7;
                     font-size: 8pt;
-                    font-weight: 600;
+                    font-weight: bold;
                     min-height: 24px;
                 }
                 QPushButton:hover {
-                    background-color: rgba(129, 199, 132, 0.22);
-                    border-color: #A5D6A7;
+                    background-color: #2e7d32;
                 }
             """)
         elif state == "error":
             btn.setEnabled(True)
-            btn.setText("✕ Failed")
+            btn.setText("Failed")
             err = err_msg or "Connection verification failed"
             btn.setToolTip(f"{err}\n\n(Click to retry)")
             btn.setStyleSheet("""
                 QPushButton {
-                    background-color: rgba(229, 115, 115, 0.12);
-                    border: 1px solid #E57373;
+                    background-color: #5c1d1d;
+                    border: 1px solid #e53935;
                     border-radius: 5px;
-                    padding: 3px 8px;
-                    color: #E57373;
+                    padding: 3px 6px;
+                    color: #ef9a9a;
                     font-size: 8pt;
-                    font-weight: 600;
+                    font-weight: bold;
                     min-height: 24px;
                 }
                 QPushButton:hover {
-                    background-color: rgba(229, 115, 115, 0.22);
-                    border-color: #EF5350;
+                    background-color: #7f2626;
                 }
             """)
         else:
             btn.setEnabled(True)
-            btn.setText("Test Connection")
+            btn.setText("Test")
             btn.setToolTip("Test connection and benchmark speed")
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: rgba(255, 255, 255, 0.08);
                     border: 1px solid rgba(255, 255, 255, 0.18);
                     border-radius: 5px;
-                    padding: 3px 8px;
+                    padding: 3px 6px;
                     color: #FFFFFF;
                     font-size: 8pt;
                     font-weight: 500;
@@ -324,17 +317,15 @@ def create_stealth_subtab(dialog) -> QWidget:
     warp_act_row = QHBoxLayout()
     warp_act_row.setSpacing(8)
 
-    warp_test_btn = QPushButton("Test Connection")
-    warp_test_btn.setMinimumWidth(110)
-    warp_test_btn.setMaximumWidth(150)
-    warp_test_btn.setFixedHeight(26)
+    warp_test_btn = QPushButton("Test")
+    warp_test_btn.setFixedSize(88, 26)
     warp_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     _apply_cached_score_to_btn(warp_test_btn, init_scores.get("warp"))
     warp_test_btn.clicked.connect(lambda: _run_unified_test("warp", "", "", warp_test_btn))
     warp_act_row.addWidget(warp_test_btn)
 
     reset_warp_btn = QPushButton("Reset Key")
-    reset_warp_btn.setFixedSize(78, 26)
+    reset_warp_btn.setFixedSize(76, 26)
     reset_warp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     reset_warp_btn.setToolTip("Re-registers a fresh Cloudflare WARP identity if connection stalls or gets rate-limited")
     reset_warp_btn.setStyleSheet(f"""
@@ -386,7 +377,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     # CARD B: WireGuard Configurations (.conf)
     # =========================================================================
     card_wg, card_wg_layout = dialog._create_card_frame("")
-    card_wg_layout.setSpacing(10)
+    card_wg_layout.setSpacing(8)
 
     wg_hdr = QHBoxLayout()
     wg_hdr.setSpacing(10)
@@ -395,8 +386,22 @@ def create_stealth_subtab(dialog) -> QWidget:
     wg_title.setStyleSheet(f"font-size: 9.5pt; font-weight: bold; color: {accent_color}; border: none; background: transparent;")
     wg_hdr.addWidget(wg_title)
     wg_hdr.addStretch()
+    card_wg_layout.addLayout(wg_hdr)
+
+    wg_desc = QLabel(
+        "Userspace WireGuard tunnels (Proton VPN, Windscribe, Mullvad, etc.). Import free or custom .conf files."
+    )
+    wg_desc.setWordWrap(True)
+    wg_desc.setStyleSheet("color: #AAAAAA; font-size: 8.5pt;")
+    card_wg_layout.addWidget(wg_desc)
+
+    # Action toolbar below description: + Add .conf and + Import Folder
+    wg_act_row = QHBoxLayout()
+    wg_act_row.setSpacing(8)
+    wg_act_row.addStretch()
 
     add_conf_btn = QPushButton("+ Add .conf")
+    add_conf_btn.setFixedSize(92, 26)
     add_conf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     add_conf_btn.setStyleSheet(f"""
         QPushButton {{
@@ -405,7 +410,7 @@ def create_stealth_subtab(dialog) -> QWidget:
             border-radius: 5px;
             padding: 3px 8px;
             color: #FFFFFF;
-            font-size: 8.5pt;
+            font-size: 8pt;
             font-weight: 500;
         }}
         QPushButton:hover {{
@@ -413,9 +418,10 @@ def create_stealth_subtab(dialog) -> QWidget:
             border-color: {accent_color};
         }}
     """)
-    wg_hdr.addWidget(add_conf_btn)
+    wg_act_row.addWidget(add_conf_btn)
 
     import_folder_btn = QPushButton("+ Import Folder")
+    import_folder_btn.setFixedSize(105, 26)
     import_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     import_folder_btn.setStyleSheet(f"""
         QPushButton {{
@@ -424,7 +430,7 @@ def create_stealth_subtab(dialog) -> QWidget:
             border-radius: 5px;
             padding: 3px 8px;
             color: #FFFFFF;
-            font-size: 8.5pt;
+            font-size: 8pt;
             font-weight: 500;
         }}
         QPushButton:hover {{
@@ -432,8 +438,8 @@ def create_stealth_subtab(dialog) -> QWidget:
             border-color: {accent_color};
         }}
     """)
-    wg_hdr.addWidget(import_folder_btn)
-    card_wg_layout.addLayout(wg_hdr)
+    wg_act_row.addWidget(import_folder_btn)
+    card_wg_layout.addLayout(wg_act_row)
 
     wg_desc = QLabel(
         "Userspace WireGuard tunnels (Proton VPN, Windscribe, Mullvad, etc.). Import free or custom .conf files."
@@ -490,41 +496,46 @@ def create_stealth_subtab(dialog) -> QWidget:
                 }
             """)
             r_lay = QHBoxLayout(row_frame)
-            r_lay.setContentsMargins(8, 6, 8, 6)
-            r_lay.setSpacing(10)
+            r_lay.setContentsMargins(8, 4, 8, 4)
+            r_lay.setSpacing(8)
 
             # Single mode Radio
-            p_radio = QRadioButton(fname)
+            p_radio = QRadioButton()
             p_radio.setCursor(Qt.CursorShape.PointingHandCursor)
-            p_radio.setStyleSheet("font-size: 9pt; font-weight: 500; color: #FFFFFF;")
+            p_radio.setStyleSheet("font-size: 8.5pt; font-weight: 500; color: #FFFFFF;")
             p_radio.setVisible(not is_rot)
             single_mode_group.addButton(p_radio)
             if fname == saved_active and dialog.settings.value("stealth_proxy_mode", "warp", type=str) == "wireguard":
                 p_radio.setChecked(True)
-            r_lay.addWidget(p_radio)
 
             # Rotation mode Checkbox
-            p_check = QCheckBox(fname)
+            p_check = QCheckBox()
             p_check.setCursor(Qt.CursorShape.PointingHandCursor)
-            p_check.setStyleSheet("font-size: 9pt; font-weight: 500; color: #FFFFFF;")
+            p_check.setStyleSheet("font-size: 8.5pt; font-weight: 500; color: #FFFFFF;")
             p_check.setVisible(is_rot)
             p_check.setChecked(fname in pool_wg_set)
-            r_lay.addWidget(p_check)
 
-            r_lay.addStretch()
+            # Middle-elided label text with full name in tooltip
+            fm = p_radio.fontMetrics()
+            elided_fname = fm.elidedText(fname, Qt.TextElideMode.ElideMiddle, 220)
+            p_radio.setText(elided_fname)
+            p_radio.setToolTip(fname)
+            p_check.setText(elided_fname)
+            p_check.setToolTip(fname)
 
-            # Dynamic Test Button
-            p_test_btn = QPushButton("Test Connection")
-            p_test_btn.setMinimumWidth(110)
-            p_test_btn.setMaximumWidth(150)
-            p_test_btn.setFixedHeight(26)
+            r_lay.addWidget(p_radio, 1)
+            r_lay.addWidget(p_check, 1)
+
+            # Dynamic Test Button (Hubcap style)
+            p_test_btn = QPushButton("Test")
+            p_test_btn.setFixedSize(88, 26)
             p_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             _apply_cached_score_to_btn(p_test_btn, scores.get(f"wg:{fname}"))
             r_lay.addWidget(p_test_btn)
 
             # Delete Button
             p_del_btn = QPushButton("Remove")
-            p_del_btn.setFixedSize(65, 26)
+            p_del_btn.setFixedSize(62, 26)
             p_del_btn.setToolTip(f"Remove profile '{fname}'")
             p_del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             p_del_btn.setStyleSheet("""
@@ -733,12 +744,10 @@ def create_stealth_subtab(dialog) -> QWidget:
     card_custom_layout.addLayout(url_row)
 
     custom_act_row = QHBoxLayout()
-    custom_act_row.setSpacing(10)
+    custom_act_row.setSpacing(8)
 
-    custom_test_btn = QPushButton("Test Connection")
-    custom_test_btn.setMinimumWidth(110)
-    custom_test_btn.setMaximumWidth(150)
-    custom_test_btn.setFixedHeight(26)
+    custom_test_btn = QPushButton("Test")
+    custom_test_btn.setFixedSize(88, 26)
     custom_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     _apply_cached_score_to_btn(custom_test_btn, init_scores.get("custom"))
     custom_test_btn.clicked.connect(

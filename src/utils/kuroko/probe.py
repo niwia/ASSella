@@ -46,12 +46,16 @@ def _parse_cf_trace(trace_text: str) -> str:
     return f"{ip} ({tag}{f' - {loc}' if loc else ''})"
 
 
-def test_connection(proxy_url: str, timeout: float = 8.0) -> Tuple[bool, str]:
+def test_connection(proxy_url: str, timeout: float = 6.0) -> Tuple[bool, str]:
     """
     Verify end-to-end tunnel connectivity through the SOCKS5 proxy and return
     (success, '<exit_ip> (<org_or_provider>)').
-    Uses multi-endpoint fallbacks to guard against public IP API rate limits (HTTP 429).
+    Uses fast probe_alive pre-check and multi-endpoint fallbacks.
     """
+    # Fast-fail: if the tunnel cannot pass traffic, exit immediately (prevents 30s+ timeouts on dead peers)
+    if not probe_alive(proxy_url, timeout=min(3.0, timeout)):
+        return False, "Proxy/tunnel is unreachable or timed out."
+
     endpoints = [
         ("https://1.1.1.1/cdn-cgi/trace", lambda text: _parse_cf_trace(text)),
         (
@@ -64,6 +68,8 @@ def test_connection(proxy_url: str, timeout: float = 8.0) -> Tuple[bool, str]:
         ),
     ]
 
+    per_req_timeout = min(3.5, timeout)
+
     # 1. Prefer curl_cffi if installed
     try:
         from curl_cffi import requests as cffi_requests
@@ -73,7 +79,7 @@ def test_connection(proxy_url: str, timeout: float = 8.0) -> Tuple[bool, str]:
                 resp = cffi_requests.get(
                     url,
                     proxies={"http": proxy_url, "https": proxy_url},
-                    timeout=timeout,
+                    timeout=per_req_timeout,
                 )
                 if resp.status_code == 200:
                     if url.endswith("/trace"):
@@ -84,16 +90,17 @@ def test_connection(proxy_url: str, timeout: float = 8.0) -> Tuple[bool, str]:
             except Exception as endpoint_err:
                 logger.debug(f"[Kuroko] Endpoint {url} failed: {endpoint_err}")
                 continue
+        return False, "Failed to verify connection through proxy across all verification endpoints."
     except ImportError as e:
         logger.debug(f"[Kuroko] curl_cffi not installed: {e}")
 
-    # 2. Fallback: shell out to curl
+    # 2. Fallback: shell out to curl only if curl_cffi is missing
     curl_bin = shutil.which("curl")
     if curl_bin:
         for url, parser in endpoints:
             try:
                 out = subprocess.check_output(
-                    [curl_bin, "-fsSL", "--max-time", str(int(timeout)), "-x", proxy_url, url],
+                    [curl_bin, "-fsSL", "--max-time", str(int(per_req_timeout)), "-x", proxy_url, url],
                     text=True,
                 )
                 if url.endswith("/trace"):
