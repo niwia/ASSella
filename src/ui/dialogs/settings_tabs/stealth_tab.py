@@ -3,10 +3,13 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon, QPainter, QPixmap
+from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -33,11 +36,44 @@ from utils.kuroko import (
     test_and_benchmark_endpoint,
 )
 from utils.main_thread import post_to_main_thread
+from utils.paths import Paths
 from utils.task_runner import TaskRunner
 
 logger = logging.getLogger(__name__)
 
 _safe_string_list = safe_settings_string_list
+
+
+def _colored_svg_icon(path: Path, color: str, size: int = 14) -> QIcon:
+    """Render an SVG with currentColor replaced by the given color string."""
+    try:
+        if not path or not path.exists():
+            return QIcon()
+        svg_str = path.read_text(encoding="utf-8")
+        recolored = svg_str.replace("currentColor", color)
+        renderer = QSvgRenderer(recolored.encode("utf-8"))
+        if not renderer.isValid():
+            return QIcon()
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pixmap)
+        renderer.render(p)
+        p.end()
+        return QIcon(pixmap)
+    except Exception:
+        return QIcon()
+
+
+def _extract_ip_summary(exit_label: str) -> str:
+    """Extract a concise IP and country code from exit label (e.g. '104.28.1.1 (US)')."""
+    if not exit_label:
+        return ""
+    m = re.match(r"^([a-fA-F0-9\.:]+)\s*(?:\(.*?\b([A-Z]{2})\b.*?\))?", exit_label.strip())
+    if m and m.group(1):
+        ip = m.group(1)
+        country = m.group(2)
+        return f"{ip} ({country})" if country else ip
+    return exit_label.split(" - ")[0].strip()[:24]
 
 
 def _scrolled(page: QWidget) -> QScrollArea:
@@ -80,7 +116,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     single_mode_group = QButtonGroup(dialog)
     single_mode_group.setExclusive(True)
 
-    # In-memory candidate row registry for Benchmark All: cand_id -> {status_lbl, test_btn}
+    # In-memory candidate row registry for Benchmark All: cand_id -> {"btn": btn, "ip_lbl": ip_lbl}
     candidate_row_widgets = {}
 
     # =========================================================================
@@ -98,7 +134,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     routing_hdr.addStretch()
     card_routing_layout.addLayout(routing_hdr)
 
-    # Master Toggle
+    # Master Toggle (The on/off switch for the entire stealth pipeline)
     dialog.enable_stealth_proxy_checkbox = create_checkbox_setting(
         "Route Depot Downloads Through Proxy / VPN",
         "enable_stealth_proxy",
@@ -106,8 +142,13 @@ def create_stealth_subtab(dialog) -> QWidget:
         dialog,
         "Routes DepotDownloader through an encrypted tunnel or proxy. Stops downloads immediately if disconnected.",
     )
-    dialog.enable_stealth_proxy_checkbox.toggled.connect(lambda _c: _trigger_visor_refresh())
     card_routing_layout.addWidget(dialog.enable_stealth_proxy_checkbox)
+
+    # Container for sub-options inside Card 1 (disabled/greyscaled when master toggle is off)
+    card_sub_options = QWidget()
+    card_sub_options_layout = QVBoxLayout(card_sub_options)
+    card_sub_options_layout.setContentsMargins(0, 0, 0, 0)
+    card_sub_options_layout.setSpacing(10)
 
     # Multi-Endpoint Rotation Toggle
     dialog.stealth_rotation_checkbox = create_checkbox_setting(
@@ -117,7 +158,7 @@ def create_stealth_subtab(dialog) -> QWidget:
         dialog,
         "Pool multiple endpoints (WARP, WireGuard profiles, custom proxies) with automatic dead-peer failover and speed benchmarking.",
     )
-    card_routing_layout.addWidget(dialog.stealth_rotation_checkbox)
+    card_sub_options_layout.addWidget(dialog.stealth_rotation_checkbox)
 
     # Benchmark All Container (visible when Rotation is ON)
     benchmark_container = QWidget()
@@ -160,14 +201,41 @@ def create_stealth_subtab(dialog) -> QWidget:
     benchmark_btn_row.addWidget(benchmark_summary_lbl, 1)
 
     benchmark_layout.addLayout(benchmark_btn_row)
-    card_routing_layout.addWidget(benchmark_container)
+    card_sub_options_layout.addWidget(benchmark_container)
+    card_routing_layout.addWidget(card_sub_options)
     layout.addWidget(card_routing)
+
+    # Container for all cards below the master card (greyscaled when master toggle is off)
+    cards_container = QWidget()
+    cards_layout = QVBoxLayout(cards_container)
+    cards_layout.setContentsMargins(0, 0, 0, 0)
+    cards_layout.setSpacing(12)
+    layout.addWidget(cards_container)
+
+    def _sync_master_enabled(enabled: bool):
+        card_sub_options.setEnabled(enabled)
+        cards_container.setEnabled(enabled)
+        dim_css = "" if enabled else "QWidget { opacity: 0.45; }"
+        card_sub_options.setStyleSheet(dim_css)
+        cards_container.setStyleSheet(dim_css)
+
+    dialog.enable_stealth_proxy_checkbox.toggled.connect(
+        lambda c: (_sync_master_enabled(c), _trigger_visor_refresh())
+    )
 
     # Cached endpoint benchmark scores
     init_scores = get_endpoint_scores(dialog.settings)
 
     # Dynamic Button State Updater (Hubcap style: compact button text with rich tooltips)
-    def _update_test_button_state(btn: QPushButton, state: str, exit_label: str = "", ping_ms: int = 0, speed_mbps: float = 0.0, err_msg: str = ""):
+    def _update_test_button_state(
+        btn: QPushButton,
+        state: str,
+        exit_label: str = "",
+        ping_ms: int = 0,
+        speed_mbps: float = 0.0,
+        err_msg: str = "",
+        ip_lbl: Optional[QLabel] = None,
+    ):
         if state == "testing":
             btn.setEnabled(False)
             btn.setText("Testing...")
@@ -184,6 +252,9 @@ def create_stealth_subtab(dialog) -> QWidget:
                     min-height: 24px;
                 }
             """)
+            if ip_lbl:
+                ip_lbl.setText("Testing...")
+                ip_lbl.setStyleSheet("color: #e0af68; font-size: 8pt; font-weight: 500;")
         elif state == "ok":
             btn.setEnabled(True)
             compact_txt = f"OK ({ping_ms} ms)" if ping_ms > 0 else "OK"
@@ -212,6 +283,11 @@ def create_stealth_subtab(dialog) -> QWidget:
                     background-color: #2e7d32;
                 }
             """)
+            if ip_lbl:
+                ip_summary = _extract_ip_summary(exit_label)
+                ip_lbl.setText(ip_summary)
+                ip_lbl.setToolTip(f"Exit IP: {exit_label}")
+                ip_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: 500;")
         elif state == "error":
             btn.setEnabled(True)
             btn.setText("Failed")
@@ -232,6 +308,8 @@ def create_stealth_subtab(dialog) -> QWidget:
                     background-color: #7f2626;
                 }
             """)
+            if ip_lbl:
+                ip_lbl.setText("")
         else:
             btn.setEnabled(True)
             btn.setText("Test")
@@ -252,31 +330,35 @@ def create_stealth_subtab(dialog) -> QWidget:
                     border-color: {accent_color};
                 }}
             """)
+            if ip_lbl:
+                ip_lbl.setText("")
 
-    def _apply_cached_score_to_btn(btn: QPushButton, score: Optional[dict]):
+    def _apply_cached_score(btn: QPushButton, ip_lbl: Optional[QLabel], score: Optional[dict]):
         if score and score.get("ok"):
             _update_test_button_state(
-                btn, "ok", score.get("exit_label", ""), score.get("ping_ms", 0), score.get("speed_mbps", 0.0)
+                btn, "ok", score.get("exit_label", ""), score.get("ping_ms", 0), score.get("speed_mbps", 0.0), ip_lbl=ip_lbl
             )
         else:
-            _update_test_button_state(btn, "idle")
+            _update_test_button_state(btn, "idle", ip_lbl=ip_lbl)
 
     # Generic Unified Test Handler
-    def _run_unified_test(mode: str, wg_path: str, custom_url: str, test_btn: QPushButton):
-        _update_test_button_state(test_btn, "testing")
+    def _run_unified_test(mode: str, wg_path: str, custom_url: str, test_btn: QPushButton, ip_lbl: Optional[QLabel] = None):
+        _update_test_button_state(test_btn, "testing", ip_lbl=ip_lbl)
 
         def _done(result):
             if isinstance(result, tuple) and len(result) == 5:
                 ok, exit_label, ping_ms, speed_mbps, err_msg = result
-                _update_test_button_state(test_btn, "ok" if ok else "error", exit_label, ping_ms, speed_mbps, err_msg)
+                _update_test_button_state(
+                    test_btn, "ok" if ok else "error", exit_label, ping_ms, speed_mbps, err_msg, ip_lbl=ip_lbl
+                )
             else:
-                _update_test_button_state(test_btn, "error", err_msg="Unexpected test result")
+                _update_test_button_state(test_btn, "error", err_msg="Unexpected test result", ip_lbl=ip_lbl)
 
         worker = dialog._stealth_task_runner.run(
-            test_and_benchmark_endpoint, mode, wg_path, custom_url, 8.0, dialog.settings
+            test_and_benchmark_endpoint, mode, wg_path, custom_url, 6.0, dialog.settings
         )
         worker.finished.connect(_done)
-        worker.error.connect(lambda _e: _update_test_button_state(test_btn, "error", err_msg="Test execution failed"))
+        worker.error.connect(lambda _e: _update_test_button_state(test_btn, "error", err_msg="Test execution failed", ip_lbl=ip_lbl))
 
     # =========================================================================
     # CARD A: Cloudflare WARP
@@ -307,9 +389,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     warp_hdr.addWidget(warp_badge)
     card_warp_layout.addLayout(warp_hdr)
 
-    warp_desc = QLabel(
-        "Routes downloads through Cloudflare WARP using userspace WireGuard. Zero setup required, no account or root privileges needed."
-    )
+    warp_desc = QLabel("Routes through free Cloudflare WARP servers.")
     warp_desc.setWordWrap(True)
     warp_desc.setStyleSheet("color: #AAAAAA; font-size: 8.5pt;")
     card_warp_layout.addWidget(warp_desc)
@@ -320,12 +400,9 @@ def create_stealth_subtab(dialog) -> QWidget:
     warp_test_btn = QPushButton("Test")
     warp_test_btn.setFixedSize(88, 26)
     warp_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    _apply_cached_score_to_btn(warp_test_btn, init_scores.get("warp"))
-    warp_test_btn.clicked.connect(lambda: _run_unified_test("warp", "", "", warp_test_btn))
-    warp_act_row.addWidget(warp_test_btn)
 
     reset_warp_btn = QPushButton("Reset Key")
-    reset_warp_btn.setFixedSize(76, 26)
+    reset_warp_btn.setFixedSize(88, 26)
     reset_warp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     reset_warp_btn.setToolTip("Re-registers a fresh Cloudflare WARP identity if connection stalls or gets rate-limited")
     reset_warp_btn.setStyleSheet(f"""
@@ -345,6 +422,17 @@ def create_stealth_subtab(dialog) -> QWidget:
         }}
     """)
 
+    warp_ip_lbl = QLabel("")
+    warp_ip_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: 500;")
+
+    _apply_cached_score(warp_test_btn, warp_ip_lbl, init_scores.get("warp"))
+    warp_test_btn.clicked.connect(lambda: _run_unified_test("warp", "", "", warp_test_btn, warp_ip_lbl))
+    warp_act_row.addWidget(warp_test_btn)
+    warp_act_row.addWidget(reset_warp_btn)
+    warp_act_row.addWidget(warp_ip_lbl)
+    warp_act_row.addStretch()
+    card_warp_layout.addLayout(warp_act_row)
+
     def _on_reset_warp():
         reset_warp_btn.setEnabled(False)
         reset_warp_btn.setText("Resetting...")
@@ -352,29 +440,26 @@ def create_stealth_subtab(dialog) -> QWidget:
         def _bg_reset():
             from utils.kuroko import get_or_create_warp_config
             get_or_create_warp_config(force_refresh=True)
-            return test_and_benchmark_endpoint("warp", "", "", 8.0, dialog.settings)
+            return test_and_benchmark_endpoint("warp", "", "", 6.0, dialog.settings)
 
         def _on_reset_done(result):
             reset_warp_btn.setEnabled(True)
             reset_warp_btn.setText("Reset Key")
             if isinstance(result, tuple) and len(result) == 5:
                 ok, exit_label, ping_ms, speed_mbps, err_msg = result
-                _update_test_button_state(warp_test_btn, "ok" if ok else "error", exit_label, ping_ms, speed_mbps, err_msg)
+                _update_test_button_state(warp_test_btn, "ok" if ok else "error", exit_label, ping_ms, speed_mbps, err_msg, ip_lbl=warp_ip_lbl)
 
         worker = dialog._stealth_task_runner.run(_bg_reset)
         worker.finished.connect(_on_reset_done)
         worker.error.connect(lambda _e: (reset_warp_btn.setEnabled(True), reset_warp_btn.setText("Reset Key")))
 
     reset_warp_btn.clicked.connect(_on_reset_warp)
-    warp_act_row.addWidget(reset_warp_btn)
-    warp_act_row.addStretch()
-    card_warp_layout.addLayout(warp_act_row)
 
-    candidate_row_widgets["warp"] = warp_test_btn
-    layout.addWidget(card_warp)
+    candidate_row_widgets["warp"] = {"btn": warp_test_btn, "ip_lbl": warp_ip_lbl}
+    cards_layout.addWidget(card_warp)
 
     # =========================================================================
-    # CARD B: WireGuard Configurations (.conf)
+    # CARD B: WireGuard
     # =========================================================================
     card_wg, card_wg_layout = dialog._create_card_frame("")
     card_wg_layout.setSpacing(8)
@@ -382,68 +467,13 @@ def create_stealth_subtab(dialog) -> QWidget:
     wg_hdr = QHBoxLayout()
     wg_hdr.setSpacing(10)
 
-    wg_title = QLabel("WireGuard Configurations (.conf)")
+    wg_title = QLabel("WireGuard")
     wg_title.setStyleSheet(f"font-size: 9.5pt; font-weight: bold; color: {accent_color}; border: none; background: transparent;")
     wg_hdr.addWidget(wg_title)
     wg_hdr.addStretch()
     card_wg_layout.addLayout(wg_hdr)
 
-    wg_desc = QLabel(
-        "Userspace WireGuard tunnels (Proton VPN, Windscribe, Mullvad, etc.). Import free or custom .conf files."
-    )
-    wg_desc.setWordWrap(True)
-    wg_desc.setStyleSheet("color: #AAAAAA; font-size: 8.5pt;")
-    card_wg_layout.addWidget(wg_desc)
-
-    # Action toolbar below description: + Add .conf and + Import Folder
-    wg_act_row = QHBoxLayout()
-    wg_act_row.setSpacing(8)
-    wg_act_row.addStretch()
-
-    add_conf_btn = QPushButton("+ Add .conf")
-    add_conf_btn.setFixedSize(92, 26)
-    add_conf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    add_conf_btn.setStyleSheet(f"""
-        QPushButton {{
-            background-color: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            border-radius: 5px;
-            padding: 3px 8px;
-            color: #FFFFFF;
-            font-size: 8pt;
-            font-weight: 500;
-        }}
-        QPushButton:hover {{
-            background-color: rgba(255, 255, 255, 0.16);
-            border-color: {accent_color};
-        }}
-    """)
-    wg_act_row.addWidget(add_conf_btn)
-
-    import_folder_btn = QPushButton("+ Import Folder")
-    import_folder_btn.setFixedSize(105, 26)
-    import_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    import_folder_btn.setStyleSheet(f"""
-        QPushButton {{
-            background-color: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            border-radius: 5px;
-            padding: 3px 8px;
-            color: #FFFFFF;
-            font-size: 8pt;
-            font-weight: 500;
-        }}
-        QPushButton:hover {{
-            background-color: rgba(255, 255, 255, 0.16);
-            border-color: {accent_color};
-        }}
-    """)
-    wg_act_row.addWidget(import_folder_btn)
-    card_wg_layout.addLayout(wg_act_row)
-
-    wg_desc = QLabel(
-        "Userspace WireGuard tunnels (Proton VPN, Windscribe, Mullvad, etc.). Import free or custom .conf files."
-    )
+    wg_desc = QLabel("Import your VPN/proxy/SOCKS5 config files.")
     wg_desc.setWordWrap(True)
     wg_desc.setStyleSheet("color: #AAAAAA; font-size: 8.5pt;")
     card_wg_layout.addWidget(wg_desc)
@@ -454,180 +484,10 @@ def create_stealth_subtab(dialog) -> QWidget:
     profiles_layout.setContentsMargins(0, 0, 0, 0)
     profiles_layout.setSpacing(6)
     card_wg_layout.addWidget(profiles_container)
-    layout.addWidget(card_wg)
+    cards_layout.addWidget(card_wg)
 
-    # Registry of WG profile row UI elements: filename -> {radio, check, row_widget, status_lbl, test_btn}
+    # Registry of WG profile row UI elements: filename -> {radio, check, test_btn, ip_lbl}
     profile_row_items = {}
-
-    def _refresh_wg_profiles_ui():
-        # Clear existing rows
-        for fname, item in list(profile_row_items.items()):
-            candidate_row_widgets.pop(f"wg:{fname}", None)
-            if "radio" in item and item["radio"]:
-                single_mode_group.removeButton(item["radio"])
-        while profiles_layout.count() > 0:
-            child = profiles_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-        profile_row_items.clear()
-
-        profiles = WireguardProfileManager.list_profiles()
-        saved_active = dialog.settings.value("stealth_active_wg_profile", "", type=str).strip()
-        pool_wg_set = set(_safe_string_list(dialog.settings, "stealth_pool_wg_profiles"))
-        scores = get_endpoint_scores(dialog.settings)
-        is_rot = dialog.stealth_rotation_checkbox.isChecked()
-
-        if not profiles:
-            empty_lbl = QLabel("No WireGuard profiles imported yet. Click '+ Add .conf' above to import.")
-            empty_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 8.5pt; font-style: italic; padding: 6px;")
-            profiles_layout.addWidget(empty_lbl)
-            return
-
-        for p in profiles:
-            fname = p["filename"]
-            fpath = p["path"]
-
-            row_frame = QFrame()
-            row_frame.setStyleSheet("""
-                QFrame {
-                    background-color: rgba(255, 255, 255, 0.025);
-                    border: 1px solid rgba(255, 255, 255, 0.07);
-                    border-radius: 6px;
-                }
-            """)
-            r_lay = QHBoxLayout(row_frame)
-            r_lay.setContentsMargins(8, 4, 8, 4)
-            r_lay.setSpacing(8)
-
-            # Single mode Radio
-            p_radio = QRadioButton()
-            p_radio.setCursor(Qt.CursorShape.PointingHandCursor)
-            p_radio.setStyleSheet("font-size: 8.5pt; font-weight: 500; color: #FFFFFF;")
-            p_radio.setVisible(not is_rot)
-            single_mode_group.addButton(p_radio)
-            if fname == saved_active and dialog.settings.value("stealth_proxy_mode", "warp", type=str) == "wireguard":
-                p_radio.setChecked(True)
-
-            # Rotation mode Checkbox
-            p_check = QCheckBox()
-            p_check.setCursor(Qt.CursorShape.PointingHandCursor)
-            p_check.setStyleSheet("font-size: 8.5pt; font-weight: 500; color: #FFFFFF;")
-            p_check.setVisible(is_rot)
-            p_check.setChecked(fname in pool_wg_set)
-
-            # Middle-elided label text with full name in tooltip
-            fm = p_radio.fontMetrics()
-            elided_fname = fm.elidedText(fname, Qt.TextElideMode.ElideMiddle, 220)
-            p_radio.setText(elided_fname)
-            p_radio.setToolTip(fname)
-            p_check.setText(elided_fname)
-            p_check.setToolTip(fname)
-
-            r_lay.addWidget(p_radio, 1)
-            r_lay.addWidget(p_check, 1)
-
-            # Dynamic Test Button (Hubcap style)
-            p_test_btn = QPushButton("Test")
-            p_test_btn.setFixedSize(88, 26)
-            p_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            _apply_cached_score_to_btn(p_test_btn, scores.get(f"wg:{fname}"))
-            r_lay.addWidget(p_test_btn)
-
-            # Delete Button
-            p_del_btn = QPushButton("Remove")
-            p_del_btn.setFixedSize(62, 26)
-            p_del_btn.setToolTip(f"Remove profile '{fname}'")
-            p_del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            p_del_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: transparent;
-                    border: 1px solid rgba(229, 115, 115, 0.35);
-                    border-radius: 4px;
-                    color: #E57373;
-                    font-size: 8pt;
-                    font-weight: 500;
-                }
-                QPushButton:hover {
-                    background-color: rgba(229, 115, 115, 0.2);
-                    border-color: #E57373;
-                }
-            """)
-            r_lay.addWidget(p_del_btn)
-
-            profiles_layout.addWidget(row_frame)
-
-            # Connect Radio Toggle
-            def _make_radio_cb(profile_fname, profile_path):
-                return lambda checked: _on_wg_radio_toggled(profile_fname, profile_path, checked)
-
-            p_radio.toggled.connect(_make_radio_cb(fname, fpath))
-
-            # Connect Checkbox Toggle
-            def _make_check_cb(profile_fname):
-                return lambda checked: _on_wg_check_toggled(profile_fname, checked)
-
-            p_check.toggled.connect(_make_check_cb(fname))
-
-            # Connect Test Button
-            def _make_test_cb(profile_path, test_btn_widget):
-                return lambda: _run_unified_test("wireguard", profile_path, "", test_btn_widget)
-
-            p_test_btn.clicked.connect(_make_test_cb(fpath, p_test_btn))
-
-            # Connect Delete Button
-            def _make_del_cb(profile_fname):
-                return lambda: _on_delete_profile(profile_fname)
-
-            p_del_btn.clicked.connect(_make_del_cb(fname))
-
-            profile_row_items[fname] = {
-                "radio": p_radio,
-                "check": p_check,
-                "test_btn": p_test_btn,
-            }
-            candidate_row_widgets[f"wg:{fname}"] = p_test_btn
-
-    def _on_wg_radio_toggled(profile_fname: str, profile_path: str, checked: bool):
-        if checked:
-            dialog.settings.setValue("stealth_proxy_mode", "wireguard")
-            dialog.settings.setValue("stealth_active_wg_profile", profile_fname)
-            dialog.settings.setValue("stealth_proxy_wg_path", profile_path)
-            dialog.stealth_proxy_wg_edit.setText(profile_path)
-            _trigger_visor_refresh()
-
-    def _on_wg_check_toggled(profile_fname: str, checked: bool):
-        cur_list = _safe_string_list(dialog.settings, "stealth_pool_wg_profiles")
-        cur_set = set(str(x) for x in cur_list)
-        if checked:
-            cur_set.add(profile_fname)
-        else:
-            cur_set.discard(profile_fname)
-        dialog.settings.setValue("stealth_pool_wg_profiles", sorted(list(cur_set)))
-        _trigger_visor_refresh()
-
-    def _on_delete_profile(profile_fname: str):
-        confirmed = ThemedMessageBox.question(
-            dialog,
-            "Delete Profile",
-            f"Are you sure you want to delete WireGuard configuration '{profile_fname}'?",
-        )
-        if confirmed:
-            WireguardProfileManager.delete_profile(profile_fname)
-            # Remove from pool settings
-            cur_list = _safe_string_list(dialog.settings, "stealth_pool_wg_profiles")
-            cur_set = set(str(x) for x in cur_list)
-            cur_set.discard(profile_fname)
-            dialog.settings.setValue("stealth_pool_wg_profiles", sorted(list(cur_set)))
-
-            # If active single profile was deleted, fall back to WARP
-            if dialog.settings.value("stealth_active_wg_profile", "", type=str) == profile_fname:
-                dialog.settings.setValue("stealth_active_wg_profile", "")
-                dialog.settings.setValue("stealth_proxy_wg_path", "")
-                dialog.settings.setValue("stealth_proxy_mode", "warp")
-                warp_radio.setChecked(True)
-
-            _refresh_wg_profiles_ui()
-            _trigger_visor_refresh()
 
     def _on_add_conf():
         path, _ = ThemedFileDialog.getOpenFileName(
@@ -672,11 +532,241 @@ def create_stealth_subtab(dialog) -> QWidget:
                     f"Successfully imported {imported_count} WireGuard configuration(s).",
                 )
 
-    add_conf_btn.clicked.connect(_on_add_conf)
-    import_folder_btn.clicked.connect(_on_import_folder)
+    def _on_delete_profile(profile_fname: str):
+        confirmed = ThemedMessageBox.question(
+            dialog,
+            "Delete Profile",
+            f"Are you sure you want to delete WireGuard configuration '{profile_fname}'?",
+        )
+        if confirmed:
+            WireguardProfileManager.delete_profile(profile_fname)
+            # Remove from pool settings
+            cur_list = _safe_string_list(dialog.settings, "stealth_pool_wg_profiles")
+            cur_set = set(str(x) for x in cur_list)
+            cur_set.discard(profile_fname)
+            dialog.settings.setValue("stealth_pool_wg_profiles", sorted(list(cur_set)))
+
+            # If active single profile was deleted, fall back to WARP
+            if dialog.settings.value("stealth_active_wg_profile", "", type=str) == profile_fname:
+                dialog.settings.setValue("stealth_active_wg_profile", "")
+                dialog.settings.setValue("stealth_proxy_wg_path", "")
+                dialog.settings.setValue("stealth_proxy_mode", "warp")
+                warp_radio.setChecked(True)
+
+            _refresh_wg_profiles_ui()
+            _trigger_visor_refresh()
+
+    def _refresh_wg_profiles_ui():
+        # Clear existing rows and layouts
+        for fname, item in list(profile_row_items.items()):
+            candidate_row_widgets.pop(f"wg:{fname}", None)
+            if "radio" in item and item["radio"]:
+                single_mode_group.removeButton(item["radio"])
+        while profiles_layout.count() > 0:
+            child = profiles_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+            elif child.layout():
+                while child.layout().count() > 0:
+                    sub = child.layout().takeAt(0)
+                    if sub.widget():
+                        sub.widget().deleteLater()
+        profile_row_items.clear()
+
+        profiles = WireguardProfileManager.list_profiles()
+        saved_active = dialog.settings.value("stealth_active_wg_profile", "", type=str).strip()
+        pool_wg_set = set(_safe_string_list(dialog.settings, "stealth_pool_wg_profiles"))
+        scores = get_endpoint_scores(dialog.settings)
+        is_rot = dialog.stealth_rotation_checkbox.isChecked()
+
+        if not profiles:
+            empty_lbl = QLabel("No WireGuard profiles imported yet.")
+            empty_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.4); font-size: 8.5pt; font-style: italic; padding: 4px 6px;")
+            profiles_layout.addWidget(empty_lbl)
+        else:
+            for p in profiles:
+                fname = p["filename"]
+                fpath = p["path"]
+
+                row_frame = QFrame()
+                row_frame.setStyleSheet("""
+                    QFrame {
+                        background-color: rgba(255, 255, 255, 0.025);
+                        border: 1px solid rgba(255, 255, 255, 0.07);
+                        border-radius: 6px;
+                    }
+                """)
+                r_lay = QHBoxLayout(row_frame)
+                r_lay.setContentsMargins(8, 4, 8, 4)
+                r_lay.setSpacing(8)
+
+                # Single mode Radio
+                p_radio = QRadioButton()
+                p_radio.setCursor(Qt.CursorShape.PointingHandCursor)
+                p_radio.setStyleSheet("font-size: 8.5pt; font-weight: 500; color: #FFFFFF;")
+                p_radio.setVisible(not is_rot)
+                single_mode_group.addButton(p_radio)
+                if fname == saved_active and dialog.settings.value("stealth_proxy_mode", "warp", type=str) == "wireguard":
+                    p_radio.setChecked(True)
+
+                # Rotation mode Checkbox
+                p_check = QCheckBox()
+                p_check.setCursor(Qt.CursorShape.PointingHandCursor)
+                p_check.setStyleSheet("font-size: 8.5pt; font-weight: 500; color: #FFFFFF;")
+                p_check.setVisible(is_rot)
+                p_check.setChecked(fname in pool_wg_set)
+
+                # Middle-elided label text with full name in tooltip
+                fm = p_radio.fontMetrics()
+                elided_fname = fm.elidedText(fname, Qt.TextElideMode.ElideMiddle, 200)
+                p_radio.setText(elided_fname)
+                p_radio.setToolTip(fname)
+                p_check.setText(elided_fname)
+                p_check.setToolTip(fname)
+
+                r_lay.addWidget(p_radio, 1)
+                r_lay.addWidget(p_check, 1)
+
+                # Dynamic Test Button (Hubcap style)
+                p_test_btn = QPushButton("Test")
+                p_test_btn.setFixedSize(88, 26)
+                p_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+                # Exit IP label
+                p_ip_lbl = QLabel("")
+                p_ip_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: 500;")
+                _apply_cached_score(p_test_btn, p_ip_lbl, scores.get(f"wg:{fname}"))
+
+                r_lay.addWidget(p_test_btn)
+                r_lay.addWidget(p_ip_lbl)
+
+                # Delete Button with trash icon
+                p_del_btn = QPushButton()
+                p_del_btn.setFixedSize(26, 26)
+                p_del_btn.setToolTip(f"Remove profile '{fname}'")
+                p_del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                bin_icon = _colored_svg_icon(Paths.icon("bin.svg"), "#E57373", 14)
+                if not bin_icon.isNull():
+                    p_del_btn.setIcon(bin_icon)
+                else:
+                    p_del_btn.setText("X")
+                p_del_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: transparent;
+                        border: 1px solid rgba(229, 115, 115, 0.35);
+                        border-radius: 4px;
+                        padding: 3px;
+                    }
+                    QPushButton:hover {
+                        background-color: rgba(229, 115, 115, 0.2);
+                        border-color: #E57373;
+                    }
+                """)
+                r_lay.addWidget(p_del_btn)
+
+                profiles_layout.addWidget(row_frame)
+
+                # Connect Radio Toggle
+                def _make_radio_cb(profile_fname, profile_path):
+                    return lambda checked: _on_wg_radio_toggled(profile_fname, profile_path, checked)
+
+                p_radio.toggled.connect(_make_radio_cb(fname, fpath))
+
+                # Connect Checkbox Toggle
+                def _make_check_cb(profile_fname):
+                    return lambda checked: _on_wg_check_toggled(profile_fname, checked)
+
+                p_check.toggled.connect(_make_check_cb(fname))
+
+                # Connect Test Button
+                def _make_test_cb(profile_path, test_btn_widget, ip_lbl_widget):
+                    return lambda: _run_unified_test("wireguard", profile_path, "", test_btn_widget, ip_lbl_widget)
+
+                p_test_btn.clicked.connect(_make_test_cb(fpath, p_test_btn, p_ip_lbl))
+
+                # Connect Delete Button
+                def _make_del_cb(profile_fname):
+                    return lambda: _on_delete_profile(profile_fname)
+
+                p_del_btn.clicked.connect(_make_del_cb(fname))
+
+                profile_row_items[fname] = {
+                    "radio": p_radio,
+                    "check": p_check,
+                    "test_btn": p_test_btn,
+                    "ip_lbl": p_ip_lbl,
+                }
+                candidate_row_widgets[f"wg:{fname}"] = {"btn": p_test_btn, "ip_lbl": p_ip_lbl}
+
+        # Add .conf and Import Folder buttons appear AFTER the last entry
+        add_btns_row = QHBoxLayout()
+        add_btns_row.setSpacing(8)
+        add_btns_row.addStretch()
+
+        add_conf_btn = QPushButton("+ Add .conf")
+        add_conf_btn.setFixedSize(92, 26)
+        add_conf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_conf_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 5px;
+                padding: 3px 8px;
+                color: #FFFFFF;
+                font-size: 8pt;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.16);
+                border-color: {accent_color};
+            }}
+        """)
+        add_conf_btn.clicked.connect(_on_add_conf)
+        add_btns_row.addWidget(add_conf_btn)
+
+        import_folder_btn = QPushButton("+ Import Folder")
+        import_folder_btn.setFixedSize(105, 26)
+        import_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        import_folder_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 5px;
+                padding: 3px 8px;
+                color: #FFFFFF;
+                font-size: 8pt;
+                font-weight: 500;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.16);
+                border-color: {accent_color};
+            }}
+        """)
+        import_folder_btn.clicked.connect(_on_import_folder)
+        add_btns_row.addWidget(import_folder_btn)
+
+        profiles_layout.addLayout(add_btns_row)
+
+    def _on_wg_radio_toggled(profile_fname: str, profile_path: str, checked: bool):
+        if checked:
+            dialog.settings.setValue("stealth_proxy_mode", "wireguard")
+            dialog.settings.setValue("stealth_active_wg_profile", profile_fname)
+            dialog.settings.setValue("stealth_proxy_wg_path", profile_path)
+            dialog.stealth_proxy_wg_edit.setText(profile_path)
+            _trigger_visor_refresh()
+
+    def _on_wg_check_toggled(profile_fname: str, checked: bool):
+        cur_list = _safe_string_list(dialog.settings, "stealth_pool_wg_profiles")
+        cur_set = set(str(x) for x in cur_list)
+        if checked:
+            cur_set.add(profile_fname)
+        else:
+            cur_set.discard(profile_fname)
+        dialog.settings.setValue("stealth_pool_wg_profiles", sorted(list(cur_set)))
+        _trigger_visor_refresh()
 
     # =========================================================================
-    # CARD C: Custom SOCKS5 / HTTP Proxy
+    # CARD C: Custom Proxy
     # =========================================================================
     card_custom, card_custom_layout = dialog._create_card_frame("")
     card_custom_layout.setSpacing(8)
@@ -684,13 +774,13 @@ def create_stealth_subtab(dialog) -> QWidget:
     custom_hdr = QHBoxLayout()
     custom_hdr.setSpacing(10)
 
-    custom_radio = QRadioButton("Custom SOCKS5 / HTTP Proxy")
+    custom_radio = QRadioButton("Custom Proxy")
     custom_radio.setCursor(Qt.CursorShape.PointingHandCursor)
     custom_radio.setStyleSheet("font-size: 9.5pt; font-weight: bold; color: #FFFFFF;")
     single_mode_group.addButton(custom_radio)
     custom_hdr.addWidget(custom_radio)
 
-    custom_check = QCheckBox("Custom SOCKS5 / HTTP Proxy")
+    custom_check = QCheckBox("Custom Proxy")
     custom_check.setCursor(Qt.CursorShape.PointingHandCursor)
     custom_check.setStyleSheet("font-size: 9.5pt; font-weight: bold; color: #FFFFFF;")
     custom_check.setChecked(dialog.settings.value("stealth_pool_custom", False, type=bool))
@@ -700,9 +790,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     custom_hdr.addStretch()
     card_custom_layout.addLayout(custom_hdr)
 
-    custom_desc = QLabel(
-        "Route downloads through an existing local or remote SOCKS5 / HTTP proxy (e.g. Tor or SSH dynamic tunnel)."
-    )
+    custom_desc = QLabel("Remote SOCKS5 / HTTP (Tor and SSH)")
     custom_desc.setWordWrap(True)
     custom_desc.setStyleSheet("color: #AAAAAA; font-size: 8.5pt;")
     card_custom_layout.addWidget(custom_desc)
@@ -712,13 +800,13 @@ def create_stealth_subtab(dialog) -> QWidget:
     url_row.setSpacing(8)
 
     url_lbl = QLabel("Proxy URL:")
-    url_lbl.setFixedWidth(80)
+    url_lbl.setFixedWidth(70)
     url_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500;")
     url_row.addWidget(url_lbl)
 
     dialog.stealth_proxy_custom_edit = QLineEdit()
     dialog.stealth_proxy_custom_edit.setPlaceholderText("socks5://127.0.0.1:1080 (or socks5://user:pass@host:port)")
-    custom_saved_url = dialog.settings.value("stealth_proxy_custom_url", "socks5://127.0.0.1:1080", type=str)
+    custom_saved_url = dialog.settings.value("stealth_proxy_custom_url", "", type=str)
     dialog.stealth_proxy_custom_edit.setText(custom_saved_url)
     dialog.stealth_proxy_custom_edit.setStyleSheet(f"""
         QLineEdit {{
@@ -734,12 +822,6 @@ def create_stealth_subtab(dialog) -> QWidget:
             background-color: rgba(255, 255, 255, 0.08);
         }}
     """)
-    dialog.stealth_proxy_custom_edit.textChanged.connect(
-        lambda text: (
-            dialog.settings.setValue("stealth_proxy_custom_url", text.strip()),
-            _trigger_visor_refresh(),
-        )
-    )
     url_row.addWidget(dialog.stealth_proxy_custom_edit, 1)
     card_custom_layout.addLayout(url_row)
 
@@ -749,16 +831,68 @@ def create_stealth_subtab(dialog) -> QWidget:
     custom_test_btn = QPushButton("Test")
     custom_test_btn.setFixedSize(88, 26)
     custom_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    _apply_cached_score_to_btn(custom_test_btn, init_scores.get("custom"))
+
+    custom_ip_lbl = QLabel("")
+    custom_ip_lbl.setStyleSheet("color: #81C784; font-size: 8pt; font-weight: 500;")
+    _apply_cached_score(custom_test_btn, custom_ip_lbl, init_scores.get("custom"))
+
     custom_test_btn.clicked.connect(
-        lambda: _run_unified_test("custom", "", dialog.stealth_proxy_custom_edit.text().strip(), custom_test_btn)
+        lambda: _run_unified_test("custom", "", dialog.stealth_proxy_custom_edit.text().strip(), custom_test_btn, custom_ip_lbl)
     )
     custom_act_row.addWidget(custom_test_btn)
+    custom_act_row.addWidget(custom_ip_lbl)
+
+    custom_clear_btn = QPushButton()
+    custom_clear_btn.setFixedSize(26, 26)
+    custom_clear_btn.setToolTip("Clear custom proxy URL")
+    custom_clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    bin_icon_custom = _colored_svg_icon(Paths.icon("bin.svg"), "#E57373", 14)
+    if not bin_icon_custom.isNull():
+        custom_clear_btn.setIcon(bin_icon_custom)
+    else:
+        custom_clear_btn.setText("X")
+    custom_clear_btn.setStyleSheet("""
+        QPushButton {
+            background-color: transparent;
+            border: 1px solid rgba(229, 115, 115, 0.35);
+            border-radius: 4px;
+            padding: 3px;
+        }
+        QPushButton:hover {
+            background-color: rgba(229, 115, 115, 0.2);
+            border-color: #E57373;
+        }
+    """)
+    custom_clear_btn.clicked.connect(lambda: dialog.stealth_proxy_custom_edit.clear())
+    custom_act_row.addWidget(custom_clear_btn)
     custom_act_row.addStretch()
     card_custom_layout.addLayout(custom_act_row)
 
-    candidate_row_widgets["custom"] = custom_test_btn
-    layout.addWidget(card_custom)
+    candidate_row_widgets["custom"] = {"btn": custom_test_btn, "ip_lbl": custom_ip_lbl}
+    cards_layout.addWidget(card_custom)
+
+    def _sync_custom_url_state(url_text: str):
+        clean_url = url_text.strip()
+        dialog.settings.setValue("stealth_proxy_custom_url", clean_url)
+        _trigger_visor_refresh()
+        has_url = bool(clean_url)
+        custom_check.setEnabled(has_url)
+        custom_radio.setEnabled(has_url)
+        custom_test_btn.setEnabled(has_url)
+        custom_clear_btn.setEnabled(has_url)
+        if not has_url:
+            custom_check.setToolTip("Enter a proxy URL first to include in rotation")
+            custom_radio.setToolTip("Enter a proxy URL first to select this mode")
+            if custom_check.isChecked():
+                custom_check.setChecked(False)
+            if custom_radio.isChecked():
+                warp_radio.setChecked(True)
+        else:
+            custom_check.setToolTip("")
+            custom_radio.setToolTip("")
+
+    dialog.stealth_proxy_custom_edit.textChanged.connect(_sync_custom_url_state)
+    _sync_custom_url_state(custom_saved_url)
 
     # Initial Population of WG Profiles
     _refresh_wg_profiles_ui()
@@ -781,7 +915,7 @@ def create_stealth_subtab(dialog) -> QWidget:
     saved_mode = dialog.settings.value("stealth_proxy_mode", "warp", type=str).lower().strip()
     if saved_mode == "warp":
         warp_radio.setChecked(True)
-    elif saved_mode == "custom":
+    elif saved_mode == "custom" and dialog.stealth_proxy_custom_edit.text().strip():
         custom_radio.setChecked(True)
     elif saved_mode == "wireguard":
         active_prof = dialog.settings.value("stealth_active_wg_profile", "", type=str).strip()
@@ -789,6 +923,8 @@ def create_stealth_subtab(dialog) -> QWidget:
             profile_row_items[active_prof]["radio"].setChecked(True)
         else:
             warp_radio.setChecked(True)
+    else:
+        warp_radio.setChecked(True)
 
     # Mode Switcher (Single Mode vs Rotation Mode)
     def _update_mode_visibility():
@@ -819,7 +955,9 @@ def create_stealth_subtab(dialog) -> QWidget:
         benchmark_summary_lbl.setText("Testing candidates sequentially (5 MB burst)...")
         benchmark_summary_lbl.setStyleSheet("color: #90CAF9; font-size: 8.5pt;")
 
-        for btn in candidate_row_widgets.values():
+        for entry in candidate_row_widgets.values():
+            btn = entry["btn"] if isinstance(entry, dict) else entry
+            ip_lbl = entry.get("ip_lbl") if isinstance(entry, dict) else None
             if btn:
                 btn.setEnabled(False)
                 btn.setText("Waiting...")
@@ -828,23 +966,28 @@ def create_stealth_subtab(dialog) -> QWidget:
                         background-color: rgba(255, 255, 255, 0.04);
                         border: 1px solid rgba(255, 255, 255, 0.1);
                         border-radius: 5px;
-                        padding: 3px 8px;
+                        padding: 3px 6px;
                         color: #B0BEC5;
                         font-size: 8pt;
                         min-height: 24px;
                     }
                 """)
+            if ip_lbl:
+                ip_lbl.setText("")
 
         def _progress_cb(cand_id, ok, exit_label, ping_ms, speed_mbps, msg):
             def _update_row():
-                btn = candidate_row_widgets.get(cand_id)
-                if btn:
-                    _update_test_button_state(btn, "ok" if ok else "error", exit_label, ping_ms, speed_mbps, msg)
+                entry = candidate_row_widgets.get(cand_id)
+                if entry:
+                    btn = entry["btn"] if isinstance(entry, dict) else entry
+                    ip_lbl = entry.get("ip_lbl") if isinstance(entry, dict) else None
+                    _update_test_button_state(btn, "ok" if ok else "error", exit_label, ping_ms, speed_mbps, msg, ip_lbl=ip_lbl)
             post_to_main_thread(_update_row)
 
         def _done_all(results):
             benchmark_all_btn.setEnabled(True)
-            for btn in candidate_row_widgets.values():
+            for entry in candidate_row_widgets.values():
+                btn = entry["btn"] if isinstance(entry, dict) else entry
                 if btn:
                     btn.setEnabled(True)
             if isinstance(results, list) and results:
@@ -869,6 +1012,9 @@ def create_stealth_subtab(dialog) -> QWidget:
         worker.error.connect(lambda _e: (benchmark_all_btn.setEnabled(True), benchmark_summary_lbl.setText("Benchmark encountered an error.")))
 
     benchmark_all_btn.clicked.connect(_on_benchmark_all)
+
+    # Initialize master toggle enabled sync
+    _sync_master_enabled(dialog.enable_stealth_proxy_checkbox.isChecked())
 
     layout.addStretch()
     return _scrolled(widget)
