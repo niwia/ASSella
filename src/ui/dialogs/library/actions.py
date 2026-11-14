@@ -31,12 +31,6 @@ except ImportError:
     morrenus_api = None
 
 try:
-    from core.steam_helpers import slssteam_api_send
-except ImportError:
-    def slssteam_api_send(_cmd):
-        return None
-
-try:
     from utils.helpers import get_base_path
 except ImportError:
     def get_base_path():
@@ -1909,16 +1903,56 @@ class LibraryActionsMixin:
                 except Exception as e:
                     logger.debug(f"Failed to unregister plugin game {appid} in wipe_sls_only: {e}")
 
-            if platform.system() == "Linux":
-                try:
-                    for aid in ({appid} | dlc_ids):
-                        if aid and aid.isdigit():
-                            slssteam_api_send(f"uninstall|{aid}")
-                except Exception as api_err:
-                    logger.warning(f"Failed to send SLSsteam uninstall API trigger: {api_err}")
+            # Notify SLSsteam of config updates without dispatching uninstall commands to Steam client
+            try:
+                from utils.sls_bridge import SLSBridge
+                SLSBridge.notify_reload()
+            except Exception as notify_err:
+                logger.debug(f"SLS reload notification error in wipe_sls_only: {notify_err}")
         except Exception as e:
             logger.error(f"Error cleaning SLS config for {appid}: {e}", exc_info=True)
             errors.append(f"SLS config: {e}")
+
+        # Prime existing appmanifest ACF file for Steam native adoption if present
+        if appid and appid not in ("0", "N/A", "unknown"):
+            try:
+                from core.steam_helpers import get_steam_libraries
+                from utils.steam_acf import set_acf_state_flags
+                libs = get_steam_libraries() or []
+                lib_p = game_data.get("library_path")
+                if lib_p and lib_p not in libs:
+                    libs.append(lib_p)
+                for lib in libs:
+                    acf_path = Path(lib) / "steamapps" / f"appmanifest_{appid}.acf"
+                    if acf_path.is_file():
+                        set_acf_state_flags(acf_path, 6)
+                        logger.info(f"I bought the game: Set StateFlags=6 on {acf_path} for Steam adoption")
+            except Exception as acf_err:
+                logger.debug(f"Failed to prime ACF for {appid} in wipe_sls_only: {acf_err}")
+
+        # On Windows, clean GreenLuma AppList files if wrapper mode is enabled
+        if platform.system() == "Windows" and appid and appid.isdigit():
+            try:
+                from utils.yaml_config_manager import is_greenluma_wrapper_mode_enabled
+                if is_greenluma_wrapper_mode_enabled():
+                    from core.steam_helpers import find_steam_install
+                    steam_path = find_steam_install()
+                    if steam_path:
+                        app_list_dir = os.path.join(steam_path, "AppList")
+                        if os.path.isdir(app_list_dir):
+                            for fname in os.listdir(app_list_dir):
+                                if fname.endswith(".txt"):
+                                    fpath = os.path.join(app_list_dir, fname)
+                                    try:
+                                        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                                            c = f.read().strip()
+                                        if c in target_ids:
+                                            os.remove(fpath)
+                                            logger.info(f"I bought the game: Removed GreenLuma AppList file {fpath}")
+                                    except Exception as f_err:
+                                        logger.debug(f"Failed removing GreenLuma file {fpath}: {f_err}")
+            except Exception as gl_err:
+                logger.debug(f"GreenLuma AppList cleanup failed in wipe_sls_only: {gl_err}")
 
         # 3. Restore original EOS binaries and remove EOS proxy (if applied)
         if install_path and os.path.isdir(install_path):
