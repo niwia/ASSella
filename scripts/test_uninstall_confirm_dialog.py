@@ -4,11 +4,15 @@ Tests for UninstallConfirmDialog, prefix discovery/scanning, and API gate.
 
 import os
 import shutil
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PyQt6.QtWidgets import QApplication

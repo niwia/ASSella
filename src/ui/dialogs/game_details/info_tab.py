@@ -1351,8 +1351,8 @@ def build_uninstall_panel(dialog) -> None:
             if win is not None:
                 try:
                     win.accept()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[GameDetails] Failed to accept advanced uninstall dialog: {e}")
             dialog.parent_window._uninstall_game(dialog.game_data, dialog, opts)
 
         confirm.clicked.connect(_on_confirm)

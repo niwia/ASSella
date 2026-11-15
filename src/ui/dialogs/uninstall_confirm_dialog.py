@@ -61,8 +61,8 @@ class PrefixScannerThread(QThread):
                     fp = os.path.join(root, f)
                     try:
                         total += os.path.getsize(fp)
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.debug(f"[PrefixScanner] Could not get size of {fp}: {e}")
                 now = time.time()
                 if now - last_emit > 0.08:
                     self.progress.emit(total)
@@ -93,16 +93,16 @@ def find_compatdata_path(
                 if parent.name.lower() == "steamapps":
                     candidates.append(str(parent / "compatdata" / str(appid)))
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[UninstallConfirm] Path traversal error checking compatdata: {e}")
 
     try:
         from core.steam_helpers import get_steam_libraries
 
         for lib in get_steam_libraries() or []:
             candidates.append(os.path.join(lib, "steamapps", "compatdata", str(appid)))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[UninstallConfirm] Error reading steam libraries for compatdata: {e}")
 
     for cp in candidates:
         if os.path.exists(cp):
@@ -155,8 +155,8 @@ class UninstallConfirmDialog(QDialog):
                     prec = get_plugin_game(self.appid, active_only=False)
                     if prec and prec.get("dlc_only"):
                         self.is_dlc_only = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[UninstallConfirm] Could not check DLC-only status: {e}")
 
         self.compatdata_path = None
         if platform.system() == "Linux" and not self.is_dlc_only:
@@ -377,8 +377,8 @@ class UninstallConfirmDialog(QDialog):
             try:
                 self._scanner.stop()
                 self._scanner.wait(150)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[UninstallConfirm] Error stopping prefix scanner: {e}")
             self._scanner = None
 
     def closeEvent(self, event) -> None:
