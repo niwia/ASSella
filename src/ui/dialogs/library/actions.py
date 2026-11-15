@@ -1761,22 +1761,30 @@ class LibraryActionsMixin:
                 confirm_msg += "• Proton prefix: Intact / not modified\n"
             confirm_msg += "• Steam Cloud saves & achievements (intact)\n"
             progress_title = "Removing integrations..."
-        else:
-            confirm_title = "Confirm Uninstall"
-            confirm_msg = self.game_manager.get_uninstall_confirmation_message(
-                game_data, remove_compatdata=c_data, remove_saves=c_saves
-            )
-            progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
 
-        reply = ThemedMessageBox.question(
-            parent,
-            confirm_title,
-            confirm_msg,
-            ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-        )
-        if reply != ThemedMessageBox.StandardButton.Yes:
-            return
-        c_wipe_sls = opts.get("wipe_sls", False)
+            reply = ThemedMessageBox.question(
+                parent,
+                confirm_title,
+                confirm_msg,
+                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+            )
+            if reply != ThemedMessageBox.StandardButton.Yes:
+                return
+            c_wipe_sls = opts.get("wipe_sls", False)
+        elif opts.get("from_advanced"):
+            c_data = opts.get("compat", False)
+            c_saves = opts.get("saves", False)
+            c_wipe_sls = opts.get("wipe_sls", True)
+            progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
+        else:
+            from ui.dialogs.uninstall_confirm_dialog import UninstallConfirmDialog
+            dlg = UninstallConfirmDialog(parent, game_data=game_data)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            c_data = dlg.should_wipe_prefix()
+            c_saves = False
+            c_wipe_sls = True
+            progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
 
         self._uninstall_progress_dialog = ThemedProgressDialog(
             progress_title, None, 0, 0, parent

@@ -1,5 +1,5 @@
--- SpaceBunny 2.0.5 — Mario Test 3.6 core
--- Made by bakabakabaka for Assella 3.1
+-- SpaceBunny 2.0.5
+-- Made by bakabakabaka for Assella 3.1  — Mario Test 3.6 core
 
 local function standDown(message)
 	if type(log) == "table" and type(log.error) == "function" then

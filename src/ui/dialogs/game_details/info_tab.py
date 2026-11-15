@@ -1339,11 +1339,23 @@ def build_uninstall_panel(dialog) -> None:
 
         _update_uninstall_ui()
 
-        confirm.clicked.connect(
-            lambda: dialog.parent_window._uninstall_game(
-                dialog.game_data, dialog, {
-                    key: cb.isChecked() for key, cb in getattr(dialog, "_uninstall_opts", {}).items()
-                }))
+        def _on_confirm():
+            opts = {}
+            for key, cb in getattr(dialog, "_uninstall_opts", {}).items():
+                try:
+                    opts[key] = cb.isChecked()
+                except Exception:
+                    opts[key] = False
+            opts["from_advanced"] = True
+            win = getattr(dialog, "_advanced_uninstall_win", None)
+            if win is not None:
+                try:
+                    win.accept()
+                except Exception:
+                    pass
+            dialog.parent_window._uninstall_game(dialog.game_data, dialog, opts)
+
+        confirm.clicked.connect(_on_confirm)
         dialog._uninstall_panel_built = True
 
 
@@ -1374,17 +1386,16 @@ def open_advanced_uninstall(dialog) -> None:
     dialog._uninstall_content = QVBoxLayout()
     dialog._uninstall_content.setSpacing(6)
     body.addLayout(dialog._uninstall_content)
-    build_uninstall_panel(dialog)
-    # Any confirm button in the panel closes this window first.
-    for i in range(dialog._uninstall_content.count()):
-        w = dialog._uninstall_content.itemAt(i).widget()
-        if isinstance(w, QPushButton):
-            w.clicked.connect(win.accept, Qt.ConnectionType.DirectConnection)
-    cancel = QPushButton("Cancel")
-    cancel.setFixedHeight(28)
-    cancel.clicked.connect(win.reject)
-    body.addWidget(cancel)
-    win.exec()
+    dialog._advanced_uninstall_win = win
+    try:
+        build_uninstall_panel(dialog)
+        cancel = QPushButton("Cancel")
+        cancel.setFixedHeight(28)
+        cancel.clicked.connect(win.reject)
+        body.addWidget(cancel)
+        win.exec()
+    finally:
+        dialog._advanced_uninstall_win = None
 
 
 def toggle_uninstall_panel(dialog) -> None:

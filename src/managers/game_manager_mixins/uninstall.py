@@ -140,6 +140,18 @@ class GameManagerUninstallMixin:
             else:
                 confirm_msg += "• Steam Cloud saves (none found)\n"
 
+        preserved_msg_items = []
+        if not remove_compatdata and platform.system() == "Linux":
+            if compatdata_path:
+                preserved_msg_items.append(f"• Proton prefix (Windows saves): {compatdata_path}")
+            else:
+                preserved_msg_items.append("• Proton prefix: none found on disk")
+        if not remove_saves:
+            preserved_msg_items.append("• Steam Cloud saves")
+
+        if preserved_msg_items:
+            confirm_msg += "\n[Will Be Preserved]\n" + "\n".join(preserved_msg_items) + "\n"
+
         if (
             platform.system() == "Windows"
             and is_accela_install
@@ -325,11 +337,18 @@ class GameManagerUninstallMixin:
         remove_from_library=False,
         remove_shortcuts=False,
         remove_sls=False,
+        wipe_sls_only=False,
     ):
         """
         Uninstall a game by removing its folder (or DLC files if dlc_only), ACF file, and optionally compatdata/saves.
+        If wipe_sls_only is True ('I bought the game'), delegates to _wipe_sls_only to clean integrations while
+        preserving 100% of game files, prefix, and saves.
         Returns (success: bool, error_message: str)
         """
+        if wipe_sls_only or game_data.get("wipe_sls_only"):
+            from ui.dialogs.library.actions import LibraryActionsMixin
+            return LibraryActionsMixin._wipe_sls_only(game_data)
+
         game_name = game_data.get("game_name", "Unknown")
         install_path = game_data.get("install_path")
         library_path = game_data.get("library_path")
@@ -364,7 +383,8 @@ class GameManagerUninstallMixin:
                 logger.debug(f"  Could not cancel an install retry for {appid}: {e}")
 
             if (
-                platform.system() == "Linux"
+                remove_compatdata
+                and platform.system() == "Linux"
                 and appid
                 and appid not in ("0", "N/A", "unknown")
             ):
@@ -435,10 +455,14 @@ class GameManagerUninstallMixin:
                             except Exception as e:
                                 logger.warning(f"Could not remove marker {m_name}: {e}")
 
-                if install_path and os.path.exists(install_path):
+                if not (wipe_sls_only or game_data.get("wipe_sls_only")) and install_path and os.path.exists(install_path):
                     shutil.rmtree(install_path, ignore_errors=True)
-                    logger.info(f"Removed game folder: {install_path}")
-                    removed_items.append(f"Game folder: {install_path}")
+                    if os.path.exists(install_path) and os.listdir(install_path):
+                        logger.warning(f"Some files in game folder could not be deleted: {install_path}")
+                        removed_items.append(f"Game folder: {install_path} (some files remaining)")
+                    else:
+                        logger.info(f"Removed game folder: {install_path}")
+                        removed_items.append(f"Game folder: {install_path}")
 
                 try:
                     libs = get_steam_libraries() or []

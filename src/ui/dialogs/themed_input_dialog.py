@@ -55,7 +55,7 @@ class ThemedInputDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setWindowModality(Qt.WindowModality.WindowModal)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(360)
 
         self._build_ui(title, label, text, items, editable)
 
@@ -87,8 +87,8 @@ class ThemedInputDialog(QDialog):
         """)
 
         lay = QVBoxLayout(self.container)
-        lay.setContentsMargins(0, 0, 0, 12)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, 0, 0, 10)
+        lay.setSpacing(6)
 
         self.title_bar = DialogTitleBar(
             self,
@@ -100,7 +100,7 @@ class ThemedInputDialog(QDialog):
         lay.addWidget(self.title_bar)
 
         body = QVBoxLayout()
-        body.setContentsMargins(16, 4, 16, 4)
+        body.setContentsMargins(16, 2, 16, 4)
         body.setSpacing(8)
 
         self.label = QLabel(label, self)
@@ -121,13 +121,21 @@ class ThemedInputDialog(QDialog):
         body.addWidget(self.field)
 
         buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 2, 0, 0)
+        buttons.setSpacing(8)
         buttons.addStretch()
+
         self.cancel_button = QPushButton("Cancel", self)
         self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_button.setFixedSize(95, 28)
         self.cancel_button.clicked.connect(self.reject)
+
         self.ok_button = QPushButton("OK", self)
         self.ok_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ok_button.setFixedSize(95, 28)
+        self.ok_button.setDefault(True)
         self.ok_button.clicked.connect(self.accept)
+
         self.ok_button.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.accent_color};
@@ -135,7 +143,7 @@ class ThemedInputDialog(QDialog):
                 border: none;
                 border-radius: 5px;
                 font-size: 8.5pt;
-                padding: 5px 16px;
+                font-weight: 500;
             }}
             QPushButton:hover {{ background-color: #ffffff; }}
         """)
@@ -146,12 +154,12 @@ class ThemedInputDialog(QDialog):
                 border-radius: 5px;
                 color: #e5e7eb;
                 font-size: 8.5pt;
-                padding: 5px 16px;
             }
             QPushButton:hover { background-color: rgba(255, 255, 255, 0.12); color: #ffffff; }
         """)
         buttons.addWidget(self.cancel_button)
         buttons.addWidget(self.ok_button)
+        buttons.addStretch()
         body.addLayout(buttons)
 
         lay.addLayout(body)

@@ -148,6 +148,9 @@ class TestWipeSlsOnly(unittest.TestCase):
         self.assertIn("[Preserved]", summary)
         self.assertIn("Proton prefix (Windows saves)", summary)
 
+        # 5. SLSsteam uninstall API pipe must NOT be called for standard uninstall!
+        mock_send_sls.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
