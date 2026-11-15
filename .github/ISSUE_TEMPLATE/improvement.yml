@@ -1,0 +1,26 @@
+name: Improvement / Refactoring
+description: Propose an optimization, architectural cleanup, UI polish, or documentation change.
+title: "[Improvement]: "
+labels: ["improvement"]
+body:
+  - type: textarea
+    id: area
+    attributes:
+      label: Target Area
+      description: What component does this improvement address (e.g. startup speed, UI responsiveness, documentation, code maintainability)?
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Proposed Improvement
+      description: Describe the technical or visual change in detail.
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation & Benefits
+      description: Why should this change be implemented, and what are the measurable benefits?
+    validations:
+      required: true
