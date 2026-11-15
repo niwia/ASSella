@@ -1,0 +1,93 @@
+name: Bug Report
+description: Report a reproducible problem or unexpected behavior in ASSella.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please search existing issues before opening a new one to avoid duplicates.
+        For general setup help or questions, please use [Discord](https://discord.gg/hubcapsmanifest) or [Documentation](https://assella.pages.dev/).
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Operating System / Environment
+      description: What system are you running ASSella on?
+      options:
+        - "SteamOS (Steam Deck)"
+        - "Bazzite"
+        - "Arch Linux"
+        - "CachyOS (Desktop & Handheld)"
+        - "NixOS"
+        - "Others"
+    validations:
+      required: true
+  - type: dropdown
+    id: release-channel
+    attributes:
+      label: Release Channel & Version
+      description: Which channel and version of ASSella are you using?
+      options:
+        - "Stable (v3.0.x AppImage)"
+        - "Beta (v3.1.x-beta AppImage)"
+        - "Canary (v3.1.x-canary AppImage)"
+        - "Source / Local Dev"
+    validations:
+      required: true
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Affected Subsystem
+      options:
+        - "Steam Library / Game Installation"
+        - "AT0-M / SLSsteam Integration"
+        - "DLC Management / Depot Mapping"
+        - "Game Details / Art / Fixes"
+        - "Decky Plugin / Companions (Uran / Epsilon)"
+        - "UI / Application Startup"
+        - "Other"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the Bug
+      description: A clear and concise description of the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Exact steps to reproduce the behavior.
+      placeholder: |
+        1. Open ASSella
+        2. Navigate to ...
+        3. Click on ...
+        4. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs & Terminal Output
+      description: |
+        Please paste relevant terminal output or log snippets.
+        IMPORTANT: Scrub any personal API keys, Discord tokens, or sensitive credentials before posting!
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I searched existing issues and verified this is not a duplicate.
+          required: true
+        - label: I have scrubbed any sensitive API keys or personal tokens from logs.
+          required: true
