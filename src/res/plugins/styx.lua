@@ -1,25 +1,7 @@
--- styx.lua (2.4)
+-- styx.lua (2.5)
 --
--- ======================= 2.4 changes from 2.3 ==========================
---  55. Bound diagnostic ticket reads by both returned size and caller capacity.
---  56. Skip packet-property access once the fallback ticket is warm.
---      Everything from 2.3 is retained; ticket-size semantics are unchanged.
---
--- ======================= 2.1 changes from 0.4 ==========================
---  44. Renamed to Styx.  Canonical files are styx.lua and styx.conf.lua; the
---      legacy filenames are retired.  Config is optional: the
---      built-in defaults are the known-good insert mode.
---  45. Confirmed on SteamStub (app 3404260): insert + original ticket size is
---      the shape that passes.  Overwrite invalidates the signed 50-byte header
---      and is rejected; returning size + 4 is also rejected.  Both remain
---      selectable fallbacks for other stubs.
---  46. Versioning follows SpaceBunny: Styx.VERSION, a numbered changelog in
---      this header, and the version in the load notification.
---  47. The conf is re-read on every ticket request, so splice_mode and
---      return_expanded_size can be changed without restarting Steam.
---  48. Everything from 0.4 is kept: accountInfo 768 login gate, BUpdate(480,
---      false) through the live IClientUser vtable, readiness probing, fail-open
---      bounds checks, per-app rules, secondary fallback, and the test suite.
+-- SLSsteam ownership ticket splicer: injects AppOwnershipTicket for
+-- AdditionalApps games so they pass SteamStub DRM checks.
 --
 Styx = Styx or {
 	setup          = false,
@@ -37,9 +19,10 @@ Styx = Styx or {
 	getTicketTramp = nil,
 	getTicketFn    = nil,
 	getTicketPtr   = nil,
+	hookPlacementUnknown = false,
 }
 
-Styx.VERSION = "2.4"
+Styx.VERSION = "2.5"
 
 KATAMARI = KATAMARI or { plugins = {} }
 KATAMARI.plugins.styx = {
@@ -66,6 +49,11 @@ pcall(ffi.cdef, [[
 	typedef uint32_t(*UpdateTicket_t)(void*, uint32_t, int);
 ]])
 
+pcall(ffi.cdef, [[
+	struct StyxTimespec { long tv_sec; long tv_nsec; };
+	int clock_gettime(int, struct StyxTimespec*);
+]])
+
 local EMsg = {
 	ClientAccountInfo = 768,
 }
@@ -86,6 +74,7 @@ local defaults = {
 	refresh_retry_seconds = 5,
 
 	probe_window_seconds = 60,
+	probe_interval_seconds = 2, -- 1–60 seconds between cold packet probes
 	max_warmup_requests  = 120,
 
 	account_info_msg_type = EMsg.ClientAccountInfo,
@@ -131,6 +120,9 @@ local function motherStyxConfig()
 	local home = os.getenv("HOME") or ""
 	local configHome = os.getenv("XDG_CONFIG_HOME")
 	if configHome == nil or configHome == "" then
+		if home == "" then
+			return nil
+		end
 		configHome = home .. "/.config"
 	end
 
@@ -157,6 +149,10 @@ mergeConfig(config, rawget(_G, "StyxConfig"))
 S.config = config
 S.failedApps = S.failedApps or {}
 
+-- Configuration is read exactly once, here at startup. Files are never polled
+-- per request and there is no configLoaded refresh: edits to styx.conf.lua or
+-- katamari.conf.lua take effect only after a Steam restart.
+
 local function notify(message)
 	if S.config.notify then
 		log.notify(message)
@@ -182,11 +178,216 @@ local function warnOnce(appId, message)
 	end
 end
 
+local function warnConfigOnce(setting, message)
+	local key = "config:" .. setting
+	if not S.failedApps[key] then
+		S.failedApps[key] = true
+		log.warn("[Styx] " .. message)
+	end
+end
+
+-- One preallocated timespec, used only on 64-bit Linux. Everywhere else (or if
+-- clock_gettime is unavailable) monotonicNow() falls back to os.time().
+local monotonicClock
+local monotonicTimespec
+if ffi.os == "Linux" then
+	local okAbi, is64Bit = pcall(ffi.abi, "64bit")
+	if okAbi and is64Bit then
+		local okClock, clock, timespec = pcall(function()
+			return ffi.C.clock_gettime, ffi.new("struct StyxTimespec[1]")
+		end)
+		if okClock then
+			monotonicClock = clock
+			monotonicTimespec = timespec
+		end
+	end
+end
+
+local function monotonicNow()
+	if monotonicClock and monotonicTimespec then
+		local ok, result = pcall(monotonicClock, 1, monotonicTimespec)
+		if ok and result == 0 then
+			local ts = monotonicTimespec[0]
+			return tonumber(ts.tv_sec) + tonumber(ts.tv_nsec) / 1000000000
+		end
+	end
+	return os.time()
+end
+
 local function validAppId(appId)
 	return type(appId) == "number"
 		and appId > 0
 		and appId <= 4294967295
 		and appId == math.floor(appId)
+end
+
+local function validSpliceMode(mode)
+	return mode == "insert" or mode == "overwrite" or mode == "both"
+end
+
+local function validateStartupConfig()
+	local maxSize = tonumber(S.config.max_ticket_size)
+	if not maxSize or maxSize ~= math.floor(maxSize) or maxSize < 4 or maxSize > 0x100000 then
+		warnConfigOnce("max_ticket_size", "invalid max_ticket_size "
+			.. tostring(S.config.max_ticket_size) .. ", using 65536")
+		S.config.max_ticket_size = 65536
+	end
+
+	if not validAppId(S.config.fallback_app) then
+		warnConfigOnce("fallback_app", "invalid fallback_app, using 480")
+		S.config.fallback_app = 480
+	end
+
+	if S.config.secondary_fallback ~= nil and not validAppId(S.config.secondary_fallback) then
+		warnConfigOnce("secondary_fallback", "invalid secondary_fallback, disabling it")
+		S.config.secondary_fallback = nil
+	end
+
+	if not validSpliceMode(S.config.splice_mode) then
+		warnConfigOnce("splice_mode", "invalid splice_mode "
+			.. tostring(S.config.splice_mode) .. ", using insert")
+		S.config.splice_mode = "insert"
+	end
+
+	if S.config.apps ~= nil and type(S.config.apps) ~= "table" then
+		warnConfigOnce("apps", "invalid apps config (expected table or nil), disabling")
+		S.config.apps = {}
+	end
+
+	local retry = tonumber(S.config.refresh_retry_seconds)
+	if not retry or retry ~= math.floor(retry) or retry < 1 or retry > 3600 then
+		warnConfigOnce("refresh_retry_seconds", "invalid refresh_retry_seconds, using 5")
+		S.config.refresh_retry_seconds = 5
+	end
+
+	local probeWindow = tonumber(S.config.probe_window_seconds)
+	if not probeWindow or probeWindow ~= math.floor(probeWindow)
+		or probeWindow < 1 or probeWindow > 3600 then
+		warnConfigOnce("probe_window_seconds", "invalid probe_window_seconds, using 60")
+		S.config.probe_window_seconds = 60
+	end
+
+	local probeInterval = tonumber(S.config.probe_interval_seconds)
+	if not probeInterval or probeInterval ~= math.floor(probeInterval)
+		or probeInterval < 1 or probeInterval > 60 then
+		warnConfigOnce("probe_interval_seconds", "invalid probe_interval_seconds "
+			.. tostring(S.config.probe_interval_seconds) .. ", using 2")
+		S.config.probe_interval_seconds = 2
+	end
+
+	local maxWarmup = tonumber(S.config.max_warmup_requests)
+	if not maxWarmup or maxWarmup ~= math.floor(maxWarmup)
+		or maxWarmup < 1 or maxWarmup > 10000 then
+		warnConfigOnce("max_warmup_requests", "invalid max_warmup_requests, using 120")
+		S.config.max_warmup_requests = 120
+	end
+
+	if type(S.config.enabled) ~= "boolean" then
+		warnConfigOnce("enabled", "invalid enabled setting, using true")
+		S.config.enabled = true
+	end
+
+	local accountInfoType = tonumber(S.config.account_info_msg_type)
+	if not accountInfoType or accountInfoType ~= math.floor(accountInfoType)
+		or accountInfoType < 1 or accountInfoType > 0x7fffffff then
+		warnConfigOnce("account_info_msg_type", "invalid account_info_msg_type "
+			.. tostring(S.config.account_info_msg_type) .. ", using 768")
+		S.config.account_info_msg_type = EMsg.ClientAccountInfo
+	else
+		S.config.account_info_msg_type = accountInfoType
+	end
+end
+
+validateStartupConfig()
+
+-- ---------------------------------------------------------------------------
+-- Target resolution and native hook placement
+--
+-- These run at load time on the main (loading) thread, before any callback is
+-- registered. They only inspect steamclient.so, so they do not need
+-- S.clientUser or login state. Placing the detour here keeps LuaHook /
+-- place_lua_hook off Steam's IPC worker thread (SLSsteam::initialized /
+-- Network::recvPkt), which can SIGSEGV on Linux when the libc TLS layout of
+-- the worker differs.
+-- ---------------------------------------------------------------------------
+local function resolveTargets()
+	if S.resolved then
+		return true
+	end
+
+	local userMap = VFTableInfo_t("14IClientUserMap", "GetAppOwnershipTicketExtendedData")
+	if not userMap:init() then
+		log.error("[Styx] Failed to resolve IClientUserMap::GetAppOwnershipTicketExtendedData")
+		return false
+	end
+
+	local impl = VFTableInfo_t("5CUser", "GetAppOwnershipTicketExtendedData", userMap.index, 0)
+	if not impl:init() then
+		log.error("[Styx] Failed to resolve CUser::GetAppOwnershipTicketExtendedData")
+		return false
+	end
+	if impl.ptr == nil then
+		log.error("[Styx] Resolved CUser::GetAppOwnershipTicketExtendedData has a null address")
+		return false
+	end
+
+	S.getTicketPtr = impl.ptr
+	S.getTicketFn = ffi.cast("GetTicket_t", impl.ptr)
+	S.getTicketIndex = userMap.index
+
+	S.updateInfo = VFTableInfo_t("14IClientUserMap", "BUpdateAppOwnershipTicket")
+	if not S.updateInfo:init() then
+		log.error("[Styx] Failed to resolve IClientUserMap::BUpdateAppOwnershipTicket")
+		return false
+	end
+
+	notify("[Styx] Resolved GetTicket index " .. tostring(S.getTicketIndex)
+		.. ", BUpdate index " .. tostring(S.updateInfo.index))
+
+	local maxSize = tonumber(S.config.max_ticket_size)
+	if not maxSize or maxSize ~= math.floor(maxSize) or maxSize < 4 or maxSize > 0x100000 then
+		maxSize = 65536
+	end
+	S.probeSize = maxSize
+	S.probeBuf = ffi.new("uint8_t[?]", maxSize)
+	S.probeOffApp = ffi.new("uint32_t[1]")
+	S.probeOffSteam = ffi.new("uint32_t[1]")
+	S.probeOffSig = ffi.new("uint32_t[1]")
+	S.probeOffSigSize = ffi.new("uint32_t[1]")
+
+	S.resolved = true
+	return true
+end
+
+local function placeHook()
+	if S.hookPlacementUnknown then
+		-- A previous attempt threw while native state was ambiguous. Retrying
+		-- could double-install a detour, so refuse until Steam restarts.
+		return false
+	end
+	if S.getTicketHook then
+		return true
+	end
+
+	notify("[Styx] Placing GetAppOwnershipTicketExtendedData hook at index "
+		.. tostring(S.getTicketIndex))
+	notify("[Styx] Constructing LuaHook target=" .. tostring(S.getTicketPtr))
+	S.getTicketHook = LuaHook("Styx GetTicket", S.getTicketPtr)
+	-- place_lua_hook enables the detour before returning its trampoline. The
+	-- callback's nil guard fails closed during that window, but serialization
+	-- before LuaJIT entry requires native SLSsteam support.
+	notify("[Styx] Calling place_lua_hook index=" .. tostring(S.getTicketHook.index)
+		.. " callback=" .. tostring(S.hkGetTicket))
+	local trampoline = ffi.C.place_lua_hook(S.getTicketHook.index, S.hkGetTicket)
+	if trampoline == nil then
+		log.error("[Styx] Failed to place GetAppOwnershipTicketExtendedData hook")
+		S.getTicketHook = nil
+		return false
+	end
+
+	S.getTicketTramp = ffi.cast("GetTicket_t", trampoline)
+	notify("[Styx] Hook placed, trampoline=" .. tostring(trampoline))
+	return true
 end
 
 local function ruleFor(appId)
@@ -217,7 +418,10 @@ local function ruleFor(appId)
 		if rule.enabled == false then
 			return false, nil
 		end
-		return true, rule.fallback_app or S.config.fallback_app
+		if rule.fallback_app ~= nil then
+			return true, rule.fallback_app
+		end
+		return true, S.config.fallback_app
 	end
 
 	return false, nil
@@ -228,7 +432,7 @@ end
 -- ---------------------------------------------------------------------------
 local function ticketLayoutIsSafe(size, ticketSize, sigOffset)
 	local maxSize = tonumber(S.config.max_ticket_size)
-	if not maxSize or maxSize < 4 then
+	if not maxSize or maxSize ~= math.floor(maxSize) or maxSize < 4 or maxSize > 0x100000 then
 		return false, "invalid max_ticket_size"
 	end
 
@@ -259,6 +463,9 @@ local function putLittleEndianU32(buffer, offset, value)
 end
 
 local function spliceTicket(pTicket, ticketSize, size, sigOffset, appId)
+	if pTicket == nil then
+		return false, "ticket buffer pointer is null"
+	end
 	local safe, reason = ticketLayoutIsSafe(size, ticketSize, sigOffset)
 	if not safe then
 		return false, reason
@@ -286,27 +493,43 @@ local function runtimeOptions(appId)
 		expanded = false,
 	}
 
-	local dir = pluginDirectory()
 	local configured = {}
 	mergeConfig(configured, S.config)
-	mergeConfig(configured, motherStyxConfig())
-	mergeConfig(configured, loadConfigFile(dir .. "/styx.conf.lua"))
-	mergeConfig(configured, loadConfigFile(dir .. "/../styx.conf.lua"))
 
-	if type(configured.splice_mode) == "string" then
-		options.mode = configured.splice_mode
+	if configured.splice_mode ~= nil then
+		if validSpliceMode(configured.splice_mode) then
+			options.mode = configured.splice_mode
+		else
+			warnConfigOnce("splice_mode", "invalid runtime splice_mode "
+				.. tostring(configured.splice_mode) .. ", using insert")
+		end
 	end
 	if configured.return_expanded_size ~= nil then
-		options.expanded = configured.return_expanded_size ~= false
+		if type(configured.return_expanded_size) == "boolean" then
+			options.expanded = configured.return_expanded_size
+		else
+			warnConfigOnce("return_expanded_size",
+				"invalid runtime return_expanded_size, using false")
+		end
 	end
 
 	local override = rawget(_G, "StyxConfig")
 	if type(override) == "table" then
-		if type(override.splice_mode) == "string" then
-			options.mode = override.splice_mode
+		if override.splice_mode ~= nil then
+			if validSpliceMode(override.splice_mode) then
+				options.mode = override.splice_mode
+			else
+				warnConfigOnce("splice_mode", "invalid runtime splice_mode "
+					.. tostring(override.splice_mode) .. ", using insert")
+			end
 		end
 		if override.return_expanded_size ~= nil then
-			options.expanded = override.return_expanded_size ~= false
+			if type(override.return_expanded_size) == "boolean" then
+				options.expanded = override.return_expanded_size
+			else
+				warnConfigOnce("return_expanded_size",
+					"invalid runtime return_expanded_size, using false")
+			end
 		end
 	end
 
@@ -316,6 +539,19 @@ local function runtimeOptions(appId)
 end
 
 local function overwriteAppId(pTicket, ticketSize, size, appOffset, appId)
+	local maxSize = tonumber(S.config.max_ticket_size)
+	if pTicket == nil then
+		return false, "ticket buffer pointer is null"
+	end
+	if not maxSize or maxSize ~= math.floor(maxSize)
+		or maxSize < 4 or maxSize > 0x100000
+		or ticketSize <= 0 or ticketSize > maxSize
+		or size <= 0 or size > ticketSize then
+		return false, "ticket size is outside the caller buffer or safety limit"
+	end
+	if not validAppId(appId) then
+		return false, "app id is invalid"
+	end
 	if appOffset < 0 or appOffset + 4 > size then
 		return false, "app id offset is outside the ticket"
 	end
@@ -327,30 +563,57 @@ local function overwriteAppId(pTicket, ticketSize, size, appOffset, appId)
 end
 
 local function logTicketLayout(appId, pTicket, fallbackSize, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize, options)
-	if S.loggedOffsets[appId] then
+	if not S.config.debug then
 		return
 	end
-	S.loggedOffsets[appId] = true
+	local safeBytes = math.min(fallbackSize, ticketSize or fallbackSize)
+	local canFullyRead = pTicket ~= nil and safeBytes >= 20
+	local previous = S.loggedOffsets[appId]
+	if previous == "full" or (previous and not canFullyRead) then
+		return
+	end
+	S.loggedOffsets[appId] = canFullyRead and "full" or "partial"
 
 	local length, version, ticketApp = "n/a", "n/a", "n/a"
-	local safeBytes = math.min(fallbackSize, ticketSize or fallbackSize)
 	if pTicket ~= nil and safeBytes >= 8 then
-		local head = ffi.cast("uint32_t*", pTicket)
-		length, version = head[0], head[1]
-		if safeBytes >= 20 then
-			ticketApp = head[4]
+		local head = ffi.cast("const uint8_t*", pTicket)
+		local function readU32(offset)
+			return head[offset]
+				+ head[offset + 1] * 0x100
+				+ head[offset + 2] * 0x10000
+				+ head[offset + 3] * 0x1000000
 		end
+		length, version = readU32(0), readU32(4)
+		if safeBytes >= 20 then
+			ticketApp = readU32(16)
+		end
+	end
+	local function offsetValue(pointer)
+		if pointer == nil then
+			return "nil"
+		end
+		return tostring(pointer[0])
 	end
 	notify(string.format(
 		"[Styx] ticket for %d: size=%d len=%s ver=%s app=%s "
-			.. "appOff=%d steamOff=%d sigOff=%d sigSize=%d mode=%s expanded=%s",
+			.. "appOff=%s steamOff=%s sigOff=%s sigSize=%s mode=%s expanded=%s",
 		appId, fallbackSize, length, version, ticketApp,
-		pOffAppId[0], pOffSteamId[0], pOffSig[0], pOffSigSize[0],
+		offsetValue(pOffAppId), offsetValue(pOffSteamId),
+		offsetValue(pOffSig), offsetValue(pOffSigSize),
 		options.mode, tostring(options.expanded)
 	))
 end
 
 local function spliceByMode(pTicket, ticketSize, fallbackSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize, appId, options)
+	if pTicket == nil then
+		return false, "ticket buffer pointer is null"
+	end
+	if pOffAppId == nil or pOffSig == nil then
+		return false, "required ticket offset pointer is null"
+	end
+	if not validAppId(appId) then
+		return false, "app id is invalid"
+	end
 	local sigOffset = pOffSig[0]
 
 	if options.mode == "overwrite" then
@@ -410,12 +673,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Calling the real GetAppOwnershipTicketExtendedData
 -- ---------------------------------------------------------------------------
-local function callOriginal(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize)
-	local fn = S.getTicketTramp or S.getTicketFn
-	if not fn then
+local function callOriginal(trampoline, pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize)
+	-- Never fall back to S.getTicketFn here: once detour placement starts that
+	-- address may route back into hkGetTicket.
+	if not trampoline then
 		return 0
 	end
-	return fn(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize)
+	return trampoline(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize)
 end
 
 -- ---------------------------------------------------------------------------
@@ -457,7 +721,7 @@ local function recallFallback(reason)
 		return false
 	end
 
-	local now = os.time()
+	local now = monotonicNow()
 	local retry = tonumber(S.config.refresh_retry_seconds) or 5
 	if S.lastRequestAt and (now - S.lastRequestAt) < retry then
 		debug("Skipping BUpdate for " .. tostring(S.config.fallback_app) .. " (rate limited)")
@@ -492,7 +756,18 @@ local function probeFallback()
 		return false
 	end
 
-	local fn = S.getTicketTramp or S.getTicketFn
+	local fn = S.getTicketTramp
+	if not fn then
+		-- Before the hook exists, the raw target is safe for warm-up. During
+		-- placement, it may already point back through hkGetTicket.
+		if S.getTicketHook then
+			return false
+		end
+		fn = S.getTicketFn
+	end
+	if not fn then
+		return false
+	end
 	local appId = S.config.fallback_app
 	local size = fn(
 		S.clientUser, appId, S.probeBuf, S.probeSize,
@@ -511,14 +786,18 @@ end
 -- ---------------------------------------------------------------------------
 -- Core ticket handler
 -- ---------------------------------------------------------------------------
-local function handleTicket(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize)
+local function handleTicket(trampoline, pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize)
 	debug("handleTicket: appId=" .. tostring(appId) .. " ticketSize=" .. tostring(ticketSize))
-	local originalSize = callOriginal(
+	if pTicket == nil and ticketSize > 0 then
+		warnOnce(appId, "ticket buffer pointer is null")
+		return 0
+	end
+	local originalSize = callOriginal(trampoline,
 		pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize
 	)
 	debug("handleTicket: originalSize=" .. tostring(originalSize))
 
-	if originalSize > 0 or not S.config.enabled then
+	if originalSize > 0 or not S.active or not S.config.enabled then
 		return originalSize
 	end
 
@@ -530,7 +809,7 @@ local function handleTicket(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSt
 		return originalSize
 	end
 
-	local fallbackSize = callOriginal(
+	local fallbackSize = callOriginal(trampoline,
 		pUser, fallbackApp, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize
 	)
 
@@ -538,7 +817,7 @@ local function handleTicket(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSt
 		local secondary = S.config.secondary_fallback
 		if validAppId(secondary) and secondary ~= fallbackApp and secondary ~= appId then
 			debug("primary fallback " .. tostring(fallbackApp) .. " empty, trying " .. tostring(secondary))
-			fallbackSize = callOriginal(
+			fallbackSize = callOriginal(trampoline,
 				pUser, secondary, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize
 			)
 			if fallbackSize > 0 then
@@ -554,6 +833,12 @@ local function handleTicket(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSt
 	end
 
 	S.fallbackReady = true
+	local maxSize = tonumber(S.config.max_ticket_size)
+	if not maxSize or fallbackSize > ticketSize or fallbackSize > maxSize
+		or ticketSize <= 0 or ticketSize > maxSize then
+		warnOnce(appId, "fallback ticket size exceeds the caller buffer or safety limit")
+		return 0
+	end
 
 	local options = runtimeOptions(appId)
 	logTicketLayout(appId, pTicket, fallbackSize, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize, options)
@@ -579,13 +864,23 @@ end
 
 S.seenApps = S.seenApps or {}
 
-S.hkGetTicket = ffi.cast("GetTicket_t", function(
+-- Keep the existing callback cdata anchored if a same-state reload happens
+-- after the native detour was installed. Replacing it could let the old
+-- callback be collected while the detour still targets it.
+local function createGetTicketCallback()
+	return ffi.cast("GetTicket_t", function(
 	pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize
 )
 	local mutex = LuaMutex()
+	local trampoline = S.getTicketTramp
 	local previousInFallback = S.inFallback
 	local result = 0
 	local ok, err = pcall(function()
+		if not trampoline then
+			warnOnce(appId, "GetTicket trampoline unavailable")
+			return
+		end
+
 		if not S.seenApps[appId] then
 			S.seenApps[appId] = true
 			notify("[Styx] HK GetTicket: appId=" .. tostring(appId)
@@ -594,14 +889,15 @@ S.hkGetTicket = ffi.cast("GetTicket_t", function(
 		debug("hkGetTicket appId=" .. tostring(appId) .. " ticketSize=" .. tostring(ticketSize))
 
 		if previousInFallback then
-			result = callOriginal(
+			result = callOriginal(trampoline,
 				pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize
 			)
 			return
 		end
 
 		S.inFallback = true
-		result = handleTicket(pUser, appId, pTicket, ticketSize, pOffAppId, pOffSteamId, pOffSig, pOffSigSize)
+		result = handleTicket(trampoline, pUser, appId, pTicket, ticketSize,
+			pOffAppId, pOffSteamId, pOffSig, pOffSigSize)
 	end)
 	S.inFallback = previousInFallback
 
@@ -612,57 +908,45 @@ S.hkGetTicket = ffi.cast("GetTicket_t", function(
 		result = 0
 	end
 
+	-- Explicitly release before returning; SLSsteam's LuaMutex destructor also
+	-- unlocks its std::recursive_mutex when this userdata is collected. See
+	-- styx.md for the wrapper lifecycle caveat. This lock is acquired only
+	-- after entering the FFI callback; native code must serialize VM entry.
 	mutex:unlock()
 	return result or 0
 end)
-
--- ---------------------------------------------------------------------------
--- ---------------------------------------------------------------------------
-local function resolveTargets()
-	if S.resolved then
-		return true
-	end
-
-	local userMap = VFTableInfo_t("14IClientUserMap", "GetAppOwnershipTicketExtendedData")
-	if not userMap:init() then
-		log.error("[Styx] Failed to resolve IClientUserMap::GetAppOwnershipTicketExtendedData")
-		return false
-	end
-
-	local impl = VFTableInfo_t("5CUser", "GetAppOwnershipTicketExtendedData", userMap.index, 0)
-	if not impl:init() then
-		log.error("[Styx] Failed to resolve CUser::GetAppOwnershipTicketExtendedData")
-		return false
-	end
-
-	S.getTicketPtr = impl.ptr
-	S.getTicketFn = ffi.cast("GetTicket_t", impl.ptr)
-	S.getTicketIndex = userMap.index
-
-	S.updateInfo = VFTableInfo_t("14IClientUserMap", "BUpdateAppOwnershipTicket")
-	if not S.updateInfo:init() then
-		log.error("[Styx] Failed to resolve IClientUserMap::BUpdateAppOwnershipTicket")
-		return false
-	end
-
-	notify("[Styx] Resolved GetTicket index " .. tostring(S.getTicketIndex)
-		.. ", BUpdate index " .. tostring(S.updateInfo.index))
-
-	local maxSize = tonumber(S.config.max_ticket_size) or 65536
-	if maxSize < 4 then
-		maxSize = 65536
-	end
-	S.probeSize = maxSize
-	S.probeBuf = ffi.new("uint8_t[?]", maxSize)
-	S.probeOffApp = ffi.new("uint32_t[1]")
-	S.probeOffSteam = ffi.new("uint32_t[1]")
-	S.probeOffSig = ffi.new("uint32_t[1]")
-	S.probeOffSigSize = ffi.new("uint32_t[1]")
-
-	S.resolved = true
-	return true
 end
 
+if not (S.getTicketHook and S.hkGetTicket) then
+	S.hkGetTicket = createGetTicketCallback()
+end
+
+-- Place the GetTicket hook now, on the load-time (main) thread, so the native
+-- detour is never installed from Steam's IPC worker thread. resolveTargets()
+-- and placeHook() only inspect steamclient.so and do not need S.clientUser or
+-- login state. S.getTicketHook and S.hkGetTicket stay anchored across reloads,
+-- and placeHook() is idempotent once the hook exists. Failures are logged and
+-- swallowed so a bad resolve never crashes the loader.
+if S.config.enabled then
+	local okResolve, resolved = pcall(resolveTargets)
+	if not okResolve then
+		log.error("[Styx] resolveTargets failed at load time: " .. tostring(resolved))
+	elseif resolved then
+		local okPlace, placeErr = pcall(placeHook)
+		if not okPlace then
+			-- placeHook may have installed a partial detour before throwing.
+			-- Keep S.getTicketHook and S.hkGetTicket anchored, never retry, and
+			-- require a restart so the ambiguous native state is cleared.
+			S.hookPlacementUnknown = true
+			log.error("[Styx] placeHook threw at load time; native hook state is "
+				.. "unknown and a Steam restart is required: " .. tostring(placeErr))
+		end
+	end
+end
+
+-- ---------------------------------------------------------------------------
+-- Client-user resolution (runtime, after login)
+-- ---------------------------------------------------------------------------
 local function resolveClientUser()
 	if S.clientUser then
 		return true
@@ -691,26 +975,6 @@ local function resolveClientUser()
 	return S.clientUser ~= nil
 end
 
-local function placeHook()
-	if S.getTicketHook then
-		return true
-	end
-
-	notify("[Styx] Placing GetAppOwnershipTicketExtendedData hook at index "
-		.. tostring(S.getTicketIndex))
-	S.getTicketHook = LuaHook("Styx GetTicket", S.getTicketPtr)
-	local trampoline = ffi.C.place_lua_hook(S.getTicketHook.index, S.hkGetTicket)
-	if trampoline == nil then
-		log.error("[Styx] Failed to place GetAppOwnershipTicketExtendedData hook")
-		S.getTicketHook = nil
-		return false
-	end
-
-	S.getTicketTramp = ffi.cast("GetTicket_t", trampoline)
-	notify("[Styx] Hook placed, trampoline=" .. tostring(trampoline))
-	return true
-end
-
 local function start()
 	if S.active then
 		return
@@ -719,10 +983,27 @@ local function start()
 		return
 	end
 
-	if not resolveClientUser() then
+	if S.hookPlacementUnknown then
+		if not S.warnedPlacementUnknown then
+			S.warnedPlacementUnknown = true
+			log.warn("[Styx] GetTicket hook state is unknown after a load-time failure; "
+				.. "refusing activation (restart Steam)")
+		end
 		return
 	end
-	if not resolveTargets() then
+
+	-- The hook must already be installed at load time. Never call placeHook()
+	-- or resolveTargets() here: start() runs from the Steam IPC worker thread,
+	-- and entering LuaJIT/place_lua_hook from there can SIGSEGV across libc TLS.
+	if not S.getTicketHook or not S.getTicketTramp then
+		if not S.warnedHookMissing then
+			S.warnedHookMissing = true
+			log.warn("[Styx] GetTicket hook was not placed at load time; skipping activation")
+		end
+		return
+	end
+
+	if not resolveClientUser() then
 		return
 	end
 
@@ -735,13 +1016,12 @@ local function start()
 	end
 	log.info("[Styx] Activating — warming spacewar ("
 		.. tostring(S.config.fallback_app) .. "), subscribed=" .. tostring(subscribed)
-		.. ", arming the ticket hook")
+		.. ", ticket hook already armed at load time")
 
 	recallFallback("login")
+	local now = monotonicNow()
+	S.lastProbeAt = now
 	probeFallback()
-	if not placeHook() then
-		return
-	end
 
 	S.active = true
 end
@@ -799,8 +1079,13 @@ local function onNetworkPacket(pkt)
 		return
 	end
 
-	if os.time() <= S.probeUntil then
-		probeFallback()
+	local now = monotonicNow()
+	if now <= S.probeUntil then
+		local interval = tonumber(S.config.probe_interval_seconds) or 2
+		if not S.lastProbeAt or now - S.lastProbeAt >= interval then
+			S.lastProbeAt = now
+			probeFallback()
+		end
 	elseif not S.fallbackReady and not S.warnedNoTicket then
 		S.warnedNoTicket = true
 		log.warn("[Styx] Spacewar (" .. tostring(S.config.fallback_app)
@@ -811,7 +1096,6 @@ local function onNetworkPacket(pkt)
 	end
 
 	if isAccountInfo then
-		S.lastRequestAt = nil
 		recallFallback("accountInfo")
 	end
 end
