@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "🔒 Security Vulnerability Report"
+    url: https://github.com/niwia/ASSella/security/advisories/new
+    about: Privately report a vulnerability. Never report security bugs in public issues!
+  - name: "🎮 Hubcap Discord Server"
+    url: https://discord.gg/hubcapsmanifest
+    about: Join Discord for community help, support in #support-steamdeck-and linux, and general chat.
+  - name: "📖 ASSella Documentation"
+    url: https://assella.pages.dev/
+    about: Read the official installation and usage documentation.
