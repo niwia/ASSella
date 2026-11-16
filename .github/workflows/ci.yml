@@ -2,9 +2,9 @@ name: CI - Code Health & Syntax
 
 on:
   push:
-    branches: [ main, beta, canary ]
+    branches: [ main, beta, canary, arm64 ]
   pull_request:
-    branches: [ main, beta, canary ]
+    branches: [ main, beta, canary, arm64 ]
   workflow_dispatch:
 
 jobs:

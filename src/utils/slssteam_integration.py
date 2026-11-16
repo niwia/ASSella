@@ -121,6 +121,9 @@ def _is_slssteam_available() -> bool:
     """Check if SLSsteam API pipe exists (proxy for Steam + SLSsteam running)."""
     if sys.platform != "linux":
         return False
+    from utils.helpers import is_arm64
+    if is_arm64():
+        return False
     return os.path.exists(SLSSTEAM_API_PIPE)
 
 

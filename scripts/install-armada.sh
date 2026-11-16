@@ -17,15 +17,22 @@ NC='\033[0m' # No Color
 
 echo -e "${BOLD}${BLUE}=== ASSella ARM64 / Armada OS Installer ===${NC}"
 
-# 1. Architecture Check
-ARCH=$(uname -m)
+# Parse command line flags
 FORCE=0
+UPDATE_ONLY=0
 for arg in "$@"; do
-    if [[ "$arg" == "--force" || "$arg" == "-f" ]]; then
-        FORCE=1
-    fi
+    case "$arg" in
+        --force|-f)
+            FORCE=1
+            ;;
+        --update|-u)
+            UPDATE_ONLY=1
+            ;;
+    esac
 done
 
+# 1. Architecture Check
+ARCH=$(uname -m)
 if [[ "$ARCH" != "aarch64" && "$ARCH" != "arm64" && "$FORCE" -eq 0 ]]; then
     echo -e "${YELLOW}Warning: Detected architecture '$ARCH' is not ARM64 (aarch64).${NC}"
     echo "If you are testing or running under an emulator, pass '--force' to proceed."
@@ -53,8 +60,10 @@ INSTALL_DIR="${HOME}/.local/share/ASSella"
 BIN_DIR="${HOME}/.local/bin"
 DOTNET_DIR="${HOME}/.dotnet"
 APP_DIR="${HOME}/.local/share/applications"
+ICON_DIR_SVG="${HOME}/.local/share/icons/hicolor/scalable/apps"
+ICON_DIR_PNG="${HOME}/.local/share/icons/hicolor/256x256/apps"
 
-mkdir -p "$INSTALL_DIR" "$BIN_DIR" "$APP_DIR"
+mkdir -p "$INSTALL_DIR" "$BIN_DIR" "$APP_DIR" "$ICON_DIR_SVG" "$ICON_DIR_PNG"
 
 # 4. Install / Verify .NET 9 Runtime for linux-arm64
 echo -e "\n${BLUE}[2/5] Checking Microsoft .NET 9 Runtime (ARM64)...${NC}"
@@ -106,9 +115,34 @@ echo "Installing Python dependencies (PyQt6, requests, etc.)..."
 "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --quiet
 echo -e "${GREEN}✓ Python virtual environment configured.${NC}"
 
-# 7. Create Launcher Script & Desktop Entry
-echo -e "\n${BLUE}[5/5] Creating launcher and desktop shortcut...${NC}"
+# 6b. Kuroko Stealth Proxy (ARM64 wireproxy binary)
+if [[ ! -x "$INSTALL_DIR/src/deps/wireproxy" ]] || file -b "$INSTALL_DIR/src/deps/wireproxy" 2>/dev/null | grep -q "x86-64"; then
+    echo "Configuring native ARM64 wireproxy binary for Kuroko stealth proxy..."
+    WP_TMP=$(mktemp -d)
+    if curl -fsSL --retry 3 "https://github.com/windtf/wireproxy/releases/download/v0.3.2/wireproxy_linux_arm64.tar.gz" -o "$WP_TMP/wireproxy.tar.gz" 2>/dev/null; then
+        tar -xzf "$WP_TMP/wireproxy.tar.gz" -C "$WP_TMP" 2>/dev/null || true
+        if [[ -f "$WP_TMP/wireproxy" ]]; then
+            mkdir -p "$INSTALL_DIR/src/deps"
+            cp -f "$WP_TMP/wireproxy" "$INSTALL_DIR/src/deps/wireproxy"
+            chmod +x "$INSTALL_DIR/src/deps/wireproxy"
+            echo -e "${GREEN}✓ Native ARM64 wireproxy installed.${NC}"
+        fi
+    fi
+    rm -rf "$WP_TMP"
+fi
 
+# 7. Create Launcher Script, Desktop Entry & Icons
+echo -e "\n${BLUE}[5/5] Creating launcher, desktop shortcut and icons...${NC}"
+
+# Install Icons to standard user icon theme paths
+if [[ -f "$INSTALL_DIR/src/res/logo/icon.svg" ]]; then
+    cp -f "$INSTALL_DIR/src/res/logo/icon.svg" "$ICON_DIR_SVG/assella.svg"
+fi
+if [[ -f "$INSTALL_DIR/src/res/logo/icon.png" ]]; then
+    cp -f "$INSTALL_DIR/src/res/logo/icon.png" "$ICON_DIR_PNG/assella.png"
+fi
+
+# Launcher Script
 LAUNCHER="$BIN_DIR/assella"
 cat << 'EOF' > "$LAUNCHER"
 #!/usr/bin/env bash
@@ -132,13 +166,14 @@ cat << EOF > "$desktop_tmp"
 [Desktop Entry]
 Name=ASSella
 GenericName=Game Depot Downloader
-Comment=Steam Depot Downloader & Management Tool (ARM64)
+Comment=Steam Game & Depot Management Suite (ARM64)
 Exec=$LAUNCHER
-Icon=$ICON_PATH
+Icon=assella
 Terminal=false
 Type=Application
 Categories=Utility;Game;
 StartupNotify=true
+StartupWMClass=ASSella
 EOF
 chmod 0644 "$desktop_tmp"
 rm -f "$DESKTOP_FILE"
@@ -158,4 +193,8 @@ echo -e "\n${BOLD}${GREEN}=== Installation Complete! ===${NC}"
 echo -e "You can now launch ASSella using:"
 echo -e "  • ${BOLD}Application Launcher${NC}: Click ASSella under Games / Utilities"
 echo -e "  • ${BOLD}Terminal${NC}: Run '${BOLD}assella${NC}'"
-echo -e "  • ${BOLD}Steam Game Mode (Armada OS / GameScope)${NC}: Open Steam in Desktop mode -> 'Add a Non-Steam Game' -> Select ASSella"
+echo -e "  • ${BOLD}Steam Game Mode (Armada OS / Gamescope)${NC}:"
+echo -e "    1. Switch to Desktop Mode in Armada OS"
+echo -e "    2. In Steam: Games -> 'Add a Non-Steam Game to My Library...'"
+echo -e "    3. Select ASSella from the list and click 'Add Selected Programs'"
+echo -e "    4. Return to Gaming Mode — ASSella is now accessible with controller support!"

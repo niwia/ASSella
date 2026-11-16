@@ -1,8 +1,8 @@
-name: Auto-Sync Canary to ARM64
+name: Auto-Sync Beta to ARM64
 
 on:
   push:
-    branches: [ canary ]
+    branches: [ beta ]
   workflow_dispatch:
 
 permissions:
@@ -23,10 +23,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Fast-forward / Merge Canary into ARM64
+      - name: Fast-forward / Merge Beta into ARM64
         run: |
           git checkout arm64
-          git merge origin/canary --no-edit -m "chore(sync): auto-merge canary into arm64 [skip ci]" || {
+          git merge origin/beta --no-edit -m "chore(sync): auto-merge beta into arm64 [skip ci]" || {
             echo "Auto-merge encountered conflicts. Aborting merge."
             git merge --abort
             exit 1

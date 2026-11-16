@@ -205,7 +205,7 @@ def create_sls_tab(dialog) -> QWidget:
     if is_arm64():
         os_name = "Armada OS" if is_armada_os() else "ARM64 Linux"
         arm_badge = QLabel(
-            f"ℹ️ <b>{os_name} (ARM64)</b>: SLSsteam is an x86_64 library injector and is not available "
+            f"<b>{os_name} (ARM64)</b>: SLSsteam is an x86_64 library injector and is not available "
             "on ARM64. ASSella is running in <b>Standalone Mode</b> (Direct Depot Downloads, Local Manifest Management, "
             "and Non-Steam Game launching)."
         )

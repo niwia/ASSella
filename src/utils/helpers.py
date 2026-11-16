@@ -332,16 +332,20 @@ def _install_dotnet_9_linux() -> bool:
         os.chmod(install_script_path, 0o755)
 
         logger.info("Running .NET 9 installer script...")
+        install_cmd = [
+            str(install_script_path),
+            "--channel",
+            "9.0",
+            "--runtime",
+            "dotnet",
+            "--install-dir",
+            str(dotnet_root),
+        ]
+        if is_arm64():
+            install_cmd.extend(["--architecture", "arm64"])
+
         install_result = subprocess.run(
-            [
-                str(install_script_path),
-                "--channel",
-                "9.0",
-                "--runtime",
-                "dotnet",
-                "--install-dir",
-                str(dotnet_root),
-            ],
+            install_cmd,
             capture_output=True,
             text=True,
             timeout=300,
