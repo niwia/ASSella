@@ -8,8 +8,8 @@ import logging
 from typing import List
 
 from PyQt6 import sip
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QTimer, QSize
+from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import (
     QSizePolicy,
     QDialog,
@@ -466,7 +466,10 @@ class GameDetailsDialogV2(QDialog):
 
         tab_bar_layout.addStretch()
 
-        close_btn = QPushButton("✕ Close")
+        from utils.paths import Paths
+        close_btn = QPushButton("Close")
+        close_btn.setIcon(QIcon(str(Paths.icon("close.svg"))))
+        close_btn.setIconSize(QSize(13, 13))
         self._tab_close_btn = close_btn
         close_btn.setFlat(True)
         close_btn.setFixedHeight(30)

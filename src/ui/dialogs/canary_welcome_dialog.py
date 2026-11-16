@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, pyqtSlot, QPoint
-from PyQt6.QtGui import QMovie
+from PyQt6.QtGui import QMovie, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -309,18 +309,18 @@ class CanaryWelcomeDialog(QDialog):
         layout.addLayout(stepper_layout)
         layout.addStretch()
 
-        btn_close = QPushButton("✕")
+        btn_close = QPushButton()
+        btn_close.setIcon(QIcon(str(Paths.icon("close.svg"))))
+        btn_close.setIconSize(QSize(16, 16))
         btn_close.setFixedSize(24, 24)
         btn_close.setStyleSheet("""
             QPushButton {
                 background: transparent;
                 border: none;
-                color: rgba(255, 255, 255, 0.4);
-                font-size: 11pt;
-                font-weight: bold;
+                border-radius: 4px;
             }
             QPushButton:hover {
-                color: #ff5252;
+                background: rgba(255, 82, 82, 0.2);
             }
         """)
         btn_close.clicked.connect(self.close)
@@ -341,20 +341,18 @@ class CanaryWelcomeDialog(QDialog):
         self.gif_label.setScaledContents(True)
         self.gif_label.setStyleSheet("border-radius: 9px; background: #000000;")
 
-        self.btn_gif_close = QPushButton("✕", widget)
+        self.btn_gif_close = QPushButton(widget)
+        self.btn_gif_close.setIcon(QIcon(str(Paths.icon("close.svg"))))
+        self.btn_gif_close.setIconSize(QSize(14, 14))
         self.btn_gif_close.setGeometry(604, 8, 26, 26)
         self.btn_gif_close.setStyleSheet("""
             QPushButton {
                 background: rgba(0, 0, 0, 0.45);
                 border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 13px;
-                color: rgba(255, 255, 255, 0.7);
-                font-size: 10pt;
-                font-weight: bold;
             }
             QPushButton:hover {
                 background: rgba(255, 82, 82, 0.7);
-                color: #FFFFFF;
             }
         """)
         self.btn_gif_close.clicked.connect(self.close)
@@ -662,7 +660,7 @@ class CanaryWelcomeDialog(QDialog):
             self.settings.setValue("morrenus_api_key", key)
             self.settings.sync()
 
-            self.lbl_key_status.setText("✓ All done! API key verified & saved successfully.")
+            self.lbl_key_status.setText("All done! API key verified & saved successfully.")
             self.lbl_key_status.setStyleSheet(f"color: {success_color}; font-size: 9pt; font-weight: bold;")
 
             user = data.get("username", "Unknown")
@@ -904,7 +902,7 @@ class CanaryWelcomeDialog(QDialog):
                 self.settings.setValue("sls_config_management", True)
                 self.settings.setValue("prompt_steam_restart", False)
                 self.settings.sync()
-                self.lbl_api_toggled.setText("✓ API: yes automatically enabled in config.yaml")
+                self.lbl_api_toggled.setText("API: yes automatically enabled in config.yaml")
         except Exception as e:
             logger.debug(f"Failed to auto-toggle API: yes: {e}")
 

@@ -489,22 +489,7 @@ class ContentDepotSelectionDialog(DepotSelectionDialog):
                     border: none;
                     outline: none;
                 }
-                QCheckBox::indicator {
-                    width: 13px;
-                    height: 13px;
-                    border: none;
-                    border-radius: 3px;
-                    background: rgba(255, 255, 255, 0.12);
-                    outline: none;
-                }
-                QCheckBox::indicator:hover {
-                    background: rgba(255, 255, 255, 0.22);
-                }
-                QCheckBox::indicator:checked {
-                    background: %s;
-                    border: none;
-                }
-            """ % getattr(self, "accent_color", "#6c5ce7"))
+            """)
             bar.addWidget(self.remember_storage_chk)
 
         browse = next((b for b in self.findChildren(QPushButton) if b.text().startswith("Browse Files")), None)

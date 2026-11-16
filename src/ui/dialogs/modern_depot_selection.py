@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
 from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+from utils.paths import Paths
 
 from utils.image_fetcher import ImageFetcher
 from utils.settings import get_settings
@@ -380,7 +381,9 @@ class ModernDepotSelectionDialog(QDialog):
         self.appid_val_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500; border: none; background: transparent;")
         appid_row.addWidget(self.appid_val_lbl)
 
-        copy_btn = QPushButton("📋")
+        copy_btn = QPushButton()
+        copy_btn.setIcon(QIcon(str(Paths.icon("content_copy.svg"))))
+        copy_btn.setIconSize(QSize(13, 13))
         copy_btn.setFixedSize(20, 20)
         copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         copy_btn.setToolTip("Copy App ID")
@@ -459,13 +462,17 @@ class ModernDepotSelectionDialog(QDialog):
         nav_box = QVBoxLayout()
         nav_box.setSpacing(6)
 
-        self.btn_nav_depots = QPushButton("📦  Depots")
+        self.btn_nav_depots = QPushButton("Depots")
+        self.btn_nav_depots.setIcon(QIcon(str(Paths.icon("archive.svg"))))
+        self.btn_nav_depots.setIconSize(QSize(16, 16))
         self.btn_nav_depots.setCheckable(True)
         self.btn_nav_depots.setChecked(True)
         self.btn_nav_depots.setFixedHeight(34)
         self.btn_nav_depots.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.btn_nav_dlcs = QPushButton("🏷️  DLCs")
+        self.btn_nav_dlcs = QPushButton("DLCs")
+        self.btn_nav_dlcs.setIcon(QIcon(str(Paths.icon("label.svg"))))
+        self.btn_nav_dlcs.setIconSize(QSize(16, 16))
         self.btn_nav_dlcs.setCheckable(True)
         self.btn_nav_dlcs.setFixedHeight(34)
         self.btn_nav_dlcs.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -612,7 +619,7 @@ class ModernDepotSelectionDialog(QDialog):
 
         # Search Bar
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍  Search depots...")
+        self.search_input.setPlaceholderText("Search depots...")
         self.search_input.setFixedHeight(30)
         self.search_input.setFixedWidth(200)
         self.search_input.setStyleSheet(f"""
@@ -1167,7 +1174,9 @@ class ModernDepotSelectionDialog(QDialog):
             self.table_widget.setItem(row_idx, 3, size_item)
 
             # Col 4: Per-depot Folder / File Inspection Action
-            folder_btn = QPushButton("📁")
+            folder_btn = QPushButton()
+            folder_btn.setIcon(QIcon(str(Paths.icon("folder_open.svg"))))
+            folder_btn.setIconSize(QSize(15, 15))
             folder_btn.setFixedSize(28, 24)
             folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             folder_btn.setToolTip(f"Inspect/Select files for depot {depot_id}")
@@ -1177,7 +1186,6 @@ class ModernDepotSelectionDialog(QDialog):
                     border: 1px solid rgba(255, 255, 255, 0.12);
                     border-radius: 4px;
                     color: #FFFFFF;
-                    font-size: 8.5pt;
                 }
                 QPushButton:hover {
                     background-color: rgba(255, 255, 255, 0.15);
@@ -1200,8 +1208,8 @@ class ModernDepotSelectionDialog(QDialog):
         # Update metadata counts in sidebar and filter pills
         self.depots_count_lbl.setText(f"<b style='color: {self.accent_color};'>{total_depots_count}</b> / {len(self.depots)}")
         self.dlc_size_val_lbl.setText(format_size(total_dlc_bytes))
-        self.btn_nav_depots.setText(f"📦  Depots ({total_depots_count})")
-        self.btn_nav_dlcs.setText(f"🏷️  DLCs ({dlc_depots_count})")
+        self.btn_nav_depots.setText(f"Depots ({total_depots_count})")
+        self.btn_nav_dlcs.setText(f"DLCs ({dlc_depots_count})")
 
         if hasattr(self, "pill_all"):
             self.pill_all.setText(f"All ({total_depots_count})")

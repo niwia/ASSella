@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QMetaObject, QSize
-from PyQt6.QtGui import QPixmap, QMovie
+from PyQt6.QtGui import QPixmap, QMovie, QIcon
 from PyQt6.QtWidgets import (
     QDialog,
     QWidget,
@@ -259,16 +259,16 @@ class ZipImportConfirmationDialog(QDialog):
         tb_layout.addWidget(tb_title)
         tb_layout.addStretch(1)
 
-        close_btn = QPushButton("✕")
+        from utils.paths import Paths
+        close_btn = QPushButton()
+        close_btn.setIcon(QIcon(str(Paths.icon("close.svg"))))
+        close_btn.setIconSize(QSize(14, 14))
         close_btn.setFixedSize(22, 22)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
-                color: rgba(255, 255, 255, 0.55);
                 border: none;
-                font-size: 9.5pt;
-                font-weight: bold;
                 border-radius: 4px;
             }
             QPushButton:hover {
@@ -642,26 +642,15 @@ class ZipImportConfirmationDialog(QDialog):
         pin_layout.setSpacing(2)
 
         self.pin_checkbox = QCheckBox("Pin this build in Steam")
-        self.pin_checkbox.setStyleSheet(f"""
-            QCheckBox {{
+        self.pin_checkbox.setStyleSheet("""
+            QCheckBox {
                 color: #FFFFFF;
                 font-size: 8.8pt;
                 font-weight: 600;
                 spacing: 8px;
                 background: transparent;
                 border: none;
-            }}
-            QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
-                background: rgba(255, 255, 255, 0.05);
-            }}
-            QCheckBox::indicator:checked {{
-                background: {self.accent_color};
-                border: 1px solid {self.accent_color};
-            }}
+            }
         """)
         pin_layout.addWidget(self.pin_checkbox)
 

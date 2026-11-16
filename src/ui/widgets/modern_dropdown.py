@@ -176,10 +176,17 @@ class DropdownItemDelegate(QStyledItemDelegate):
             painter.drawText(sub_rect, h_align | Qt.AlignmentFlag.AlignVCenter, sub_elided)
 
         if is_checked:
-            painter.setFont(_font(base_font, 11, QFont.Weight.Bold))
-            painter.setPen(self.accent_color)
             check_rect = rect.adjusted(rect.width() - 26, 0, -8, 0)
-            painter.drawText(check_rect, Qt.AlignmentFlag.AlignCenter, "✓")
+            cx = check_rect.center().x()
+            cy = check_rect.center().y()
+            check_path = QPainterPath()
+            check_path.moveTo(cx - 4.5, cy + 0.5)
+            check_path.lineTo(cx - 1.5, cy + 3.5)
+            check_path.lineTo(cx + 4.5, cy - 3.5)
+            check_pen = QPen(self.accent_color, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(check_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(check_path)
 
         painter.restore()
 

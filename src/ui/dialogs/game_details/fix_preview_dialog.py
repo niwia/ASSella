@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -24,6 +25,7 @@ from PyQt6.QtWidgets import (
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.themed_dialog import install_themed_frame
 from utils.font_safety import status_dot
+from utils.paths import Paths
 
 logger = logging.getLogger(__name__)
 
@@ -161,8 +163,7 @@ class FixPreviewDialog(QDialog):
         header_top = QHBoxLayout()
         header_top.setSpacing(8)
 
-        icon_str = "🔧" if self.mode == "apply" else "↩"
-        title_lbl = QLabel(f"{icon_str} {self.fix_title}")
+        title_lbl = QLabel(self.fix_title)
         title_lbl.setStyleSheet("color: #FFFFFF; font-size: 13pt; font-weight: bold;")
         header_top.addWidget(title_lbl)
 
@@ -573,23 +574,19 @@ class FixPreviewDialog(QDialog):
             container._cb = None
             badge_lbl = QLabel()
             if status == "conflict":
-                badge_lbl.setText("⚠️")
+                badge_lbl.setPixmap(QIcon(str(Paths.icon("warning.svg"))).pixmap(14, 14))
                 badge_lbl.setToolTip(file_info.get("conflict_reason") or "File conflict")
             elif status == "managed_by_other_fix":
-                badge_lbl.setText("🔗")
-                badge_lbl.setStyleSheet("color: #a78bfa; font-weight: bold; font-size: 10pt;")
+                badge_lbl.setPixmap(QIcon(str(Paths.icon("link.svg"))).pixmap(14, 14))
                 badge_lbl.setToolTip(file_info.get("conflict_reason") or "Managed by another active fix")
             elif action == "revert":
-                badge_lbl.setText("↩")
-                badge_lbl.setStyleSheet("color: #60a5fa; font-weight: bold; font-size: 10pt;")
+                badge_lbl.setPixmap(QIcon(str(Paths.icon("restore.svg"))).pixmap(14, 14))
                 badge_lbl.setToolTip("Will be restored from backup")
             elif action == "delete":
-                badge_lbl.setText("✕")
-                badge_lbl.setStyleSheet("color: #f87171; font-weight: bold; font-size: 10pt;")
+                badge_lbl.setPixmap(QIcon(str(Paths.icon("close.svg"))).pixmap(14, 14))
                 badge_lbl.setToolTip("Will be permanently deleted")
             else:
-                badge_lbl.setText("✓")
-                badge_lbl.setStyleSheet("color: #9ca3af; font-size: 9pt;")
+                badge_lbl.setPixmap(QIcon(str(Paths.icon("check.svg"))).pixmap(14, 14))
             lay.addWidget(badge_lbl)
 
         # File path label

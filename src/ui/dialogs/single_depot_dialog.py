@@ -395,23 +395,6 @@ class SingleDepotSelectionDialog(QDialog):
         self.depot_checkbox = QCheckBox()
         self.depot_checkbox.setChecked(self._is_pre_checked)
         self.depot_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.depot_checkbox.setStyleSheet(f"""
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
-                background-color: rgba(255, 255, 255, 0.05);
-            }}
-            QCheckBox::indicator:hover {{
-                border-color: {self.accent_color};
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {self.accent_color};
-                border-color: {self.accent_color};
-                image: url("{tick_svg_path}");
-            }}
-        """)
         card_layout.addWidget(self.depot_checkbox)
 
         # Depot ID
@@ -1177,24 +1160,6 @@ class SingleDepotSelectionDialog(QDialog):
             return
         self._ambient_color = color
         self.accent_color = color.name()
-
-        if hasattr(self, "depot_checkbox") and self.depot_checkbox:
-            self.depot_checkbox.setStyleSheet(f"""
-                QCheckBox::indicator {{
-                    width: 18px;
-                    height: 18px;
-                    border-radius: 4px;
-                    border: 1px solid rgba(255, 255, 255, 0.3);
-                    background-color: rgba(255, 255, 255, 0.05);
-                }}
-                QCheckBox::indicator:hover {{
-                    border-color: {self.accent_color};
-                }}
-                QCheckBox::indicator:checked {{
-                    background-color: {self.accent_color};
-                    border-color: {self.accent_color};
-                }}
-            """)
 
         if hasattr(self, "ok_btn") and self.ok_btn:
             from utils.color_utils import get_best_foreground_color

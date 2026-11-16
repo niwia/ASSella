@@ -198,26 +198,7 @@ class NativeSteamActionDialog(QDialog):
                 border: none;
                 outline: none;
             }
-            QCheckBox::indicator {
-                width: 15px;
-                height: 15px;
-                border: none;
-                border-radius: 3px;
-                background: rgba(255, 255, 255, 0.12);
-                outline: none;
-            }
-            QCheckBox::indicator:hover {
-                background: rgba(255, 255, 255, 0.22);
-            }
-            QCheckBox::indicator:checked {
-                background: %s;
-                border: none;
-            }
-            QCheckBox::indicator:focus {
-                border: none;
-                outline: none;
-            }
-        """ % self.accent_color)
+        """)
         body_lay.addWidget(self.remember_chk)
 
         # Bottom row: Cancel / Proceed (big buttons filling the bottom width)

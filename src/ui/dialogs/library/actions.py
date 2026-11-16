@@ -12,7 +12,8 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSlot, QPropertyAnimation, QEasingCurve
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QIcon
+from utils.paths import Paths
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -136,35 +137,41 @@ class LibraryActionsMixin:
 
         count = len(self._selected_appids)
 
-        act_select_all = QAction("✓  Select All", menu)
+        act_select_all = QAction("Select All", menu)
+        act_select_all.setIcon(QIcon(str(Paths.icon("check.svg"))))
         act_select_all.triggered.connect(self._on_select_all_action_clicked)
         menu.addAction(act_select_all)
 
         menu.addSeparator()
 
-        act_move_atom = QAction("→  Move to AT0-M", menu)
+        act_move_atom = QAction("Move to AT0-M", menu)
+        act_move_atom.setIcon(QIcon(str(Paths.icon("archive.svg"))))
         act_move_atom.setEnabled(count > 0)
         act_move_atom.triggered.connect(self._on_move_to_atom_action_clicked)
         menu.addAction(act_move_atom)
 
-        act_update = QAction("↻  Update Selected", menu)
+        act_update = QAction("Update Selected", menu)
+        act_update.setIcon(QIcon(str(Paths.icon("refresh.svg"))))
         act_update.setEnabled(count > 0)
         act_update.triggered.connect(self._on_update_action_clicked)
         menu.addAction(act_update)
 
-        act_uninstall = QAction("✕  Uninstall Selected", menu)
+        act_uninstall = QAction("Uninstall Selected", menu)
+        act_uninstall.setIcon(QIcon(str(Paths.icon("delete_outline.svg"))))
         act_uninstall.setEnabled(count > 0)
         act_uninstall.triggered.connect(self._on_uninstall_action_clicked)
         menu.addAction(act_uninstall)
 
         menu.addSeparator()
 
-        act_clear = QAction("↩  Clear Selection", menu)
+        act_clear = QAction("Clear Selection", menu)
+        act_clear.setIcon(QIcon(str(Paths.icon("restore.svg"))))
         act_clear.setEnabled(count > 0)
         act_clear.triggered.connect(self._on_clear_selection_clicked)
         menu.addAction(act_clear)
 
-        act_exit = QAction("✕  Exit Multi-Select", menu)
+        act_exit = QAction("Exit Multi-Select", menu)
+        act_exit.setIcon(QIcon(str(Paths.icon("close.svg"))))
         act_exit.triggered.connect(lambda: self._toggle_select_mode(False))
         menu.addAction(act_exit)
 
@@ -223,7 +230,8 @@ class LibraryActionsMixin:
         menu.addAction(act_select)
 
         if self._select_mode:
-            act_select_all = QAction("Select All (✓)", menu)
+            act_select_all = QAction("Select All", menu)
+            act_select_all.setIcon(QIcon(str(Paths.icon("check.svg"))))
             act_select_all.triggered.connect(self._on_select_all_action_clicked)
             menu.addAction(act_select_all)
 

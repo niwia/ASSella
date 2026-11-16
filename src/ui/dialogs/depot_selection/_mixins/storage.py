@@ -173,22 +173,7 @@ class StorageMixin:
                     border: none;
                     outline: none;
                 }
-                QCheckBox::indicator {
-                    width: 13px;
-                    height: 13px;
-                    border: none;
-                    border-radius: 3px;
-                    background: rgba(255, 255, 255, 0.12);
-                    outline: none;
-                }
-                QCheckBox::indicator:hover {
-                    background: rgba(255, 255, 255, 0.22);
-                }
-                QCheckBox::indicator:checked {
-                    background: %s;
-                    border: none;
-                }
-            """ % self.accent_color)
+            """)
             layout.addWidget(self.remember_storage_chk)
 
         # Pre-select priority: preferred library path (zip confirmation or job

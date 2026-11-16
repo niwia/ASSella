@@ -553,7 +553,9 @@ class FetchManifestDialog(QDialog):
         from utils.color_utils import get_best_foreground_color
         text_color = get_best_foreground_color(self.accent_color)
 
-        self.dl_btn = QPushButton("⬇ Download (Add to Queue)")
+        self.dl_btn = QPushButton("Download (Add to Queue)")
+        self.dl_btn.setIcon(QIcon(str(Paths.icon("file_download.svg"))))
+        self.dl_btn.setIconSize(QSize(16, 16))
         self.dl_btn.setFixedHeight(36)
         self.dl_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.dl_btn.setStyleSheet(f"""

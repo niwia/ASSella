@@ -43,6 +43,14 @@ def format_game_display_name(game_data: dict) -> str:
 DLC_MODE_SUFFIX = " [DLC MODE]"
 
 
+def _library_check_icon_path(accent_hex: str) -> str:
+    from utils.color_utils import get_best_foreground_color
+    from utils.paths import Paths
+    fg = get_best_foreground_color(accent_hex)
+    is_light = fg.lower() in ("#000000", "#121214", "#1e1e24")
+    return str(Paths.icon("check_dark.svg" if is_light else "check_white.svg"))
+
+
 def split_dlc_mode(display_name: str) -> tuple:
     """Split the DLC-mode marker off a display name.
 
@@ -279,6 +287,7 @@ class GameItemWidget(QWidget):
             self.checkbox.setChecked(self._is_selected)
             self.checkbox.move(10, 10)
             self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            chk_icon = _library_check_icon_path(self.accent_color)
             self.checkbox.setStyleSheet(
                 f"""
                 QCheckBox::indicator {{
@@ -291,6 +300,7 @@ class GameItemWidget(QWidget):
                 QCheckBox::indicator:checked {{
                     background-color: {self.accent_color};
                     border-color: {self.accent_color};
+                    image: url("{chk_icon}");
                 }}
                 """
             )
@@ -960,6 +970,7 @@ class GameTileWidget(GameItemWidget):
         self.checkbox.setChecked(self._is_selected)
         self.checkbox.move(8, 8)
         self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        chk_icon = _library_check_icon_path(self.accent_color)
         self.checkbox.setStyleSheet(
             f"""
             QCheckBox::indicator {{
@@ -972,6 +983,7 @@ class GameTileWidget(GameItemWidget):
             QCheckBox::indicator:checked {{
                 background-color: {self.accent_color};
                 border: 2px solid #000000;
+                image: url("{chk_icon}");
             }}
             """
         )
@@ -1149,6 +1161,7 @@ class GameCompactWidget(GameItemWidget):
         self.checkbox = QCheckBox()
         self.checkbox.setChecked(self._is_selected)
         self.checkbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        chk_icon = _library_check_icon_path(self.accent_color)
         self.checkbox.setStyleSheet(
             f"""
             QCheckBox::indicator {{
@@ -1161,6 +1174,7 @@ class GameCompactWidget(GameItemWidget):
             QCheckBox::indicator:checked {{
                 background-color: {self.accent_color};
                 border: 2px solid #000000;
+                image: url("{chk_icon}");
             }}
             """
         )

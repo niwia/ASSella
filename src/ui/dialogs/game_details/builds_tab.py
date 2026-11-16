@@ -819,23 +819,12 @@ class BuildDepotsSelectionDialog(QDialog):
         self.selected_depots: Dict[str, str] = {}
         self.checkboxes: Dict[str, tuple] = {}
 
-        self.setStyleSheet(f"""
-            QCheckBox {{
+        self.setStyleSheet("""
+            QCheckBox {
                 color: #FFFFFF;
                 font-size: 9pt;
                 spacing: 8px;
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
-                background-color: rgba(255, 255, 255, 0.05);
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {accent_color};
-                border-color: {accent_color};
-            }}
+            }
         """)
 
         layout = install_themed_frame(self, margins=(18, 18, 18, 18), spacing=12)
