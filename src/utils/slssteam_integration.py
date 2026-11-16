@@ -238,6 +238,9 @@ def is_steam_process_running() -> bool:
     """Check if the steam process is currently running on the system.
     Cached for 2 seconds to avoid freezing the UI on repeated calls.
     """
+    if sys.platform == "win32":
+        from core.steam_helpers import is_steam_running
+        return is_steam_running()
     _update_proc_cache_if_needed()
     return _proc_cache["steam_running"]
 
