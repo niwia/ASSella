@@ -196,11 +196,13 @@ def resolve_pinned_manifests(game_data: Dict[str, Any], appid: str) -> Dict[str,
             manifest_map[str(d)] = str(gid)
 
     # 3. Check depots structure in game_data
-    for depot_id, depot_info in (game_data.get("depots") or {}).items():
-        if isinstance(depot_info, dict):
-            gid = depot_info.get("manifest_id") or depot_info.get("gid")
-            if gid and str(gid).isdigit() and str(depot_id) not in manifest_map:
-                manifest_map[str(depot_id)] = str(gid)
+    gd_depots = game_data.get("depots")
+    if isinstance(gd_depots, dict):
+        for depot_id, depot_info in gd_depots.items():
+            if isinstance(depot_info, dict):
+                gid = depot_info.get("manifest_id") or depot_info.get("gid")
+                if gid and str(gid).isdigit() and str(depot_id) not in manifest_map:
+                    manifest_map[str(depot_id)] = str(gid)
 
     # 4. Check installed appmanifest acf on disk if available
     try:

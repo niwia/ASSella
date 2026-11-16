@@ -571,16 +571,57 @@ class NativeSteamDownloadTask(QObject):
             logger.debug(f"[NativeSteamDL] Error checking DepotKeyManager: {e}")
 
         # 5. Fallback/merge from game_data
-        for depot_id, depot_info in (game_data.get("depots") or {}).items():
-            if isinstance(depot_info, dict):
-                k = depot_info.get("key") or depot_info.get("decryption_key")
-                if k:
-                    depot_keys.setdefault(str(depot_id), k)
-                m = depot_info.get("manifest_id") or depot_info.get("gid")
-                if m:
-                    manifest_gids.setdefault(str(depot_id), str(m))
+        depots_raw = game_data.get("depots")
+        if isinstance(depots_raw, dict):
+            for depot_id, depot_info in depots_raw.items():
+                if isinstance(depot_info, dict):
+                    k = depot_info.get("key") or depot_info.get("decryption_key")
+                    if k:
+                        depot_keys.setdefault(str(depot_id), k)
+                    m = depot_info.get("manifest_id") or depot_info.get("gid")
+                    if m:
+                        manifest_gids.setdefault(str(depot_id), str(m))
         if game_data.get("app_key"):
             depot_keys.setdefault(appid_str, game_data["app_key"])
+
+        # Auto-bridge known workshop keys from db/workshop_keys.txt
+        try:
+            from utils.paths import Paths
+            ws_keys_file = Paths.workshop_keys()
+            if ws_keys_file.exists():
+                ws_depot_id = None
+                if isinstance(depots_raw, dict):
+                    raw_ws = depots_raw.get("workshopdepot")
+                    if raw_ws and str(raw_ws).strip().isdigit():
+                        ws_depot_id = str(raw_ws).strip()
+                if not ws_depot_id:
+                    try:
+                        from managers.db_manager import DatabaseManager
+                        app_info = DatabaseManager().get_app_info(appid_str, bypass_expiration=True)
+                        if app_info and isinstance(app_info.get("depots"), dict):
+                            raw_ws = app_info["depots"].get("workshopdepot")
+                            if raw_ws and str(raw_ws).strip().isdigit():
+                                ws_depot_id = str(raw_ws).strip()
+                    except Exception:
+                        pass
+
+                with open(ws_keys_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split(";")
+                        if len(parts) >= 2:
+                            k_id = parts[0].strip()
+                            k_val = parts[1].strip()
+                            if len(k_val) == 64 and (
+                                k_id == appid_str
+                                or k_id in depot_keys
+                                or (ws_depot_id and k_id == ws_depot_id)
+                                or (isinstance(depots_raw, dict) and k_id in depots_raw)
+                            ):
+                                depot_keys.setdefault(k_id, k_val)
+                                if k_id == appid_str:
+                                    game_data.setdefault("app_key", k_val)
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] Error reading workshop keys: {e}")
 
         logger.info(f"[NativeSteamDL] Resolved {len(depot_keys)} depot keys and {len(game_data.get('dlcs', {}))} DLCs for {appid_str}")
         return depot_keys, manifest_gids
@@ -730,9 +771,10 @@ class NativeSteamDownloadTask(QObject):
         if is_dlc:
             new_depot_ids = list(sel_dlc_depots)
         else:
+            from utils.depot_utils import extract_depot_ids
             raw_candidates = set(str(d) for d in selected_depots) if selected_depots else (
                 set(str(d) for d in depot_keys.keys()) | (
-                    set(str(d) for d in game_data["depots"].keys()) if (game_data and game_data.get("depots")) else set()
+                    extract_depot_ids(game_data.get("depots")) if game_data else set()
                 )
             )
             new_depot_ids = [d for d in raw_candidates if d != appid_str]
@@ -768,14 +810,14 @@ class NativeSteamDownloadTask(QObject):
 
         # If user explicitly selected depots, prune any depots of THIS game that are not selected
         if game_data and game_data.get("depots") and selected_depots:
-            all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str}
+            all_game_depots = {str(d) for d in extract_depot_ids(game_data["depots"]) if str(d) != appid_str}
             user_depots_set = set(new_depot_ids)
             for d in all_game_depots:
                 if d in existing_depots_comments and d not in user_depots_set and d not in shared_redists:
                     existing_depots_comments.pop(d, None)
 
         # Merge new depot IDs with comments
-        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
         for d in new_depot_ids:
             if d in shared_redists:
                 existing_depots_comments[d] = "Steamworks Shared"
@@ -832,7 +874,7 @@ class NativeSteamDownloadTask(QObject):
                     key_comments[appid_str] = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
 
             if game_data and game_data.get("depots"):
-                all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str}
+                all_game_depots = {str(d) for d in extract_depot_ids(game_data["depots"]) if str(d) != appid_str}
                 user_depots_set = set(new_depot_ids)
                 for d in all_game_depots:
                     if d not in user_depots_set and d not in sel_dlcs and d not in shared_redists:

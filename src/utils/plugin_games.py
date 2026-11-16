@@ -882,6 +882,39 @@ def collect_game_depots_and_keys(
     except Exception as e:
         logger.debug(f"[PluginGames] DepotKeyManager lookup error for {appid_str}: {e}")
 
+    # Auto-bridge known workshop keys from db/workshop_keys.txt
+    try:
+        from utils.paths import Paths
+        ws_keys_file = Paths.workshop_keys()
+        if ws_keys_file.exists():
+            ws_depot_id = None
+            try:
+                from managers.db_manager import DatabaseManager
+                app_info = DatabaseManager().get_app_info(appid_str, bypass_expiration=True)
+                if app_info and isinstance(app_info.get("depots"), dict):
+                    raw_ws = app_info["depots"].get("workshopdepot")
+                    if raw_ws and str(raw_ws).strip().isdigit():
+                        ws_depot_id = str(raw_ws).strip()
+            except Exception:
+                pass
+
+            with open(ws_keys_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split(";")
+                    if len(parts) >= 2:
+                        k_id = parts[0].strip()
+                        k_val = parts[1].strip().lower()
+                        if len(k_val) == 64 and (
+                            k_id == appid_str
+                            or k_id in depot_ids
+                            or (ws_depot_id and k_id == ws_depot_id)
+                        ):
+                            decryption_keys[k_id] = k_val
+                            if k_id != appid_str and k_id not in depot_ids and not depot_ids:
+                                depot_ids.append(k_id)
+    except Exception as e:
+        logger.debug(f"[PluginGames] Error reading workshop keys for {appid_str}: {e}")
+
     # 3. Fallback: If Hubcap had no depots, query DatabaseManager and local .depot files
     if not depot_ids:
         from utils.depot_utils import is_zero_byte_depot, is_redist_or_dependency, NON_DEPOT_KEYS
@@ -1098,17 +1131,31 @@ def revert_eos_proxy_if_applied(install_path: Optional[str]) -> bool:
     return False
 
 
-def detect_migration_complications(game_data: Dict[str, Any], settings: Any = None) -> Dict[str, Any]:
+def detect_migration_complications(
+    game_data: Any,
+    settings: Any = None,
+    appid: Optional[str] = None,
+) -> Dict[str, Any]:
     """Detect if this game has any complications when migrating to AT0-M:
     - Pinned build (buildid, manifest_map)
     - DLC-only mode (mapped DLC AppIDs, DLC depots, DLC keys)
     - EOS proxy active
     - Goldberg emulator active
+    - Missing content keys
+    - Unkeyed Steam Workshop
     """
-    appid_str = str(game_data.get("appid", "")).strip()
+    if isinstance(game_data, str) and isinstance(settings, dict):
+        appid_str = str(game_data).strip()
+        game_data = settings
+        settings_obj = None
+    else:
+        appid_str = str(appid or (game_data.get("appid", "") if isinstance(game_data, dict) else "")).strip()
+        settings_obj = settings
+
     from utils.settings import get_settings
 
-    settings_obj = settings or get_settings()
+    if settings_obj is None:
+        settings_obj = get_settings()
 
     # 1. Pinned build check
     is_pinned = bool(
@@ -1204,7 +1251,26 @@ def detect_migration_complications(game_data: Dict[str, Any], settings: Any = No
     except Exception as e:
         logger.debug(f"[PluginGames] Error checking unkeyed depots for {appid_str}: {e}")
 
-    has_complications = bool(pinned_info or dlc_info or eos_active or goldberg_active or unkeyed_info)
+    # 6. Unkeyed workshop check
+    unkeyed_workshop = None
+    try:
+        from utils.workshop_helpers import is_workshop_key_missing
+        if is_workshop_key_missing(appid_str, game_data=game_data):
+            unkeyed_workshop = {
+                "appid": appid_str,
+                "has_workshop": True,
+            }
+    except Exception as e:
+        logger.debug(f"[PluginGames] Error checking workshop key for {appid_str}: {e}")
+
+    has_complications = bool(
+        pinned_info
+        or dlc_info
+        or eos_active
+        or goldberg_active
+        or unkeyed_info
+        or unkeyed_workshop
+    )
     return {
         "has_complications": has_complications,
         "pinned": pinned_info,
@@ -1212,6 +1278,7 @@ def detect_migration_complications(game_data: Dict[str, Any], settings: Any = No
         "eos": eos_active,
         "goldberg": goldberg_active,
         "unkeyed": unkeyed_info,
+        "unkeyed_workshop": unkeyed_workshop,
     }
 
 

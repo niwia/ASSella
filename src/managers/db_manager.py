@@ -131,6 +131,30 @@ class DatabaseManager:
         self._app_info_cache: Dict[Tuple[str, bool], Tuple[int, Dict[str, Any]]] = {}
         self._depot_enrichments_cache: Dict[str, Dict[str, dict]] = {}
 
+        if self.conn:
+            try:
+                with self._conn_lock:
+                    cur = self.conn.cursor()
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS depot_enrichments (
+                            appid INTEGER,
+                            depot_id INTEGER,
+                            name TEXT,
+                            size INTEGER,
+                            sharedinstall INTEGER,
+                            system INTEGER,
+                            last_updated INTEGER,
+                            PRIMARY KEY (appid, depot_id)
+                        )
+                        """
+                    )
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_apps_depots_cached ON apps(appid) WHERE depots_json IS NOT NULL;")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_depot_enrichments_appid ON depot_enrichments(appid);")
+                    self.conn.commit()
+            except Exception as e:
+                logger.debug(f"[DatabaseManager] Startup index migration notice: {e}")
+
         self.is_initialized = True
         logger.info(f"DatabaseManager initialized at: {self.db_path}")
 

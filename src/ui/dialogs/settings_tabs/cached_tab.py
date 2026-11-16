@@ -1,16 +1,18 @@
 """Settings -> Downloads -> Cached: games with cached info, one Clear button each.
 
 Nothing is read until the tab is opened; the list is collected on a QThread
-(utils/game_cache.py) and the rows are added in small batches so the dialog
-never stalls.
+(utils/game_cache.py) and the rows are added via on-demand windowed pagination
+(INITIAL_BATCH = 25) so the dialog never stalls or consumes high CPU.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
+from typing import List, Optional, Tuple
 
 from PyQt6 import sip
-from PyQt6.QtCore import QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -26,7 +28,8 @@ from ui.sizes import size_control
 
 logger = logging.getLogger(__name__)
 
-_BATCH = 60
+INITIAL_BATCH = 25
+BATCH_CHUNK = 25
 _ROW_H = 46  # fits the standard control height plus padding
 MUTED = "color: rgba(255,255,255,0.55); font-size: 8.5pt; border: none; background: transparent;"
 
@@ -34,60 +37,87 @@ MUTED = "color: rgba(255,255,255,0.55); font-size: 8.5pt; border: none; backgrou
 class _Job(QThread):
     done = pyqtSignal(object)
 
-    def __init__(self, fn, parent=None):
+    def __init__(self, fn, parent=None, cancel_token: Optional[threading.Event] = None):
         super().__init__(parent)
         self._fn = fn
+        self._cancel_token = cancel_token
 
     def run(self):
         try:
-            self.done.emit(self._fn())
+            if self._cancel_token and self._cancel_token.is_set():
+                return
+            res = self._fn()
+            if self._cancel_token and self._cancel_token.is_set():
+                return
+            self.done.emit(res)
         except Exception as e:
+            if self._cancel_token and self._cancel_token.is_set():
+                return
             logger.warning(f"[CachedTab] background job failed: {e}")
             self.done.emit(e)
 
 
-def _start(owner, fn, on_done) -> None:
-    job = _Job(fn, owner)
+def _start(owner, fn, on_done, cancel_token: Optional[threading.Event] = None) -> _Job:
+    job = _Job(fn, owner, cancel_token=cancel_token)
     job.done.connect(on_done)
     job.finished.connect(job.deleteLater)
     owner._cached_jobs = [j for j in getattr(owner, "_cached_jobs", []) if not sip.isdeleted(j)] + [job]
+    if hasattr(owner, "_job"):
+        owner._job = job
     job.start()
+    return job
 
 
-def create_cached_page(dialog) -> QWidget:
-    page = QWidget()
-    lay = QVBoxLayout(page)
-    lay.setContentsMargins(4, 8, 4, 4)
-    lay.setSpacing(8)
+class CachedTabPage(QWidget):
+    """Cached tab widget with windowed on-demand pagination and cancellation on tab switch/hide."""
 
-    info = QLabel("Loading cached games…")
-    info.setStyleSheet(MUTED)
-    info.setWordWrap(True)
-    lay.addWidget(info)
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._cancel_token = threading.Event()
+        self._all_rows: List[Tuple[str, str]] = []
+        self._rendered_count = 0
+        self._job: Optional[_Job] = None
+        self._is_loaded = False
+        self._init_ui()
 
-    lst = QListWidget()
-    lst.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-    lst.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    lst.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
-    lst.setStyleSheet(
-        "QListWidget { background-color: rgba(18, 20, 26, 0.70); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 4px; }"
-        "QListWidget::item { padding: 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }"
-        "QListWidget::item:hover { background: rgba(255, 255, 255, 0.06); border-radius: 4px; }"
-    )
-    lay.addWidget(lst, 1)
+    def _init_ui(self) -> None:
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 8, 4, 4)
+        lay.setSpacing(8)
 
-    state = {"total": 0}
+        self.info = QLabel("Loading cached games…")
+        self.info.setStyleSheet(MUTED)
+        self.info.setWordWrap(True)
+        lay.addWidget(self.info)
 
-    def _update_info():
-        n = lst.count()
-        info.setText(
+        self.lst = QListWidget()
+        self.lst.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.lst.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.lst.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.lst.setStyleSheet(
+            "QListWidget { background-color: rgba(18, 20, 26, 0.70); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 4px; }"
+            "QListWidget::item { padding: 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }"
+            "QListWidget::item:hover { background: rgba(255, 255, 255, 0.06); border-radius: 4px; }"
+        )
+        lay.addWidget(self.lst, 1)
+
+        # Hook scroll bar for windowed on-demand pagination
+        self.lst.verticalScrollBar().valueChanged.connect(self._on_scroll)
+
+    def _update_info(self) -> None:
+        if sip.isdeleted(self.info):
+            return
+        n = len(self._all_rows)
+        self.info.setText(
             f"{n} game{'s' if n != 1 else ''} with cached info. Clearing removes it everywhere ASSella "
             "keeps it; it is fetched again the next time you open the game. Installed and AT0-M games "
             "keep their decryption keys."
             if n else "No cached game info."
         )
 
-    def _row(appid: str, name: str) -> None:
+    def _row(self, appid: str, name: str) -> None:
+        if sip.isdeleted(self.lst):
+            return
         item = QListWidgetItem()
         w = QWidget()
         h = QHBoxLayout(w)
@@ -104,8 +134,8 @@ def create_cached_page(dialog) -> QWidget:
         lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         btn.setFixedWidth(84)
         item.setSizeHint(QSize(0, _ROW_H))
-        lst.addItem(item)
-        lst.setItemWidget(item, w)
+        self.lst.addItem(item)
+        self.lst.setItemWidget(item, w)
 
         def _clear():
             btn.setEnabled(False)
@@ -113,48 +143,82 @@ def create_cached_page(dialog) -> QWidget:
             from utils.game_cache import clear_game_cache
 
             def _done(res):
-                if sip.isdeleted(lst):
+                if sip.isdeleted(self.lst):
                     return
                 if isinstance(res, Exception):
                     btn.setEnabled(True)
                     btn.setText("Clear")
                     btn.setToolTip(str(res))
                     return
-                row = lst.row(item)
+                row = self.lst.row(item)
                 if row >= 0:
-                    lst.takeItem(row)
-                _update_info()
+                    self.lst.takeItem(row)
+                    self._rendered_count = max(0, self._rendered_count - 1)
+                self._all_rows = [(a, n) for a, n in self._all_rows if a != appid]
+                self._update_info()
 
-            _start(page, lambda: clear_game_cache(appid), _done)
+            _start(self, lambda: clear_game_cache(appid), _done)
 
         btn.clicked.connect(_clear)
 
-    def _fill(rows, start=0):
-        if sip.isdeleted(lst):
+    def _render_next_batch(self, count: int = 25) -> None:
+        if sip.isdeleted(self.lst) or self._cancel_token.is_set():
             return
-        lst.setUpdatesEnabled(False)
-        for appid, name in rows[start:start + _BATCH]:
-            _row(appid, name)
-        lst.setUpdatesEnabled(True)
-        if start + _BATCH < len(rows):
-            QTimer.singleShot(0, lambda: _fill(rows, start + _BATCH))
-        else:
-            _update_info()
+        if self._rendered_count >= len(self._all_rows):
+            return
+        self.lst.setUpdatesEnabled(False)
+        end = min(self._rendered_count + count, len(self._all_rows))
+        for appid, name in self._all_rows[self._rendered_count:end]:
+            self._row(appid, name)
+        self._rendered_count = end
+        self.lst.setUpdatesEnabled(True)
 
-    def _loaded(res):
-        if sip.isdeleted(info):
+    def _on_scroll(self, value: int) -> None:
+        if self._cancel_token.is_set() or sip.isdeleted(self.lst):
             return
-        if isinstance(res, Exception):
-            info.setText(f"Could not read the caches: {res}")
-            return
-        state["total"] = len(res)
-        if not res:
-            _update_info()
-            return
-        info.setText(f"Loading {len(res)} games…")
-        _fill(res)
+        sb = self.lst.verticalScrollBar()
+        if sb.maximum() > 0 and value >= sb.maximum() - 150:
+            if self._rendered_count < len(self._all_rows):
+                self._render_next_batch(BATCH_CHUNK)
 
-    from utils.game_cache import list_cached_games
+    def _start_loading(self) -> None:
+        if self._is_loaded:
+            return
+        self._cancel_token.clear()
+        self.info.setText("Loading cached games…")
 
-    _start(page, list_cached_games, _loaded)
+        def _loaded(res):
+            if sip.isdeleted(self) or self._cancel_token.is_set():
+                return
+            if isinstance(res, Exception):
+                self.info.setText(f"Could not read the caches: {res}")
+                return
+            self._is_loaded = True
+            self._all_rows = res or []
+            self._rendered_count = 0
+            if sip.isdeleted(self.lst):
+                return
+            self.lst.clear()
+            self._update_info()
+            if self._all_rows:
+                self._render_next_batch(INITIAL_BATCH)
+
+        from utils.game_cache import list_cached_games
+        _start(self, lambda: list_cached_games(self._cancel_token), _loaded, cancel_token=self._cancel_token)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._cancel_token.clear()
+        if not self._is_loaded:
+            self._start_loading()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._cancel_token.set()
+        if self._job and not sip.isdeleted(self._job) and self._job.isRunning():
+            self._job.quit()
+
+
+def create_cached_page(dialog) -> QWidget:
+    page = CachedTabPage(dialog)
     return page

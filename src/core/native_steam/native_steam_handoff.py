@@ -280,14 +280,15 @@ def perform_steam_handoff(
     # Resolve depots if none explicitly selected
     from utils.dlc_helpers import is_dlc_only_mode, filter_dlc_depots_only
     is_dlc = is_dlc_only_mode(appid) or bool(game_data.get("is_dlc_only"))
-    depots_meta = (game_data.get("depots") or {}) if game_data else {}
+    depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
 
     if not selected_depots:
+        from utils.depot_utils import extract_depot_ids
         all_d = set(str(d) for d in depot_keys.keys())
         if manifest_gids:
             all_d.update(str(d) for d in manifest_gids.keys())
         if game_data and game_data.get("depots"):
-            all_d.update(str(d) for d in game_data["depots"].keys())
+            all_d.update(extract_depot_ids(game_data["depots"]))
         if is_dlc:
             selected_depots = filter_dlc_depots_only(all_d, appid, depots_meta=depots_meta)
         else:
@@ -394,7 +395,7 @@ def perform_steam_handoff(
     try:
         from utils.plugin_games import register_plugin_game
         depot_names: Dict[str, str] = {}
-        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
         for did in (selected_depots or []):
             meta = depots_meta.get(did) or depots_meta.get(int(did) if str(did).isdigit() else did) or {}
             if isinstance(meta, dict) and meta.get("desc"):

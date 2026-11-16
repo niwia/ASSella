@@ -313,7 +313,7 @@ class DepotsStateMixin:
             or gd.get("_dlc_only")
             or is_dlc_only_mode(self.appid_str)
         )
-        is_dlc_context = bool(self.is_dlc_setup or is_dlc_only)
+        is_dlc_context = bool(getattr(self, "is_dlc_setup", False) or is_dlc_only)
         is_base_owned = bool(is_steam_owned_base or is_dlc_only)
 
         # DLC AppIDs set
@@ -470,7 +470,7 @@ class DepotsStateMixin:
         accent_val = (getattr(dlg, "accent_color", None) if dlg is not None else None) or self.ac
         active_tint = (
             QColor(accent_val)
-            if accent_val and QColor(accent_val).isValid()
+            if isinstance(accent_val, (str, int, QColor)) and QColor(accent_val).isValid()
             else None
         )
 
@@ -537,6 +537,37 @@ class DepotsStateMixin:
             )
 
         # Collect missing / pending depots
+        from utils.workshop_helpers import check_game_has_workshop
+        dlg = self.dialog
+        has_workshop = bool(
+            getattr(dlg, "_has_workshop", False)
+            or check_game_has_workshop(self.appid_str, game_data=gd, allow_network=False)
+        )
+        app_key_val = (
+            game_keys.get(self.appid_str)
+            or live_keys.get(self.appid_str)
+            or gd.get("app_key")
+            or ""
+        )
+        if not app_key_val or len(str(app_key_val).strip()) != 64:
+            try:
+                from utils.paths import Paths
+                ws_keys_file = Paths.workshop_keys()
+                if ws_keys_file.exists():
+                    with open(ws_keys_file, "r", encoding="utf-8") as f:
+                        for line in f:
+                            parts = line.strip().split(";")
+                            if len(parts) >= 2 and parts[0].strip() == self.appid_str:
+                                cand = parts[1].strip().lower()
+                                if len(cand) == 64:
+                                    app_key_val = cand
+                                    game_keys[self.appid_str] = cand
+                                    break
+            except Exception:
+                pass
+        has_root_key = bool(app_key_val and len(str(app_key_val).strip()) == 64)
+        ws_missing_tooltip = "Root AppKey is missing. Base game is playable, but Steam Workshop downloads require this key."
+
         missing_depots_map: Dict[str, Dict[str, Any]] = {}
 
         at0m_stat = db_mgr.get_at0m_update_status(self.appid_str)
@@ -582,24 +613,35 @@ class DepotsStateMixin:
                 mid
                 and mid not in valid_key_depots
                 and mid not in missing_depots_map
-                and mid != self.appid_str
+                and (mid != self.appid_str or (has_workshop and not has_root_key))
                 and mid not in ALL_SHARED_REDISTS
             ):
-                if _is_unreleased(mid):
+                if mid == self.appid_str:
+                    missing_depots_map[mid] = {
+                        "status": "key_missing",
+                        "tag": "[No Workshop Key]",
+                        "tooltip": ws_missing_tooltip,
+                    }
+                elif _is_unreleased(mid):
                     m_stat, m_tag, m_tip = (
                         STATUS_UNRELEASED,
                         UNRELEASED_TAG,
                         unreleased_tooltip(mid),
                     )
+                    missing_depots_map[mid] = {
+                        "status": m_stat,
+                        "tag": m_tag,
+                        "tooltip": m_tip,
+                    }
                 else:
                     m_stat, m_tag, m_tip = gate.classify_missing(
                         mid, reported_missing=True
                     )
-                missing_depots_map[mid] = {
-                    "status": m_stat,
-                    "tag": m_tag,
-                    "tooltip": m_tip,
-                }
+                    missing_depots_map[mid] = {
+                        "status": m_stat,
+                        "tag": m_tag,
+                        "tooltip": m_tip,
+                    }
 
         for row in db_mgr.get_missing_hubcap_depots(self.appid_str):
             mid = str(row.get("depot_id") or "")
@@ -607,24 +649,35 @@ class DepotsStateMixin:
                 mid
                 and mid not in valid_key_depots
                 and mid not in missing_depots_map
-                and mid != self.appid_str
+                and (mid != self.appid_str or (has_workshop and not has_root_key))
                 and mid not in ALL_SHARED_REDISTS
             ):
-                if _is_unreleased(mid):
+                if mid == self.appid_str:
+                    missing_depots_map[mid] = {
+                        "status": "key_missing",
+                        "tag": "[No Workshop Key]",
+                        "tooltip": ws_missing_tooltip,
+                    }
+                elif _is_unreleased(mid):
                     m_stat, m_tag, m_tip = (
                         STATUS_UNRELEASED,
                         UNRELEASED_TAG,
                         unreleased_tooltip(mid),
                     )
+                    missing_depots_map[mid] = {
+                        "status": m_stat,
+                        "tag": m_tag,
+                        "tooltip": m_tip,
+                    }
                 else:
                     m_stat, m_tag, m_tip = gate.classify_missing(
                         mid, reported_missing=True
                     )
-                missing_depots_map[mid] = {
-                    "status": m_stat,
-                    "tag": m_tag,
-                    "tooltip": m_tip,
-                }
+                    missing_depots_map[mid] = {
+                        "status": m_stat,
+                        "tag": m_tag,
+                        "tooltip": m_tip,
+                    }
 
         try:
             from managers.at0m_update_checker import At0mUpdateChecker
@@ -644,7 +697,7 @@ class DepotsStateMixin:
                 did_str not in valid_key_depots
                 and did_str not in game_depots_set
                 and did_str not in missing_depots_map
-                and did_str != self.appid_str
+                and (did_str != self.appid_str or (has_workshop and not has_root_key))
                 and did_str not in ALL_SHARED_REDISTS
                 and isinstance(ddata, dict)
             ):
@@ -672,25 +725,45 @@ class DepotsStateMixin:
                     or ddata.get("size")
                     or ddata.get("is_dlc")
                 ):
-                    if _is_unreleased(did_str):
+                    if did_str == self.appid_str:
+                        missing_depots_map[did_str] = {
+                            "status": "key_missing",
+                            "tag": "[No Workshop Key]",
+                            "tooltip": ws_missing_tooltip,
+                        }
+                    elif _is_unreleased(did_str):
                         m_stat, m_tag, m_tip = (
                             STATUS_UNRELEASED,
                             UNRELEASED_TAG,
                             unreleased_tooltip(did_str),
                         )
+                        missing_depots_map[did_str] = {
+                            "status": m_stat,
+                            "tag": m_tag,
+                            "tooltip": m_tip,
+                        }
                     else:
                         m_stat, m_tag, m_tip = gate.classify_missing(did_str)
-                    missing_depots_map[did_str] = {
-                        "status": m_stat,
-                        "tag": m_tag,
-                        "tooltip": m_tip,
-                    }
+                        missing_depots_map[did_str] = {
+                            "status": m_stat,
+                            "tag": m_tag,
+                            "tooltip": m_tip,
+                        }
+
+        if has_workshop and not has_root_key and self.appid_str not in missing_depots_map:
+            missing_depots_map[self.appid_str] = {
+                "status": "key_missing",
+                "tag": "[No Workshop Key]",
+                "tooltip": ws_missing_tooltip,
+            }
 
         existing_depot_ids = {d["id"] for d in depots_list}
         for d in sorted(
             missing_depots_map.keys() - existing_depot_ids,
             key=lambda x: int(x) if x.isdigit() else 0,
         ):
+            if d == self.appid_str:
+                continue
             m_info = missing_depots_map[d]
             desc = (
                 plugin_depot_names.get(d)
@@ -745,20 +818,11 @@ class DepotsStateMixin:
 
         # Build Keys list for THIS GAME ONLY
         keys_list: List[Dict[str, Any]] = []
-        if (
-            self.appid_str in game_keys
-            or self.appid_str in live_keys
-            or is_base_owned
-        ):
-            root_k = (
-                game_keys.get(self.appid_str)
-                or live_keys.get(self.appid_str)
-                or ""
-            )
+        if has_root_key:
             keys_list.append(
                 {
                     "id": self.appid_str,
-                    "key": root_k,
+                    "key": str(app_key_val),
                     "is_appkey": True,
                     "in_config": (self.appid_str in live_keys),
                     "in_local": bool(
@@ -767,6 +831,32 @@ class DepotsStateMixin:
                         or self.appid_str in plugin_keys
                     ),
                     "is_missing": False,
+                    "is_base_owned": is_base_owned,
+                    "is_dlc_base_locked": is_dlc_context,
+                    "is_owned": is_steam_owned_base,
+                }
+            )
+        elif (
+            has_workshop
+            or is_base_owned
+            or self.appid_str in game_keys
+            or self.appid_str in live_keys
+        ):
+            keys_list.append(
+                {
+                    "id": self.appid_str,
+                    "key": "",
+                    "is_appkey": True,
+                    "in_config": False,
+                    "in_local": False,
+                    "is_missing": True,
+                    "missing_status": "key_missing",
+                    "missing_tag": "[No Workshop Key]" if has_workshop else "[No Key]",
+                    "missing_tooltip": (
+                        ws_missing_tooltip
+                        if has_workshop
+                        else "Root AppKey is not available."
+                    ),
                     "is_base_owned": is_base_owned,
                     "is_dlc_base_locked": is_dlc_context,
                     "is_owned": is_steam_owned_base,

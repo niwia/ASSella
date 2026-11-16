@@ -1779,20 +1779,28 @@ class ZipImportConfirmationDialog(QDialog):
             for d, k in (game_data.get("depot_keys") or {}).items():
                 if k:
                     candidate_keys[str(d)] = str(k).strip().lower()
-            for d, dinfo in (game_data.get("depots") or {}).items():
-                if isinstance(dinfo, dict):
-                    k = dinfo.get("key") or dinfo.get("decryption_key")
-                    if k:
-                        candidate_keys[str(d)] = str(k).strip().lower()
+            gd_depots = game_data.get("depots")
+            if isinstance(gd_depots, dict):
+                for d, dinfo in gd_depots.items():
+                    if isinstance(dinfo, dict):
+                        k = dinfo.get("key") or dinfo.get("decryption_key")
+                        if k:
+                            candidate_keys[str(d)] = str(k).strip().lower()
 
             candidate_depots = {}
-            for d, dinfo in (game_data.get("depots") or {}).items():
-                did_str = str(d).strip()
-                if did_str.isdigit() and did_str != appid_str:
-                    d_desc = ""
-                    if isinstance(dinfo, dict):
-                        d_desc = dinfo.get("desc") or dinfo.get("name") or ""
-                    candidate_depots[did_str] = d_desc
+            if isinstance(gd_depots, dict):
+                for d, dinfo in gd_depots.items():
+                    did_str = str(d).strip()
+                    if did_str.isdigit() and did_str != appid_str:
+                        d_desc = ""
+                        if isinstance(dinfo, dict):
+                            d_desc = dinfo.get("desc") or dinfo.get("name") or ""
+                        candidate_depots[did_str] = d_desc
+            elif isinstance(gd_depots, (list, set, tuple)):
+                for d in gd_depots:
+                    did_str = str(d).strip()
+                    if did_str.isdigit() and did_str != appid_str:
+                        candidate_depots[did_str] = ""
 
             # 3. Determine missing keys and missing depots
             missing_keys = {

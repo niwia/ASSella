@@ -282,13 +282,16 @@ def _make_local_indicator(in_local: bool, is_missing: bool = False) -> QWidget:
         dot.setToolTip("Decryption key present in local database")
         h_lay.addWidget(dot)
     elif is_missing:
-        lbl = QLabel("—")
-        lbl.setStyleSheet(
-            "color: rgba(255, 255, 255, 0.25); font-weight: bold; font-size: 11px;"
-        )
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl.setToolTip("Decryption key not available locally or on Hubcap")
-        h_lay.addWidget(lbl)
+        dot = QFrame()
+        dot.setFixedSize(10, 10)
+        dot.setStyleSheet("""
+            QFrame {
+                background-color: #EF5350;
+                border-radius: 5px;
+            }
+        """)
+        dot.setToolTip("Decryption key not available locally or on Hubcap")
+        h_lay.addWidget(dot)
     else:
         empty = QLabel("")
         h_lay.addWidget(empty)

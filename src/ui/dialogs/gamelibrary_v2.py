@@ -241,6 +241,23 @@ class GameDetailsDialogV2(QDialog):
         if main_win and hasattr(main_win, "progress_bar"):
             main_win.progress_bar.valueChanged.connect(self._on_main_progress_changed)
 
+    def _is_atom_game(self) -> bool:
+        if (
+            self.game_data.get("is_atom")
+            or self.game_data.get("is_vapor")
+            or self.game_data.get("is_plugin_game")
+            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
+            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M", "plugin_native")
+        ):
+            return True
+        try:
+            from utils.plugin_games import is_plugin_game
+            if is_plugin_game(self.appid):
+                return True
+        except Exception:
+            pass
+        return False
+
     # ── Per-tab height: Info is short, the other tabs get the full window ──
     FULL_HEIGHT = 540
 
@@ -394,13 +411,7 @@ class GameDetailsDialogV2(QDialog):
         tab_bar_layout.setContentsMargins(8, 0, 8, 0)
         tab_bar_layout.setSpacing(2)
 
-        is_atom = bool(
-            self.game_data.get("is_atom")
-            or self.game_data.get("is_vapor")
-            or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        )
+        is_atom = self._is_atom_game()
         self._is_atom = is_atom
 
         if is_atom:
@@ -575,14 +586,7 @@ class GameDetailsDialogV2(QDialog):
         return gd.get("update_status") == "update_available" and not (latest and latest in cached_ids)
 
     def _ensure_workshop_loaded(self):
-        is_vapor = bool(
-            self.game_data.get("is_atom")
-            or self.game_data.get("is_vapor")
-            or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        )
-        if is_vapor:
+        if self._is_atom_game():
             return
         if getattr(self, "_workshop_scanned", False):
             return
@@ -592,14 +596,7 @@ class GameDetailsDialogV2(QDialog):
     @pyqtSlot(bool)
     def _on_workshop_check_finished(self, has_ws: bool):
         from utils.dlc_helpers import is_dlc_only_mode
-        is_vapor = bool(
-            self.game_data.get("is_atom")
-            or self.game_data.get("is_vapor")
-            or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        )
-        if is_dlc_only_mode(self.appid) or is_vapor:
+        if is_dlc_only_mode(self.appid) or self._is_atom_game():
             return
         if has_ws:
             self._has_workshop = True
@@ -844,13 +841,7 @@ class GameDetailsDialogV2(QDialog):
     #  Workshop Tab Delegations
     # ──────────────────────────────────────────
     def _init_workshop_tab(self):
-        is_vapor = bool(
-            self.game_data.get("is_atom")
-            or self.game_data.get("is_vapor")
-            or self.game_data.get("is_plugin_game")
-            or self.game_data.get("update_status") in ("vapor", "at0m", "at0-m")
-            or self.game_data.get("source") in ("Vapor", "at0-m", "AT0-M")
-        )
+        is_vapor = self._is_atom_game()
         ws_enabled = self.settings.value("enable_workshop_downloader", False, type=bool)
         if not ws_enabled or is_vapor:
             dummy = QWidget()

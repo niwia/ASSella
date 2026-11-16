@@ -112,6 +112,11 @@ class AtomMigrationComplicationsDialog(QDialog):
         if goldberg:
             content_layout.addWidget(self._create_goldberg_card())
 
+        # 6. Unkeyed Workshop Card
+        unkeyed_ws = self.complications.get("unkeyed_workshop")
+        if unkeyed_ws:
+            content_layout.addWidget(self._create_workshop_unkeyed_card(unkeyed_ws))
+
         content_layout.addStretch()
         scroll.setWidget(content_widget)
         layout.addWidget(scroll, 1)
@@ -335,6 +340,29 @@ class AtomMigrationComplicationsDialog(QDialog):
             )
 
         desc = QLabel(desc_text)
+        desc.setWordWrap(True)
+        desc.setTextFormat(Qt.TextFormat.RichText)
+        desc.setStyleSheet("font-size: 8.5pt; color: #D0D0D8; border: none; background: transparent;")
+        card_layout.addWidget(desc)
+
+        return card
+
+    def _create_workshop_unkeyed_card(self, unkeyed_ws: Dict[str, Any]) -> QFrame:
+        card = self._create_card_frame()
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(8)
+
+        title = QLabel("🛠️ Steam Workshop Notice")
+        title.setStyleSheet("font-weight: bold; font-size: 9.5pt; color: #FFB74D; border: none;")
+        card_layout.addWidget(title)
+
+        desc = QLabel(
+            "This game supports Steam Workshop, but the root <b>AppKey</b> is currently unavailable in the local key databases.<br><br>"
+            "• <b>Base Game:</b> <span style='color: #85E89D;'>✓ Ready</span> (all base content depots and keys are configured)<br>"
+            "• <b>Steam Workshop:</b> <span style='color: #FFB74D;'>⚠️ No Key</span> (workshop mod downloads via Steam require the root AppKey)<br><br>"
+            "<i>The base game is fully playable under AT0-M. If a workshop key is added later (via db/workshop_keys.txt or SLSsteam config), workshop downloads will activate automatically.</i>"
+        )
         desc.setWordWrap(True)
         desc.setTextFormat(Qt.TextFormat.RichText)
         desc.setStyleSheet("font-size: 8.5pt; color: #D0D0D8; border: none; background: transparent;")
