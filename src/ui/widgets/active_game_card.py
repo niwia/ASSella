@@ -15,13 +15,14 @@ class ActiveGameCard(QFrame):
         self.appid = None
         self.game_name = "Installing Game..."
         self.pixmap = None
+        self._scaled_pixmap = None
         self.accent_color = "#C06C84"
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumHeight(84)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setContentsMargins(16, 12, 20, 12)
         lay.setSpacing(4)
         lay.addStretch()
 
@@ -47,6 +48,10 @@ class ActiveGameCard(QFrame):
         lay.addWidget(self.sub_lbl)
         lay.addStretch()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._scaled_pixmap = None
+
     def set_game(self, appid: str, game_name: str, accent_color: str = None):
         self.appid = str(appid) if appid else None
         self.game_name = game_name or "Installing Game..."
@@ -59,10 +64,31 @@ class ActiveGameCard(QFrame):
         from utils.image_fetcher import ImageFetcher
         from PyQt6.QtGui import QPixmap
         self.pixmap = None
+        self._scaled_pixmap = None
+        self._cached_fade_mode = None
+        self._img_fetcher = None
         if self.appid and self.appid not in ("0", "unknown", "N/A"):
             cache_path = ImageFetcher.get_cache_path(self.appid)
             if cache_path.exists():
                 self.pixmap = QPixmap(str(cache_path))
+            else:
+                expected_appid = self.appid
+
+                def _on_img_fetched(data, aid=expected_appid):
+                    from PyQt6 import sip
+                    if sip.isdeleted(self) or self.appid != aid:
+                        return
+                    if data:
+                        pm = QPixmap()
+                        if pm.loadFromData(data) and not pm.isNull():
+                            self.pixmap = pm
+                            self._scaled_pixmap = None
+                            self.update()
+
+                url = ImageFetcher.get_header_image_url(self.appid)
+                self._img_fetcher = ImageFetcher(url, parent=self)
+                self._img_fetcher.finished.connect(_on_img_fetched)
+                self._img_fetcher.start()
         self.update()
 
     def set_version_info(self, installed_build: str = "", target_build: str = "", appid: str = ""):
@@ -100,13 +126,13 @@ class ActiveGameCard(QFrame):
             entry = build_lookup.get(bid)
             if entry and entry.get("date"):
                 return str(entry["date"]).strip()
-            # If not in SteamDB cache, try PICS branches timeupdated
+            # If not in SteamDB cache, try PICS branches timeupdated from local DatabaseManager cache
             if aid and str(aid).isdigit() and int(aid) > 0:
                 try:
-                    from core.steam_api import get_depot_info_from_api
+                    from managers.db_manager import DatabaseManager
                     from datetime import datetime, timezone
-                    p_info = get_depot_info_from_api(int(aid))
-                    if p_info and "branches" in p_info:
+                    p_info = DatabaseManager().get_app_info(str(aid), bypass_expiration=True)
+                    if p_info and "branches" in p_info and isinstance(p_info["branches"], dict):
                         for b_data in p_info["branches"].values():
                             if isinstance(b_data, dict) and str(b_data.get("buildid")) == str(bid):
                                 tu = b_data.get("timeupdated")
@@ -191,15 +217,59 @@ class ActiveGameCard(QFrame):
                     "color: rgba(255, 255, 255, 0.65); font-size: 8.5pt; font-weight: 500; background: transparent; border: none;"
                 )
 
+    def _artwork_layout_params(self, rect):
+        """Return mode-specific artwork geometry & gradient measurements.
+
+        Single-game downloads span the full bottom section (~700-850px), while
+        queued downloads sit beside the queue list (~350-420px) and need more
+        fade runway + stronger scrim so wrapped text remains easy to read.
+        """
+        is_compact = rect.width() < 520
+        natural_w = int(rect.height() * (self.pixmap.width() / max(self.pixmap.height(), 1)))
+        if is_compact:
+            target_w = min(rect.width(), max(natural_w, int(rect.width() * 0.68)))
+            return (
+                "compact",
+                target_w,
+                {
+                    "fade_start": 0.05,
+                    "fade_end": 0.80,
+                    "peak_alpha": 220,
+                    "end_alpha": 238,
+                    "scrim_mid": 45,
+                    "scrim_end": 95,
+                },
+            )
+        target_w = min(rect.width(), max(natural_w, int(rect.width() * 0.58)))
+        return (
+            "wide",
+            target_w,
+            {
+                "fade_start": 0.0,
+                "fade_end": 0.68,
+                "peak_alpha": 232,
+                "end_alpha": 245,
+                "scrim_mid": 25,
+                "scrim_end": 85,
+            },
+        )
+
     def paintEvent(self, event):
-        from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen
+        from PyQt6.QtGui import QPainter, QLinearGradient, QPainterPath, QPen
         from PyQt6.QtCore import QRect
+        from ui.widgets.artwork_fade import build_faded_artwork
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
         rect = self.rect()
-        bg_color = QColor(18, 18, 22, 230)
+        pal = self.palette()
+        win_col = pal.color(pal.ColorRole.Window)
+        if win_col.isValid():
+            bg_color = QColor(win_col.red(), win_col.green(), win_col.blue(), 230)
+        else:
+            bg_color = QColor(18, 18, 22, 230)
 
         path = QPainterPath()
         path.addRoundedRect(float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 6.0, 6.0)
@@ -210,23 +280,40 @@ class ActiveGameCard(QFrame):
         painter.drawRect(rect)
 
         if self.pixmap and not self.pixmap.isNull():
-            img_h = rect.height()
-            img_w = int(img_h * (self.pixmap.width() / self.pixmap.height()))
-            target_rect = QRect(rect.width() - img_w, 0, img_w, rect.height())
-            painter.drawPixmap(target_rect, self.pixmap)
+            mode, target_w, params = self._artwork_layout_params(rect)
+            target_rect = QRect(rect.width() - target_w, 0, target_w, rect.height())
 
-            # Gradient scrim overlay across the image
-            fade_w = min(img_w, max(140, int(rect.width() * 0.75)))
-            gradient = QLinearGradient(rect.width() - img_w, 0, rect.width(), 0)
-            gradient.setColorAt(0.0, bg_color)
-            gradient.setColorAt(0.45, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 215))
-            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 50))
+            if (
+                self._scaled_pixmap is None
+                or self._scaled_pixmap.size() != target_rect.size()
+                or getattr(self, "_cached_fade_mode", None) != mode
+            ):
+                self._scaled_pixmap = build_faded_artwork(
+                    self.pixmap,
+                    target_rect.size(),
+                    direction="fade_in_right",
+                    fade_start=params["fade_start"],
+                    fade_end=params["fade_end"],
+                    start_alpha=0,
+                    peak_alpha=params["peak_alpha"],
+                    end_alpha=params["end_alpha"],
+                    edge_alpha=205,
+                    edge_span=0.14,
+                )
+                self._cached_fade_mode = mode
 
-            painter.setBrush(QBrush(gradient))
-            painter.drawRect(rect)
+            if not self._scaled_pixmap.isNull():
+                painter.drawPixmap(target_rect, self._scaled_pixmap)
+
+            # Soft readability scrim over the artwork zone without creating a hard band
+            scrim = QLinearGradient(float(target_rect.left()), 0.0, float(target_rect.right()), 0.0)
+            scrim.setColorAt(0.0, QColor(0, 0, 0, 0))
+            scrim.setColorAt(0.45, QColor(0, 0, 0, params["scrim_mid"]))
+            scrim.setColorAt(1.0, QColor(0, 0, 0, params["scrim_end"]))
+            painter.fillRect(target_rect, scrim)
 
         painter.setClipping(False)
-        painter.setPen(QPen(QColor(255, 255, 255, 15), 1))
+        border_col = QColor(255, 255, 255, 18) if bg_color.lightness() < 128 else QColor(0, 0, 0, 22)
+        painter.setPen(QPen(border_col, 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)
         painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)

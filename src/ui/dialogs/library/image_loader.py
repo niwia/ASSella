@@ -1,7 +1,7 @@
 import logging
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QPixmapCache
 from PyQt6.QtWidgets import QListWidgetItem
 
 from ui.dialogs.library.widgets import GameItemWidget
@@ -26,13 +26,31 @@ class LibraryImageLoaderMixin:
         """Sequential start of delayed image fetches."""
         if self._closing or not hasattr(self, "_pending_image_fetches"):
             return
+        # Prioritize visible items first so user sees images for visible games immediately
+        visible_fetches = []
+        hidden_fetches = []
         for item, app_id in self._pending_image_fetches:
+            if item.isHidden():
+                hidden_fetches.append((item, app_id))
+            else:
+                visible_fetches.append((item, app_id))
+        for item, app_id in visible_fetches + hidden_fetches:
             self._fetch_item_image(item, app_id)
         self._pending_image_fetches.clear()
 
     def _fetch_item_image(self, _item: QListWidgetItem, app_id: str) -> None:
         if not ImageFetcher:
             return
+
+        # Check in-memory QPixmapCache for immediate 0ms cache hit
+        cache_key = f"game_header_{app_id}"
+        cached_pixmap = QPixmapCache.find(cache_key)
+        if cached_pixmap and not cached_pixmap.isNull():
+            widget = self.games_list.itemWidget(_item)
+            if isinstance(widget, GameItemWidget):
+                widget.set_image(cached_pixmap)
+            return
+
         if app_id in self._active_fetchers or app_id in self._image_fetch_queue:
             return
 
@@ -110,9 +128,15 @@ class LibraryImageLoaderMixin:
         if self._check_appid_match(data, app_id):
             widget = self.games_list.itemWidget(item)
             if isinstance(widget, GameItemWidget):
-                pixmap = QPixmap()
-                pixmap.loadFromData(image_data)
-                widget.set_image(pixmap)
+                cache_key = f"game_header_{app_id}"
+                cached_pixmap = QPixmapCache.find(cache_key)
+                if cached_pixmap and not cached_pixmap.isNull():
+                    widget.set_image(cached_pixmap)
+                else:
+                    pixmap = QPixmap()
+                    if pixmap.loadFromData(image_data):
+                        QPixmapCache.insert(cache_key, pixmap)
+                        widget.set_image(pixmap)
 
     def _trigger_header_refresh(self, app_id: str) -> None:
         """Trigger background refresh of header URL from API."""

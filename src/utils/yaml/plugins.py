@@ -75,6 +75,16 @@ def ensure_sls_plugin_config_sections(config_path: Optional[Path] = None) -> boo
         if modified:
             _write_in_place(config_path, content)
             logger.info(f"ensure_sls_plugin_config_sections: Added missing sections to {config_path}")
+
+        # The plugins' shared config (katamari.conf.lua) lives next to
+        # config.yaml; ASSella writes it so every plugin finds the same
+        # Hubcap key and proxy/worker routes.
+        try:
+            from managers.katamari_config_manager import KatamariConfigManager
+
+            KatamariConfigManager.ensure_config(config_path.parent / "katamari.conf.lua")
+        except Exception as e:
+            logger.debug(f"ensure_sls_plugin_config_sections: katamari.conf.lua not ensured: {e}")
         return True
     except Exception as e:
         logger.error(f"Failed to ensure SLS plugin config sections in {config_path}: {e}")
@@ -116,10 +126,10 @@ def deploy_sls_plugin(plugin_filename: str) -> Tuple[bool, bool, str]:
     from utils.plugin_manager import deploy_plugin
     return deploy_plugin(plugin_filename)
 
-def deploy_all_sls_plugins() -> Tuple[bool, List[str]]:
-    """Deploy required plugins (download.lua, spliced-tickets.lua) from Cloud on demand."""
+def deploy_all_sls_plugins(essential_only: bool = False) -> Tuple[bool, List[str]]:
+    """Deploy the Katamari plugin family on demand."""
     from utils.plugin_manager import deploy_all_plugins
-    return deploy_all_plugins()
+    return deploy_all_plugins(essential_only=essential_only)
 
 def are_sls_plugins_deployed() -> bool:
     """Check if the required plugins exist in at least the primary SLSsteam plugins directory."""

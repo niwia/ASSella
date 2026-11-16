@@ -10,7 +10,7 @@ from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
-def run_connection_check() -> Tuple[bool, bool, str]:
+def run_connection_check(force: bool = False) -> Tuple[bool, bool, str]:
     """
     Performs connection checks for Steam and Hubcap API.
     Returns:
@@ -29,12 +29,11 @@ def run_connection_check() -> Tuple[bool, bool, str]:
 
     # 2. Check Hubcap status
     import utils.isp_bypass as isp_bypass
-    isp_bypass.connection_status = "Connecting"
-    
+
     from core.morrenus_api import check_health
     hubcap_ok = False
     try:
-        health = check_health()
+        health = check_health(force=force)
         if health.get("status") == "healthy":
             hubcap_ok = True
     except Exception as e:
@@ -43,5 +42,9 @@ def run_connection_check() -> Tuple[bool, bool, str]:
     hubcap_mode = isp_bypass.connection_status
     if not hubcap_ok:
         hubcap_mode = "Offline"
+    elif hubcap_mode in ("Connecting", "Offline"):
+        settings = isp_bypass.get_settings()
+        configured_mode = settings.value("isp_bypass_mode", "direct", type=str) if settings else "direct"
+        hubcap_mode = configured_mode.capitalize() if configured_mode in ("direct", "doh", "tor", "wire") else "Online"
 
     return steam_ok, hubcap_ok, hubcap_mode

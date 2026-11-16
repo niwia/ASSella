@@ -110,16 +110,21 @@ from utils.yaml.keys import (  # noqa: F401
 from utils.yaml.maintenance import (  # noqa: F401
     add_launch_option,
     backup_config_on_startup,
+    build_bypass_launch_command,
     clean_denuvo_games_section,
     ensure_netsock_binary,
+    extract_bypass_exe,
     find_existing_netsock_so,
+    get_bypass_exe,
     get_denuvo_games,
     get_launch_option,
     get_netsock_so_launch_path,
     get_netsock_tools_dir,
     harden_existing_config_permissions,
+    remove_bypass,
     remove_launch_option,
     save_denuvo_games,
+    set_bypass_exe,
 )
 
 from utils.yaml.modes import (  # noqa: F401

@@ -6,7 +6,6 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot, QSize
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QComboBox,
     QDialog,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -17,6 +16,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from utils.paths import Paths
 
@@ -90,10 +90,10 @@ class GameLibraryDialog(
             self.background_color = self.settings.value("background_color", "#111318")
         self.applist_2_0_enabled = True
 
-        # Search debounce timer
+        # Search debounce timer (triggers fast in-place filtering)
         self.search_timer = QTimer(self)
         self.search_timer.setSingleShot(True)
-        self.search_timer.timeout.connect(self._refresh_game_list)
+        self.search_timer.timeout.connect(self._apply_search_filter)
 
         # State tracking
         self._active_fetchers = {}
@@ -198,20 +198,6 @@ class GameLibraryDialog(
                 border-radius: 4px; 
             }}
             
-            QComboBox {{ 
-                background-color: #1e1e1e; 
-                color: #FFFFFF; 
-                border: 1px solid #333333; 
-                padding: 5px; 
-                border-radius: 4px; 
-            }}
-            QComboBox::drop-down {{ border: none; }}
-            QComboBox QAbstractItemView {{
-                background-color: #1e1e1e;
-                color: #FFFFFF;
-                selection-background-color: #222;
-                border: none;
-            }}
         """
         )
 
@@ -233,45 +219,25 @@ class GameLibraryDialog(
         self._setup_style()
 
     def _show_sort_menu(self) -> None:
-        """Show minimal dropdown menu for sorting options."""
-        from PyQt6.QtWidgets import QMenu
-        from PyQt6.QtGui import QAction
-        menu = QMenu(self)
-        menu.setStyleSheet(
-            f"""
-            QMenu {{
-                background-color: #1a1a20;
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 8px;
-                padding: 4px;
-            }}
-            QMenu::item {{
-                padding: 6px 18px;
-                border-radius: 4px;
-                font-size: 12px;
-                color: #FFFFFF;
-            }}
-            QMenu::item:selected {{
-                background-color: rgba(255, 255, 255, 0.12);
-                color: {self.accent_color};
-            }}
-            """
+        """Show the sort options in the shared dropdown popup."""
+        from ui.widgets.modern_dropdown import ModernPopup, PopupEntry
+
+        button = getattr(self, "sort_button", None)
+        if not button or not hasattr(self, "sort_combo"):
+            return
+        current = self.sort_combo.currentIndex()
+        entries = [
+            PopupEntry(text=self.sort_combo.itemText(i), checked=(i == current), payload=i)
+            for i in range(self.sort_combo.count())
+        ]
+        popup = ModernPopup(
+            self,
+            entries,
+            accent_color=self.accent_color,
+            on_selected=lambda idx: self._on_sort_menu_item_selected(idx, self.sort_combo.itemText(idx)),
+            filter_threshold=0,
         )
-
-        current_data = self.sort_combo.currentData() if hasattr(self, "sort_combo") else "pinned_first"
-        for i in range(self.sort_combo.count()):
-            label = self.sort_combo.itemText(i)
-            data = self.sort_combo.itemData(i)
-            action = QAction(label, menu)
-            action.setCheckable(True)
-            if data == current_data:
-                action.setChecked(True)
-            action.triggered.connect(lambda checked, idx=i, l=label: self._on_sort_menu_item_selected(idx, l))
-            menu.addAction(action)
-
-        if hasattr(self, "sort_button") and self.sort_button:
-            menu.exec(self.sort_button.mapToGlobal(self.sort_button.rect().bottomLeft()))
+        popup.show_at(button, min_width=200)
 
     def _on_sort_menu_item_selected(self, index: int, label: str) -> None:
         if hasattr(self, "sort_combo"):
@@ -305,7 +271,7 @@ class GameLibraryDialog(
         self.select_mode_button.setCheckable(True)
         self.select_mode_button.clicked.connect(self._toggle_select_mode)
 
-        self.sort_combo = QComboBox()
+        self.sort_combo = ModernComboBox()
         self.sort_combo.addItem("Pinned First", "pinned_first")
         self.sort_combo.addItem("Recently Installed", "recently_installed")
         self.sort_combo.addItem("Has Update First", "update_first")
@@ -438,6 +404,9 @@ class GameLibraryDialog(
 
     def _connect_signals(self) -> None:
         """Connect GameManager and local signals."""
+        from core.ratings import subscribe_ratings
+        subscribe_ratings(self._on_rating_updated)
+
         if not self.game_manager:
             return
 
@@ -574,9 +543,45 @@ class GameLibraryDialog(
 
         self._show_game_details_dialog(game_data)
 
+    def _on_rating_updated(self, appid: str = "*") -> None:
+        """Refresh rating badge for a specific appid (or all items if '*')."""
+        if getattr(self, "_closing", False) or not hasattr(self, "games_list"):
+            return
+
+        if appid and appid != "*":
+            entry = self._items_by_appid.get(str(appid))
+            if entry:
+                widget = entry[1] if isinstance(entry, tuple) else self.games_list.itemWidget(entry)
+                if widget and hasattr(widget, "update_proton_badge"):
+                    try:
+                        widget.update_proton_badge()
+                    except Exception as e:
+                        logger.debug(f"[GameLibrary] Could not update proton badge for {appid}: {e}")
+                return
+
+        # Fallback for bulk updates ("*") or if _items_by_appid wasn't populated for this item
+        for i in range(self.games_list.count()):
+            item = self.games_list.item(i)
+            if not item:
+                continue
+            widget = self.games_list.itemWidget(item)
+            if not widget:
+                continue
+            if appid in ("*", None) or str(getattr(widget, "appid", "")) == str(appid):
+                try:
+                    if hasattr(widget, "update_denuvo_badge"):
+                        widget.update_denuvo_badge()
+                    if hasattr(widget, "update_proton_badge"):
+                        widget.update_proton_badge()
+                except Exception as e:
+                    logger.debug(f"[GameLibrary] Could not update badges for item {i}: {e}")
+
     def closeEvent(self, event) -> None:
         """Cleanup resources on close."""
         self._closing = True
+        from core.ratings import unsubscribe_ratings
+        unsubscribe_ratings(self._on_rating_updated)
+        self._load_generation = getattr(self, "_load_generation", 0) + 1
         for fetcher in list(self._active_fetchers.values()):
             try:
                 fetcher.stop()

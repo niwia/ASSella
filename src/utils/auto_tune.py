@@ -23,6 +23,7 @@ down); `decide_next` also treats near-zero samples as "no data" and holds.
 """
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,14 @@ SPEED_EPS_BPS = 1024.0
 # its sample to train the controller. Validation-only passes (0 bytes,
 # gigabytes/sec of local checksums) must never become the baseline —
 # otherwise every real download reads as "degraded" and N ratchets to floor.
-MIN_WIRE_BYTES_FOR_LEARNING = 1_048_576
+MIN_WIRE_BYTES_FOR_LEARNING = 32 * 1_048_576
+MIN_SECONDS_FOR_LEARNING = 8.0
+# v2 keys: the v1 baseline was trained on progress-bar speed (which counts
+# bytes reused from disk) and is ignored.
+TABLE_VERSION = "v2"
+EWMA_ALPHA = 0.4
+REPROBE_EVERY = 6      # re-test the neighbours of the best N every few samples
+CLEARLY_BETTER = 1.04  # a step must beat the best by this much to win
 IMPROVE_FACTOR = 1.05
 DEGRADE_FACTOR = 0.80
 
@@ -94,10 +102,16 @@ def get_cap(settings, cap_key: str = "max_downloads", default: int = 8) -> int:
     return clamp(read_int(settings, cap_key, default), 1, MAX_CONCURRENCY)
 
 
-def should_learn(wire_bytes: float) -> bool:
-    """True when a sample moved enough real bytes to train the controller."""
+def should_learn(wire_bytes: float, seconds: float = None) -> bool:
+    """True when a sample is long and large enough to say something about N.
+
+    Short bursts are dominated by connection ramp-up and latency, so they
+    neither prove nor disprove a concurrency level.
+    """
     try:
-        return float(wire_bytes) >= MIN_WIRE_BYTES_FOR_LEARNING
+        if float(wire_bytes) < MIN_WIRE_BYTES_FOR_LEARNING:
+            return False
+        return seconds is None or float(seconds) >= MIN_SECONDS_FOR_LEARNING
     except (TypeError, ValueError):
         return False
 
@@ -124,8 +138,8 @@ def _network_fingerprint() -> str:
         try:
             import os as _os
             kind = "wl" if _os.path.isdir(f"/sys/class/net/{iface}/wireless") else "eth"
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[auto_tune] _network_fingerprint: ignored %s", _silent_err, exc_info=False)
         mac_tail = "nogw"
         try:
             gw_ip = ".".join(str(int(gw_hex[i:i + 2], 16)) for i in (6, 4, 2, 0))
@@ -135,21 +149,35 @@ def _network_fingerprint() -> str:
                     if len(cells) >= 4 and cells[0] == gw_ip and len(cells[3]) == 17:
                         mac_tail = cells[3].replace(":", "")[-6:].lower()
                         break
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[auto_tune] _network_fingerprint: ignored %s", _silent_err, exc_info=False)
         return f"{kind}-{mac_tail}"
     except Exception:
         return "nonet"
 
 
-def get_connection_id(settings) -> str:
-    """Tuning scope id: lan/wan flag + network fingerprint.
+def get_storage_tag(dest_path: str = "") -> str:
+    """Classify destination storage into 'sdcard' (removable/external) vs 'internal'."""
+    if not dest_path:
+        return "internal"
+    try:
+        norm = os.path.abspath(dest_path)
+        if norm.startswith(("/run/media/", "/media/", "/mnt/")):
+            return "sdcard"
+    except Exception as _silent_err:
+        logger.debug("[auto_tune] get_storage_tag: ignored %s", _silent_err, exc_info=False)
+    return "internal"
 
-    Each physical connection learns its own best concurrency, so a fast
-    home link never inherits the baseline of a throttled hotspot.
+
+def get_connection_id(settings, dest_path: str = "") -> str:
+    """Tuning scope id: lan/wan flag + network fingerprint + storage tag.
+
+    Each physical connection and storage medium learns its own best concurrency,
+    so a slow microSD card does not poison the baseline of an internal NVMe SSD.
     """
     lan = read_bool(settings, "use_lancache", True) if settings is not None else False
-    return f"{'lan' if lan else 'wan'}-{_network_fingerprint()}"
+    storage_tag = get_storage_tag(dest_path)
+    return f"{'lan' if lan else 'wan'}-{_network_fingerprint()}_{storage_tag}"
 
 
 def _purge_legacy_keys(settings) -> None:
@@ -160,17 +188,61 @@ def _purge_legacy_keys(settings) -> None:
         for key in _LEGACY_BEST_KEYS:
             try:
                 settings.remove(key)
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as _silent_err:
+                logger.debug("[auto_tune] _purge_legacy_keys: ignored %s", _silent_err, exc_info=False)
+    except Exception as _silent_err:
+        logger.debug("[auto_tune] _purge_legacy_keys: ignored %s", _silent_err, exc_info=False)
 
 
-def _best_keys(base_best_key: str, settings, lancache_key: str = "use_lancache"):
-    """Best concurrency tracked per connection (see get_connection_id)."""
+def _best_keys(base_best_key: str, settings, dest_path: str = "", lancache_key: str = "use_lancache"):
+    """Settings key of the per-N speed table for this connection and storage medium."""
     _purge_legacy_keys(settings)
-    conn = get_connection_id(settings)
-    return base_best_key + "_" + conn, base_best_key + "_mbps_" + conn
+    conn = get_connection_id(settings, dest_path=dest_path)
+    return f"{base_best_key}_{TABLE_VERSION}_{conn}"
+
+
+def _load_table(settings, key: str) -> dict:
+    import json
+
+    try:
+        raw = settings.value(key, "", type=str) if settings is not None else ""
+        data = json.loads(raw) if raw else {}
+        stats = {int(n): v for n, v in (data.get("stats") or {}).items()}
+        return {"stats": stats, "samples": int(data.get("samples", 0))}
+    except Exception:
+        return {"stats": {}, "samples": 0}
+
+
+def _save_table(settings, key: str, table: dict) -> None:
+    import json
+
+    if settings is None:
+        return
+    try:
+        settings.setValue(key, json.dumps({"stats": {str(n): v for n, v in table["stats"].items()},
+                                           "samples": table["samples"]}))
+        settings.sync()
+    except Exception as e:
+        logger.debug(f"[AutoTune] Failed to persist table: {e}")
+
+
+def _score(entry: dict) -> float:
+    """Speed, discounted for Ns that keep producing chunk errors."""
+    if not entry or entry.get("count", 0) <= 0:
+        return 0.0
+    err_rate = entry.get("errors", 0) / max(1, entry.get("count", 1))
+    return float(entry.get("mbps", 0.0)) * (1.0 - min(0.5, 0.25 * err_rate))
+
+
+def _best_n(stats: dict, default: int) -> int:
+    scored = [(n, _score(e)) for n, e in stats.items() if e.get("count", 0) > 0]
+    if not scored:
+        return default
+    top = max(sc for _, sc in scored)
+    # Within measurement noise, prefer the N nearest the default: fewer
+    # connections risk stalls, more just add load for no gain.
+    near = [n for n, sc in scored if sc >= top * 0.97]
+    return min(near, key=lambda n: (abs(n - DEFAULT_START), n))
 
 
 def get_start_concurrency(
@@ -180,84 +252,92 @@ def get_start_concurrency(
     best_key: str = "auto_tune_best",
     default_start: int = DEFAULT_START,
     default_cap: int = 8,
+    dest_path: str = "",
 ) -> int:
-    """Pick the concurrency for the first depot/item of a job.
+    """Concurrency for the first depot of a job.
 
-    Auto OFF -> slider value exactly (legacy). Auto ON -> stored best,
-    clamped to [1, cap] (floored at MIN_CONCURRENCY when the cap allows it).
+    Auto OFF -> slider value exactly. Auto ON -> the fastest N measured on this
+    connection + storage so far, clamped to [MIN_CONCURRENCY, cap].
     """
     cap = get_cap(settings, cap_key, default_cap)
     if not is_auto_enabled(settings, auto_key):
         return cap
-    best_n_key, _ = _best_keys(best_key, settings)
-    best = read_int(settings, best_n_key, default_start)
-    start = max(1, min(cap, best))
+    table = _load_table(settings, _best_keys(best_key, settings, dest_path=dest_path))
+    start = min(cap, _best_n(table["stats"], default_start))
     if cap >= MIN_CONCURRENCY:
         start = max(MIN_CONCURRENCY, start)
     return start
 
 
-def get_learned_display(settings, best_key: str = "auto_tune_best") -> str:
-    """Return learned concurrency (e.g. '8') or 'learning...' if not trained yet."""
+def get_learned_display(settings, best_key: str = "auto_tune_best", dest_path: str = "") -> str:
+    """Learned concurrency (e.g. '12') or 'learning...' before the first real sample."""
     if settings is None:
         return "learning..."
-    best_n_key, best_m_key = _best_keys(best_key, settings)
-    best_mbps = read_float(settings, best_m_key, 0.0)
-    if best_mbps > 0.0:
-        val = clamp(read_int(settings, best_n_key, DEFAULT_START), 1, MAX_CONCURRENCY)
-        return str(val)
-    return "learning..."
+    table = _load_table(settings, _best_keys(best_key, settings, dest_path=dest_path))
+    if not table["stats"]:
+        return "learning..."
+    return str(clamp(_best_n(table["stats"], DEFAULT_START), 1, MAX_CONCURRENCY))
 
 
-def decide_next(prev_n: int, prev_mbps: float, best_n: int, best_mbps: float,
-                cap: int, errors: int = 0):
-    """AIMD step. Returns (next_n, new_best_n, new_best_mbps)."""
+def decide_next(table: dict, used_n: int, speed_bps: float, cap: int, errors: int = 0) -> int:
+    """Update the per-N table with one sample and pick the next N.
+
+    Hill-climb on measured speed per N: try one step up; if that is not
+    clearly faster, try one step down; otherwise settle on the best and
+    re-check its neighbours every few samples (networks change). Chunk
+    errors halve N at once and count against that N.
+    """
     cap = clamp(cap, 1, MAX_CONCURRENCY)
-    prev_n = clamp(prev_n, 1, cap)
-    best_n = clamp(best_n, 1, cap)
     floor = MIN_CONCURRENCY if cap >= MIN_CONCURRENCY else 1
-
+    used_n = clamp(used_n, 1, cap)
+    stats = table["stats"]
+    if float(speed_bps) <= SPEED_EPS_BPS:
+        # No usable measurement (failed run / nothing downloaded).
+        if errors > 0:
+            en = stats.get(used_n)
+            if en:
+                en["errors"] = en.get("errors", 0) + 1
+            return max(floor, used_n // 2)
+        return used_n
+    e = stats.setdefault(used_n, {"mbps": 0.0, "count": 0, "errors": 0})
+    mbps = float(speed_bps) / 1_048_576
+    e["mbps"] = mbps if e["count"] == 0 else EWMA_ALPHA * mbps + (1 - EWMA_ALPHA) * e["mbps"]
+    e["count"] += 1
     if errors > 0:
-        # Multiplicative decrease on any chunk-level trouble.
-        return max(floor, prev_n // 2), best_n, best_mbps
+        e["errors"] = e.get("errors", 0) + 1
+    table["samples"] += 1
 
-    if prev_mbps <= SPEED_EPS_BPS:
-        # No real download data (validation-only / fully cached) -> hold.
-        if best_mbps <= 0:
-            return prev_n, best_n, best_mbps
-        return prev_n, best_n, best_mbps
+    if errors > 0 and errors >= 3:
+        return max(floor, used_n // 2)
 
-    if best_mbps <= 0:
-        # First real measurement becomes the baseline.
-        return prev_n, prev_n, prev_mbps
+    best = min(cap, _best_n(stats, used_n))
+    best_score = _score(stats.get(best, {}))
+    # Never explore below 4 on our own: too few connections stall on one slow chunk.
+    up, down = min(cap, best + STEP), max(min(cap, max(floor, 4)), best - STEP)
 
-    if prev_mbps > best_mbps * IMPROVE_FACTOR:
-        return min(cap, prev_n + STEP), prev_n, prev_mbps
+    def _untested_or_stale(n):
+        en = stats.get(n)
+        return en is None or (table["samples"] % REPROBE_EVERY == 0)
 
-    if prev_mbps < best_mbps * DEGRADE_FACTOR:
-        return max(floor, prev_n - STEP), best_n, best_mbps
-
-    return prev_n, best_n, best_mbps
+    # Did the step we just took win clearly? Keep climbing in that direction.
+    if used_n == best and used_n != up and _untested_or_stale(up):
+        return up
+    if used_n > best and _score(e) < best_score * CLEARLY_BETTER:
+        # Going up did not help; try below the best once.
+        return down if down != best and down not in stats else best
+    if used_n < best and _score(e) < best_score * CLEARLY_BETTER:
+        return best
+    return best
 
 
 def record_result(settings, best_key: str, prev_n: int, prev_mbps: float,
-                  cap: int, errors: int = 0) -> int:
-    """Persist the outcome of one depot/item and return the next concurrency."""
-    if settings is None:
-        next_n, _, _ = decide_next(prev_n, prev_mbps, prev_n, 0.0, cap, errors)
-        return next_n
-    best_n_key, best_m_key = _best_keys(best_key, settings)
-    best_n = clamp(read_int(settings, best_n_key, prev_n), 1, MAX_CONCURRENCY)
-    best_mbps = read_float(settings, best_m_key, 0.0)
-    next_n, new_best_n, new_best_mbps = decide_next(
-        prev_n, prev_mbps, best_n, best_mbps, cap, errors
-    )
-    try:
-        settings.setValue(best_n_key, int(new_best_n))
-        settings.setValue(best_m_key, float(new_best_mbps))
-        settings.sync()
-    except Exception as e:
-        logger.debug(f"[AutoTune] Failed to persist best concurrency: {e}")
+                  cap: int, errors: int = 0, dest_path: str = "") -> int:
+    """Record one depot's real download speed (bytes/s) at prev_n; return the next N."""
+    key = _best_keys(best_key, settings, dest_path=dest_path) if settings is not None else ""
+    table = _load_table(settings, key) if settings is not None else {"stats": {}, "samples": 0}
+    next_n = decide_next(table, prev_n, prev_mbps, cap, errors)
+    if settings is not None:
+        _save_table(settings, key, table)
     return next_n
 
 

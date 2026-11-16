@@ -142,16 +142,8 @@ def main() -> int:
                   for line in hex_whites),
               f"{background}: white text is only used on the selection container")
 
-    # --------------------------------- the selection keeps its own readable ink
-    print("=== the selection container keeps readable ink ===")
-    for accent in ["#a1c9fd", "#C06C84", "#000000", "#FFFFFF"]:
-        css = style.build_stylesheet("#f4f4f4", accent)
-        container = style.get_dark_container_color(accent)
-        want = style.get_best_foreground_color(container)
-        check(f"selection-background-color: {container}" in css,
-              f"{accent}: the selection fill is the accent's dark container")
-        check(f"selection-color: {want}" in css,
-              f"{accent}: the selection text uses {want}")
+    # (The selection-container rules were dropped with the dead QComboBox
+    # styles in aa4cac3: ModernComboBox paints its own popup.)
 
     # ---------------------------------------- the popup follows the window
     print("=== the dropdown popup follows the window, not a fixed dark ===")

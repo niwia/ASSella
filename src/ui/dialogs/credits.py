@@ -122,6 +122,11 @@ class CreditsDialog(QDialog):
 
         # ── Update row ───────────────────────────────────────────────────────
         main_layout.addWidget(self._build_update_row())
+        if self.main_window and getattr(self.main_window, "_tool_update_available_flag", False):
+            remote_ver = getattr(self.main_window, "_latest_remote_version", "") or ""
+            if remote_ver:
+                remote_src = getattr(self.main_window, "_latest_update_source", "") or ""
+                self._on_check_available(remote_ver, remote_src)
         main_layout.addSpacing(10)
 
         # ── Close button ─────────────────────────────────────────────────────
@@ -346,12 +351,18 @@ class CreditsDialog(QDialog):
         def _check_sync():
             try:
                 configured_channel = self.settings.value("update_channel", "").strip().lower()
-                res = check_for_updates(configured_channel=configured_channel, current_version=app_version)
+                update_server = self.settings.value("update_server", "auto", type=str).strip().lower()
+                res = check_for_updates(
+                    configured_channel=configured_channel,
+                    current_version=app_version,
+                    update_server=update_server,
+                )
                 if res["status"] == "update_available":
                     QMetaObject.invokeMethod(
                         self, "_on_check_available",
                         Qt.ConnectionType.QueuedConnection,
                         Q_ARG(str, res["remote_version"] or ""),
+                        Q_ARG(str, res.get("source") or ""),
                     )
                 elif res["status"] == "up_to_date":
                     QMetaObject.invokeMethod(
@@ -375,7 +386,12 @@ class CreditsDialog(QDialog):
         threading.Thread(target=_check_sync, daemon=True).start()
 
     @pyqtSlot(str)
-    def _on_check_available(self, remote_version: str) -> None:
+    @pyqtSlot(str, str)
+    def _on_check_available(self, remote_version: str, remote_source: str = "") -> None:
+        if self.main_window:
+            self.main_window._latest_remote_version = remote_version
+            self.main_window._latest_update_source = remote_source
+            self.main_window._tool_update_available_flag = True
         self.status_label.setText(f"Update available: v{remote_version}")
         self.status_label.setStyleSheet(
             "color: #E07B00; font-weight: bold; font-size: 12px; background: transparent;"

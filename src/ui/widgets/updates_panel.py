@@ -1,8 +1,11 @@
+import logging
 import os
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -93,6 +96,24 @@ class UpdatesPanel(QFrame):
             if main_win and hasattr(main_win, "position_update_all_btn"):
                 main_win.position_update_all_btn()
 
+def _build_faded_artwork(pixmap, target_size):
+    """Scale artwork to cover target_size and apply a smooth S-curve left fade."""
+    from ui.widgets.artwork_fade import build_faded_artwork
+
+    return build_faded_artwork(
+        pixmap,
+        target_size,
+        direction="fade_in_right",
+        fade_start=0.0,
+        fade_end=0.72,
+        start_alpha=0,
+        peak_alpha=225,
+        end_alpha=238,
+        edge_alpha=200,
+        edge_span=0.16,
+    )
+
+
 class UpdateItemWidget(QFrame):
     """One row of the pending-updates list.
 
@@ -119,6 +140,7 @@ class UpdateItemWidget(QFrame):
         self.name = name
         self.accent_color = accent_color
         self.pixmap = None
+        self._scaled_pixmap = None
         self.badge = None
         self.action_btn = None
 
@@ -129,6 +151,22 @@ class UpdateItemWidget(QFrame):
         if cache_path.exists():
             from PyQt6.QtGui import QPixmap
             self.pixmap = QPixmap(str(cache_path))
+        elif appid and appid not in ("0", "N/A", "unknown"):
+            def _on_img_fetched(data):
+                from PyQt6 import sip
+                if sip.isdeleted(self):
+                    return
+                if data:
+                    from PyQt6.QtGui import QPixmap
+                    pm = QPixmap()
+                    if pm.loadFromData(data) and not pm.isNull():
+                        self.pixmap = pm
+                        self._scaled_pixmap = None
+                        self.update()
+            url = ImageFetcher.get_header_image_url(appid)
+            self._img_fetcher = ImageFetcher(url, parent=self)
+            self._img_fetcher.finished.connect(_on_img_fetched)
+            self._img_fetcher.start()
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 2, 12, 2)
@@ -143,7 +181,7 @@ class UpdateItemWidget(QFrame):
             self.badge = QLabel(badge_text)
             self.badge.setStyleSheet(
                 f"color: {badge_color}; font-size: 8pt; font-weight: bold;"
-                f"background: transparent; border: 1px solid {badge_color};"
+                f"background: rgba(18, 18, 22, 195); border: 1px solid {badge_color};"
                 f"border-radius: 7px; padding: 1px 6px;"
             )
             self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -197,14 +235,15 @@ class UpdateItemWidget(QFrame):
                             if hasattr(w, "game_manager"):
                                 main_win = w
                                 break
-                    if main_win and hasattr(main_win, "game_manager"):
-                        game = main_win.game_manager.get_game(appid)
-                        if game:
-                            from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
-                            dlg = GameDetailsDialogV2(main_win, game)
+                    if main_win:
+                        if hasattr(main_win, "open_game_library"):
+                            main_win.open_game_library(show_details_for_appid=str(appid))
+                        else:
+                            from ui.dialogs.gamelibrary import GameLibraryDialog
+                            dlg = GameLibraryDialog(main_win, show_details_for_appid=str(appid))
                             dlg.exec()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Failed to open game library/details for update item {appid}: {e}")
 
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, _open)
@@ -225,44 +264,43 @@ class UpdateItemWidget(QFrame):
             self.update()
 
     def paintEvent(self, event):
-        from PyQt6.QtGui import QPainter, QLinearGradient, QBrush, QPainterPath, QPen
+        from PyQt6.QtGui import QPainter, QPainterPath, QPen
         from PyQt6.QtCore import QRect
-        
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
+
         rect = self.rect()
-        bg_color = QColor(35, 35, 35) if self.underMouse() else QColor(25, 25, 25)
-        
+        hovered = self.underMouse()
+        bg_color = QColor(34, 34, 38) if hovered else QColor(24, 24, 27)
+
         path = QPainterPath()
         path.addRoundedRect(float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), 6.0, 6.0)
         painter.setClipPath(path)
-        
+
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(bg_color)
         painter.drawRect(rect)
-        
+
         if self.pixmap and not self.pixmap.isNull():
-            # Calculate aspect ratio scaling to fill the right section
-            img_h = rect.height()
-            img_w = int(img_h * (self.pixmap.width() / self.pixmap.height()))
-            target_rect = QRect(rect.width() - img_w, 0, img_w, rect.height())
-            
-            # Draw the image
-            painter.drawPixmap(target_rect, self.pixmap)
-            
-            # Smooth transition from solid background color to transparent specifically over the image's left side
-            fade_w = min(img_w, 80)
-            gradient = QLinearGradient(rect.width() - img_w, 0, rect.width() - img_w + fade_w, 0)
-            gradient.setColorAt(0.0, bg_color)
-            gradient.setColorAt(1.0, QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 0))
-            
-            painter.setBrush(QBrush(gradient))
-            painter.drawRect(rect)
-            
+            natural_w = int(rect.height() * (self.pixmap.width() / max(self.pixmap.height(), 1)))
+            target_w = min(rect.width(), max(natural_w, int(rect.width() * 0.65)))
+            target_rect = QRect(rect.width() - target_w, 0, target_w, rect.height())
+
+            if self._scaled_pixmap is None or self._scaled_pixmap.size() != target_rect.size():
+                self._scaled_pixmap = _build_faded_artwork(self.pixmap, target_rect.size())
+
+            if not self._scaled_pixmap.isNull():
+                painter.setOpacity(0.92 if hovered else 0.78)
+                painter.drawPixmap(target_rect, self._scaled_pixmap)
+                painter.setOpacity(1.0)
+
         painter.setClipping(False)
-        if self.underMouse():
+        if hovered:
             pen_color = QColor(self.accent_color)
-            painter.setPen(QPen(pen_color, 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)
+            pen_color.setAlpha(200)
+        else:
+            pen_color = QColor(255, 255, 255, 16)
+        painter.setPen(QPen(pen_color, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)

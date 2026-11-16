@@ -154,6 +154,12 @@ def _apply_stylesheet(
     lit_svg = str(Paths.resource("halloween/pumpkin_lit.svg"))
     is_halloween = (preset == "halloween" or accent_color.name().lower() in ("#ffb77d", "#ff7518"))
 
+    christmas_unlit_svg = str(Paths.resource("christmas/candy_square_unlit.svg"))
+    christmas_lit_svg = str(Paths.resource("christmas/candy_square_lit.svg"))
+    christmas_radio_unlit = str(Paths.resource("christmas/candy_circle_unlit.svg"))
+    christmas_radio_lit = str(Paths.resource("christmas/candy_circle_lit.svg"))
+    is_christmas = (preset == "christmas" or accent_color.name().lower() in ("#e53935", "#d32f2f", "#ff334b"))
+
     custom_unlit = settings.value("theme_checkbox_unlit", "", type=str) if settings else ""
     custom_lit = settings.value("theme_checkbox_lit", "", type=str) if settings else ""
 
@@ -169,6 +175,28 @@ def _apply_stylesheet(
         unlit_icon_path = unlit_svg
         lit_icon_path = lit_svg
         use_themed_checkbox = True
+    elif is_christmas and os.path.exists(christmas_unlit_svg) and os.path.exists(christmas_lit_svg):
+        unlit_icon_path = christmas_unlit_svg
+        lit_icon_path = christmas_lit_svg
+        use_themed_checkbox = True
+
+    radio_rules = ""
+    if is_christmas and os.path.exists(christmas_radio_unlit) and os.path.exists(christmas_radio_lit):
+        radio_rules = f"""
+        QRadioButton::indicator {{
+            width: 18px;
+            height: 18px;
+            background: transparent;
+            border: none;
+            image: url("{christmas_radio_unlit}");
+        }}
+
+        QRadioButton::indicator:checked {{
+            background: transparent;
+            border: none;
+            image: url("{christmas_radio_lit}");
+        }}
+        """
 
     if use_themed_checkbox:
         checkbox_css = f"""
@@ -198,9 +226,17 @@ def _apply_stylesheet(
             border: none;
             background: transparent;
         }}
-        """
+        """ + radio_rules
         list_indicator_css = ""
     else:
+        from utils.color_utils import get_best_foreground_color
+        fg_hex = get_best_foreground_color(accent_color.name())
+        is_light_accent = (fg_hex.lower() in ("#000000", "#121214", "#1e1e24"))
+
+        check_icon_path = str(Paths.icon("check_dark.svg" if is_light_accent else "check_white.svg"))
+        dash_icon_path = str(Paths.icon("dash_dark.svg" if is_light_accent else "dash_white.svg"))
+        radio_dot_icon_path = str(Paths.icon("radio_dot_dark.svg" if is_light_accent else "radio_dot_white.svg"))
+
         checkbox_css = f"""
         QCheckBox {{
             background-color: transparent;
@@ -211,46 +247,116 @@ def _apply_stylesheet(
         }}
 
         QCheckBox::indicator {{
-            width: 14px;
-            height: 14px;
+            width: 16px;
+            height: 16px;
             background: transparent;
             border: 1.5px solid {outline};
             border-radius: 4px;
-        }}
-
-        QCheckBox::indicator:checked, QCheckBox::indicator:checked:hover, QCheckBox::indicator:checked:selected {{
-            background: {accent_color.name()};
-            border: 1.5px solid {accent_color.name()};
         }}
 
         QCheckBox::indicator:unchecked:hover {{
             border: 1.5px solid {accent_light};
-            background: rgba({accent_r}, {accent_g}, {accent_b}, 20);
+            background: transparent;
+        }}
+
+        QCheckBox::indicator:checked, QCheckBox::indicator:checked:selected {{
+            background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
+            image: url("{check_icon_path}");
+        }}
+
+        QCheckBox::indicator:checked:hover {{
+            background-color: {accent_light};
+            border: 1.5px solid {accent_light};
+            image: url("{check_icon_path}");
+        }}
+
+        QCheckBox::indicator:indeterminate {{
+            background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
+            image: url("{dash_icon_path}");
+        }}
+
+        QCheckBox::indicator:indeterminate:hover {{
+            background-color: {accent_light};
+            border: 1.5px solid {accent_light};
+            image: url("{dash_icon_path}");
+        }}
+
+        QRadioButton {{
+            background-color: transparent;
+            color: {accent_color.name()};
+            padding: 4px;
+            spacing: 8px;
+            font-weight: bold;
+        }}
+
+        QRadioButton::indicator {{
+            width: 16px;
+            height: 16px;
+            background: transparent;
+            border: 1.5px solid {outline};
+            border-radius: 9px;
+        }}
+
+        QRadioButton::indicator:unchecked:hover {{
+            border: 1.5px solid {accent_light};
+            background: transparent;
+        }}
+
+        QRadioButton::indicator:checked {{
+            background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
+            image: url("{radio_dot_icon_path}");
+        }}
+
+        QRadioButton::indicator:checked:hover {{
+            background-color: {accent_light};
+            border: 1.5px solid {accent_light};
+            image: url("{radio_dot_icon_path}");
         }}
         """
         list_indicator_css = f"""
-        QListWidget::indicator, QTableWidget::indicator, QTableView::indicator {{
-            width: 14px;
-            height: 14px;
+        QListWidget::indicator, QTableWidget::indicator, QTableView::indicator, QTreeView::indicator {{
+            width: 16px;
+            height: 16px;
             background: transparent;
             border: 1.5px solid {outline};
             border-radius: 4px;
         }}
 
-        QListWidget::indicator:unchecked, QTableWidget::indicator:unchecked, QTableView::indicator:unchecked {{
+        QListWidget::indicator:unchecked, QTableWidget::indicator:unchecked, QTableView::indicator:unchecked, QTreeView::indicator:unchecked {{
             background-color: transparent;
         }}
 
-        QListWidget::indicator:checked, QTableWidget::indicator:checked, QTableView::indicator:checked,
-        QListWidget::indicator:checked:hover, QTableWidget::indicator:checked:hover, QTableView::indicator:checked:hover,
-        QListWidget::indicator:checked:selected, QTableWidget::indicator:checked:selected, QTableView::indicator:checked:selected {{
-            background-color: {accent_color.name()};
-            border: 1.5px solid {accent_color.name()};
+        QListWidget::indicator:unchecked:hover, QTableWidget::indicator:unchecked:hover, QTableView::indicator:unchecked:hover, QTreeView::indicator:unchecked:hover {{
+            border: 1.5px solid {accent_light};
+            background-color: transparent;
         }}
 
-        QListWidget::indicator:unchecked:hover, QTableWidget::indicator:unchecked:hover, QTableView::indicator:unchecked:hover {{
+        QListWidget::indicator:checked, QTableWidget::indicator:checked, QTableView::indicator:checked, QTreeView::indicator:checked,
+        QListWidget::indicator:checked:selected, QTableWidget::indicator:checked:selected, QTableView::indicator:checked:selected, QTreeView::indicator:checked:selected {{
+            background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
+            image: url("{check_icon_path}");
+        }}
+
+        QListWidget::indicator:checked:hover, QTableWidget::indicator:checked:hover, QTableView::indicator:checked:hover, QTreeView::indicator:checked:hover {{
+            background-color: {accent_light};
             border: 1.5px solid {accent_light};
-            background-color: rgba({accent_r}, {accent_g}, {accent_b}, 20);
+            image: url("{check_icon_path}");
+        }}
+
+        QListWidget::indicator:indeterminate, QTableWidget::indicator:indeterminate, QTableView::indicator:indeterminate, QTreeView::indicator:indeterminate {{
+            background-color: {accent_color.name()};
+            border: 1.5px solid {accent_color.name()};
+            image: url("{dash_icon_path}");
+        }}
+
+        QListWidget::indicator:indeterminate:hover, QTableWidget::indicator:indeterminate:hover, QTableView::indicator:indeterminate:hover, QTreeView::indicator:indeterminate:hover {{
+            background-color: {accent_light};
+            border: 1.5px solid {accent_light};
+            image: url("{dash_icon_path}");
         }}
         """
 
@@ -631,8 +737,74 @@ def update_appearance(
     apply_palette(app, accent, background, font_name=str(font_info) if font_ok else "", font=font)
     try:
         for w in app.allWidgets():
-            if w.__class__.__name__ == "DialogTitleBar" and hasattr(w, "update_style"):
+            if w.__class__.__name__ in ("DialogTitleBar", "BottomTitleBar") and hasattr(w, "update_style"):
                 w.update_style()
     except Exception:
         pass
     return font_ok, font_info
+
+
+def draw_christmas_titlebar(painter, w: int, h: int) -> None:
+    """Renders organic dripping snow layer along the top edge of the titlebar."""
+    from PyQt6.QtGui import QPainterPath, QColor, QPen, QPainter
+    from PyQt6.QtCore import Qt
+
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+    snow = QPainterPath()
+    snow.moveTo(0, 0)
+    snow.lineTo(0, 3.0)
+
+    # Varied, natural dripping pattern: (span_width, drip_depth)
+    drip_offsets = (
+        (16.0, 4.5), (14.0, 9.5), (20.0, 3.0), (12.0, 13.0),
+        (26.0, 4.0), (15.0, 8.0), (32.0, 3.5), (11.0, 11.5),
+        (18.0, 5.0), (22.0, 14.0), (28.0, 3.0), (13.0, 7.5),
+        (17.0, 12.0), (24.0, 4.0), (19.0, 8.5), (10.0, 10.0),
+    )
+
+    x = 0.0
+    idx = 0
+    num_patterns = len(drip_offsets)
+
+    while x < w:
+        span_w, drip_len = drip_offsets[idx % num_patterns]
+        idx += 1
+        nx = min(float(w), x + span_w)
+        actual_span = nx - x
+        mid_x = x + actual_span * 0.50
+
+        base_y = 2.5 + (idx % 3) * 0.7
+        tip_y = min(float(h - 8), base_y + drip_len)
+
+        # Smooth organic drip curve down to tip and back up
+        snow.cubicTo(
+            x + actual_span * 0.25, base_y + (tip_y - base_y) * 0.65,
+            mid_x - 1.2, tip_y,
+            mid_x, tip_y,
+        )
+        snow.cubicTo(
+            mid_x + 1.2, tip_y,
+            nx - actual_span * 0.25, base_y + (tip_y - base_y) * 0.65,
+            nx, base_y,
+        )
+        x = nx
+
+    snow.lineTo(w, 0)
+    snow.closeSubpath()
+
+    # Soft cool shadow / frost rim underneath the drips
+    painter.setPen(QPen(QColor(180, 215, 245, 140), 1.5))
+    painter.drawPath(snow)
+
+    # Crisp white snow fill
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#FFFFFF"))
+    painter.drawPath(snow)
+
+    # Subtle glisten line along the top window seam
+    painter.setPen(QPen(QColor(255, 255, 255, 220), 1.0))
+    painter.drawLine(0, 0, w, 0)
+
+    painter.restore()

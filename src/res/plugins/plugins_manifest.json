@@ -1,56 +1,101 @@
 {
-  "manifest_version": 1,
-  "updated_at": "2026-10-23T08:01:35Z",
+  "manifest_version": 2,
+  "serial": 20261115193247,
+  "updated_at": "2026-11-15T19:32:47Z",
+  "default_interceptor": "spacebunny.lua",
   "plugins": {
-    "download.lua": {
-      "name": "Download Interceptor",
-      "filename": "download.lua",
-      "version": "1.0.1",
+    "spacebunny.lua": {
+      "name": "SpaceBunny",
+      "filename": "spacebunny.lua",
+      "version": "2.0.5",
+      "role": "download-interceptor",
       "category": "interceptor",
-      "description": "Native Steam download interception and depot streaming plugin for SLSsteam.",
-      "sha256": "8e822aecfea085cfcada45b9ed0e8f2c09bc04b76c667cc1904342c9197be627",
-      "size_bytes": 9166,
-      "required": false
+      "description": "Download interceptor: injects depots and decryption keys and resolves manifest request codes from several providers with circuit breakers.",
+      "sha256": "0376922f29f0ad467d4643f859145af77b3c95cf2ef06d58a949c134a98f2452",
+      "size_bytes": 39715,
+      "required": true,
+      "deployable": true,
+      "is_default": true
     },
-    "spacebunny1.5.lua": {
-      "name": "SpaceBunny 1.5",
-      "filename": "spacebunny1.5.lua",
-      "version": "1.5.0",
-      "category": "interceptor",
-      "description": "SLSsteam download interceptor with MRC authority hierarchy, curl timeout fixes, and monotonic clocks.",
-      "sha256": "8c9956ab351fe0a454bbf51b67334566a06ad254f62a658d7943112e19b49026",
-      "size_bytes": 35767,
-      "required": true
-    },
-    "spliced-tickets.lua": {
-      "name": "Spliced Tickets",
-      "filename": "spliced-tickets.lua",
-      "version": "1.0.0",
+    "styx.lua": {
+      "name": "Styx",
+      "filename": "styx.lua",
+      "version": "2.5",
+      "role": "ticket-splicer",
       "category": "companion",
-      "description": "App and depot ownership ticket splicing handler for SLSsteam.",
-      "sha256": "62f377e39368d94612371ca62791ac90fad258a360482e6be380069ca1d94eda",
-      "size_bytes": 2187,
-      "required": true
+      "description": "Ownership ticket splicer so apps added through AdditionalApps pass SteamStub DRM checks.",
+      "sha256": "d85ed2a268461e7ff2e5ccfd44d26fd792526a37e2d38086afad7abcaec63fbc",
+      "size_bytes": 33884,
+      "required": true,
+      "deployable": true
     },
     "lobster.lua": {
       "name": "Lobster",
       "filename": "lobster.lua",
-      "version": "1.0.0",
+      "version": "1.2.2",
+      "role": "config-recovery",
       "category": "companion",
-      "description": "SLSsteam config recovery plugin: restores AdditionalDepots and DecryptionKeys if stripped by Headcrab updates.",
-      "sha256": "d8950f939437f75a0c16d91e42256bcb36e3dfb02f034040ebcaf0c7a9bfcd02",
-      "size_bytes": 12343,
-      "required": false
+      "description": "Restores AdditionalDepots and DecryptionKeys in config.yaml when an SLSsteam update strips them.",
+      "sha256": "a8e4d8f80c69c126a36e19a05914e90478ed9a81f0ccbc8bdb88492579d38121",
+      "size_bytes": 20595,
+      "required": true,
+      "deployable": true
     },
-    "hubcap.lua": {
-      "name": "Hubcap",
-      "filename": "hubcap.lua",
-      "version": "1.0.0",
+    "lettuce.lua": {
+      "name": "Lettuce",
+      "filename": "lettuce.lua",
+      "version": "0.4",
+      "role": "transport",
       "category": "companion",
-      "description": "Hubcap manifest and key bridge plugin for SLSsteam.",
-      "sha256": "1e4fd91d3206cac1635eccb3df50796a944d9bbd8ffa5023d3005f72078a75eb",
-      "size_bytes": 29609,
-      "required": false
+      "description": "Proxy / ISP-block transport for the plugins' own requests (MRC providers, Hubcap), with a Cloudflare worker fallback. Formerly Bypass.",
+      "sha256": "e0e18caa4f229c59119d3becd1241e11333eadea91f7093511491a8b611ffe09",
+      "size_bytes": 35921,
+      "required": false,
+      "deployable": true,
+      "default_on": true
+    },
+    "pineapple.lua": {
+      "name": "Pineapple",
+      "filename": "pineapple.lua",
+      "version": "1.0",
+      "role": "manifest-seed",
+      "category": "companion",
+      "description": "Manifest fallback: puts Hubcap manifests into Steam's depotcache before Steam asks, so updates work when every MRC provider is down. Formerly Bakeneko.",
+      "sha256": "46408b2e77a2a7ed4fcf749ce1e61e583fecf83b7209518539606224f9e2f554",
+      "size_bytes": 32056,
+      "required": false,
+      "deployable": false,
+      "disabled_reason": "Pineapple is still being finished and will be enabled in a future update."
+    }
+  },
+  "retired": {
+    "hubcap.lua": {
+      "replaced_by": "pineapple.lua",
+      "reason": "The Hubcap key resolver is retired; Pineapple replaces it."
+    },
+    "bypass.lua": {
+      "replaced_by": "lettuce.lua",
+      "reason": "Renamed to Lettuce."
+    },
+    "spacebunny1.5.lua": {
+      "replaced_by": "spacebunny.lua",
+      "reason": "Legacy SpaceBunny alias."
+    },
+    "spliced-tickets.lua": {
+      "replaced_by": "styx.lua",
+      "reason": "Superseded by Styx."
+    },
+    "katamari.lua": {
+      "replaced_by": null,
+      "reason": "The registry is no longer needed; katamari.conf.lua stays the shared config."
+    },
+    "bakeneko.lua": {
+      "replaced_by": "pineapple.lua",
+      "reason": "Renamed to Pineapple."
+    },
+    "download.lua": {
+      "replaced_by": "spacebunny.lua",
+      "reason": "The Standard Interceptor is no longer published; SpaceBunny is the interceptor."
     }
   }
 }

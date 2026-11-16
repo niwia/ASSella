@@ -22,6 +22,20 @@ BASE_URL = "https://hubcapmanifest.com/api/v1"
 DEFAULT_SEARCH_LIMIT = 100
 MAX_SEARCH_LIMIT = 100
 
+_hubcap_manifest_used_flag = False
+
+def mark_hubcap_manifest_used() -> None:
+    """Flag that a Hubcap manifest generation/download endpoint was actively invoked."""
+    global _hubcap_manifest_used_flag
+    _hubcap_manifest_used_flag = True
+
+def pop_hubcap_manifest_used() -> bool:
+    """Return and reset whether a Hubcap manifest endpoint was invoked."""
+    global _hubcap_manifest_used_flag
+    used = _hubcap_manifest_used_flag
+    _hubcap_manifest_used_flag = False
+    return used
+
 # Error messages for specific HTTP status codes
 API_ERROR_MESSAGES = {
     400: "Bad Request. The request parameters were invalid.",
@@ -281,7 +295,7 @@ def search_games(
 
 _last_user_stats_fetch: float = 0.0
 _last_generate_usage_fetch: float = 0.0
-_STATS_CACHE_TTL: float = 60.0  # 60s minimum interval between API calls to avoid 429
+_STATS_CACHE_TTL: float = 300.0  # 5-minute (300s) interval between API calls when online to avoid rate limits
 
 
 def is_stats_cache_from_previous_utc_day(cached_stats: Any) -> bool:
@@ -443,6 +457,10 @@ def get_user_stats(force: bool = False) -> Dict:
     if isinstance(res, dict) and "error" not in res and res:
         _last_user_stats_fetch = now
         settings.setValue("last_cached_user_stats", res)
+        # Mark health check cache as healthy too since user stats succeeded
+        global _last_health_check_time, _cached_health_check
+        _last_health_check_time = now
+        _cached_health_check = {"status": "healthy", "source": "user_stats"}
         return res
 
     # On rate limit (429) or error, back off for 120s
@@ -483,8 +501,9 @@ def get_generate_usage(force: bool = False) -> Dict:
 
 
 def get_all_hubcap_stats(force: bool = False) -> Dict:
-    """Fetches both user stats and generation usage limits."""
+    """Fetches both user stats and generation usage limits with rate-limit pacing."""
     user_stats = get_user_stats(force=force)
+    time.sleep(0.35)  # Pace queries to respect Hubcap 3/3/s rate ceiling
     gen_usage = get_generate_usage(force=force)
     return {
         "user_stats": user_stats,
@@ -530,27 +549,54 @@ def generate_single_manifest(
             get_session(), "GET", url, headers=headers, stream=True, timeout=60
         )
         response.raise_for_status()
+        mark_hubcap_manifest_used()
         return response.content, None
     except Exception as e:
         err = _handle_request_exception(e, f"Single manifest generate (depot {depot_id}, gid {manifest_id})")
         return None, err
 
 
-def check_health() -> Dict:
+_last_health_check_time: float = 0.0
+_cached_health_check: Optional[Dict] = None
+_HEALTH_CACHE_TTL: float = 300.0  # 5-minute (300s) cache for confirmed healthy status
+
+
+def check_health(force: bool = False) -> Dict:
     """
-    Checks if the Hubcab API is healthy using the ISP bypass pipeline,
+    Checks if the Hubcap API is healthy using the ISP bypass pipeline,
     so users with ISP bypass enabled still get accurate health status.
-    Does not require an API key.
+    Does not require an API key. Caches successful check for 5 minutes (300s)
+    to avoid burning requests against the rate limit ceiling.
+    Failed/unreachable checks are not cached to allow immediate retry.
     """
+    global _last_health_check_time, _cached_health_check
+    now = time.time()
+    if not force and _cached_health_check and (now - _last_health_check_time < _HEALTH_CACHE_TTL):
+        logger.debug("[Hubcap] Using recently cached health check")
+        return _cached_health_check
+
     url = f"{BASE_URL}/health"
     try:
         from utils.isp_bypass import execute_hubcap_request, is_html_or_blocked_payload
-        response = execute_hubcap_request(get_session(), "GET", url, timeout=5)
+        response = execute_hubcap_request(get_session(), "GET", url, timeout=10)
         response.raise_for_status()
         if is_html_or_blocked_payload(response):
+            _cached_health_check = None
             return {"status": "unhealthy", "error": "Gateway returned HTML payload (ISP block detected). Switch ISP bypass in Settings."}
-        return response.json()
+        data = response.json()
+        _last_health_check_time = now
+        _cached_health_check = data
+        return data
     except Exception as e:
+        from utils.isp_bypass import HubcapRateLimitError
+        # A 429 rate limit response proves Hubcap API is alive and reachable!
+        if isinstance(e, HubcapRateLimitError) or getattr(getattr(e, "response", None), "status_code", None) == 429:
+            logger.info("[Hubcap] Health check encountered 429 rate limit - server is online and responding.")
+            rate_limited_health = {"status": "healthy", "rate_limited": True}
+            _last_health_check_time = now
+            _cached_health_check = rate_limited_health
+            return rate_limited_health
+        _cached_health_check = None  # Do not cache failure: allow immediate retry
         error_msg = _handle_request_exception(e, "Health check")
         return {"status": "unhealthy", "error": error_msg}
 
@@ -682,6 +728,7 @@ def download_manifest(
             get_session(), "GET", url, headers=headers, stream=True, timeout=60
         )
         r.raise_for_status()
+        mark_hubcap_manifest_used()
         with open(temp_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)

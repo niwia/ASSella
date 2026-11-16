@@ -29,10 +29,18 @@ def load_steam_cache() -> List[Dict[str, Any]]:
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        games = None
         if isinstance(data, dict):
-            return data.get("games", [])
+            games = data.get("games", [])
         elif isinstance(data, list):
-            return data
+            games = data
+        if isinstance(games, list):
+            try:
+                from utils.library_rules import repair_cached_game_names
+                repair_cached_game_names(games)
+            except Exception as _silent_err:
+                logger.debug("[SteamTabCache] repair_cached_game_names skipped: %s", _silent_err)
+            return games
     except Exception as e:
         logger.warning(f"[SteamTabCache] Error loading cache: {e}")
     return []

@@ -231,10 +231,23 @@ def verify_or_download_manifest(
             if not depot_check.get("is_up_to_date", True):
                 stale_depots = depot_check.get("stale_depots", [])
                 logger.info(
-                    f"[ManifestFetcher] Cached manifest for {app_id_str} has {len(stale_depots)} stale depot(s): {stale_depots}. "
-                    "Attempting targeted single-manifest update..."
+                    f"[ManifestFetcher] Cached manifest for {app_id_str} has {len(stale_depots)} stale depot(s): {stale_depots}."
                 )
 
+                # Targeted single-manifest update is ideal for small incremental patches (<= 3 depots).
+                # For major updates (> 3 depots), downloading the updated bundle zip is orders of
+                # magnitude faster (~2 seconds vs minutes of sequential single-manifest fetches)
+                # and avoids exhausting daily generate quota.
+                MAX_STALE_SINGLE_FETCH = 3
+                if len(stale_depots) > MAX_STALE_SINGLE_FETCH:
+                    logger.info(
+                        f"[ManifestFetcher] Stale depots count ({len(stale_depots)}) exceeds threshold "
+                        f"({MAX_STALE_SINGLE_FETCH}). Downloading updated manifest bundle instead of single manifest updates..."
+                    )
+                    dl_res = morrenus_api.download_manifest(app_id_str, branch=branch_str, force_update=True)
+                    return dl_res, refetched_depots, missing_depots_info_patch
+
+                logger.info("[ManifestFetcher] Attempting targeted single-manifest update...")
                 # Targeted single-manifest update (saves full zip quota)
                 all_stale_ok = True
                 updated_manifests = {}

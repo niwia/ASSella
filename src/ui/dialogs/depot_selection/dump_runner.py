@@ -12,6 +12,7 @@ the dialog should show when it did not work out, and the key file is cleaned up
 on every failure.
 """
 
+import logging
 import os
 import subprocess
 
@@ -20,6 +21,8 @@ from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
 
 from ui.dialogs.depot_selection.manifest_dump import ManifestDump, discard_keys_file
+
+logger = logging.getLogger(__name__)
 
 _MISSING_LISTING = "Failed to locate generated file list text file."
 
@@ -34,11 +37,27 @@ class _DumpThread(QThread):
         self._cmd = cmd
 
     def run(self):
+        proxy_mgr = None
         try:
-            subprocess.run(self._cmd, capture_output=True, text=True, check=True)
+            cmd = list(self._cmd)
+            from utils.kuroko import resolve_stealth_proxy_url
+            proxy_url, proxy_mgr = resolve_stealth_proxy_url()
+            if proxy_url:
+                cmd.extend(["-proxy", proxy_url])
+
+            from utils.helpers import get_dotnet_env
+            env = get_dotnet_env()
+            subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
             self.finished_signal.emit(True, "")
         except Exception as ex:
             self.finished_signal.emit(False, str(ex))
+        finally:
+            mgr, proxy_mgr = proxy_mgr, None
+            if mgr is not None:
+                try:
+                    mgr.stop()
+                except Exception as e:
+                    logger.debug(f"[DumpRunner] Error stopping stealth proxy manager: {e}")
 
 
 class ManifestDumpRunner(QObject):

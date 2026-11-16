@@ -18,7 +18,6 @@ was, so nothing renders differently from before.
 
 from utils.color_utils import (
     get_best_foreground_color,
-    get_dark_container_color,
     get_raised_surface_tokens,
     is_light_color,
     surface_overlay_rgb,
@@ -73,13 +72,13 @@ def ink_on(background: str, alpha: float) -> str:
 
 def build_stylesheet(background: str, accent: str) -> str:
     """The stylesheet for a Game Details window painted on `background`."""
+    from utils.paths import Paths
+    fg_hex = get_best_foreground_color(accent)
+    is_light = fg_hex.lower() in ("#000000", "#121214", "#1e1e24")
+    chk_icon = str(Paths.icon("check_dark.svg" if is_light else "check_white.svg"))
     tokens = get_raised_surface_tokens(background)
     ink = tokens["ink"]
     overlay = surface_overlay_rgb(background)
-    selection = get_dark_container_color(accent)
-    # The selection background is always a dark container, so its text is the
-    # readable ink for *that* colour, not for the window behind it.
-    selection_ink = get_best_foreground_color(selection)
     return f"""
         QDialog {{
             background-color: {background};
@@ -125,48 +124,30 @@ def build_stylesheet(background: str, accent: str) -> str:
             color: rgba({overlay}, 0.118);
             border-color: rgba(255, 255, 255, 8);
         }}
-        QComboBox {{
-            background-color: rgba(0, 0, 0, 0.196);
-            color: {ink};
-            border: 1px solid rgba({overlay}, 0.059);
-            border-radius: 6px;
-            padding: 3px 8px;
-            font-size: 9.5pt;
-        }}
-        QComboBox::drop-down {{ border: none; width: 18px; }}
-        QComboBox QAbstractItemView {{
-            background-color: {background};
-            border: 1px solid rgba({overlay}, 0.08);
-            border-radius: 8px;
-            selection-background-color: {selection};
-            selection-color: {selection_ink};
-            font-size: 9.5pt;
-            outline: 0px;
-            padding: 4px;
-        }}
-        QComboBox QAbstractItemView::item {{
-            min-height: 28px;
-            padding: 4px 12px;
-            color: {ink};
-        }}
-        QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {{
-            background-color: {selection} !important;
-            color: {selection_ink} !important;
-        }}
         QCheckBox {{
             color: {ink};
             font-size: 9.5pt;
             spacing: 6px;
         }}
         QCheckBox::indicator {{
-            width: 14px; height: 14px;
-            border: 1px solid rgba({overlay}, 0.078);
-            border-radius: 3px;
-            background: rgba(0, 0, 0, 0.157);
+            width: 16px; height: 16px;
+            border: 1.5px solid rgba({overlay}, 0.2);
+            border-radius: 4px;
+            background: transparent;
+        }}
+        QCheckBox::indicator:unchecked:hover {{
+            border-color: {accent};
+            background: transparent;
         }}
         QCheckBox::indicator:checked {{
             background-color: {accent};
-            border-color: {accent};
+            border: 1.5px solid {accent};
+            image: url("{chk_icon}");
+        }}
+        QCheckBox::indicator:checked:hover {{
+            background-color: {accent};
+            border: 1.5px solid {accent};
+            image: url("{chk_icon}");
         }}
         QScrollArea {{ border: none; background: transparent; }}
         QScrollBar:vertical {{

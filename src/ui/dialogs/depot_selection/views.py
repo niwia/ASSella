@@ -45,6 +45,8 @@ class DepotCheckboxDelegate(QStyledItemDelegate):
         from utils.paths import Paths
         unlit_svg = str(Paths.resource("halloween/pumpkin_unlit.svg"))
         lit_svg = str(Paths.resource("halloween/pumpkin_lit.svg"))
+        christmas_unlit_svg = str(Paths.resource("christmas/candy_square_unlit.svg"))
+        christmas_lit_svg = str(Paths.resource("christmas/candy_square_lit.svg"))
 
         custom_unlit = settings.value("theme_checkbox_unlit", "", type=str)
         custom_lit = settings.value("theme_checkbox_lit", "", type=str)
@@ -55,6 +57,9 @@ class DepotCheckboxDelegate(QStyledItemDelegate):
         elif preset == "halloween" or str(accent).lower() in ("#ffb77d", "#ff7518"):
             if os.path.exists(unlit_svg) and os.path.exists(lit_svg):
                 path_unlit, path_lit = unlit_svg, lit_svg
+        elif preset == "christmas" or str(accent).lower() in ("#e53935", "#d32f2f"):
+            if os.path.exists(christmas_unlit_svg) and os.path.exists(christmas_lit_svg):
+                path_unlit, path_lit = christmas_unlit_svg, christmas_lit_svg
 
         if path_unlit and path_lit:
             try:

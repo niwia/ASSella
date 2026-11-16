@@ -1,4 +1,5 @@
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -9,6 +10,7 @@ from PyQt6.QtWidgets import (
 from ui.dialogs.themed_dialog import install_themed_frame
 from utils.settings import get_settings
 from utils.color_utils import get_best_foreground_color
+from utils.paths import Paths
 
 
 ACTION_NO = 0
@@ -48,7 +50,8 @@ class SingleDepotTimerDialog(QDialog):
         btn_row.setSpacing(8)
         btn_row.addStretch()
         
-        self.yes_btn = QPushButton(f"✓ Yes ({self.seconds})")
+        self.yes_btn = QPushButton(f"Yes ({self.seconds})")
+        self.yes_btn.setIcon(QIcon(str(Paths.icon("check.svg"))))
         self.yes_btn.setFixedHeight(32)
         self.yes_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.yes_btn.setStyleSheet(f"""
@@ -66,7 +69,8 @@ class SingleDepotTimerDialog(QDialog):
         """)
         self.yes_btn.clicked.connect(self._on_yes_clicked)
         
-        self.manual_btn = QPushButton("⚙ Manual")
+        self.manual_btn = QPushButton("Manual")
+        self.manual_btn.setIcon(QIcon(str(Paths.icon("settings.svg"))))
         self.manual_btn.setFixedHeight(32)
         self.manual_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.manual_btn.setToolTip("Open minimal depot selection to choose download drive or custom files")
@@ -85,7 +89,8 @@ class SingleDepotTimerDialog(QDialog):
         """)
         self.manual_btn.clicked.connect(self._on_manual_clicked)
 
-        self.no_btn = QPushButton("✕ No")
+        self.no_btn = QPushButton("No")
+        self.no_btn.setIcon(QIcon(str(Paths.icon("close.svg"))))
         self.no_btn.setFixedHeight(32)
         self.no_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.no_btn.setStyleSheet("""
@@ -135,4 +140,4 @@ class SingleDepotTimerDialog(QDialog):
             self.timer.stop()
             self.done(self.ACTION_YES)
         else:
-            self.yes_btn.setText(f"✓ Yes ({self.seconds})")
+            self.yes_btn.setText(f"Yes ({self.seconds})")

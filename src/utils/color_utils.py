@@ -1,14 +1,19 @@
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Dict, Optional
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer, QCoreApplication
 from PyQt6.QtGui import QColor, QImage, QPixmap
 
 logger = logging.getLogger(__name__)
 
 _THUMBNAIL_COLOR_CACHE: Dict[str, QColor] = {}
 _DISK_CACHE_LOADED: bool = False
+_DIRTY: bool = False
+_SAVE_TIMER: Optional[QTimer] = None
+_HOOK_REGISTERED: bool = False
 
 
 def _get_color_cache_file() -> Path:
@@ -43,26 +48,58 @@ def get_cached_thumbnail_color(app_id: Optional[str]) -> Optional[QColor]:
     return _THUMBNAIL_COLOR_CACHE.get(str(app_id))
 
 
-def _save_color_to_disk_cache(app_id: str, hex_val: str) -> None:
+def _schedule_disk_save() -> None:
+    global _DIRTY, _SAVE_TIMER, _HOOK_REGISTERED
+    _DIRTY = True
+
+    if not _HOOK_REGISTERED:
+        app = QCoreApplication.instance()
+        if app:
+            app.aboutToQuit.connect(flush_color_cache)
+            _HOOK_REGISTERED = True
+
+    if _SAVE_TIMER is None:
+        _SAVE_TIMER = QTimer()
+        _SAVE_TIMER.setSingleShot(True)
+        _SAVE_TIMER.setInterval(2000)
+        _SAVE_TIMER.timeout.connect(flush_color_cache)
+    _SAVE_TIMER.start()
+
+
+def flush_color_cache() -> None:
+    global _DIRTY
+    if not _DIRTY:
+        return
     try:
         cache_path = _get_color_cache_file()
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {}
-        if cache_path.is_file():
-            try:
-                raw = json.loads(cache_path.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    data = raw
-            except Exception:
-                data = {}
-        data[str(app_id)] = hex_val
+        _ensure_disk_cache_loaded()
+        data = {
+            str(k): v.name()
+            for k, v in _THUMBNAIL_COLOR_CACHE.items()
+            if isinstance(v, QColor) and v.isValid()
+        }
         # Cap size at 1500 entries
         if len(data) > 1500:
             for k in list(data.keys())[:300]:
                 data.pop(k, None)
-        cache_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        fd, tmp_file = tempfile.mkstemp(
+            dir=str(cache_path.parent), prefix="colors_", suffix=".tmp"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_file, cache_path)
+        _DIRTY = False
     except Exception as e:
-        logger.debug(f"Could not save thumbnail color cache to disk: {e}")
+        logger.debug(f"Could not flush thumbnail color cache to disk: {e}")
+
+
+def _save_color_to_disk_cache(app_id: str, hex_val: str) -> None:
+    col = QColor(hex_val)
+    if col.isValid():
+        _THUMBNAIL_COLOR_CACHE[str(app_id)] = col
+    _schedule_disk_save()
 
 
 def extract_dominant_color(pixmap: QPixmap, app_id: Optional[str] = None) -> Optional[QColor]:
@@ -144,7 +181,7 @@ def extract_dominant_color(pixmap: QPixmap, app_id: Optional[str] = None) -> Opt
             adjusted = QColor.fromHsv(h, s, v)
             if app_id:
                 _THUMBNAIL_COLOR_CACHE[str(app_id)] = adjusted
-                _save_color_to_disk_cache(str(app_id), adjusted.name())
+                _schedule_disk_save()
             return adjusted
 
     except Exception as e:
@@ -416,6 +453,59 @@ def make_svg_icon(svg_path: str, color: str, size: int = 20):
         logger.warning(f"make_svg_icon: failed to render '{svg_path}': {e}")
         from PyQt6.QtGui import QIcon
         return QIcon()
+
+
+def render_svg_pixmap(
+    svg_path: str,
+    width: int,
+    height: Optional[int] = None,
+    dpr: float = 1.0,
+) -> QPixmap:
+    """Render an SVG file crisply at the requested logical size and device pixel ratio."""
+    try:
+        from PyQt6.QtGui import QPainter
+        from PyQt6.QtSvg import QSvgRenderer
+
+        target_h = width if height is None else height
+        safe_dpr = max(1.0, float(dpr or 1.0))
+        px = QPixmap(max(1, round(width * safe_dpr)), max(1, round(target_h * safe_dpr)))
+        px.fill(Qt.GlobalColor.transparent)
+        renderer = QSvgRenderer(str(svg_path))
+        if not renderer.isValid():
+            return QPixmap()
+        painter = QPainter(px)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        renderer.render(painter)
+        painter.end()
+        px.setDevicePixelRatio(safe_dpr)
+        return px
+    except Exception as e:
+        logger.debug(f"render_svg_pixmap: failed to render '{svg_path}': {e}")
+        return QPixmap()
+
+
+def load_assella_app_icon():
+    """Load the ASSella window/application QIcon, preferring icon.svg with ICO/PNG fallbacks."""
+    from PyQt6.QtGui import QIcon
+    from utils.paths import Paths
+
+    icon = QIcon()
+    svg_path = Paths.resource("logo/icon.svg")
+    if svg_path.exists():
+        for sz in (16, 24, 32, 48, 64, 128, 256):
+            px = render_svg_pixmap(str(svg_path), sz)
+            if not px.isNull():
+                icon.addPixmap(px)
+        if not icon.isNull():
+            return icon
+
+    for rel in ("logo/icon.ico", "logo/icon.png", "logo/accela.png"):
+        fallback = Paths.resource(rel)
+        if fallback.exists():
+            icon = QIcon(str(fallback))
+            if not icon.isNull():
+                return icon
+    return icon
 
 
 

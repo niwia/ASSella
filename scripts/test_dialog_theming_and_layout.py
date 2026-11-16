@@ -54,12 +54,14 @@ def test_depot_dialog_normal_mode_layout():
     assert not hasattr(dialog, "path_lbl"), "path_lbl should not exist in normal game install header"
     print("  [ok] install path / status label is not present in normal game header")
 
-    # 3. Dynamic theming updates titlebar text and icons
+    # 3. Dynamic theming updates controls and action buttons
+    from utils.settings import get_settings
+    get_settings().setValue("enable_adaptive_game_theming", True)
     theme_color = QColor("#FF5500")
     dialog._apply_dynamic_theme(theme_color)
     assert dialog._ambient_color == theme_color, "_ambient_color updated"
-    assert "#ff5500" in dialog.title_bar.title_label.styleSheet().lower(), "Dialog titlebar text color updated dynamically"
-    print("  [ok] _apply_dynamic_theme updates dialog titlebar to thumbnail color")
+    assert "#ff5500" in dialog.download_btn.styleSheet().lower(), "Dialog download button color updated dynamically"
+    print("  [ok] _apply_dynamic_theme updates dialog controls to thumbnail color")
 
 def test_depot_dialog_dlc_only_layout():
     print("\n=== Testing DepotSelectionDialog DLC-Only Mode Layout ===")
@@ -83,16 +85,70 @@ def test_single_depot_dialog_dynamic_theme():
         game_name="Single Depot Game",
     )
 
+    from utils.settings import get_settings
+    get_settings().setValue("enable_adaptive_game_theming", True)
     theme_color = QColor("#33AAFF")
     dialog._apply_dynamic_theme(theme_color)
     assert dialog._ambient_color == theme_color, "_ambient_color updated"
-    assert "#33aaff" in dialog.title_bar.title_label.styleSheet().lower(), "Single depot dialog titlebar text color updated"
-    print("  [ok] SingleDepotSelectionDialog titlebar text and icons updated to thumbnail color")
+    assert "#33aaff" in dialog.ok_btn.styleSheet().lower(), "Single depot dialog OK button color updated"
+    print("  [ok] SingleDepotSelectionDialog action button updated to thumbnail color")
+    dialog.close()
+
+def test_game_details_dialog_dynamic_theme():
+    print("\n=== Testing GameDetailsDialogV2 Dynamic Theming ===")
+    from ui.dialogs.gamelibrary_v2 import GameDetailsDialogV2
+    game_data = {
+        "appid": "555555",
+        "game_name": "Test Themed Game",
+        "size_on_disk": 1024 * 1024 * 50,
+        "buildid": "123456",
+    }
+    dialog = GameDetailsDialogV2(None, game_data)
+    
+    # Title bar should NOT have game thumbnail accent
+    assert "Test Themed Game" in dialog.title_bar.title_label.text()
+    
+    # Dynamically apply color
+    from utils.settings import get_settings
+    get_settings().setValue("enable_adaptive_game_theming", True)
+    thumb_color = QColor("#FF4500")
+    dialog._apply_dynamic_accent(thumb_color)
+    assert dialog.accent_color.lower() == "#ff4500", "Dialog accent color should update to thumbnail color"
+    
+    # Title bar title_label should remain on theme accent, not overridden by thumb_color
+    settings_accent = dialog.settings.value("accent_color", "#C06C84").lower()
+    if settings_accent != "#ff4500":
+        assert "#ff4500" not in dialog.title_bar.title_label.styleSheet().lower()
+    
+    # Active tab button should have thumbnail accent
+    active_btn = dialog._tab_buttons[dialog.stacked.currentIndex()]
+    assert "#ff4500" in active_btn.styleSheet().lower(), "Active tab should be styled with thumbnail accent"
+    print("  [ok] GameDetailsDialogV2 tabs styled with thumbnail accent while titlebar retains theme accent")
+    dialog.close()
+
+def test_adaptive_theming_disabled_by_default():
+    print("\n=== Testing Adaptive Theming Disabled By Default ===")
+    from utils.settings import get_settings
+    get_settings().setValue("enable_adaptive_game_theming", False)
+    dialog = SingleDepotSelectionDialog(
+        app_id="200000",
+        depots={"200001": {"name": "Main Depot", "size": 5000}},
+        game_name="Single Depot Game",
+    )
+    theme_color = QColor("#00FF00")
+    dialog._apply_dynamic_theme(theme_color)
+    assert getattr(dialog, "_ambient_color", None) != theme_color, "_ambient_color should not update when adaptive theming is disabled"
+    assert "#00ff00" not in dialog.ok_btn.styleSheet().lower()
+    print("  [ok] Adaptive theming cleanly ignores dynamic color when setting is False")
+    dialog.close()
+
 
 if __name__ == "__main__":
     test_dialog_titlebar_update_accent()
     test_depot_dialog_normal_mode_layout()
     test_depot_dialog_dlc_only_layout()
     test_single_depot_dialog_dynamic_theme()
+    test_game_details_dialog_dynamic_theme()
+    test_adaptive_theming_disabled_by_default()
     print("\n============================================================")
     print("ALL TESTS PASSED SUCCESSFULLY!")

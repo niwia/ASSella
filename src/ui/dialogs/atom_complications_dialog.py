@@ -99,13 +99,23 @@ class AtomMigrationComplicationsDialog(QDialog):
         if dlc_only:
             content_layout.addWidget(self._create_dlc_card(dlc_only))
 
-        # 3. EOS Proxy Card
+        # 3. Missing Decryption Keys Card
+        unkeyed = self.complications.get("unkeyed")
+        if unkeyed:
+            content_layout.addWidget(self._create_unkeyed_card(unkeyed))
+
+        # 4. EOS Proxy Card
         if eos:
             content_layout.addWidget(self._create_eos_card())
 
-        # 4. Goldberg Emulator Card
+        # 5. Goldberg Emulator Card
         if goldberg:
             content_layout.addWidget(self._create_goldberg_card())
+
+        # 6. Unkeyed Workshop Card
+        unkeyed_ws = self.complications.get("unkeyed_workshop")
+        if unkeyed_ws:
+            content_layout.addWidget(self._create_workshop_unkeyed_card(unkeyed_ws))
 
         content_layout.addStretch()
         scroll.setWidget(content_widget)
@@ -181,7 +191,7 @@ class AtomMigrationComplicationsDialog(QDialog):
         card_layout.setContentsMargins(12, 12, 12, 12)
         card_layout.setSpacing(8)
 
-        title = QLabel("📌 Pinned Build Overrides (ManifestIds)")
+        title = QLabel("Pinned Build Overrides (ManifestIds)")
         title.setStyleSheet(f"font-weight: bold; font-size: 9.5pt; color: {self.accent_color}; border: none;")
         card_layout.addWidget(title)
 
@@ -221,7 +231,7 @@ class AtomMigrationComplicationsDialog(QDialog):
         card_layout.setContentsMargins(12, 12, 12, 12)
         card_layout.setSpacing(8)
 
-        title = QLabel("🧩 DLC-Only Configuration")
+        title = QLabel("DLC-Only Configuration")
         title.setStyleSheet(f"font-weight: bold; font-size: 9.5pt; color: {self.accent_color}; border: none;")
         card_layout.addWidget(title)
 
@@ -262,14 +272,14 @@ class AtomMigrationComplicationsDialog(QDialog):
         card_layout.setContentsMargins(12, 12, 12, 12)
         card_layout.setSpacing(8)
 
-        title = QLabel("🛡️ Epic Online Services (EOS) Proxy")
+        title = QLabel("Epic Online Services (EOS) Proxy")
         title.setStyleSheet(f"font-weight: bold; font-size: 9.5pt; color: {self.accent_color}; border: none;")
         card_layout.addWidget(title)
 
         desc = QLabel(
             "An <b>EOS Proxy</b> was detected in the game directory. The proxy DLL will be recalled "
             "and the original genuine EOS DLL restored, as Steam will overwrite modified files during adoption.<br><br>"
-            "💡 <i>You can re-enable the EOS Proxy from the Game Details dialog after Steam finishes "
+            "<i>Tip: You can re-enable the EOS Proxy from the Game Details dialog after Steam finishes "
             "adopting/installing the game.</i>"
         )
         desc.setWordWrap(True)
@@ -285,7 +295,7 @@ class AtomMigrationComplicationsDialog(QDialog):
         card_layout.setContentsMargins(12, 12, 12, 12)
         card_layout.setSpacing(8)
 
-        title = QLabel("🕹️ Goldberg Steam Emulator")
+        title = QLabel("Goldberg Steam Emulator")
         title.setStyleSheet(f"font-weight: bold; font-size: 9.5pt; color: {self.accent_color}; border: none;")
         card_layout.addWidget(title)
 
@@ -293,6 +303,65 @@ class AtomMigrationComplicationsDialog(QDialog):
             "<b>Goldberg Emulator</b> was detected in the game directory. Emulator DLLs will be removed "
             "and genuine Steam binaries restored from <code>.valve</code> backups, because native Steam requires "
             "authentic Steamworks binaries and will otherwise fail or overwrite them."
+        )
+        desc.setWordWrap(True)
+        desc.setTextFormat(Qt.TextFormat.RichText)
+        desc.setStyleSheet("font-size: 8.5pt; color: #D0D0D8; border: none; background: transparent;")
+        card_layout.addWidget(desc)
+
+        return card
+
+    def _create_unkeyed_card(self, unkeyed_info: Dict[str, Any]) -> QFrame:
+        card = self._create_card_frame()
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(8)
+
+        title = QLabel("Missing Decryption Keys")
+        title.setStyleSheet("font-weight: bold; font-size: 9.5pt; color: #FFAA33; border: none;")
+        card_layout.addWidget(title)
+
+        unkeyed_depots = unkeyed_info.get("unkeyed_depots", [])
+        has_keys = unkeyed_info.get("has_keys", True)
+
+        if not has_keys:
+            desc_text = (
+                "<b>Warning:</b> No valid decryption keys were found for this game. "
+                "Steam client cannot download game files without keys and will show 'Depot without key' errors. "
+                "Existing local files will be preserved, but Steam updates will fail until keys become available."
+            )
+        else:
+            depots_str = ", ".join(str(d) for d in unkeyed_depots)
+            desc_text = (
+                f"<b>Warning:</b> Decryption keys are missing for depot(s): <code>{depots_str}</code>.<br>"
+                "To prevent Steam from halting downloads with <i>'Depot without key'</i> errors, these unkeyed depots "
+                "will be <b>safely excluded</b> from SLSsteam <code>AdditionalDepots</code>. "
+                "Steam will manage the remaining keyed depots natively."
+            )
+
+        desc = QLabel(desc_text)
+        desc.setWordWrap(True)
+        desc.setTextFormat(Qt.TextFormat.RichText)
+        desc.setStyleSheet("font-size: 8.5pt; color: #D0D0D8; border: none; background: transparent;")
+        card_layout.addWidget(desc)
+
+        return card
+
+    def _create_workshop_unkeyed_card(self, unkeyed_ws: Dict[str, Any]) -> QFrame:
+        card = self._create_card_frame()
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(8)
+
+        title = QLabel("Steam Workshop Notice")
+        title.setStyleSheet("font-weight: bold; font-size: 9.5pt; color: #FFB74D; border: none;")
+        card_layout.addWidget(title)
+
+        desc = QLabel(
+            "This game supports Steam Workshop, but the root <b>AppKey</b> is currently unavailable in the local key databases.<br><br>"
+            "• <b>Base Game:</b> <span style='color: #85E89D;'>Ready</span> (all base content depots and keys are configured)<br>"
+            "• <b>Steam Workshop:</b> <span style='color: #FFB74D;'>No Key</span> (workshop mod downloads via Steam require the root AppKey)<br><br>"
+            "<i>The base game is fully playable under AT0-M. If a workshop key is added later (via db/workshop_keys.txt or SLSsteam config), workshop downloads will activate automatically.</i>"
         )
         desc.setWordWrap(True)
         desc.setTextFormat(Qt.TextFormat.RichText)

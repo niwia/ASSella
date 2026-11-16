@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 
 from core import morrenus_api
 from utils.settings import get_settings
+from utils.font_safety import status_dot
 
 logger = logging.getLogger(__name__)
 
@@ -144,13 +145,13 @@ class MorrenusStatsWidget(QWidget):
         status_bottom_row = QHBoxLayout()
         status_bottom_row.setContentsMargins(0, 4, 0, 0)
 
-        self.account_status_lbl = QLabel("● Account: --")
+        self.account_status_lbl = QLabel(f"{status_dot()} Account: --")
         self.account_status_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.6);")
         status_bottom_row.addWidget(self.account_status_lbl)
 
         status_bottom_row.addStretch()
 
-        self.steam_service_lbl = QLabel("● Steam Gen Service: --")
+        self.steam_service_lbl = QLabel(f"{status_dot()} Steam Gen Service: --")
         self.steam_service_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.6);")
         status_bottom_row.addWidget(self.steam_service_lbl)
 
@@ -195,7 +196,7 @@ class MorrenusStatsWidget(QWidget):
         self.total_calls_label.setText("Total: --")
         self.expiration_label.setText("Expires: --")
         self.expiration_label.setStyleSheet("color: rgba(255, 255, 255, 0.7); font-size: 8.5pt;")
-        self.account_status_lbl.setText("● Account: Error")
+        self.account_status_lbl.setText(f"{status_dot()} Account: Error")
         self.account_status_lbl.setStyleSheet("font-size: 8pt; color: #e57373;")
         self.daily_val_lbl.setText("Error")
         self.daily_usage_bar.setValue(0)
@@ -203,7 +204,7 @@ class MorrenusStatsWidget(QWidget):
         self.single_bar.setValue(0)
         self.workshop_val_lbl.setText("Error")
         self.workshop_bar.setValue(0)
-        self.steam_service_lbl.setText("● Steam Gen Service: --")
+        self.steam_service_lbl.setText(f"{status_dot()} Steam Gen Service: --")
         self.steam_service_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.5);")
 
     def _display_all_stats(self, user_stats: dict, gen_usage: dict) -> None:
@@ -230,15 +231,15 @@ class MorrenusStatsWidget(QWidget):
 
             can_req = user_stats.get("can_make_requests", False)
             if can_req:
-                self.account_status_lbl.setText("● Account: Active")
+                self.account_status_lbl.setText(f"{status_dot()} Account: Active")
                 self.account_status_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('success', '#81c784')}; font-weight: bold;")
             else:
-                self.account_status_lbl.setText("● Account: Inactive")
+                self.account_status_lbl.setText(f"{status_dot()} Account: Inactive")
                 self.account_status_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('error', '#e57373')}; font-weight: bold;")
         else:
             self.username_label.setText("User: Error")
             self.daily_val_lbl.setText("Error")
-            self.account_status_lbl.setText("● Account: Error")
+            self.account_status_lbl.setText(f"{status_dot()} Account: Error")
             self.account_status_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('error', '#e57373')}; font-weight: bold;")
 
         # 2. Generation usage limits
@@ -263,15 +264,15 @@ class MorrenusStatsWidget(QWidget):
 
             ready = gen_usage.get("steam_service_ready", True)
             if ready:
-                self.steam_service_lbl.setText("● Steam Gen Service: Ready")
+                self.steam_service_lbl.setText(f"{status_dot()} Steam Gen Service: Ready")
                 self.steam_service_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('success', '#81c784')};")
             else:
-                self.steam_service_lbl.setText("● Steam Gen Service: Offline")
+                self.steam_service_lbl.setText(f"{status_dot()} Steam Gen Service: Offline")
                 self.steam_service_lbl.setStyleSheet(f"font-size: 8pt; color: {semantic.get('error', '#e57373')};")
         else:
             self.single_val_lbl.setText("--")
             self.workshop_val_lbl.setText("--")
-            self.steam_service_lbl.setText("● Steam Gen Service: --")
+            self.steam_service_lbl.setText(f"{status_dot()} Steam Gen Service: --")
             self.steam_service_lbl.setStyleSheet("font-size: 8pt; color: rgba(255, 255, 255, 0.5);")
 
     @staticmethod

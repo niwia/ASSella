@@ -108,26 +108,23 @@ class TestAtomDlcAndByparr(unittest.TestCase):
         self.assertEqual(headers2.get("X-Api-Key"), "custom-api-key-999")
         print("  [PASS] Byparr custom service and headers verified")
 
-    def test_02_plugins_manifest_hubcap_registered(self):
-        """Verify hubcap.lua is in manifest, on disk, and registered in plugin_manager."""
+    def test_02_hubcap_retired_lettuce_registered(self):
+        """hubcap.lua is retired (never deployed, archived on sight); lettuce.lua replaces bypass.lua."""
         manifest_path = SRC_DIR / "res" / "plugins" / "plugins_manifest.json"
-        self.assertTrue(manifest_path.exists())
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertNotIn("hubcap.lua", manifest["plugins"])
+        self.assertFalse((SRC_DIR / "res" / "plugins" / "hubcap.lua").exists())
 
-        self.assertIn("hubcap.lua", manifest["plugins"])
-        self.assertEqual(manifest["plugins"]["hubcap.lua"]["version"], "1.0.0")
-
-        hubcap_lua = SRC_DIR / "res" / "plugins" / "hubcap.lua"
-        self.assertTrue(hubcap_lua.exists())
-        self.assertGreater(hubcap_lua.stat().st_size, 20000)
-
-        # Check plugin_manager lists
-        from utils.plugin_manager import FALLBACK_REQUIRED_PLUGINS
-        self.assertIn("hubcap.lua", FALLBACK_REQUIRED_PLUGINS)
-        print("  [PASS] Hubcap plugin manifest and registration verified")
+        from utils.plugin_manager import BUILTIN_RETIRED_PLUGINS, FALLBACK_REQUIRED_PLUGINS, KATAMARI_FAMILY_PLUGINS
+        self.assertNotIn("hubcap.lua", FALLBACK_REQUIRED_PLUGINS)
+        self.assertIn("hubcap.lua", BUILTIN_RETIRED_PLUGINS)
+        self.assertEqual(BUILTIN_RETIRED_PLUGINS["bypass.lua"], "lettuce.lua")
+        self.assertIn("lettuce.lua", KATAMARI_FAMILY_PLUGINS)
+        self.assertNotIn("bypass.lua", KATAMARI_FAMILY_PLUGINS)
+        print("  [PASS] Hubcap retired, Lettuce registered")
 
     def test_03_atom_dlc_dialog_structure_and_filters(self):
-        """Verify AtomDlcSelectionDialog sets up tables, filters owned items, and hides bulk bars < 5."""
+        """Verify AtomDlcSelectionDialog sets up tables, unlocks owned items with warning, and hides bulk bars < 5."""
         base_appid = "123456"
         disc = DlcDiscovery(
             appid=base_appid,
@@ -163,7 +160,7 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             }
         }
 
-        # Mock Steam ticket ownership to include 100001 as already owned
+        # Mock Steam ticket ownership to include 100001 as suspected Steam-owned
         with patch("ui.dialogs.atom_dlc_selection_dialog.get_owned_dlcs_from_steam", return_value={"100001"}):
             dlg = AtomDlcSelectionDialog(
                 parent=None,
@@ -174,7 +171,7 @@ class TestAtomDlcAndByparr(unittest.TestCase):
                 manifest_data=manifest_data,
             )
 
-            # 1. Base appid (123456) MUST NOT be in apps table, while owned DLC (100001) is present but greyscaled
+            # 1. Base appid (123456) MUST NOT be in apps table; owned DLC (100001) is present, tagged (Owned), and interactive
             app_ids_in_table = [dlg.apps_table.item(r, 0).text() for r in range(dlg.apps_table.rowCount())]
             self.assertNotIn("123456", app_ids_in_table)
             self.assertIn("100001", app_ids_in_table)
@@ -182,10 +179,11 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             self.assertIn("100003", app_ids_in_table)
             self.assertEqual(len(app_ids_in_table), 3)
 
-            # Owned DLC 100001 toggle must be disabled/read-only and greyscaled
+            # Owned DLC 100001 starts unchecked & interactive (not greyscaled), tagged (Owned)
             toggle_100001 = dlg.app_toggles["100001"]
-            self.assertFalse(toggle_100001.isEnabled())
-            self.assertTrue(toggle_100001.isGreyscaled())
+            self.assertTrue(toggle_100001.isEnabled())
+            self.assertFalse(toggle_100001.isGreyscaled())
+            self.assertFalse(toggle_100001.isChecked())
             self.assertIn("(Owned)", dlg.apps_table.item(0, 1).text())
             self.assertTrue(dlg.apps_table.item(0, 1).font().italic())
 
@@ -197,7 +195,7 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             # 2. Bulk bar should be hidden because count is < 5 (3 items)
             self.assertFalse(dlg.apps_bulk_bar.isVisible())
 
-            # 3. Depots: 200001 belongs to owned DLC 100001 -> greyscaled with locked toggle
+            # 3. Depots: 200001 belongs to owned DLC 100001 -> interactive, starts unchecked, tagged (Owned)
             # 200002 is missing key -> disabled with tag '[No Key]'
             # 200003 is valid -> enabled
             depot_ids_in_table = [dlg.depots_table.item(r, 0).text() for r in range(dlg.depots_table.rowCount())]
@@ -205,12 +203,33 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             self.assertIn("200002", depot_ids_in_table)
             self.assertIn("200003", depot_ids_in_table)
 
-            # 200001 owned depot toggle should be disabled/locked and greyscaled
             toggle_200001 = dlg.depot_toggles["200001"]
-            self.assertFalse(toggle_200001.isEnabled())
-            self.assertTrue(toggle_200001.isGreyscaled())
+            self.assertTrue(toggle_200001.isEnabled())
+            self.assertFalse(toggle_200001.isGreyscaled())
+            self.assertFalse(toggle_200001.isChecked())
             self.assertIn("(Owned)", dlg.depots_table.item(0, 1).text())
             self.assertTrue(dlg.depots_table.item(0, 1).font().italic())
+
+            # Cancelling the warning leaves owned DLC and its depot unchecked
+            with patch("ui.dialogs.atom_dlc_selection_dialog.confirm_steam_owned_override", return_value=False) as mock_cancel:
+                toggle_100001.setChecked(True, animate=False)
+                self.assertEqual(mock_cancel.call_count, 1)
+                self.assertFalse(toggle_100001.isChecked())
+                self.assertFalse(toggle_200001.isChecked())
+
+            # Proceeding warns ONCE and cascades cleanly to owned depot 200001
+            with patch("ui.dialogs.atom_dlc_selection_dialog.confirm_steam_owned_override", return_value=True) as mock_proceed:
+                toggle_100001.setChecked(True, animate=False)
+                self.assertEqual(mock_proceed.call_count, 1)
+                self.assertTrue(toggle_100001.isChecked())
+                self.assertTrue(toggle_200001.isChecked())
+
+            # Toggling OFF never prompts
+            with patch("ui.dialogs.atom_dlc_selection_dialog.confirm_steam_owned_override") as mock_off:
+                toggle_100001.setChecked(False, animate=False)
+                mock_off.assert_not_called()
+                self.assertFalse(toggle_100001.isChecked())
+                self.assertFalse(toggle_200001.isChecked())
 
             # 200002 toggle should be disabled (missing key)
             toggle_200002 = dlg.depot_toggles["200002"]
@@ -227,7 +246,7 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             self.assertEqual(dlg.width(), 620)
             self.assertEqual(dlg.height(), 500)
 
-            print("  [PASS] AtomDlcSelectionDialog structure, owned DLC greyscaling, and toggle state verified")
+            print("  [PASS] AtomDlcSelectionDialog structure, owned DLC override warning, and cascade verified")
 
     def test_04_dlc_mode_memory_detection(self):
         """Verify _detect_configured_dlc_mode detects AT0-M vs ASSella vs unconfigured."""
@@ -278,6 +297,55 @@ class TestAtomDlcAndByparr(unittest.TestCase):
             mode = actions_obj._detect_configured_dlc_mode(setting_appid)
             self.assertEqual(mode, "assella")
 
+        # 5. ASSella config-only game. That path writes DlcData, which AT0-M
+        #    also writes, so the mode recorded at configure time must decide it.
+        class _RecordedAssellaSettings:
+            def value(self, key, default=None, type=None):
+                if key.startswith("dlc_mode_source/"):
+                    return "assella"
+                return default
+
+        config_only_appid = "5555555"
+        legacy_atom_appid = "4444444"
+        with tempfile.TemporaryDirectory() as tmp_cfg_dir:
+            cfg = Path(tmp_cfg_dir) / "config.yaml"
+            cfg.write_text("DlcData:\n", encoding="utf-8")
+
+            with patch("utils.plugin_games.load_plugin_library", return_value={}), \
+                 patch("utils.helpers.get_base_path", return_value=Path(tmp_cfg_dir)), \
+                 patch("utils.settings.get_settings", return_value=_RecordedAssellaSettings()), \
+                 patch("utils.yaml_config_manager.get_user_config_path", return_value=cfg), \
+                 patch("utils.yaml_config_manager.get_dlc_data", return_value={config_only_appid: {"1234": "DLC"}}), \
+                 patch("utils.dlc_helpers.is_dlc_only_mode", return_value=True):
+                mode = actions_obj._detect_configured_dlc_mode(config_only_appid)
+                self.assertEqual(mode, "assella", "recorded ASSella mode must beat DlcData")
+
+            # 6. Legacy AT0-M DlcData with no recorded mode stays native.
+            with patch("utils.plugin_games.load_plugin_library", return_value={}), \
+                 patch("utils.helpers.get_base_path", return_value=Path(tmp_cfg_dir)), \
+                 patch("utils.settings.get_settings", return_value=MagicMock(value=lambda *a, **k: "")), \
+                 patch("utils.yaml_config_manager.get_user_config_path", return_value=cfg), \
+                 patch("utils.yaml_config_manager.get_dlc_data", return_value={legacy_atom_appid: {"1234": "DLC"}}), \
+                 patch("utils.dlc_helpers.is_dlc_only_mode", return_value=False):
+                mode = actions_obj._detect_configured_dlc_mode(legacy_atom_appid)
+                self.assertEqual(mode, "native", "DlcData without a recorded ASSella mode stays AT0-M")
+
+            # 7. Recorded AT0-M mode returns native even when is_dlc_only_mode is True.
+            class _RecordedNativeSettings:
+                def value(self, key, default=None, type=None):
+                    if key.startswith("dlc_mode_source/"):
+                        return "native"
+                    return default
+
+            native_appid = "3333333"
+            with patch("utils.plugin_games.load_plugin_library", return_value={}), \
+                 patch("utils.helpers.get_base_path", return_value=Path(tmp_cfg_dir)), \
+                 patch("utils.settings.get_settings", return_value=_RecordedNativeSettings()), \
+                 patch("utils.yaml_config_manager.get_user_config_path", return_value=None), \
+                 patch("utils.dlc_helpers.is_dlc_only_mode", return_value=True):
+                mode = actions_obj._detect_configured_dlc_mode(native_appid)
+                self.assertEqual(mode, "native", "recorded native mode must beat is_dlc_only_mode")
+
         print("  [PASS] DLC mode memory detection verified")
 
     def test_05_plugin_version_extraction_and_display(self):
@@ -307,14 +375,45 @@ Lobster = {
         lob_ver = get_plugin_version("lobster.lua")
         self.assertIsNotNone(lob_ver)
 
-        print(f"  [PASS] Plugin version resolution verified (SpaceBunny: {sb_ver}, Lobster: {lob_ver})")
+        # 3. Redundant legacy plugin archiving (spacebunny1.5.lua -> .bak)
+        import tempfile
+        from utils.plugin_manager import archive_redundant_legacy_plugins
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdir = Path(tmpdir)
+            sb15 = pdir / "spacebunny1.5.lua"
+            sb15.write_text("-- legacy spacebunny 1.5")
+            with patch("utils.plugin_manager.get_sls_plugins_dirs", return_value=[pdir]), \
+                 patch("utils.plugin_manager.is_plugin_check_bypassed", return_value=False):
+                archived = archive_redundant_legacy_plugins(auto_deploy_replacement=False)
+                self.assertEqual(len(archived), 1)
+                self.assertFalse(sb15.exists())
+                self.assertTrue((pdir / "spacebunny1.5.lua.bak").exists())
+
+        print(f"  [PASS] Plugin version resolution and legacy archiving verified (SpaceBunny: {sb_ver}, Lobster: {lob_ver})")
+
+    def test_09_native_handoff_platform_check_runs_once(self):
+        """The AT0-M handoff must not re-ask the platform mismatch question
+        when the caller already answered it (fetchmanifest asks before handing off)."""
+        import inspect
+        from managers import task_manager as tm_mod
+
+        sig = inspect.signature(tm_mod.TaskManager.start_native_steam_handoff)
+        self.assertIn("platform_checked", sig.parameters)
+        self.assertIs(sig.parameters["platform_checked"].default, False)
+
+        body = inspect.getsource(tm_mod.TaskManager.start_native_steam_handoff)
+        guard = body.index("if platform_checked:")
+        check = body.index("check_native_steam_platform_mismatch(\n")
+        self.assertLess(guard, check, "the guard must wrap the mismatch check")
+
+        fm = (Path(__file__).resolve().parent.parent / "src/ui/dialogs/fetchmanifest.py").read_text()
+        self.assertIn("platform_checked=True", fm, "fetchmanifest must declare its prompt authoritative")
 
     def test_06_platform_mismatch_and_dlc_badge(self):
         """Verify PlatformMismatchDialog styling/text and single DLC Only badge in GameListWidget."""
         from ui.dialogs.platform_mismatch_dialog import (
             PlatformMismatchDialog,
             ACTION_PROCEED,
-            ACTION_FORCE_PROTON,
         )
         from ui.dialogs.library.widgets import GameItemWidget
 
@@ -328,14 +427,18 @@ Lobster = {
         }
         dlg = PlatformMismatchDialog(details=details)
         self.assertEqual(ACTION_PROCEED, 1)
-        self.assertEqual(ACTION_FORCE_PROTON, ACTION_PROCEED)
+        self.assertFalse(hasattr(dlg, "btn_force_proton"), "force-proton alias should be gone")
         self.assertEqual(dlg.btn_proceed.text(), "Proceed")
 
         # Find description label and verify text
         from PyQt6.QtWidgets import QLabel
-        desc_labels = [w for w in dlg.findChildren(QLabel) if "Only Windows keys are available" in w.text()]
-        self.assertTrue(len(desc_labels) > 0, "Expected description text to mention 'Only Windows keys are available'")
-        self.assertIn("Please switch to Proton in Steam compatibility options after install.", desc_labels[0].text())
+        desc_labels = [w for w in dlg.findChildren(QLabel) if "only contains the Windows files" in w.text()]
+        self.assertTrue(len(desc_labels) > 0, "Expected description text to mention the Windows-only package")
+        desc_text = desc_labels[0].text()
+        self.assertIn("select a compatibility tool (Proton)", desc_text)
+        self.assertIn("ASSella does not change this for you.", desc_text)
+        self.assertNotIn("will attempt to download", desc_text)
+        self.assertNotIn("Force Proton", desc_text)
 
         # 2. GameItemWidget: single DLC badge
         game_data = {
@@ -469,12 +572,12 @@ Lobster = {
         test_dlc_depot = "9999992"
         test_unselected_dlc = "9999999"
 
-        # Provide tokens for base, selected DLC, selected DLC depot, and unselected DLC
+        # Provide numeric tokens for base, selected DLC, selected DLC depot, and unselected DLC
         tokens_map = {
-            test_base_aid: "TOKEN_BASE_GAME_SECRET",
-            test_dlc_aid: "TOKEN_DLC_SECRET",
-            test_dlc_depot: "TOKEN_DEPOT_SECRET",
-            test_unselected_dlc: "TOKEN_UNSELECTED_SECRET",
+            test_base_aid: "999999012345678901",
+            test_dlc_aid: "999999112345678902",
+            test_dlc_depot: "999999212345678903",
+            test_unselected_dlc: "999999912345678904",
         }
 
         try:
@@ -500,10 +603,17 @@ Lobster = {
             # Unselected DLC token must not enter AppTokens
             self.assertNotIn(test_unselected_dlc, cfg_tokens, "Unselected DLC token found in AppTokens!")
             # Selected DLC token and selected depot token must be present
-            self.assertEqual(cfg_tokens.get(test_dlc_aid), "TOKEN_DLC_SECRET")
-            self.assertEqual(cfg_tokens.get(test_dlc_depot), "TOKEN_DEPOT_SECRET")
+            self.assertEqual(cfg_tokens.get(test_dlc_aid), "999999112345678902")
+            self.assertEqual(cfg_tokens.get(test_dlc_depot), "999999212345678903")
         finally:
             unregister_plugin_game(test_base_aid)
+            # Guarantee test tokens are cleanly pruned
+            from utils.yaml_config_manager import batch_config_edit
+            with batch_config_edit(cfg_path) as ed:
+                ed.remove_app_token(test_base_aid)
+                ed.remove_app_token(test_dlc_aid)
+                ed.remove_app_token(test_dlc_depot)
+                ed.remove_app_token(test_unselected_dlc)
 
         print("  [PASS] AtomManifestFixDialog and DLC AppToken scoping verified")
 

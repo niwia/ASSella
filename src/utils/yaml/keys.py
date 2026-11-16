@@ -129,17 +129,18 @@ def has_game_decryption_keys(
         return True
 
     # 2. Collect known depots for this game
+    from utils.depot_utils import extract_depot_ids
     game_depots: Set[str] = set()
     gd = game_data or {}
     if gd.get("depots"):
-        game_depots.update(str(d).strip() for d in gd["depots"].keys())
+        game_depots.update(extract_depot_ids(gd["depots"]))
 
     try:
         from managers.depot_key_manager import DepotKeyManager
         dkm = DepotKeyManager.get_instance()
         local_keys = dkm.get_keys_for_app(appid_str)
         if local_keys:
-            game_depots.update(str(d).strip() for d in local_keys.keys())
+            game_depots.update(extract_depot_ids(local_keys))
     except Exception:
         pass
 
@@ -147,8 +148,8 @@ def has_game_decryption_keys(
         from utils.plugin_games import load_plugin_library
         lib = load_plugin_library()
         if appid_str in lib:
-            game_depots.update(str(d).strip() for d in lib[appid_str].get("depots", []))
-            game_depots.update(str(d).strip() for d in lib[appid_str].get("keys", {}).keys())
+            game_depots.update(extract_depot_ids(lib[appid_str].get("depots")))
+            game_depots.update(extract_depot_ids(lib[appid_str].get("keys")))
     except Exception:
         pass
 

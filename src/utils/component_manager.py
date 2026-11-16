@@ -239,11 +239,15 @@ def get_status(key: str, manifest: Optional[dict] = None) -> Dict[str, object]:
             "remote_sha256": entry.get("sha256"),
         }
 
+    if not on_disk and installed_sha:
+        clear_installed(key)
+        installed_sha = None
+
     return {
         "key": key,
         "known": True,
         "installed": on_disk,
-        "current": bool(installed_sha and installed_sha == entry.get("sha256")),
+        "current": bool(on_disk and installed_sha and installed_sha == entry.get("sha256")),
         "name": entry.get("name"),
         "description": entry.get("description"),
         "size_bytes": entry.get("size_bytes"),

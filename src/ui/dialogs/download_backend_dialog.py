@@ -11,7 +11,7 @@ from typing import Optional
 from pathlib import Path
 import logging
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap, QColor
 from PyQt6.QtWidgets import (
     QDialog,
@@ -53,8 +53,14 @@ class DownloadBackendDialog(QDialog):
         game_name: str = "",
         accent_color: str = "#6c5ce7",
         mode: str = "download",
+        atom_guard: bool = False,
     ):
         super().__init__(parent)
+        # atom_guard: also require the full AT0-M readiness check (config,
+        # Plugins: yes, AdditionalDepots/DecryptionKeys, interceptor), the same
+        # gate standard games pass before AT0-M mode is offered.
+        self._atom_guard = atom_guard
+        self._atom_block_reason = ""
         self.app_id = str(app_id)
         self.game_name = game_name or f"App {app_id}"
         self.accent_color = accent_color
@@ -62,7 +68,7 @@ class DownloadBackendDialog(QDialog):
         self._choice = BACKEND_CANCEL
         self.settings = get_settings()
 
-        self._plugins_available = are_plugins_present()
+        self._plugins_available = self._compute_atom_available()
         self._selected_backend = BACKEND_NATIVE_STEAM if self._plugins_available else BACKEND_ASSELLA
 
         # Parse accent RGB for glowing backgrounds
@@ -78,6 +84,35 @@ class DownloadBackendDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         self._init_ui()
+
+    def _compute_atom_available(self) -> bool:
+        """Plugins present and, when guarded, the full AT0-M readiness check."""
+        self._atom_block_reason = ""
+        if not are_plugins_present():
+            return False
+        if self._atom_guard:
+            try:
+                from utils.plugin_games import can_use_atom_mode
+                ok, reason = can_use_atom_mode()
+            except Exception as e:
+                ok, reason = False, f"AT0-M readiness check failed: {e}"
+            if not ok:
+                self._atom_block_reason = reason or "AT0-M is not ready"
+                return False
+        return True
+
+    def _apply_block_reason(self) -> None:
+        """Show why AT0-M is unavailable when it is the guard (not plugins) blocking it."""
+        if self._atom_block_reason and are_plugins_present(ignore_bypass=True):
+            self.steam_status_lbl.setStyleSheet("font-size: 7.5pt; color: #ff6b6b; border: none; background: transparent; font-weight: 500;")
+            self.steam_status_lbl.setText("AT0-M not ready")
+            self.steam_status_lbl.setVisible(True)
+            self.steam_card.setToolTip(self._atom_block_reason)
+            self.steam_status_lbl.setToolTip(self._atom_block_reason)
+            if hasattr(self, "plugin_help_btn"):
+                self.plugin_help_btn.setVisible(True)
+        else:
+            self.steam_card.setToolTip("")
 
     def _init_ui(self):
         root = QVBoxLayout(self)
@@ -173,6 +208,8 @@ class DownloadBackendDialog(QDialog):
         else:
             self.steam_status_lbl.setVisible(False)
         steam_vbox.addWidget(self.steam_status_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
+        if self._atom_block_reason:
+            QTimer.singleShot(0, self._apply_block_reason)
 
         self.steam_card.mousePressEvent = lambda e: self._select_backend(BACKEND_NATIVE_STEAM)
         cards_layout.addWidget(self.steam_card)
@@ -187,12 +224,14 @@ class DownloadBackendDialog(QDialog):
         assella_vbox.setSpacing(6)
         assella_vbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # ASSella Logo
+        # ASSella Logo (prefer scalable SVG with PNG fallback)
         self.assella_icon_lbl = QLabel()
         self.assella_icon_lbl.setObjectName("assella_icon_lbl")
-        assella_pix = self._load_logo("accela.png")
+        assella_pix = self._load_logo("icon.svg", size=46)
+        if assella_pix.isNull():
+            assella_pix = self._load_logo("accela.png", size=46)
         if not assella_pix.isNull():
-            self.assella_icon_lbl.setPixmap(assella_pix.scaled(46, 46, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self.assella_icon_lbl.setPixmap(assella_pix)
         assella_vbox.addWidget(self.assella_icon_lbl, alignment=Qt.AlignmentFlag.AlignCenter)
 
         assella_name = QLabel("ASSella")
@@ -245,30 +284,11 @@ class DownloadBackendDialog(QDialog):
                 border: none;
                 outline: none;
             }
-            QCheckBox::indicator {
-                width: 15px;
-                height: 15px;
-                border: none;
-                border-radius: 3px;
-                background: rgba(255, 255, 255, 0.12);
-                outline: none;
-            }
-            QCheckBox::indicator:hover {
-                background: rgba(255, 255, 255, 0.22);
-            }
-            QCheckBox::indicator:checked {
-                background: %s;
-                border: none;
-            }
-            QCheckBox::indicator:focus {
-                border: none;
-                outline: none;
-            }
-        """ % self.accent_color)
+        """)
         body_lay.addWidget(self.remember_chk)
 
         # Custom plugin warning (visible only when Steam is chosen and bypass is active with physical plugins missing)
-        self.custom_plugin_warn_lbl = QLabel("⚠️ Custom plugins active — third-party plugin support cannot be guaranteed!")
+        self.custom_plugin_warn_lbl = QLabel("Custom plugins active — third-party plugin support cannot be guaranteed!")
         self.custom_plugin_warn_lbl.setStyleSheet("font-size: 7.5pt; color: #ffb74d; border: none; background: transparent;")
         self.custom_plugin_warn_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.custom_plugin_warn_lbl.setWordWrap(True)
@@ -344,7 +364,7 @@ class DownloadBackendDialog(QDialog):
 
         self._update_cards_ui()
 
-    def _load_logo(self, filename: str) -> QPixmap:
+    def _load_logo(self, filename: str, size: int = 0) -> QPixmap:
         """Load logo from bundled src/res/logo or ~/.local/share/ACCELA/Logo."""
         candidates = [
             Path(__file__).resolve().parent.parent.parent / "res" / "logo" / filename,
@@ -353,7 +373,25 @@ class DownloadBackendDialog(QDialog):
         ]
         for c in candidates:
             if c.is_file():
-                return QPixmap(str(c))
+                if c.suffix.lower() == ".svg":
+                    from utils.color_utils import render_svg_pixmap
+                    px = render_svg_pixmap(
+                        str(c),
+                        size or 46,
+                        dpr=max(1.0, self.devicePixelRatioF()),
+                    )
+                    if not px.isNull():
+                        return px
+                else:
+                    px = QPixmap(str(c))
+                    if not px.isNull():
+                        if size > 0:
+                            return px.scaled(
+                                size, size,
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation,
+                            )
+                        return px
         return QPixmap()
 
     def _select_backend(self, backend: int):
@@ -448,8 +486,8 @@ class DownloadBackendDialog(QDialog):
             except Exception as e:
                 logger.error(f"[DownloadBackendDialog] Error opening settings: {e}")
 
-        # Re-check plugin availability
-        self._plugins_available = are_plugins_present()
+        # Re-check plugin availability (and AT0-M readiness when guarded)
+        self._plugins_available = self._compute_atom_available()
         phys_present = are_plugins_present(ignore_bypass=True)
         bypassed = is_plugin_check_bypassed()
         self.plugin_help_btn.setVisible(not self._plugins_available)
@@ -465,6 +503,7 @@ class DownloadBackendDialog(QDialog):
         else:
             self.steam_status_lbl.setVisible(False)
 
+        self._apply_block_reason()
         self.steam_card.setCursor(Qt.CursorShape.PointingHandCursor if self._plugins_available else Qt.CursorShape.ForbiddenCursor)
         if self._plugins_available and self._selected_backend != BACKEND_ASSELLA:
             self._selected_backend = BACKEND_NATIVE_STEAM

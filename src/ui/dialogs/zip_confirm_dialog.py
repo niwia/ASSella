@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QMetaObject, QSize
-from PyQt6.QtGui import QPixmap, QMovie
+from PyQt6.QtGui import QPixmap, QMovie, QIcon
 from PyQt6.QtWidgets import (
     QDialog,
     QWidget,
@@ -40,10 +40,10 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QFrame,
     QCheckBox,
-    QComboBox,
     QRadioButton,
     QButtonGroup,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from utils.color_utils import get_best_foreground_color
 from utils.settings import get_settings
@@ -259,16 +259,16 @@ class ZipImportConfirmationDialog(QDialog):
         tb_layout.addWidget(tb_title)
         tb_layout.addStretch(1)
 
-        close_btn = QPushButton("✕")
+        from utils.paths import Paths
+        close_btn = QPushButton()
+        close_btn.setIcon(QIcon(str(Paths.icon("close.svg"))))
+        close_btn.setIconSize(QSize(14, 14))
         close_btn.setFixedSize(22, 22)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet("""
             QPushButton {
                 background: transparent;
-                color: rgba(255, 255, 255, 0.55);
                 border: none;
-                font-size: 9.5pt;
-                font-weight: bold;
                 border-radius: 4px;
             }
             QPushButton:hover {
@@ -642,26 +642,15 @@ class ZipImportConfirmationDialog(QDialog):
         pin_layout.setSpacing(2)
 
         self.pin_checkbox = QCheckBox("Pin this build in Steam")
-        self.pin_checkbox.setStyleSheet(f"""
-            QCheckBox {{
+        self.pin_checkbox.setStyleSheet("""
+            QCheckBox {
                 color: #FFFFFF;
                 font-size: 8.8pt;
                 font-weight: 600;
                 spacing: 8px;
                 background: transparent;
                 border: none;
-            }}
-            QCheckBox::indicator {{
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
-                background: rgba(255, 255, 255, 0.05);
-            }}
-            QCheckBox::indicator:checked {{
-                background: {self.accent_color};
-                border: 1px solid {self.accent_color};
-            }}
+            }
         """)
         pin_layout.addWidget(self.pin_checkbox)
 
@@ -689,28 +678,8 @@ class ZipImportConfirmationDialog(QDialog):
         dest_lbl.setStyleSheet("color: rgba(255, 255, 255, 0.85); font-size: 8.6pt; font-weight: 600; border: none; background: transparent;")
         dest_layout.addWidget(dest_lbl)
 
-        self.dest_combo = QComboBox()
+        self.dest_combo = ModernComboBox()
         self.dest_combo.setFixedHeight(28)
-        self.dest_combo.setStyleSheet("""
-            QComboBox {
-                background-color: rgba(255, 255, 255, 0.07);
-                color: #FFFFFF;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 6px;
-                padding: 2px 10px;
-                font-size: 8.4pt;
-                font-weight: 500;
-            }
-            QComboBox:hover {
-                border-color: rgba(255, 255, 255, 0.3);
-            }
-            QComboBox QAbstractItemView {
-                background-color: #1a1a24;
-                color: #FFFFFF;
-                selection-background-color: #4C8DF5;
-                border: 1px solid rgba(255, 255, 255, 0.15);
-            }
-        """)
         dest_layout.addWidget(self.dest_combo, 1)
         self.confirm_layout.addWidget(self.dest_frame)
 
@@ -1799,20 +1768,28 @@ class ZipImportConfirmationDialog(QDialog):
             for d, k in (game_data.get("depot_keys") or {}).items():
                 if k:
                     candidate_keys[str(d)] = str(k).strip().lower()
-            for d, dinfo in (game_data.get("depots") or {}).items():
-                if isinstance(dinfo, dict):
-                    k = dinfo.get("key") or dinfo.get("decryption_key")
-                    if k:
-                        candidate_keys[str(d)] = str(k).strip().lower()
+            gd_depots = game_data.get("depots")
+            if isinstance(gd_depots, dict):
+                for d, dinfo in gd_depots.items():
+                    if isinstance(dinfo, dict):
+                        k = dinfo.get("key") or dinfo.get("decryption_key")
+                        if k:
+                            candidate_keys[str(d)] = str(k).strip().lower()
 
             candidate_depots = {}
-            for d, dinfo in (game_data.get("depots") or {}).items():
-                did_str = str(d).strip()
-                if did_str.isdigit() and did_str != appid_str:
-                    d_desc = ""
-                    if isinstance(dinfo, dict):
-                        d_desc = dinfo.get("desc") or dinfo.get("name") or ""
-                    candidate_depots[did_str] = d_desc
+            if isinstance(gd_depots, dict):
+                for d, dinfo in gd_depots.items():
+                    did_str = str(d).strip()
+                    if did_str.isdigit() and did_str != appid_str:
+                        d_desc = ""
+                        if isinstance(dinfo, dict):
+                            d_desc = dinfo.get("desc") or dinfo.get("name") or ""
+                        candidate_depots[did_str] = d_desc
+            elif isinstance(gd_depots, (list, set, tuple)):
+                for d in gd_depots:
+                    did_str = str(d).strip()
+                    if did_str.isdigit() and did_str != appid_str:
+                        candidate_depots[did_str] = ""
 
             # 3. Determine missing keys and missing depots
             missing_keys = {

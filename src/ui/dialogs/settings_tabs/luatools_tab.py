@@ -20,6 +20,7 @@ from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from core.lua_tools_api import LuaToolsAPI
 from utils.task_runner import TaskRunner
+from utils.font_safety import status_dot
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ def create_luatools_tab(dialog) -> QWidget:
     status_lay = QHBoxLayout(status_frame)
     status_lay.setContentsMargins(14, 12, 14, 12)
 
-    dialog.luatools_status_dot = QLabel("●")
+    dialog.luatools_status_dot = QLabel(status_dot())
     dialog.luatools_status_dot.setStyleSheet("color: #ef4444; font-size: 14pt; border: none; background: transparent;")
     status_lay.addWidget(dialog.luatools_status_dot)
 

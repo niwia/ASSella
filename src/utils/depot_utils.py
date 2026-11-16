@@ -41,6 +41,17 @@ REDIST_NAME_KEYWORDS = (
 )
 
 
+def extract_depot_ids(depots_obj: Any) -> Set[str]:
+    """Safely extract string depot IDs from either a dict (depot_id -> info) or a list/set/tuple of depot IDs."""
+    if not depots_obj:
+        return set()
+    if isinstance(depots_obj, dict):
+        return {str(d).strip() for d in depots_obj.keys() if str(d).strip()}
+    if isinstance(depots_obj, (list, set, tuple)):
+        return {str(d).strip() for d in depots_obj if str(d).strip()}
+    return set()
+
+
 def is_redist_or_dependency(dinfo: Any, did_str: str) -> bool:
     """True if depot is a redistributable, system package, or external dependency."""
     if did_str in BLACKLISTED_DEPOTS:
@@ -166,6 +177,40 @@ def _is_not_in_branch(d_info: Any, branch: str) -> bool:
     if d_info.get("from_dlc_app"):
         return False
     return branch not in manifests
+
+
+def iter_depot_manifest_gids(depot_data: Any, branch: str = "public") -> List[str]:
+    """Return the manifest GID(s) a depot entry carries, whatever its shape.
+
+    Depot entries appear both flat (``{"manifest_id": "123"}``) and per-branch
+    (``{"manifests": {"public": {"gid": "123"}, "beta": "456"}}``). Branch
+    bundles store their GIDs under a branch key, so reading only the flat
+    ``manifest_id`` misses them entirely. The selected ``branch`` is preferred;
+    other branches are used only when it has no entry, and a flat
+    ``manifest_id`` always counts.
+    """
+    if not isinstance(depot_data, dict):
+        return []
+    gids: List[str] = []
+    flat = depot_data.get("manifest_id")
+    if flat is not None:
+        gid = str(flat).strip()
+        if gid.isdigit():
+            gids.append(gid)
+    manifests = depot_data.get("manifests")
+    if isinstance(manifests, dict):
+        preferred = manifests.get(branch)
+        entries = [preferred] if preferred is not None else list(manifests.values())
+        for entry in entries:
+            if isinstance(entry, dict):
+                value = entry.get("gid") or entry.get("manifest_id")
+            else:
+                value = entry
+            if value is not None:
+                gid = str(value).strip()
+                if gid.isdigit():
+                    gids.append(gid)
+    return gids
 
 
 def check_hubcap_vs_steam_depots(

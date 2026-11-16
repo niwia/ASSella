@@ -323,10 +323,12 @@ class SimplifiedTerminalWidget(QWidget):
 
         download_games = []
         at0m_key_ready = []
-        at0m_awaiting = []
+        has_key_pending = False
         for g in games:
             status = g.get("update_status")
-            if status not in ("update_available", "key_pending"):
+            if status == "key_pending":
+                has_key_pending = True
+            if status != "update_available":
                 continue
             appid = str(g.get("appid", ""))
             if settings.value(
@@ -336,11 +338,8 @@ class SimplifiedTerminalWidget(QWidget):
             if settings.value(f"pin_build/{appid}", False, type=bool):
                 continue
             if is_atom_managed(g):
-                if status == "update_available":
-                    at0m_key_ready.append(g)
-                else:
-                    at0m_awaiting.append(g)
-            elif status == "update_available":
+                at0m_key_ready.append(g)
+            else:
                 download_games.append(g)
 
         total_downloads = len(download_games)
@@ -466,8 +465,9 @@ class SimplifiedTerminalWidget(QWidget):
         if hasattr(self, "panel_mid") and self.panel_mid:
             self.panel_mid.update()
 
-        if total_downloads + total_key_syncs + len(at0m_awaiting) == 0:
-            lbl = QLabel("All games up-to-date")
+        if total_downloads + total_key_syncs == 0:
+            msg = "No actionable updates (keys pending on Hubcap)" if has_key_pending else "All games up-to-date"
+            lbl = QLabel(msg)
             lbl.setStyleSheet("color: #888888; font-style: italic; font-size: 9pt;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.updates_scroll_layout.addWidget(lbl)
@@ -515,11 +515,6 @@ class SimplifiedTerminalWidget(QWidget):
                     row.action_btn.setEnabled(False)
                     row.action_btn.setText("Syncing…")
                 self.updates_scroll_layout.addWidget(row)
-
-            for g in at0m_awaiting:
-                self.updates_scroll_layout.addWidget(
-                    _make_row(g, "Awaiting Hubcap Key", "#888888")
-                )
         self.updates_scroll_layout.addStretch()
 
     def add_history_entry(self, entry):

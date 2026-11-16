@@ -1,0 +1,75 @@
+name: Auto-Sync Docs, Voices & Broadcast Across Branches
+
+on:
+  push:
+    paths:
+      - 'docs/**'
+      - 'src/res/voices.json'
+      - 'broadcast.json'
+    branches:
+      - canary
+      - beta
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Propagate docs, voices.json, and broadcast.json to other branches
+        run: |
+          SOURCE_BRANCH="${{ github.ref_name }}"
+          TARGET_BRANCHES=("canary" "beta" "main" "arm64")
+
+          echo "Syncing shared assets from source branch: $SOURCE_BRANCH"
+
+          for TARGET in "${TARGET_BRANCHES[@]}"; do
+            if [ "$TARGET" = "$SOURCE_BRANCH" ]; then
+              continue
+            fi
+
+            echo "Evaluating sync for branch: $TARGET"
+            if git show-ref --verify --quiet "refs/remotes/origin/$TARGET"; then
+              git checkout -B "$TARGET" "origin/$TARGET"
+
+              # Clean replacement of docs directory so deletions/renames propagate cleanly
+              if [ -d "docs" ]; then
+                rm -rf docs/
+              fi
+              git checkout "origin/$SOURCE_BRANCH" -- docs/
+
+              # Sync voices.json and broadcast.json if they exist in source
+              if git checkout "origin/$SOURCE_BRANCH" -- src/res/voices.json 2>/dev/null; then
+                git add src/res/voices.json
+              fi
+              if git checkout "origin/$SOURCE_BRANCH" -- broadcast.json 2>/dev/null; then
+                git add broadcast.json
+              fi
+
+              git add -A docs/
+
+              if git diff --cached --quiet; then
+                echo "Branch $TARGET already in sync with shared assets."
+              else
+                git commit -m "chore(sync): sync docs, voices.json, and broadcast.json from $SOURCE_BRANCH [skip ci]"
+                git push origin "$TARGET"
+                echo "Successfully synced shared assets to $TARGET."
+              fi
+            else
+              echo "Branch origin/$TARGET not found, skipping."
+            fi
+          done

@@ -253,14 +253,15 @@ def has_game_config_entries(
         pass
 
     # 3. Check AdditionalApps
+    from utils.depot_utils import extract_depot_ids
     try:
         live_apps = get_additional_apps(cfg_path)
         if appid_str in live_apps:
             return True
         gd = game_data or {}
         gd_dlcs = gd.get("dlcs") or {}
-        for dlc_id in gd_dlcs.keys():
-            if str(dlc_id).strip() in live_apps:
+        for dlc_id in extract_depot_ids(gd_dlcs):
+            if dlc_id in live_apps:
                 return True
     except Exception:
         pass
@@ -269,14 +270,14 @@ def has_game_config_entries(
     game_depots: Set[str] = set()
     gd = game_data or {}
     if gd.get("depots"):
-        game_depots.update(str(d).strip() for d in gd["depots"].keys())
+        game_depots.update(extract_depot_ids(gd["depots"]))
 
     try:
         from managers.depot_key_manager import DepotKeyManager
         dkm = DepotKeyManager.get_instance()
         local_keys = dkm.get_keys_for_app(appid_str)
         if local_keys:
-            game_depots.update(str(d).strip() for d in local_keys.keys())
+            game_depots.update(extract_depot_ids(local_keys))
     except Exception:
         pass
 

@@ -52,6 +52,55 @@ class BranchBuildMixin:
             pass
         return ""
 
+    def _try_resolve_historical_buildid_async(self):
+        """If bundle is stale and build ID is unknown, check SteamDB cache in background."""
+        aid_str = str(getattr(self, "app_id", "") or "").strip()
+        if not aid_str.isdigit() or aid_str in ("0", "N/A", "unknown"):
+            return
+        aid_int = int(aid_str)
+
+        def _worker():
+            try:
+                from core.steamdb_scraper import SteamDBBuildsCache
+                cached_builds = SteamDBBuildsCache().get_builds(aid_int) or []
+                if not cached_builds:
+                    return
+
+                zip_manifests = {}
+                depots_dict = getattr(self, "depots", {}) or {}
+                from utils.depot_utils import iter_depot_manifest_gids
+                sel_branch = getattr(self, "branch", "public")
+                for did, ddata in depots_dict.items():
+                    gids = iter_depot_manifest_gids(ddata, sel_branch)
+                    if gids:
+                        zip_manifests[str(did)] = gids
+
+                if not zip_manifests:
+                    return
+
+                for cb in cached_builds:
+                    c_depots = cb.get("depots", {})
+                    if any(
+                        str(d_id) in c_depots and str(c_depots[str(d_id)].get("manifest_id")) in m_ids
+                        for d_id, m_ids in zip_manifests.items()
+                    ):
+                        matched_bid = str(cb.get("buildid", "")).strip()
+                        if matched_bid:
+                            def _update_ui(bid=matched_bid):
+                                if not getattr(self, "_selected_build_id", None) or self._selected_build_id == getattr(self, "current_build_id", ""):
+                                    self.current_build_id = bid
+                                    self._selected_build_id = bid
+                                    if hasattr(self, "builds_btn") and self.builds_btn is not None:
+                                        self.builds_btn.setText(f"Build: {bid} (Older)")
+                            from utils.main_thread import post_to_main_thread
+                            post_to_main_thread(_update_ui)
+                            break
+            except Exception as e:
+                logger.debug(f"[DepotSelection] Background build ID match failed: {e}")
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
     def get_selected_build(self) -> Optional[str]:
         return getattr(self, "_selected_build_id", None) or self.current_build_id
 
@@ -137,11 +186,29 @@ class BranchBuildMixin:
                     border: 1px solid {self.accent_color};
                 }}
             """)
-        else:
+        elif getattr(self, "is_bundle_stale", False):
             self.builds_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(230, 126, 34, 0.12);
+                    border: 1px solid rgba(230, 126, 34, 0.6);
+                    border-radius: 6px;
+                    color: #f39c12;
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                    padding: 2px 12px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(230, 126, 34, 0.22);
+                    border-color: #f39c12;
+                    color: #f39c12;
+                }
+            """)
+        else:
+            accent_r, accent_g, accent_b = self._resolve_accent_colors() if hasattr(self, "_resolve_accent_colors") else (192, 108, 132)
+            self.builds_btn.setStyleSheet(f"""
                 QPushButton {{
                     background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba(255, 255, 255, 0.16);
+                    border: 1px solid rgba({accent_r}, {accent_g}, {accent_b}, 0.35);
                     border-radius: 6px;
                     color: #FFFFFF;
                     font-size: 8.5pt;
@@ -150,7 +217,8 @@ class BranchBuildMixin:
                 }}
                 QPushButton:hover {{
                     background-color: rgba(255, 255, 255, 0.12);
-                    border-color: rgba(255, 255, 255, 0.35);
+                    border-color: {self.accent_color};
+                    color: {self.accent_color};
                 }}
             """)
         if hasattr(self, "builds_btn") and self.builds_btn is not None:

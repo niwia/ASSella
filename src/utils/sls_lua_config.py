@@ -4,7 +4,7 @@ sls_lua_config.py
 Utilities to inspect, generate, and synchronize Lua configuration files for
 SLSsteam plugins:
   - lobster.conf.lua: Headcrab config recovery settings
-  - spacebunny.conf.lua: SpaceBunny interceptor and Hubcap auto-fetch settings
+  - katamari.conf.lua (hubcap section): the Hubcap API key the plugins use
 
 Strictly NO emojis used anywhere.
 """
@@ -44,9 +44,9 @@ def get_lobster_conf_path() -> Path:
     return get_sls_config_dir() / "lobster.conf.lua"
 
 
-def get_spacebunny_conf_path() -> Path:
-    """Return canonical path to spacebunny.conf.lua."""
-    return get_sls_config_dir() / "spacebunny.conf.lua"
+def get_hubcap_key_conf_path() -> Path:
+    """Where the plugins read the Hubcap API key: katamari.conf.lua (hubcap section)."""
+    return get_sls_config_dir() / "katamari.conf.lua"
 
 
 # ---------------------------------------------------------------------------
@@ -174,147 +174,6 @@ def write_lobster_conf(cfg: Dict[str, Any], conf_path: Optional[Path] = None) ->
 
 
 # ---------------------------------------------------------------------------
-# SpaceBunny / Hubcap Configuration
-# ---------------------------------------------------------------------------
-
-DEFAULT_HUBCAP_CONFIG: Dict[str, Any] = {
-    "enabled": True,
-    "base_url": "https://hubcapmanifest.com/api/v1",
-    "api_key": "",
-    "api_key_timestamp": 0,
-    "timeout_sec": 5,
-    "write_config": True,
-    "notify": True,
-    "preflight": "contents",
-    "depot_index": False,
-    "write_depot_comments": False,
-}
-
-
-def read_spacebunny_conf(conf_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Read ~/.config/SLSsteam/spacebunny.conf.lua, returning outer dict containing 'hubcap' sub-dict."""
-    path = conf_path or get_spacebunny_conf_path()
-    res: Dict[str, Any] = {
-        "standalone": False,
-        "hubcap": dict(DEFAULT_HUBCAP_CONFIG),
-    }
-    if not path.is_file():
-        return res
-
-    try:
-        content = path.read_text(encoding="utf-8", errors="ignore")
-
-        # Outer standalone
-        m_st = re.search(r'\bstandalone\s*=\s*([^,\n\r]+)', content)
-        if m_st:
-            b = _parse_bool(m_st.group(1))
-            if b is not None:
-                res["standalone"] = b
-
-        # Extract hubcap table block
-        m_hub = re.search(r'\bhubcap\s*=\s*\{([^}]+)\}', content, re.DOTALL)
-        if m_hub:
-            hub_content = m_hub.group(1)
-            h = res["hubcap"]
-
-            m = re.search(r'\benabled\s*=\s*([^,\n\r]+)', hub_content)
-            if m:
-                b = _parse_bool(m.group(1))
-                if b is not None:
-                    h["enabled"] = b
-
-            m = re.search(r'\bapi_key\s*=\s*([^,\n\r]+)', hub_content)
-            if m:
-                s = _parse_string(m.group(1))
-                if s is not None:
-                    h["api_key"] = s
-
-            m = re.search(r'\bapi_key_timestamp\s*=\s*([^,\n\r]+)', hub_content)
-            if m:
-                ts = _parse_int(m.group(1))
-                if ts is not None:
-                    h["api_key_timestamp"] = ts
-
-            m = re.search(r'\bbase_url\s*=\s*([^,\n\r]+)', hub_content)
-            if m:
-                s = _parse_string(m.group(1))
-                if s is not None:
-                    h["base_url"] = s
-
-            for key in ("write_config", "notify", "depot_index", "write_depot_comments"):
-                m = re.search(rf'\b{key}\s*=\s*([^,\n\r]+)', hub_content)
-                if m:
-                    b = _parse_bool(m.group(1))
-                    if b is not None:
-                        h[key] = b
-
-            m = re.search(r'\btimeout_sec\s*=\s*([^,\n\r]+)', hub_content)
-            if m:
-                num = _parse_int(m.group(1))
-                if num is not None:
-                    h["timeout_sec"] = num
-
-            m = re.search(r'\bpreflight\s*=\s*([^,\n\r]+)', hub_content)
-            if m:
-                s = _parse_string(m.group(1))
-                if s is not None:
-                    h["preflight"] = s
-    except Exception as exc:
-        logger.error(f"[SlsLuaConfig] Failed to read {path}: {exc}")
-
-    return res
-
-
-def write_spacebunny_conf(cfg: Dict[str, Any], conf_path: Optional[Path] = None) -> bool:
-    """Write ~/.config/SLSsteam/spacebunny.conf.lua preserving standalone and hubcap options."""
-    path = conf_path or get_spacebunny_conf_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        standalone = "true" if cfg.get("standalone", False) else "false"
-        hub = cfg.get("hubcap", {})
-
-        h_enabled = "true" if hub.get("enabled", True) else "false"
-        h_api_key = str(hub.get("api_key", "")).strip()
-        h_ts = int(hub.get("api_key_timestamp", 0) or 0)
-        h_base_url = str(hub.get("base_url", "https://hubcapmanifest.com/api/v1")).strip()
-        h_timeout = int(hub.get("timeout_sec", 5) or 5)
-        h_write_config = "true" if hub.get("write_config", True) else "false"
-        h_notify = "true" if hub.get("notify", True) else "false"
-        h_preflight = str(hub.get("preflight", "contents")).strip()
-        h_depot_index = "true" if hub.get("depot_index", False) else "false"
-        h_comments = "true" if hub.get("write_depot_comments", False) else "false"
-
-        lua_code = (
-            "-- spacebunny.conf.lua\n"
-            "-- Configuration for spacebunny.lua and hubcap.lua (Hubcap key resolver)\n"
-            "return {\n"
-            f"    standalone = {standalone},\n"
-            "    hubcap = {\n"
-            f"        enabled = {h_enabled},\n"
-            f'        api_key = "{escape_lua_string(h_api_key)}",\n'
-            f"        api_key_timestamp = {h_ts},\n"
-            f'        base_url = "{escape_lua_string(h_base_url)}",\n'
-            f"        timeout_sec = {h_timeout},\n"
-            f"        write_config = {h_write_config},\n"
-            f"        notify = {h_notify},\n"
-            f'        preflight = "{escape_lua_string(h_preflight)}",\n'
-            f"        depot_index = {h_depot_index},\n"
-            f"        write_depot_comments = {h_comments},\n"
-            "    },\n"
-            "}\n"
-        )
-        path.write_text(lua_code, encoding="utf-8")
-        try:
-            os.chmod(path, 0o600)
-        except (OSError, AttributeError) as exc:
-            logger.debug(f"[SlsLuaConfig] Could not restrict permissions on {path}: {exc}")
-        return True
-    except Exception as exc:
-        logger.error(f"[SlsLuaConfig] Failed to write {path}: {exc}")
-        return False
-
-
-# ---------------------------------------------------------------------------
 # Bidirectional AT0-M Key Sync Logic
 # ---------------------------------------------------------------------------
 
@@ -366,53 +225,46 @@ def is_valid_hubcap_key(key: str) -> bool:
     return bool(re.match(r'^[a-zA-Z0-9_\-]+$', k))
 
 
-def sync_hubcap_api_key(settings, sb_conf_path: Optional[Path] = None) -> Tuple[bool, str]:
-    """Bidirectionally synchronize Hubcap API key between ASSella settings and spacebunny.conf.lua.
-    Condition:
-      - If Lua timestamp > local timestamp (and Lua key valid): copy Lua key to local settings.
-      - If local timestamp > Lua timestamp (and local key valid): copy local key to spacebunny.conf.lua.
-      - If timestamps are equal or unset: initial sync local -> Lua if local key exists.
+def sync_hubcap_api_key(settings, conf_path: Optional[Path] = None) -> Tuple[bool, str]:
+    """Keep the Hubcap API key in ASSella and in katamari.conf.lua (hubcap section) the same.
+
+    The newer side wins, by timestamp:
+      - katamari.conf.lua newer (and its key valid): copy it into ASSella.
+      - ASSella newer (and its key valid): write it into katamari.conf.lua.
     Returns (synced, message).
     """
-    sb_path = sb_conf_path or get_spacebunny_conf_path()
-    if not sb_path.is_file():
-        return False, "spacebunny.conf.lua does not exist"
+    from managers.katamari_config_manager import KatamariConfigManager
+
+    path = conf_path or get_hubcap_key_conf_path()
+    if not path.is_file():
+        return False, "katamari.conf.lua does not exist"
 
     local_key = str(settings.value("morrenus_api_key", "", type=str) or "").strip()
     try:
-        raw_val = settings.value("morrenus_api_key_timestamp", 0)
-        local_ts = int(str(raw_val).strip() or 0)
+        local_ts = int(str(settings.value("morrenus_api_key_timestamp", 0)).strip() or 0)
     except (ValueError, TypeError):
         local_ts = 0
-
-    # If user has a local key but no timestamp set yet, initialize it
     if local_key and local_ts == 0:
         local_ts = generate_hubcap_timestamp()
         settings.setValue("morrenus_api_key_timestamp", str(local_ts))
 
-    sb_cfg = read_spacebunny_conf(sb_path)
-    hub = sb_cfg.get("hubcap", {})
+    hub = KatamariConfigManager.load_config(path).get("hubcap", {})
     lua_key = str(hub.get("api_key", "")).strip()
     lua_ts = int(hub.get("api_key_timestamp", 0) or 0)
-
     lua_sort = _timestamp_to_sort_key(lua_ts)
     local_sort = _timestamp_to_sort_key(local_ts)
 
-    # Decision logic
     if lua_sort > local_sort and is_valid_hubcap_key(lua_key):
-        # Lua is newer: update ASSella
         settings.setValue("morrenus_api_key", lua_key)
         settings.setValue("morrenus_api_key_timestamp", str(lua_ts))
-        logger.info(f"[SlsLuaConfig] Synced newer Hubcap API key from Lua (ts: {lua_ts}) to ASSella")
-        return True, "Synced API key from spacebunny.conf.lua to ASSella"
+        logger.info(f"[SlsLuaConfig] Synced newer Hubcap API key from katamari.conf.lua (ts: {lua_ts}) to ASSella")
+        return True, "Synced API key from katamari.conf.lua to ASSella"
 
-    elif (local_sort > lua_sort or (local_sort > 0 and lua_sort == 0)) and is_valid_hubcap_key(local_key):
-        # ASSella is newer: update Lua
-        hub["api_key"] = local_key
-        hub["api_key_timestamp"] = local_ts
-        sb_cfg["hubcap"] = hub
-        write_spacebunny_conf(sb_cfg, sb_path)
-        logger.info(f"[SlsLuaConfig] Synced newer Hubcap API key from ASSella (ts: {local_ts}) to Lua")
-        return True, "Synced API key from ASSella to spacebunny.conf.lua"
+    if (local_sort > lua_sort or (local_sort > 0 and lua_sort == 0)) and is_valid_hubcap_key(local_key):
+        ok = KatamariConfigManager.set_hubcap_api_key(local_key, local_ts, path)
+        if not ok:
+            return False, "Could not write katamari.conf.lua"
+        logger.info(f"[SlsLuaConfig] Synced newer Hubcap API key from ASSella (ts: {local_ts}) to katamari.conf.lua")
+        return True, "Synced API key from ASSella to katamari.conf.lua"
 
     return False, "Already in sync"

@@ -16,20 +16,20 @@ git+https://github.com/solsticegamestudios/steam.git@1373e885f26bb636225443787f5
 # the resolved commit in the lock, which is what actually pins the build.
 git+https://github.com/solsticegamestudios/vdf.git@v4.0
 
-beautifulsoup4==4.12.3
+beautifulsoup4==4.15.0
 cachetools==5.5.2
-capstone==5.0.6
+capstone==5.0.9
 configobj==5.0.9
-cryptography==46.0.3
+cryptography==50.0.2
 curl-cffi==0.17.0
 gevent==25.9.1
 gevent-eventemitter==2.1
 protobuf==5.29.5
-psutil==7.0.0
+psutil==7.2.2
 pycryptodome==3.23.0
 pyyaml==6.0.3
 pysocks==1.7.1
-pyqt6==6.9.1
+pyqt6==6.11.0
 zstandard==0.25.0
 
 # rich powers the CLI depot/DLC selection menus, progress bars, and terminal formatting.
@@ -37,7 +37,7 @@ zstandard==0.25.0
 rich>=13.7.0
 
 # wsproto is required by steam.client for Steam WebSocket protocol support
-wsproto==1.2.0
+wsproto==1.3.2
 
 # Removed as unused - verified no imports anywhere outside src/deps/ vendored
 # sample scripts (see docs/DEPENDENCIES.md):

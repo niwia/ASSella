@@ -121,6 +121,12 @@ def install_themed_frame(
     dialog.themed_title_bar = title_bar
     dialog.themed_body = body
 
+    parent = dialog.parent()
+    if isinstance(parent, QWidget) and parent is not dialog:
+        from ui.dialogs.dialog_raiser import DialogRaiser
+
+        DialogRaiser.attach(parent, dialog)
+
     return body
 
 

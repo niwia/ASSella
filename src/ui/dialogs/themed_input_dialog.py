@@ -15,7 +15,6 @@ from typing import List, Optional, Sequence, Tuple
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -25,6 +24,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 
 from ui.dialog_titlebar import DialogTitleBar
 from utils.settings import get_settings
@@ -55,7 +55,7 @@ class ThemedInputDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setWindowModality(Qt.WindowModality.WindowModal)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(360)
 
         self._build_ui(title, label, text, items, editable)
 
@@ -76,7 +76,7 @@ class ThemedInputDialog(QDialog):
                 color: #e5e7eb;
                 font-size: 9.5pt;
             }}
-            QLineEdit, QComboBox {{
+            QLineEdit {{
                 background-color: rgba(255, 255, 255, 0.06);
                 border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 5px;
@@ -84,17 +84,11 @@ class ThemedInputDialog(QDialog):
                 padding: 5px 8px;
                 min-height: 24px;
             }}
-            QComboBox QAbstractItemView {{
-                background-color: {self.background_color};
-                color: #e5e7eb;
-                selection-background-color: {self.accent_color};
-                selection-color: #0b0d12;
-            }}
         """)
 
         lay = QVBoxLayout(self.container)
-        lay.setContentsMargins(0, 0, 0, 12)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, 0, 0, 10)
+        lay.setSpacing(6)
 
         self.title_bar = DialogTitleBar(
             self,
@@ -106,7 +100,7 @@ class ThemedInputDialog(QDialog):
         lay.addWidget(self.title_bar)
 
         body = QVBoxLayout()
-        body.setContentsMargins(16, 4, 16, 4)
+        body.setContentsMargins(16, 2, 16, 4)
         body.setSpacing(8)
 
         self.label = QLabel(label, self)
@@ -115,7 +109,7 @@ class ThemedInputDialog(QDialog):
         body.addWidget(self.label)
 
         if self._combo_mode:
-            self.field = QComboBox(self)
+            self.field = ModernComboBox(self)
             self.field.addItems(list(items or []))
             self.field.setEditable(editable)
             if text:
@@ -127,13 +121,21 @@ class ThemedInputDialog(QDialog):
         body.addWidget(self.field)
 
         buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 2, 0, 0)
+        buttons.setSpacing(8)
         buttons.addStretch()
+
         self.cancel_button = QPushButton("Cancel", self)
         self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_button.setFixedSize(95, 28)
         self.cancel_button.clicked.connect(self.reject)
+
         self.ok_button = QPushButton("OK", self)
         self.ok_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ok_button.setFixedSize(95, 28)
+        self.ok_button.setDefault(True)
         self.ok_button.clicked.connect(self.accept)
+
         self.ok_button.setStyleSheet(f"""
             QPushButton {{
                 background-color: {self.accent_color};
@@ -141,7 +143,7 @@ class ThemedInputDialog(QDialog):
                 border: none;
                 border-radius: 5px;
                 font-size: 8.5pt;
-                padding: 5px 16px;
+                font-weight: 500;
             }}
             QPushButton:hover {{ background-color: #ffffff; }}
         """)
@@ -152,12 +154,12 @@ class ThemedInputDialog(QDialog):
                 border-radius: 5px;
                 color: #e5e7eb;
                 font-size: 8.5pt;
-                padding: 5px 16px;
             }
             QPushButton:hover { background-color: rgba(255, 255, 255, 0.12); color: #ffffff; }
         """)
         buttons.addWidget(self.cancel_button)
         buttons.addWidget(self.ok_button)
+        buttons.addStretch()
         body.addLayout(buttons)
 
         lay.addLayout(body)

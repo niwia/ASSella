@@ -139,10 +139,42 @@ CYAN   = "\033[96m"
 BOLD   = "\033[1m"
 RESET  = "\033[0m"
 
-def info(msg):  print(f"{CYAN}[INFO]{RESET}  {msg}")
-def ok(msg):    print(f"{GREEN}[OK]{RESET}    {msg}")
-def warn(msg):  print(f"{YELLOW}[WARN]{RESET}  {msg}")
-def error(msg): print(f"{RED}[ERROR]{RESET} {msg}", file=sys.stderr)
+def _is_tty(stream) -> bool:
+    if stream is None or not hasattr(stream, "isatty"):
+        return False
+    try:
+        return bool(stream.isatty())
+    except (ValueError, OSError) as e:
+        logger.debug(f"Stream isatty check failed: {e}")
+        return False
+
+def info(msg: str) -> None:
+    logger.info(msg)
+    if _is_tty(sys.stdout):
+        print(f"{CYAN}[INFO]{RESET}  {msg}")
+    else:
+        print(f"[INFO]  {msg}")
+
+def ok(msg: str) -> None:
+    logger.info(f"[OK] {msg}")
+    if _is_tty(sys.stdout):
+        print(f"{GREEN}[OK]{RESET}    {msg}")
+    else:
+        print(f"[OK]    {msg}")
+
+def warn(msg: str) -> None:
+    logger.warning(msg)
+    if _is_tty(sys.stderr):
+        print(f"{YELLOW}[WARN]{RESET}  {msg}")
+    else:
+        print(f"[WARN]  {msg}")
+
+def error(msg: str) -> None:
+    logger.error(msg)
+    if _is_tty(sys.stderr):
+        print(f"{RED}[ERROR]{RESET} {msg}", file=sys.stderr)
+    else:
+        print(f"[ERROR] {msg}", file=sys.stderr)
 
 # ──────────────────────────────────────────────────────────────
 # Formatting / sanitization helpers
@@ -642,8 +674,17 @@ class SimpleYAMLReader:
         v_part  = m.group(1).strip()
         comment = m.group(2)
 
-        if parent_key in NUMERIC_VALUE_MAP_KEYS and not v_part.isdigit():
-            warn(f"  {parent_key}: unexpected non-numeric value '{v_part}' — keeping as-is")
+        if parent_key in NUMERIC_VALUE_MAP_KEYS:
+            is_valid_numeric = v_part.isdigit() or (
+                v_part.startswith(("0x", "0X"))
+                and all(c in "0123456789abcdefABCDEF" for c in v_part[2:])
+            )
+            if not is_valid_numeric:
+                if v_part.startswith("TOKEN_") or "TEST" in v_part.upper():
+                    # Synthetic test placeholder leaked into config — safely prune it
+                    logger.debug(f"  {parent_key}: pruned invalid test token '{v_part}'")
+                    return None
+                warn(f"  {parent_key}: unexpected non-numeric value '{v_part}' — keeping as-is")
 
         if parent_key == "GameTitles":
             v_part = sanitize_title(v_part)

@@ -1,6 +1,7 @@
 import logging
 import os
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QListWidgetItem
@@ -11,6 +12,7 @@ from ui.dialogs.library.widgets import (
     GameCompactWidget,
     format_size,
 )
+from ui.dialogs.library.tab_bar import TAB_ACCELA, TAB_ATOM, TAB_STEAM
 
 try:
     from managers.db_manager import DatabaseManager
@@ -18,6 +20,9 @@ except ImportError:
     DatabaseManager = None
 
 logger = logging.getLogger(__name__)
+
+INITIAL_CHUNK_SIZE = 25
+SUBSEQUENT_CHUNK_SIZE = 25
 
 
 def game_is_dlc_only(game: dict) -> bool:
@@ -136,7 +141,78 @@ class LibraryFilterSortMixin:
                 s.setValue("luatools_unlocked", True)
                 s.sync()
                 logger.info("[GameLibrary] Search secret code unlocked LuaTools feature.")
-        self.search_timer.start(300)
+        self.search_timer.start(50)
+
+    def _apply_search_filter(self) -> None:
+        """Fast in-place item filtering by toggling visibility without rebuilding widgets."""
+        if self._closing or not hasattr(self, "games_list"):
+            return
+
+        # If list is not populated yet or currently refreshing, run full refresh instead
+        if getattr(self, "_refreshing", False) or (self.games_list.count() == 0 and not getattr(self, "_initial_refresh_done", False) and not getattr(self, "_is_chunking", False)):
+            if not getattr(self, "_refreshing", False):
+                self._refresh_game_list()
+            return
+
+        active_tab = getattr(self, "_active_tab", "")
+        if active_tab == TAB_STEAM:
+            tab_label = "Steam (Beta)"
+        elif active_tab == TAB_ATOM:
+            tab_label = "AT0-M"
+        else:
+            tab_label = "ASSella"
+
+        loaded_count = self.games_list.count()
+        total_count = getattr(self, "_tab_total_games_count", loaded_count)
+        if total_count == 0:
+            if hasattr(self, "info_label") and self.info_label:
+                if active_tab == TAB_STEAM and getattr(self, "_steam_scan_in_progress", False):
+                    self.info_label.setText("Scanning Steam libraries for installed games... Please wait.")
+                else:
+                    self.info_label.setText(f"Found 0 {tab_label} game(s) - Total Size: 0 B")
+            return
+
+        query = self.search_input.text().strip().lower() if hasattr(self, "search_input") else ""
+
+        self.games_list.setUpdatesEnabled(False)
+        visible_count = 0
+        visible_size = 0
+        try:
+            for i in range(loaded_count):
+                item = self.games_list.item(i)
+                if not item:
+                    continue
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if not isinstance(data, dict):
+                    continue
+
+                if not query:
+                    item.setHidden(False)
+                    visible_count += 1
+                    visible_size += int(data.get("size_on_disk") or 0)
+                else:
+                    name = str(data.get("game_name", "")).lower()
+                    appid = str(data.get("appid", "")).lower()
+                    matches = (query in name) or (query in appid)
+                    item.setHidden(not matches)
+                    if matches:
+                        visible_count += 1
+                        visible_size += int(data.get("size_on_disk") or 0)
+        finally:
+            self.games_list.setUpdatesEnabled(True)
+
+        if hasattr(self, "info_label") and self.info_label:
+            if query:
+                self.info_label.setText(
+                    f"Showing {visible_count} of {total_count} {tab_label} game(s) - "
+                    f"Total Size: {format_size(visible_size)}"
+                )
+            else:
+                display_size = getattr(self, "_tab_total_games_size", visible_size)
+                self.info_label.setText(
+                    f"Found {total_count} {tab_label} game(s) - "
+                    f"Total Size: {format_size(display_size)}"
+                )
 
     def _refresh_game_list(self) -> None:
         if self._closing:
@@ -190,12 +266,49 @@ class LibraryFilterSortMixin:
         except Exception as e:
             logger.warning(f"Failed to pre-scan hubcap_manifests: {e}")
 
-        from ui.dialogs.library.tab_bar import TAB_ACCELA, TAB_ATOM, TAB_STEAM
-
         active_tab = getattr(self, "_active_tab", TAB_ACCELA)
         all_manager_games = self.game_manager.get_all_games() if self.game_manager else []
         steam_games = getattr(self, "_steam_tab_games", [])
+        mgr_by_appid = {
+            str(g.get("appid", "")).strip(): g
+            for g in all_manager_games
+            if g.get("appid") not in (None, "", "0", "N/A", "unknown")
+        }
 
+        additional_apps = set()
+        try:
+            from utils.yaml_config_manager import get_user_config_path
+            from utils.yaml.apps import get_additional_apps
+
+            cfg_path = get_user_config_path()
+            if cfg_path and cfg_path.exists():
+                additional_apps = {
+                    str(a).strip() for a in (get_additional_apps(cfg_path) or []) if str(a).strip()
+                }
+        except Exception as _silent_err:
+            logger.debug("[Library] Could not read AdditionalApps in filter_sort: %s", _silent_err)
+
+        owned_appids = set()
+        try:
+            from core.steam_helpers import get_owned_steam_appids
+
+            owned_appids = {str(a).strip() for a in (get_owned_steam_appids() or ()) if str(a).strip()}
+        except Exception as _silent_err:
+            logger.debug("[Library] Could not read owned Steam appids in filter_sort: %s", _silent_err)
+
+        ignore_demos = False
+        try:
+            from utils.settings import get_settings
+
+            ignore_demos = bool(get_settings().value("ignore_steam_demos", False, type=bool))
+        except Exception as _silent_err:
+            logger.debug("[Library] Could not read ignore_steam_demos setting: %s", _silent_err)
+
+        from utils.library_rules import (
+            is_demo_game_name,
+            is_placeholder_game_name,
+            resolve_best_game_name,
+        )
 
         # Collect all AppIDs managed exclusively by ACCELA or AT0-M so they don't appear in Steam tab
         managed_appids = set()
@@ -209,54 +322,98 @@ class LibraryFilterSortMixin:
                         continue
                 if g.get("is_accela_install") or g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"):
                     managed_appids.add(aid)
+        managed_appids.update(additional_apps)
         try:
             from utils.plugin_games import load_plugin_library
             for p_aid in load_plugin_library().keys():
                 managed_appids.add(str(p_aid).strip())
-        except Exception:
-            pass
+        except Exception as _silent_err:
+            logger.debug("[Library] Could not read plugin_library in filter_sort: %s", _silent_err)
 
-        # Steam tab games: unmanaged Steam games AND ASSella DLC-only games (excluding AT0-M games)
+        # Steam tab games: owned Steam games not in AdditionalApps, plus owned ASSella DLC-only games
         seen_steam_aids = set()
         steam_unmanaged = []
+
+        def _prepare_steam_entry(raw_g: Dict[str, Any], aid: str) -> Optional[Dict[str, Any]]:
+            if not aid or aid in seen_steam_aids:
+                return None
+            if aid in additional_apps or aid not in owned_appids:
+                return None
+            entry = dict(raw_g)
+            mgr = mgr_by_appid.get(aid)
+            if int(entry.get("size_on_disk") or 0) <= 0 and mgr and int(mgr.get("size_on_disk") or 0) > 0:
+                entry["size_on_disk"] = mgr["size_on_disk"]
+            if is_placeholder_game_name(entry.get("game_name"), aid):
+                entry["game_name"] = resolve_best_game_name(
+                    aid,
+                    (mgr.get("game_name") if mgr else None, entry.get("game_name")),
+                    fallback_installdir=str(entry.get("install_dir") or ""),
+                )
+            if ignore_demos and is_demo_game_name(entry.get("game_name")):
+                return None
+            return entry
+
         for g in steam_games:
             aid = str(g.get("appid", "")).strip()
             is_atom_game = bool(g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game") or aid in managed_appids)
             is_assella_dlc_only = game_is_dlc_only(g) and not is_atom_game
             if is_assella_dlc_only:
-                steam_unmanaged.append(g)
-                if aid:
+                prepared = _prepare_steam_entry(g, aid)
+                if prepared is not None:
+                    steam_unmanaged.append(prepared)
                     seen_steam_aids.add(aid)
             elif (
                 aid not in managed_appids
                 and not g.get("is_accela_install")
                 and not g.get("is_atom")
             ):
-                steam_unmanaged.append(g)
-                if aid:
+                prepared = _prepare_steam_entry(g, aid)
+                if prepared is not None:
+                    steam_unmanaged.append(prepared)
                     seen_steam_aids.add(aid)
 
-        # Include any ASSella DLC-only games from manager that might not have been in steam_games
+        # Include any owned ASSella DLC-only games from manager that might not have been in steam_games
         for g in all_manager_games:
             aid = str(g.get("appid", "")).strip()
             is_atom_game = bool(g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game") or aid in managed_appids)
             if aid and game_is_dlc_only(g) and not is_atom_game and aid not in seen_steam_aids:
-                steam_unmanaged.append(g)
-                seen_steam_aids.add(aid)
+                prepared = _prepare_steam_entry(g, aid)
+                if prepared is not None:
+                    steam_unmanaged.append(prepared)
+                    seen_steam_aids.add(aid)
 
-        # Update tab counts on the bar
+        # AT0-M games that are registered but not on disk yet (added / queued in Steam).
+        try:
+            from utils.atom_pending import get_pending_atom_games
+            installed_aids = {str(g.get("appid", "")).strip() for g in all_manager_games}
+            pending_atom = get_pending_atom_games(installed_aids)
+        except Exception as e:
+            logger.debug(f"[Library] Pending AT0-M games unavailable: {e}")
+            pending_atom = []
+        self._pending_atom_games = pending_atom
+
+        # ASSella games that are in AdditionalApps but not on disk yet.
+        try:
+            from utils.assella_pending import get_pending_assella_games
+            installed_aids = {str(g.get("appid", "")).strip() for g in all_manager_games}
+            pending_assella = get_pending_assella_games(installed_aids)
+        except Exception as e:
+            logger.debug(f"[Library] Pending ASSella games unavailable: {e}")
+            pending_assella = []
+        self._pending_assella_games = pending_assella
+
         accela_total = sum(
             1
             for g in all_manager_games
             if g.get("is_accela_install")
             and not game_is_dlc_only(g)
             and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
-        )
+        ) + len(pending_assella)
         atom_total = sum(
             1
             for g in all_manager_games
             if g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game")
-        )
+        ) + len(pending_atom)
         steam_total = len(steam_unmanaged)
 
         if hasattr(self, "tab_bar"):
@@ -272,7 +429,7 @@ class LibraryFilterSortMixin:
                 g
                 for g in all_manager_games
                 if g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game")
-            ]
+            ] + list(pending_atom)
         else:
             games = [
                 g
@@ -280,62 +437,97 @@ class LibraryFilterSortMixin:
                 if g.get("is_accela_install")
                 and not game_is_dlc_only(g)
                 and not (g.get("is_atom") or g.get("is_vapor") or g.get("is_plugin_game"))
-            ]
+            ] + list(pending_assella)
         
-        # Filter games by search term (case-insensitive)
-        has_filter = False
-        if hasattr(self, "search_input"):
-            query = self.search_input.text().strip().lower()
-            if query:
-                games = [g for g in games if query in g.get("game_name", "").lower()]
-                has_filter = True
-
         games = self._sort_games(games)
-        
-        # Limit displayed games count when filtering to prevent heavy UI layout lag
-        truncated = False
-        if has_filter and len(games) > 150:
-            showing_games = games[:150]
-            truncated = True
-        else:
-            showing_games = games
 
-        # Optimize: freeze widget repaints during batch insertion
+        # Store tab totals for instantaneous info_label display
+        self._tab_total_games_count = len(games)
+        self._tab_total_games_size = sum(int(g.get("size_on_disk") or 0) for g in games)
+
+        # Increment generation counter to discard obsolete chunking timers from earlier refreshes
+        self._load_generation = getattr(self, "_load_generation", 0) + 1
+        current_gen = self._load_generation
+
+        initial_chunk = games[:INITIAL_CHUNK_SIZE]
+        remaining_games = games[INITIAL_CHUNK_SIZE:]
+        self._is_chunking = bool(remaining_games)
+
+        # Optimize: freeze widget repaints during batch insertion of initial viewport slice
         self.games_list.setUpdatesEnabled(False)
-        total_size = 0
         try:
-            for game in showing_games:
-                total_size += self._add_game_to_list(game)
+            for game in initial_chunk:
+                self._add_game_to_list(game)
         finally:
             self.games_list.setUpdatesEnabled(True)
 
-        if active_tab == TAB_STEAM:
-            tab_label = "Steam (Beta)"
-        elif active_tab == TAB_ATOM:
-            tab_label = "AT0-M"
-        else:
-            tab_label = "ASSella"
-
-        if active_tab == TAB_STEAM and getattr(self, "_steam_scan_in_progress", False) and len(games) == 0:
-            self.info_label.setText("Scanning Steam libraries for installed games... Please wait.")
-        elif truncated:
-            self.info_label.setText(
-                f"Showing top 150 of {len(games)} {tab_label} game(s) - "
-                f"Please refine your search query."
-            )
-        else:
-            self.info_label.setText(
-                f"Found {len(games)} {tab_label} game(s) - "
-                f"Total Size: {format_size(total_size)}"
-            )
+        self._initial_refresh_done = True
         self._refreshing = False
 
-        # Defer image downloads; skip ratings badges entirely for Steam tab
-        if active_tab != TAB_STEAM:
-            QTimer.singleShot(100, self._start_pending_image_fetches)
-            QTimer.singleShot(300, self._populate_ratings_badges)
+        if active_tab == TAB_STEAM and getattr(self, "_steam_scan_in_progress", False) and len(games) == 0:
+            if hasattr(self, "info_label") and self.info_label:
+                self.info_label.setText("Scanning Steam libraries for installed games... Please wait.")
         else:
-            QTimer.singleShot(50, self._start_pending_image_fetches)
+            self._apply_search_filter()
+
+        # Start loading images for visible items immediately
+        QTimer.singleShot(40, self._start_pending_image_fetches)
+
+        if remaining_games:
+            QTimer.singleShot(
+                0,
+                lambda: self._process_next_game_chunk(remaining_games, current_gen, active_tab),
+            )
+        else:
+            if active_tab != TAB_STEAM:
+                QTimer.singleShot(250, self._populate_ratings_badges)
+
+    def _process_next_game_chunk(
+        self,
+        remaining_games: list,
+        gen: int,
+        active_tab: str,
+    ) -> None:
+        """Cooperatively stream subsequent game cards into the list via the Qt event loop."""
+        if getattr(self, "_closing", False) or getattr(self, "_load_generation", 0) != gen:
+            return
+
+        chunk = remaining_games[:SUBSEQUENT_CHUNK_SIZE]
+        rest = remaining_games[SUBSEQUENT_CHUNK_SIZE:]
+
+        query = self.search_input.text().strip().lower() if hasattr(self, "search_input") else ""
+
+        self.games_list.setUpdatesEnabled(False)
+        try:
+            for game in chunk:
+                self._add_game_to_list(game)
+                if query:
+                    name = str(game.get("game_name", "")).lower()
+                    aid = str(game.get("appid", "")).lower()
+                    matches = (query in name) or (query in aid)
+                    appid = str(game.get("appid", "0"))
+                    item = self._items_by_appid.get(appid)
+                    if item:
+                        item.setHidden(not matches)
+        finally:
+            self.games_list.setUpdatesEnabled(True)
+
+        # Trigger batch image loader for newly added items
+        if getattr(self, "_pending_image_fetches", None):
+            QTimer.singleShot(40, self._start_pending_image_fetches)
+
+        if rest:
+            if query:
+                self._apply_search_filter()
+            QTimer.singleShot(
+                0,
+                lambda: self._process_next_game_chunk(rest, gen, active_tab),
+            )
+        else:
+            self._is_chunking = False
+            self._apply_search_filter()
+            if active_tab != TAB_STEAM:
+                QTimer.singleShot(150, self._populate_ratings_badges)
 
     def _add_game_to_list(self, game: dict) -> int:
         """Creates and adds a single game widget to the list. Returns size."""
@@ -345,7 +537,7 @@ class LibraryFilterSortMixin:
 
         widget = GameItemWidget(
             game,
-            format_size(size),
+            "—" if game.get("atom_pending") else format_size(size),
             self.accent_color,
             self.background_color,
             select_mode=self._select_mode,

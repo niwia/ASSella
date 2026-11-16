@@ -106,12 +106,13 @@ class TestBatchAtomMigration(unittest.TestCase):
         self.assertEqual(len(received[0]["failed"]), 1)
         self.assertIn("boom", received[0]["failed"][0]["reason"])
 
+    @patch("utils.plugin_games.refetch_missing_keys", return_value={})
     @patch("utils.plugin_games.collect_game_depots_and_keys")
     @patch("utils.plugin_games.save_plugin_library")
     @patch("utils.plugin_games.get_user_config_path")
     @patch("utils.sls_bridge.SLSBridge.notify_reload")
     def test_batch_convert_engine_skips_zero_keys(
-        self, mock_reload, mock_cfg_path, mock_save_lib, mock_collect
+        self, mock_reload, mock_cfg_path, mock_save_lib, mock_collect, mock_refetch
     ):
         """Games with zero decryption keys are skipped; the rest still migrate."""
         mock_cfg_path.return_value = Path("/tmp/nonexistent_config.yaml")

@@ -1,24 +1,27 @@
 """
-themed_progress_dialog.py - ASSella custom-styled frameless progress dialog.
-Replaces native OS QProgressDialog with ASSella dark theme and DialogTitleBar.
+themed_progress_dialog.py - ASSella's shared progress dialog.
+
+A small floating card in the same style as the library's "Discovering DLCs"
+overlay (spinner, status, elapsed time, optional Cancel, thin bar when the
+work has a known length). Drop-in replacement for QProgressDialog.
 """
 
 import logging
 from typing import Optional
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QPoint
+import time
+
+from PyQt6.QtCore import Qt, QPoint, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
-    QProgressBar,
     QPushButton,
     QWidget,
     QFrame,
 )
 
-from ui.dialog_titlebar import DialogTitleBar
 from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -47,7 +50,7 @@ class ThemedProgressDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setWindowModality(Qt.WindowModality.WindowModal)
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(420)
 
         settings = get_settings()
         self.accent_color = settings.value("accent_color", "#a1c9fd")
@@ -56,93 +59,107 @@ class ThemedProgressDialog(QDialog):
         self._build_ui(labelText, cancelButtonText, minimum, maximum)
 
     def _build_ui(self, label_text: str, cancel_text: Optional[str], minimum: int, maximum: int):
+        """Minimal floating card, same look as the "Discovering DLCs" overlay:
+
+            ( spinner )  Status text ...            12.4s   Cancel
+                         ━━━━━━━━━━━━━━━━━━━━━━━━  (determinate only)
+        """
+        from ui.widgets.accent_progress_bar import AccentProgressBar
+        from ui.widgets.pixel_loader_overlay import SpinnerRingWidget
+
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(0)
 
-        # Outer Container with border and shadow effect
         self.container = QFrame(self)
-        self.container.setObjectName("dialogContainer")
-        self.container.setStyleSheet(f"""
-            QFrame#dialogContainer {{
-                background-color: {self.background_color};
-                border: 1px solid rgba(255, 255, 255, 0.12);
+        self.container.setObjectName("progressCard")
+        self.container.setStyleSheet("""
+            QFrame#progressCard {
+                background-color: rgba(18, 19, 24, 0.96);
+                border: 1px solid rgba(255, 255, 255, 0.14);
                 border-radius: 10px;
-            }}
+            }
         """)
+        card = QVBoxLayout(self.container)
+        card.setContentsMargins(14, 11, 12, 11)
+        card.setSpacing(8)
 
-        container_lay = QVBoxLayout(self.container)
-        container_lay.setContentsMargins(0, 0, 0, 12)
-        container_lay.setSpacing(12)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.spinner = SpinnerRingWidget(self.container, size=22, accent_color=self.accent_color)
+        row.addWidget(self.spinner, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        # In-App Title Bar (No native decorations)
-        self.title_bar = DialogTitleBar(
-            self,
-            title="Progress",
-            can_minimize=False,
-            can_maximize=False,
-            use_power_close=True,
-        )
-        container_lay.addWidget(self.title_bar)
-
-        # Body area
-        body_lay = QVBoxLayout()
-        body_lay.setContentsMargins(16, 4, 16, 4)
-        body_lay.setSpacing(10)
-
-        self.label = QLabel(label_text, self)
+        self.label = QLabel(label_text, self.container)
         self.label.setWordWrap(True)
-        self.label.setStyleSheet("color: rgba(255, 255, 255, 0.90); font-size: 9pt;")
-        body_lay.addWidget(self.label)
+        self.label.setMaximumWidth(440)
+        self.label.setStyleSheet(
+            "color: #FFFFFF; font-size: 9pt; font-weight: 500; border: none; background: transparent;"
+        )
+        row.addWidget(self.label, 1, Qt.AlignmentFlag.AlignVCenter)
 
-        self.progress_bar = QProgressBar(self)
-        self.progress_bar.setRange(minimum, maximum)
-        self.progress_bar.setFixedHeight(8)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: rgba(255, 255, 255, 0.08);
-                border: none;
-                border-radius: 4px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {self.accent_color};
-                border-radius: 4px;
-            }}
-        """)
-        body_lay.addWidget(self.progress_bar)
+        self.timer_lbl = QLabel("0.0s", self.container)
+        self.timer_lbl.setStyleSheet(
+            "color: rgba(255, 255, 255, 0.5); font-family: monospace; font-size: 8.5pt;"
+            " border: none; background: transparent;"
+        )
+        row.addWidget(self.timer_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        # Button layout
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-
-        self.cancel_btn = QPushButton(cancel_text or "Cancel", self)
+        self.cancel_btn = QPushButton(cancel_text or "Cancel", self.container)
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.cancel_btn.setFixedHeight(28)
+        self.cancel_btn.setFixedHeight(24)
         self.cancel_btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: rgba(255, 255, 255, 0.06);
-                border: 1px solid rgba(255, 255, 255, 0.15);
+                background: transparent;
+                border: 1px solid rgba(255, 255, 255, 0.14);
                 border-radius: 5px;
-                color: #e5e7eb;
-                font-size: 8.5pt;
-                padding: 0 14px;
+                color: rgba(255, 255, 255, 0.75);
+                font-size: 8pt;
+                padding: 0 10px;
             }}
-            QPushButton:hover {{
-                background-color: rgba(255, 255, 255, 0.12);
-                color: #ffffff;
-                border-color: rgba(255, 255, 255, 0.25);
-            }}
+            QPushButton:hover {{ color: #ffffff; border-color: {self.accent_color}; }}
         """)
         self.cancel_btn.clicked.connect(self._on_cancel_clicked)
-        btn_row.addWidget(self.cancel_btn)
+        self.cancel_btn.setVisible(bool(cancel_text))
+        row.addWidget(self.cancel_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        card.addLayout(row)
 
-        if not cancel_text:
-            self.cancel_btn.setVisible(False)
+        # Thin bar for determinate work; indeterminate work is the spinner alone.
+        self.progress_bar = AccentProgressBar(self.container, accent=self.accent_color)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(4)
+        self.progress_bar.setRange(minimum, maximum)
+        card.addWidget(self.progress_bar)
+        self._sync_bar()
 
-        body_lay.addLayout(btn_row)
-        container_lay.addLayout(body_lay)
         root.addWidget(self.container)
+        self.title_bar = None  # kept for callers that probe it
+
+        self._started = time.monotonic()
+        self._clock = QTimer(self)
+        self._clock.setInterval(100)
+        self._clock.timeout.connect(self._tick)
+
+    def _sync_bar(self):
+        self.progress_bar.setVisible(self.progress_bar.maximum() > self.progress_bar.minimum())
+
+    def _tick(self):
+        e = time.monotonic() - self._started
+        self.timer_lbl.setText(f"{e:.1f}s" if e < 60 else f"{int(e // 60)}m {e % 60:04.1f}s")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._started = time.monotonic()
+        self._clock.start()
+        self.adjustSize()
+        parent = self.parentWidget()
+        if parent is not None:
+            # Float over the middle of the window that started the work.
+            center = parent.window().frameGeometry().center()
+            self.move(center.x() - self.width() // 2, center.y() - self.height() // 2)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._clock.stop()
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -169,11 +186,7 @@ class ThemedProgressDialog(QDialog):
     @pyqtSlot(str)
     def setLabelText(self, text: str):
         self.label.setText(text)
-        if self.title_bar and hasattr(self.title_bar, "title_label"):
-            short_title = text.split("...")[0].strip()
-            if len(short_title) > 28:
-                short_title = short_title[:25] + "..."
-            self.title_bar.title_label.setText(short_title)
+        self.adjustSize()
 
     def setCancelButtonText(self, text: str):
         if text:
@@ -188,6 +201,7 @@ class ThemedProgressDialog(QDialog):
 
     def setRange(self, minimum: int, maximum: int):
         self.progress_bar.setRange(minimum, maximum)
+        self._sync_bar()
 
     @pyqtSlot(int)
     def setValue(self, value: int):
@@ -200,6 +214,7 @@ class ThemedProgressDialog(QDialog):
 
     def setMaximum(self, maximum: int):
         self.progress_bar.setMaximum(maximum)
+        self._sync_bar()
 
     def setMinimum(self, minimum: int):
         self.progress_bar.setMinimum(minimum)
@@ -208,10 +223,8 @@ class ThemedProgressDialog(QDialog):
         pass  # Kept for QProgressDialog compatibility
 
     def setWindowTitle(self, title: str):
-        """Show the caller's title in the in-app bar, since there are no decorations."""
+        """Kept for the taskbar / accessibility; the card itself shows only the status."""
         super().setWindowTitle(title)
-        if title and self.title_bar and hasattr(self.title_bar, "title_label"):
-            self.title_bar.title_label.setText(title)
 
     def wasCanceled(self) -> bool:
         return self._was_canceled

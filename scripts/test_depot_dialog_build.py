@@ -348,21 +348,25 @@ def main() -> int:
     )
     check(all(isinstance(v, dict) for v in dlg7.missing_depots_info.values()),
           "string metadata coerced to a dict")
-    # ----------------------------- user accent preserved on controls
-    print("\n=== user accent preserved on controls ===")
+    # ----------------------------- dynamic thumbnail accent applied to controls
+    print("\n=== dynamic thumbnail accent applied to controls ===")
     from PyQt6.QtGui import QColor
-    user_accent = (dlg.accent_color or "#a1c9fd").lower()
-    check(user_accent in dlg.download_btn.styleSheet().lower(),
-          "Download button retains user accent color")
-    check(user_accent in dlg.table_widget.styleSheet().lower(),
-          "Table widget retains user accent color")
+    initial_accent = (dlg.accent_color or "#a1c9fd").lower()
+    check(initial_accent in dlg.download_btn.styleSheet().lower(),
+          "Download button retains initial accent color")
+    check(initial_accent in dlg.table_widget.styleSheet().lower(),
+          "Table widget retains initial accent color")
 
+    from utils.settings import get_settings
+    get_settings().setValue("enable_adaptive_game_theming", True)
     test_color = QColor(60, 120, 240)
     dlg._apply_dynamic_theme(test_color)
     check(dlg._ambient_color == test_color,
           "_apply_dynamic_theme sets _ambient_color for background")
-    check(user_accent in dlg.download_btn.styleSheet().lower(),
-          "Download button keeps user accent color after ambient color update")
+    check(test_color.name().lower() in dlg.download_btn.styleSheet().lower(),
+          "Download button updates to dynamic thumbnail accent color after ambient color update")
+    check(test_color.name().lower() in dlg.table_widget.styleSheet().lower(),
+          "Table widget updates to dynamic thumbnail accent color after ambient color update")
 
     dlg.close()
     app.processEvents()

@@ -3,7 +3,7 @@ import os
 import re
 import subprocess
 import sys
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from PyQt6.QtCore import QMutex, QObject, QThread, pyqtSignal
 
@@ -12,6 +12,41 @@ from utils.paths import Paths
 from utils.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+_AIO_VARIANT_RE = re.compile(r"\[\+\]\s*Unpacked with\s+(.+?)\s*(?:->|$)", re.IGNORECASE)
+_CLI_VARIANT_RE = re.compile(
+    r"(?:Unpacked with|Detected Packer:|Unpacking file with)\s+([^\r\n!]+)",
+    re.IGNORECASE,
+)
+
+
+def _extract_steamstub_variant(line: str) -> Optional[str]:
+    """Extract the reported SteamStub / packer name from Steamless output."""
+    if not line:
+        return None
+    match = _AIO_VARIANT_RE.search(line)
+    if match:
+        variant = match.group(1).strip()
+        return variant or None
+    match = _CLI_VARIANT_RE.search(line)
+    if match:
+        variant = match.group(1).strip().rstrip(".")
+        if variant and "file" not in variant.lower()[:6]:
+            return variant
+    return None
+
+
+def _make_rel_path(file_path: str, base_dir: Optional[str]) -> str:
+    """Return path relative to base_dir when inside it, otherwise basename."""
+    if not base_dir:
+        return os.path.basename(file_path)
+    try:
+        rel = os.path.relpath(file_path, base_dir)
+        if not rel.startswith(".."):
+            return rel
+    except ValueError as e:
+        logger.debug("Relative path computation fallback for %s: %s", file_path, e)
+    return os.path.basename(file_path)
 
 
 class SteamlessIntegration(QObject):
@@ -23,6 +58,7 @@ class SteamlessIntegration(QObject):
     progress = pyqtSignal(str)
     error = pyqtSignal(str)
     finished = pyqtSignal(bool)
+    summary_ready = pyqtSignal(dict)
 
     def __init__(self, steamless_path: Optional[str] = None):
         super().__init__()
@@ -30,10 +66,99 @@ class SteamlessIntegration(QObject):
         self.is_windows = sys.platform == "win32"
         self._current_process = None
         self._process_mutex = QMutex()
+        self.use_aio = False
+        self.engine_label = ""
+        self._last_exe_status: Optional[str] = None
+        self._last_exe_variant: Optional[str] = None
+        self._last_exe_backup_path: Optional[str] = None
+        self._last_exe_error: Optional[str] = None
+        self._last_exe_returncode: Optional[int] = None
+        self.last_summary: Optional[Dict[str, Any]] = None
 
         # Check for dotnet availability and get full path
         self.dotnet_path = get_dotnet_path()
         self.dotnet_available = self.dotnet_path is not None
+
+    def get_engine_label(self) -> str:
+        """Return a human-readable engine name for summary display."""
+        if self.engine_label:
+            return self.engine_label
+        return "Steamless AIO (Python)" if getattr(self, "use_aio", False) else "Steamless (.NET CLI)"
+
+    @staticmethod
+    def build_summary(
+        game_directory: str,
+        executables: List[Dict[str, Any]],
+        *,
+        target_exe: Optional[str] = None,
+        engine: str = "",
+        error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build a canonical structured summary from per-executable results."""
+        fixed_count = sum(1 for item in executables if item.get("status") == "fixed")
+        clean_count = sum(1 for item in executables if item.get("status") == "clean")
+        failed_count = sum(1 for item in executables if item.get("status") == "failed")
+        scanned_count = len(executables)
+
+        if error and scanned_count == 0:
+            overall_status = "failed"
+        elif scanned_count == 0:
+            overall_status = "no_executables"
+        elif failed_count > 0 and fixed_count > 0:
+            overall_status = "partial_failure"
+        elif failed_count > 0:
+            overall_status = "failed"
+        elif fixed_count > 0:
+            overall_status = "fixed"
+        else:
+            overall_status = "clean"
+
+        return {
+            "game_directory": game_directory,
+            "target_exe": target_exe,
+            "engine": engine,
+            "scanned_count": scanned_count,
+            "fixed_count": fixed_count,
+            "clean_count": clean_count,
+            "failed_count": failed_count,
+            "overall_status": overall_status,
+            "error": error,
+            "executables": list(executables),
+        }
+
+    def _build_exe_entry(
+        self,
+        exe_path: str,
+        game_directory: Optional[str],
+        ok: bool,
+        size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Build a structured result row for the last evaluated executable."""
+        if ok:
+            status = "fixed"
+        elif self._last_exe_status == "no_drm":
+            status = "clean"
+        else:
+            status = "failed"
+
+        resolved_size = size
+        if resolved_size is None:
+            try:
+                resolved_size = os.path.getsize(exe_path)
+            except OSError:
+                resolved_size = 0
+
+        return {
+            "name": os.path.basename(exe_path),
+            "path": exe_path,
+            "rel_path": _make_rel_path(exe_path, game_directory),
+            "size": int(resolved_size or 0),
+            "status": status,
+            "variant": self._last_exe_variant,
+            "backup_path": self._last_exe_backup_path,
+            "error": self._last_exe_error,
+            "exit_code": self._last_exe_returncode,
+        }
 
     def find_game_executables(self, game_directory: str) -> List[dict]:
         """
@@ -291,23 +416,45 @@ class SteamlessIntegration(QObject):
             logger.warning(f"Error calculating priority for {filename}: {e}")
             return 0  # Return lowest priority on error
 
+    def _reset_exe_state(self) -> None:
+        """Clear per-executable tracking fields before evaluating one binary."""
+        self._last_exe_status = None
+        self._last_exe_variant = None
+        self._last_exe_backup_path = None
+        self._last_exe_error = None
+        self._last_exe_returncode = None
+
+    def _emit_error_summary(self, game_directory: str, message: str) -> None:
+        """Record and emit a structured error summary before emitting error."""
+        self.last_summary = self.build_summary(
+            game_directory,
+            [],
+            engine=self.get_engine_label(),
+            error=message,
+        )
+        self.summary_ready.emit(self.last_summary)
+        self.error.emit(message)
+
     def process_game_with_steamless(self, game_directory: str) -> bool:
         """
         Main method to process a game directory with Steamless.
         Returns True if successful, False otherwise.
         """
         try:
+            self.last_summary = None
             if not getattr(self, "use_aio", False):
                 if not self.dotnet_available:
-                    self.error.emit(
-                        ".NET 9 runtime is not available. Please install .NET 9 runtime."
+                    self._emit_error_summary(
+                        game_directory,
+                        ".NET 9 runtime is not available. Please install .NET 9 runtime.",
                     )
                     return False
 
                 if not os.path.exists(self.steamless_path):
-                    self.error.emit(
+                    self._emit_error_summary(
+                        game_directory,
                         f"Steamless is not installed (looked in {self.steamless_path}). "
-                        "Download it from Settings -> Tools -> Optional Components."
+                        "Download it from Settings -> Tools -> Optional Components.",
                     )
                     return False
 
@@ -315,12 +462,18 @@ class SteamlessIntegration(QObject):
                 if not os.path.exists(steamless_dll):
                     steamless_dll = os.path.join(self.steamless_path, "Steamless.CLI")
                 if not os.path.exists(steamless_dll):
-                    self.error.emit(f"Steamless.CLI.dll not found in {self.steamless_path}")
+                    self._emit_error_summary(
+                        game_directory,
+                        f"Steamless.CLI.dll not found in {self.steamless_path}",
+                    )
                     return False
 
             # Validate game_directory is actually a directory
             if not os.path.isdir(game_directory):
-                self.error.emit(f"Game path is not a directory: {game_directory}")
+                self._emit_error_summary(
+                    game_directory,
+                    f"Game path is not a directory: {game_directory}",
+                )
                 return False
 
             # Ensure game_directory is an absolute path
@@ -330,14 +483,20 @@ class SteamlessIntegration(QObject):
 
             # Check if directory is readable
             if not os.access(game_directory, os.R_OK):
-                self.error.emit(f"Game directory is not readable: {game_directory}")
+                self._emit_error_summary(
+                    game_directory,
+                    f"Game directory is not readable: {game_directory}",
+                )
                 return False
 
             self.progress.emit("Searching for game executables...")
             exe_files = self.find_game_executables(game_directory)
 
             if not exe_files:
-                self.error.emit("No suitable game executables found.")
+                self._emit_error_summary(
+                    game_directory,
+                    "No suitable game executables found.",
+                )
                 return False
 
             # Process ALL executables - no limit
@@ -349,10 +508,7 @@ class SteamlessIntegration(QObject):
                     f"  Candidate {i + 1}: {exe_info['name']} (priority: {exe_info['priority']}, size: {exe_info['size']:,} bytes)"
                 )
 
-            # Track results for all executables
-            success_count = 0
-            no_drm_count = 0
-            error_count = 0
+            exe_results: List[Dict[str, Any]] = []
 
             # Process all executables without stopping on first success
             for i, exe_info in enumerate(exe_files):
@@ -364,28 +520,51 @@ class SteamlessIntegration(QObject):
                     f"Processing executable {i + 1}/{len(exe_files)}: {exe_name} (priority: {priority})"
                 )
 
-                self._last_exe_status = None
-                if self._run_steamless_on_exe(target_exe):
+                self._reset_exe_state()
+                ok = self._run_steamless_on_exe(target_exe)
+                if ok:
                     self.progress.emit(f"Successfully processed: {exe_name}")
-                    success_count += 1
-                else:
-                    if getattr(self, "_last_exe_status", None) == "no_drm":
-                        no_drm_count += 1
-                    else:
-                        error_count += 1
+                exe_results.append(
+                    self._build_exe_entry(
+                        target_exe,
+                        game_directory,
+                        ok,
+                        size=exe_info.get("size"),
+                    )
+                )
+
+            summary = self.build_summary(
+                game_directory,
+                exe_results,
+                engine=self.get_engine_label(),
+            )
+            self.last_summary = summary
+            self.summary_ready.emit(summary)
+
+            success_count = summary["fixed_count"]
+            error_count = summary["failed_count"]
 
             # Final summary
-            if success_count > 0:
+            if error_count > 0:
+                if success_count > 0:
+                    msg = (
+                        f"Steamless unpacked {success_count} executable(s), "
+                        f"but failed on {error_count} executable(s)"
+                    )
+                else:
+                    msg = f"Steamless completed with errors on {error_count} executable(s)"
+                self.error.emit(msg)
+                return False
+            elif success_count > 0:
                 self.progress.emit(
                     f"Steamless completed: {success_count}/{len(exe_files)} executables unpacked successfully (code 0)"
                 )
                 self.finished.emit(True)  # emit once for the whole game, not per-exe
                 return True
-            elif error_count > 0:
-                self.error.emit(f"Steamless completed with errors on {error_count} executable(s)")
-                return False
             else:
-                self.progress.emit(f"No Steam DRM detected in any of the {len(exe_files)} evaluated executable(s) (code 1)")
+                self.progress.emit(
+                    f"No Steam DRM detected in any of the {len(exe_files)} evaluated executable(s) (code 1)"
+                )
                 self.finished.emit(True)
                 return True
 
@@ -393,7 +572,10 @@ class SteamlessIntegration(QObject):
             logger.error(
                 f"Critical error in process_game_with_steamless: {e}", exc_info=True
             )
-            self.error.emit(f"Unexpected error during Steamless processing: {str(e)}")
+            self._emit_error_summary(
+                game_directory,
+                f"Unexpected error during Steamless processing: {str(e)}",
+            )
             return False
 
     def _run_steamless_on_exe(self, exe_path: str) -> bool:
@@ -406,10 +588,12 @@ class SteamlessIntegration(QObject):
                 # steamless.py is bundled in deps/ — no external script needed.
                 steamless_py = str(Paths.deps("steamless.py"))
                 if not os.path.exists(steamless_py):
-                    self.error.emit(
+                    err_msg = (
                         f"Bundled steamless.py not found at: {steamless_py}. "
-                        f"The AppImage may be corrupted — please reinstall."
+                        "The AppImage may be corrupted — please reinstall."
                     )
+                    self._last_exe_error = err_msg
+                    self.error.emit(err_msg)
                     self._last_exe_status = "error"
                     return False
 
@@ -417,10 +601,12 @@ class SteamlessIntegration(QObject):
                 from utils.helpers import get_venv_python
                 python_exe = get_venv_python() or sys.executable
                 if not python_exe or not os.path.exists(python_exe):
-                    self.error.emit(
+                    err_msg = (
                         "Cannot find the tool's Python interpreter. "
                         "Please reinstall ASSella."
                     )
+                    self._last_exe_error = err_msg
+                    self.error.emit(err_msg)
                     self._last_exe_status = "error"
                     return False
 
@@ -528,6 +714,9 @@ class SteamlessIntegration(QObject):
                         if line:
                             self.progress.emit(f"{line}")
                             output_lines.append(line)
+                            variant = _extract_steamstub_variant(line)
+                            if variant:
+                                self._last_exe_variant = variant
 
                 except ValueError as e:
                     logger.debug(f"stdout closed during read: {e}")
@@ -535,6 +724,7 @@ class SteamlessIntegration(QObject):
                     logger.debug(f"Error reading process output: {e}")
 
             process.wait()
+            self._last_exe_returncode = process.returncode
 
             # Log output summary
             if output_lines:
@@ -552,24 +742,35 @@ class SteamlessIntegration(QObject):
             # 1 = no Steam DRM (not an error, try next executable)
             # 2 = SteamStub detected but unpacking failed
             # >2 = error
+            exe_name = os.path.basename(exe_path)
             if process.returncode == 0:
-                self.progress.emit(f"Successfully unpacked Steam DRM: {os.path.basename(exe_path)} (code 0)")
+                self.progress.emit(f"Successfully unpacked Steam DRM: {exe_name} (code 0)")
             elif process.returncode == 1:
-                self.progress.emit(
-                    f"No Steam DRM detected in: {os.path.basename(exe_path)} (code 1)"
-                )
+                self.progress.emit(f"No Steam DRM detected in: {exe_name} (code 1)")
                 self._last_exe_status = "no_drm"
                 return False
             elif process.returncode == 2:
-                self.error.emit(
-                    f"SteamStub DRM detected in {os.path.basename(exe_path)}, but unpacking failed (code 2)."
+                err_msg = (
+                    f"SteamStub DRM detected in {exe_name}, but unpacking failed (code 2)."
                 )
+                self._last_exe_error = err_msg
+                self.error.emit(err_msg)
                 self._last_exe_status = "unpack_error"
                 return False
             else:
-                self.error.emit(
-                    f"Steamless failed with exit code {process.returncode} on {os.path.basename(exe_path)}"
+                detail = next(
+                    (
+                        ln
+                        for ln in reversed(output_lines)
+                        if ln.startswith("[!]") or "error" in ln.lower()
+                    ),
+                    "",
                 )
+                err_msg = f"Steamless failed with exit code {process.returncode} on {exe_name}"
+                if detail:
+                    err_msg = f"{err_msg}: {detail}"
+                self._last_exe_error = err_msg
+                self.error.emit(err_msg)
                 self._last_exe_status = "error"
                 return False
 
@@ -583,6 +784,7 @@ class SteamlessIntegration(QObject):
                         if os.path.exists(bak_file):
                             os.remove(bak_file)
                         os.rename(original_backup, bak_file)
+                        self._last_exe_backup_path = bak_file
                         self.progress.emit(f"Backed up original executable to: {bak_file}")
                 else:
                     # Steamless CLI creates an .unpacked.exe
@@ -593,17 +795,19 @@ class SteamlessIntegration(QObject):
                             os.remove(bak_file)
                         os.rename(exe_path, bak_file)
                         os.rename(unpacked_exe, exe_path)
+                        self._last_exe_backup_path = bak_file
                         self.progress.emit(f"Backed up original executable to: {bak_file}")
             except Exception as e:
                 self.progress.emit(f"Warning: Failed to rename backup files: {e}")
 
-            self.finished.emit(True)  # removed from here — now emitted once in process_game_with_steamless
             self._last_exe_status = "success"
             return True
 
         except Exception as e:
             logger.error(f"Error running Steamless: {e}", exc_info=True)
-            self.error.emit(f"Error running Steamless: {str(e)}")
+            err_msg = f"Error running Steamless: {str(e)}"
+            self._last_exe_error = err_msg
+            self.error.emit(err_msg)
             self._last_exe_status = "error"
             return False
         finally:
@@ -613,6 +817,7 @@ class SteamlessIntegration(QObject):
             self._process_mutex.unlock()
 
     def run_steamless_on_exe(self, exe_path: str) -> bool:
+        self._reset_exe_state()
         return self._run_steamless_on_exe(exe_path)
 
     def terminate_process(self):
@@ -663,6 +868,7 @@ class SteamlessTask(QThread):
     completed = pyqtSignal()
     error = pyqtSignal(tuple)
     result = pyqtSignal(bool)
+    summary_ready = pyqtSignal(dict)
 
     def __init__(self):
         super().__init__()
@@ -676,8 +882,25 @@ class SteamlessTask(QThread):
         self.steamless_integration = None
         self._integration_mutex = QMutex()
         self.use_aio = True
+        self.fallback_used = False
         self.dotnet_available = False
         self.process = None
+        self.last_summary: Optional[Dict[str, Any]] = None
+
+    def _get_engine_label(self) -> str:
+        """Return display name for the active Steamless backend."""
+        if getattr(self, "use_aio", True):
+            return (
+                "Steamless AIO (Fallback)"
+                if getattr(self, "fallback_used", False)
+                else "Steamless AIO (Python)"
+            )
+        return "Steamless (.NET CLI)"
+
+    def _emit_summary(self, summary: Dict[str, Any]) -> None:
+        """Record and broadcast the canonical Steamless run summary."""
+        self.last_summary = summary
+        self.summary_ready.emit(summary)
 
     @staticmethod
     def _get_steamless_path():
@@ -687,6 +910,7 @@ class SteamlessTask(QThread):
 
     def _setup_steamless_integration(self):
         """Initialize Steamless integration and check prerequisites"""
+        self.fallback_used = False
         if getattr(self, "use_aio", True):
             self.progress.emit("Using Steamless AIO...")
             self.dotnet_available = True
@@ -696,6 +920,7 @@ class SteamlessTask(QThread):
         if not self.steamless_path.exists():
             logger.info("Legacy Steamless directory not found — falling back to Steamless AIO")
             self.use_aio = True
+            self.fallback_used = True
             self.progress.emit("Using Steamless AIO...")
             self.dotnet_available = True
             return True
@@ -707,6 +932,7 @@ class SteamlessTask(QThread):
         if not steamless_dll.exists():
             logger.info("Steamless.CLI.dll not found — falling back to Steamless AIO")
             self.use_aio = True
+            self.fallback_used = True
             self.progress.emit("Using Steamless AIO...")
             self.dotnet_available = True
             return True
@@ -718,6 +944,7 @@ class SteamlessTask(QThread):
         if not self.dotnet_available:
             logger.info(".NET 9 runtime not found — falling back to Steamless AIO")
             self.use_aio = True
+            self.fallback_used = True
             self.progress.emit("Using Steamless AIO...")
             self.dotnet_available = True
             return True
@@ -741,9 +968,19 @@ class SteamlessTask(QThread):
         """Run Steamless on the game directory (QThread main loop)"""
         try:
             success = False
+            self.last_summary = None
 
             if not self._game_directory:
                 error_msg = "Game directory not set"
+                self._emit_summary(
+                    SteamlessIntegration.build_summary(
+                        "",
+                        [],
+                        target_exe=self._target_exe,
+                        engine=self._get_engine_label(),
+                        error=error_msg,
+                    )
+                )
                 self.progress.emit(error_msg)
                 self.error.emit((Exception, error_msg, ""))
                 self.result.emit(success)
@@ -759,6 +996,15 @@ class SteamlessTask(QThread):
                 # Check if directory exists
                 if not os.path.exists(self._game_directory):
                     error_msg = f"Game directory not found: {self._game_directory}"
+                    self._emit_summary(
+                        SteamlessIntegration.build_summary(
+                            self._game_directory,
+                            [],
+                            target_exe=self._target_exe,
+                            engine=self._get_engine_label(),
+                            error=error_msg,
+                        )
+                    )
                     self.progress.emit(error_msg)
                     self.error.emit((Exception, error_msg, ""))
                     self.result.emit(success)
@@ -768,6 +1014,16 @@ class SteamlessTask(QThread):
 
                 # Check prerequisites (dotnet, Steamless files)
                 if not self._setup_steamless_integration():
+                    error_msg = "Steamless prerequisites check failed."
+                    self._emit_summary(
+                        SteamlessIntegration.build_summary(
+                            self._game_directory,
+                            [],
+                            target_exe=self._target_exe,
+                            engine=self._get_engine_label(),
+                            error=error_msg,
+                        )
+                    )
                     self.result.emit(success)
                     self.completed.emit()
                     self._thread_completed = True
@@ -779,14 +1035,19 @@ class SteamlessTask(QThread):
                     self.steamless_integration = SteamlessIntegration(
                         steamless_path=str(self.steamless_path),
                     )
-                    if getattr(self, "use_aio", True):
-                        self.steamless_integration.use_aio = True
+                    self.steamless_integration.use_aio = bool(
+                        getattr(self, "use_aio", True)
+                    )
+                    self.steamless_integration.engine_label = self._get_engine_label()
                     self.steamless_integration.progress.connect(self._handle_progress)
                     self.steamless_integration.error.connect(
                         self._handle_integration_error
                     )
                     self.steamless_integration.finished.connect(
                         self._handle_integration_finished
+                    )
+                    self.steamless_integration.summary_ready.connect(
+                        self._handle_integration_summary
                     )
                 finally:
                     self._integration_mutex.unlock()
@@ -802,24 +1063,40 @@ class SteamlessTask(QThread):
                     logger.info(f"Processing specific executable: {self._target_exe}")
                     self.progress.emit("Found 1 executable(s) to evaluate")
                     self.progress.emit(f"Processing: {exe_name}")
-                    success = self.steamless_integration.run_steamless_on_exe(
+                    unpacked = self.steamless_integration.run_steamless_on_exe(
                         self._target_exe
                     )
-                    if success:
+                    entry = self.steamless_integration._build_exe_entry(
+                        self._target_exe,
+                        self._game_directory,
+                        unpacked,
+                    )
+                    summary = self.steamless_integration.build_summary(
+                        self._game_directory,
+                        [entry],
+                        target_exe=self._target_exe,
+                        engine=self._get_engine_label(),
+                    )
+                    self._emit_summary(summary)
+
+                    if unpacked:
                         self.progress.emit(f"Successfully processed: {exe_name}")
                         self.progress.emit("Steamless processing completed successfully")
+                        final_success = True
+                    elif entry["status"] == "clean":
+                        self.progress.emit("No Steam DRM detected in executable")
+                        self.progress.emit("Steamless processing completed successfully")
+                        final_success = True
                     else:
-                        if getattr(self.steamless_integration, "_last_exe_status", None) == "no_drm":
-                            self.progress.emit("No Steam DRM detected in executable")
-                        else:
-                            self.progress.emit("Steamless failed to process executable")
+                        self.progress.emit(
+                            entry.get("error") or "Steamless failed to process executable"
+                        )
+                        final_success = False
                 else:
                     # Scan directory for all executables
-                    success = self.steamless_integration.process_game_with_steamless(
+                    final_success = self.steamless_integration.process_game_with_steamless(
                         self._game_directory
                     )
-
-                final_success = success
 
                 self.result.emit(final_success)
                 self.completed.emit()
@@ -831,8 +1108,18 @@ class SteamlessTask(QThread):
                 logger.error(error_msg, exc_info=True)
                 import traceback
 
+                if self.last_summary is None:
+                    self._emit_summary(
+                        SteamlessIntegration.build_summary(
+                            self._game_directory or "",
+                            [],
+                            target_exe=self._target_exe,
+                            engine=self._get_engine_label(),
+                            error=error_msg,
+                        )
+                    )
                 self.error.emit((type(e), str(e), traceback.format_exc()))
-                self.result.emit(success)
+                self.result.emit(False)
                 self.completed.emit()
                 self._thread_completed = True
                 return
@@ -840,9 +1127,18 @@ class SteamlessTask(QThread):
         except Exception as e:
             error_msg = f"CRITICAL: Thread crashed on startup: {e}"
             logger.critical(error_msg, exc_info=True)
-            import traceback
 
             try:
+                if self.last_summary is None:
+                    self._emit_summary(
+                        SteamlessIntegration.build_summary(
+                            self._game_directory or "",
+                            [],
+                            target_exe=self._target_exe,
+                            engine=self._get_engine_label(),
+                            error=error_msg,
+                        )
+                    )
                 self.result.emit(False)
                 self.completed.emit()
             except (RuntimeError, TypeError):
@@ -860,6 +1156,13 @@ class SteamlessTask(QThread):
         if not self._is_running:
             return
         logger.error(f"Steamless error: {message}")
+        self.progress.emit(f"Error: {message}")
+
+    def _handle_integration_summary(self, summary):
+        """Relay structured SteamlessIntegration summary to task listeners."""
+        if not self._is_running:
+            return
+        self._emit_summary(summary)
 
     def _handle_integration_finished(self, success):
         """Handle completion signal from SteamlessIntegration"""
@@ -901,6 +1204,9 @@ class SteamlessTask(QThread):
                     )
                     self.steamless_integration.finished.disconnect(
                         self._handle_integration_finished
+                    )
+                    self.steamless_integration.summary_ready.disconnect(
+                        self._handle_integration_summary
                     )
                     logger.debug("SteamlessIntegration signals disconnected")
                 except (TypeError, RuntimeError) as e:

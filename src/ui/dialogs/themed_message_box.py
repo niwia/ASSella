@@ -151,6 +151,11 @@ class ThemedMessageBox(QDialog):
 
         self._build_ui(title, text, buttons, default_button, severity, informative)
 
+        if parent is not None:
+            from ui.dialogs.dialog_raiser import DialogRaiser
+
+            DialogRaiser.attach(parent, self)
+
     def _build_ui(
         self,
         title: str,
@@ -466,3 +471,17 @@ class ThemedMessageBox(QDialog):
         informative: str = "",
     ) -> StandardButton:
         return cls._run("critical", parent, title, text, buttons, default_button, informative)
+
+
+def confirm_steam_owned_override(parent: Optional[QWidget] = None) -> bool:
+    """Ask the user to confirm before enabling an entry suspected to be owned on Steam."""
+    choice = ThemedMessageBox.choices(
+        parent,
+        "Steam Ownership Warning",
+        "ASSella suspects that you own this game or a part of it on Steam.\n\n"
+        "If you have it, don't enable this. If you are sure that you don't own this, proceed.",
+        [("Proceed", "proceed"), ("Cancel", "cancel")],
+        default="cancel",
+        severity="warning",
+    )
+    return choice == "proceed"

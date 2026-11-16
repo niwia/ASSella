@@ -107,20 +107,20 @@ class EOSDetector:
             cls._bundled_proxy_hash_cache = h
         return h
 
+    PRUNE_DIRS = {
+        ".depotdownloader", "__pycache__", "content", "paks", "pak", "assets",
+        "sound", "sounds", "audio", "music", "media", "video", "videos", "movies",
+        "textures", "cache", "saves", "screenshots", "shadercache", "streamingassets",
+        "node_modules", ".git"
+    }
+
     @staticmethod
-    def get_eos_dll_paths(game_directory: Union[str, Path], max_depth: int = 4) -> List[Path]:
+    def get_eos_dll_paths(game_directory: Union[str, Path], max_depth: int = 8) -> List[Path]:
         """Find all instances of EOSSDK-Win64-Shipping.dll or EOSSDK-Win64-Shipping.yes in the game folder."""
         dir_path = Path(game_directory)
         found_paths = []
         if not dir_path.exists() or not dir_path.is_dir():
             return found_paths
-
-        PRUNE_DIRS = {
-            ".depotdownloader", "__pycache__", "content", "paks", "pak", "assets",
-            "sound", "sounds", "audio", "music", "media", "video", "videos", "movies",
-            "textures", "cache", "saves", "screenshots", "shadercache", "streamingassets",
-            "node_modules", ".git"
-        }
 
         base_depth = len(dir_path.parts)
         try:
@@ -128,10 +128,9 @@ class EOSDetector:
                 rel_depth = len(Path(root).parts) - base_depth
                 if rel_depth >= max_depth:
                     dirs[:] = []
-                    continue
-
-                # Prune non-binary asset and cache directories in-place
-                dirs[:] = [d for d in dirs if d.lower() not in PRUNE_DIRS and not d.startswith(".")]
+                else:
+                    # Prune non-binary asset and cache directories in-place
+                    dirs[:] = [d for d in dirs if d.lower() not in EOSDetector.PRUNE_DIRS and not d.startswith(".")]
 
                 for file in files:
                     if file.lower() in ("eossdk-win64-shipping.dll", "eossdk-win64-shipping.yes"):
@@ -204,10 +203,14 @@ class EOSDetector:
             return False
 
         applied = False
+        base_depth = len(dir_path.parts)
         try:
-            for root, _, files in os.walk(dir_path):
-                if ".DepotDownloader" in Path(root).parts:
-                    continue
+            for root, dirs, files in os.walk(dir_path):
+                rel_depth = len(Path(root).parts) - base_depth
+                if rel_depth >= 8:
+                    dirs[:] = []
+                else:
+                    dirs[:] = [d for d in dirs if d.lower() not in cls.PRUNE_DIRS and not d.startswith(".")]
 
                 dll_target = Path(root) / "EOSSDK-Win64-Shipping.dll"
                 yes_target = Path(root) / "EOSSDK-Win64-Shipping.yes"
@@ -249,10 +252,14 @@ class EOSDetector:
             return False
 
         removed = False
+        base_depth = len(dir_path.parts)
         try:
-            for root, _, files in os.walk(dir_path):
-                if ".DepotDownloader" in Path(root).parts:
-                    continue
+            for root, dirs, files in os.walk(dir_path):
+                rel_depth = len(Path(root).parts) - base_depth
+                if rel_depth >= 8:
+                    dirs[:] = []
+                else:
+                    dirs[:] = [d for d in dirs if d.lower() not in cls.PRUNE_DIRS and not d.startswith(".")]
 
                 dll_target = Path(root) / "EOSSDK-Win64-Shipping.dll"
                 found_dll = None

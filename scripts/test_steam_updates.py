@@ -223,7 +223,8 @@ class TestHealthTabControl(unittest.TestCase):
         cfg.write_text("BootStrapperInhibitAll=enable\n")
         health_tab.refresh_steam_updates_control(self.dialog)
         self.assertEqual(self.dialog.health_steam_updates_btn.text(), "Enable Steam Updates")
-        self.assertIn(str(cfg), self.dialog.health_steam_updates_lbl.text())
+        # The path lives in the button's tooltip; the label only says a Steam restart is needed.
+        self.assertIn(str(cfg), self.dialog.health_steam_updates_btn.toolTip())
 
     def test_enabling_steam_updates_shows_warning_and_cancels_on_no(self):
         from ui.dialogs.themed_message_box import ThemedMessageBox

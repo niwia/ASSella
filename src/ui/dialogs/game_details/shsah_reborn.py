@@ -77,7 +77,7 @@ def show_experimental_warning(parent, accent_color: str = "#a1c9fd") -> None:
     layout.setContentsMargins(22, 22, 22, 20)
     layout.setSpacing(14)
 
-    title = QLabel("⚠️ Achievement Unlocking is Experimental")
+    title = QLabel("Achievement Unlocking is Experimental")
     title.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {accent_color};")
     layout.addWidget(title)
 

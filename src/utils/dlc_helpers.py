@@ -136,13 +136,13 @@ def filter_dlc_depots_only(
     """
     appid_str = str(base_appid).strip()
     dlc_set = {str(d).strip() for d in (dlc_appids or []) if str(d).strip().isdigit()}
-    meta_dict = depots_meta or {}
+    meta_dict = depots_meta if isinstance(depots_meta, dict) else {}
 
     if not meta_dict and appid_str:
         try:
             from managers.db_manager import DatabaseManager
             app_info = DatabaseManager().get_app_info(appid_str, bypass_expiration=True)
-            if app_info and app_info.get("depots"):
+            if app_info and isinstance(app_info.get("depots"), dict):
                 meta_dict = app_info["depots"]
         except Exception as e:
             logger.debug(f"[DLCHelpers] depot metadata lookup failed for {appid_str}: {e}")
@@ -465,6 +465,23 @@ def is_dlc_only_mode(appid: str) -> bool:
     except Exception as e:
         logger.error(f"Error checking dlc_only_mode setting for {appid}: {e}")
         return False
+
+
+def is_dlc_only_context(appid: str, *sources) -> bool:
+    """True when a job/dialog is working on a DLC-only game.
+
+    Checks the per-game DLC-only setting plus the transient flags that the
+    library, task manager and details dialog put on ``game_data`` / job
+    metadata (any number of dicts may be passed). DLC-only games must always
+    show the depot selector (AGENTS.md: DLC-Only Depot Selection Guard), so
+    single-depot auto-skip and countdowns are bypassed for them.
+    """
+    for src in sources:
+        if isinstance(src, dict) and any(
+            src.get(k) for k in ("_dlc_only", "_lock_dlc_only", "is_dlc_only", "dlc_only")
+        ):
+            return True
+    return is_dlc_only_mode(str(appid or ""))
 
 
 # Mirrors the limits used for the depot selector's smart presets
@@ -1184,7 +1201,7 @@ def purge_and_sanitize_for_dlc_only(
                 if remove_additional_depot(config_path, d, excluding_appid=appid_str):
                     summary["base_depots_removed"].append(d)
 
-        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
         for d in sorted(sel_dlc_depots, key=lambda x: int(x) if x.isdigit() else 0):
             if d == appid_str:
                 continue  # Safeguard: parent AppID is NEVER in AdditionalDepots
@@ -1208,7 +1225,7 @@ def purge_and_sanitize_for_dlc_only(
         depot_keys = {}
         if game_data and game_data.get("depot_keys"):
             depot_keys.update({str(k): v for k, v in game_data["depot_keys"].items()})
-        if game_data and game_data.get("depots"):
+        if game_data and isinstance(game_data.get("depots"), dict):
             for did, dinfo in game_data["depots"].items():
                 if isinstance(dinfo, dict) and dinfo.get("key"):
                     depot_keys[str(did)] = dinfo["key"]
@@ -1334,7 +1351,7 @@ def sync_dlc_only_sls_config(
             if selected_depots_raw is not None
             else None
         )
-        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
 
         selected_dlcs = []
         unselected_dlcs = []

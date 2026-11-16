@@ -21,7 +21,6 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QCheckBox,
-    QComboBox,
     QDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -36,8 +35,10 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ui.widgets.modern_dropdown import ModernComboBox
 from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialogs.themed_progress_dialog import ThemedProgressDialog
+from utils.paths import Paths
 
 from utils.image_fetcher import ImageFetcher
 from utils.settings import get_settings
@@ -138,6 +139,14 @@ class ModernDepotSelectionDialog(QDialog):
         self._settings = get_settings()
         self.accent_color = self._settings.value("theme_accent", "#C06C84", type=str)
         try:
+            from utils.color_utils import get_cached_thumbnail_color
+            cached_col = get_cached_thumbnail_color(str(self.app_id))
+            if cached_col and cached_col.isValid():
+                self.accent_color = cached_col.name()
+                self._ambient_color = cached_col
+        except Exception as _silent_err:
+            logger.debug("[modern_depot_selection] __init__: ignored %s", _silent_err, exc_info=False)
+        try:
             c = QColor(self.accent_color)
             self.accent_r, self.accent_g, self.accent_b = c.red(), c.green(), c.blue()
         except Exception:
@@ -167,8 +176,8 @@ class ModernDepotSelectionDialog(QDialog):
                     saved_data = json.loads(saved_val)
                     if saved_data.get("selected"):
                         self.selected_depots = saved_data["selected"]
-                except Exception:
-                    pass
+                except Exception as _silent_err:
+                    logger.debug("[modern_depot_selection] __init__: ignored %s", _silent_err, exc_info=False)
 
         self.resize(1050, 680)
         self.setMinimumSize(960, 580)
@@ -372,7 +381,9 @@ class ModernDepotSelectionDialog(QDialog):
         self.appid_val_lbl.setStyleSheet("color: #FFFFFF; font-size: 8.5pt; font-weight: 500; border: none; background: transparent;")
         appid_row.addWidget(self.appid_val_lbl)
 
-        copy_btn = QPushButton("📋")
+        copy_btn = QPushButton()
+        copy_btn.setIcon(QIcon(str(Paths.icon("content_copy.svg"))))
+        copy_btn.setIconSize(QSize(13, 13))
         copy_btn.setFixedSize(20, 20)
         copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         copy_btn.setToolTip("Copy App ID")
@@ -451,13 +462,17 @@ class ModernDepotSelectionDialog(QDialog):
         nav_box = QVBoxLayout()
         nav_box.setSpacing(6)
 
-        self.btn_nav_depots = QPushButton("📦  Depots")
+        self.btn_nav_depots = QPushButton("Depots")
+        self.btn_nav_depots.setIcon(QIcon(str(Paths.icon("archive.svg"))))
+        self.btn_nav_depots.setIconSize(QSize(16, 16))
         self.btn_nav_depots.setCheckable(True)
         self.btn_nav_depots.setChecked(True)
         self.btn_nav_depots.setFixedHeight(34)
         self.btn_nav_depots.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.btn_nav_dlcs = QPushButton("🏷️  DLCs")
+        self.btn_nav_dlcs = QPushButton("DLCs")
+        self.btn_nav_dlcs.setIcon(QIcon(str(Paths.icon("label.svg"))))
+        self.btn_nav_dlcs.setIconSize(QSize(16, 16))
         self.btn_nav_dlcs.setCheckable(True)
         self.btn_nav_dlcs.setFixedHeight(34)
         self.btn_nav_dlcs.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -555,27 +570,12 @@ class ModernDepotSelectionDialog(QDialog):
             lbl_b.setStyleSheet("font-size: 8.5pt; color: rgba(255, 255, 255, 0.7);")
             top_row.addWidget(lbl_b)
 
-            self.branch_combo = QComboBox()
+            self.branch_combo = ModernComboBox()
             self.branch_combo.setFixedHeight(28)
             self.branch_combo.setMinimumWidth(110)
             self.branch_combo.addItems(branch_list)
             if self.branch in branch_list:
                 self.branch_combo.setCurrentText(self.branch)
-            self.branch_combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.06);
-                    border: 1px solid rgba(255, 255, 255, 0.16);
-                    border-radius: 6px;
-                    color: #FFFFFF;
-                    padding: 2px 10px;
-                    font-size: 8.5pt;
-                    font-weight: 600;
-                }}
-                QComboBox:hover {{
-                    border-color: rgba(255, 255, 255, 0.35);
-                    background-color: rgba(255, 255, 255, 0.12);
-                }}
-            """)
             self.branch_combo.currentTextChanged.connect(self._on_branch_changed)
             top_row.addWidget(self.branch_combo)
 
@@ -619,7 +619,7 @@ class ModernDepotSelectionDialog(QDialog):
 
         # Search Bar
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍  Search depots...")
+        self.search_input.setPlaceholderText("Search depots...")
         self.search_input.setFixedHeight(30)
         self.search_input.setFixedWidth(200)
         self.search_input.setStyleSheet(f"""
@@ -941,34 +941,17 @@ class ModernDepotSelectionDialog(QDialog):
         self._storage_btn_group.idClicked.connect(_on_storage_btn_clicked)
 
         if total_storages > max_direct_buttons:
-            combo = QComboBox()
+            combo = ModernComboBox()
             combo.setFixedHeight(34)
-            combo.addItem("More Drives ▾", None)
-            combo.setStyleSheet(f"""
-                QComboBox {{
-                    background-color: rgba(255, 255, 255, 0.04);
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    border-radius: 6px;
-                    color: rgba(255, 255, 255, 0.85);
-                    padding: 2px 8px;
-                    font-size: 8pt;
-                }}
-                QComboBox:hover {{
-                    border-color: {acc};
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: #1a1c23;
-                    color: #FFFFFF;
-                    selection-background-color: {acc};
-                }}
-            """)
+            combo.setPlaceholderText("More Drives")
             for i in range(max_direct_buttons, total_storages):
                 spath = storage_paths[i]
                 lbl_text, free_str, _ = _format_storage_info(spath)
                 combo.addItem(f"{lbl_text} ({free_str})", spath)
+            combo.setCurrentIndex(-1)
 
             def _on_combo_changed(idx: int):
-                if idx > 0:
+                if idx >= 0:
                     chosen = combo.itemData(idx)
                     if chosen:
                         self.selected_storage_path = chosen
@@ -1191,7 +1174,9 @@ class ModernDepotSelectionDialog(QDialog):
             self.table_widget.setItem(row_idx, 3, size_item)
 
             # Col 4: Per-depot Folder / File Inspection Action
-            folder_btn = QPushButton("📁")
+            folder_btn = QPushButton()
+            folder_btn.setIcon(QIcon(str(Paths.icon("folder_open.svg"))))
+            folder_btn.setIconSize(QSize(15, 15))
             folder_btn.setFixedSize(28, 24)
             folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             folder_btn.setToolTip(f"Inspect/Select files for depot {depot_id}")
@@ -1201,7 +1186,6 @@ class ModernDepotSelectionDialog(QDialog):
                     border: 1px solid rgba(255, 255, 255, 0.12);
                     border-radius: 4px;
                     color: #FFFFFF;
-                    font-size: 8.5pt;
                 }
                 QPushButton:hover {
                     background-color: rgba(255, 255, 255, 0.15);
@@ -1224,8 +1208,8 @@ class ModernDepotSelectionDialog(QDialog):
         # Update metadata counts in sidebar and filter pills
         self.depots_count_lbl.setText(f"<b style='color: {self.accent_color};'>{total_depots_count}</b> / {len(self.depots)}")
         self.dlc_size_val_lbl.setText(format_size(total_dlc_bytes))
-        self.btn_nav_depots.setText(f"📦  Depots ({total_depots_count})")
-        self.btn_nav_dlcs.setText(f"🏷️  DLCs ({dlc_depots_count})")
+        self.btn_nav_depots.setText(f"Depots ({total_depots_count})")
+        self.btn_nav_dlcs.setText(f"DLCs ({dlc_depots_count})")
 
         if hasattr(self, "pill_all"):
             self.pill_all.setText(f"All ({total_depots_count})")
@@ -1562,8 +1546,8 @@ class ModernDepotSelectionDialog(QDialog):
                     m = find_live(lua_content, r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)")
                     if m:
                         depot_key = m.group(1)
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[modern_depot_selection] _open_file_selector_for_depot: ignored %s", _silent_err, exc_info=False)
 
         if not depot_key:
             try:
@@ -1571,8 +1555,8 @@ class ModernDepotSelectionDialog(QDialog):
                 cached = DepotKeyManager().get_depot_keys(app_id)
                 if target_depot in cached:
                     depot_key = cached[target_depot]
-            except Exception:
-                pass
+            except Exception as _silent_err:
+                logger.debug("[modern_depot_selection] _open_file_selector_for_depot: ignored %s", _silent_err, exc_info=False)
 
         if not depot_key:
             ThemedMessageBox.critical(self, "Error", f"Could not find depot key for depot {target_depot}.")
@@ -1620,11 +1604,27 @@ class ModernDepotSelectionDialog(QDialog):
         class DumpThread(QThread):
             finished_signal = pyqtSignal(bool, str)
             def run(self):
+                proxy_mgr = None
                 try:
-                    subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    cmd_list = list(cmd)
+                    from utils.kuroko import resolve_stealth_proxy_url
+                    proxy_url, proxy_mgr = resolve_stealth_proxy_url()
+                    if proxy_url:
+                        cmd_list.extend(["-proxy", proxy_url])
+
+                    from utils.helpers import get_dotnet_env
+                    env = get_dotnet_env()
+                    subprocess.run(cmd_list, capture_output=True, text=True, check=True, env=env)
                     self.finished_signal.emit(True, "")
                 except Exception as ex:
                     self.finished_signal.emit(False, str(ex))
+                finally:
+                    mgr, proxy_mgr = proxy_mgr, None
+                    if mgr is not None:
+                        try:
+                            mgr.stop()
+                        except Exception as e:
+                            logger.debug(f"[ModernDepotSelection] Error stopping stealth proxy manager: {e}")
 
         self._dump_thread = DumpThread()
 

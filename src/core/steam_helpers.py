@@ -301,16 +301,27 @@ def get_installed_steam_client_version(force_refresh: bool = False) -> Optional[
     return None
 
 
+_cached_steam_install = None
+
+
 def find_steam_install():
+    global _cached_steam_install
+    if _cached_steam_install and os.path.isdir(_cached_steam_install):
+        return _cached_steam_install
+
     if sys.platform == "win32":
-        return _find_steam_windows()
+        path = _find_steam_windows()
     elif sys.platform == "linux":
-        return _find_steam_linux()
+        path = _find_steam_linux()
     else:
         logger.warning(
             f"Automatic Steam path detection is not supported on this OS: {sys.platform}."
         )
         return None
+
+    if path:
+        _cached_steam_install = path
+    return path
 
 
 def _find_steam_windows():
@@ -364,8 +375,8 @@ def get_owned_steam_appids() -> set:
             p = Path(env.steam_path) / "userdata"
             if p not in candidates:
                 candidates.append(p)
-    except Exception:
-        pass
+    except Exception as _silent_err:
+        logger.debug("[steam_helpers] get_owned_steam_appids: ignored %s", _silent_err, exc_info=False)
 
     for userdata_dir in candidates:
         if not userdata_dir.is_dir():
@@ -403,20 +414,40 @@ def parse_library_folders(vdf_path):
     return library_paths
 
 
+_cached_steam_libraries = None
+_cached_libraries_vdf_mtime = None
+
+
 def get_steam_libraries():
+    global _cached_steam_libraries, _cached_libraries_vdf_mtime
     steam_path = find_steam_install()
     if not steam_path:
         return []
 
-    all_libraries = {os.path.realpath(steam_path)}
     vdf_path = os.path.join(steam_path, "steamapps", "libraryfolders.vdf")
-
+    vdf_mtime = None
     if os.path.exists(vdf_path):
+        try:
+            vdf_mtime = os.path.getmtime(vdf_path)
+        except OSError as _silent_err:
+            logger.debug("[steam_helpers] get_steam_libraries: ignored %s", _silent_err, exc_info=False)
+
+    if (
+        _cached_steam_libraries is not None
+        and vdf_mtime is not None
+        and vdf_mtime == _cached_libraries_vdf_mtime
+    ):
+        return list(_cached_steam_libraries)
+
+    all_libraries = {os.path.realpath(steam_path)}
+    if vdf_path and os.path.exists(vdf_path):
         additional_libraries = parse_library_folders(vdf_path)
         for lib_path in additional_libraries:
             all_libraries.add(os.path.realpath(lib_path))
 
-    return list(all_libraries)
+    _cached_steam_libraries = list(all_libraries)
+    _cached_libraries_vdf_mtime = vdf_mtime
+    return list(_cached_steam_libraries)
 
 
 def is_steam_running():
@@ -734,7 +765,8 @@ def fix_greenluma_offline_mode():
     try:
         from utils.settings import get_settings
         from utils.yaml_config_manager import is_greenluma_wrapper_mode_enabled
-    except ImportError:
+    except ImportError as _silent_err:
+        logger.debug("[steam_helpers] fix_greenluma_offline_mode: ignored %s", _silent_err, exc_info=False)
         return
 
     settings = get_settings()
@@ -811,10 +843,11 @@ def app_id_exists_in_applist(app_list_dir, app_id_to_check):
                         content = f.read().strip()
                         if content == app_id_to_check:
                             return True
-                except (OSError, UnicodeDecodeError):
+                except (OSError, UnicodeDecodeError) as _silent_err:
+                    logger.debug("[steam_helpers] app_id_exists_in_applist: ignored %s", _silent_err, exc_info=False)
                     continue
-    except OSError:
-        pass
+    except OSError as _silent_err:
+        logger.debug("[steam_helpers] app_id_exists_in_applist: ignored %s", _silent_err, exc_info=False)
 
 
 def get_most_recent_steam_id() -> Optional[str]:

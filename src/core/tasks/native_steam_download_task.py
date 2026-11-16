@@ -8,7 +8,7 @@ Workflow:
   1. Reads depot keys and manifest GIDs from Hubcap bundle / cache.
   2. Patches config.yaml with Plugins: yes, AdditionalApps, AdditionalDepots,
      and DecryptionKeys atomically with fsync.
-  3. Deploys download.lua and spliced-tickets.lua to ~/.config/SLSsteam/plugins/
+  3. Deploys the Katamari plugin family to ~/.config/SLSsteam/plugins/
      (prioritizing locally bundled copies).
   4. Waits for AppLicensesChanged in .SLSsteam.log for the AppID, followed
      by a 1.5s delay for Steam memory propagation.
@@ -219,7 +219,7 @@ class NativeSteamDownloadTask(QObject):
         # 4. Verify SLSsteam plugins are present
         from utils.plugin_manager import are_plugins_present, is_plugin_check_bypassed
         if not are_plugins_present():
-            msg = "AT0-M plugins (download interceptor / spliced-tickets.lua) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
+            msg = "AT0-M plugins (download interceptor / Styx) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
             self.error.emit((RuntimeError, msg, None))
@@ -571,26 +571,67 @@ class NativeSteamDownloadTask(QObject):
             logger.debug(f"[NativeSteamDL] Error checking DepotKeyManager: {e}")
 
         # 5. Fallback/merge from game_data
-        for depot_id, depot_info in (game_data.get("depots") or {}).items():
-            if isinstance(depot_info, dict):
-                k = depot_info.get("key") or depot_info.get("decryption_key")
-                if k:
-                    depot_keys.setdefault(str(depot_id), k)
-                m = depot_info.get("manifest_id") or depot_info.get("gid")
-                if m:
-                    manifest_gids.setdefault(str(depot_id), str(m))
+        depots_raw = game_data.get("depots")
+        if isinstance(depots_raw, dict):
+            for depot_id, depot_info in depots_raw.items():
+                if isinstance(depot_info, dict):
+                    k = depot_info.get("key") or depot_info.get("decryption_key")
+                    if k:
+                        depot_keys.setdefault(str(depot_id), k)
+                    m = depot_info.get("manifest_id") or depot_info.get("gid")
+                    if m:
+                        manifest_gids.setdefault(str(depot_id), str(m))
         if game_data.get("app_key"):
             depot_keys.setdefault(appid_str, game_data["app_key"])
+
+        # Auto-bridge known workshop keys from db/workshop_keys.txt
+        try:
+            from utils.paths import Paths
+            ws_keys_file = Paths.workshop_keys()
+            if ws_keys_file.exists():
+                ws_depot_id = None
+                if isinstance(depots_raw, dict):
+                    raw_ws = depots_raw.get("workshopdepot")
+                    if raw_ws and str(raw_ws).strip().isdigit():
+                        ws_depot_id = str(raw_ws).strip()
+                if not ws_depot_id:
+                    try:
+                        from managers.db_manager import DatabaseManager
+                        app_info = DatabaseManager().get_app_info(appid_str, bypass_expiration=True)
+                        if app_info and isinstance(app_info.get("depots"), dict):
+                            raw_ws = app_info["depots"].get("workshopdepot")
+                            if raw_ws and str(raw_ws).strip().isdigit():
+                                ws_depot_id = str(raw_ws).strip()
+                    except Exception:
+                        pass
+
+                with open(ws_keys_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split(";")
+                        if len(parts) >= 2:
+                            k_id = parts[0].strip()
+                            k_val = parts[1].strip()
+                            if len(k_val) == 64 and (
+                                k_id == appid_str
+                                or k_id in depot_keys
+                                or (ws_depot_id and k_id == ws_depot_id)
+                                or (isinstance(depots_raw, dict) and k_id in depots_raw)
+                            ):
+                                depot_keys.setdefault(k_id, k_val)
+                                if k_id == appid_str:
+                                    game_data.setdefault("app_key", k_val)
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] Error reading workshop keys: {e}")
 
         logger.info(f"[NativeSteamDL] Resolved {len(depot_keys)} depot keys and {len(game_data.get('dlcs', {}))} DLCs for {appid_str}")
         return depot_keys, manifest_gids
 
     def _deploy_plugin(self, plugins_dir: Path) -> bool:
-        """Deploy download.lua and spliced-tickets.lua to SLSsteam plugins directory from Cloud."""
+        """Deploy the Katamari plugin family to the SLSsteam plugins directory."""
         try:
             from utils.plugin_manager import deploy_all_plugins
             self.progress.emit("[Native Steam] Checking required plugins from Cloud...")
-            ok, msgs = deploy_all_plugins()
+            ok, msgs = deploy_all_plugins(only_if_missing=True)  # never replace the user's files mid-download
             for m in msgs:
                 logger.info(f"[NativeSteamDL] {m}")
             return ok
@@ -730,9 +771,10 @@ class NativeSteamDownloadTask(QObject):
         if is_dlc:
             new_depot_ids = list(sel_dlc_depots)
         else:
+            from utils.depot_utils import extract_depot_ids
             raw_candidates = set(str(d) for d in selected_depots) if selected_depots else (
                 set(str(d) for d in depot_keys.keys()) | (
-                    set(str(d) for d in game_data["depots"].keys()) if (game_data and game_data.get("depots")) else set()
+                    extract_depot_ids(game_data.get("depots")) if game_data else set()
                 )
             )
             new_depot_ids = [d for d in raw_candidates if d != appid_str]
@@ -768,14 +810,14 @@ class NativeSteamDownloadTask(QObject):
 
         # If user explicitly selected depots, prune any depots of THIS game that are not selected
         if game_data and game_data.get("depots") and selected_depots:
-            all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str}
+            all_game_depots = {str(d) for d in extract_depot_ids(game_data["depots"]) if str(d) != appid_str}
             user_depots_set = set(new_depot_ids)
             for d in all_game_depots:
                 if d in existing_depots_comments and d not in user_depots_set and d not in shared_redists:
                     existing_depots_comments.pop(d, None)
 
         # Merge new depot IDs with comments
-        depots_meta = (game_data.get("depots") or {}) if game_data else {}
+        depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
         for d in new_depot_ids:
             if d in shared_redists:
                 existing_depots_comments[d] = "Steamworks Shared"
@@ -832,7 +874,7 @@ class NativeSteamDownloadTask(QObject):
                     key_comments[appid_str] = f"{game_name} [AppKey] ({appid_str})" if game_name else f"AppKey ({appid_str})"
 
             if game_data and game_data.get("depots"):
-                all_game_depots = {str(d) for d in game_data["depots"].keys() if str(d) != appid_str}
+                all_game_depots = {str(d) for d in extract_depot_ids(game_data["depots"]) if str(d) != appid_str}
                 user_depots_set = set(new_depot_ids)
                 for d in all_game_depots:
                     if d not in user_depots_set and d not in sel_dlcs and d not in shared_redists:
