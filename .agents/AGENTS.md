@@ -99,3 +99,27 @@ Every GitHub Actions release run automatically generates and publishes standalon
 - Installer scripts must query GitHub API (`https://api.github.com/repos/niwia/ASSella/releases`) with channel filtering (`--beta`, `--canary`, `--stable`).
 - Auto-detect channel from `$LOCAL_VER` (e.g. `2.7.0dev` → beta channel) when run interactively or without arguments.
 - Always verify assets end with `.AppImage` and exclude `.zsync` files from binary download targets.
+
+---
+
+## 4. ARM64 Architecture & Armada OS Guidelines
+
+- **Independent Branch**: The `arm64` branch is maintained deliberately and isolated from auto-syncing (`sync-arm64.yml` is removed). Do not re-enable automated push-triggered merges from `beta` or `canary`.
+- **Merging from `beta` to `arm64`**:
+  - Always verify and preserve ARM64-specific gating across shared files:
+    - `src/core/steam_helpers.py`: `steamrtarm64` candidate checks and direct native launcher invocation (`is_arm64()`).
+    - `src/utils/helpers.py`: Bundled `.dotnet` priority (`AppDir/bin/.dotnet`) in `get_dotnet_env()` / `get_dotnet_path()` and `--architecture arm64` in `install_dotnet_9()`.
+    - `src/utils/yaml/modes.py` & `src/utils/slssteam_integration.py`: Dynamic SLS detection via `SteamEnv.sls_installed()` (`~/.local/share/SLSsteam/SLSsteam.so`) instead of hardcoding ARM64 as unsupported.
+    - `src/ui/dialogs/settings_sls.py`: Dynamic SLS capability status instead of disabled controls.
+    - `src/ui/main_window.py`: Handheld screen geometry clamping against `QApplication.primaryScreen().availableGeometry()`.
+    - `requirements.in`: Pinned `requests>=2.32.0` and `pycryptodome>=3.20.0`.
+    - `src/utils/game_cache.py`: Top-level `import threading  # noqa: TC003` to prevent runtime `smoke_import_check.py` annotation resolution failures.
+  - Dedicated ARM64 files must NEVER be removed: `.github/workflows/build-arm64.yml`, `scripts/build_arm64_appimage.sh`, `scripts/install-armada.sh`, `scripts/test_arm64_gating.py`, and `docs/arm64.md`.
+- **Armada OS & Handheld Invariants**:
+  - **FUSE3 Static Runtime**: Fedora bootc lacks `libfuse.so.2`. ARM64 AppImage builds must bundle a static FUSE3 runtime.
+  - **Gamescope Wayland Session**: Game Mode runs pure Wayland. AppImage bundles `libqwayland-egl.so` and `libqxcb.so`, exporting `QT_QPA_PLATFORM="wayland;xcb"`.
+  - **Bundled .NET 9**: Bundled at `AppDir/bin/.dotnet` to eliminate the external host dependency on immutable systems.
+- **CI & Build Pipeline**:
+  - Build workflow: `.github/workflows/build-arm64.yml` running on native `ubuntu-24.04-arm`.
+  - Tests: Run `python3 scripts/test_arm64_gating.py` locally to verify gating integrity without ARM64 hardware.
+
