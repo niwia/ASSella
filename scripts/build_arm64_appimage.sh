@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# build_arm64_appimage.sh — Automated ARM64 / AArch64 AppImage Packaging Script
+# build_arm64_appimage.sh — Standalone ARM64 AppImage Packaging for Armada OS
 # ==============================================================================
-# Assembles and packages a standalone, portable ARM64 AppImage for ASSella.
-# Designed for Armada OS, ARM64 handhelds, and GitHub Actions (ubuntu-24.04-arm).
+# Assembles a 100% self-contained ARM64 AppImage designed for Fedora bootc,
+# Gamescope (Game Mode), and KDE Plasma (Desktop Mode) handhelds.
+#
+# Key Features:
+#   1. Bundled .NET 9 ARM64 Runtime: Zero host ~/.dotnet dependencies.
+#   2. Wayland & Gamescope Native: QT_QPA_PLATFORM="wayland;xcb" in AppRun.
+#   3. FUSE3 / bootc Resilient: Static runtime support & APPIMAGE_EXTRACT_AND_RUN.
+#   4. Bundled Python 3.13 aarch64 runtime from python-build-standalone.
+#   5. Native aarch64 wireproxy & appimageupdatetool.
 # ==============================================================================
 
 set -euo pipefail
@@ -18,7 +25,7 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$SCRIPT_DIR"
 
-echo -e "${BOLD}${BLUE}=== ASSella ARM64 AppImage Packaging ===${NC}"
+echo -e "${BOLD}${BLUE}=== ASSella ARM64 AppImage Builder for Armada OS ===${NC}"
 
 # 1. Architecture Check
 HOST_ARCH=$(uname -m)
@@ -42,8 +49,8 @@ OUTPUT_APPIMAGE="$SCRIPT_DIR/ASSella-arm64.AppImage"
 rm -rf "$BUILD_DIR"
 mkdir -p "$APPDIR/bin"
 
-# 2. Desktop Entry & Icon Setup
-echo -e "\n${BLUE}[1/6] Setting up desktop entry and icons...${NC}"
+# 2. Desktop Entry & Icons Setup
+echo -e "\n${BLUE}[1/7] Setting up desktop entry and icons...${NC}"
 cat << 'EOF' > "$APPDIR/assella.desktop"
 [Desktop Entry]
 Name=ASSella
@@ -71,12 +78,29 @@ if [[ -f "src/res/logo/icon.png" ]]; then
     cp "src/res/logo/icon.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/assella.png"
 fi
 
-# 3. AppRun & Run Wrapper
-echo -e "\n${BLUE}[2/6] Generating launcher entrypoints...${NC}"
+# 3. AppRun (Gamescope Wayland, Sandbox, Bundled .NET)
+echo -e "\n${BLUE}[2/7] Generating launcher entrypoints...${NC}"
 cat << 'EOF' > "$APPDIR/AppRun"
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
 cd "$HERE/bin"
+
+# 1. Wayland & Gamescope compatibility (prefer Wayland in Game Mode, fallback to XCB in Desktop Mode)
+export QT_QPA_PLATFORM="wayland;xcb"
+
+# 2. QtWebEngine / Chromium sandbox guard for FUSE mounts
+export QTWEBENGINE_DISABLE_SANDBOX=1
+
+# 3. Prioritise bundled self-contained .NET 9 ARM64 runtime
+export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+if [ -d "$HERE/bin/.dotnet" ]; then
+    export DOTNET_ROOT="$HERE/bin/.dotnet"
+    export PATH="$HERE/bin/.dotnet:${PATH}"
+elif [ -d "${HOME}/.dotnet" ]; then
+    export DOTNET_ROOT="${HOME}/.dotnet"
+    export PATH="${HOME}/.dotnet:${PATH}"
+fi
+
 export APPIMAGE=1
 exec "./run.sh" "$@"
 EOF
@@ -86,13 +110,6 @@ cat << 'EOF' > "$APPDIR/bin/run.sh"
 #!/usr/bin/env bash
 cd "$(dirname "$(realpath "$0")")"
 export APPIMAGE=1
-
-# Sanitise .NET runtime environment
-export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
-if [ -d "${HOME}/.dotnet" ]; then
-    export DOTNET_ROOT="${HOME}/.dotnet"
-    export PATH="${HOME}/.dotnet:${PATH}"
-fi
 
 PYTHON_EXEC=".venv/bin/python3"
 if [ -f "$PYTHON_EXEC" ]; then
@@ -104,7 +121,7 @@ EOF
 chmod +x "$APPDIR/bin/run.sh"
 
 # 4. Copy Codebase & Stamp Version
-echo -e "\n${BLUE}[3/6] Copying source code and assets...${NC}"
+echo -e "\n${BLUE}[3/7] Copying source code and assets...${NC}"
 cp -r src "$APPDIR/bin/"
 find "$APPDIR/bin/src" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
@@ -115,8 +132,22 @@ BUILD_DATE_UTC="$(date -u +%Y-%m-%d)"
 BUILD_TS_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 python3 -c 'import re, sys; p = sys.argv[1]; t = open(p, "r", encoding="utf-8").read(); t = re.sub(r"^BUILD_DATE\s*=.*$", f"BUILD_DATE = \"{sys.argv[2]}\"", t, flags=re.M); t = re.sub(r"^BUILD_TIMESTAMP\s*=.*$", f"BUILD_TIMESTAMP = \"{sys.argv[3]}\"", t, flags=re.M); open(p, "w", encoding="utf-8").write(t); print(f"Stamped {p}: {sys.argv[2]}")' "$APPDIR/bin/src/utils/version.py" "$BUILD_DATE_UTC" "$BUILD_TS_UTC"
 
-# 5. Fetch Native ARM64 Binaries (wireproxy & appimageupdatetool)
-echo -e "\n${BLUE}[4/6] Bundling native ARM64 dependencies...${NC}"
+# 5. Bundle Microsoft .NET 9 ARM64 Runtime (Zero Host Dependencies)
+echo -e "\n${BLUE}[4/7] Bundling self-contained .NET 9 ARM64 Runtime...${NC}"
+DOTNET_ARM64_TAR="/tmp/dotnet-runtime-9.0-arm64.tar.gz"
+if [ ! -f "$DOTNET_ARM64_TAR" ]; then
+    echo "Downloading official Microsoft .NET 9 runtime (linux-arm64)..."
+    curl -fsSL --retry 3 "https://dotnetcli.azureedge.net/dotnet/Runtime/9.0.0/dotnet-runtime-9.0.0-linux-arm64.tar.gz" -o "$DOTNET_ARM64_TAR" || \
+    curl -fsSL --retry 3 "https://builds.dotnet.microsoft.com/dotnet/Runtime/9.0.0/dotnet-runtime-9.0.0-linux-arm64.tar.gz" -o "$DOTNET_ARM64_TAR"
+fi
+
+mkdir -p "$APPDIR/bin/.dotnet"
+tar -xzf "$DOTNET_ARM64_TAR" -C "$APPDIR/bin/.dotnet"
+chmod +x "$APPDIR/bin/.dotnet/dotnet"
+echo -e "${GREEN}✓ Bundled .NET 9 ARM64 runtime.${NC}"
+
+# 6. Fetch Native ARM64 Binaries (wireproxy & appimageupdatetool)
+echo -e "\n${BLUE}[5/7] Bundling native ARM64 support binaries...${NC}"
 
 # ARM64 wireproxy for Kuroko stealth proxy
 echo "Downloading native ARM64 wireproxy..."
@@ -149,8 +180,8 @@ if [ ! -f "$APPDIR/bin/appimageupdatetool" ]; then
     fi
 fi
 
-# 6. Standalone Python 3.13 Runtime for aarch64
-echo -e "\n${BLUE}[5/6] Setting up standalone Python 3.13 runtime (aarch64)...${NC}"
+# 7. Standalone Python 3.13 Runtime for aarch64
+echo -e "\n${BLUE}[6/7] Setting up standalone Python 3.13 runtime (aarch64)...${NC}"
 PYTHON_TAR="/tmp/cpython-3.13-arm64.tar.gz"
 if [ ! -f "$PYTHON_TAR" ]; then
     echo "Downloading standalone CPython 3.13 for aarch64-unknown-linux-gnu..."
@@ -170,10 +201,9 @@ else
     echo "Cross-packaging note: Host is $HOST_ARCH. Pip wheel installation requires ARM64 host or QEMU user emulation."
 fi
 
-# 7. Package AppImage using appimagetool
-echo -e "\n${BLUE}[6/6] Packaging AppImage via appimagetool...${NC}"
+# 8. Package AppImage via appimagetool
+echo -e "\n${BLUE}[7/7] Packaging AppImage via appimagetool...${NC}"
 
-# Find appimagetool
 APPIMAGETOOL="appimagetool"
 if ! command -v "$APPIMAGETOOL" &>/dev/null; then
     if [[ -x "/usr/local/bin/appimagetool" ]]; then
@@ -190,11 +220,24 @@ if ! command -v "$APPIMAGETOOL" &>/dev/null; then
     fi
 fi
 
+# Use static runtime if available for FUSE3 compatibility on Fedora bootc
+STATIC_RUNTIME="/tmp/runtime-aarch64"
+RUNTIME_FLAG=()
+if [ ! -f "$STATIC_RUNTIME" ]; then
+    curl -fsSL --retry 3 "https://github.com/AppImageCommunity/type2-runtime/releases/download/continuous/runtime-aarch64" -o "$STATIC_RUNTIME" 2>/dev/null || true
+fi
+if [ -f "$STATIC_RUNTIME" ]; then
+    RUNTIME_FLAG=("--runtime-file" "$STATIC_RUNTIME")
+    echo "✓ Using static FUSE3-compatible aarch64 runtime."
+fi
+
 UPDATE_INFO="gh-releases-zsync|niwia|ASSella|latest-pre|ASSella-arm64.AppImage.zsync"
-ARCH=aarch64 "$APPIMAGETOOL" -n -u "$UPDATE_INFO" "$APPDIR" "$OUTPUT_APPIMAGE"
+ARCH=aarch64 "$APPIMAGETOOL" -n -u "$UPDATE_INFO" "${RUNTIME_FLAG[@]}" "$APPDIR" "$OUTPUT_APPIMAGE"
 
 sha256sum "$OUTPUT_APPIMAGE" > "${OUTPUT_APPIMAGE}.sha256"
 
 echo -e "\n${BOLD}${GREEN}=== Build Complete! ===${NC}"
 echo -e "AppImage: ${BOLD}$OUTPUT_APPIMAGE${NC}"
 echo -e "Checksum: ${BOLD}${OUTPUT_APPIMAGE}.sha256${NC}"
+echo -e "\n${BOLD}Smoke-testing on Armada OS / Fedora bootc container:${NC}"
+echo "  podman run --rm -v \$(pwd):/app -w /app --platform linux/arm64 fedora:41 bash -c \"APPIMAGE_EXTRACT_AND_RUN=1 ./ASSella-arm64.AppImage --headless --check-updates\""

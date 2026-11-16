@@ -123,7 +123,12 @@ def _is_slssteam_available() -> bool:
         return False
     from utils.helpers import is_arm64
     if is_arm64():
-        return False
+        from core.steam_helpers import get_steam_env
+        try:
+            if not get_steam_env().sls_installed():
+                return False
+        except Exception:
+            return False
     return os.path.exists(SLSSTEAM_API_PIPE)
 
 

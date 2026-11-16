@@ -202,17 +202,28 @@ def create_sls_tab(dialog) -> QWidget:
     int_card, int_layout = dialog._create_card_frame("SLS Settings")
 
     from utils.helpers import is_arm64, is_armada_os
+    from core.steam_helpers import get_steam_env
     if is_arm64():
         os_name = "Armada OS" if is_armada_os() else "ARM64 Linux"
-        arm_badge = QLabel(
-            f"<b>{os_name} (ARM64)</b>: SLSsteam is an x86_64 library injector and is not available "
-            "on ARM64. ASSella is running in <b>Standalone Mode</b> (Direct Depot Downloads, Local Manifest Management, "
-            "and Non-Steam Game launching)."
-        )
-        arm_badge.setStyleSheet(
-            "background-color: rgba(64, 150, 255, 0.15); border: 1px solid rgba(64, 150, 255, 0.4); "
-            "border-radius: 6px; padding: 8px; color: #E0E0E0; font-size: 8.5pt;"
-        )
+        sls_present = get_steam_env().sls_installed()
+        if sls_present:
+            arm_badge = QLabel(
+                f"<b>{os_name} (ARM64)</b>: Native SLSsteam.so detected in ~/.local/share/SLSsteam/. "
+                "SLSsteam integration is active."
+            )
+            arm_badge.setStyleSheet(
+                "background-color: rgba(46, 204, 113, 0.15); border: 1px solid rgba(46, 204, 113, 0.4); "
+                "border-radius: 6px; padding: 8px; color: #E0E0E0; font-size: 8.5pt;"
+            )
+        else:
+            arm_badge = QLabel(
+                f"<b>{os_name} (ARM64)</b>: SLSsteam arm64 build not detected in ~/.local/share/SLSsteam/. "
+                "ASSella is running in <b>Standalone Mode</b> (Direct Depot Downloads & Local Manifests)."
+            )
+            arm_badge.setStyleSheet(
+                "background-color: rgba(64, 150, 255, 0.15); border: 1px solid rgba(64, 150, 255, 0.4); "
+                "border-radius: 6px; padding: 8px; color: #E0E0E0; font-size: 8.5pt;"
+            )
         arm_badge.setWordWrap(True)
         int_layout.addWidget(arm_badge)
 

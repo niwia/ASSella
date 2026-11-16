@@ -341,18 +341,25 @@ def _find_steam_windows():
 def _find_steam_linux():
     home_dir = os.path.expanduser("~")
     potential_paths = [
-        os.path.join(home_dir, ".steam", "steam"),
         os.path.join(home_dir, ".local", "share", "Steam"),
+        os.path.join(home_dir, ".steam", "steam"),
         os.path.join(
             home_dir, ".var", "app", "com.valvesoftware.Steam", "data", "Steam"
         ),
     ]
-    # os.path.join(home_dir, "snap", "steam", "common", ".steam", "steam"),
 
     for path in potential_paths:
-        if os.path.isdir(os.path.join(path, "steamapps")):
+        # Standard Steam has steamapps/; native ARM64 Steam installs to steamrtarm64/
+        if (
+            os.path.isdir(os.path.join(path, "steamapps"))
+            or os.path.isdir(os.path.join(path, "steamrtarm64"))
+        ):
             real_path = os.path.realpath(path)
-            logger.info(f"Found Steam installation at: {real_path} (from {path})")
+            arm_bin = os.path.join(path, "steamrtarm64", "steam")
+            if os.path.exists(arm_bin):
+                logger.info(f"Found native ARM64 Steam installation at: {real_path} (binary: {arm_bin})")
+            else:
+                logger.info(f"Found Steam installation at: {real_path} (from {path})")
             return real_path
 
     logger.error("Could not find Steam installation in common Linux directories.")

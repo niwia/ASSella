@@ -24,7 +24,13 @@ def is_slssteam_mode_enabled() -> bool:
     """Check if Steam integration is enabled for the current platform."""
     from utils.helpers import is_arm64
     if is_arm64():
-        return False
+        # On ARM64, allow if native SLSsteam.so is installed in ~/.local/share/SLSsteam/
+        from core.steam_helpers import get_steam_env
+        try:
+            if not get_steam_env().sls_installed():
+                return False
+        except Exception:
+            return False
     settings = get_settings()
     if sys.platform == "linux":
         return settings.value("library_mode", False, type=bool)
@@ -42,7 +48,12 @@ def is_slssteam_config_management_enabled() -> bool:
     """Check if SLSsteam config management is enabled in settings."""
     from utils.helpers import is_arm64
     if is_arm64():
-        return False
+        from core.steam_helpers import get_steam_env
+        try:
+            if not get_steam_env().sls_installed():
+                return False
+        except Exception:
+            return False
     settings = get_settings()
     return settings.value("sls_config_management", True, type=bool)
 
