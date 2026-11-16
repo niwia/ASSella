@@ -193,7 +193,7 @@ def _update_proc_cache_if_needed():
                 comm_path = os.path.join("/proc", pid_dir, "comm")
                 with open(comm_path, "r", encoding="utf-8", errors="ignore") as f:
                     comm = f.read().strip()
-                if comm in STEAM_PROCESS_NAMES or (comm.startswith((".steam", "steam")) and comm != "steamwebhelper"):
+                if comm in STEAM_PROCESS_NAMES:
                     steam_pids.append(pid_dir)
                 elif comm == "steamwebhelper":
                     _proc_cache["steam_running"] = True

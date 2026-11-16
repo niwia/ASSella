@@ -1428,7 +1428,6 @@ class FetchManifestDialog(QDialog):
         try:
             from core.native_steam.compat_tool import (
                 check_native_steam_platform_mismatch,
-                force_proton_for_app,
             )
             from ui.dialogs.platform_mismatch_dialog import (
                 PlatformMismatchDialog,

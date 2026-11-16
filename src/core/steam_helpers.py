@@ -12,8 +12,6 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-_slssteam_so_path_cache = None
-_library_inject_so_path_cache = None
 
 # ---------------------------------------------------------------------------
 # SteamEnv — single source of truth for Steam/SLS path resolution
@@ -476,248 +474,33 @@ def is_steam_running():
 
     return any(
         (p.info.get("name") or "").lower() in STEAM_PROCESS_NAMES
-        or (p.info.get("name") or "").lower().startswith((".steam", "steam"))
+        or (p.info.get("name") or "").lower() == "steamwebhelper"
         for p in psutil.process_iter(["name"])
     )
 
 
-def kill_steam_process():
-    global _slssteam_so_path_cache, _library_inject_so_path_cache
-    _slssteam_so_path_cache = None
-    _library_inject_so_path_cache = None
-
-    if sys.platform == "win32":
-        steam_procs = [
-            p
-            for p in psutil.process_iter(["pid", "name"])
-            if (p.info.get("name") or "").lower() == "steam.exe"
-        ]
-    else:
-        # Prefer main client process over helpers
-        steam_procs = [
-            p
-            for p in psutil.process_iter(["pid", "name"])
-            if (
-                ((p.info.get("name") or "").lower() in STEAM_PROCESS_NAMES
-                 or (p.info.get("name") or "").lower().startswith((".steam", "steam")))
-                and (p.info.get("name") or "").lower() != "steamwebhelper"
-            )
-        ]
-        if not steam_procs:
-            steam_procs = [
-                p
-                for p in psutil.process_iter(["pid", "name"])
-                if (p.info.get("name") or "").lower() in STEAM_PROCESS_NAMES
-                or (p.info.get("name") or "").lower().startswith((".steam", "steam"))
-            ]
-
-    if not steam_procs:
-        logger.warning("Steam process not found.")
-        return False
-
-    steam_proc = steam_procs[0]
-
-    if sys.platform == "linux":
-        for sp in steam_procs:
-            pid = sp.pid
-            maps_file = f"/proc/{pid}/maps"
-            try:
-                with open(maps_file, "r") as f:
-                    for line in f:
-                        if "SLSsteam.so" in line:
-                            parts = line.split()
-                            if len(parts) > 5 and os.path.exists(parts[-1]):
-                                _slssteam_so_path_cache = parts[-1]
-                                logger.info(
-                                    f"Found and cached SLSsteam.so path: {_slssteam_so_path_cache}"
-                                )
-                        elif (
-                            "library-inject.so" in line
-                            or "libSLS-library-inject.so" in line
-                        ):
-                            parts = line.split()
-                            if len(parts) > 5 and os.path.exists(parts[-1]):
-                                _library_inject_so_path_cache = parts[-1]
-                                logger.info(
-                                    f"Found and cached library-inject.so path: {_library_inject_so_path_cache}"
-                                )
-                if _slssteam_so_path_cache:
-                    break
-            except OSError as e:
-                logger.error(f"Error reading process maps for library paths: {e}")
-
-    # 1. Graceful SIGTERM to all detected steam processes
-    for sp in steam_procs:
-        try:
-            sp.terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-
-    # 2. Wait up to 3 seconds for clean exit
-    gone, alive = psutil.wait_procs(steam_procs, timeout=3.0)
-
-    # 3. Force kill (SIGKILL) any stubborn stragglers
-    for sp in alive:
-        try:
-            sp.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-
-    if alive:
-        psutil.wait_procs(alive, timeout=2.0)
-
-    logger.info(f"Terminated Steam processes (PIDs: {[p.pid for p in steam_procs]}).")
-    return True
+def kill_steam_process() -> bool:
+    """Deprecated: Steam process termination has been removed from ASSella."""
+    logger.debug("kill_steam_process called, but Steam process killing is removed.")
+    return False
 
 
-def start_steam():
-    """Start Steam on Windows, or attempt to start Steam with SLSsteam integration on Linux
-    Returns: "SUCCESS", "FAILED", or "NEEDS_USER_PATH"
-    """
-    global _slssteam_so_path_cache, _library_inject_so_path_cache
-    logger.info("Attempting to start Steam...")
-
-    try:
-        if sys.platform == "win32":
-            steam_path = find_steam_install()
-            if not steam_path:
-                return "FAILED"
-            exe_path = os.path.join(steam_path, "steam.exe")
-            if not os.path.exists(exe_path):
-                return "FAILED"
-            subprocess.Popen([exe_path])
-            return "SUCCESS"
-
-        elif sys.platform == "linux":
-            # For Linux, we now need to handle SLSsteam.so AND library-inject.so
-            slssteam_path = _slssteam_so_path_cache
-            library_inject_path = _library_inject_so_path_cache
-
-            # Try default locations if not cached
-            if not slssteam_path:
-                default_slssteam_paths = [
-                    "/usr/lib32/libSLSsteam.so",
-                    os.path.expanduser("~/.local/share/SLSsteam/SLSsteam.so"),
-                    os.path.expanduser(
-                        "~/.var/app/com.valvesoftware.Steam/.local/share/SLSsteam/SLSsteam.so"
-                    ),
-                ]
-                for path in default_slssteam_paths:
-                    if os.path.exists(path):
-                        slssteam_path = path
-                        logger.info(f"Found SLSsteam.so at: {path}")
-                        break
-
-            if not library_inject_path:
-                default_library_inject_paths = [
-                    "/usr/lib32/libSLS-library-inject.so",
-                    os.path.expanduser("~/.local/share/SLSsteam/library-inject.so"),
-                    os.path.expanduser(
-                        "~/.var/app/com.valvesoftware.Steam/.local/share/SLSsteam/library-inject.so"
-                    ),
-                ]
-                for path in default_library_inject_paths:
-                    if os.path.exists(path):
-                        library_inject_path = path
-                        logger.info(f"Found library-inject.so at: {path}")
-                        break
-
-            # If we have both libraries, start with them
-            if slssteam_path and library_inject_path:
-                if os.path.exists(slssteam_path) and os.path.exists(
-                    library_inject_path
-                ):
-                    # Start Steam with both libraries
-                    success = start_steam_with_slssteam(
-                        slssteam_path, library_inject_path
-                    )
-                    # Only clear caches if successful
-                    if success == "SUCCESS":
-                        _slssteam_so_path_cache = None
-                        _library_inject_so_path_cache = None
-                    return success
-                else:
-                    logger.warning("Cached library paths no longer exist")
-                    return "NEEDS_USER_PATH"
-            else:
-                # Missing one or both libraries
-                missing = []
-                if not slssteam_path:
-                    missing.append("SLSsteam.so")
-                if not library_inject_path:
-                    missing.append("library-inject.so")
-                logger.warning(f"Missing libraries: {', '.join(missing)}")
-                return "NEEDS_USER_PATH"
-        else:
-            return "FAILED"
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.error(f"Failed to execute Steam: {e}", exc_info=True)
-        return "FAILED"
+def start_steam() -> str:
+    """Deprecated: Steam execution launch has been removed from ASSella."""
+    logger.debug("start_steam called, but Steam launch execution is removed.")
+    return "FAILED"
 
 
-def start_steam_with_slssteam(slssteam_path=None, library_inject_path=None):
-    """Start Steam on Linux with SLSsteam.so AND library-inject.so via LD_AUDIT
-    Returns: "SUCCESS", "FAILED", or "NEEDS_USER_PATH"
-    """
-
-    if sys.platform != "linux":
-        logger.error("start_steam_with_slssteam is only supported on Linux")
-        return "FAILED"
-
-    # Validate paths
-    if not slssteam_path or not os.path.exists(slssteam_path):
-        logger.error(f"SLSsteam.so path is invalid or does not exist: {slssteam_path}")
-        return "NEEDS_USER_PATH"
-
-    if not library_inject_path or not os.path.exists(library_inject_path):
-        logger.error(
-            f"library-inject.so path is invalid or does not exist: {library_inject_path}"
-        )
-        return "NEEDS_USER_PATH"
-
-    import shutil
-    steam_cmd = shutil.which("steam")
-    if not steam_cmd:
-        # Check standard NixOS and system paths
-        for candidate in (
-            "/run/current-system/sw/bin/steam",
-            os.path.expanduser("~/.nix-profile/bin/steam"),
-            "/usr/bin/steam",
-        ):
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                steam_cmd = candidate
-                break
-    if not steam_cmd:
-        steam_cmd = "steam"
-
-    try:
-        logger.info(
-            f"Executing {steam_cmd} with LD_AUDIT: {library_inject_path}:{slssteam_path}"
-        )
-        env = os.environ.copy()
-        env["LD_AUDIT"] = f"{library_inject_path}:{slssteam_path}"
-        subprocess.Popen([steam_cmd], env=env)
-        return "SUCCESS"
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.error(
-            f"Failed to execute steam with provided libraries: {e}", exc_info=True
-        )
-        return "FAILED"
+def start_steam_with_slssteam(slssteam_path=None, library_inject_path=None) -> str:
+    """Deprecated: Steam execution launch has been removed from ASSella."""
+    logger.debug("start_steam_with_slssteam called, but Steam launch execution is removed.")
+    return "FAILED"
 
 
-def run_dll_injector(steam_path):
-    if sys.platform != "win32":
-        return False
-    injector_path = os.path.join(steam_path, "DLLInjector.exe")
-    if not os.path.exists(injector_path):
-        return False
-    try:
-        subprocess.Popen(
-            [injector_path], cwd=steam_path, creationflags=subprocess.CREATE_NO_WINDOW
-        )
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False
+def run_dll_injector(steam_path) -> bool:
+    """Deprecated: DLL injector execution has been removed from ASSella."""
+    logger.debug("run_dll_injector called, but DLL injector execution is removed.")
+    return False
 
 
 def get_library_index(library_path: str, steam_path: str | None = None) -> int:
@@ -772,7 +555,6 @@ def get_library_index(library_path: str, steam_path: str | None = None) -> int:
 def dispatch_steam_url(url: str) -> bool:
     """Dispatch a steam:// URL (such as steam://install/<appid>) to the active Steam client."""
     import shutil
-    import subprocess
 
     try:
         env = get_steam_env()

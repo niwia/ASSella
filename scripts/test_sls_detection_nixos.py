@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import errno
+import time
 from pathlib import Path
 
 src_dir = Path(__file__).resolve().parent.parent / "src"
@@ -155,6 +156,58 @@ def test_slssteam_api_send_nonblocking():
             os.unlink(fifo_path)
 
 
+def test_steam_restart_removed_and_compat_tool():
+    from core.steam_helpers import kill_steam_process, start_steam, start_steam_with_slssteam, run_dll_injector
+    import core.native_steam.compat_tool as ct
+
+    # 1. Deprecated Steam lifecycle stubs return safe values without exceptions or subprocesses
+    assert kill_steam_process() is False
+    assert start_steam() == "FAILED"
+    assert start_steam_with_slssteam() == "FAILED"
+    assert run_dll_injector("/nonexistent") is False
+    print("  [ok] steam lifecycle helpers are safely deprecated and no-op")
+
+    # 2. force_proton_for_app rejects modification while Steam is running
+    vdf_content = '"InstallConfigStore"\n{\n\t"Software"\n\t{\n\t\t"Valve"\n\t\t{\n\t\t\t"Steam"\n\t\t\t{\n\t\t\t}\n\t\t}\n\t}\n}\n'
+    with tempfile.NamedTemporaryFile("w+", suffix=".vdf") as tmp_vdf:
+        tmp_vdf.write(vdf_content)
+        tmp_vdf.flush()
+
+        old_get_vdf = ct.get_steam_config_vdf_path
+        old_is_steam_running = sls.is_steam_process_running
+        try:
+            ct.get_steam_config_vdf_path = lambda: Path(tmp_vdf.name)
+
+            # Case A: Steam is running -> Must return False and not modify VDF
+            sls._proc_cache["last_check"] = time.time() + 1000
+            sls._proc_cache["steam_running"] = True
+
+            assert not ct.force_proton_for_app(12345, "proton_experimental")
+            assert not ct.set_compat_tool_for_app(12345, "proton_experimental")
+            print("  [ok] force_proton_for_app guards against running Steam (prevents VDF overwrite)")
+
+            # Case B: Steam is NOT running -> Successfully writes CompatToolMapping
+            sls._proc_cache["steam_running"] = False
+            sls._proc_cache["slssteam_active"] = False
+
+            # Ensure steam comm check also returns False in this test
+            saved_pipe = sls.SLSSTEAM_API_PIPE
+            sls.SLSSTEAM_API_PIPE = "/tmp/nonexistent_test_pipe.API"
+            try:
+                assert ct.force_proton_for_app(12345, "proton_experimental")
+                content = Path(tmp_vdf.name).read_text(encoding="utf-8")
+                assert "12345" in content
+                assert "proton_experimental" in content
+                print("  [ok] force_proton_for_app safely writes CompatToolMapping when Steam is closed")
+            finally:
+                sls.SLSSTEAM_API_PIPE = saved_pipe
+
+        finally:
+            ct.get_steam_config_vdf_path = old_get_vdf
+            sls._proc_cache["last_check"] = 0.0
+            sls._update_proc_cache_if_needed()
+
+
 if __name__ == "__main__":
     print("=== Testing NixOS SLSsteam & Steam Detection ===")
     test_pipe_listening_nonexistent()
@@ -164,4 +217,5 @@ if __name__ == "__main__":
     test_nixos_steam_process_names()
     test_proc_cache_with_active_pipe()
     test_slssteam_api_send_nonblocking()
-    print("ALL NIXOS DETECTION TESTS PASSED")
+    test_steam_restart_removed_and_compat_tool()
+    print("ALL NIXOS DETECTION & LIFECYCLE TESTS PASSED")
