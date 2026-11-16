@@ -1626,7 +1626,13 @@ elif command -v appimage-run &>/dev/null; then
 elif [ -n "${NIX_LD:-}" ] && [ -e "$NIX_LD" ]; then
     exec "$APPIMAGE" "$@"
 elif command -v nix-shell &>/dev/null; then
-    exec nix-shell -p steam-run --run 'exec steam-run "$1" "${@:2}"' -- "$APPIMAGE" "$@"
+    _tmp_sentinel=$(mktemp -t assella_nix.XXXXXX 2>/dev/null || true)
+    nix-shell -p steam-run --run 'rm -f "$1"; exec steam-run "$2" "${@:3}"' -- "$_tmp_sentinel" "$APPIMAGE" "$@"
+    _status=$?
+    if [ -n "$_tmp_sentinel" ] && [ ! -f "$_tmp_sentinel" ]; then
+        exit "$_status"
+    fi
+    [ -n "$_tmp_sentinel" ] && rm -f "$_tmp_sentinel" 2>/dev/null || true
 fi
 
 msg="NixOS detected! Please install 'steam-run' or 'appimage-run' (or enable programs.nix-ld) in your NixOS configuration to launch ASSella."
