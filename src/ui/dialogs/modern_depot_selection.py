@@ -1503,176 +1503,48 @@ class ModernDepotSelectionDialog(QDialog):
 
     def _open_file_selector_for_depot(self, target_depot: str):
         """Open selective file customization dialog for a specific depot."""
-        from utils.helpers import get_base_path
-        app_id = self.app_id
-
-        manifests_dir = get_base_path() / "hubcap_manifests"
-        zips = list(manifests_dir.glob(f"accela_fetch_{app_id}.zip")) + \
-               list(manifests_dir.glob(f"accela_fetch_{app_id}_*.zip"))
-
-        if not zips:
-            ThemedMessageBox.critical(self, "Error", f"No manifest zip file found for AppID {app_id} in {manifests_dir}.")
-            return
-        zips.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-        zip_path = str(zips[0])
-
-        import zipfile
-        temp_dir = os.path.join(tempfile.gettempdir(), f"selective_manifests_{app_id}")
-        os.makedirs(temp_dir, exist_ok=True)
-
-        try:
-            from utils.steam_manifest import safe_extract_zip
-            safe_extract_zip(zip_path, temp_dir)
-        except Exception as e:
-            ThemedMessageBox.critical(self, "Error", f"Failed to extract manifest zip: {e}")
-            return
-
-        depot_key = None
-        lua_files = list(Path(temp_dir).glob("*.lua"))
-        if lua_files:
-            try:
-                with open(str(lua_files[0]), "r", encoding="utf-8") as lf:
-                    lua_content = lf.read()
-                    m = find_live(lua_content, r"addappid\(\s*" + re.escape(target_depot) + r"\s*,\s*\d+\s*,\s*\"([a-fA-F0-9]+)\"\)")
-                    if m:
-                        depot_key = m.group(1)
-            except Exception as _silent_err:
-                logger.debug("[modern_depot_selection] _open_file_selector_for_depot: ignored %s", _silent_err, exc_info=False)
-
-        if not depot_key:
-            try:
-                from managers.depot_key_manager import DepotKeyManager
-                cached = DepotKeyManager().get_depot_keys(app_id)
-                if target_depot in cached:
-                    depot_key = cached[target_depot]
-            except Exception as _silent_err:
-                logger.debug("[modern_depot_selection] _open_file_selector_for_depot: ignored %s", _silent_err, exc_info=False)
-
-        if not depot_key:
-            ThemedMessageBox.critical(self, "Error", f"Could not find depot key for depot {target_depot}.")
-            return
-
-        keys_path = os.path.join(temp_dir, "depot.keys")
-        try:
-            with open(keys_path, "w") as kf:
-                kf.write(f"{target_depot};{depot_key}\n")
-        except OSError as e:
-            ThemedMessageBox.critical(self, "Error", f"Failed to write keys file: {e}")
-            return
-
         target_mid = getattr(self, "_manifest_overrides", {}).get(str(target_depot))
         if not target_mid and hasattr(self, "depots") and str(target_depot) in self.depots:
             d_info = self.depots[str(target_depot)]
             if isinstance(d_info, dict):
                 target_mid = d_info.get("manifest_id")
 
-        manifest_file = None
-        manifest_id = None
-        if target_mid:
-            cand = Path(temp_dir) / f"{target_depot}_{target_mid}.manifest"
-            if cand.exists() and cand.stat().st_size > 0:
-                manifest_file = str(cand)
-                manifest_id = str(target_mid)
-            else:
-                try:
-                    from core import morrenus_api
-                    raw_bytes, _ = morrenus_api.generate_single_manifest(target_depot, str(target_mid), depot_key=depot_key)
-                    if raw_bytes:
-                        cand.write_bytes(raw_bytes)
-                        manifest_file = str(cand)
-                        manifest_id = str(target_mid)
-                except Exception as _fetch_err:
-                    logger.debug(f"[ModernDepotSelection] Error fetching manifest on-demand: {_fetch_err}")
+        from ui.dialogs.depot_selection.dump_runner import ManifestDumpRunner
+        runner = ManifestDumpRunner(
+            self,
+            app_id=str(self.app_id),
+            depot_id=str(target_depot),
+            manifest_id=str(target_mid) if target_mid else None,
+        )
+        runner.finished.connect(lambda ok, msg, r=runner: self._on_dump_finished(r.dump, ok, msg))
+        runner.start()
 
-        if not manifest_file:
-            manifest_files = list(Path(temp_dir).glob(f"{target_depot}_*.manifest")) or list(Path(temp_dir).glob("*.manifest"))
-            if not manifest_files:
-                ThemedMessageBox.critical(self, "Error", f"No manifest file found for depot {target_depot}.")
-                return
-            manifest_path = manifest_files[0]
-            manifest_file = str(manifest_path)
-            stem = manifest_path.name.replace(".manifest", "")
-            manifest_id = stem.split("_", 1)[1] if "_" in stem else stem
+    def _on_dump_finished(self, dump, ok: bool, message: str):
+        if not ok or not dump:
+            ThemedMessageBox.critical(self, "Error", message or "Failed to prepare manifest.")
+            return
 
-        progress_dialog = ThemedProgressDialog("Loading file list from manifest...", "Cancel", 0, 0, self)
-        progress_dialog.setWindowTitle("Loading Manifest")
-        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        progress_dialog.show()
-
-        from utils.helpers import get_dotnet_path, resource_path
-        dotnet_path = get_dotnet_path()
-        dll_path = resource_path(os.path.join("deps", "DepotDownloader.dll"))
-
-        cmd = [
-            dotnet_path,
-            dll_path,
-            "-app", str(app_id),
-            "-depot", str(target_depot),
-            "-manifest", str(manifest_id),
-            "-manifestfile", manifest_file,
-            "-depotkeys", keys_path,
-            "-manifest-only",
-            "-dir", temp_dir,
-        ]
-
-        class DumpThread(QThread):
-            finished_signal = pyqtSignal(bool, str)
-            def run(self):
-                proxy_mgr = None
-                try:
-                    cmd_list = list(cmd)
-                    from utils.kuroko import resolve_stealth_proxy_url
-                    proxy_url, proxy_mgr = resolve_stealth_proxy_url()
-                    if proxy_url:
-                        cmd_list.extend(["-proxy", proxy_url])
-
-                    from utils.helpers import get_dotnet_env
-                    env = get_dotnet_env()
-                    subprocess.run(cmd_list, capture_output=True, text=True, check=True, env=env)
-                    self.finished_signal.emit(True, "")
-                except Exception as ex:
-                    self.finished_signal.emit(False, str(ex))
-                finally:
-                    mgr, proxy_mgr = proxy_mgr, None
-                    if mgr is not None:
-                        try:
-                            mgr.stop()
-                        except Exception as e:
-                            logger.debug(f"[ModernDepotSelection] Error stopping stealth proxy manager: {e}")
-
-        self._dump_thread = DumpThread()
-
-        def _on_finished(success: bool, err: str):
-            progress_dialog.close()
-            if not success:
-                ThemedMessageBox.critical(self, "Error", f"Failed to load file list: {err}")
-                return
-
-            txt_path = os.path.join(temp_dir, f"manifest_{target_depot}_{manifest_id}.txt")
-            if not os.path.exists(txt_path):
-                ThemedMessageBox.critical(self, "Error", "Failed to locate generated file list.")
-                return
-
-            from ui.dialogs.fileselection import FileSelectionDialog
-            sel_dlg = FileSelectionDialog(
-                app_id=app_id,
-                depot_id=target_depot,
-                manifest_txt_path=txt_path,
-                parent=self,
-                manifest_file=manifest_file,
-                keys_path=keys_path,
-                manifest_id=manifest_id,
-            )
+        from ui.dialogs.fileselection import FileSelectionDialog
+        from ui.dialogs.depot_selection.manifest_dump import discard_keys_file
+        sel_dlg = FileSelectionDialog(
+            app_id=dump.app_id,
+            depot_id=dump.depot_id,
+            manifest_txt_path=dump.txt_path,
+            parent=self,
+            manifest_file=dump.manifest_file,
+            keys_path=dump.keys_path,
+            manifest_id=dump.manifest_id,
+        )
+        try:
             if sel_dlg.exec():
                 self.selected_files = sel_dlg.selected_files
                 ThemedMessageBox.information(
                     self,
                     "Selection Confirmed",
-                    f"Selected {len(self.selected_files)} file(s) for depot {target_depot}.\nPress OK at the bottom to download.",
+                    f"Selected {len(self.selected_files)} file(s) for depot {dump.depot_id}.\nPress OK at the bottom to download.",
                 )
-
-        self._dump_thread.finished_signal.connect(_on_finished)
-        self._dump_thread.start()
+        finally:
+            discard_keys_file(dump.keys_path)
 
     # Public getters matching DepotSelectionDialog interface
     def get_selected_depots(self) -> List[str]:

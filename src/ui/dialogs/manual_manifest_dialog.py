@@ -51,6 +51,7 @@ class ManualManifestDialog(QDialog):
         depots_dict: Optional[Dict[str, Any]] = None,
         default_depot_id: str = "",
         current_build_id: str = "",
+        target_build_id: Optional[str] = None,
         accent_color: str = "#4c8df5",
     ):
         super().__init__(parent)
@@ -59,6 +60,7 @@ class ManualManifestDialog(QDialog):
         self.depots_dict = dict(depots_dict or {})
         self.default_depot_id = str(default_depot_id or "").strip()
         self.current_build_id = str(current_build_id or "").strip()
+        self.target_build_id = str(target_build_id).strip() if target_build_id is not None else ""
         self.accent_color = accent_color
 
         self._settings = get_settings()
@@ -236,15 +238,19 @@ class ManualManifestDialog(QDialog):
             except Exception:
                 pass
 
-        init_bid = self.current_build_id or self._remembered_build_id
-        parent_ambient_bid = getattr(self.parent(), "current_build_id", "") if self.parent() else ""
-        if init_bid and init_bid != parent_ambient_bid:
-            self.build_input.setText(init_bid)
+        if self.target_build_id:
+            self.build_input.setText(self.target_build_id)
             self._user_typed_build = True
-        elif saved_mid and len(saved_mid) >= 6:
-            self.build_input.setText(f"M-{saved_mid[-6:]}")
         else:
-            self.build_input.setPlaceholderText(f"e.g. {init_bid or '55251'} or M-XXXXXX")
+            init_bid = self.current_build_id or self._remembered_build_id
+            parent_ambient_bid = getattr(self.parent(), "current_build_id", "") if self.parent() else ""
+            if init_bid and init_bid != parent_ambient_bid:
+                self.build_input.setText(init_bid)
+                self._user_typed_build = True
+            elif saved_mid and len(saved_mid) >= 6:
+                self.build_input.setText(f"M-{saved_mid[-6:]}")
+            else:
+                self.build_input.setPlaceholderText(f"e.g. {init_bid or '55251'} or M-XXXXXX")
 
         # Bottom Button Row
         btn_row = QHBoxLayout()

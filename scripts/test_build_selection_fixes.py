@@ -7,6 +7,7 @@ if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
 from ui.dialogs.depot_selection._mixins.branch_build import BranchBuildMixin
+from ui.dialogs.build_selection_dialog import _has_usable_manifests
 
 
 class DummyHost(BranchBuildMixin):
@@ -64,9 +65,29 @@ def test_build_unpinned_when_current_and_no_overrides():
     print("  [ok] build is unpinned when build_id matches current and no overrides exist")
 
 
+def test_usable_manifests_guard():
+    # Empty or None
+    assert not _has_usable_manifests(None)
+    assert not _has_usable_manifests({})
+
+    # Non-empty mapping with blank / zero manifest IDs
+    assert not _has_usable_manifests({"33231": {"manifest_id": ""}})
+    assert not _has_usable_manifests({"33231": ""})
+    assert not _has_usable_manifests({"33231": {"manifest_id": "0"}})
+    assert not _has_usable_manifests({"33231": "0"})
+    assert not _has_usable_manifests({"33231": {"depot_id": "33231"}})
+
+    # Valid numeric manifest IDs
+    assert _has_usable_manifests({"33231": {"manifest_id": "5654928643791563232"}})
+    assert _has_usable_manifests({"33231": "5654928643791563232"})
+    assert _has_usable_manifests({"33231": {"manifest_id": ""}, "33362": {"manifest_id": "5654928643791563232"}})
+    print("  [ok] _has_usable_manifests correctly rejects empty/blank manifest mappings and accepts valid IDs")
+
+
 if __name__ == "__main__":
     print("=== Testing Build Selection & Pinning Invariants ===")
     test_build_pinning_with_manifest_override()
     test_build_pinning_different_build_id()
     test_build_unpinned_when_current_and_no_overrides()
+    test_usable_manifests_guard()
     print("ALL BUILD SELECTION TESTS PASSED")

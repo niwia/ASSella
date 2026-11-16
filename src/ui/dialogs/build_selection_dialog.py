@@ -35,6 +35,17 @@ from ui.dialogs.themed_message_box import ThemedMessageBox
 logger = logging.getLogger("ACCELA.build_selection")
 
 
+def _has_usable_manifests(depots: Optional[Dict[str, Any]]) -> bool:
+    """Return True if depots dict has at least one valid numeric manifest ID."""
+    if not isinstance(depots, dict) or not depots:
+        return False
+    for did, info in depots.items():
+        mid = info.get("manifest_id") if isinstance(info, dict) else str(info or "").strip()
+        if mid and str(mid).isdigit() and str(mid) != "0":
+            return True
+    return False
+
+
 class BuildSelectionCard(QFrame):
     """QFrame subclass for build cards that handles clicks safely without monkey-patching."""
     def __init__(self, dialog, idx: int, parent=None):
@@ -530,14 +541,14 @@ class BuildSelectionDialog(QDialog):
             from core.steamdb_scraper import SteamDBBuildsCache
             cache = SteamDBBuildsCache()
             c_depots = cache.get_build_depots(build_id)
-            if c_depots:
+            if _has_usable_manifests(c_depots):
                 self._selected_patch_depots = c_depots
                 self.accept()
                 return
         except Exception:
             pass
 
-        if item.get("depots"):
+        if _has_usable_manifests(item.get("depots")):
             self._selected_patch_depots = item["depots"]
             self.accept()
             return
@@ -558,7 +569,7 @@ class BuildSelectionDialog(QDialog):
         threading.Thread(target=_depot_worker, daemon=True).start()
 
     def _on_depots_resolved(self, build_id: str, depots: dict):
-        if not depots:
+        if not _has_usable_manifests(depots):
             self.select_btn.setEnabled(True)
             self.select_btn.setText(f"Use Build {build_id}")
             res = ThemedMessageBox.question(
@@ -594,7 +605,8 @@ class BuildSelectionDialog(QDialog):
             game_name=self.game_name,
             depots_dict=self.depots_dict,
             default_depot_id=self.default_depot_id,
-            current_build_id=build_id,
+            current_build_id=self.current_build_id,
+            target_build_id=build_id,
             accent_color=self.accent_color,
         )
         if dlg.exec():

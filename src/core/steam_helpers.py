@@ -450,10 +450,33 @@ def get_steam_libraries():
     return list(_cached_steam_libraries)
 
 
+STEAM_PROCESS_NAMES = {
+    "steam",
+    ".steam-wrapped",
+    "steam-wrapped",
+    "steam-original",
+    "steam.sh",
+}
+
+
 def is_steam_running():
-    process_name = "steam.exe" if sys.platform == "win32" else "steam"
+    if sys.platform == "win32":
+        return any(
+            (p.info.get("name") or "").lower() == "steam.exe"
+            for p in psutil.process_iter(["name"])
+        )
+
+    # Check if SLSsteam pipe has an active listener first (fastest and most reliable)
+    try:
+        from utils.slssteam_integration import _is_slssteam_pipe_listening
+        if _is_slssteam_pipe_listening():
+            return True
+    except Exception:
+        pass
+
     return any(
-        (p.info.get("name") or "").lower() == process_name
+        (p.info.get("name") or "").lower() in STEAM_PROCESS_NAMES
+        or (p.info.get("name") or "").lower().startswith((".steam", "steam"))
         for p in psutil.process_iter(["name"])
     )
 
@@ -463,54 +486,88 @@ def kill_steam_process():
     _slssteam_so_path_cache = None
     _library_inject_so_path_cache = None
 
-    process_name = "steam.exe" if sys.platform == "win32" else "steam"
-    steam_proc = next(
-        (
+    if sys.platform == "win32":
+        steam_procs = [
             p
             for p in psutil.process_iter(["pid", "name"])
-            if (p.info.get("name") or "").lower() == process_name
-        ),
-        None,
-    )
+            if (p.info.get("name") or "").lower() == "steam.exe"
+        ]
+    else:
+        # Prefer main client process over helpers
+        steam_procs = [
+            p
+            for p in psutil.process_iter(["pid", "name"])
+            if (
+                ((p.info.get("name") or "").lower() in STEAM_PROCESS_NAMES
+                 or (p.info.get("name") or "").lower().startswith((".steam", "steam")))
+                and (p.info.get("name") or "").lower() != "steamwebhelper"
+            )
+        ]
+        if not steam_procs:
+            steam_procs = [
+                p
+                for p in psutil.process_iter(["pid", "name"])
+                if (p.info.get("name") or "").lower() in STEAM_PROCESS_NAMES
+                or (p.info.get("name") or "").lower().startswith((".steam", "steam"))
+            ]
 
-    if not steam_proc:
-        logger.warning(f"{process_name} process not found.")
+    if not steam_procs:
+        logger.warning("Steam process not found.")
         return False
+
+    steam_proc = steam_procs[0]
 
     if sys.platform == "linux":
-        pid = steam_proc.pid
-        maps_file = f"/proc/{pid}/maps"
-        try:
-            with open(maps_file, "r") as f:
-                for line in f:
-                    if "SLSsteam.so" in line:
-                        parts = line.split()
-                        if len(parts) > 5 and os.path.exists(parts[-1]):
-                            _slssteam_so_path_cache = parts[-1]
-                            logger.info(
-                                f"Found and cached SLSsteam.so path: {_slssteam_so_path_cache}"
-                            )
-                    elif (
-                        "library-inject.so" in line
-                        or "libSLS-library-inject.so" in line
-                    ):
-                        parts = line.split()
-                        if len(parts) > 5 and os.path.exists(parts[-1]):
-                            _library_inject_so_path_cache = parts[-1]
-                            logger.info(
-                                f"Found and cached library-inject.so path: {_library_inject_so_path_cache}"
-                            )
-        except OSError as e:
-            logger.error(f"Error reading process maps for library paths: {e}")
+        for sp in steam_procs:
+            pid = sp.pid
+            maps_file = f"/proc/{pid}/maps"
+            try:
+                with open(maps_file, "r") as f:
+                    for line in f:
+                        if "SLSsteam.so" in line:
+                            parts = line.split()
+                            if len(parts) > 5 and os.path.exists(parts[-1]):
+                                _slssteam_so_path_cache = parts[-1]
+                                logger.info(
+                                    f"Found and cached SLSsteam.so path: {_slssteam_so_path_cache}"
+                                )
+                        elif (
+                            "library-inject.so" in line
+                            or "libSLS-library-inject.so" in line
+                        ):
+                            parts = line.split()
+                            if len(parts) > 5 and os.path.exists(parts[-1]):
+                                _library_inject_so_path_cache = parts[-1]
+                                logger.info(
+                                    f"Found and cached library-inject.so path: {_library_inject_so_path_cache}"
+                                )
+                if _slssteam_so_path_cache:
+                    break
+            except OSError as e:
+                logger.error(f"Error reading process maps for library paths: {e}")
 
-    try:
-        steam_proc.kill()
-        steam_proc.wait(timeout=5)
-        logger.info(f"Successfully terminated {process_name} (PID: {steam_proc.pid}).")
-        return True
-    except psutil.Error as e:
-        logger.error(f"Failed to terminate {process_name}: {e}")
-        return False
+    # 1. Graceful SIGTERM to all detected steam processes
+    for sp in steam_procs:
+        try:
+            sp.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    # 2. Wait up to 3 seconds for clean exit
+    gone, alive = psutil.wait_procs(steam_procs, timeout=3.0)
+
+    # 3. Force kill (SIGKILL) any stubborn stragglers
+    for sp in alive:
+        try:
+            sp.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    if alive:
+        psutil.wait_procs(alive, timeout=2.0)
+
+    logger.info(f"Terminated Steam processes (PIDs: {[p.pid for p in steam_procs]}).")
+    return True
 
 
 def start_steam():
@@ -618,13 +675,28 @@ def start_steam_with_slssteam(slssteam_path=None, library_inject_path=None):
         )
         return "NEEDS_USER_PATH"
 
+    import shutil
+    steam_cmd = shutil.which("steam")
+    if not steam_cmd:
+        # Check standard NixOS and system paths
+        for candidate in (
+            "/run/current-system/sw/bin/steam",
+            os.path.expanduser("~/.nix-profile/bin/steam"),
+            "/usr/bin/steam",
+        ):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                steam_cmd = candidate
+                break
+    if not steam_cmd:
+        steam_cmd = "steam"
+
     try:
         logger.info(
-            f"Executing Steam with LD_AUDIT: {library_inject_path}:{slssteam_path}"
+            f"Executing {steam_cmd} with LD_AUDIT: {library_inject_path}:{slssteam_path}"
         )
         env = os.environ.copy()
         env["LD_AUDIT"] = f"{library_inject_path}:{slssteam_path}"
-        subprocess.Popen(["steam"], env=env)
+        subprocess.Popen([steam_cmd], env=env)
         return "SUCCESS"
     except (OSError, subprocess.SubprocessError) as e:
         logger.error(
@@ -736,20 +808,12 @@ def trigger_steam_install(appid: str, library_index: int = 0) -> bool:
 
 
 def slssteam_api_send(command: str) -> bool:
-    """Send a command to SLSsteam API via named pipe."""
-    if sys.platform != "linux":
-        return False
-
-    pipe_path = "/tmp/SLSsteam.API"
-
+    """Send a command to SLSsteam API via named pipe. Delegates to non-blocking helper."""
     try:
-        with open(pipe_path, "w") as f:
-            f.write(command.strip() + "\n")
-            f.flush()
-        logger.info(f"SLSsteam API command sent: {command}")
-        return True
-    except OSError:
-        # Silently fail - API may not be available
+        from utils.slssteam_integration import _slssteam_api_send
+        return _slssteam_api_send(command)
+    except Exception as e:
+        logger.debug(f"slssteam_api_send fallback failed: {e}")
         return False
 
 

@@ -760,20 +760,19 @@ class SingleDepotSelectionDialog(QDialog):
             if isinstance(d_info, dict):
                 target_manifest_id = d_info.get("manifest_id")
 
-        try:
-            dump = prepare_manifest_dump(self.app_id, target_depot, manifest_id=target_manifest_id)
-        except ManifestDumpError as e:
-            ThemedMessageBox.critical(self, "Error", str(e))
-            return
-
-        runner = ManifestDumpRunner(self, dump)
-        runner.finished.connect(lambda ok, message: self._on_dump_finished(dump, ok, message))
+        runner = ManifestDumpRunner(
+            self,
+            app_id=str(self.app_id),
+            depot_id=str(target_depot),
+            manifest_id=str(target_manifest_id) if target_manifest_id else None,
+        )
+        runner.finished.connect(lambda ok, message, r=runner: self._on_dump_finished(r.dump, ok, message))
         runner.start()
 
     def _on_dump_finished(self, dump, ok, message):
         """Open the file-selection tree over a listing that was written."""
-        if not ok:
-            ThemedMessageBox.critical(self, "Error", message)
+        if not ok or not dump:
+            ThemedMessageBox.critical(self, "Error", message or "Failed to prepare manifest.")
             return
 
         from ui.dialogs.fileselection import FileSelectionDialog
