@@ -15,7 +15,7 @@ export default defineConfig({
     siteTitle: 'ASSella',
     nav: [
       { text: 'Installation Guide', link: '/install' },
-      { text: 'arm64', link: '/arm64' },
+      { text: 'ARM64 (Preview)', link: '/arm64' },
       { text: 'Uran', link: '/uran' },
       { text: 'Epsilon', link: '/epsilon' },
       {
@@ -67,8 +67,8 @@ export default defineConfig({
         ]
       },
       {
-        text: 'arm64',
-        items: [{ text: 'arm64 (coming soon)', link: '/arm64' }]
+        text: 'ARM64',
+        items: [{ text: 'ARM64 & Armada OS (Preview)', link: '/arm64' }]
       },
       {
         text: 'Uran',
