@@ -217,20 +217,20 @@ class GameDetailsDialogV2(QDialog):
         self._builds_fetch_requested = False
 
         try:
-            from core.steamdb_scraper import ByparrManager
-            has_byparr = ByparrManager.find_byparr_dir() is not None
+            from core.steamdb_scraper import ByparrManager, cffi_requests
+            has_solver = (ByparrManager.find_byparr_dir() is not None) or ByparrManager.is_custom_service() or bool(cffi_requests)
         except Exception:
-            has_byparr = False
+            has_solver = False
 
-        if self._cached_builds and has_byparr:
+        if self._cached_builds:
             self._populate_builds_cards(self._cached_builds)
             self.builds_center_stack.setCurrentIndex(1)
             if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
                 self.builds_bottom_bar.setVisible(True)
         else:
-            self.builds_center_stack.setCurrentIndex(0 if has_byparr else 2)
+            self.builds_center_stack.setCurrentIndex(0 if has_solver else 2)
             if hasattr(self, "builds_bottom_bar") and self.builds_bottom_bar:
-                self.builds_bottom_bar.setVisible(has_byparr)
+                self.builds_bottom_bar.setVisible(has_solver)
 
         if self.parent():
             from ui.dialogs.dialog_raiser import DialogRaiser

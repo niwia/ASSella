@@ -1941,6 +1941,12 @@ class FetchManifestDialog(QDialog):
                     if overrides:
                         metadata["manifest_overrides"] = overrides
 
+                if hasattr(depot_dialog, "get_selected_files"):
+                    sel_files = depot_dialog.get_selected_files()
+                    if sel_files:
+                        metadata["selected_files_list"] = sel_files
+                        logger.info(f"[FetchManifest] Preserved {len(sel_files)} selective files for download")
+
                 if getattr(depot_dialog, "_dlc_only_mode", False):
                     metadata["is_dlc_only"] = True
                     metadata["_dlc_only"] = True

@@ -125,6 +125,22 @@ def main() -> int:
             "-manifest-only", "-dir", dump.temp_dir,
         ], "the command line is DepotDownloader's manifest-only invocation")
 
+    print("\n=== an explicit manifest_id override is respected ===")
+    with tempfile.TemporaryDirectory() as tmp:
+        hubcap = Path(tmp) / "hubcap_manifests"
+        hubcap.mkdir()
+        make_bundle(hubcap / "accela_fetch_1234.zip", lua=LUA,
+                    members={
+                        "1234_default111.manifest": b"default",
+                        "1234_override999.manifest": b"override",
+                    })
+        dump = md.prepare_manifest_dump(1234, "1234", manifest_id="override999",
+                                        manifests_dir=hubcap, temp_root=str(Path(tmp) / "work"))
+        check(dump.manifest_id == "override999",
+              "explicit manifest_id override selects the requested manifest")
+        check(dump.manifest_file.endswith("1234_override999.manifest"),
+              "manifest_file points to the overridden manifest")
+
     print("\n=== a bundle without the depot prefix still yields a manifest ===")
     with tempfile.TemporaryDirectory() as tmp:
         hubcap = Path(tmp) / "hubcap_manifests"

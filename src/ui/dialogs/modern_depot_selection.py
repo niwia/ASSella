@@ -1469,33 +1469,19 @@ class ModernDepotSelectionDialog(QDialog):
 
     def _on_builds_clicked(self):
         """Open historical build picker dialog."""
-        from core.steamdb_scraper import ByparrManager
-        has_byparr = ByparrManager.find_byparr_dir() is not None
         first_depot = next(iter(self.depots.keys())) if self.depots else str(self.app_id)
         active_bid = getattr(self, "_selected_build_id", None) or self.current_build_id
 
-        if not has_byparr:
-            from ui.dialogs.manual_manifest_dialog import ManualManifestDialog
-            dlg = ManualManifestDialog(
-                parent=self,
-                app_id=self.app_id,
-                game_name=self.game_name,
-                depots_dict=self.depots,
-                default_depot_id=first_depot,
-                current_build_id=active_bid,
-                accent_color=self.accent_color,
-            )
-        else:
-            from ui.dialogs.build_selection_dialog import BuildSelectionDialog
-            dlg = BuildSelectionDialog(
-                parent=self,
-                app_id=self.app_id,
-                game_name=self.game_name,
-                current_build_id=active_bid,
-                accent_color=self.accent_color,
-                depots_dict=self.depots,
-                default_depot_id=first_depot,
-            )
+        from ui.dialogs.build_selection_dialog import BuildSelectionDialog
+        dlg = BuildSelectionDialog(
+            parent=self,
+            app_id=self.app_id,
+            game_name=self.game_name,
+            current_build_id=active_bid,
+            accent_color=self.accent_color,
+            depots_dict=self.depots,
+            default_depot_id=first_depot,
+        )
 
         if dlg.exec():
             selected_bid, patch_depots = dlg.get_selected_build()
@@ -1503,7 +1489,11 @@ class ModernDepotSelectionDialog(QDialog):
                 self._selected_build_id = selected_bid
                 self.builds_btn.setText(selected_bid)
                 self.build_val_lbl.setText(selected_bid)
-                self._is_build_pinned = (selected_bid != self.current_build_id)
+                has_mid_diff = bool(patch_depots)
+                if self.current_build_id and selected_bid == self.current_build_id and not has_mid_diff:
+                    self._is_build_pinned = False
+                else:
+                    self._is_build_pinned = True
                 self._update_build_btn_style()
                 if patch_depots:
                     for did, info in patch_depots.items():
@@ -1570,15 +1560,39 @@ class ModernDepotSelectionDialog(QDialog):
             ThemedMessageBox.critical(self, "Error", f"Failed to write keys file: {e}")
             return
 
-        manifest_files = list(Path(temp_dir).glob(f"{target_depot}_*.manifest")) or list(Path(temp_dir).glob("*.manifest"))
-        if not manifest_files:
-            ThemedMessageBox.critical(self, "Error", f"No manifest file found for depot {target_depot}.")
-            return
+        target_mid = getattr(self, "_manifest_overrides", {}).get(str(target_depot))
+        if not target_mid and hasattr(self, "depots") and str(target_depot) in self.depots:
+            d_info = self.depots[str(target_depot)]
+            if isinstance(d_info, dict):
+                target_mid = d_info.get("manifest_id")
 
-        manifest_path = manifest_files[0]
-        manifest_file = str(manifest_path)
-        stem = manifest_path.name.replace(".manifest", "")
-        manifest_id = stem.split("_", 1)[1] if "_" in stem else stem
+        manifest_file = None
+        manifest_id = None
+        if target_mid:
+            cand = Path(temp_dir) / f"{target_depot}_{target_mid}.manifest"
+            if cand.exists() and cand.stat().st_size > 0:
+                manifest_file = str(cand)
+                manifest_id = str(target_mid)
+            else:
+                try:
+                    from core import morrenus_api
+                    raw_bytes, _ = morrenus_api.generate_single_manifest(target_depot, str(target_mid), depot_key=depot_key)
+                    if raw_bytes:
+                        cand.write_bytes(raw_bytes)
+                        manifest_file = str(cand)
+                        manifest_id = str(target_mid)
+                except Exception as _fetch_err:
+                    logger.debug(f"[ModernDepotSelection] Error fetching manifest on-demand: {_fetch_err}")
+
+        if not manifest_file:
+            manifest_files = list(Path(temp_dir).glob(f"{target_depot}_*.manifest")) or list(Path(temp_dir).glob("*.manifest"))
+            if not manifest_files:
+                ThemedMessageBox.critical(self, "Error", f"No manifest file found for depot {target_depot}.")
+                return
+            manifest_path = manifest_files[0]
+            manifest_file = str(manifest_path)
+            stem = manifest_path.name.replace(".manifest", "")
+            manifest_id = stem.split("_", 1)[1] if "_" in stem else stem
 
         progress_dialog = ThemedProgressDialog("Loading file list from manifest...", "Cancel", 0, 0, self)
         progress_dialog.setWindowTitle("Loading Manifest")

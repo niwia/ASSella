@@ -28,14 +28,70 @@ class FileCustomisationMixin:
             return str(id_item.data(Qt.ItemDataRole.UserRole))
         return None
 
+    def _checked_downloadable_depots(self):
+        """All checked depots that can actually be downloaded: [(depot_id, name), ...]"""
+        result = []
+        for i in range(self.table_widget.rowCount()):
+            id_item = self.table_widget.item(i, 0)
+            if id_item is None or id_item.checkState() != Qt.CheckState.Checked:
+                continue
+            role = id_item.data(Qt.ItemDataRole.UserRole + 2)
+            if role in ("missing", "expander", "unreleased"):
+                continue
+            did = str(id_item.data(Qt.ItemDataRole.UserRole) or id_item.text()).strip()
+            name_item = self.table_widget.item(i, 1)
+            name = name_item.text().strip() if name_item else f"Depot {did}"
+            if did and did not in [d[0] for d in result]:
+                result.append((did, name))
+        return result
+
     def _on_select_files_clicked(self):
-        target_depot = self._first_checked_depot_id()
-        if not target_depot:
+        checked = self._checked_downloadable_depots()
+        if not checked:
             ThemedMessageBox.warning(self, "Warning", "Please select at least one depot first.")
             return
 
+        overrides = getattr(self, "_manifest_overrides", {})
+
+        if len(checked) == 1:
+            target_depot = checked[0][0]
+        else:
+            # If multiple depots are checked, allow the user to select which depot to browse
+            items = []
+            default_idx = 0
+            for idx, (did, dname) in enumerate(checked):
+                mid = overrides.get(did)
+                if not mid and hasattr(self, "depots") and did in self.depots:
+                    d_info = self.depots[did]
+                    if isinstance(d_info, dict):
+                        mid = d_info.get("manifest_id")
+                label = f"{did} - {dname}"
+                if mid:
+                    label += f" [Manifest: {mid}]"
+                items.append(label)
+                if did in overrides:
+                    default_idx = idx
+
+            from ui.dialogs.themed_input_dialog import ThemedInputDialog
+            chosen_item, ok = ThemedInputDialog.getItem(
+                self,
+                title="Browse Files",
+                label="Multiple depots are checked. Select which depot to browse:",
+                items=items,
+                current=default_idx,
+            )
+            if not ok or not chosen_item:
+                return
+            target_depot = chosen_item.split(" - ", 1)[0].strip()
+
+        target_manifest_id = overrides.get(str(target_depot))
+        if not target_manifest_id and hasattr(self, "depots") and str(target_depot) in self.depots:
+            d_info = self.depots[str(target_depot)]
+            if isinstance(d_info, dict):
+                target_manifest_id = d_info.get("manifest_id")
+
         try:
-            dump = prepare_manifest_dump(self.app_id, target_depot)
+            dump = prepare_manifest_dump(self.app_id, target_depot, manifest_id=target_manifest_id)
         except ManifestDumpError as e:
             ThemedMessageBox.critical(self, "Error", str(e))
             return
