@@ -1615,7 +1615,8 @@ do_install() {
         cat >"$NIXOS_LAUNCHER" <<'EOL'
 #!/usr/bin/env bash
 # Ensure Nix profile paths are in PATH for desktop GUI launchers
-export PATH="$HOME/.nix-profile/bin:/etc/profiles/per-user/$USER/bin:/run/current-system/sw/bin:$PATH"
+_nix_user="${USER:-${LOGNAME:-$(id -un 2>/dev/null || whoami)}}"
+export PATH="$HOME/.nix-profile/bin:/etc/profiles/per-user/$_nix_user/bin:/run/current-system/sw/bin:$PATH"
 
 APPIMAGE="$HOME/.local/share/ACCELA/ASSella.AppImage"
 
