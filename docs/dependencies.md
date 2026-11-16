@@ -21,7 +21,7 @@ They are now pinned:
 
 ```
 steam @ git+https://github.com/solsticegamestudios/steam.git@1373e885f26bb636225443787f54d4082283e5f3
-vdf   @ git+https://github.com/solsticegamestudios/vdf.git@v4.0
+vdf   @ git+https://github.com/solsticegamestudios/vdf.git@fb88ea7e38a85476743f5601b0c80d5715034623
 ```
 
 To bump them:

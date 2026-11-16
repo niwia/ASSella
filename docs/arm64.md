@@ -1,88 +1,94 @@
-# ASSella on ARM64 & Armada OS
+# ASSella for ARM64 & Armada OS
 
-ASSella provides native 64-bit ARM (`aarch64`) support designed specifically for modern ARM handheld devices running [Armada OS](https://github.com/armada-os/armada) (a Fedora `bootc` immutable distribution running Gamescope and KDE Plasma).
+::: warning Early Testing Preview
+Native ARM64 support is currently in **early testing and active development**. Features may be experimental, incomplete, or behave unpredictably. Expect occasional manual troubleshooting as the ecosystem and tools mature.
+:::
 
----
+::: danger Critical Prerequisite: SLSsteam ARM64 Release Preview Required
+To use ASSella's game management and native Steam integration on ARM64, you **must** be running an early **SLSsteam ARM64 release preview** build (the `aarm64` branch / preview builds providing `SLSsteam.so` for aarch64). 
 
-## 1. Overview & Architecture
-
-Mainstream x86_64 ASSella releases target standard Steam Deck (SteamOS) and generic x86 Linux distributions. The ARM64 port adapts ASSella to the architectural quirks of ARM64 handhelds while sharing 100% of the core functionality, Material You interface, and game management engines.
-
-| Component | x86_64 Mainstream | ARM64 / Armada OS |
-| :--- | :--- | :--- |
-| **Target Architecture** | `x86_64` (AMD64) | `aarch64` (ARM64) |
-| **Steam Client Root** | `~/.local/share/Steam` | `~/.local/share/Steam/steamrtarm64` |
-| **Steam Executable** | `~/.local/share/Steam/steam` | `~/.local/share/Steam/steamrtarm64/steam` |
-| **Display Session** | X11 / Xwayland / Gamescope | Pure Wayland Gamescope (`wayland;xcb`) |
-| **AppImage FUSE Runtime** | Type 2 (dynamic `libfuse.so.2`) | Static FUSE3 runtime (for Fedora bootc) |
-| **.NET 9 Dependency** | Host `~/.dotnet/dotnet` | Bundled directly in `AppDir/bin/.dotnet` |
-| **CI Runner** | `ubuntu-22.04` (x86) | `ubuntu-24.04-arm` (Native GitHub aarch64) |
-| **Primary Binary** | `ASSella.AppImage` | `ASSella-arm64.AppImage` |
+Standard x86 SLSsteam binaries or older releases will **not** inject into native ARM64 Steam. Without an ARM64-compatible SLSsteam release preview, ASSella will safely fall back to Standalone Mode.
+:::
 
 ---
 
-## 2. Platform Quirks on Armada OS
+## Overview
 
-### A. Fedora bootc Immutability & FUSE3
-Armada OS is an image-based OS where `/usr` is read-only and traditional legacy libraries like `libfuse.so.2` are absent. 
-- Traditional AppImages fail on double-click with `dlopen(): error loading libfuse.so.2`.
-- ASSella's ARM64 AppImage is built using a static FUSE3 runtime, allowing direct execution without requiring host package layering or `fuse2` packages.
+ASSella provides native 64-bit ARM (`aarch64`) builds designed specifically for modern ARM handheld devices running **Armada OS** (a Fedora `bootc` immutable gaming distribution) and other 64-bit ARM Linux environments.
 
-### B. Gamescope (Game Mode) Wayland Session
-Armada OS boots directly into Gamescope Wayland in Game Mode and KDE Plasma in Desktop Mode.
-- When launched as a Non-Steam Game inside Gamescope, relying solely on `libqxcb.so` can fail or cause black screens if Xwayland is uninitialized.
-- The ARM64 AppImage bundles both `libqwayland-egl.so` and `libqxcb.so` in `usr/plugins/platforms/`, and exports:
-  ```bash
-  export QT_QPA_PLATFORM="wayland;xcb"
-  ```
-
-### C. Handheld Screen Geometry Clamping
-ARM64 handheld screens typically operate at 720p or 800p resolutions with fractional scaling enabled (125%–150%). 
-- In [src/ui/main_window.py](file:///home/aiwin/ASSella_beta_git/src/ui/main_window.py), `MainWindow.show()` dynamically inspects:
-  ```python
-  avail = QApplication.primaryScreen().availableGeometry()
-  ```
-  and clamps the application window to fit within available screen bounds, preventing control buttons or bottom tabs from clipping offscreen.
-
-### D. Bundled .NET 9 Runtime
-Features requiring .NET (such as specific decryption or manifest tools) would fail if the user had to install .NET 9 on an immutable OS.
-- The build script (`scripts/build_arm64_appimage.sh`) bundles Microsoft's official `dotnet-runtime-9.0.0-linux-arm64` directly into `AppDir/bin/.dotnet`.
-- [src/utils/helpers.py](file:///home/aiwin/ASSella_beta_git/src/utils/helpers.py) checks for this bundled runtime before falling back to `~/.dotnet/dotnet`.
-
-### E. Native Steam Path Resolution
-Steam on ARM64 Linux places its native runtime at `~/.local/share/Steam/steamrtarm64`.
-- [src/core/steam_helpers.py](file:///home/aiwin/ASSella_beta_git/src/core/steam_helpers.py) prioritizes `steamrtarm64` whenever `is_arm64()` returns true, and executes `steamrtarm64/steam` directly.
-
-### F. SLSsteam on ARM64
-SLSsteam provides an experimental `aarm64` branch that builds `SLSsteam.so` injected via `LD_AUDIT`.
-- Instead of hardcoding ARM64 as incompatible, [src/utils/slssteam_integration.py](file:///home/aiwin/ASSella_beta_git/src/utils/slssteam_integration.py) uses `SteamEnv.sls_installed()` to detect `~/.local/share/SLSsteam/SLSsteam.so`.
-- When present, SLS mode is available; when absent, ASSella cleanly falls back to Standalone Mode.
+The ARM64 port delivers the same Material You interface, downloading workflows, and library management features available on x86, while adapting under the hood to the unique requirements of ARM handheld hardware and immutable system architectures.
 
 ---
 
-## 3. Dedicated Scripts & Files
+## Key Handheld & OS Adaptations
 
-| Path | Purpose |
-| :--- | :--- |
-| `.github/workflows/build-arm64.yml` | Native `ubuntu-24.04-arm` CI workflow that compiles and verifies `ASSella-arm64.AppImage`. |
-| `scripts/build_arm64_appimage.sh` | Shell script assembling the ARM64 AppDir, Python 3.13 aarch64 runtime, .NET 9 ARM64 runtime, and AppImage. |
-| `scripts/install-armada.sh` | Userland installer script tailored for Armada OS. |
-| `scripts/test_arm64_gating.py` | Unit test suite verifying architecture gating and path candidate logic. |
-| `.agents/rules/arm64_rules.md` | Agent rules and guidelines for managing the `arm64` branch. |
+### 1. Bundled .NET 9 Runtime
+Armada OS utilizes an immutable root filesystem (`bootc`), meaning users cannot easily install packages into system directories.
+- ASSella bundles the native ARM64 **.NET 9** runtime internally.
+- Features requiring .NET work immediately without requiring host-level modifications, root privileges, or running manual install scripts into system paths.
+
+### 2. Static FUSE3 Runtime Support
+Modern Linux distributions and immutable operating systems no longer ship legacy `libfuse.so.2` by default.
+- Traditional AppImages fail on modern images with `dlopen(): error loading libfuse.so.2`.
+- The ARM64 AppImage is built with static FUSE3 compatibility so it runs directly on double-click without needing extra compatibility packages.
+
+### 3. Gamescope & Wayland Native Windowing
+Armada OS boots directly into a Gamescope Wayland session in Game Mode and KDE Plasma in Desktop Mode.
+- ASSella includes native Wayland and XCB display platform plugins.
+- Operates smoothly when launched as a Non-Steam Game inside Gamescope Game Mode without relying on an external Xwayland bridge.
+
+### 4. Handheld Fractional Scaling & Screen Clamping
+ARM64 handheld screens frequently use 720p or 800p displays paired with 125%–150% fractional scaling.
+- The window geometry dynamically detects available screen bounds and clamps dimensions to fit the display.
+- Action bars, sidebars, and dialog buttons remain accessible without clipping offscreen.
+
+### 5. Native ARM64 Steam Detection
+Steam on ARM64 Linux resides in dedicated ARM runtime directories:
+- ASSella automatically resolves and hooks native ARM Steam at `~/.local/share/Steam/steamrtarm64`.
+- Manifest discovery and client version probing natively inspect ARM64 manifest structures.
 
 ---
 
-## 4. Guidelines for Merging from `beta`
+## Requirements Checklist
 
-When merging features or bug fixes from `beta` to `arm64`:
+Before testing ASSella on ARM64, ensure your environment meets these requirements:
 
-1. **Do not use automated sync**: Pushes to `beta` must never blindly auto-merge into `arm64`. Merging must be performed manually and intentionally.
-2. **Preserve Dynamic Gating**: Never remove `if is_arm64():` branches or bundled `.dotnet` lookups in `helpers.py`, `steam_helpers.py`, or `modes.py`.
-3. **Keep `game_cache.py` Lint Annotation**: Ensure `import threading  # noqa: TC003` remains intact; moving it into `if TYPE_CHECKING:` causes `scripts/smoke_import_check.py` to fail at runtime.
-4. **Run Verification**:
-   ```bash
-   uvx ruff check src/
-   python3 -u scripts/smoke_import_check.py
-   python3 scripts/test_arm64_gating.py
-   python3 scripts/check_silent_exceptions.py
-   ```
+- [x] **64-bit ARM Handheld**: Powered by an ARM64 (aarch64) SoC.
+- [x] **Supported OS**: Armada OS or compatible ARM64 Linux distribution.
+- [x] **Native ARM Steam Client**: Native Steam installed under `~/.local/share/Steam/steamrtarm64/steam`.
+- [x] **SLSsteam ARM64 Preview**: Early preview build of `SLSsteam.so` built for ARM64 installed in `~/.local/share/SLSsteam/SLSsteam.so`.
+- [x] **Hubcap Manifest API Key**: Connected Discord account and active Hubcap API key (see [Installation Guide](/install)).
+
+---
+
+## How to Run
+
+### Step 1: Download the ARM64 AppImage Preview
+Obtain the latest preview binary (`ASSella-arm64.AppImage`) for your ARM64 device.
+
+### Step 2: Grant Execution Permissions
+Open your terminal in Desktop Mode and make the AppImage executable:
+
+```bash
+chmod +x ASSella-arm64.AppImage
+```
+
+### Step 3: Launch in Desktop Mode
+You can launch ASSella directly from the terminal or file manager:
+
+```bash
+./ASSella-arm64.AppImage
+```
+
+### Step 4: (Optional) Add to Steam for Game Mode
+To access ASSella directly from the handheld gaming UI:
+1. Open Steam in Desktop Mode.
+2. Select **Games** $\rightarrow$ **Add a Non-Steam Game to My Library...**
+3. Browse and select `ASSella-arm64.AppImage`.
+4. Return to Gaming Mode / Gamescope and launch ASSella whenever needed.
+
+---
+
+## Current Status & Feedback
+
+Because ARM64 gaming on Linux is an actively evolving space, certain features may undergo adjustments between releases. If you run into issues, unexpected behaviors, or visual glitches on your specific handheld hardware, sharing testing feedback and logs helps stabilize the experience for everyone.
