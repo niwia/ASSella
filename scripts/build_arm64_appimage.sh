@@ -110,6 +110,7 @@ cat << 'EOF' > "$APPDIR/bin/run.sh"
 #!/usr/bin/env bash
 cd "$(dirname "$(realpath "$0")")"
 export APPIMAGE=1
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
 
 PYTHON_EXEC=".venv/bin/python3"
 if [ -f "$PYTHON_EXEC" ]; then

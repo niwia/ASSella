@@ -23,6 +23,7 @@ from PyQt6.QtGui import (
     QShortcut,
 )
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QHBoxLayout,
@@ -514,7 +515,17 @@ class MainWindow(
         """Configure basic window properties."""
         self.setWindowTitle("ASSELA")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setGeometry(100, 100, 800, 350)
+
+        screen = QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            w = min(800, avail.width())
+            h = min(350, avail.height())
+            x = max(avail.x(), min(100, avail.x() + (avail.width() - w) // 2))
+            y = max(avail.y(), min(100, avail.y() + (avail.height() - h) // 2))
+            self.setGeometry(x, y, w, h)
+        else:
+            self.setGeometry(100, 100, 800, 350)
 
         from utils.color_utils import load_assella_app_icon
         app_icon = load_assella_app_icon()

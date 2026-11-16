@@ -32,6 +32,9 @@ pysocks==1.7.1
 pyqt6==6.11.0
 zstandard==0.25.0
 
+# HTTP client for Steam API, Morrenus, Hubcap and artwork downloads
+requests>=2.32.0
+
 # rich powers the CLI depot/DLC selection menus, progress bars, and terminal formatting.
 # `managers/cli_manager.py` imports `ui/text_menus.py` at module level.
 rich>=13.7.0

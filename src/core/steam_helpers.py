@@ -117,14 +117,20 @@ def _build_steam_env() -> SteamEnv:
 
     else:
         # ── Native paths ───────────────────────────────────────────────────
-        # Steam root: prefer ~/.local/share/Steam, fall back to ~/.steam/steam symlink
+        # Steam root: prefer ~/.local/share/Steam, fall back to ~/.steam/steam symlink or native ARM steamrtarm64
         native_candidates = [
             home / ".local" / "share" / "Steam",
             home / ".steam" / "steam",
+            home / ".local" / "share" / "Steam" / "steamrtarm64",
+            home / ".steam" / "steam" / "steamrtarm64",
         ]
         steam_path = None
         for candidate in native_candidates:
-            if (candidate / "steamapps").is_dir():
+            if (
+                (candidate / "steamapps").is_dir()
+                or (candidate / "steamrtarm64").is_dir()
+                or (candidate / "steam").is_file()
+            ):
                 steam_path = str(candidate.resolve())
                 break
 
@@ -255,7 +261,9 @@ def get_installed_steam_client_version(force_refresh: bool = False) -> Optional[
         home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam",
         home / ".var" / "app" / "com.valvesoftware.Steam" / "data" / "Steam",
         home / ".local" / "share" / "Steam",
+        home / ".local" / "share" / "Steam" / "steamrtarm64",
         home / ".steam" / "steam",
+        home / ".steam" / "steam" / "steamrtarm64",
         home / ".steam" / "root",
     ])
 
@@ -264,8 +272,12 @@ def get_installed_steam_client_version(force_refresh: bool = False) -> Optional[
         "steam_client_steamdeck_publicbeta_ubuntu12.manifest",
         "steam_client_ubuntu12.manifest",
         "steam_client_publicbeta_ubuntu12.manifest",
+        "steam_client_arm64.manifest",
+        "steam_client_steamdeck_arm64.manifest",
+        "steam_client_publicbeta_arm64.manifest",
         "steam_client_steamdeck_stable_ubuntu12",
         "steam_client_ubuntu12",
+        "steam_client_arm64",
     ]
 
     version_pattern = re.compile(r'"version"\s+"(\d+)"')
@@ -716,6 +728,10 @@ def dispatch_steam_url(url: str) -> bool:
             cmd = ["flatpak", "run", "com.valvesoftware.Steam", url]
         elif shutil.which("steam"):
             cmd = ["steam", url]
+        elif env.steam_path and (Path(env.steam_path) / "steam").is_file():
+            cmd = [str(Path(env.steam_path) / "steam"), url]
+        elif env.steam_path and (Path(env.steam_path) / "steamrtarm64" / "steam").is_file():
+            cmd = [str(Path(env.steam_path) / "steamrtarm64" / "steam"), url]
         elif shutil.which("xdg-open"):
             cmd = ["xdg-open", url]
 
