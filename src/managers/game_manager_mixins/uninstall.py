@@ -335,9 +335,10 @@ class GameManagerUninstallMixin:
         remove_compatdata=False,
         remove_saves=False,
         remove_from_library=False,
-        remove_shortcuts=False,
+        remove_shortcuts=True,
         remove_sls=False,
         wipe_sls_only=False,
+        remove_game_files=True,
     ):
         """
         Uninstall a game by removing its folder (or DLC files if dlc_only), ACF file, and optionally compatdata/saves.
@@ -455,53 +456,60 @@ class GameManagerUninstallMixin:
                             except Exception as e:
                                 logger.warning(f"Could not remove marker {m_name}: {e}")
 
-                if not (wipe_sls_only or game_data.get("wipe_sls_only")) and install_path and os.path.exists(install_path):
-                    shutil.rmtree(install_path, ignore_errors=True)
-                    if os.path.exists(install_path) and os.listdir(install_path):
-                        logger.warning(f"Some files in game folder could not be deleted: {install_path}")
-                        removed_items.append(f"Game folder: {install_path} (some files remaining)")
-                    else:
-                        logger.info(f"Removed game folder: {install_path}")
-                        removed_items.append(f"Game folder: {install_path}")
+                if not (wipe_sls_only or game_data.get("wipe_sls_only")):
+                    if remove_game_files and install_path and os.path.exists(install_path):
+                        shutil.rmtree(install_path, ignore_errors=True)
+                        if os.path.exists(install_path) and os.listdir(install_path):
+                            logger.warning(f"Some files in game folder could not be deleted: {install_path}")
+                            removed_items.append(f"Game folder: {install_path} (some files remaining)")
+                        else:
+                            logger.info(f"Removed game folder: {install_path}")
+                            removed_items.append(f"Game folder: {install_path}")
+                    elif not remove_game_files and install_path:
+                        preserved_items.append(f"Game folder: {install_path} (preserved on disk)")
 
-                try:
-                    libs = get_steam_libraries() or []
-                    if library_path and library_path not in libs:
-                        libs.append(library_path)
-                    for lib in libs:
-                        dl_dir = Path(lib) / "steamapps" / "downloading" / str(appid)
-                        if dl_dir.exists():
-                            shutil.rmtree(dl_dir, ignore_errors=True)
-                            logger.info(f"Removed downloading folder: {dl_dir}")
-                            removed_items.append("Temporary download caches")
-                        temp_dir = Path(lib) / "steamapps" / "temp" / str(appid)
-                        if temp_dir.exists():
-                            shutil.rmtree(temp_dir, ignore_errors=True)
-                            logger.info(f"Removed temp folder: {temp_dir}")
-                except Exception as e:
-                    logger.debug(
-                        f"Error cleaning downloading/temp folders for {appid}: {e}"
-                    )
+                if remove_game_files:
+                    try:
+                        libs = get_steam_libraries() or []
+                        if library_path and library_path not in libs:
+                            libs.append(library_path)
+                        for lib in libs:
+                            dl_dir = Path(lib) / "steamapps" / "downloading" / str(appid)
+                            if dl_dir.exists():
+                                shutil.rmtree(dl_dir, ignore_errors=True)
+                                logger.info(f"Removed downloading folder: {dl_dir}")
+                                removed_items.append("Temporary download caches")
+                            temp_dir = Path(lib) / "steamapps" / "temp" / str(appid)
+                            if temp_dir.exists():
+                                shutil.rmtree(temp_dir, ignore_errors=True)
+                                logger.info(f"Removed temp folder: {temp_dir}")
+                    except Exception as e:
+                        logger.debug(
+                            f"Error cleaning downloading/temp folders for {appid}: {e}"
+                        )
 
-                try:
-                    libs = get_steam_libraries() or []
-                    if library_path and library_path not in libs:
-                        libs.append(library_path)
-                    for lib in libs:
-                        acf_file = Path(lib) / "steamapps" / f"appmanifest_{appid}.acf"
-                        if acf_file.exists():
-                            acf_file.unlink(missing_ok=True)
-                            logger.info(f"Removed ACF file: {acf_file}")
-                            removed_items.append(f"Steam app manifest: {acf_file.name}")
-                except Exception as e:
-                    logger.debug(f"Error cleaning ACF file for {appid}: {e}")
+                    try:
+                        libs = get_steam_libraries() or []
+                        if library_path and library_path not in libs:
+                            libs.append(library_path)
+                        for lib in libs:
+                            acf_file = Path(lib) / "steamapps" / f"appmanifest_{appid}.acf"
+                            if acf_file.exists():
+                                acf_file.unlink(missing_ok=True)
+                                logger.info(f"Removed ACF file: {acf_file}")
+                                removed_items.append(f"Steam app manifest: {acf_file.name}")
+                    except Exception as e:
+                        logger.debug(f"Error cleaning ACF file for {appid}: {e}")
+                else:
+                    manifest_name = f"appmanifest_{appid}.acf" if appid and appid != "0" else "appmanifest (.acf)"
+                    preserved_items.append(f"Steam app manifest: {manifest_name} (preserved on disk)")
 
             depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
             depot_has_remaining = (
                 is_dlc_only
                 and target_dlc_ids
                 and depot_file.exists()
-                and bool(depot_file.read_text().strip())
+                and bool(depot_file.read_text(encoding="utf-8", errors="replace").strip())
             )
 
             if appid and appid not in ("0", "N/A", "unknown"):
@@ -535,8 +543,11 @@ class GameManagerUninstallMixin:
                 else:
                     preserved_items.append("Steam Cloud userdata saves: None found")
 
-                self._remove_linux_shortcuts_and_icons(appid)
-                removed_items.append("Desktop application shortcuts & icons")
+                if remove_shortcuts:
+                    self._remove_linux_shortcuts_and_icons(appid)
+                    removed_items.append("Desktop application shortcuts & icons")
+                else:
+                    preserved_items.append("Desktop application shortcuts & icons (preserved)")
 
             if appid and appid not in ("0", "N/A", "unknown"):
                 # If partial DLC-only uninstall, only prune target_dlc_ids from config
@@ -580,7 +591,7 @@ class GameManagerUninstallMixin:
                                 )
                                 if depot_file.exists():
                                     try:
-                                        for line in depot_file.read_text().splitlines():
+                                        for line in depot_file.read_text(encoding="utf-8", errors="replace").splitlines():
                                             parts = line.split(":")
                                             if parts and parts[0].strip():
                                                 did = str(parts[0].strip())
@@ -765,13 +776,13 @@ class GameManagerUninstallMixin:
                 desktop_files_removed = 0
                 for desktop_file in desktop_dir.glob("*.desktop"):
                     try:
-                        with open(desktop_file, "r", encoding="utf-8") as f:
+                        with open(desktop_file, "r", encoding="utf-8", errors="ignore") as f:
                             content = f.read()
                             if re.search(rf"steam://rungameid/{appid}(?!\d)", content):
                                 os.remove(desktop_file)
                                 logger.info(f"Removed desktop entry: {desktop_file}")
                                 desktop_files_removed += 1
-                    except OSError as e:
+                    except (OSError, UnicodeDecodeError) as e:
                         logger.warning(
                             f"Error reading desktop file {desktop_file}: {e}"
                         )

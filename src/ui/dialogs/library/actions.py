@@ -1726,9 +1726,36 @@ class LibraryActionsMixin:
         c_data = opts.get("compat", False)
         c_saves = opts.get("saves", False)
         c_wipe_sls = opts.get("wipe_sls", False)
+        c_delete_files = opts.get("delete_files", True)
+        c_shortcuts = opts.get("shortcuts", True)
 
-        if c_wipe_sls_only:
-            # Fallback path resolution for AT0-M titles
+        if not opts:
+            from ui.dialogs.uninstall_confirm_dialog import UninstallConfirmDialog
+            dlg = UninstallConfirmDialog(parent, game_data=game_data)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            c_wipe_sls_only = dlg.should_wipe_sls_only()
+            c_delete_files = dlg.should_delete_game_files()
+            c_data = dlg.should_wipe_prefix()
+            c_saves = dlg.should_remove_saves()
+            c_wipe_sls = dlg.should_remove_sls()
+            c_shortcuts = dlg.should_remove_shortcuts()
+
+            target_dlc_ids = dlg.get_target_dlc_ids()
+            if target_dlc_ids is not None:
+                game_data = dict(game_data)
+                game_data["_dlc_uninstall_ids"] = target_dlc_ids
+
+            if c_wipe_sls_only:
+                progress_title = "Removing integrations..."
+            elif is_dlc_only:
+                progress_title = "Uninstalling DLC..."
+            else:
+                progress_title = "Uninstalling game..."
+
+        elif c_wipe_sls_only:
+            # Fallback path resolution for AT0-M titles when invoked directly via opts
             install_path = game_data.get("install_path")
             if not install_path or not os.path.exists(install_path):
                 try:
@@ -1770,27 +1797,25 @@ class LibraryActionsMixin:
             confirm_msg += "• Steam Cloud saves & achievements (intact)\n"
             progress_title = "Removing integrations..."
 
-            reply = ThemedMessageBox.question(
-                parent,
-                confirm_title,
-                confirm_msg,
-                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
-            )
-            if reply != ThemedMessageBox.StandardButton.Yes:
-                return
+            if not opts.get("skip_confirm"):
+                reply = ThemedMessageBox.question(
+                    parent,
+                    confirm_title,
+                    confirm_msg,
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                )
+                if reply != ThemedMessageBox.StandardButton.Yes:
+                    return
             c_wipe_sls = opts.get("wipe_sls", False)
+
         elif opts.get("from_advanced"):
             c_data = opts.get("compat", False)
             c_saves = opts.get("saves", False)
             c_wipe_sls = opts.get("wipe_sls", True)
+            c_delete_files = opts.get("delete_files", True)
+            c_shortcuts = opts.get("shortcuts", True)
             progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
         else:
-            from ui.dialogs.uninstall_confirm_dialog import UninstallConfirmDialog
-            dlg = UninstallConfirmDialog(parent, game_data=game_data)
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return
-            c_data = dlg.should_wipe_prefix()
-            c_saves = False
             c_wipe_sls = True
             progress_title = "Uninstalling DLC..." if is_dlc_only else "Uninstalling game..."
 
@@ -1800,10 +1825,26 @@ class LibraryActionsMixin:
         self._uninstall_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self._uninstall_progress_dialog.show()
 
-        self.executor.submit(self._uninstall_game_async, game_data, c_data, c_saves, c_wipe_sls, c_wipe_sls_only)
+        self.executor.submit(
+            self._uninstall_game_async,
+            game_data,
+            c_data,
+            c_saves,
+            c_wipe_sls,
+            c_wipe_sls_only,
+            c_delete_files,
+            c_shortcuts,
+        )
 
     def _uninstall_game_async(
-        self, game_data: dict, c_data: bool, c_saves: bool, c_wipe_sls: bool = False, c_wipe_sls_only: bool = False
+        self,
+        game_data: dict,
+        c_data: bool,
+        c_saves: bool,
+        c_wipe_sls: bool = False,
+        c_wipe_sls_only: bool = False,
+        remove_game_files: bool = True,
+        remove_shortcuts: bool = True,
     ) -> None:
         """Background task to uninstall game."""
         try:
@@ -1817,8 +1858,12 @@ class LibraryActionsMixin:
                         self.game_manager.remove_game(appid)
             else:
                 success, err = self.game_manager.uninstall_game(
-                    game_data, remove_compatdata=c_data, remove_saves=c_saves,
-                    remove_sls=c_wipe_sls
+                    game_data,
+                    remove_compatdata=c_data,
+                    remove_saves=c_saves,
+                    remove_sls=c_wipe_sls,
+                    remove_game_files=remove_game_files,
+                    remove_shortcuts=remove_shortcuts,
                 )
                 self._last_uninstall_summary = getattr(self.game_manager, "last_uninstall_summary", None)
             self.uninstall_complete.emit(success, str(err) if err else "")

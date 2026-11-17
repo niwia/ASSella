@@ -2,10 +2,12 @@
 uninstall_confirm_dialog.py - Dedicated confirmation modal for game uninstallation.
 
 Features:
-- Clear, color-coded summary of what will be removed vs what will be preserved.
+- Unified confirmation modal combining standard and advanced uninstall options.
+- Clear, color-coded live summary of what will be removed vs what will be preserved.
+- Dynamically moves items between [Will Be Removed] and [Will Be Preserved] as checkboxes are toggled.
+- Dedicated 'I bought the game' preset mode that automatically preserves files and saves while cleaning SLS entries.
 - Asynchronous calculation of Proton prefix size with live progress updates (e.g. [??] -> [12 MB] -> [1.4 GB]).
-- Checkbox allowing users to optionally wipe the Proton prefix (with local Windows saves).
-- Respects DLC-only mode (preserves base game files and Proton prefix).
+- Respects DLC-only mode (allows individual DLC selection and preserves base game files/prefix).
 """
 
 import logging
@@ -13,7 +15,7 @@ import os
 import platform
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -112,9 +114,9 @@ def find_compatdata_path(
 
 class UninstallConfirmDialog(QDialog):
     """
-    Dedicated confirmation modal for standard uninstallation.
-    Displays what will be removed vs preserved, and lets the user optionally
-    opt into wiping their Proton prefix.
+    Unified confirmation modal for uninstallation.
+    Displays customizable removal options with a live preview of what will be
+    removed vs preserved, and lets the user choose their exact desired cleanup scope.
     """
 
     def __init__(self, parent: Optional[QWidget] = None, game_data: Optional[Dict[str, Any]] = None):
@@ -165,6 +167,7 @@ class UninstallConfirmDialog(QDialog):
         self._scanner: Optional[PrefixScannerThread] = None
         self._scan_started = False
         self._prefix_size_str = "??"
+        self._dlc_checkboxes: Dict[str, QCheckBox] = {}
 
         settings = get_settings()
         self.accent_color = (
@@ -172,8 +175,8 @@ class UninstallConfirmDialog(QDialog):
             or (settings.value("accent_color", "#a1c9fd") if settings else "#a1c9fd")
         )
 
-        self.setMinimumWidth(460)
-        self.setMaximumWidth(540)
+        self.setMinimumWidth(480)
+        self.setMaximumWidth(560)
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -183,14 +186,156 @@ class UninstallConfirmDialog(QDialog):
 
         # Header question
         header_text = (
-            f"Are you sure you want to uninstall DLC for <b>{self.game_name}</b>?"
+            f"Select the uninstallation options for DLCs of <b>{self.game_name}</b>:"
             if self.is_dlc_only
-            else f"Are you sure you want to uninstall <b>{self.game_name}</b>?"
+            else f"Select the uninstallation options for <b>{self.game_name}</b>:"
         )
         self.header_lbl = QLabel(header_text)
         self.header_lbl.setWordWrap(True)
         self.header_lbl.setStyleSheet("font-size: 10pt; color: #FFFFFF;")
         layout.addWidget(self.header_lbl)
+
+        # Options Container Frame
+        self.options_frame = QFrame()
+        self.options_frame.setStyleSheet("""
+            QFrame {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                padding: 4px;
+            }
+        """)
+        options_layout = QVBoxLayout(self.options_frame)
+        options_layout.setContentsMargins(10, 8, 10, 8)
+        options_layout.setSpacing(8)
+
+        cb_style = """
+            QCheckBox {
+                color: #e5e7eb;
+                font-size: 9pt;
+                spacing: 8px;
+            }
+            QCheckBox:disabled {
+                color: rgba(255, 255, 255, 0.35);
+            }
+        """
+
+        if not self.is_dlc_only:
+            # 1. Preset Checkbox: 'I bought the game'
+            self.bought_preset_cb = QCheckBox(
+                "I bought the game (Only remove SLSsteam entries; keep game files, saves, and prefix 100% intact)"
+            )
+            self.bought_preset_cb.setToolTip(
+                "Cleans all SLSsteam integrations while leaving your game folder, saves, achievements, and prefix untouched."
+            )
+            self.bought_preset_cb.setStyleSheet("""
+                QCheckBox {
+                    color: #4ade80;
+                    font-size: 9.5pt;
+                    font-weight: bold;
+                    spacing: 8px;
+                }
+            """)
+            self.bought_preset_cb.toggled.connect(self._on_bought_preset_toggled)
+            options_layout.addWidget(self.bought_preset_cb)
+
+            # Divider line inside options
+            divider = QFrame()
+            divider.setFrameShape(QFrame.Shape.HLine)
+            divider.setFrameShadow(QFrame.Shadow.Sunken)
+            divider.setStyleSheet("background-color: rgba(255, 255, 255, 0.06);")
+            options_layout.addWidget(divider)
+
+            # 2. Delete game installation files
+            self.delete_files_cb = QCheckBox("Delete game installation files")
+            self.delete_files_cb.setToolTip("Deletes the game files folder from your Steam library storage.")
+            self.delete_files_cb.setStyleSheet(cb_style)
+            self.delete_files_cb.setChecked(True)
+            self.delete_files_cb.toggled.connect(self._update_summary)
+            options_layout.addWidget(self.delete_files_cb)
+
+            # 3. Remove SLSsteam & AT0-M configuration entries (always checked)
+            self.remove_sls_cb = QCheckBox("Remove SLSsteam & AT0-M configuration entries")
+            self.remove_sls_cb.setToolTip("Cleans AppID, DLC, AppTokens, and manifest tracking from SLSsteam config.yaml.")
+            self.remove_sls_cb.setStyleSheet(cb_style)
+            self.remove_sls_cb.setChecked(True)
+            self.remove_sls_cb.setEnabled(False)
+            options_layout.addWidget(self.remove_sls_cb)
+
+            # 4. Remove desktop shortcuts & icons (Linux only)
+            if platform.system() == "Linux":
+                self.remove_shortcuts_cb = QCheckBox("Remove desktop application shortcuts & icons")
+                self.remove_shortcuts_cb.setStyleSheet(cb_style)
+                self.remove_shortcuts_cb.setChecked(True)
+                self.remove_shortcuts_cb.toggled.connect(self._update_summary)
+                options_layout.addWidget(self.remove_shortcuts_cb)
+            else:
+                self.remove_shortcuts_cb = QCheckBox("Remove desktop application shortcuts & icons")
+                self.remove_shortcuts_cb.hide()
+
+            # 5. Wipe Proton prefix
+            self.wipe_prefix_cb = QCheckBox("Wipe Proton prefix (with saves) [??]")
+            self.wipe_prefix_cb.setToolTip(
+                "Permanently deletes the Proton prefix directory (compatdata), including any Windows saves in AppData/Documents."
+            )
+            self.wipe_prefix_cb.setStyleSheet(cb_style)
+            if platform.system() == "Linux":
+                if self.compatdata_path:
+                    self.wipe_prefix_cb.setChecked(False)
+                    self.wipe_prefix_cb.toggled.connect(self._update_summary)
+                    options_layout.addWidget(self.wipe_prefix_cb)
+                else:
+                    self.wipe_prefix_cb.setText("Proton prefix: none found on disk")
+                    self.wipe_prefix_cb.setEnabled(False)
+                    self.wipe_prefix_cb.setChecked(False)
+                    options_layout.addWidget(self.wipe_prefix_cb)
+            else:
+                self.wipe_prefix_cb.hide()
+
+            # 6. Remove local Steam Cloud saves
+            self.remove_saves_cb = QCheckBox("Remove local Steam Cloud userdata saves")
+            self.remove_saves_cb.setToolTip("Permanently deletes local copies of Steam Cloud saves stored in userdata directory.")
+            self.remove_saves_cb.setStyleSheet(cb_style)
+            self.remove_saves_cb.setChecked(False)
+            self.remove_saves_cb.toggled.connect(self._update_summary)
+            options_layout.addWidget(self.remove_saves_cb)
+
+        else:
+            # DLC-Only mode: List individual DLCs with checkboxes
+            from utils.dlc_helpers import get_dlc_only_info
+
+            dlc_list = get_dlc_only_info(self.appid) or []
+            self.bought_preset_cb = QCheckBox("I bought the game")
+            self.bought_preset_cb.hide()
+            self.delete_files_cb = QCheckBox("Delete game installation files")
+            self.delete_files_cb.hide()
+            self.remove_shortcuts_cb = QCheckBox("Remove desktop application shortcuts & icons")
+            self.remove_shortcuts_cb.hide()
+            self.wipe_prefix_cb = QCheckBox("Wipe Proton prefix (with saves)")
+            self.wipe_prefix_cb.hide()
+            self.remove_saves_cb = QCheckBox("Remove local Steam Cloud userdata saves")
+            self.remove_saves_cb.hide()
+
+            dlc_header = QLabel("Select DLCs to remove:")
+            dlc_header.setStyleSheet("color: #ff8a7a; font-weight: bold; font-size: 9.5pt;")
+            options_layout.addWidget(dlc_header)
+
+            for dlc in dlc_list:
+                did = str(dlc.get("dlc_appid", "")).strip()
+                if not did:
+                    continue
+                dname = dlc.get("dlc_name") or f"DLC {did}"
+                cb = QCheckBox(f"{dname} ({did})")
+                cb.setStyleSheet(cb_style)
+                cb.setChecked(True)
+                cb.toggled.connect(self._update_summary)
+                self._dlc_checkboxes[did] = cb
+                options_layout.addWidget(cb)
+
+            if not dlc_list:
+                options_layout.addWidget(QLabel("No DLC depot configuration records found."))
+
+        layout.addWidget(self.options_frame)
 
         # Content card summarizing removed & preserved items
         self.summary_card = QFrame()
@@ -212,32 +357,6 @@ class UninstallConfirmDialog(QDialog):
         self.summary_lbl.setStyleSheet("font-size: 9pt; background: transparent; border: none;")
         card_layout.addWidget(self.summary_lbl)
         layout.addWidget(self.summary_card)
-
-        # Checkbox for Proton prefix wiping
-        self.wipe_prefix_cb = QCheckBox("Wipe Proton prefix (with saves) [??]")
-        self.wipe_prefix_cb.setStyleSheet("""
-            QCheckBox {
-                color: #e5e7eb;
-                font-size: 9pt;
-                spacing: 8px;
-            }
-            QCheckBox:disabled {
-                color: rgba(255, 255, 255, 0.35);
-            }
-        """)
-
-        if platform.system() == "Linux" and not self.is_dlc_only:
-            if self.compatdata_path:
-                self.wipe_prefix_cb.setChecked(False)
-                self.wipe_prefix_cb.toggled.connect(self._on_wipe_prefix_toggled)
-                layout.addWidget(self.wipe_prefix_cb)
-            else:
-                self.wipe_prefix_cb.setText("Proton prefix: none found on disk")
-                self.wipe_prefix_cb.setEnabled(False)
-                self.wipe_prefix_cb.setChecked(False)
-                layout.addWidget(self.wipe_prefix_cb)
-        else:
-            self.wipe_prefix_cb.hide()
 
         # Action Buttons
         btn_layout = QHBoxLayout()
@@ -263,88 +382,192 @@ class UninstallConfirmDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
 
-        self.confirm_btn = QPushButton("Confirm Uninstall")
+        self.confirm_btn = QPushButton("Uninstall")
         self.confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.confirm_btn.setFixedHeight(28)
         self.confirm_btn.setMinimumWidth(130)
-        self.confirm_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(229, 115, 115, 0.22);
-                color: #ff8a7a;
-                border: 1px solid rgba(229, 115, 115, 0.4);
-                border-radius: 5px;
-                font-size: 8.5pt;
-                font-weight: bold;
-                padding: 0 14px;
-            }
-            QPushButton:hover {
-                background-color: rgba(229, 115, 115, 0.35);
-                color: #ffffff;
-            }
-        """)
         self.confirm_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.confirm_btn)
 
         layout.addLayout(btn_layout)
         self._update_summary()
 
-    def _update_summary(self) -> None:
-        wipe_prefix = self.wipe_prefix_cb.isChecked() and self.wipe_prefix_cb.isEnabled()
-
-        if self.is_dlc_only:
-            html = """
-            <div style="color: #ff8a7a; font-weight: bold; margin-bottom: 4px;">[Will Be Removed]</div>
-            <div style="color: #d1d5db; line-height: 140%; margin-left: 6px;">
-                • Selected DLC depot files<br>
-                • DLC SLSsteam configuration entries
-            </div>
-            <div style="color: #4ade80; font-weight: bold; margin-top: 8px; margin-bottom: 4px;">[Will Be Preserved]</div>
-            <div style="color: #d1d5db; line-height: 140%; margin-left: 6px;">
-                • Base game directory (100% intact)<br>
-                • Proton prefix & Windows saves (100% intact)<br>
-                • Steam Cloud userdata saves
-            </div>
-            """
+    def _on_bought_preset_toggled(self, checked: bool) -> None:
+        """When 'I bought the game' is checked, disable other options and update UI."""
+        if checked:
+            if self.delete_files_cb:
+                self.delete_files_cb.setEnabled(False)
+            if self.remove_shortcuts_cb:
+                self.remove_shortcuts_cb.setEnabled(False)
+            if self.wipe_prefix_cb and self.compatdata_path:
+                self.wipe_prefix_cb.setEnabled(False)
+                self.wipe_prefix_cb.setChecked(False)
+            if self.remove_saves_cb:
+                self.remove_saves_cb.setEnabled(False)
+                self.remove_saves_cb.setChecked(False)
         else:
+            if self.delete_files_cb:
+                self.delete_files_cb.setEnabled(True)
+            if self.remove_shortcuts_cb:
+                self.remove_shortcuts_cb.setEnabled(True)
+            if self.wipe_prefix_cb and self.compatdata_path:
+                self.wipe_prefix_cb.setEnabled(True)
+            if self.remove_saves_cb:
+                self.remove_saves_cb.setEnabled(True)
+
+        self._update_summary()
+
+    def _update_summary(self) -> None:
+        """Dynamically moves items between [Will Be Removed] and [Will Be Preserved]."""
+        if self.is_dlc_only:
+            checked_dlcs = [
+                did for did, cb in self._dlc_checkboxes.items() if cb.isChecked()
+            ]
+            unchecked_dlcs = [
+                did for did, cb in self._dlc_checkboxes.items() if not cb.isChecked()
+            ]
+
+            removed_items = []
+            if checked_dlcs:
+                removed_items.append(f"• Selected DLC files ({len(checked_dlcs)} DLC(s))")
+                removed_items.append("• Mapped DLC SLSsteam configuration entries")
+            else:
+                removed_items.append("• (No DLCs selected for removal)")
+
+            preserved_items = [
+                "• Base game directory (100% intact)",
+                "• Proton prefix & Windows saves (100% intact)",
+                "• Steam Cloud userdata saves",
+            ]
+            if unchecked_dlcs:
+                preserved_items.append(f"• Preserved DLC files ({len(unchecked_dlcs)} DLC(s))")
+
+            self.confirm_btn.setText("Uninstall Selected DLC")
+            self.confirm_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(229, 115, 115, 0.22);
+                    color: #ff8a7a;
+                    border: 1px solid rgba(229, 115, 115, 0.4);
+                    border-radius: 5px;
+                    font-size: 8.5pt;
+                    font-weight: bold;
+                    padding: 0 14px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(229, 115, 115, 0.35);
+                    color: #ffffff;
+                }
+            """)
+            self.confirm_btn.setEnabled(bool(checked_dlcs))
+
+        elif self.bought_preset_cb and self.bought_preset_cb.isChecked():
+            # 'I bought the game' Preset active
             removed_items = [
-                f"• Game folder: {self.install_path or 'Known install directory'}",
-                f"• Steam app manifest: appmanifest_{self.appid}.acf" if self.appid and self.appid != "0" else "• Steam app manifest (.acf)",
                 "• SLSsteam & AT0-M configuration entries",
+                "• Unregistered from ASSella library manager",
+            ]
+            preserved_items = [
+                f"• Game folder: {self.install_path or 'Game directory'} (100% intact)",
+                "• Proton prefix & local Windows saves (100% intact)",
+                "• Steam Cloud userdata saves (100% intact)",
             ]
             if platform.system() == "Linux":
-                removed_items.append("• Application shortcuts & icons")
+                preserved_items.append("• Application shortcuts & icons (intact)")
 
+            self.confirm_btn.setText("Clean Integrations")
+            self.confirm_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(34, 197, 94, 0.22);
+                    color: #4ade80;
+                    border: 1px solid rgba(34, 197, 94, 0.45);
+                    border-radius: 5px;
+                    font-size: 8.5pt;
+                    font-weight: bold;
+                    padding: 0 14px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(34, 197, 94, 0.35);
+                    color: #ffffff;
+                }
+            """)
+            self.confirm_btn.setEnabled(True)
+
+        else:
+            # Standard configurable uninstall
+            delete_files = bool(self.delete_files_cb and self.delete_files_cb.isChecked())
+            remove_shortcuts = bool(self.remove_shortcuts_cb and self.remove_shortcuts_cb.isChecked())
+            wipe_prefix = bool(self.wipe_prefix_cb and self.wipe_prefix_cb.isChecked() and self.wipe_prefix_cb.isEnabled())
+            remove_saves = bool(self.remove_saves_cb and self.remove_saves_cb.isChecked())
+
+            removed_items = []
             preserved_items = []
+
+            # 1. Game files
+            if delete_files:
+                removed_items.append(f"• Game folder: {self.install_path or 'Known install directory'}")
+                manifest_name = f"appmanifest_{self.appid}.acf" if self.appid and self.appid != "0" else "appmanifest (.acf)"
+                removed_items.append(f"• Steam app manifest: {manifest_name}")
+            else:
+                preserved_items.append(f"• Game folder: {self.install_path or 'Game directory'} (preserved on disk)")
+
+            # 2. SLS & AT0-M configuration (always removed in standard mode)
+            removed_items.append("• SLSsteam & AT0-M configuration entries")
+
+            # 3. Desktop shortcuts
+            if platform.system() == "Linux":
+                if remove_shortcuts:
+                    removed_items.append("• Application shortcuts & icons")
+                else:
+                    preserved_items.append("• Application shortcuts & icons (preserved)")
+
+            # 4. Proton prefix
+            size_suffix = f" ({self._prefix_size_str})" if self._prefix_size_str and self._prefix_size_str != "??" else ""
             if wipe_prefix:
-                size_suffix = f" ({self._prefix_size_str})" if self._prefix_size_str and self._prefix_size_str != "??" else ""
                 removed_items.append(f"• <b>Proton prefix (with saves):</b> {self.compatdata_path or 'compatdata'}{size_suffix}")
             else:
                 if self.compatdata_path:
-                    size_suffix = f" ({self._prefix_size_str})" if self._prefix_size_str and self._prefix_size_str != "??" else ""
                     preserved_items.append(f"• Proton prefix (Windows saves): {self.compatdata_path}{size_suffix}")
                 else:
                     preserved_items.append("• Proton prefix: none found on disk")
 
-            preserved_items.append("• Steam Cloud userdata saves")
+            # 5. Steam Cloud saves
+            if remove_saves:
+                removed_items.append("• Local Steam Cloud userdata saves")
+            else:
+                preserved_items.append("• Steam Cloud userdata saves (preserved)")
 
-            removed_html = "<br>".join(removed_items)
-            preserved_html = "<br>".join(preserved_items)
+            self.confirm_btn.setText("Uninstall")
+            self.confirm_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: rgba(229, 115, 115, 0.22);
+                    color: #ff8a7a;
+                    border: 1px solid rgba(229, 115, 115, 0.4);
+                    border-radius: 5px;
+                    font-size: 8.5pt;
+                    font-weight: bold;
+                    padding: 0 14px;
+                }
+                QPushButton:hover {
+                    background-color: rgba(229, 115, 115, 0.35);
+                    color: #ffffff;
+                }
+            """)
+            self.confirm_btn.setEnabled(True)
 
-            html = f"""
-            <div style="color: #ff8a7a; font-weight: bold; margin-bottom: 4px;">[Will Be Removed]</div>
-            <div style="color: #d1d5db; line-height: 140%; margin-left: 6px;">
-                {removed_html}
-            </div>
-            <div style="color: #4ade80; font-weight: bold; margin-top: 8px; margin-bottom: 4px;">[Will Be Preserved]</div>
-            <div style="color: #d1d5db; line-height: 140%; margin-left: 6px;">
-                {preserved_html}
-            </div>
-            """
+        removed_html = "<br>".join(removed_items) if removed_items else "• None"
+        preserved_html = "<br>".join(preserved_items) if preserved_items else "• None"
 
+        html = f"""
+        <div style="color: #ff8a7a; font-weight: bold; margin-bottom: 4px;">[Will Be Removed]</div>
+        <div style="color: #d1d5db; line-height: 140%; margin-left: 6px;">
+            {removed_html}
+        </div>
+        <div style="color: #4ade80; font-weight: bold; margin-top: 8px; margin-bottom: 4px;">[Will Be Preserved]</div>
+        <div style="color: #d1d5db; line-height: 140%; margin-left: 6px;">
+            {preserved_html}
+        </div>
+        """
         self.summary_lbl.setText(html)
-
-    def _on_wipe_prefix_toggled(self, _checked: bool) -> None:
-        self._update_summary()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -363,13 +586,15 @@ class UninstallConfirmDialog(QDialog):
     def _on_scan_progress(self, bytes_scanned: int) -> None:
         formatted = format_size(bytes_scanned)
         self._prefix_size_str = formatted
-        self.wipe_prefix_cb.setText(f"Wipe Proton prefix (with saves) [{formatted}]")
+        if self.wipe_prefix_cb:
+            self.wipe_prefix_cb.setText(f"Wipe Proton prefix (with saves) [{formatted}]")
         self._update_summary()
 
     def _on_scan_finished(self, total_bytes: int) -> None:
         formatted = format_size(total_bytes)
         self._prefix_size_str = formatted
-        self.wipe_prefix_cb.setText(f"Wipe Proton prefix (with saves) [{formatted}]")
+        if self.wipe_prefix_cb:
+            self.wipe_prefix_cb.setText(f"Wipe Proton prefix (with saves) [{formatted}]")
         self._update_summary()
 
     def _cleanup_scanner(self) -> None:
@@ -393,6 +618,44 @@ class UninstallConfirmDialog(QDialog):
         self._cleanup_scanner()
         super().accept()
 
+    def should_wipe_sls_only(self) -> bool:
+        """Returns True if the user selected 'I bought the game' preset."""
+        return bool(self.bought_preset_cb and self.bought_preset_cb.isChecked())
+
+    def should_delete_game_files(self) -> bool:
+        """Returns True if game files should be deleted from disk."""
+        if self.should_wipe_sls_only():
+            return False
+        if self.delete_files_cb:
+            return bool(self.delete_files_cb.isChecked())
+        return True
+
+    def should_remove_sls(self) -> bool:
+        """Always removes SLSsteam entries on uninstall."""
+        return True
+
     def should_wipe_prefix(self) -> bool:
-        """Returns True if the user explicitly opted to wipe the Proton prefix."""
-        return bool(self.wipe_prefix_cb.isChecked() and self.wipe_prefix_cb.isEnabled())
+        """Returns True if user explicitly opted to wipe the Proton prefix."""
+        if self.should_wipe_sls_only():
+            return False
+        return bool(self.wipe_prefix_cb and self.wipe_prefix_cb.isChecked() and self.wipe_prefix_cb.isEnabled())
+
+    def should_remove_saves(self) -> bool:
+        """Returns True if user opted to delete local Steam Cloud userdata saves."""
+        if self.should_wipe_sls_only():
+            return False
+        return bool(self.remove_saves_cb and self.remove_saves_cb.isChecked())
+
+    def should_remove_shortcuts(self) -> bool:
+        """Returns True if user opted to remove desktop shortcuts."""
+        if self.should_wipe_sls_only():
+            return False
+        if self.remove_shortcuts_cb:
+            return bool(self.remove_shortcuts_cb.isChecked())
+        return True
+
+    def get_target_dlc_ids(self) -> Optional[List[str]]:
+        """Returns list of selected DLC IDs to uninstall for DLC-only games."""
+        if not self.is_dlc_only:
+            return None
+        return [did for did, cb in self._dlc_checkboxes.items() if cb.isChecked()]

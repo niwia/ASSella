@@ -202,7 +202,7 @@ jobs:
           cp -r src AppDir/bin/
           find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           # Optional and on-demand components are downloaded on demand (R2 or auto-fetch)
-          rm -rf AppDir/bin/src/deps/Goldberg AppDir/bin/src/deps/Steamless AppDir/bin/src/deps/SLScheevo AppDir/bin/src/deps/schema-grabber AppDir/bin/src/deps/wireproxy
+          rm -rf AppDir/bin/src/deps/Goldberg AppDir/bin/src/deps/Steamless AppDir/bin/src/deps/SLScheevo AppDir/bin/src/deps/schema-grabber AppDir/bin/src/deps/wireproxy AppDir/bin/src/data/steam_headers.db
           # Easter egg media assets are excluded from AppDir to minimize AppImage footprint (~8.8 MB saved)
           rm -rf AppDir/bin/src/res/jumpscare AppDir/bin/src/res/intro
           BUILD_DATE_UTC="$(date -u +%Y-%m-%d)"
@@ -601,7 +601,7 @@ jobs:
           find "${PKG_NAME}" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           find "${PKG_NAME}" -type f -name "*.pyc" -delete 2>/dev/null || true
           # Optional and on-demand components are downloaded on demand (R2 or auto-fetch)
-          rm -rf "${PKG_NAME}/bin/src/deps/Goldberg" "${PKG_NAME}/bin/src/deps/Steamless" "${PKG_NAME}/bin/src/deps/SLScheevo" "${PKG_NAME}/bin/src/deps/schema-grabber" "${PKG_NAME}/bin/src/deps/wireproxy"
+          rm -rf "${PKG_NAME}/bin/src/deps/Goldberg" "${PKG_NAME}/bin/src/deps/Steamless" "${PKG_NAME}/bin/src/deps/SLScheevo" "${PKG_NAME}/bin/src/deps/schema-grabber" "${PKG_NAME}/bin/src/deps/wireproxy" "${PKG_NAME}/bin/src/data/steam_headers.db"
 
           # 4. Create tar.gz and zip archives
           tar -czf "${PKG_NAME}.tar.gz" "${PKG_NAME}"

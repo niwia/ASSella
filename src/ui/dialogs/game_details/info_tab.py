@@ -66,12 +66,11 @@ def _install_drive_label(dialog) -> str:
 
 
 def _build_uninstall_tile(dialog, is_vapor_mode: bool) -> MaterialTile:
-    """Uninstall tile with a menu: Standard, or Advanced (opens a window)."""
-    from PyQt6.QtWidgets import QMenu
+    """Uninstall tile: opens the unified uninstallation modal."""
     from utils.dlc_helpers import is_dlc_only_mode
 
-    tile = MaterialTile("Uninstall", "Standard / Advanced", dialog, is_toggle=False)
-    tile.update_state(False, dialog.accent_color, inactive_sub="Standard / Advanced")
+    tile = MaterialTile("Uninstall", "Standard", dialog, is_toggle=False)
+    tile.update_state(False, dialog.accent_color, inactive_sub="Standard")
     tile.title_lbl.setStyleSheet("font-weight: bold; font-size: 8.5pt; color: #E57373; background: transparent;")
     is_vapor_dlc = is_vapor_mode and (
         is_dlc_only_mode(dialog.appid)
@@ -83,17 +82,8 @@ def _build_uninstall_tile(dialog, is_vapor_mode: bool) -> MaterialTile:
         tile.setToolTip("Uninstall DLC-only AT0-M games from Steam.")
         return tile
 
-    menu = QMenu(tile)
-    menu.setStyleSheet(f"""
-        QMenu {{ background: #1b1c20; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 4px; }}
-        QMenu::item {{ padding: 6px 18px; border-radius: 5px; color: #E8E8EE; }}
-        QMenu::item:selected {{ background: rgba(229,115,115,0.18); color: #FFFFFF; }}
-    """)
-    menu.addAction("Uninstall", lambda: do_standard_uninstall(dialog)).setToolTip(
-        "Remove the game files and its SLSsteam entries."
-    )
-    menu.addAction("Advanced...", lambda: open_advanced_uninstall(dialog))
-    tile.clicked.connect(lambda: menu.exec(tile.mapToGlobal(tile.rect().bottomLeft())))
+    tile.setToolTip("Uninstall game files and configure cleanup options.")
+    tile.clicked.connect(lambda: do_standard_uninstall(dialog))
     return tile
 
 
@@ -1360,42 +1350,12 @@ def build_uninstall_panel(dialog) -> None:
 
 
 def do_standard_uninstall(dialog) -> None:
-    from utils.dlc_helpers import is_dlc_only_mode, get_dlc_only_info
-    if is_dlc_only_mode(dialog.appid):
-        dlc_list = get_dlc_only_info(dialog.appid)
-        all_dlc_ids = [dlc.get("dlc_appid") for dlc in (dlc_list or []) if dlc.get("dlc_appid")]
-        gd = dict(dialog.game_data)
-        gd["_dlc_uninstall_ids"] = all_dlc_ids
-        dialog.parent_window._uninstall_game(gd, dialog, {})
-    else:
-        dialog.parent_window._uninstall_game(
-            dialog.game_data, dialog, {"compat": False, "saves": False, "wipe_sls": True, "wipe_sls_only": False}
-        )
+    dialog.parent_window._uninstall_game(dialog.game_data, dialog, {})
 
 
 def open_advanced_uninstall(dialog) -> None:
-    """Advanced uninstall in its own window (used to expand inside Game Details)."""
-    from PyQt6.QtWidgets import QDialog as _QDialog
-
-    from ui.dialogs.themed_dialog import install_themed_frame
-
-    win = _QDialog(dialog)
-    win.setWindowTitle(f"Uninstall {dialog.game_data.get('game_name', 'game')}")
-    win.setMinimumWidth(460)
-    body = install_themed_frame(win, margins=(16, 10, 16, 14), spacing=8)
-    dialog._uninstall_content = QVBoxLayout()
-    dialog._uninstall_content.setSpacing(6)
-    body.addLayout(dialog._uninstall_content)
-    dialog._advanced_uninstall_win = win
-    try:
-        build_uninstall_panel(dialog)
-        cancel = QPushButton("Cancel")
-        cancel.setFixedHeight(28)
-        cancel.clicked.connect(win.reject)
-        body.addWidget(cancel)
-        win.exec()
-    finally:
-        dialog._advanced_uninstall_win = None
+    """Redirects to the unified uninstallation modal."""
+    do_standard_uninstall(dialog)
 
 
 def toggle_uninstall_panel(dialog) -> None:

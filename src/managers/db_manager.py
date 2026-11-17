@@ -39,6 +39,49 @@ def _create_empty_db(path: Path) -> None:
             )
         """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS depot_enrichments (
+                depot_id TEXT PRIMARY KEY,
+                appid TEXT,
+                name TEXT,
+                size_str TEXT,
+                size_bytes INTEGER,
+                dl_str TEXT,
+                is_dlc INTEGER,
+                oslist TEXT,
+                osarch TEXT,
+                releasestate TEXT,
+                release_src TEXT,
+                updated_at INTEGER
+            )
+        """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS missing_hubcap_depots (
+                appid TEXT NOT NULL,
+                depot_id TEXT NOT NULL,
+                manifest_id TEXT NOT NULL,
+                depot_name TEXT,
+                first_seen INTEGER,
+                PRIMARY KEY (appid, depot_id)
+            )
+        """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS at0m_update_status (
+                appid TEXT PRIMARY KEY,
+                game_title TEXT,
+                last_timeupdated INTEGER DEFAULT 0,
+                last_checked INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'up_to_date',
+                new_depots TEXT,
+                cooldown_until INTEGER DEFAULT 0
+            )
+        """
+        )
         conn.commit()
         conn.close()
     except Exception as e:
