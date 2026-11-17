@@ -117,8 +117,13 @@ def _experimental_mode_enabled() -> bool:
         return False
 
 
-def _is_slssteam_available() -> bool:
-    """Check if SLSsteam API pipe exists (proxy for Steam + SLSsteam running)."""
+def _is_slssteam_pipe_listening() -> bool:
+    """Check if SLSsteam API pipe exists and has an active reader listening.
+
+    In POSIX, opening a FIFO with O_WRONLY | O_NONBLOCK fails with ENXIO if no reader
+    is open, and succeeds immediately if SLSsteam's server thread is active.
+    Works seamlessly across all Linux distributions (including NixOS FHS environments).
+    """
     if sys.platform != "linux":
         return False
     from utils.helpers import is_arm64
@@ -129,8 +134,35 @@ def _is_slssteam_available() -> bool:
                 return False
         except Exception:
             return False
-    return os.path.exists(SLSSTEAM_API_PIPE)
+    if not os.path.exists(SLSSTEAM_API_PIPE):
+        return False
+    try:
+        import stat
+        st = os.stat(SLSSTEAM_API_PIPE)
+        if not stat.S_ISFIFO(st.st_mode):
+            return False
+        fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        return True
+    except OSError as e:
+        logger.debug(f"[sls] pipe listening check: {e}")
+        return False
 
+
+def _is_slssteam_available() -> bool:
+    """Check if SLSsteam API pipe exists and has an active reader listening."""
+    if sys.platform != "linux":
+        return False
+    return _is_slssteam_pipe_listening()
+
+
+STEAM_PROCESS_NAMES = {
+    "steam",
+    ".steam-wrapped",
+    "steam-wrapped",
+    "steam-original",
+    "steam.sh",
+}
 
 _proc_cache = {
     "last_check": 0.0,
@@ -141,7 +173,9 @@ _PROC_CACHE_TTL = 2.0  # seconds
 
 
 def _update_proc_cache_if_needed():
-    """Scan /proc at most once every _PROC_CACHE_TTL seconds."""
+    """Scan /proc at most once every _PROC_CACHE_TTL seconds.
+    Supports standard distros, NixOS wrapped binaries (.steam-wrapped), and containerized Steam.
+    """
     import time
     now = time.time()
     if now - _proc_cache["last_check"] < _PROC_CACHE_TTL:
@@ -154,6 +188,11 @@ def _update_proc_cache_if_needed():
     if sys.platform != "linux":
         return
 
+    # 1. Fast pipe listener check: if /tmp/SLSsteam.API has an active listener, SLS is active & Steam is running
+    if _is_slssteam_pipe_listening():
+        _proc_cache["slssteam_active"] = True
+        _proc_cache["steam_running"] = True
+
     try:
         steam_pids = []
         for pid_dir in os.listdir("/proc"):
@@ -163,30 +202,41 @@ def _update_proc_cache_if_needed():
                 comm_path = os.path.join("/proc", pid_dir, "comm")
                 with open(comm_path, "r", encoding="utf-8", errors="ignore") as f:
                     comm = f.read().strip()
-                if comm == "steam":
+                if comm in STEAM_PROCESS_NAMES:
                     steam_pids.append(pid_dir)
+                elif comm == "steamwebhelper":
+                    _proc_cache["steam_running"] = True
+                elif comm == "bwrap":
+                    try:
+                        with open(os.path.join("/proc", pid_dir, "cmdline"), "rb") as cf:
+                            cdata = cf.read()
+                            if b"steam" in cdata or b".steam-wrapped" in cdata:
+                                _proc_cache["steam_running"] = True
+                    except OSError as e:
+                        logger.debug(f"[sls] bwrap cmdline read: {e}")
             except OSError:
                 continue
 
         if steam_pids:
             _proc_cache["steam_running"] = True
-            for pid in steam_pids:
-                maps_path = os.path.join("/proc", pid, "maps")
-                try:
-                    if os.path.exists(maps_path):
-                        with open(maps_path, "r", encoding="utf-8", errors="ignore") as f:
-                            for line in f:
-                                if "SLSsteam.so" in line:
-                                    _proc_cache["slssteam_active"] = True
-                                    return
-                except OSError:
-                    continue
+            if not _proc_cache["slssteam_active"]:
+                for pid in steam_pids:
+                    maps_path = os.path.join("/proc", pid, "maps")
+                    try:
+                        if os.path.exists(maps_path):
+                            with open(maps_path, "r", encoding="utf-8", errors="ignore") as f:
+                                for line in f:
+                                    if "SLSsteam.so" in line:
+                                        _proc_cache["slssteam_active"] = True
+                                        return
+                    except OSError:
+                        continue
     except OSError:
         pass
 
 
 def is_slssteam_process_active() -> bool:
-    """Check if SLSsteam.so is loaded in Steam's memory space using /proc maps.
+    """Check if SLSsteam.so is loaded in Steam or listening on its API pipe.
     Cached for 2 seconds to avoid freezing the UI on repeated calls.
     """
     _update_proc_cache_if_needed()
@@ -197,6 +247,9 @@ def is_steam_process_running() -> bool:
     """Check if the steam process is currently running on the system.
     Cached for 2 seconds to avoid freezing the UI on repeated calls.
     """
+    if sys.platform == "win32":
+        from core.steam_helpers import is_steam_running
+        return is_steam_running()
     _update_proc_cache_if_needed()
     return _proc_cache["steam_running"]
 
@@ -442,16 +495,21 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False, cached_only: bo
 def _slssteam_api_send(command: str) -> bool:
     """Send a raw command to SLSsteam via the named pipe.
 
-    Returns True on success.  Returns False (never raises) on any failure —
+    Uses O_WRONLY | O_NONBLOCK to prevent blocking indefinitely if the pipe
+    exists on disk without an active reader.
+    Returns True on success. Returns False (never raises) on any failure —
     including the pipe being gone because Steam/SLSsteam closed mid-write.
     """
-    if not _is_slssteam_available():
+    if sys.platform != "linux":
         return False
+    if not _is_slssteam_pipe_listening():
+        return False
+    fd = -1
     try:
-        with open(SLSSTEAM_API_PIPE, "w") as f:
-            f.write(command.strip() + "\n")
-            f.flush()
-        logger.info(f"SLSsteam API command sent: {command}")
+        fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+        payload = (command.strip() + "\n").encode("utf-8")
+        os.write(fd, payload)
+        logger.info(f"SLSsteam API command sent: {command.strip()}")
         return True
     except OSError as e:
         # ENXIO / EPIPE = pipe exists on disk but reader (SLSsteam) has gone away.
@@ -461,6 +519,12 @@ def _slssteam_api_send(command: str) -> bool:
             "(Steam/SLSsteam may have closed — command will be retried or skipped)"
         )
         return False
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError as e:
+                logger.debug(f"[sls] close pipe fd: {e}")
 
 
 def _poll_sls_log_for(

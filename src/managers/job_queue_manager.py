@@ -426,107 +426,11 @@ class JobQueueManager(QObject):
         self._check_if_safe_to_start_next_job()
 
     def _prompt_for_steam_restart(self, completed_count=0):
-        """Prompt user to restart Steam (Run via QTimer on Main Thread)"""
-        is_running = steam_helpers.is_steam_running()
-        action_word = "restart" if is_running else "start"
-        Title = "Restart Steam" if is_running else "Start Steam"
-
-        prefix = ""
-        if completed_count > 0:
-            prefix = (
-                f"All {completed_count} job(s) have finished successfully!\n\n"
-            )
-
-        prompt_text = f"{prefix}Steam-integrated changes were created. Would you like to {action_word} Steam now to apply them?"
-
-        reply = ThemedMessageBox.question(
-            self.main_window,
-            Title,
-            prompt_text,
-            ThemedMessageBox.StandardButton.Yes
-            | ThemedMessageBox.StandardButton.No,
-            ThemedMessageBox.StandardButton.No,
+        """Informative log on queue completion. Steam restart is no longer used."""
+        logger.info(
+            f"All {completed_count} job(s) finished successfully. "
+            "SLSsteam and Steam discover games dynamically without restarting."
         )
-
-        if reply == ThemedMessageBox.StandardButton.Yes:
-            logger.info(f"User agreed to {action_word} Steam.")
-            threading.Thread(
-                target=self._perform_steam_restart, daemon=True
-            ).start()
-
-    def _perform_steam_restart(self):
-        """Execute Steam restart logic in background thread"""
-        try:
-            if sys.platform == "linux":
-                logger.info("Attempting to kill Steam process...")
-                steam_helpers.kill_steam_process()
-                time.sleep(1)
-
-                result = steam_helpers.start_steam()
-
-                if result == "NEEDS_USER_PATH":
-                    QMetaObject.invokeMethod(
-                        self.main_window,
-                        "handle_linux_steam_path_selection",
-                        Qt.ConnectionType.QueuedConnection,
-                    )
-                elif result == "SUCCESS":
-                    logger.info(
-                        "Steam started successfully with cached libraries."
-                    )
-                else:
-                    logger.warning("Failed to start Steam.")
-                    self._show_message_safe(
-                        "Execution Failed",
-                        "Could not start Steam.",
-                    )
-
-            else:
-                steam_path = steam_helpers.find_steam_install()
-                if steam_path:
-                    logger.info("Closing Steam...")
-                    if not steam_helpers.kill_steam_process():
-                        logger.info(
-                            "Steam process was not running or could not be killed."
-                        )
-
-                    time.sleep(1)
-
-                    injector_path = os.path.join(steam_path, "DLLInjector.exe")
-                    if os.path.exists(injector_path):
-                        logger.info(
-                            "Windows Wrapper Mode: Launching DLLInjector.exe..."
-                        )
-                        if not steam_helpers.run_dll_injector(steam_path):
-                            self._show_message_safe(
-                                "Injector Failed",
-                                f"Could not launch DLLInjector.exe from {steam_path}.",
-                            )
-                    else:
-                        user32_path = os.path.join(steam_path, "user32.dll")
-                        if os.path.exists(user32_path):
-                            logger.info(
-                                "DLLInjector.exe not found, but user32.dll exists. Starting Steam normally..."
-                            )
-                            steam_helpers.start_steam()
-                        else:
-                            self._show_message_safe(
-                                "Injector Not Found",
-                                "DLLInjector.exe not found in Steam folder.",
-                            )
-                else:
-                    self._show_message_safe(
-                        "Error",
-                        "Could not find Steam installation path.",
-                    )
-
-        except Exception as e:
-            logger.error(f"Error during Steam restart: {e}")
-
-    @staticmethod
-    def _show_message_safe(title, text):
-        """Helper to show MessageBox from background thread"""
-        logger.error(f"MSG: {title} - {text}")
 
     def clear(self):
         """Clear the job queue"""

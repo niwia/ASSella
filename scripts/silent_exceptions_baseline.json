@@ -59,10 +59,6 @@
     "broad": 1,
     "narrow": 3
   },
-  "core/tasks/native_steam_download_task.py": {
-    "broad": 1,
-    "narrow": 0
-  },
   "core/tasks/smart_update_task.py": {
     "broad": 1,
     "narrow": 0
@@ -179,10 +175,6 @@
     "broad": 1,
     "narrow": 2
   },
-  "ui/dialogs/game_details/depots_tab_mixins/state.py": {
-    "broad": 1,
-    "narrow": 0
-  },
   "ui/dialogs/game_details/tools_tab.py": {
     "broad": 2,
     "narrow": 0
@@ -196,7 +188,7 @@
     "narrow": 0
   },
   "ui/dialogs/gamelibrary_v2.py": {
-    "broad": 2,
+    "broad": 1,
     "narrow": 0
   },
   "ui/dialogs/library/acf_scanner.py": {
@@ -212,7 +204,7 @@
     "narrow": 1
   },
   "ui/dialogs/library/widgets.py": {
-    "broad": 3,
+    "broad": 1,
     "narrow": 1
   },
   "ui/dialogs/manual_manifest_dialog.py": {
@@ -320,7 +312,7 @@
     "narrow": 0
   },
   "utils/plugin_games.py": {
-    "broad": 2,
+    "broad": 1,
     "narrow": 0
   },
   "utils/settings.py": {
@@ -352,7 +344,7 @@
     "narrow": 0
   },
   "utils/workshop_helpers.py": {
-    "broad": 10,
+    "broad": 5,
     "narrow": 0
   },
   "utils/yaml/apps.py": {

@@ -198,7 +198,7 @@ class GameManager(
         """Update game information."""
         logger.info(f"Updating game: {game_id}")
         for i, game in enumerate(self.games):
-            if game.get("appid") == game_id:
+            if str(game.get("appid")) == str(game_id):
                 self.games[i].update(game_data)
                 self._games_by_appid[str(game_id)] = self.games[i]
                 self.games = self._get_sorted_games(self.games)

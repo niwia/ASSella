@@ -237,7 +237,7 @@ detect_distro() {
         IS_STEAM_DECK=true
     fi
 
-    if [[ "$DISTRO_ID" == "nixos" ]]; then
+    if [[ "$DISTRO_ID" == "nixos" ]] || [[ -f /etc/NIXOS ]] || [[ -f /run/current-system/nixos-version ]]; then
         IS_NIXOS=true
     fi
 
@@ -1614,15 +1614,42 @@ do_install() {
         echo -e "${YELLOW}[INFO] Configuring NixOS compatibility launcher...${NC}"
         cat >"$NIXOS_LAUNCHER" <<'EOL'
 #!/usr/bin/env bash
+# Ensure Nix profile paths are in PATH for desktop GUI launchers
+_nix_user="${USER:-${LOGNAME:-$(id -un 2>/dev/null || whoami)}}"
+export PATH="$HOME/.nix-profile/bin:/etc/profiles/per-user/$_nix_user/bin:/run/current-system/sw/bin:$PATH"
+
+APPIMAGE="$HOME/.local/share/ACCELA/ASSella.AppImage"
+
 if command -v steam-run &>/dev/null; then
-    exec steam-run "$HOME/.local/share/ACCELA/ASSella.AppImage" "$@"
+    exec steam-run "$APPIMAGE" "$@"
 elif command -v appimage-run &>/dev/null; then
-    exec appimage-run "$HOME/.local/share/ACCELA/ASSella.AppImage" "$@"
-else
-    echo "NixOS detected! Please install steam-run or appimage-run to launch ASSella:"
-    echo "  nix-shell -p steam-run --run 'steam-run ~/.local/share/ACCELA/ASSella.AppImage'"
-    read -p "Press Enter to exit..."
+    exec appimage-run "$APPIMAGE" "$@"
+elif [ -n "${NIX_LD:-}" ] && [ -e "$NIX_LD" ]; then
+    exec "$APPIMAGE" "$@"
+elif command -v nix-shell &>/dev/null; then
+    _tmp_sentinel=$(mktemp -t assella_nix.XXXXXX 2>/dev/null || true)
+    nix-shell -p steam-run --run 'rm -f "$1"; exec steam-run "$2" "${@:3}"' -- "$_tmp_sentinel" "$APPIMAGE" "$@"
+    _status=$?
+    if [ -n "$_tmp_sentinel" ] && [ ! -f "$_tmp_sentinel" ]; then
+        exit "$_status"
+    fi
+    [ -n "$_tmp_sentinel" ] && rm -f "$_tmp_sentinel" 2>/dev/null || true
 fi
+
+msg="NixOS detected! Please install 'steam-run' or 'appimage-run' (or enable programs.nix-ld) in your NixOS configuration to launch ASSella."
+if command -v zenity &>/dev/null; then
+    zenity --error --text="$msg" --title="ASSella Launcher"
+elif command -v kdialog &>/dev/null; then
+    kdialog --error "$msg" --title "ASSella Launcher"
+elif command -v notify-send &>/dev/null; then
+    notify-send -u critical "ASSella Launcher" "$msg"
+else
+    echo "$msg" >&2
+    if [ -t 0 ]; then
+        read -p "Press Enter to exit..." dummy
+    fi
+fi
+exit 1
 EOL
         chmod +x "$NIXOS_LAUNCHER"
         EXEC_COMMAND="$NIXOS_LAUNCHER %u"
@@ -1706,6 +1733,7 @@ do_uninstall() {
     rm -f "$INSTALL_DESTINATION/ASSella.AppImage"
     rm -f "$INSTALL_DESTINATION/ACCELA.AppImage"
     rm -f "$INSTALL_DESTINATION/version"
+    rm -f "$VERSION_TS_FILE"
     rm -f "$NIXOS_LAUNCHER"
     rm -f "$PRIMARY_DESKTOP_ENTRY"
     rm -f "$LEGACY_DESKTOP_ENTRY"

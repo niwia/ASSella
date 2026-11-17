@@ -69,7 +69,7 @@ class LibraryScannerMixin:
             for i in range(self.games_list.count()):
                 it = self.games_list.item(i)
                 game_data = it.data(Qt.ItemDataRole.UserRole)
-                if game_data and game_data.get("appid") == appid:
+                if game_data and str(game_data.get("appid")) == str(appid):
                     item = it
                     break
 

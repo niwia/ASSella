@@ -182,6 +182,7 @@ def prepare_manifest_dump(
     app_id: AppId,
     depot_id: str,
     *,
+    manifest_id: Optional[str] = None,
     manifests_dir: Optional[Path] = None,
     temp_root: Optional[str] = None,
     key_lookup: Optional[Callable[[str], Optional[str]]] = None,
@@ -208,22 +209,72 @@ def prepare_manifest_dump(
     keys_path = os.path.join(temp_dir, "depot.keys")
     write_keys_file(keys_path, depot_id, depot_key)
 
-    try:
-        manifest_path = find_manifest_file(temp_dir, depot_id)
-    except ManifestDumpError:
-        # A key on disk outlives the dialog, so never leave one behind for a
-        # dump that cannot be used.
-        discard_keys_file(keys_path)
-        raise
+    manifest_path: Optional[Path] = None
+    mid_str = str(manifest_id).strip() if manifest_id else ""
 
-    manifest_id = manifest_id_from_name(manifest_path.name)
+    if mid_str:
+        # Check if the requested manifest already exists in the extracted bundle / temp dir
+        target_file = Path(temp_dir) / f"{depot_id}_{mid_str}.manifest"
+        if target_file.exists() and target_file.stat().st_size > 0:
+            manifest_path = target_file
+        else:
+            # Check persistent manifests folder
+            try:
+                from utils.helpers import get_base_path
+                base_manifest = get_base_path() / "manifests" / f"{depot_id}_{mid_str}.manifest"
+                if base_manifest.exists() and base_manifest.stat().st_size > 0:
+                    import shutil
+                    shutil.copy(base_manifest, target_file)
+                    manifest_path = target_file
+            except Exception as _base_err:
+                logger.debug(f"[ManifestDump] Error checking base manifests: {_base_err}")
+
+        # If not found locally, fetch on-demand from Steam CDN via at0-m / morrenus_api
+        if manifest_path is None:
+            try:
+                from core import morrenus_api
+                logger.info(f"[ManifestDump] Fetching manifest {mid_str} on-demand for depot {depot_id}...")
+                raw_bytes, gen_err = morrenus_api.generate_single_manifest(
+                    depot_id, mid_str, depot_key=depot_key
+                )
+                if raw_bytes:
+                    target_file.write_bytes(raw_bytes)
+                    manifest_path = target_file
+                    # Also persist in base manifests folder
+                    try:
+                        from utils.helpers import get_base_path
+                        base_dir = get_base_path() / "manifests"
+                        base_dir.mkdir(parents=True, exist_ok=True)
+                        (base_dir / f"{depot_id}_{mid_str}.manifest").write_bytes(raw_bytes)
+                    except Exception as _p_err:
+                        logger.debug(f"[ManifestDump] Failed to persist manifest copy: {_p_err}")
+                else:
+                    logger.warning(f"[ManifestDump] On-demand manifest fetch failed for {depot_id}_{mid_str}: {gen_err}")
+            except Exception as _fetch_err:
+                logger.warning(f"[ManifestDump] Error during on-demand manifest fetch: {_fetch_err}")
+
+        if manifest_path is None:
+            discard_keys_file(keys_path)
+            raise ManifestDumpError(
+                f"Could not load or download manifest {mid_str} for depot {depot_id}."
+            )
+        resolved_manifest_id = mid_str
+    else:
+        try:
+            manifest_path = find_manifest_file(temp_dir, depot_id)
+        except ManifestDumpError:
+            # A key on disk outlives the dialog, so never leave one behind for a
+            # dump that cannot be used.
+            discard_keys_file(keys_path)
+            raise
+        resolved_manifest_id = manifest_id_from_name(manifest_path.name)
 
     return ManifestDump(
         app_id=app_id,
         depot_id=depot_id,
-        manifest_id=manifest_id,
+        manifest_id=resolved_manifest_id,
         manifest_file=str(manifest_path),
         keys_path=keys_path,
         temp_dir=temp_dir,
-        txt_path=os.path.join(temp_dir, f"manifest_{depot_id}_{manifest_id}.txt"),
+        txt_path=os.path.join(temp_dir, f"manifest_{depot_id}_{resolved_manifest_id}.txt"),
     )

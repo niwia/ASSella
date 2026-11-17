@@ -71,8 +71,9 @@ def _caught_names(handler: ast.ExceptHandler):
 def analyse(root: Path) -> dict:
     """Count silent handlers per file, split into broad and narrow catches."""
     counts = {}
+    ignored_subdirs = {"__pycache__", "Goldberg", "Steamless", "SLScheevo", "schema-grabber"}
     for path in sorted(Path(root).rglob("*.py")):
-        if "__pycache__" in path.parts:
+        if any(part in ignored_subdirs for part in path.parts):
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))

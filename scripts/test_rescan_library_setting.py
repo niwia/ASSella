@@ -116,6 +116,40 @@ class TestRescanLibrarySetting(unittest.TestCase):
             mgr._handle_queue_completion()
             mock_mw.game_manager.scan_steam_libraries_async.assert_called_once()
 
+    def test_post_install_updates_in_memory_status_to_up_to_date(self):
+        mock_main_window = MagicMock()
+        mock_gm = MagicMock()
+        existing_game = {"appid": "12345", "game_name": "Test Game", "update_status": "update_available"}
+        mock_gm.get_game.return_value = existing_game
+        mock_main_window.game_manager = mock_gm
+        mock_main_window.job_queue = MagicMock()
+        mock_main_window.job_queue_manager = None
+        mock_main_window.task_manager = MagicMock()
+        mock_main_window._details_dialog = None
+
+        job = DummyTask(
+            main_window=mock_main_window,
+            game_data={"appid": "12345", "game_name": "Test Game", "buildid": "100", "update_status": "update_available"},
+        )
+
+        with patch("utils.settings.get_settings") as mock_get_settings, \
+             patch.object(job, "job_finished"), \
+             patch.object(job, "_apply_install_update_status", return_value="up_to_date"), \
+             patch.object(job, "_compute_final_buildid", return_value="100"), \
+             patch.object(job, "_apply_install_buildid_and_pin"), \
+             patch("managers.db_manager.DatabaseManager"):
+
+            mock_settings = MagicMock()
+            mock_settings.value.side_effect = lambda key, default=None, type=None: False if key == "rescan_library_after_download" else default
+            mock_get_settings.return_value = mock_settings
+
+            job._finalize_job_logic()
+
+            self.assertEqual(job.game_data["update_status"], "up_to_date")
+            self.assertEqual(existing_game["update_status"], "up_to_date")
+            mock_gm.game_update_status_changed.emit.assert_called_with("12345", "up_to_date")
+            mock_gm.update_game.assert_called_with("12345", job.game_data)
+
 
 if __name__ == "__main__":
     unittest.main()

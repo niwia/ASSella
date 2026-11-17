@@ -1157,13 +1157,16 @@ class DownloadDepotsTask(QObject):
 
         for depot_id in selected_depots:
             depot_id_str = str(depot_id)
-            manifest_id = game_data.get("manifests", {}).get(depot_id_str)
+            # 1. Primary: check explicit manifest_overrides
+            manifest_id = (game_data.get("manifest_overrides") or {}).get(depot_id_str)
+            if not manifest_id and depot_id_str.isdigit():
+                manifest_id = (game_data.get("manifest_overrides") or {}).get(int(depot_id_str))
+
+            # 2. Check game_data manifests
+            if not manifest_id:
+                manifest_id = game_data.get("manifests", {}).get(depot_id_str)
             if not manifest_id and depot_id_str.isdigit():
                 manifest_id = game_data.get("manifests", {}).get(int(depot_id_str))
-
-            # Fallback 1: check metadata manifest_overrides
-            if not manifest_id:
-                manifest_id = (game_data.get("manifest_overrides") or {}).get(depot_id_str)
 
             # Fallback 2: check if any {depot_id}_*.manifest exists on disk (manifest_dir, base manifests, depotcache)
             if not manifest_id:

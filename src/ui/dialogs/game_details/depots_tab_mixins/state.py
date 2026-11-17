@@ -563,8 +563,8 @@ class DepotsStateMixin:
                                     app_key_val = cand
                                     game_keys[self.appid_str] = cand
                                     break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[DepotsState] workshop_keys read: {e}")
         has_root_key = bool(app_key_val and len(str(app_key_val).strip()) == 64)
         ws_missing_tooltip = "Root AppKey is missing. Base game is playable, but Steam Workshop downloads require this key."
 

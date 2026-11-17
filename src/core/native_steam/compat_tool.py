@@ -126,12 +126,14 @@ def get_preferred_compat_tool() -> str:
 def force_proton_for_app(
     appid: Union[int, str],
     tool_name: Optional[str] = None,
-    restart_steam_if_running: bool = True,
+    restart_steam_if_running: bool = False,
 ) -> bool:
     """
     Configure Proton for an AppID in Steam's config.vdf.
-    If Steam is running, terminates it first so Steam does not overwrite config.vdf,
-    writes the new CompatToolMapping entry atomically, and restarts Steam with SLSsteam.
+
+    If Steam is running, does NOT modify config.vdf because Steam holds config.vdf
+    in memory and will overwrite any on-disk changes upon exiting.
+    Returns False and logs a warning advising that Steam must be closed first.
     """
     aid_str = str(appid).strip()
     if not aid_str or aid_str in ("0", "N/A", "unknown"):
@@ -142,17 +144,19 @@ def force_proton_for_app(
         logger.error("[CompatTool] Steam config.vdf not found; cannot force Proton.")
         return False
 
+    from utils.slssteam_integration import is_steam_process_running
+    from core.steam_helpers import is_steam_running
+
+    if is_steam_process_running() or is_steam_running():
+        logger.warning(
+            f"[CompatTool] Steam is currently running. Cannot modify {config_path} "
+            "because Steam holds config.vdf in memory and overwrites it on shutdown. "
+            "Please close Steam completely before applying Proton configuration."
+        )
+        return False
+
     if not tool_name:
         tool_name = get_preferred_compat_tool()
-
-    from core.steam_helpers import is_steam_running, kill_steam_process, start_steam
-    from core.native_steam.native_steam_handoff import check_slssteam_active
-
-    was_running = is_steam_running()
-    if was_running and restart_steam_if_running:
-        logger.info(f"[CompatTool] Terminating Steam to modify {config_path}...")
-        kill_steam_process()
-        time.sleep(1.0)
 
     try:
         import vdf
@@ -189,22 +193,15 @@ def force_proton_for_app(
         logger.info(
             f"[CompatTool] Successfully set AppID {aid_str} to use '{tool_name}' in {config_path}"
         )
+        return True
 
     except Exception as e:
         logger.error(f"[CompatTool] Failed to write CompatToolMapping in {config_path}: {e}")
         return False
 
-    if was_running and restart_steam_if_running:
-        logger.info("[CompatTool] Restarting Steam with SLSsteam...")
-        start_steam()
-        # Wait up to 15 seconds for SLSsteam to become active
-        for _ in range(30):
-            time.sleep(0.5)
-            if check_slssteam_active():
-                logger.info("[CompatTool] Steam and SLSsteam successfully active after restart.")
-                break
 
-    return True
+# Alias for compatibility with callers referring to set_compat_tool_for_app
+set_compat_tool_for_app = force_proton_for_app
 
 
 def check_native_steam_platform_mismatch(

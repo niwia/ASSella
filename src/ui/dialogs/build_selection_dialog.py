@@ -30,8 +30,20 @@ from utils.color_utils import get_dark_container_color, get_best_foreground_colo
 from utils.settings import get_settings
 from utils.qt_utils import clear_layout
 from ui.dialogs.themed_dialog import install_themed_frame
+from ui.dialogs.themed_message_box import ThemedMessageBox
 
 logger = logging.getLogger("ACCELA.build_selection")
+
+
+def _has_usable_manifests(depots: Optional[Dict[str, Any]]) -> bool:
+    """Return True if depots dict has at least one valid numeric manifest ID."""
+    if not isinstance(depots, dict) or not depots:
+        return False
+    for did, info in depots.items():
+        mid = info.get("manifest_id") if isinstance(info, dict) else str(info or "").strip()
+        if mid and str(mid).isdigit() and str(mid) != "0":
+            return True
+    return False
 
 
 class BuildSelectionCard(QFrame):
@@ -529,14 +541,14 @@ class BuildSelectionDialog(QDialog):
             from core.steamdb_scraper import SteamDBBuildsCache
             cache = SteamDBBuildsCache()
             c_depots = cache.get_build_depots(build_id)
-            if c_depots:
+            if _has_usable_manifests(c_depots):
                 self._selected_patch_depots = c_depots
                 self.accept()
                 return
         except Exception:
             pass
 
-        if item.get("depots"):
+        if _has_usable_manifests(item.get("depots")):
             self._selected_patch_depots = item["depots"]
             self.accept()
             return
@@ -557,6 +569,21 @@ class BuildSelectionDialog(QDialog):
         threading.Thread(target=_depot_worker, daemon=True).start()
 
     def _on_depots_resolved(self, build_id: str, depots: dict):
+        if not _has_usable_manifests(depots):
+            self.select_btn.setEnabled(True)
+            self.select_btn.setText(f"Use Build {build_id}")
+            res = ThemedMessageBox.question(
+                self,
+                "No Manifests Found",
+                f"Could not automatically resolve depot manifests for Build {build_id} from SteamDB.\n\n"
+                "Would you like to manually enter the manifest ID for this build?",
+                ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                ThemedMessageBox.StandardButton.Yes,
+            )
+            if res == ThemedMessageBox.StandardButton.Yes:
+                self._open_manual_with_build(build_id)
+            return
+
         self._selected_patch_depots = depots or {}
         try:
             from core.steamdb_scraper import SteamDBBuildsCache
@@ -570,7 +597,7 @@ class BuildSelectionDialog(QDialog):
                 break
         self.accept()
 
-    def _on_manual_clicked(self):
+    def _open_manual_with_build(self, build_id: str):
         from ui.dialogs.manual_manifest_dialog import ManualManifestDialog
         dlg = ManualManifestDialog(
             parent=self,
@@ -579,11 +606,16 @@ class BuildSelectionDialog(QDialog):
             depots_dict=self.depots_dict,
             default_depot_id=self.default_depot_id,
             current_build_id=self.current_build_id,
+            target_build_id=build_id,
             accent_color=self.accent_color,
         )
         if dlg.exec():
             self._selected_build_id, self._selected_patch_depots = dlg.get_selected_build()
             self.accept()
+
+    def _on_manual_clicked(self):
+        active_bid = self._selected_build_id or self.current_build_id
+        self._open_manual_with_build(active_bid)
 
     def get_selected_build(self) -> Tuple[str, Dict[str, Any]]:
         """Return (selected_build_id, patch_depots_dict)."""

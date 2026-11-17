@@ -371,14 +371,23 @@ class NativeSteamDownloadTask(QObject):
             self.error.emit((RuntimeError, msg, None))
 
     def _check_slssteam_active(self) -> bool:
-        """Check if SLSsteam.so is loaded in a running Steam process."""
+        """Check if SLSsteam.so is loaded in a running Steam process or listening on its API pipe."""
+        try:
+            from utils.slssteam_integration import is_slssteam_process_active
+            if is_slssteam_process_active():
+                return True
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] _check_slssteam_active: {e}")
+
+        STEAM_COMM_NAMES = {"steam", ".steam-wrapped", "steam-wrapped", "steam-original", "steam.sh"}
         try:
             for pid_dir in os.listdir("/proc"):
                 if not pid_dir.isdigit():
                     continue
                 try:
                     with open(f"/proc/{pid_dir}/comm", "r", encoding="utf-8", errors="ignore") as f:
-                        if f.read().strip() != "steam":
+                        comm = f.read().strip()
+                        if comm not in STEAM_COMM_NAMES and not comm.startswith((".steam", "steam")):
                             continue
                 except OSError as e:
                     logger.debug(f"[NativeSteamDL] Could not read /proc/{pid_dir}/comm: {e}")
@@ -602,8 +611,8 @@ class NativeSteamDownloadTask(QObject):
                             raw_ws = app_info["depots"].get("workshopdepot")
                             if raw_ws and str(raw_ws).strip().isdigit():
                                 ws_depot_id = str(raw_ws).strip()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[NativeSteamDL] workshopdepot lookup: {e}")
 
                 with open(ws_keys_file, "r", encoding="utf-8") as f:
                     for line in f:

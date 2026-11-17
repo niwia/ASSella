@@ -1497,12 +1497,20 @@ class TaskManager(
                             should_rescan = get_settings().value("rescan_library_after_download", True, type=bool)
 
                             if (
-                                should_rescan
-                                and self.main_window
+                                self.main_window
                                 and hasattr(self.main_window, "game_manager")
                                 and self.main_window.game_manager
                             ):
-                                self.main_window.game_manager.scan_steam_libraries_async()
+                                gm = self.main_window.game_manager
+                                existing = gm.get_game(appid)
+                                if existing:
+                                    existing["update_status"] = "up_to_date"
+                                if hasattr(gm, "game_update_status_changed"):
+                                    gm.game_update_status_changed.emit(str(appid), "up_to_date")
+                                if should_rescan:
+                                    gm.scan_steam_libraries_async()
+                                else:
+                                    gm.library_updated.emit()
 
                             _cleanup()
                             return
