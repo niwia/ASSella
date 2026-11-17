@@ -192,8 +192,8 @@ def _update_proc_cache_if_needed():
                 _proc_cache["slssteam_active"] = True
                 _proc_cache["steam_running"] = True
                 return
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug(f"[sls] FIFO check skipped: {e}")
 
     try:
         steam_pids = []
@@ -233,8 +233,8 @@ def _update_proc_cache_if_needed():
                                         return
                     except OSError:
                         continue
-    except OSError:
-        pass
+    except OSError as e:
+        logger.debug(f"[sls] FIFO check skipped: {e}")
 
 
 def is_slssteam_process_active() -> bool:

@@ -512,8 +512,8 @@ class SizeScannerThread(QThread):
                                 if os.path.islink(fp):
                                     continue
                                 total += os.lstat(fp).st_size
-                            except OSError:
-                                pass
+                            except OSError as stat_err:
+                                logger.debug(f"[SizeScanner] stat skipped {fp}: {stat_err}")
                 if not self._stopped:
                     self.size_found.emit(card_key, row_idx, total)
             except Exception as e:
