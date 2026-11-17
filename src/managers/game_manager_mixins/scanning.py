@@ -915,7 +915,7 @@ class GameManagerScanningMixin:
 
             if is_accela_install and depot_file and depot_file.exists():
                 try:
-                    for line in depot_file.read_text(encoding="utf-8").splitlines():
+                    for line in depot_file.read_text(encoding="utf-8", errors="replace").splitlines():
                         line = line.strip()
                         if line and ":" in line:
                             p = [x.strip() for x in line.split(":", 2)]

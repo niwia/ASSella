@@ -291,7 +291,7 @@ class GameManagerUninstallMixin:
         target_set = {str(d).strip() for d in target_dlc_ids} if target_dlc_ids else None
         remaining_lines = []
         try:
-            lines = depot_file.read_text().splitlines()
+            lines = depot_file.read_text(encoding="utf-8", errors="replace").splitlines()
             for line in lines:
                 line = line.strip()
                 if not line:
@@ -516,7 +516,10 @@ class GameManagerUninstallMixin:
                     )
 
             if platform.system() == "Linux" and not is_dlc_only:
-                data_status = self._remove_linux_game_data(appid, remove_compatdata, remove_saves)
+                resolved_compat = game_data.get("_resolved_compatdata")
+                data_status = self._remove_linux_game_data(
+                    appid, remove_compatdata, remove_saves, resolved_compatdata=resolved_compat
+                )
                 if remove_compatdata and data_status.get("compatdata_removed"):
                     removed_items.append(f"Proton prefix (Windows saves): {data_status['compatdata_path']}")
                 elif data_status.get("compatdata_path"):
@@ -680,7 +683,7 @@ class GameManagerUninstallMixin:
             return False, str(e)
 
     @staticmethod
-    def _remove_linux_game_data(appid, remove_compatdata, remove_saves):
+    def _remove_linux_game_data(appid, remove_compatdata, remove_saves, resolved_compatdata=None):
         """Remove Linux-specific game data (compatdata and Steam Cloud saves). Returns dict of status."""
         status = {
             "compatdata_removed": False,
@@ -700,25 +703,37 @@ class GameManagerUninstallMixin:
             )
             return status
 
+        # 1. Proton prefix (compatdata)
+        if resolved_compatdata and os.path.exists(resolved_compatdata):
+            status["compatdata_path"] = resolved_compatdata
+            if remove_compatdata:
+                try:
+                    shutil.rmtree(resolved_compatdata)
+                    status["compatdata_removed"] = True
+                    logger.info(f"Removed compatdata: {resolved_compatdata}")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to remove compatdata {resolved_compatdata}: {e}"
+                    )
+        else:
+            steam_libraries = get_steam_libraries() or []
+            for lib in steam_libraries:
+                compatdata_path = os.path.join(lib, "steamapps", "compatdata", str(appid))
+                if os.path.exists(compatdata_path):
+                    status["compatdata_path"] = compatdata_path
+                    if remove_compatdata:
+                        try:
+                            shutil.rmtree(compatdata_path)
+                            status["compatdata_removed"] = True
+                            logger.info(f"Removed compatdata: {compatdata_path}")
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to remove compatdata {compatdata_path}: {e}"
+                            )
+                    break
+
+        # 2. Steam Cloud userdata saves (.../<appid>/remote)
         steam_libraries = get_steam_libraries() or []
-        if not steam_libraries:
-            return status
-
-        for lib in steam_libraries:
-            compatdata_path = os.path.join(lib, "steamapps", "compatdata", str(appid))
-            if os.path.exists(compatdata_path):
-                status["compatdata_path"] = compatdata_path
-                if remove_compatdata:
-                    try:
-                        shutil.rmtree(compatdata_path)
-                        status["compatdata_removed"] = True
-                        logger.info(f"Removed compatdata: {compatdata_path}")
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to remove compatdata {compatdata_path}: {e}"
-                        )
-                break
-
         for lib in steam_libraries:
             userdata_path = os.path.join(lib, "userdata")
             if os.path.exists(userdata_path):
@@ -728,7 +743,8 @@ class GameManagerUninstallMixin:
                         if os.path.isdir(user_path):
                             saves_path = os.path.join(user_path, str(appid), "remote")
                             if os.path.exists(saves_path):
-                                status["saves_path"] = saves_path
+                                if not status["saves_path"]:
+                                    status["saves_path"] = saves_path
                                 if remove_saves:
                                     try:
                                         shutil.rmtree(saves_path)
@@ -867,7 +883,7 @@ class GameManagerUninstallMixin:
                 if filename.lower().endswith(".txt"):
                     filepath = os.path.join(app_list_dir, filename)
                     try:
-                        with open(filepath, "r", encoding="utf-8") as f:
+                        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                             content = f.read().strip()
                             all_files_data.append((filename, filepath, content))
 
@@ -876,7 +892,7 @@ class GameManagerUninstallMixin:
                                 logger.info(
                                     f"Found GreenLuma file to delete: {filename} (contains AppID {appid})"
                                 )
-                    except OSError as e:
+                    except (OSError, UnicodeDecodeError) as e:
                         logger.warning(f"Error reading AppList file {filepath}: {e}")
         except OSError as e:
             logger.error(f"Error scanning AppList directory {app_list_dir}: {e}")
@@ -962,11 +978,11 @@ class GameManagerUninstallMixin:
 
             filepath = os.path.join(app_list_dir, filename)
             try:
-                with open(filepath, "r", encoding="utf-8") as file_handle:
+                with open(filepath, "r", encoding="utf-8", errors="ignore") as file_handle:
                     content = file_handle.read().strip()
                 if content in files_by_id:
                     files_by_id[content].append(filename)
-            except OSError as e:
+            except (OSError, UnicodeDecodeError) as e:
                 logger.debug(f"  Skipped unreadable AppList file {filepath}: {e}")
                 continue
 

@@ -4,10 +4,12 @@ uninstall_confirm_dialog.py - Dedicated confirmation modal for game uninstallati
 Features:
 - Unified confirmation modal combining standard and advanced uninstall options.
 - Per-card interactive layout: each toggle owns its own 'WILL REMOVE' / 'WILL KEEP' / 'ALWAYS' mapping.
+- Danger styling for irreversible user data (Steam Cloud saves).
 - Live disk item rows with glyphs (✕ / ✓), middle-elided paths with tooltips, and calculated sizes.
 - Dedicated 'I bought the game' preset mode: transforms into 'Cleanse my sins', visually unchecks
   all other cards, forces them to 'WILL KEEP' (green), and switches the button to 'Cleanse'.
-- Non-blocking, cancelable background size calculation thread that updates 'Uninstall · frees X GB'.
+- Non-blocking, cancelable background size calculation thread that updates 'Uninstall | X GB'.
+- Symlink-safe size scanning (lstat + followlinks=False) to avoid recursive host disk crawling.
 - Respects DLC-only mode (locks base game files & prefix as kept; lists individual DLC depot cards).
 - Custom themed frame (install_themed_frame) with power-close button and user accent color styling.
 """
@@ -16,7 +18,7 @@ import logging
 import os
 import platform
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFontMetrics
@@ -43,6 +45,9 @@ logger = logging.getLogger(__name__)
 RED = "#f87171"
 GREEN = "#4ade80"
 AMBER = "#fbbf24"
+
+# Global registry to keep strong references to active background threads and prevent premature GC crashes
+_active_scanners: Set[QThread] = set()
 
 check_icon_path = str(Paths.icon("check_white.svg")).replace("\\", "/")
 
@@ -79,6 +84,9 @@ QFrame#Card {{
 QFrame#Card[state="remove"] {{
     border-color: #4a2a2e;
 }}
+QFrame#Card[state="danger"] {{
+    border-color: #7f1d1d;
+}}
 QFrame#Card[state="keep"] {{
     border-color: #223a2b;
 }}
@@ -92,6 +100,9 @@ QFrame#Bar {{
 }}
 QFrame#Card[state="remove"] QFrame#Bar {{
     background: {RED};
+}}
+QFrame#Card[state="danger"] QFrame#Bar {{
+    background: #ef4444;
 }}
 QFrame#Card[state="keep"] QFrame#Bar {{
     background: {GREEN};
@@ -109,6 +120,11 @@ QLabel#Pill {{
 QFrame#Card[state="remove"] QLabel#Pill {{
     color: {RED};
     background: #2a1a1d;
+}}
+QFrame#Card[state="danger"] QLabel#Pill {{
+    color: #fca5a5;
+    background: #450a0a;
+    border: 1px solid rgba(239, 68, 68, 0.4);
 }}
 QFrame#Card[state="keep"] QLabel#Pill {{
     color: {GREEN};
@@ -131,6 +147,9 @@ QLabel#ItemGlyph {{
 }}
 QFrame#Card[state="remove"] QLabel#ItemGlyph {{
     color: {RED};
+}}
+QFrame#Card[state="danger"] QLabel#ItemGlyph {{
+    color: #ef4444;
 }}
 QFrame#Card[state="keep"] QLabel#ItemGlyph {{
     color: {GREEN};
@@ -193,6 +212,35 @@ QCheckBox::indicator:checked:disabled {{
     background: #3a4560;
     border: 1.5px solid #3a4560;
     image: url({check_icon_path});
+}}
+
+QPushButton#ConfirmBtn {{
+    border-radius: 6px;
+    font-size: 8.5pt;
+    font-weight: bold;
+}}
+QPushButton#ConfirmBtn[mode="danger"] {{
+    background-color: rgba(229, 115, 115, 0.22);
+    color: #ff8a7a;
+    border: 1px solid rgba(229, 115, 115, 0.4);
+}}
+QPushButton#ConfirmBtn[mode="danger"]:hover {{
+    background-color: rgba(229, 115, 115, 0.35);
+    color: #ffffff;
+}}
+QPushButton#ConfirmBtn[mode="danger"]:disabled {{
+    background-color: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.25);
+    border-color: rgba(255, 255, 255, 0.08);
+}}
+QPushButton#ConfirmBtn[mode="bought"] {{
+    background-color: rgba(34, 197, 94, 0.22);
+    color: #4ade80;
+    border: 1px solid rgba(34, 197, 94, 0.45);
+}}
+QPushButton#ConfirmBtn[mode="bought"]:hover {{
+    background-color: rgba(34, 197, 94, 0.35);
+    color: #ffffff;
 }}
 """
 
@@ -308,13 +356,16 @@ class OptionCard(QFrame):
         items: List[dict],
         checked: bool = True,
         locked: bool = False,
+        danger: bool = False,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
         self.key = key
         self.locked = locked
+        self.danger = danger
         self._forced_keep = False
         self._saved_checked = checked
+        self._base_enabled = not locked
         self.setObjectName("Card")
 
         outer = QHBoxLayout(self)
@@ -332,7 +383,7 @@ class OptionCard(QFrame):
         outer.addLayout(body, 1)
 
         head = QHBoxLayout()
-        # Escape single ampersands as && so Qt does not treat & as a keyboard accelerator mnemonic
+        # Escape single ampersands as && so Qt does not treat & as a keyboard accelerator mnemonic in QCheckBox
         safe_title = title.replace("&", "&&") if "&&" not in title else title
         self.check = QCheckBox(safe_title)
         self.check.setChecked(checked)
@@ -364,6 +415,12 @@ class OptionCard(QFrame):
 
         self._sync()
 
+    def set_base_enabled(self, enabled: bool) -> None:
+        """Sets the baseline enabled state so force_keep(False) does not re-enable dead cards."""
+        self._base_enabled = enabled
+        if not self._forced_keep:
+            self.check.setEnabled(enabled)
+
     def _on_check_toggled(self) -> None:
         self._sync()
         self.toggled.emit()
@@ -388,13 +445,15 @@ class OptionCard(QFrame):
             self.check.blockSignals(True)
             self.check.setChecked(getattr(self, "_saved_checked", self.check.isChecked()))
             self.check.blockSignals(False)
-            self.check.setEnabled(True)
+            self.check.setEnabled(self._base_enabled)
         self._sync()
 
     def _sync(self) -> None:
         removing = self.removing()
         if self.locked:
             state, text = "locked", "ALWAYS"
+        elif self.danger and removing:
+            state, text = "danger", "WILL REMOVE"
         else:
             state, text = ("remove", "WILL REMOVE") if removing else ("keep", "WILL KEEP")
         self.setProperty("state", state)
@@ -417,7 +476,7 @@ class SizeScannerThread(QThread):
     """Background worker to lazily calculate directory sizes without freezing the GUI."""
 
     size_found = pyqtSignal(str, int, int)  # card_key, row_idx, size_bytes
-    finished = pyqtSignal()
+    scan_done = pyqtSignal()  # Renamed to avoid shadowing QThread.finished
 
     def __init__(self, targets: List[tuple]):
         """targets: list of (card_key, row_idx, path)"""
@@ -436,10 +495,13 @@ class SizeScannerThread(QThread):
                 continue
             total = 0
             try:
+                # Symlink guard: do not follow symlinks to avoid infinite loops or measuring host drive
+                if os.path.islink(path):
+                    continue
                 if os.path.isfile(path):
-                    total = os.path.getsize(path)
+                    total = os.lstat(path).st_size
                 else:
-                    for root, _dirs, files in os.walk(path):
+                    for root, _dirs, files in os.walk(path, followlinks=False):
                         if self._stopped:
                             return
                         for f in files:
@@ -447,7 +509,9 @@ class SizeScannerThread(QThread):
                                 return
                             fp = os.path.join(root, f)
                             try:
-                                total += os.path.getsize(fp)
+                                if os.path.islink(fp):
+                                    continue
+                                total += os.lstat(fp).st_size
                             except OSError:
                                 pass
                 if not self._stopped:
@@ -455,7 +519,7 @@ class SizeScannerThread(QThread):
             except Exception as e:
                 logger.debug(f"[SizeScanner] Error scanning {path}: {e}")
         if not self._stopped:
-            self.finished.emit()
+            self.scan_done.emit()
 
 
 # Alias for backward compatibility with existing tests
@@ -518,10 +582,11 @@ def find_acf_path(appid: str, library_path: Optional[str] = None) -> Optional[st
     return None
 
 
-def find_userdata_saves_path(appid: str, library_path: Optional[str] = None) -> Optional[str]:
-    """Locate local Steam Cloud userdata saves folder for this game."""
+def find_userdata_saves_paths(appid: str, library_path: Optional[str] = None) -> List[str]:
+    """Locate local Steam Cloud userdata saves (remote folders) for all users."""
     if not appid or appid in ("0", "N/A", "unknown"):
-        return None
+        return []
+    results = []
     try:
         from core.steam_helpers import get_steam_libraries
 
@@ -534,13 +599,10 @@ def find_userdata_saves_path(appid: str, library_path: Optional[str] = None) -> 
                 for uid in os.listdir(userdata_dir):
                     p = os.path.join(userdata_dir, uid, str(appid), "remote")
                     if os.path.exists(p):
-                        return p
-                    p_root = os.path.join(userdata_dir, uid, str(appid))
-                    if os.path.exists(p_root):
-                        return p_root
+                        results.append(p)
     except Exception as e:
         logger.debug(f"[UninstallConfirm] Error finding userdata saves: {e}")
-    return None
+    return results
 
 
 class UninstallConfirmDialog(QDialog):
@@ -593,10 +655,10 @@ class UninstallConfirmDialog(QDialog):
 
         self.acf_path = find_acf_path(self.appid, self.library_path)
         self.compatdata_path = None
-        self.saves_path = None
+        self.saves_paths: List[str] = []
         if platform.system() == "Linux" and not self.is_dlc_only:
             self.compatdata_path = find_compatdata_path(self.appid, self.install_path, self.library_path)
-            self.saves_path = find_userdata_saves_path(self.appid, self.library_path)
+            self.saves_paths = find_userdata_saves_paths(self.appid, self.library_path)
 
         self._scanner: Optional[SizeScannerThread] = None
         self._scan_started = False
@@ -690,14 +752,14 @@ class UninstallConfirmDialog(QDialog):
             # 3. Card: SLSsteam config (Locked, ALWAYS)
             sls_items = [
                 {
-                    "label": "SLSsteam && AT0-M configuration entries",
+                    "label": "SLSsteam & AT0-M configuration entries",
                     "path": None,
                     "exists": True,
                 }
             ]
             self.sls_card = OptionCard(
                 key="sls_config",
-                title="Clean SLSsteam && AT0-M entries",
+                title="Clean SLSsteam & AT0-M entries",
                 blurb="Always happens. Removes this game from your SLS config.",
                 items=sls_items,
                 checked=True,
@@ -710,14 +772,14 @@ class UninstallConfirmDialog(QDialog):
             if platform.system() == "Linux":
                 shortcuts_items = [
                     {
-                        "label": "Application shortcuts && icons",
+                        "label": "Application shortcuts & icons",
                         "path": None,
                         "exists": True,
                     }
                 ]
                 self.shortcuts_card = OptionCard(
                     key="shortcuts",
-                    title="Remove desktop shortcuts && icons",
+                    title="Remove desktop shortcuts & icons",
                     blurb="Menu entries created for this game.",
                     items=shortcuts_items,
                     checked=True,
@@ -746,29 +808,40 @@ class UninstallConfirmDialog(QDialog):
                 )
                 if not self.compatdata_path:
                     self.compat_card.check.setText("Wipe Proton prefix (none found)")
-                    self.compat_card.check.setEnabled(False)
+                    self.compat_card.set_base_enabled(False)
                 self.compat_card.toggled.connect(self._on_card_toggled)
                 self.cards["compatdata"] = self.compat_card
                 cards_layout.addWidget(self.compat_card)
             else:
                 self.compat_card = None
 
-            # 6. Card: Steam Cloud userdata saves (Linux only)
+            # 6. Card: Steam Cloud userdata saves (Linux only, with Danger treatment)
             if platform.system() == "Linux":
-                saves_items = [
-                    {
+                saves_items = []
+                if self.saves_paths:
+                    for sp in self.saves_paths:
+                        saves_items.append({
+                            "label": "Cloud userdata",
+                            "path": sp,
+                            "exists": True,
+                        })
+                else:
+                    saves_items.append({
                         "label": "Cloud userdata",
-                        "path": self.saves_path,
-                        "exists": bool(self.saves_path),
-                    }
-                ]
+                        "path": None,
+                        "exists": False,
+                    })
+
                 self.saves_card = OptionCard(
                     key="saves",
                     title="Remove local Steam Cloud saves",
                     blurb="Local copies in userdata. Cloud copies are untouched.",
                     items=saves_items,
                     checked=False,
+                    danger=True,
                 )
+                if not self.saves_paths:
+                    self.saves_card.set_base_enabled(False)
                 self.saves_card.toggled.connect(self._on_card_toggled)
                 self.cards["saves"] = self.saves_card
                 cards_layout.addWidget(self.saves_card)
@@ -846,7 +919,7 @@ class UninstallConfirmDialog(QDialog):
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll, 1)
 
-        # Action Buttons
+        # Action Buttons (160x32px identical geometry)
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
         btn_layout.addStretch()
@@ -872,6 +945,7 @@ class UninstallConfirmDialog(QDialog):
         btn_layout.addWidget(self.cancel_btn)
 
         self.confirm_btn = QPushButton("Uninstall")
+        self.confirm_btn.setObjectName("ConfirmBtn")
         self.confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.confirm_btn.setFixedSize(160, 32)
         self.confirm_btn.clicked.connect(self.accept)
@@ -898,22 +972,13 @@ class UninstallConfirmDialog(QDialog):
 
     def _refresh_confirm_button(self) -> None:
         bought = self.bought_cb.isChecked()
+        new_mode = "bought" if bought else "danger"
+        if self.confirm_btn.property("mode") != new_mode:
+            self.confirm_btn.setProperty("mode", new_mode)
+            _repolish(self.confirm_btn)
+
         if bought:
             self.confirm_btn.setText("Cleanse")
-            self.confirm_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(34, 197, 94, 0.22);
-                    color: #4ade80;
-                    border: 1px solid rgba(34, 197, 94, 0.45);
-                    border-radius: 6px;
-                    font-size: 8.5pt;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: rgba(34, 197, 94, 0.35);
-                    color: #ffffff;
-                }
-            """)
             self.confirm_btn.setEnabled(True)
             return
 
@@ -922,29 +987,10 @@ class UninstallConfirmDialog(QDialog):
             if checked_count > 0:
                 suffix = f"{checked_count} DLCs" if checked_count != 1 else "1 DLC"
                 self.confirm_btn.setText(f"Uninstall | {suffix}")
+                self.confirm_btn.setEnabled(True)
             else:
                 self.confirm_btn.setText("Uninstall")
-
-            self.confirm_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: rgba(229, 115, 115, 0.22);
-                    color: #ff8a7a;
-                    border: 1px solid rgba(229, 115, 115, 0.4);
-                    border-radius: 6px;
-                    font-size: 8.5pt;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: rgba(229, 115, 115, 0.35);
-                    color: #ffffff;
-                }
-                QPushButton:disabled {
-                    background-color: rgba(255, 255, 255, 0.04);
-                    color: rgba(255, 255, 255, 0.25);
-                    border-color: rgba(255, 255, 255, 0.08);
-                }
-            """)
-            self.confirm_btn.setEnabled(checked_count > 0)
+                self.confirm_btn.setEnabled(False)
             return
 
         reclaimable = sum(c.reclaimable_bytes() for c in self.cards.values())
@@ -952,26 +998,6 @@ class UninstallConfirmDialog(QDialog):
             self.confirm_btn.setText(f"Uninstall | {format_size(reclaimable)}")
         else:
             self.confirm_btn.setText("Uninstall")
-
-        self.confirm_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(229, 115, 115, 0.22);
-                color: #ff8a7a;
-                border: 1px solid rgba(229, 115, 115, 0.4);
-                border-radius: 6px;
-                font-size: 8.5pt;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: rgba(229, 115, 115, 0.35);
-                color: #ffffff;
-            }
-            QPushButton:disabled {
-                background-color: rgba(255, 255, 255, 0.04);
-                color: rgba(255, 255, 255, 0.25);
-                border-color: rgba(255, 255, 255, 0.08);
-            }
-        """)
         self.confirm_btn.setEnabled(True)
 
     def _update_summary(self) -> None:
@@ -1003,13 +1029,16 @@ class UninstallConfirmDialog(QDialog):
                     targets.append(("game_files", 0, self.install_path))
                 if self.compatdata_path and os.path.exists(self.compatdata_path):
                     targets.append(("compatdata", 0, self.compatdata_path))
-                if self.saves_path and os.path.exists(self.saves_path):
-                    targets.append(("saves", 0, self.saves_path))
+                if self.saves_paths:
+                    for idx, sp in enumerate(self.saves_paths):
+                        targets.append(("saves", idx, sp))
 
             if targets:
                 self._scanner = SizeScannerThread(targets)
+                _active_scanners.add(self._scanner)
+                self._scanner.finished.connect(lambda s=self._scanner: _active_scanners.discard(s))
                 self._scanner.size_found.connect(self._on_size_found)
-                self._scanner.finished.connect(self._on_scan_finished)
+                self._scanner.scan_done.connect(self._on_scan_finished)
                 self._scanner.start()
 
     def _on_size_found(self, card_key: str, row_idx: int, size_bytes: int) -> None:
@@ -1023,12 +1052,14 @@ class UninstallConfirmDialog(QDialog):
 
     def _cleanup_scanner(self) -> None:
         if self._scanner:
+            scanner = self._scanner
+            self._scanner = None
             try:
-                self._scanner.stop()
-                self._scanner.wait(150)
+                scanner.stop()
+                if not scanner.wait(150):
+                    scanner.finished.connect(scanner.deleteLater)
             except Exception as e:
                 logger.debug(f"[UninstallConfirm] Error stopping size scanner: {e}")
-            self._scanner = None
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._cleanup_scanner()

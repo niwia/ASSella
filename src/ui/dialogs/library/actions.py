@@ -1747,6 +1747,10 @@ class LibraryActionsMixin:
                 game_data = dict(game_data)
                 game_data["_dlc_uninstall_ids"] = target_dlc_ids
 
+            if dlg.compatdata_path:
+                game_data = dict(game_data)
+                game_data["_resolved_compatdata"] = dlg.compatdata_path
+
             if c_wipe_sls_only:
                 progress_title = "Removing integrations..."
             elif is_dlc_only:
@@ -1948,7 +1952,7 @@ class LibraryActionsMixin:
             from utils.helpers import get_base_path
             depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
             if depot_file.exists():
-                for line in depot_file.read_text().splitlines():
+                for line in depot_file.read_text(encoding="utf-8", errors="replace").splitlines():
                     parts = line.split(":")
                     if parts and parts[0].strip().isdigit():
                         depot_ids.add(parts[0].strip())
