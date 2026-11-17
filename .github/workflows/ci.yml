@@ -59,7 +59,7 @@ jobs:
           import importlib, sys
           modules = [
               "PyQt6.QtCore", "PyQt6.QtWidgets", "PyQt6.QtGui",
-              "requests", "yaml", "cryptography", "configobj",
+              "requests", "yaml", "cryptography", "Cryptodome",
               "rich", "vdf", "steam", "steam.client",
               "zstandard", "curl_cffi", "psutil", "bs4",
               "gevent", "capstone",

@@ -201,8 +201,8 @@ jobs:
           # 4. Copy Application Source Code
           cp -r src AppDir/bin/
           find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-          # Optional components (Goldberg, Steamless, SLScheevo) are downloaded on demand from R2
-          rm -rf AppDir/bin/src/deps/Goldberg AppDir/bin/src/deps/Steamless AppDir/bin/src/deps/SLScheevo AppDir/bin/src/deps/schema-grabber
+          # Optional and on-demand components are downloaded on demand (R2 or auto-fetch)
+          rm -rf AppDir/bin/src/deps/Goldberg AppDir/bin/src/deps/Steamless AppDir/bin/src/deps/SLScheevo AppDir/bin/src/deps/schema-grabber AppDir/bin/src/deps/wireproxy
           BUILD_DATE_UTC="$(date -u +%Y-%m-%d)"
           BUILD_TS_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 -c 'import re, sys; p = "AppDir/bin/src/utils/version.py"; t = open(p, "r", encoding="utf-8").read(); t = re.sub(r"^BUILD_DATE\s*=.*$", f"BUILD_DATE = \"{sys.argv[1]}\"", t, flags=re.M); t = re.sub(r"^BUILD_TIMESTAMP\s*=.*$", f"BUILD_TIMESTAMP = \"{sys.argv[2]}\"", t, flags=re.M); open(p, "w", encoding="utf-8").write(t); print(f"Stamped {p}: {sys.argv[1]} / {sys.argv[2]}")' "$BUILD_DATE_UTC" "$BUILD_TS_UTC"
@@ -287,28 +287,67 @@ jobs:
             echo "zsync2 bundled as AppDir/bin/zsync and verified executable."
           fi
 
-          # 8. Bundle Tor Executable
-          if [ -f "/usr/bin/tor" ]; then
-            cp /usr/bin/tor AppDir/bin/tor
-          elif [ -f "bin/tor" ]; then
-            cp bin/tor AppDir/bin/tor
-          fi
-          chmod +x AppDir/bin/tor 2>/dev/null || true
-
-          # 9. Bundle Relocatable Standalone Python 3.13 Runtime
+          # 7. Bundle Relocatable Standalone Python 3.13 Runtime
           echo "Downloading relocatable python-build-standalone runtime (Python 3.13)..."
           curl -sLo /tmp/cpython-standalone.tar.gz "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18+20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
           tar -xzf /tmp/cpython-standalone.tar.gz -C AppDir/bin/
           mv AppDir/bin/python AppDir/bin/.venv
 
-          # 10. Install application dependencies into bundled runtime
+          # 8. Install application dependencies into bundled runtime
           AppDir/bin/.venv/bin/python3 -m pip install --upgrade pip setuptools wheel
           AppDir/bin/.venv/bin/python3 -m pip install -r requirements.txt
+
+          # 9. Prune unused Qt6 subsystems, QML, and translations (~60–80 MB saved)
+          SITE_PKGS="AppDir/bin/.venv/lib/python3.13/site-packages"
+          QT6_DIR="$SITE_PKGS/PyQt6/Qt6"
+          echo "Pruning unused Qt6 subsystems, QML, and translations..."
+          rm -rf "$QT6_DIR/qml" "$QT6_DIR/translations" "$QT6_DIR/qsci" \
+                 "$QT6_DIR/plugins/sqldrivers" "$QT6_DIR/plugins/multimedia" \
+                 "$QT6_DIR/plugins/sceneparsers" "$QT6_DIR/plugins/geometryloaders"
+
+          # Retain only required Qt6 C++ libraries for QtWidgets, DBus, Wayland, and X11
+          find "$QT6_DIR/lib" -maxdepth 1 -name "libQt6*.so*" \
+            ! -name "libQt6Core*" ! -name "libQt6Gui*" ! -name "libQt6Widgets*" \
+            ! -name "libQt6DBus*" ! -name "libQt6Network*" ! -name "libQt6Svg*" \
+            ! -name "libQt6Wayland*" ! -name "libQt6WlShellIntegration*" \
+            ! -name "libQt6XcbQpa*" ! -name "libQt6OpenGL*" \
+            -delete
+
+          # Remove unused PyQt6 Python bindings (.abi3.so / .pyi / bindings)
+          find "$SITE_PKGS/PyQt6" -maxdepth 1 \( -name "Qt*.so" -o -name "Qt*.pyi" \) \
+            ! -name "QtCore*" ! -name "QtGui*" ! -name "QtWidgets*" \
+            ! -name "QtNetwork*" ! -name "QtSvg*" ! -name "QtOpenGL*" \
+            -delete
+          rm -rf "$SITE_PKGS/PyQt6/bindings"
+
+          # 10. Purge build tools and unused stdlib from relocatable runtime (~45 MB saved)
+          echo "Purging build residue and unused stdlib modules from bundled runtime..."
+          rm -rf AppDir/bin/.venv/lib/python3.13/ensurepip \
+                 AppDir/bin/.venv/lib/python3.13/site-packages/pip* \
+                 AppDir/bin/.venv/lib/python3.13/site-packages/setuptools* \
+                 AppDir/bin/.venv/lib/python3.13/site-packages/wheel* \
+                 AppDir/bin/.venv/bin/pip* \
+                 AppDir/bin/.venv/bin/wheel* \
+                 AppDir/bin/.venv/bin/ruff
+          rm -rf AppDir/bin/.venv/include \
+                 AppDir/bin/.venv/lib/python3.13/config-3.13-x86_64-linux-gnu \
+                 AppDir/bin/.venv/lib/python3.13/tkinter \
+                 AppDir/bin/.venv/lib/python3.13/idlelib \
+                 AppDir/bin/.venv/lib/python3.13/tcl* \
+                 AppDir/bin/.venv/lib/python3.13/tk* \
+                 AppDir/bin/.venv/lib/tcl* \
+                 AppDir/bin/.venv/lib/tk* \
+                 AppDir/bin/.venv/lib/Tix* \
+                 AppDir/bin/.venv/lib/itcl* \
+                 AppDir/bin/.venv/lib/thread* \
+                 AppDir/bin/.venv/share/terminfo \
+                 AppDir/bin/.venv/share/man
           find AppDir/bin/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          find AppDir/bin/.venv -name "*.pyc" -delete 2>/dev/null || true
 
           # 11. Sanity check: Verify all required imports inside bundled AppDir runtime
           echo "Verifying AppDir runtime imports..."
-          QT_QPA_PLATFORM=offscreen AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtWidgets, requests, yaml, cryptography, configobj, rich, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
+          QT_QPA_PLATFORM=offscreen AppDir/bin/.venv/bin/python3 -c "import PyQt6.QtCore, PyQt6.QtGui, PyQt6.QtWidgets, PyQt6.QtSvg, PyQt6.QtNetwork, requests, yaml, cryptography, Cryptodome, rich, vdf, steam, steam.client, zstandard, curl_cffi; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('AppDir verification: All critical dependencies imported and QApplication created successfully!')"
           test -x AppDir/bin/appimageupdatetool || { echo "::error::appimageupdatetool missing from AppDir"; exit 1; }
           echo "appimageupdatetool present and executable."
           # zsync2 fallback is optional — bundled above so delta updates work
@@ -486,8 +525,8 @@ jobs:
           echo "::group::Import check inside the bundled interpreter"
           QT_QPA_PLATFORM=offscreen AppDir_extract/bin/.venv/bin/python3 - <<'PY'
           import importlib, sys
-          mods = ["PyQt6.QtCore","PyQt6.QtWidgets","PyQt6.QtGui","requests","yaml",
-                  "cryptography","configobj","rich","vdf","steam","steam.client",
+          mods = ["PyQt6.QtCore","PyQt6.QtWidgets","PyQt6.QtGui","PyQt6.QtSvg","PyQt6.QtNetwork","requests","yaml",
+                  "cryptography","Cryptodome","rich","vdf","steam","steam.client",
                   "zstandard","curl_cffi","psutil","bs4","gevent","capstone"]
           bad = []
           for m in mods:

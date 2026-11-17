@@ -294,11 +294,11 @@ class SteamlessIntegration(QObject):
 
     def _ensure_aio_deps(self, python_exe: str) -> None:
         """
-        Install pycryptodome and capstone into the tool's venv if missing.
+        Ensure pycryptodomex and capstone are available for Steamless AIO.
         Silent on success; logs warnings on failure (AIO will still attempt to run).
         """
         deps = [
-            ("Crypto", "pycryptodome"),
+            ("Cryptodome", "pycryptodomex"),
             ("capstone", "capstone"),
         ]
         for import_name, pip_name in deps:
@@ -610,7 +610,7 @@ class SteamlessIntegration(QObject):
                     self._last_exe_status = "error"
                     return False
 
-                # Ensure pycryptodome and capstone are installed (first-run only)
+                # Ensure pycryptodomex and capstone are available (first-run only)
                 self._ensure_aio_deps(python_exe)
 
                 cmd = [python_exe, steamless_py, target_path]

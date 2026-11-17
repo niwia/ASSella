@@ -61,7 +61,8 @@ Verified zero imports anywhere outside `src/deps/` vendored sample scripts:
 | Package | Why removed |
 |---|---|
 | `numpy` | Never imported anywhere in the project |
-| `pycryptodomex` | Duplicate fork of `pycryptodome`, which is retained |
+| `configobj` | Unused across `src/` (zero imports) |
+| `pycryptodome` | Redundant fork of `pycryptodomex` (`Cryptodome`), which is installed via `steam` |
 | `just-playback`, `tinytag`, `Pillow` | Only referenced by vendored sample scripts under `src/deps/` |
 
 If you later add code that needs one of these, add it back to
