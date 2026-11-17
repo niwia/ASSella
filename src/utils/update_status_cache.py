@@ -312,3 +312,8 @@ def get_update_cache() -> UpdateStatusCache:
 
 # Backward compatibility alias
 get_update_status_cache = get_update_cache
+
+
+def get_game_update_status(appid: str) -> Optional[str]:
+    """Retrieve cached update status for a game."""
+    return get_update_cache().get_status(str(appid))

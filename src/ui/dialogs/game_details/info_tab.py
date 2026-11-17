@@ -59,7 +59,8 @@ def _is_vapor_mode(dialog, status: Optional[str] = None) -> bool:
     if status is None:
         try:
             from utils.update_status_cache import get_game_update_status
-            status = get_game_update_status(str(getattr(dialog, "appid", "") or gd.get("appid", "")))
+            aid = str(getattr(dialog, "appid", "") or gd.get("appid", "")).strip()
+            status = get_game_update_status(aid) if aid else None
         except Exception:
             status = gd.get("update_status")
     return bool(
