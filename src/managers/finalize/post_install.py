@@ -464,7 +464,16 @@ class PostInstallMixin:
                     # Cache status: handoff defers to VaporWatcher; a pinned older
                     # build is a deliberate freeze; an unpinned older package shows
                     # the pending update. See _apply_install_update_status.
-                    self._apply_install_update_status(appid, is_stale_or_rollback)
+                    final_status = self._apply_install_update_status(appid, is_stale_or_rollback)
+                    if final_status and final_status != "handoff":
+                        self.game_data["update_status"] = final_status
+                        gm = getattr(self.main_window, "game_manager", None)
+                        if gm:
+                            existing = gm.get_game(appid)
+                            if existing:
+                                existing["update_status"] = final_status
+                            if hasattr(gm, "game_update_status_changed"):
+                                gm.game_update_status_changed.emit(str(appid), final_status)
 
                     # Upsert the new manifest/depot data to SQLite DB to refresh cache age and content
                     try:
