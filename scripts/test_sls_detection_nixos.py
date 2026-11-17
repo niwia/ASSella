@@ -190,16 +190,19 @@ def test_steam_restart_removed_and_compat_tool():
             sls._proc_cache["steam_running"] = False
             sls._proc_cache["slssteam_active"] = False
 
-            # Ensure steam comm check also returns False in this test
+            import core.steam_helpers as sh
+            old_sh_running = sh.is_steam_running
             saved_pipe = sls.SLSSTEAM_API_PIPE
             sls.SLSSTEAM_API_PIPE = "/tmp/nonexistent_test_pipe.API"
             try:
+                sh.is_steam_running = lambda: False
                 assert ct.force_proton_for_app(12345, "proton_experimental")
                 content = Path(tmp_vdf.name).read_text(encoding="utf-8")
                 assert "12345" in content
                 assert "proton_experimental" in content
                 print("  [ok] force_proton_for_app safely writes CompatToolMapping when Steam is closed")
             finally:
+                sh.is_steam_running = old_sh_running
                 sls.SLSSTEAM_API_PIPE = saved_pipe
 
         finally:
