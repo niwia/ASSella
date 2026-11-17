@@ -853,14 +853,15 @@ class UninstallConfirmDialog(QDialog):
 
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.cancel_btn.setFixedSize(100, 28)
+        self.cancel_btn.setFixedSize(160, 32)
         self.cancel_btn.setStyleSheet("""
             QPushButton {
                 background-color: rgba(255, 255, 255, 0.06);
                 border: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 5px;
+                border-radius: 6px;
                 color: #e5e7eb;
                 font-size: 8.5pt;
+                font-weight: 600;
             }
             QPushButton:hover {
                 background-color: rgba(255, 255, 255, 0.12);
@@ -872,8 +873,7 @@ class UninstallConfirmDialog(QDialog):
 
         self.confirm_btn = QPushButton("Uninstall")
         self.confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.confirm_btn.setFixedHeight(28)
-        self.confirm_btn.setMinimumWidth(140)
+        self.confirm_btn.setFixedSize(160, 32)
         self.confirm_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.confirm_btn)
 
@@ -905,10 +905,9 @@ class UninstallConfirmDialog(QDialog):
                     background-color: rgba(34, 197, 94, 0.22);
                     color: #4ade80;
                     border: 1px solid rgba(34, 197, 94, 0.45);
-                    border-radius: 5px;
+                    border-radius: 6px;
                     font-size: 8.5pt;
                     font-weight: bold;
-                    padding: 0 16px;
                 }
                 QPushButton:hover {
                     background-color: rgba(34, 197, 94, 0.35);
@@ -920,20 +919,29 @@ class UninstallConfirmDialog(QDialog):
 
         if self.is_dlc_only:
             checked_count = sum(1 for c in self._dlc_cards.values() if c.removing())
-            self.confirm_btn.setText(f"Uninstall Selected DLC ({checked_count})")
+            if checked_count > 0:
+                suffix = f"{checked_count} DLCs" if checked_count != 1 else "1 DLC"
+                self.confirm_btn.setText(f"Uninstall | {suffix}")
+            else:
+                self.confirm_btn.setText("Uninstall")
+
             self.confirm_btn.setStyleSheet("""
                 QPushButton {
                     background-color: rgba(229, 115, 115, 0.22);
                     color: #ff8a7a;
                     border: 1px solid rgba(229, 115, 115, 0.4);
-                    border-radius: 5px;
+                    border-radius: 6px;
                     font-size: 8.5pt;
                     font-weight: bold;
-                    padding: 0 16px;
                 }
                 QPushButton:hover {
                     background-color: rgba(229, 115, 115, 0.35);
                     color: #ffffff;
+                }
+                QPushButton:disabled {
+                    background-color: rgba(255, 255, 255, 0.04);
+                    color: rgba(255, 255, 255, 0.25);
+                    border-color: rgba(255, 255, 255, 0.08);
                 }
             """)
             self.confirm_btn.setEnabled(checked_count > 0)
@@ -941,7 +949,7 @@ class UninstallConfirmDialog(QDialog):
 
         reclaimable = sum(c.reclaimable_bytes() for c in self.cards.values())
         if reclaimable > 0:
-            self.confirm_btn.setText(f"Uninstall · frees {format_size(reclaimable)}")
+            self.confirm_btn.setText(f"Uninstall | {format_size(reclaimable)}")
         else:
             self.confirm_btn.setText("Uninstall")
 
@@ -950,14 +958,18 @@ class UninstallConfirmDialog(QDialog):
                 background-color: rgba(229, 115, 115, 0.22);
                 color: #ff8a7a;
                 border: 1px solid rgba(229, 115, 115, 0.4);
-                border-radius: 5px;
+                border-radius: 6px;
                 font-size: 8.5pt;
                 font-weight: bold;
-                padding: 0 16px;
             }
             QPushButton:hover {
                 background-color: rgba(229, 115, 115, 0.35);
                 color: #ffffff;
+            }
+            QPushButton:disabled {
+                background-color: rgba(255, 255, 255, 0.04);
+                color: rgba(255, 255, 255, 0.25);
+                border-color: rgba(255, 255, 255, 0.08);
             }
         """)
         self.confirm_btn.setEnabled(True)

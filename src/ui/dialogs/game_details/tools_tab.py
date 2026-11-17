@@ -6,6 +6,8 @@ and Experimental DlcData configuration.
 
 import json
 import logging
+import os
+import platform
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
@@ -638,11 +640,28 @@ def init_tools_tab(dialog) -> None:
     )
     links_row.addWidget(steam_btn, 1)
 
-    steamdb_btn = QPushButton("Open SteamDB")
-    steamdb_btn.setFixedHeight(34)
-    steamdb_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    steamdb_btn.setEnabled(is_real_app)
-    steamdb_btn.setStyleSheet(f"""
+    prefix_btn = QPushButton("Open Prefix")
+    prefix_btn.setFixedHeight(34)
+    prefix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    compat_path = None
+    if platform.system() == "Linux" and is_real_app:
+        from ui.dialogs.uninstall_confirm_dialog import find_compatdata_path
+
+        compat_path = find_compatdata_path(
+            dialog.appid,
+            dialog.game_data.get("install_path"),
+            dialog.game_data.get("library_path"),
+        )
+
+    has_prefix = bool(compat_path and os.path.exists(compat_path))
+    prefix_btn.setEnabled(has_prefix)
+    if has_prefix:
+        prefix_btn.setToolTip(f"Open Proton prefix: {compat_path}")
+    else:
+        prefix_btn.setToolTip("No Proton prefix found on disk")
+
+    prefix_btn.setStyleSheet(f"""
         QPushButton {{
             background: rgba(255,255,255,0.05);
             border: 1px solid rgba(255,255,255,0.1);
@@ -661,10 +680,15 @@ def init_tools_tab(dialog) -> None:
             border-color: rgba(255,255,255,0.05);
         }}
     """)
-    steamdb_btn.clicked.connect(
-        lambda: QDesktopServices.openUrl(QUrl(f"https://www.steamdb.info/app/{dialog.appid}/"))
-    )
-    links_row.addWidget(steamdb_btn, 1)
+    if has_prefix and compat_path:
+        def _open_prefix():
+            if hasattr(dialog, "parent_window") and dialog.parent_window and hasattr(dialog.parent_window, "_open_folder"):
+                dialog.parent_window._open_folder(compat_path)
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(compat_path))
+
+        prefix_btn.clicked.connect(_open_prefix)
+    links_row.addWidget(prefix_btn, 1)
 
     copy_appid = QPushButton("Copy App ID")
     copy_appid.setFixedHeight(34)
