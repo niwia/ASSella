@@ -1,7 +1,11 @@
+import logging
 import os
 import re
 import sys
-from typing import Any, Dict, Iterable, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterable, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 
 _EMPTY_PLATFORM_CONFIG = '\t"UserConfig"\n\t{\n\t}\n\t"MountedConfig"\n\t{\n\t}'
@@ -251,12 +255,13 @@ def write_acf_file(
     return acf_path
 
 
-def _tolerant_decompress_member(zip_path: str, member) -> bytes:
+def _tolerant_decompress_member(source: Union[str, Path, Any], member) -> bytes:
     """Decompress a ZIP member when the ZIP header CRC32 is mismatched or corrupt."""
     import struct
     import zipfile
     import zlib
-    with open(zip_path, "rb") as fp:
+
+    def _read_from_fp(fp):
         fp.seek(member.header_offset)
         header = fp.read(30)
         magic, _, _, method, _, _, _, csize, usize, fn_len, extra_len = struct.unpack("<4sHHHHHIIIHH", header)
@@ -270,6 +275,11 @@ def _tolerant_decompress_member(zip_path: str, member) -> bytes:
             return compressed
         raise zipfile.BadZipFile(f"Unsupported compression method {method}")
 
+    if hasattr(source, "seek") and hasattr(source, "read"):
+        return _read_from_fp(source)
+    with open(str(source), "rb") as fp:
+        return _read_from_fp(fp)
+
 
 def tolerant_read_zip_member(archive, member, zip_path: Optional[str] = None) -> bytes:
     """Read a member from a ZipFile, bypassing BadZipFile CRC32 mismatches from remote servers."""
@@ -278,10 +288,14 @@ def tolerant_read_zip_member(archive, member, zip_path: Optional[str] = None) ->
         return archive.read(member)
     except zipfile.BadZipFile as bzf:
         if "Bad CRC-32" in str(bzf):
-            zp = zip_path or getattr(archive, "filename", None)
-            if zp:
+            source = zip_path or getattr(archive, "filename", None) or getattr(archive, "fp", None)
+            if source:
                 info = archive.getinfo(member) if isinstance(member, str) else member
-                return _tolerant_decompress_member(str(zp), info)
+                mem_name = getattr(info, "filename", str(member))
+                logger.warning(
+                    f"[steam_manifest] Bypassed CRC-32 mismatch for member '{mem_name}' in zip archive"
+                )
+                return _tolerant_decompress_member(source, info)
         raise
 
 
@@ -317,6 +331,9 @@ def safe_extract_zip(zip_path: str, dest_dir: str) -> int:
                 archive.extract(member, dest)
             except zipfile.BadZipFile as bzf:
                 if "Bad CRC-32" in str(bzf):
+                    logger.warning(
+                        f"[steam_manifest] Bypassed CRC-32 mismatch during safe_extract_zip for '{name}' in {zip_path}"
+                    )
                     raw = _tolerant_decompress_member(zip_path, member)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(raw)

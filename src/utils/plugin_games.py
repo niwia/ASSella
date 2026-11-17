@@ -839,10 +839,13 @@ def collect_game_depots_and_keys(
     zip_file = next((candidate for candidate in zip_files if candidate.exists()), None)
     if zip_file:
         try:
+            from utils.steam_manifest import tolerant_read_zip_member
             with zipfile.ZipFile(zip_file, "r") as zf:
                 for name in zf.namelist():
                     if name.endswith(".lua"):
-                        _extract_keys_and_tokens_from_lua(zf.read(name).decode("utf-8", errors="ignore"))
+                        _extract_keys_and_tokens_from_lua(
+                            tolerant_read_zip_member(zf, name, zip_path=zip_file).decode("utf-8", errors="ignore")
+                        )
         except Exception as e:
             logger.debug(f"[PluginGames] Could not read manifest zip for {appid_str}: {e}")
 
@@ -850,13 +853,14 @@ def collect_game_depots_and_keys(
     if not depot_ids and allow_hubcap_fetch:
         try:
             from core import morrenus_api
+            from utils.steam_manifest import tolerant_read_zip_member
             zip_res, _ = morrenus_api.download_manifest(appid_str, force_update=True)
             if zip_res and os.path.exists(zip_res):
                 fresh_keys = {}
                 with zipfile.ZipFile(zip_res, "r") as zf:
                     for name in zf.namelist():
                         if name.endswith(".lua"):
-                            lua_txt = zf.read(name).decode("utf-8", errors="ignore")
+                            lua_txt = tolerant_read_zip_member(zf, name, zip_path=zip_res).decode("utf-8", errors="ignore")
                             _extract_keys_and_tokens_from_lua(lua_txt)
                             for m in iter_live_matches(lua_txt, r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)'):
                                 fresh_keys[m.group(1)] = m.group(2).lower()
@@ -1360,10 +1364,11 @@ def refetch_missing_keys(appid: str, depot_ids: List[str]) -> Dict[str, str]:
         zip_res, _ = morrenus_api.download_manifest(appid, force_update=True)
         if zip_res and os.path.exists(zip_res):
             fresh_keys: Dict[str, str] = {}
+            from utils.steam_manifest import tolerant_read_zip_member
             with zipfile.ZipFile(zip_res, "r") as zf:
                 for name in zf.namelist():
                     if name.endswith(".lua"):
-                        lua_txt = zf.read(name).decode("utf-8", errors="ignore")
+                        lua_txt = tolerant_read_zip_member(zf, name, zip_path=zip_res).decode("utf-8", errors="ignore")
                         for m in re.finditer(r'addappid\((\d+),\s*\d+,\s*["\']([a-fA-F0-9]{64})["\']\)', lua_txt):
                             fresh_keys[m.group(1)] = m.group(2).lower()
             if fresh_keys:

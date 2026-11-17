@@ -136,7 +136,13 @@ class ManifestDumpRunner(QObject):
         thread.start()
 
     def _on_thread_finished(self, ok: bool, err: str, dump: Optional[ManifestDump]):
-        self._progress.close()
+        from PyQt6 import sip
+
+        if hasattr(self, "_progress") and self._progress and not sip.isdeleted(self._progress):
+            try:
+                self._progress.close()
+            except Exception as e:
+                logger.debug(f"[DumpRunner] Ignored error closing progress dialog: {e}")
         self.dump = dump
 
         message = ""

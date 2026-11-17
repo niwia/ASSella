@@ -446,7 +446,8 @@ def ensure_depot_keys_for_app(appid: str, depot_id: Optional[str] = None) -> Tup
                 with zipfile.ZipFile(zip_path, "r") as zf:
                     lua_files = [f for f in zf.namelist() if f.endswith(".lua")]
                     if lua_files:
-                        lua_content = zf.read(lua_files[0]).decode("utf-8", errors="ignore")
+                        from utils.steam_manifest import tolerant_read_zip_member
+                        lua_content = tolerant_read_zip_member(zf, lua_files[0], zip_path=zip_path).decode("utf-8", errors="ignore")
                         tmp_game_data = {}
                         ProcessZipTask._parse_lua(lua_content, tmp_game_data)
                         if not token:
