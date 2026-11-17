@@ -203,6 +203,8 @@ jobs:
           find AppDir/bin/src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           # Optional and on-demand components are downloaded on demand (R2 or auto-fetch)
           rm -rf AppDir/bin/src/deps/Goldberg AppDir/bin/src/deps/Steamless AppDir/bin/src/deps/SLScheevo AppDir/bin/src/deps/schema-grabber AppDir/bin/src/deps/wireproxy
+          # Easter egg media assets are excluded from AppDir to minimize AppImage footprint (~8.8 MB saved)
+          rm -rf AppDir/bin/src/res/jumpscare AppDir/bin/src/res/intro
           BUILD_DATE_UTC="$(date -u +%Y-%m-%d)"
           BUILD_TS_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 -c 'import re, sys; p = "AppDir/bin/src/utils/version.py"; t = open(p, "r", encoding="utf-8").read(); t = re.sub(r"^BUILD_DATE\s*=.*$", f"BUILD_DATE = \"{sys.argv[1]}\"", t, flags=re.M); t = re.sub(r"^BUILD_TIMESTAMP\s*=.*$", f"BUILD_TIMESTAMP = \"{sys.argv[2]}\"", t, flags=re.M); open(p, "w", encoding="utf-8").write(t); print(f"Stamped {p}: {sys.argv[1]} / {sys.argv[2]}")' "$BUILD_DATE_UTC" "$BUILD_TS_UTC"
