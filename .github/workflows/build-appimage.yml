@@ -59,7 +59,7 @@ jobs:
       - name: Install System Packaging Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file python3-venv python3-pip git tor libevent-2.1-7 libgl1 libegl1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libfontconfig1 libdbus-1-3 zip
+          sudo apt-get install -y zsync libfuse2 squashfs-tools wget curl file python3-venv python3-pip git libgl1 libegl1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libfontconfig1 libdbus-1-3 zip
 
       - name: Determine Release Channel & Metadata
         id: meta
@@ -600,8 +600,8 @@ jobs:
           cp -r src "${PKG_NAME}/bin/"
           find "${PKG_NAME}" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           find "${PKG_NAME}" -type f -name "*.pyc" -delete 2>/dev/null || true
-          # Optional components (Goldberg, Steamless, SLScheevo) are downloaded on demand from R2
-          rm -rf "${PKG_NAME}/bin/src/deps/Goldberg" "${PKG_NAME}/bin/src/deps/Steamless" "${PKG_NAME}/bin/src/deps/SLScheevo" "${PKG_NAME}/bin/src/deps/schema-grabber"
+          # Optional and on-demand components are downloaded on demand (R2 or auto-fetch)
+          rm -rf "${PKG_NAME}/bin/src/deps/Goldberg" "${PKG_NAME}/bin/src/deps/Steamless" "${PKG_NAME}/bin/src/deps/SLScheevo" "${PKG_NAME}/bin/src/deps/schema-grabber" "${PKG_NAME}/bin/src/deps/wireproxy"
 
           # 4. Create tar.gz and zip archives
           tar -czf "${PKG_NAME}.tar.gz" "${PKG_NAME}"

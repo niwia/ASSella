@@ -6,10 +6,10 @@ import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 try:
-    from Crypto.Cipher import AES
+    from Cryptodome.Cipher import AES
 except ImportError:
     try:
-        from Cryptodome.Cipher import AES
+        from Crypto.Cipher import AES
     except ImportError as e:
         print(f'ERROR: pycryptodomex / pycryptodome not importable in this interpreter ({sys.executable}).')
         print(f'       Underlying error: {e}')
