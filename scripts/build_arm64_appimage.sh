@@ -198,6 +198,53 @@ if [[ "$HOST_ARCH" == "aarch64" || "$HOST_ARCH" == "arm64" ]]; then
     "$APPDIR/bin/.venv/bin/python3" -m pip install --upgrade pip setuptools wheel --quiet
     "$APPDIR/bin/.venv/bin/python3" -m pip install -r requirements.txt --quiet
     find "$APPDIR/bin/.venv" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+
+    echo "Pruning unused PyQt6 modules, QML, translations, and Python stdlib tests..."
+    SITE_PKGS="$APPDIR/bin/.venv/lib/python3.13/site-packages"
+    QT6_DIR="$SITE_PKGS/PyQt6/Qt6"
+
+    if [ -d "$QT6_DIR" ]; then
+        # Remove QML, translations, and unused plugin categories
+        rm -rf "$QT6_DIR/qml" "$QT6_DIR/translations" \
+               "$QT6_DIR/plugins/sqldrivers" "$QT6_DIR/plugins/multimedia" \
+               "$QT6_DIR/plugins/sceneparsers" "$QT6_DIR/plugins/geometryloaders" \
+               "$QT6_DIR/plugins/sensorgestures" "$QT6_DIR/plugins/sensors"
+
+        # Remove heavy unused Qt6 shared libraries
+        rm -f "$QT6_DIR/lib"/libQt6Quick* "$QT6_DIR/lib"/libQt6Qml* \
+              "$QT6_DIR/lib"/libQt6Pdf* "$QT6_DIR/lib"/libQt6Multimedia* \
+              "$QT6_DIR/lib"/libQt6SpatialAudio* "$QT6_DIR/lib"/libQt6VirtualKeyboard* \
+              "$QT6_DIR/lib"/libQt6Bluetooth* "$QT6_DIR/lib"/libQt6Sensors* \
+              "$QT6_DIR/lib"/libQt6Sql* "$QT6_DIR/lib"/libQt6Positioning* \
+              "$QT6_DIR/lib"/libQt6Nfc* "$QT6_DIR/lib"/libQt63D* \
+              "$QT6_DIR/lib"/libQt6Designer* "$QT6_DIR/lib"/libQt6Help* \
+              "$QT6_DIR/lib"/libQt6Test*
+
+        # Remove matching unused PyQt6 Python bindings (keep Core, Gui, Widgets, Network, Svg, DBus, sip)
+        find "$SITE_PKGS/PyQt6" -maxdepth 1 -name "Qt*.abi3.so" \
+          ! -name "QtCore*" ! -name "QtGui*" ! -name "QtWidgets*" \
+          ! -name "QtNetwork*" ! -name "QtSvg*" ! -name "QtDBus*" \
+          -delete
+
+        # Remove type stubs across site-packages (unused by runtime)
+        find "$SITE_PKGS" -name "*.pyi" -delete
+    fi
+
+    # Prune Python stdlib tests, build wheels, and C headers
+    PY_ROOT="$APPDIR/bin/.venv"
+    rm -rf "$SITE_PKGS/pip"* "$SITE_PKGS/setuptools"* "$SITE_PKGS/wheel"* \
+           "$PY_ROOT/lib/python3.13/ensurepip" \
+           "$PY_ROOT/lib/tcl"* "$PY_ROOT/lib/tk"* "$PY_ROOT/lib/itcl"* \
+           "$PY_ROOT/lib/python3.13/tkinter" "$PY_ROOT/lib/python3.13/idlelib" \
+           "$PY_ROOT/lib/python3.13/turtledemo" "$PY_ROOT/lib/python3.13/turtle.py" \
+           "$PY_ROOT/lib/python3.13/test" "$PY_ROOT/lib/python3.13/pydoc_data" \
+           "$PY_ROOT/include"
+
+    # Strip unneeded debug symbols from native wheels
+    find "$SITE_PKGS" -name "*.so*" -exec strip --strip-unneeded {} + 2>/dev/null || true
+
+    echo "Verifying pruned runtime imports..."
+    QT_QPA_PLATFORM=offscreen "$APPDIR/bin/.venv/bin/python3" -c "import PyQt6.QtCore, PyQt6.QtWidgets, PyQt6.QtGui, PyQt6.QtNetwork, PyQt6.QtSvg, requests, yaml, cryptography, configobj, rich, vdf, steam, steam.client, zstandard, curl_cffi, capstone; app = PyQt6.QtWidgets.QApplication(['app', '-platform', 'offscreen']); print('✓ Pruned AppDir runtime verified: all critical dependencies imported and QApplication created successfully!')"
 else
     echo "Cross-packaging note: Host is $HOST_ARCH. Pip wheel installation requires ARM64 host or QEMU user emulation."
 fi
@@ -233,7 +280,10 @@ if [ -f "$STATIC_RUNTIME" ]; then
 fi
 
 UPDATE_INFO="gh-releases-zsync|niwia|ASSella|latest-pre|ASSella-arm64.AppImage.zsync"
-ARCH=aarch64 "$APPIMAGETOOL" -n -u "$UPDATE_INFO" "${RUNTIME_FLAG[@]}" "$APPDIR" "$OUTPUT_APPIMAGE"
+ARCH=aarch64 "$APPIMAGETOOL" -n -u "$UPDATE_INFO" \
+  --mksquashfs-opt -b --mksquashfs-opt 524288 \
+  --mksquashfs-opt -Xcompression-level --mksquashfs-opt 19 \
+  "${RUNTIME_FLAG[@]}" "$APPDIR" "$OUTPUT_APPIMAGE"
 
 sha256sum "$OUTPUT_APPIMAGE" > "${OUTPUT_APPIMAGE}.sha256"
 
