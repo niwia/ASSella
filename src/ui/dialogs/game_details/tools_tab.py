@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import platform
+import threading
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
@@ -30,6 +31,8 @@ from ui.dialogs.settings_tabs.components_card import (
 )
 from utils.component_manager import is_component_available
 from utils.dlc_helpers import is_dlc_only_mode, get_all_dlcs_for_app
+from utils.game_paths import find_compatdata_path
+from utils.main_thread import post_to_main_thread
 from utils.yaml_config_manager import (
     get_user_config_path,
     get_dlc_data,
@@ -42,6 +45,127 @@ logger = logging.getLogger(__name__)
 _STEAMLESS_AIO_LABEL = "Steamless (Python)"
 _STEAMLESS_CLI_LABEL = "Steamless (.NET CLI)"
 _STEAMLESS_OVERLAY_DELAY_MS = 400
+
+
+def _tools_qss(ac: str) -> str:
+    """Unified stylesheet for tools tab buttons driven by dynamic 'variant' property."""
+    return f"""
+    QPushButton[variant] {{
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 8px;
+        color: #FFFFFF;
+        font-size: 8.5pt;
+        font-weight: 600;
+        padding: 0 10px;
+    }}
+    QPushButton[variant]:hover {{
+        background: rgba(255, 255, 255, 0.10);
+        border-color: {ac};
+        color: {ac};
+    }}
+    QPushButton[variant]:pressed {{
+        background: rgba(255, 255, 255, 0.16);
+    }}
+    QPushButton[variant]:disabled {{
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.25);
+    }}
+
+    QPushButton[variant="danger"] {{
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        color: rgba(255, 255, 255, 0.3);
+    }}
+    QPushButton[variant="danger"]:enabled {{
+        background: rgba(160, 30, 20, 0.15);
+        border-color: rgba(255, 100, 80, 0.4);
+        color: #ff8a7a;
+    }}
+    QPushButton[variant="danger"]:enabled:hover {{
+        background: rgba(160, 30, 20, 0.25);
+        border-color: #ff8a7a;
+        color: #ffffff;
+    }}
+    QPushButton[variant="danger"]:disabled {{
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.25);
+    }}
+
+    QPushButton[variant="warn"] {{
+        background: rgba(255, 140, 0, 0.08);
+        border: 1px solid rgba(255, 140, 0, 0.25);
+        border-radius: 8px;
+        color: #FFA726;
+        font-size: 8.5pt;
+        font-weight: 600;
+        padding: 0 10px;
+    }}
+    QPushButton[variant="warn"]:hover {{
+        background: rgba(255, 140, 0, 0.16);
+        border-color: #FFA726;
+        color: #FFB74D;
+    }}
+    QPushButton[variant="warn"]:disabled {{
+        background: rgba(255, 255, 255, 0.02);
+        border-color: rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.25);
+    }}
+
+    QPushButton[variant="pill-accent"] {{
+        background: transparent;
+        border: none;
+        color: {ac};
+        font-weight: bold;
+        font-size: 8.5pt;
+        padding: 0 10px;
+    }}
+    QPushButton[variant="pill-accent"]:hover {{
+        background: rgba(255, 255, 255, 0.08);
+    }}
+    QPushButton[variant="pill-accent"]:disabled {{
+        color: rgba(255, 255, 255, 0.25);
+        background: transparent;
+    }}
+
+    QPushButton[variant="pill-danger"] {{
+        background: transparent;
+        border: none;
+        color: #e05a47;
+        font-weight: bold;
+        font-size: 8.5pt;
+        padding: 0 10px;
+    }}
+    QPushButton[variant="pill-danger"]:hover {{
+        background: rgba(224, 90, 71, 0.12);
+    }}
+    QPushButton[variant="pill-danger"]:disabled {{
+        color: rgba(255, 255, 255, 0.25);
+        background: transparent;
+    }}
+    """
+
+
+def _btn(text: str, *, variant: str = "default", tip: str = "", height: int = 34) -> QPushButton:
+    """Button factory standardizing properties, cursor, height and tooltips."""
+    btn = QPushButton(text)
+    btn.setProperty("variant", variant)
+    btn.setFixedHeight(height)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    if tip:
+        btn.setToolTip(tip)
+    return btn
+
+
+def _is_atom(dialog) -> bool:
+    """Check if the dialog game is managed by AT0-M / Vapor."""
+    return bool(
+        getattr(dialog, "is_atom", False)
+        or (getattr(dialog, "game_data", None) or {}).get("is_atom")
+        or (getattr(dialog, "game_data", None) or {}).get("source") in ("Vapor", "at0-m", "AT0-M")
+    )
 
 
 def _dismiss_steamless_loading(dialog) -> None:
@@ -137,6 +261,11 @@ def _launch_steamless_with_feedback(
     main_win = getattr(parent_win, "main_window", None) if parent_win else None
     tm = getattr(main_win, "task_manager", None) if main_win else None
     if tm is None:
+        ThemedMessageBox.warning(
+            dialog,
+            "Task Manager Unavailable",
+            "Cannot run Steamless because TaskManager is not available.",
+        )
         return
 
     done_sig = getattr(tm, "steamless_manual_finished", None)
@@ -209,6 +338,7 @@ def init_tools_tab(dialog) -> None:
     ac = dialog.accent_color
 
     grid_widget = QWidget()
+    grid_widget.setStyleSheet(_tools_qss(ac))
     grid = QVBoxLayout(grid_widget)
     grid.setContentsMargins(0, 0, 0, 0)
     grid.setSpacing(10)
@@ -219,62 +349,22 @@ def init_tools_tab(dialog) -> None:
     grid.addWidget(section_title("DRM & Emulation", ac))
 
     # Row 1: Steamless (Python) | Steamless (.NET CLI)
-    dialog.b_steamless_aio = QPushButton("Steamless (Python)")
-    dialog.b_steamless_aio.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
-    dialog.b_steamless_aio.setFixedHeight(36)
-    dialog.b_steamless_aio.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.b_steamless_aio.setStyleSheet(f"""
-        QPushButton {{
-            background: rgba(255,255,255,0.06);
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 8px;
-            color: #FFFFFF;
-            font-size: 9pt;
-            font-weight: 600;
-        }}
-        QPushButton:hover {{
-            background: rgba(255,255,255,0.12);
-            border-color: {ac};
-            color: {ac};
-        }}
-        QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
-        QPushButton:disabled {{
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.06);
-            color: rgba(255,255,255,0.25);
-        }}
-    """)
+    dialog.b_steamless_aio = _btn(
+        _STEAMLESS_AIO_LABEL,
+        tip="Remove Steam DRM using Python Steamless (AIO)",
+        height=34,
+    )
     dialog.b_steamless_aio.clicked.connect(
         lambda: _launch_steamless_with_feedback(
             dialog, use_aio=True, path=path, name=name, accent_color=ac
         )
     )
 
-    dialog.b_steamless_cli = QPushButton("Steamless (.NET CLI)")
-    dialog.b_steamless_cli.setToolTip("Remove Steam DRM using .NET 9 Steamless CLI")
-    dialog.b_steamless_cli.setFixedHeight(36)
-    dialog.b_steamless_cli.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.b_steamless_cli.setStyleSheet(f"""
-        QPushButton {{
-            background: rgba(255,255,255,0.06);
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 8px;
-            color: #FFFFFF;
-            font-size: 9pt;
-            font-weight: 600;
-        }}
-        QPushButton:hover {{
-            background: rgba(255,255,255,0.12);
-            border-color: {ac};
-            color: {ac};
-        }}
-        QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
-        QPushButton:disabled {{
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.06);
-            color: rgba(255,255,255,0.25);
-        }}
-    """)
+    dialog.b_steamless_cli = _btn(
+        _STEAMLESS_CLI_LABEL,
+        tip="Remove Steam DRM using .NET 9 Steamless CLI",
+        height=34,
+    )
     dialog.b_steamless_cli.clicked.connect(
         lambda: _launch_steamless_with_feedback(
             dialog, use_aio=False, path=path, name=name, accent_color=ac
@@ -291,60 +381,18 @@ def init_tools_tab(dialog) -> None:
     grid.addWidget(dialog.sl_row_widget)
 
     # Row 2: Apply Goldberg | Remove Goldberg
-    dialog.gb_apply_btn = QPushButton("Apply Goldberg")
-    dialog.gb_apply_btn.setToolTip("Apply Goldberg Steam emulator to this game")
-    dialog.gb_apply_btn.setFixedHeight(36)
-    dialog.gb_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.gb_apply_btn.setStyleSheet(f"""
-        QPushButton {{
-            background: rgba(255,255,255,0.06);
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 8px;
-            color: #FFFFFF;
-            font-size: 9pt;
-            font-weight: 600;
-        }}
-        QPushButton:hover {{
-            background: rgba(255,255,255,0.12);
-            border-color: {ac};
-            color: {ac};
-        }}
-        QPushButton:pressed {{ background: rgba(255,255,255,0.18); }}
-        QPushButton:disabled {{
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.06);
-            color: rgba(255,255,255,0.25);
-        }}
-    """)
+    dialog.gb_apply_btn = _btn(
+        "Apply Goldberg",
+        tip="Apply Goldberg Steam emulator to this game",
+        height=34,
+    )
 
-    dialog.gb_remove_btn = QPushButton("Remove Goldberg")
-    dialog.gb_remove_btn.setToolTip("Remove Goldberg Steam emulator from this game")
-    dialog.gb_remove_btn.setFixedHeight(36)
-    dialog.gb_remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.gb_remove_btn.setStyleSheet("""
-        QPushButton {
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.07);
-            border-radius: 8px;
-            color: rgba(255,255,255,0.3);
-            font-size: 9pt;
-            font-weight: 600;
-        }
-        QPushButton:enabled {
-            background: rgba(160,30,20,0.15);
-            border-color: rgba(255,100,80,0.4);
-            color: #ff8a7a;
-        }
-        QPushButton:enabled:hover {
-            background: rgba(160,30,20,0.25);
-            border-color: #ff8a7a;
-        }
-        QPushButton:disabled {
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.06);
-            color: rgba(255,255,255,0.25);
-        }
-    """)
+    dialog.gb_remove_btn = _btn(
+        "Remove Goldberg",
+        variant="danger",
+        tip="Remove Goldberg Steam emulator from this game",
+        height=34,
+    )
     dialog.gb_remove_btn.setEnabled(False)
 
     if (
@@ -378,11 +426,21 @@ def init_tools_tab(dialog) -> None:
         # instead of failing on a missing folder.
         if not require_component(dialog, "goldberg"):
             return
-        if dialog.parent_window.main_window and dialog.parent_window.main_window.task_manager:
-            dialog.parent_window.main_window.task_manager.apply_goldberg_to_game(
-                path, dialog.appid, name, show_dialog=True
+        parent_win = getattr(dialog, "parent_window", None)
+        main_win = getattr(parent_win, "main_window", None) if parent_win else None
+        tm = getattr(main_win, "task_manager", None) if main_win else None
+        if tm is None:
+            ThemedMessageBox.warning(
+                dialog,
+                "Task Manager Unavailable",
+                "Cannot apply Goldberg because TaskManager is not available.",
             )
-            dialog.parent_window.executor.submit(dialog.parent_window._check_goldberg_async, path)
+            return
+        tm.apply_goldberg_to_game(path, dialog.appid, name, show_dialog=True)
+        executor = getattr(parent_win, "executor", None)
+        check_fn = getattr(parent_win, "_check_goldberg_async", None)
+        if executor and check_fn:
+            executor.submit(check_fn, path)
 
     def _remove_gb():
         # Removing Goldberg from a game that never had it is a no-op, but the
@@ -390,25 +448,28 @@ def init_tools_tab(dialog) -> None:
         if not is_component_available("goldberg"):
             prompt_component_missing(dialog, "goldberg")
             return
-        if dialog.parent_window.main_window and dialog.parent_window.main_window.task_manager:
-            dialog.parent_window.main_window.task_manager.remove_goldberg_from_game(
-                path, dialog.appid, name, show_dialog=True
+        parent_win = getattr(dialog, "parent_window", None)
+        main_win = getattr(parent_win, "main_window", None) if parent_win else None
+        tm = getattr(main_win, "task_manager", None) if main_win else None
+        if tm is None:
+            ThemedMessageBox.warning(
+                dialog,
+                "Task Manager Unavailable",
+                "Cannot remove Goldberg because TaskManager is not available.",
             )
-            dialog.parent_window.executor.submit(dialog.parent_window._check_goldberg_async, path)
+            return
+        tm.remove_goldberg_from_game(path, dialog.appid, name, show_dialog=True)
+        executor = getattr(parent_win, "executor", None)
+        check_fn = getattr(parent_win, "_check_goldberg_async", None)
+        if executor and check_fn:
+            executor.submit(check_fn, path)
 
     dialog.gb_apply_btn.clicked.connect(_apply_gb)
     dialog.gb_remove_btn.clicked.connect(_remove_gb)
 
-    dialog.gb_apply_btn.setText("Apply Goldberg")
-    dialog.gb_apply_btn.setToolTip("Apply Goldberg Steam emulator to this game")
-    if is_component_available("goldberg"):
-        dialog.gb_remove_btn.setToolTip("Remove Goldberg Steam emulator from this game")
-    else:
+    if not is_component_available("goldberg"):
         dialog.gb_remove_btn.setToolTip("Goldberg is not downloaded on this machine.")
         dialog.gb_remove_btn.setEnabled(False)
-
-    dialog.b_steamless_cli.setText("Steamless (.NET CLI)")
-    dialog.b_steamless_cli.setToolTip("Remove Steam DRM using .NET 9 Steamless CLI")
 
     gb_row_widget = QWidget()
     gb_row = QHBoxLayout(gb_row_widget)
@@ -434,7 +495,7 @@ def init_tools_tab(dialog) -> None:
 
     # Grouped Choose + Reset (Material 3 Split Pill)
     choose_reset_group = QFrame()
-    choose_reset_group.setFixedHeight(36)
+    choose_reset_group.setFixedHeight(34)
     choose_reset_group.setStyleSheet("""
         QFrame {
             background: rgba(255, 255, 255, 0.05);
@@ -446,55 +507,22 @@ def init_tools_tab(dialog) -> None:
     cr_layout.setContentsMargins(0, 0, 0, 0)
     cr_layout.setSpacing(0)
 
-    dialog.choose_depots_btn = QPushButton("Choose...")
-    dialog.choose_depots_btn.setFixedHeight(34)
-    dialog.choose_depots_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.choose_depots_btn.setStyleSheet(f"""
-        QPushButton {{
-            background: transparent;
-            border: none;
-            color: {ac};
-            font-weight: bold;
-            font-size: 8.5pt;
-            padding: 0 10px;
-        }}
-        QPushButton:hover {{
-            background: rgba(255, 255, 255, 0.08);
-        }}
-    """)
+    dialog.choose_depots_btn = _btn("Choose...", variant="pill-accent", height=34)
     dialog.choose_depots_btn.clicked.connect(dialog._configure_depots_wrapper)
 
     cr_divider = QFrame()
     cr_divider.setFixedWidth(1)
     cr_divider.setStyleSheet("background: rgba(255, 255, 255, 0.12);")
 
-    reset_btn = QPushButton("Reset")
-    reset_btn.setFixedHeight(34)
+    reset_btn = _btn("Reset", variant="pill-danger", height=34)
     reset_btn.setFixedWidth(60)
-    reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    reset_btn.setStyleSheet("""
-        QPushButton {
-            background: transparent;
-            border: none;
-            color: #e05a47;
-            font-weight: bold;
-            font-size: 8.5pt;
-        }
-        QPushButton:hover {
-            background: rgba(224, 90, 71, 0.12);
-        }
-    """)
     reset_btn.clicked.connect(dialog._reset_depots_wrapper)
 
     cr_layout.addWidget(dialog.choose_depots_btn, 1)
     cr_layout.addWidget(cr_divider)
     cr_layout.addWidget(reset_btn)
 
-    is_atom = (
-        getattr(dialog, "is_atom", False)
-        or bool(getattr(dialog, "game_data", {}).get("is_atom"))
-        or getattr(dialog, "game_data", {}).get("source") in ("Vapor", "at0-m", "AT0-M")
-    )
+    is_atom = _is_atom(dialog)
     if is_atom:
         dialog.choose_depots_btn.setEnabled(False)
         reset_btn.setEnabled(False)
@@ -511,73 +539,25 @@ def init_tools_tab(dialog) -> None:
 
     depots_row.addWidget(choose_reset_group, 1)
 
-    # This is temporarily disabled for the time being, do not delete.
-    # dialog.move_storage_btn = QPushButton("Move Storage...")
-    # dialog.move_storage_btn.setFixedHeight(36)
-    # dialog.move_storage_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    # dialog.move_storage_btn.setToolTip("Move game installation and manifest to another Steam library storage.")
-    # dialog.move_storage_btn.setStyleSheet(f"""
-    #     QPushButton {{
-    #         background: rgba(255, 255, 255, 0.05);
-    #         border: 1px solid rgba(255, 255, 255, 0.12);
-    #         border-radius: 8px;
-    #         color: #FFFFFF;
-    #         font-weight: bold;
-    #         font-size: 8.5pt;
-    #         padding: 0 10px;
-    #     }}
-    #     QPushButton:hover {{
-    #         background: rgba(255, 255, 255, 0.10);
-    #         border-color: {ac};
-    #         color: {ac};
-    #     }}
-    #     QPushButton:disabled {{
-    #         background: rgba(255, 255, 255, 0.02);
-    #         border: 1px solid rgba(255, 255, 255, 0.05);
-    #         color: rgba(255, 255, 255, 0.25);
-    #     }}
-    # """)
-    # def _open_move_storage():
-    #     from ui.dialogs.move_storage_dialog import MoveStorageDialog
-    #     dlg = MoveStorageDialog(dialog, dialog.game_data, accent_color=ac)
-    #     if dlg.target_libs:
-    #         dlg.exec()
-    #     else:
-    #         ThemedMessageBox.information(
-    #             dialog,
-    #             "No Other Libraries",
-    #             "No other Steam library folder was detected.\n\n"
-    #             "To move games between drives, add additional library folders in Steam Settings -> Storage."
-    #         )
-    # dialog.move_storage_btn.clicked.connect(_open_move_storage)
-    # depots_row.addWidget(dialog.move_storage_btn, 1)
+    dialog.fix_btn = _btn(
+        "Fix Installation",
+        tip="Repairs game installation and forces Steam verification.",
+        height=34,
+    )
 
-    dialog.fix_btn = QPushButton("Fix Installation")
-    dialog.fix_btn.setFixedHeight(36)
-    dialog.fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    dialog.fix_btn.setToolTip("Repairs game installation and forces Steam verification.")
-    dialog.fix_btn.setStyleSheet(f"""
-        QPushButton {{
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 8px;
-            color: #FFFFFF;
-            font-weight: bold;
-            font-size: 8.5pt;
-            padding: 0 12px;
-        }}
-        QPushButton:hover {{
-            background: rgba(255, 255, 255, 0.10);
-            border-color: {ac};
-            color: {ac};
-        }}
-        QPushButton:disabled {{
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            color: rgba(255, 255, 255, 0.25);
-        }}
-    """)
-    dialog.fix_btn.clicked.connect(lambda: dialog.parent_window._fix_game_install(dialog.game_data))
+    def _on_fix_clicked():
+        parent_win = getattr(dialog, "parent_window", None)
+        fix_fn = getattr(parent_win, "_fix_game_install", None)
+        if fix_fn:
+            fix_fn(dialog.game_data)
+        else:
+            ThemedMessageBox.warning(
+                dialog,
+                "Action Unavailable",
+                "Fix Installation is not available in this context.",
+            )
+
+    dialog.fix_btn.clicked.connect(_on_fix_clicked)
     depots_row.addWidget(dialog.fix_btn, 1)
 
     # App-menu shortcut that starts the game through Steam (as ACCELA did).
@@ -585,12 +565,8 @@ def init_tools_tab(dialog) -> None:
     from utils import desktop_shortcuts
 
     if desktop_shortcuts.supported() and not is_atom:
-        dialog.desktop_btn = QPushButton("Desktop")
-        dialog.desktop_btn.setFixedHeight(36)
-        dialog.desktop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        dialog.desktop_btn.setStyleSheet(dialog.fix_btn.styleSheet())
+        dialog.desktop_btn = _btn("Desktop", tip="Checking for a shortcut...", height=34)
         dialog.desktop_btn.setEnabled(False)
-        dialog.desktop_btn.setToolTip("Checking for a shortcut...")
         depots_row.addWidget(dialog.desktop_btn, 1)
         _wire_desktop_button(dialog)
 
@@ -612,42 +588,19 @@ def init_tools_tab(dialog) -> None:
 
     is_real_app = dialog.appid not in ("0", "N/A", "unknown")
 
-    steam_btn = QPushButton("Open Store")
-    steam_btn.setFixedHeight(34)
-    steam_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    steam_btn = _btn("Open Store", height=34)
     steam_btn.setEnabled(is_real_app)
-    steam_btn.setStyleSheet(f"""
-        QPushButton {{
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 8px;
-            color: #FFFFFF;
-            font-size: 8.5pt;
-            font-weight: 600;
-        }}
-        QPushButton:hover {{
-            background: rgba(255,255,255,0.10);
-            border-color: {ac};
-            color: {ac};
-        }}
-        QPushButton:disabled {{
-            color: rgba(255,255,255,0.3);
-            border-color: rgba(255,255,255,0.05);
-        }}
-    """)
+    if not is_real_app:
+        steam_btn.setToolTip("No valid Steam App ID for this game")
     steam_btn.clicked.connect(
         lambda: QDesktopServices.openUrl(QUrl(f"https://store.steampowered.com/app/{dialog.appid}/"))
     )
     links_row.addWidget(steam_btn, 1)
 
-    prefix_btn = QPushButton("Open Prefix")
-    prefix_btn.setFixedHeight(34)
-    prefix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    prefix_btn = _btn("Open Prefix", height=34)
 
     compat_path = None
     if platform.system() == "Linux" and is_real_app:
-        from ui.dialogs.uninstall_confirm_dialog import find_compatdata_path
-
         compat_path = find_compatdata_path(
             dialog.appid,
             dialog.game_data.get("install_path"),
@@ -661,25 +614,6 @@ def init_tools_tab(dialog) -> None:
     else:
         prefix_btn.setToolTip("No Proton prefix found on disk")
 
-    prefix_btn.setStyleSheet(f"""
-        QPushButton {{
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 8px;
-            color: #FFFFFF;
-            font-size: 8.5pt;
-            font-weight: 600;
-        }}
-        QPushButton:hover {{
-            background: rgba(255,255,255,0.10);
-            border-color: {ac};
-            color: {ac};
-        }}
-        QPushButton:disabled {{
-            color: rgba(255,255,255,0.3);
-            border-color: rgba(255,255,255,0.05);
-        }}
-    """)
     if has_prefix and compat_path:
         def _open_prefix():
             if hasattr(dialog, "parent_window") and dialog.parent_window and hasattr(dialog.parent_window, "_open_folder"):
@@ -690,45 +624,14 @@ def init_tools_tab(dialog) -> None:
         prefix_btn.clicked.connect(_open_prefix)
     links_row.addWidget(prefix_btn, 1)
 
-    copy_appid = QPushButton("Copy App ID")
-    copy_appid.setFixedHeight(34)
-    copy_appid.setCursor(Qt.CursorShape.PointingHandCursor)
-    copy_appid.setStyleSheet(f"""
-        QPushButton {{
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 8px;
-            color: #FFFFFF;
-            font-size: 8.5pt;
-            font-weight: 600;
-        }}
-        QPushButton:hover {{
-            background: rgba(255,255,255,0.10);
-            border-color: {ac};
-            color: {ac};
-        }}
-    """)
+    copy_appid = _btn("Copy App ID", tip="Copy Steam App ID to clipboard", height=34)
+    copy_appid.setEnabled(is_real_app)
+    if not is_real_app:
+        copy_appid.setToolTip("No valid Steam App ID for this game")
     copy_appid.clicked.connect(lambda: QApplication.clipboard().setText(dialog.appid))
     links_row.addWidget(copy_appid, 1)
 
-    copy_path = QPushButton("Copy Path")
-    copy_path.setFixedHeight(34)
-    copy_path.setCursor(Qt.CursorShape.PointingHandCursor)
-    copy_path.setStyleSheet(f"""
-        QPushButton {{
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 8px;
-            color: #FFFFFF;
-            font-size: 8.5pt;
-            font-weight: 600;
-        }}
-        QPushButton:hover {{
-            background: rgba(255,255,255,0.10);
-            border-color: {ac};
-            color: {ac};
-        }}
-    """)
+    copy_path = _btn("Copy Path", tip="Copy game installation path to clipboard", height=34)
     copy_path.clicked.connect(
         lambda: QApplication.clipboard().setText(str(dialog.game_data.get("install_path", "")))
     )
@@ -743,30 +646,8 @@ def init_tools_tab(dialog) -> None:
     # ──────────────────────────────────────────
     grid.addWidget(section_title("Experimental DLC Tools", ac))
 
-    dialog.dlcdata_exp_btn = QPushButton("Move DLC to DlcData (Advanced)")
-    dialog.dlcdata_exp_btn.setFixedHeight(34)
-    dialog.dlcdata_exp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    dialog.dlcdata_exp_btn = _btn("Move DLC to DlcData (Advanced)", variant="warn", height=34)
     refresh_dlcdata_btn_text(dialog)
-    dialog.dlcdata_exp_btn.setStyleSheet(f"""
-        QPushButton {{
-            background: rgba(255, 140, 0, 0.08);
-            border: 1px solid rgba(255, 140, 0, 0.25);
-            border-radius: 8px;
-            color: #FFA726;
-            font-size: 8.5pt;
-            font-weight: 600;
-        }}
-        QPushButton:hover {{
-            background: rgba(255, 140, 0, 0.16);
-            border-color: #FFA726;
-            color: #FFB74D;
-        }}
-        QPushButton:disabled {{
-            color: rgba(255, 255, 255, 0.25);
-            border-color: rgba(255, 255, 255, 0.05);
-            background: rgba(255, 255, 255, 0.02);
-        }}
-    """)
     dialog.dlcdata_exp_btn.clicked.connect(lambda: handle_move_dlc_to_dlcdata(dialog))
     grid.addWidget(dialog.dlcdata_exp_btn)
 
@@ -793,9 +674,6 @@ def refresh_drm_emulation_state(dialog, is_applied=None) -> None:
         if hasattr(dialog, "b_steamless_cli") and dialog.b_steamless_cli:
             dialog.b_steamless_cli.setEnabled(False)
             dialog.b_steamless_cli.setToolTip("Not available in DLC-Only mode")
-        if hasattr(dialog, "b_steamless") and dialog.b_steamless:
-            dialog.b_steamless.setEnabled(False)
-            dialog.b_steamless.setToolTip("Not available in DLC-Only mode")
         if hasattr(dialog, "gb_apply_btn") and dialog.gb_apply_btn:
             dialog.gb_apply_btn.setEnabled(False)
             dialog.gb_apply_btn.setToolTip("Not available in DLC-Only mode")
@@ -817,9 +695,6 @@ def refresh_drm_emulation_state(dialog, is_applied=None) -> None:
     if hasattr(dialog, "b_steamless_cli") and dialog.b_steamless_cli:
         dialog.b_steamless_cli.setEnabled(not steamless_busy)
         dialog.b_steamless_cli.setToolTip("Remove Steam DRM using .NET 9 Steamless CLI")
-    if hasattr(dialog, "b_steamless") and dialog.b_steamless:
-        dialog.b_steamless.setEnabled(not steamless_busy)
-        dialog.b_steamless.setToolTip("Remove Steam DRM using Python Steamless (AIO)")
     if hasattr(dialog, "fix_btn") and dialog.fix_btn:
         dialog.fix_btn.setEnabled(True)
         dialog.fix_btn.setToolTip("Repairs game installation and forces Steam verification.")
@@ -839,12 +714,7 @@ def refresh_drm_emulation_state(dialog, is_applied=None) -> None:
 
 def update_depot_label(dialog) -> None:
     """Updates choose depots button label based on stored selection."""
-    is_atom = (
-        getattr(dialog, "is_atom", False)
-        or bool(getattr(dialog, "game_data", {}).get("is_atom"))
-        or getattr(dialog, "game_data", {}).get("source") in ("Vapor", "at0-m", "AT0-M")
-    )
-    if is_atom:
+    if _is_atom(dialog):
         if hasattr(dialog, "choose_depots_btn") and dialog.choose_depots_btn:
             dialog.choose_depots_btn.setText("Depots: AT0-M")
             dialog.choose_depots_btn.setEnabled(False)
@@ -866,15 +736,15 @@ def update_depot_label(dialog) -> None:
                     btn_text = f"Depots: {len(sel)} Selected"
                 else:
                     btn_text = "Depots: Select"
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to parse depot_selection for AppID %s: %s", getattr(dialog, "appid", "?"), exc)
     if hasattr(dialog, "choose_depots_btn") and dialog.choose_depots_btn:
         dialog.choose_depots_btn.setText(btn_text)
 
 
 def refresh_dlcdata_btn_text(dialog) -> None:
     """Refreshes text on Move DLC to DlcData button depending on existing config."""
-    if not hasattr(dialog, "dlcdata_exp_btn") or not dialog.dlcdata_exp_btn:
+    if not hasattr(dialog, "dlcdata_exp_btn") or not dialog.dlcdata_exp_btn or sip.isdeleted(dialog.dlcdata_exp_btn):
         return
     try:
         cp = get_user_config_path()
@@ -882,7 +752,8 @@ def refresh_dlcdata_btn_text(dialog) -> None:
             dialog.dlcdata_exp_btn.setText("Revert DLC from DlcData (Advanced)")
         else:
             dialog.dlcdata_exp_btn.setText("Move DLC to DlcData (Advanced)")
-    except Exception:
+    except Exception as exc:
+        logger.debug("Could not refresh DlcData button text: %s", exc)
         dialog.dlcdata_exp_btn.setText("Move DLC to DlcData (Advanced)")
 
 
@@ -937,48 +808,66 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
 
     dialog.dlcdata_exp_btn.setEnabled(False)
     dialog.dlcdata_exp_btn.setText("Fetching DLCs...")
-    QApplication.processEvents()
 
-    try:
-        dlc_list = get_all_dlcs_for_app(dialog.appid, dialog.game_data)
-        if not dlc_list:
-            ThemedMessageBox.information(
-                dialog,
-                "No DLCs Found",
-                f"No downloadable or store DLCs could be found for '{game_name}'.",
-            )
-            return
+    def _bg_fetch_and_add():
+        try:
+            dlc_list = get_all_dlcs_for_app(dialog.appid, dialog.game_data)
+            if not dlc_list:
+                def _on_empty():
+                    if sip.isdeleted(dialog):
+                        return
+                    ThemedMessageBox.information(
+                        dialog,
+                        "No DLCs Found",
+                        f"No downloadable or store DLCs could be found for '{game_name}'.",
+                    )
+                    dialog.dlcdata_exp_btn.setEnabled(True)
+                    refresh_dlcdata_btn_text(dialog)
 
-        dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
-        ok = add_dlc_data_batch(cp, dialog.appid, dlc_dict)
-        if ok:
-            ThemedMessageBox.information(
-                dialog,
-                "DLCs Moved to DlcData",
-                f"✓ Successfully wrote {len(dlc_dict)} DLC(s) for '{game_name}' to DlcData in config.yaml.\n\n"
-                f"SLSsteam will now explicitly report all these DLCs to the game.",
-            )
-        else:
-            ThemedMessageBox.critical(
-                dialog,
-                "Write Failed",
-                "Failed to write entries to DlcData in config.yaml.",
-            )
-    except Exception as e:
-        ThemedMessageBox.critical(dialog, "Error", f"Failed to move DLCs: {e}")
-    finally:
-        dialog.dlcdata_exp_btn.setEnabled(True)
-        refresh_dlcdata_btn_text(dialog)
+                post_to_main_thread(_on_empty)
+                return
+
+            dlc_dict = {str(d["dlc_appid"]): d["dlc_name"] for d in dlc_list}
+            ok = add_dlc_data_batch(cp, dialog.appid, dlc_dict)
+
+            def _on_success(write_ok: bool, count: int):
+                if sip.isdeleted(dialog):
+                    return
+                if write_ok:
+                    ThemedMessageBox.information(
+                        dialog,
+                        "DLCs Moved to DlcData",
+                        f"✓ Successfully wrote {count} DLC(s) for '{game_name}' to DlcData in config.yaml.\n\n"
+                        f"SLSsteam will now explicitly report all these DLCs to the game.",
+                    )
+                else:
+                    ThemedMessageBox.critical(
+                        dialog,
+                        "Write Failed",
+                        "Failed to write entries to DlcData in config.yaml.",
+                    )
+                dialog.dlcdata_exp_btn.setEnabled(True)
+                refresh_dlcdata_btn_text(dialog)
+
+            post_to_main_thread(lambda: _on_success(ok, len(dlc_dict)))
+        except Exception as exc:
+            err_str = str(exc)
+
+            def _on_error(err: str):
+                if sip.isdeleted(dialog):
+                    return
+                ThemedMessageBox.critical(dialog, "Error", f"Failed to move DLCs: {err}")
+                dialog.dlcdata_exp_btn.setEnabled(True)
+                refresh_dlcdata_btn_text(dialog)
+
+            post_to_main_thread(lambda: _on_error(err_str))
+
+    threading.Thread(target=_bg_fetch_and_add, name="dlcdata-worker", daemon=True).start()
 
 
 def _wire_desktop_button(dialog) -> None:
     """Add / remove the app-menu shortcut; all file and network work off the GUI thread."""
-    import threading
-
-    from PyQt6 import sip
-
     from utils import desktop_shortcuts
-    from utils.main_thread import post_to_main_thread
 
     btn = dialog.desktop_btn
     appid = str(dialog.appid)
