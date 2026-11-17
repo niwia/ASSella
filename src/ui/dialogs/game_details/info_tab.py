@@ -6,8 +6,6 @@ rollbacks, uninstallation, SLS Online, Netsock, and EOS Proxy.
 
 import os
 import re
-import time
-import platform
 import logging
 import shutil
 import threading
@@ -16,35 +14,24 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6 import sip
-from PyQt6.QtCore import Qt, QTimer, QMetaObject, Q_ARG
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QIntValidator, QPalette
 from PyQt6.QtWidgets import (
     QWidget,
     QLabel,
     QPushButton,
-    QCheckBox,
     QLineEdit,
     QFrame,
     QHBoxLayout,
     QVBoxLayout,
-    QGridLayout,
     QScrollArea,
-    QProgressDialog,
-    QApplication,
 )
 from ui.dialogs.themed_message_box import ThemedMessageBox
 
 from ui.dialogs.game_details.widgets import CenteredComboBox, MaterialTile, SwitchTile
-from ui.dialogs.game_details.hero_header import thin_line, get_last_checked
+from ui.dialogs.game_details.hero_header import get_last_checked
 from ui.progress_button import ProgressButton
 from utils.helpers import get_base_path
-from utils.lua_parsing import iter_live_matches
-from utils.steam_acf import (
-    ACF_DEFERRED,
-    ACF_FAILED,
-    ensure_acf_has_installed_depots,
-    find_appmanifest_path,
-)
 from utils.yaml_config_manager import (
     get_user_config_path, add_fake_app_id, remove_fake_app_id,
     get_fake_appid, is_slssteam_config_management_enabled,
@@ -836,6 +823,11 @@ def update_validate_button(dialog) -> None:
 
 
 def on_validate_btn_clicked(dialog) -> None:
+    parent = getattr(dialog, "parent_window", None)
+    if not parent or not hasattr(parent, "_fetch_game_manifest"):
+        logger.warning(f"parent_window._fetch_game_manifest unavailable for AppID {dialog.appid}")
+        return
+
     sel_branch = dialog.branch_combo.currentData() or "public" if hasattr(dialog, "branch_combo") else "public"
     btn_text = dialog.validate_btn.text()
 
@@ -854,7 +846,7 @@ def on_validate_btn_clicked(dialog) -> None:
     is_verify_action = "Verify" in btn_text
     try:
         if btn_text == "Refetch":
-            dialog.parent_window._fetch_game_manifest(
+            parent._fetch_game_manifest(
                 dialog.game_data, dialog, branch=sel_branch, download_only=True
             )
         else:
@@ -871,7 +863,7 @@ def on_validate_btn_clicked(dialog) -> None:
             if is_verify_action:
                 g_data["_is_verify"] = True
 
-            dialog.parent_window._fetch_game_manifest(
+            parent._fetch_game_manifest(
                 g_data, dialog, branch=sel_branch, download_only=False, local_path_override=local_path_override,
                 is_verify=is_verify_action
             )
@@ -1144,7 +1136,7 @@ def do_package_and_submit_manual_job(dialog, src_manifest_path, manifest_filenam
     is_vapor_mode = _is_vapor_mode(dialog)
 
     if is_vapor_mode:
-        from core.native_steam.native_steam_handoff import get_depotcache_dirs, send_sls_api
+        from core.native_steam.native_steam_handoff import get_depotcache_dirs
         from core.native_steam.steam_manifest_pinning import set_manifest_ids
         from utils.yaml_config_manager import get_user_config_path
 
@@ -2086,11 +2078,7 @@ def get_installed_buildid(dialog) -> str:
     return ""
 
 
-from ui.dialogs.game_details.tools_tab import (
-    update_depot_label,
-    refresh_dlcdata_btn_text,
-    handle_move_dlc_to_dlcdata,
-)
+from ui.dialogs.game_details.tools_tab import update_depot_label
 
 
 def configure_depots_wrapper(dialog) -> None:
