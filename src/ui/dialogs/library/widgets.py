@@ -1,6 +1,7 @@
 import logging
 import math
 from pathlib import Path
+from typing import Optional
 
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor, QFontMetrics, QImage, QPainter, QPixmap
@@ -16,14 +17,22 @@ from PyQt6.QtWidgets import (
 logger = logging.getLogger(__name__)
 
 
-def format_game_display_name(game_data: dict) -> str:
+def format_game_display_name(
+    game_data: dict,
+    branch_cache: Optional[dict] = None,
+    dlc_cache: Optional[dict] = None,
+) -> str:
     """Return the display name for a game, with branch suffix for non-public branches."""
     name = game_data.get("game_name", "Unknown")
     appid = str(game_data.get("appid", ""))
     parts = [name]
     if appid and appid not in ("0", "N/A", "unknown"):
-        from utils.dlc_helpers import is_dlc_only_mode
-        if is_dlc_only_mode(appid):
+        if dlc_cache is not None:
+            is_dlc = bool(dlc_cache.get(appid))
+        else:
+            from utils.dlc_helpers import is_dlc_only_mode
+            is_dlc = is_dlc_only_mode(appid)
+        if is_dlc:
             parts.append("[DLC MODE]")
         is_vm = bool(
             game_data.get("is_atom")
@@ -33,8 +42,11 @@ def format_game_display_name(game_data: dict) -> str:
             or game_data.get("source") in ("Vapor", "at0-m", "AT0-M", "plugin_native")
         )
         if not is_vm:
-            from utils.settings import get_settings
-            branch = get_settings().value(f"installed_branch/{appid}", "public", type=str)
+            if branch_cache is not None:
+                branch = branch_cache.get(appid, "public")
+            else:
+                from utils.settings import get_settings
+                branch = get_settings().value(f"installed_branch/{appid}", "public", type=str)
             if branch and branch != "public":
                 parts.append(f"({branch})")
     return " ".join(parts)
@@ -268,17 +280,13 @@ class GameItemWidget(QWidget):
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         name = self.game_data.get("game_name", "Unknown")
-        display_name = format_game_display_name(self.game_data)
-        self.image_label.setText(name[:2].upper())
-
-        self.image_label.setStyleSheet(
-            f"border-top-left-radius: 11px; "
-            f"border-bottom-left-radius: 11px; "
-            f"border-top-right-radius: 0px; "
-            f"border-bottom-right-radius: 0px; "
-            f"background-color: rgba(255, 255, 255, 0.02); "
-            f"color: {self.accent_color}; "
+        display_name = format_game_display_name(
+            self.game_data,
+            branch_cache=getattr(self.parent_dialog, "_branch_cache", None),
+            dlc_cache=getattr(self.parent_dialog, "_dlc_only_cache", None),
         )
+        self.image_label.setText(name[:2].upper())
+        self.image_label.setProperty("cardRole", "cover")
         layout.addWidget(self.image_label)
 
         # --- Checkbox Overlay (new style) ---
@@ -317,7 +325,7 @@ class GameItemWidget(QWidget):
         font.setPointSize(12)
         font.setBold(True)
         self.name_label.setFont(font)
-        self.name_label.setStyleSheet("color: #FFFFFF; font-size: 12pt; font-weight: bold;")
+        self.name_label.setProperty("cardRole", "title")
 
         name_row = QHBoxLayout()
         name_row.setContentsMargins(0, 0, 0, 0)
@@ -328,7 +336,7 @@ class GameItemWidget(QWidget):
 
         # Size
         size_label = QLabel(f"Size: {size_str}")
-        size_label.setStyleSheet("color: rgba(255, 255, 255, 0.65); font-size: 12px;")
+        size_label.setProperty("cardRole", "size")
         info_layout.addWidget(size_label)
 
         # Check if this item belongs to the Steam (Beta) tab
@@ -340,6 +348,7 @@ class GameItemWidget(QWidget):
 
         # Manifest cache status (skip entirely for Steam tab)
         self.manifest_label = QLabel()
+        self.manifest_label.setProperty("cardRole", "manifest")
         if not is_steam_tab:
             info_layout.addWidget(self.manifest_label)
             self.update_manifest_label()
@@ -397,7 +406,9 @@ class GameItemWidget(QWidget):
 
             from utils.workshop_helpers import is_workshop_key_missing
             ws_key_missing = is_at0m_game and is_workshop_key_missing(
-                str(self.game_data.get("appid", "")), game_data=self.game_data
+                str(self.game_data.get("appid", "")),
+                game_data=self.game_data,
+                prewarmed_keys=getattr(self.parent_dialog, "_prewarmed_ws_keys", None),
             )
             amber_badge_style = (
                 "color: #FFB74D; "
@@ -517,12 +528,11 @@ class GameItemWidget(QWidget):
 
         if not appid or appid in ("0", "N/A", "unknown"):
             self.manifest_label.setText("Manifest: N/A")
-            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
             return
 
         last_updated = None
         if self.parent_dialog and hasattr(self.parent_dialog, "_manifest_mtimes"):
-            last_updated = self.parent_dialog._manifest_mtimes.get(appid)
+            last_updated = self.parent_dialog._manifest_mtimes.get(str(appid))
 
         if last_updated is None:
             try:
@@ -539,7 +549,6 @@ class GameItemWidget(QWidget):
 
         if not last_updated:
             self.manifest_label.setText("Manifest: Not Found")
-            self.manifest_label.setStyleSheet("color: rgba(255, 255, 255, 0.45); font-size: 12px; font-style: italic;")
         else:
             import time
             age_seconds = time.time() - last_updated
@@ -634,7 +643,9 @@ class GameItemWidget(QWidget):
 
         from utils.workshop_helpers import is_workshop_key_missing
         ws_key_missing = is_at0m_game and is_workshop_key_missing(
-            str(self.game_data.get("appid", "")), game_data=self.game_data
+            str(self.game_data.get("appid", "")),
+            game_data=self.game_data,
+            prewarmed_keys=getattr(self.parent_dialog, "_prewarmed_ws_keys", None),
         )
         amber_badge_style = (
             "color: #FFB74D; "
@@ -850,6 +861,9 @@ class GameItemWidget(QWidget):
         appid = str(self.game_data.get("appid", "") or "")
         if not appid:
             return False
+        dlc_cache = getattr(self.parent_dialog, "_dlc_only_cache", None)
+        if dlc_cache is not None:
+            return bool(dlc_cache.get(appid))
         try:
             from utils.dlc_helpers import is_dlc_only_mode
             return bool(is_dlc_only_mode(appid))

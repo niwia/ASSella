@@ -139,8 +139,8 @@ class GameLibraryDialog(
             from ui.dialogs.dialog_raiser import DialogRaiser
             DialogRaiser(self.parent(), self)
 
-        # Initial Load
-        self._refresh_game_list()
+        # Initial Load: defer to next event tick so dialog window paints instantly
+        QTimer.singleShot(0, self._refresh_game_list)
 
         if show_details_for_appid:
             QTimer.singleShot(0, lambda: self._show_details_for_appid(show_details_for_appid))
@@ -198,6 +198,28 @@ class GameLibraryDialog(
                 border-radius: 4px; 
             }}
             
+            QLabel[cardRole="title"] {{
+                color: #FFFFFF;
+                font-size: 12pt;
+                font-weight: bold;
+            }}
+            QLabel[cardRole="size"] {{
+                color: rgba(255, 255, 255, 0.65);
+                font-size: 12px;
+            }}
+            QLabel[cardRole="manifest"] {{
+                color: rgba(255, 255, 255, 0.45);
+                font-size: 12px;
+                font-style: italic;
+            }}
+            QLabel[cardRole="cover"] {{
+                border-top-left-radius: 11px;
+                border-bottom-left-radius: 11px;
+                border-top-right-radius: 0px;
+                border-bottom-right-radius: 0px;
+                background-color: rgba(255, 255, 255, 0.02);
+                color: {self.accent_color};
+            }}
         """
         )
 

@@ -4,7 +4,7 @@ import shutil
 import logging
 import threading
 import requests
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Set, Union
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +328,54 @@ def parse_workshop_ids(text: str) -> List[str]:
     return list(dict.fromkeys(ids))
 
 
-def is_workshop_key_missing(appid: str, game_data: Optional[dict] = None) -> bool:
+def build_prewarmed_workshop_keys() -> Set[str]:
+    """Pre-collect all known valid 64-hex depot/app keys in one pass for instantaneous O(1) checks."""
+    valid_ids: Set[str] = set()
+
+    # 1. depot_keys.db
+    try:
+        from managers.depot_key_manager import DepotKeyManager
+        valid_ids.update(DepotKeyManager.get_instance().get_all_stored_depot_ids())
+    except Exception as e:
+        logger.debug(f"[Workshop] Prewarm depot_keys.db: {e}")
+
+    # 2. workshop_keys.txt
+    try:
+        from utils.paths import Paths
+        ws_file = Paths.workshop_keys()
+        if ws_file.exists():
+            with open(ws_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split(";")
+                    if len(parts) >= 2:
+                        did = parts[0].strip()
+                        key_val = parts[1].strip()
+                        if len(key_val) == 64:
+                            valid_ids.add(did)
+    except Exception as e:
+        logger.debug(f"[Workshop] Prewarm workshop_keys: {e}")
+
+    # 3. SLSsteam config.yaml
+    try:
+        from utils.yaml.keys import get_decryption_keys
+        from utils.plugin_games import get_user_config_path
+        cfg_path = get_user_config_path()
+        if cfg_path and cfg_path.exists():
+            live_keys = get_decryption_keys(cfg_path)
+            for did, key_val in live_keys.items():
+                if key_val and len(str(key_val).strip()) == 64:
+                    valid_ids.add(str(did).strip())
+    except Exception as e:
+        logger.debug(f"[Workshop] Prewarm SLS config: {e}")
+
+    return valid_ids
+
+
+def is_workshop_key_missing(
+    appid: Union[int, str],
+    game_data: Optional[dict] = None,
+    prewarmed_keys: Optional[Set[str]] = None,
+) -> bool:
     """Check if a game supports workshop but lacks a root AppKey across all stores.
 
     Stores checked:
@@ -366,6 +413,23 @@ def is_workshop_key_missing(appid: str, game_data: Optional[dict] = None) -> boo
             logger.debug(f"[Workshop] workshopdepot lookup: {e}")
     if ws_depot_id:
         cand_ids.add(ws_depot_id)
+
+    # Fast path if prewarmed keys set is provided
+    if prewarmed_keys is not None:
+        if any(cid in prewarmed_keys for cid in cand_ids):
+            return False
+        # Still check if game_data itself carries the key
+        if game_data and isinstance(game_data, dict):
+            ak = game_data.get("app_key")
+            if ak and isinstance(ak, str) and len(ak.strip()) == 64:
+                return False
+            keys_dict = game_data.get("keys")
+            if isinstance(keys_dict, dict):
+                for cid in cand_ids:
+                    k = keys_dict.get(cid)
+                    if k and isinstance(k, str) and len(k.strip()) == 64:
+                        return False
+        return True
 
     # 1. game_data
     if game_data and isinstance(game_data, dict):

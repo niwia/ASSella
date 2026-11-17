@@ -117,6 +117,24 @@ class DepotKeyManager:
             logger.error(f"[DepotKeyManager] Failed to save depot keys for AppID {appid}: {e}")
             return False
 
+    def get_all_stored_depot_ids(self) -> Set[str]:
+        """Returns set of all depot_ids that have valid 64-hex keys in depot_keys.db."""
+        try:
+            with _lock:
+                conn = self._connect()
+                rows = conn.execute("SELECT depot_id, aes_key FROM depot_keys").fetchall()
+                conn.close()
+            return {
+                str(row["depot_id"]).strip()
+                for row in rows
+                if row["aes_key"]
+                and len(str(row["aes_key"]).strip()) == 64
+                and not is_placeholder_key(str(row["aes_key"]).strip())
+            }
+        except Exception as e:
+            logger.debug(f"[DepotKeyManager] Failed to load all stored depot ids: {e}")
+            return set()
+
     def get_depot_keys(self, appid: str) -> Dict[str, str]:
         """Returns {depot_id: aes_key} for the given appid, or empty dict."""
         try:

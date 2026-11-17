@@ -69,24 +69,31 @@ def _extract_additional_apps_with_metadata(cfg_path) -> Tuple[List[str], Dict[st
     return appids, inline_comments, game_titles
 
 
-def get_pending_assella_games(installed_appids: Iterable[str]) -> List[Dict[str, Any]]:
+def get_pending_assella_games(
+    installed_appids: Iterable[str],
+    cfg_path: Optional[Any] = None,
+    plugin_lib: Optional[Dict[str, Any]] = None,
+    dlc_only_cache: Optional[Dict[str, bool]] = None,
+) -> List[Dict[str, Any]]:
     """Return games listed in AdditionalApps that are not downloaded and not AT0-M/DLC-only."""
     from utils.yaml_config_manager import get_user_config_path
     from utils.plugin_games import get_all_plugin_games
     from utils.dlc_helpers import is_dlc_only_mode
     from utils.library_rules import resolve_best_game_name
 
-    cfg_path = get_user_config_path()
-    if not cfg_path.exists():
+    if cfg_path is None:
+        cfg_path = get_user_config_path()
+    if not hasattr(cfg_path, "exists") or not cfg_path.exists():
         return []
 
     installed = {str(a).strip() for a in installed_appids if str(a).strip()}
 
-    try:
-        plugin_lib = get_all_plugin_games(active_only=True) or {}
-    except Exception as e:
-        logger.debug(f"[AssellaPending] Could not load plugin library: {e}")
-        plugin_lib = {}
+    if plugin_lib is None:
+        try:
+            plugin_lib = get_all_plugin_games(active_only=True) or {}
+        except Exception as e:
+            logger.debug(f"[AssellaPending] Could not load plugin library: {e}")
+            plugin_lib = {}
 
     plugin_appids = {str(a).strip() for a in plugin_lib.keys()}
 
@@ -100,7 +107,10 @@ def get_pending_assella_games(installed_appids: Iterable[str]) -> List[Dict[str,
     for appid in appids:
         if appid in seen or appid in installed or appid in plugin_appids:
             continue
-        if is_dlc_only_mode(appid):
+        if dlc_only_cache is not None:
+            if dlc_only_cache.get(appid):
+                continue
+        elif is_dlc_only_mode(appid):
             continue
 
         seen.add(appid)
