@@ -140,18 +140,6 @@ class GameManagerUninstallMixin:
             else:
                 confirm_msg += "• Steam Cloud saves (none found)\n"
 
-        preserved_msg_items = []
-        if not remove_compatdata and platform.system() == "Linux":
-            if compatdata_path:
-                preserved_msg_items.append(f"• Proton prefix (Windows saves): {compatdata_path}")
-            else:
-                preserved_msg_items.append("• Proton prefix: none found on disk")
-        if not remove_saves:
-            preserved_msg_items.append("• Steam Cloud saves")
-
-        if preserved_msg_items:
-            confirm_msg += "\n[Will Be Preserved]\n" + "\n".join(preserved_msg_items) + "\n"
-
         if (
             platform.system() == "Windows"
             and is_accela_install
@@ -771,9 +759,9 @@ class GameManagerUninstallMixin:
             return
 
         try:
+            desktop_files_removed = 0
             desktop_dir = Path.home() / ".local" / "share" / "applications"
             if desktop_dir.exists():
-                desktop_files_removed = 0
                 for desktop_file in desktop_dir.glob("*.desktop"):
                     try:
                         with open(desktop_file, "r", encoding="utf-8", errors="ignore") as f:
