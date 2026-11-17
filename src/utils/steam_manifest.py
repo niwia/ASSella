@@ -251,6 +251,40 @@ def write_acf_file(
     return acf_path
 
 
+def _tolerant_decompress_member(zip_path: str, member) -> bytes:
+    """Decompress a ZIP member when the ZIP header CRC32 is mismatched or corrupt."""
+    import struct
+    import zipfile
+    import zlib
+    with open(zip_path, "rb") as fp:
+        fp.seek(member.header_offset)
+        header = fp.read(30)
+        magic, _, _, method, _, _, _, csize, usize, fn_len, extra_len = struct.unpack("<4sHHHHHIIIHH", header)
+        if magic != b"PK\x03\x04":
+            raise zipfile.BadZipFile("Invalid local file header magic")
+        fp.seek(member.header_offset + 30 + fn_len + extra_len)
+        compressed = fp.read(csize or member.compress_size)
+        if method == 8:  # Deflate
+            return zlib.decompress(compressed, -15)
+        elif method == 0:  # Stored
+            return compressed
+        raise zipfile.BadZipFile(f"Unsupported compression method {method}")
+
+
+def tolerant_read_zip_member(archive, member, zip_path: Optional[str] = None) -> bytes:
+    """Read a member from a ZipFile, bypassing BadZipFile CRC32 mismatches from remote servers."""
+    import zipfile
+    try:
+        return archive.read(member)
+    except zipfile.BadZipFile as bzf:
+        if "Bad CRC-32" in str(bzf):
+            zp = zip_path or getattr(archive, "filename", None)
+            if zp:
+                info = archive.getinfo(member) if isinstance(member, str) else member
+                return _tolerant_decompress_member(str(zp), info)
+        raise
+
+
 def safe_extract_zip(zip_path: str, dest_dir: str) -> int:
     """Extract an archive without letting entries escape ``dest_dir`` (ZipSlip guard).
 
@@ -261,6 +295,7 @@ def safe_extract_zip(zip_path: str, dest_dir: str) -> int:
     Every member is resolved against ``dest_dir`` and rejected if it lands
     outside. Absolute paths, drive letters and ``..`` traversal are all refused.
     Returns the number of extracted members; raises on a malicious entry.
+    Tolerates Bad CRC-32 errors from upstream zip generation quirks.
     """
     import zipfile
     from pathlib import Path
@@ -278,6 +313,14 @@ def safe_extract_zip(zip_path: str, dest_dir: str) -> int:
             target = (dest / name).resolve()
             if target != dest and dest not in target.parents:
                 raise ValueError(f"Refusing path traversal in archive: {name!r}")
-            archive.extract(member, dest)
+            try:
+                archive.extract(member, dest)
+            except zipfile.BadZipFile as bzf:
+                if "Bad CRC-32" in str(bzf):
+                    raw = _tolerant_decompress_member(zip_path, member)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(raw)
+                else:
+                    raise
 
     return len(members)

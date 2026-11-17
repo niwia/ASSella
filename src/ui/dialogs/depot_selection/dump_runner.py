@@ -59,9 +59,15 @@ class _DumpThread(QThread):
             )
 
             from utils.kuroko import resolve_stealth_proxy_url
-            proxy_url, proxy_mgr = resolve_stealth_proxy_url()
-            if proxy_url:
-                cmd.extend(["-proxy", proxy_url])
+            try:
+                proxy_url, proxy_mgr = resolve_stealth_proxy_url()
+                if proxy_url:
+                    cmd.extend(["-proxy", proxy_url])
+            except Exception as proxy_err:
+                logger.warning(
+                    f"[DumpRunner] Stealth proxy setup failed for manifest dump, proceeding direct: {proxy_err}"
+                )
+                proxy_mgr = None
 
             env = get_dotnet_env()
             subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
