@@ -400,14 +400,14 @@ def get_owned_steam_appids() -> set:
 def parse_library_folders(vdf_path):
     library_paths = []
     try:
-        with open(vdf_path, "r", encoding="utf-8") as f:
+        with open(vdf_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
         matches = re.findall(r"^\s*\"(?:path|\d+)\"\s*\"(.*?)\"", content, re.MULTILINE)
         for path in matches:
             normalized_path = path.replace("\\\\", "\\")
             if os.path.isdir(os.path.join(normalized_path, "steamapps")):
                 library_paths.append(normalized_path)
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         logger.error(f"Failed to parse libraryfolders.vdf: {e}")
     return library_paths
 

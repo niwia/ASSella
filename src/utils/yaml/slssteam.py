@@ -55,7 +55,7 @@ def ensure_slssteam_logging_enabled(config_path: Path) -> bool:
             logger.warning(f"Config file not found at {config_path}")
             return False
 
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
 
         # 1. Check for new bitmask format: "LogLevels: <value>"
@@ -150,7 +150,7 @@ def ensure_smart_tickets_enabled(config_path: Optional[Path] = None, enable: boo
 
     val_str = "0x1" if enable else "0x0"
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
 
         pattern = re.compile(
@@ -187,7 +187,7 @@ def is_smart_tickets_enabled(config_path: Optional[Path] = None) -> bool:
         return False
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
 
         match = re.search(r"^([ \t]*)SmartTickets[ \t]*:[ \t]*([^\r\n#]+)", content, re.MULTILINE)

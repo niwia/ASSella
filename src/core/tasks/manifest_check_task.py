@@ -172,7 +172,7 @@ class ManifestCheckTask(QObject):
                 depot_file = Path(get_base_path()) / "depots" / f"{appid}.depot"
                 if depot_file.exists():
                     try:
-                        content = depot_file.read_text().strip()
+                        content = depot_file.read_text(encoding="utf-8", errors="replace").strip()
                         for line in content.splitlines():
                             line = line.strip()
                             if not line or ":" not in line:
@@ -195,7 +195,7 @@ class ManifestCheckTask(QObject):
                     lua_file = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
                     if lua_file.exists():
                         try:
-                            for m in iter_live_matches(lua_file.read_text(), r"addappid\(\s*(\d+)"):
+                            for m in iter_live_matches(lua_file.read_text(encoding="utf-8", errors="ignore"), r"addappid\(\s*(\d+)"):
                                 additional_appids.add(m.group(1))
                         except Exception as e:
                             logger.error(f"Error parsing cached LUA for DLC appids ({appid}): {e}")
@@ -766,7 +766,7 @@ class ManifestCheckTask(QObject):
                                         f"(age={lua_age/86400:.1f}d > {_LUA_CACHE_MAX_AGE_SECONDS/86400:.0f}d limit)"
                                     )
                                 else:
-                                    lua_text = lua_file.read_text()
+                                    lua_text = lua_file.read_text(encoding="utf-8", errors="ignore")
                                     pattern = r"setManifestid\(\s*" + re.escape(saved_depot_id) + r'\s*,\s*"([^"]+)"'
                                     m = re.search(pattern, lua_text)
                                     if m:
@@ -895,7 +895,7 @@ class ManifestCheckTask(QObject):
         lua_file = Path(get_base_path()) / "cached_luas" / f"{appid}.lua"
         if lua_file.exists():
             try:
-                lua_text = lua_file.read_text()
+                lua_text = lua_file.read_text(encoding="utf-8", errors="ignore")
                 pattern = r"setManifestid\(\s*" + re.escape(depot_id) + r'\s*,\s*"([^"]+)"'
                 m = re.search(pattern, lua_text)
                 if m:

@@ -44,7 +44,7 @@ def _read_config_content(config_path: Path, log_missing: bool = False) -> Option
             logger.warning(f"Config file not found at {config_path}")
         return None
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, "r", encoding="utf-8", errors="replace") as f:
         return f.read()
 
 def _get_config_content_if_enabled(config_path: Path, log_missing: bool = False):

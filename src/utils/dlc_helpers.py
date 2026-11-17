@@ -720,7 +720,7 @@ def get_dlc_only_info(base_appid: str) -> List[Dict[str, str]]:
         base_game_name = app_info.get("name", "") if app_info else ""
         base_depots_data = app_info.get("depots", {}) if app_info else {}
 
-        for line in depot_file.read_text().splitlines():
+        for line in depot_file.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -1061,7 +1061,7 @@ def get_saved_depot_selection(appid: str) -> List[str]:
         depot_file = get_base_path() / "depots" / f"{appid_str}.depot"
         if depot_file.exists():
             depots = []
-            for line in depot_file.read_text().splitlines():
+            for line in depot_file.read_text(encoding="utf-8", errors="replace").splitlines():
                 line = line.strip()
                 if line and ":" in line:
                     did = line.split(":", 1)[0].strip()
@@ -1524,7 +1524,7 @@ def has_game_dlcs(appid: str, depots: Optional[Dict[str, Any]] = None) -> bool:
         from utils.helpers import get_base_path
         depot_file = get_base_path() / "depots" / f"{appid_str}.depot"
         if depot_file.exists():
-            lines = [l.strip() for l in depot_file.read_text().splitlines() if l.strip()]
+            lines = [l.strip() for l in depot_file.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
             if len(lines) > 1:
                 for line in lines:
                     did = line.split(":", 1)[0].strip()

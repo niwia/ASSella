@@ -195,7 +195,7 @@ class SmartUpdateTask(QObject):
         depot_file = get_base_path() / "depots" / f"{self.appid}.depot"
         if depot_file.exists():
             try:
-                for line in depot_file.read_text().strip().splitlines():
+                for line in depot_file.read_text(encoding="utf-8", errors="replace").strip().splitlines():
                     parts = line.split(":", 1)
                     if parts and parts[0].strip():
                         saved_depot_ids.add(parts[0].strip())

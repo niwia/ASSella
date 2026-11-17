@@ -683,7 +683,7 @@ class PostInstallMixin:
             existing_entries = {}
             if depot_file.exists():
                 try:
-                    for line in depot_file.read_text().splitlines():
+                    for line in depot_file.read_text(encoding="utf-8", errors="replace").splitlines():
                         parts = [p.strip() for p in line.split(":")]
                         if len(parts) >= 2:
                             existing_entries[parts[0]] = line
