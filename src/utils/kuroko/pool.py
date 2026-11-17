@@ -424,20 +424,49 @@ def resolve_stealth_proxy_url(
     return url, mgr
 
 
-def prompt_stealth_fallback(error_message: str) -> bool:
+class StealthChoice(str):
+    """Return type for prompt_stealth_fallback.
+
+    Preserves backward compatibility:
+      - Evaluates to True only when 'direct' (bypassing stealth to download directly).
+      - Evaluates to False when 'cancel' or 'retry' in legacy boolean contexts.
+      - Supports string equality: choice == "retry", choice == "direct", choice == "cancel".
+    """
+
+    def __bool__(self) -> bool:
+        return self == "direct"
+
+    @property
+    def is_retry(self) -> bool:
+        return self == "retry"
+
+    @property
+    def is_direct(self) -> bool:
+        return self == "direct"
+
+    @property
+    def is_cancel(self) -> bool:
+        return self == "cancel"
+
+
+def prompt_stealth_fallback(error_message: str) -> StealthChoice:
     """Prompt user on Qt main GUI thread when stealth proxy / VPN connection fails.
 
-    Offers two choices:
-      1. 'Download Without Stealth' (Direct non-stealth download)
-      2. 'Cancel Download'
+    Offers three choices:
+      1. 'Retry Connection' (Retries tunnel initialization with candidate failover)
+      2. 'Download Without Stealth' (Direct non-stealth download)
+      3. 'Cancel Download'
 
+    If user selects Retry:
+      - Leaves settings unchanged
+      - Returns StealthChoice("retry")
     If user selects Direct:
       - Sets 'enable_stealth_proxy' to False in QSettings
       - Refreshes MainWindow system status visor
-      - Returns True
+      - Returns StealthChoice("direct")
     If user selects Cancel or closes dialog:
       - Leaves settings unchanged
-      - Returns False
+      - Returns StealthChoice("cancel")
     """
     from utils.main_thread import post_to_main_thread
 
@@ -462,16 +491,17 @@ def prompt_stealth_fallback(error_message: str) -> bool:
                 None,
                 "Stealth Connection Failed",
                 f"Unable to connect through stealth proxy / VPN:\n\n{clean_err}\n\n"
-                "Would you like to proceed with a direct (non-stealth) download, or cancel the download?",
+                "Would you like to retry the connection, proceed with a direct (non-stealth) download, or cancel the download?",
                 buttons=[
+                    ("Retry Connection", "retry"),
                     ("Download Without Stealth", "direct"),
                     ("Cancel Download", "cancel"),
                 ],
-                default="cancel",
+                default="retry",
                 severity="warning",
             )
-            if res == "direct":
-                choice[0] = "direct"
+            if res in ("retry", "direct", "cancel"):
+                choice[0] = str(res)
         except Exception as e:
             logger.error(f"[Kuroko] Error showing stealth fallback prompt: {e}")
         finally:
@@ -506,13 +536,15 @@ def prompt_stealth_fallback(error_message: str) -> bool:
                 logger.debug(f"[Kuroko] Error refreshing visor after direct fallback: {e}")
 
         post_to_main_thread(_refresh_visor)
-        return True
+    elif choice[0] == "retry":
+        logger.info("[Kuroko] User opted to retry stealth proxy connection.")
 
-    return False
+    return StealthChoice(choice[0])
 
 
 __all__ = [
     "NETWORK_ERROR_SIGNATURES",
+    "StealthChoice",
     "StealthPoolManager",
     "is_network_or_proxy_error",
     "prompt_stealth_fallback",

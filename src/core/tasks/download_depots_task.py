@@ -115,21 +115,32 @@ class DownloadDepotsTask(QObject):
                 return
 
             settings = get_settings()
-            try:
-                proxy_url = self._setup_stealth_proxy(settings)
-            except Exception as e:
-                logger.warning(f"[DownloadDepotsTask] Stealth proxy setup failed: {e}")
-                if not self._is_running:
-                    return
-                from utils.kuroko import prompt_stealth_fallback
-                if prompt_stealth_fallback(str(e)):
-                    self.progress.emit("[Warning] Stealth connection failed. Continuing with direct (non-stealth) connection per user request.")
-                    proxy_url = None
-                else:
-                    self._is_running = False
-                    self.progress.emit("Download cancelled due to stealth connection failure.")
-                    logger.info(f"[DownloadDepotsTask] User cancelled download on stealth failure: {e}")
-                    return
+            proxy_url = None
+            failover_from = None
+            while self._is_running:
+                try:
+                    proxy_url = self._setup_stealth_proxy(settings, failover_from=failover_from)
+                    break
+                except Exception as e:
+                    logger.warning(f"[DownloadDepotsTask] Stealth proxy setup failed: {e}")
+                    if not self._is_running:
+                        return
+                    from utils.kuroko import prompt_stealth_fallback
+                    user_action = prompt_stealth_fallback(str(e))
+                    if user_action == "retry":
+                        self.progress.emit("Retrying stealth connection (reconnecting/rotating)...")
+                        failover_from = getattr(getattr(self, "_kuroko_manager", None), "endpoint_id", None) or "active"
+                        self._cleanup_stealth_proxy()
+                        continue
+                    elif user_action == "direct":
+                        self.progress.emit("[Warning] Stealth connection failed. Continuing with direct (non-stealth) connection per user request.")
+                        proxy_url = None
+                        break
+                    else:
+                        self._is_running = False
+                        self.progress.emit("Download cancelled due to stealth connection failure.")
+                        logger.info(f"[DownloadDepotsTask] User cancelled download on stealth failure: {e}")
+                        return
 
             if not self._is_running:
                 logger.info("[DownloadDepotsTask] Download task stopped during stealth setup.")
@@ -375,7 +386,51 @@ class DownloadDepotsTask(QObject):
                             if not self._is_running:
                                 return
                             from utils.kuroko import prompt_stealth_fallback
-                            if prompt_stealth_fallback(net_err):
+                            user_action = prompt_stealth_fallback(net_err)
+                            if user_action == "retry":
+                                self.progress.emit(f"Stealth dropped mid-download. Reconnecting stealth proxy for depot {depot_id}...")
+                                self._cleanup_stealth_proxy()
+                                try:
+                                    prev_id = getattr(getattr(self, "_kuroko_manager", None), "endpoint_id", None) or "active"
+                                    new_proxy_url = self._setup_stealth_proxy(settings, failover_from=prev_id)
+                                    if new_proxy_url:
+                                        for c in commands[i:]:
+                                            if "-proxy" in c:
+                                                p_idx = c.index("-proxy")
+                                                c[p_idx + 1] = new_proxy_url
+                                            else:
+                                                c.extend(["-proxy", new_proxy_url])
+                                        current_cmd = commands[i]
+                                        self.last_percentage = -1
+                                        self._is_validating = False
+                                        self._current_depot_downloaded_bytes = 0
+                                        self._current_depot_network_error = ""
+                                        self.process = subprocess.Popen(
+                                            current_cmd,
+                                            stdout=subprocess.PIPE,
+                                            stderr=subprocess.STDOUT,
+                                            text=False,
+                                            creationflags=creation_flags,
+                                            env=get_dotnet_env(),
+                                        )
+                                        self._read_process_output()
+                                        if self.process and self.process.stdout:
+                                            try:
+                                                self.process.stdout.close()
+                                            except OSError as e:
+                                                logger.debug(f"[DownloadDepotsTask] Pipe close error: {e}")
+                                        self._flush_log_buffer()
+                                        if not self._is_running:
+                                            self.completed.emit()
+                                            return
+                                        return_code = self.process.poll() if self.process else 0
+                                        self.process = None
+                                        if return_code == 0:
+                                            failed_over = True
+                                            continue
+                                except Exception as retry_err:
+                                    logger.warning(f"[DownloadDepotsTask] Stealth retry failed: {retry_err}")
+                            elif user_action == "direct":
                                 self.progress.emit(f"Stealth dropped mid-download. Proceeding directly (non-stealth) for depot {depot_id}...")
                                 self._cleanup_stealth_proxy()
                                 for c in commands[i:]:
@@ -1398,7 +1453,9 @@ class DownloadDepotsTask(QObject):
 
         return commands, skipped_depots, depot_sizes
 
-    def _setup_stealth_proxy(self, settings) -> Optional[str]:
+    def _setup_stealth_proxy(
+        self, settings, failover_from: Optional[str] = None
+    ) -> Optional[str]:
         """
         Configure userspace stealth proxy (Kuroko / custom SOCKS5) if enabled in settings.
         Returns the proxy URL to pass to DepotDownloader (-proxy <url>), or None if disabled.
@@ -1407,7 +1464,7 @@ class DownloadDepotsTask(QObject):
         from utils.kuroko import resolve_stealth_proxy_url
 
         self._proxy_info_tag = None
-        proxy_url, manager = resolve_stealth_proxy_url(settings)
+        proxy_url, manager = resolve_stealth_proxy_url(settings, failover_from=failover_from)
         if manager is not None:
             self._kuroko_manager = manager
             endpoint_id = getattr(manager, "endpoint_id", None)

@@ -37,6 +37,7 @@ from .config import (
 )
 from .pool import (
     NETWORK_ERROR_SIGNATURES,
+    StealthChoice,
     StealthPoolManager,
     is_network_or_proxy_error,
     prompt_stealth_fallback,
@@ -80,6 +81,7 @@ __all__ = [
     "COOLDOWN_DURATION",
     "Kuroko",
     "NETWORK_ERROR_SIGNATURES",
+    "StealthChoice",
     "StealthPoolManager",
     "WIREPROXY_BASE_URL",
     "WIREPROXY_RELEASE_VERSION",

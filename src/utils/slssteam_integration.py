@@ -118,11 +118,10 @@ def _experimental_mode_enabled() -> bool:
 
 
 def _is_slssteam_pipe_listening() -> bool:
-    """Check if SLSsteam API pipe exists and has an active reader listening.
+    """Check if SLSsteam API pipe/file exists and SLSsteam is actively listening.
 
-    In POSIX, opening a FIFO with O_WRONLY | O_NONBLOCK fails with ENXIO if no reader
-    is open, and succeeds immediately if SLSsteam's server thread is active.
-    Works seamlessly across all Linux distributions (including NixOS FHS environments).
+    SLSsteam creates /tmp/SLSsteam.API as a regular file monitored via an inotify
+    CFileWatcher on Linux (or optionally a FIFO in custom environments).
     """
     if sys.platform != "linux":
         return False
@@ -131,11 +130,13 @@ def _is_slssteam_pipe_listening() -> bool:
     try:
         import stat
         st = os.stat(SLSSTEAM_API_PIPE)
-        if not stat.S_ISFIFO(st.st_mode):
-            return False
-        fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
-        os.close(fd)
-        return True
+        if stat.S_ISFIFO(st.st_mode):
+            fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+            os.close(fd)
+            return True
+        elif stat.S_ISREG(st.st_mode):
+            return is_slssteam_process_active()
+        return False
     except OSError as e:
         logger.debug(f"[sls] pipe listening check: {e}")
         return False
@@ -180,10 +181,19 @@ def _update_proc_cache_if_needed():
     if sys.platform != "linux":
         return
 
-    # 1. Fast pipe listener check: if /tmp/SLSsteam.API has an active listener, SLS is active & Steam is running
-    if _is_slssteam_pipe_listening():
-        _proc_cache["slssteam_active"] = True
-        _proc_cache["steam_running"] = True
+    # 1. Fast FIFO check if /tmp/SLSsteam.API is a FIFO with an active listener
+    try:
+        import stat
+        if os.path.exists(SLSSTEAM_API_PIPE):
+            st = os.stat(SLSSTEAM_API_PIPE)
+            if stat.S_ISFIFO(st.st_mode):
+                fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+                os.close(fd)
+                _proc_cache["slssteam_active"] = True
+                _proc_cache["steam_running"] = True
+                return
+    except OSError:
+        pass
 
     try:
         steam_pids = []
@@ -485,38 +495,40 @@ def check_slssteam_binary_is_latest(force_refresh: bool = False, cached_only: bo
 
 
 def _slssteam_api_send(command: str) -> bool:
-    """Send a raw command to SLSsteam via the named pipe.
+    """Send a raw command to SLSsteam via the API file/pipe.
 
-    Uses O_WRONLY | O_NONBLOCK to prevent blocking indefinitely if the pipe
-    exists on disk without an active reader.
+    Handles both standard inotify regular file (/tmp/SLSsteam.API) and FIFOs.
     Returns True on success. Returns False (never raises) on any failure —
-    including the pipe being gone because Steam/SLSsteam closed mid-write.
+    including the file being inaccessible because Steam/SLSsteam closed mid-write.
     """
     if sys.platform != "linux":
         return False
     if not _is_slssteam_pipe_listening():
         return False
-    fd = -1
     try:
-        fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
-        payload = (command.strip() + "\n").encode("utf-8")
-        os.write(fd, payload)
+        import stat
+        st = os.stat(SLSSTEAM_API_PIPE)
+        if stat.S_ISFIFO(st.st_mode):
+            fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                payload = (command.strip() + "\n").encode("utf-8")
+                os.write(fd, payload)
+            finally:
+                os.close(fd)
+        else:
+            with open(SLSSTEAM_API_PIPE, "w", encoding="utf-8") as f:
+                f.write(command.strip() + "\n")
+                f.flush()
         logger.info(f"SLSsteam API command sent: {command.strip()}")
         return True
     except OSError as e:
-        # ENXIO / EPIPE = pipe exists on disk but reader (SLSsteam) has gone away.
+        # ENXIO / EPIPE / write error = reader (SLSsteam) has gone away or file inaccessible.
         # Log at warning level so it's visible but doesn't crash anything.
         logger.warning(
-            f"SLSsteam API pipe write failed for '{command}': {e} "
+            f"SLSsteam API command send failed for '{command}': {e} "
             "(Steam/SLSsteam may have closed — command will be retried or skipped)"
         )
         return False
-    finally:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError as e:
-                logger.debug(f"[sls] close pipe fd: {e}")
 
 
 def _poll_sls_log_for(
@@ -1047,8 +1059,7 @@ def warn_sls_unavailable(context: str = "") -> str:
         issues_text = "; ".join(issues)
         msg = (
             f"{ctx_prefix}SLSsteam not available — {issues_text}. "
-            "Falling back to manual ACF write. "
-            "Make sure Steam is launched with SLSsteam loaded."
+            "Config recorded in config.yaml; Steam will register the game on next launch."
         )
     else:
         # Pipe just went away mid-operation

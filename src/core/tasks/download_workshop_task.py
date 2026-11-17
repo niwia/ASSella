@@ -296,45 +296,57 @@ class DownloadWorkshopTask(QObject):
 
         proxy_url = None
         self._proxy_info_tag = None
-        try:
-            from utils.kuroko import resolve_stealth_proxy_url
-            proxy_url, self._kuroko_manager = resolve_stealth_proxy_url(_settings)
-            if self._kuroko_manager:
-                endpoint_id = getattr(self._kuroko_manager, "endpoint_id", None)
-                if endpoint_id:
-                    if endpoint_id == "warp":
-                        mode_display = "WARP"
-                    elif endpoint_id.startswith("wg:"):
-                        prof_name = Path(endpoint_id[3:]).stem
-                        mode_display = f"WireGuard ({prof_name})"
-                    elif endpoint_id.startswith("custom"):
-                        mode_display = "Custom"
+        failover_from = None
+        while self._is_running:
+            try:
+                from utils.kuroko import resolve_stealth_proxy_url
+                proxy_url, self._kuroko_manager = resolve_stealth_proxy_url(_settings, failover_from=failover_from)
+                if self._kuroko_manager:
+                    endpoint_id = getattr(self._kuroko_manager, "endpoint_id", None)
+                    if endpoint_id:
+                        if endpoint_id == "warp":
+                            mode_display = "WARP"
+                        elif endpoint_id.startswith("wg:"):
+                            prof_name = Path(endpoint_id[3:]).stem
+                            mode_display = f"WireGuard ({prof_name})"
+                        elif endpoint_id.startswith("custom"):
+                            mode_display = "Custom"
+                        else:
+                            mode_display = endpoint_id.capitalize()
                     else:
-                        mode_display = endpoint_id.capitalize()
+                        mode = _settings.value("stealth_proxy_mode", "warp", type=str).strip().lower()
+                        mode_display = "WARP" if mode == "warp" else ("WireGuard" if mode == "wireguard" else mode.capitalize())
+                    endpoint = self._kuroko_manager.proxy_url.split("://")[-1]
+                    self._proxy_info_tag = f"[via Stealth: {mode_display} ({endpoint})]"
+                    self.log(f"  Stealth proxy active: {mode_display} ({self._kuroko_manager.proxy_url})")
+                elif proxy_url:
+                    endpoint = proxy_url.split("://")[-1]
+                    self._proxy_info_tag = f"[via Stealth: Proxy ({endpoint})]"
+                    self.log(f"  Routing download through custom proxy: {proxy_url}")
+                break
+            except Exception as e:
+                self.log(f"  [Error] Stealth proxy setup failed: {e}")
+                if not self._is_running:
+                    return
+                from utils.kuroko import prompt_stealth_fallback
+                action = prompt_stealth_fallback(str(e))
+                if action == "retry":
+                    self.log("  Retrying stealth connection (reconnecting/rotating)...")
+                    failover_from = getattr(getattr(self, "_kuroko_manager", None), "endpoint_id", None) or "active"
+                    if self._kuroko_manager:
+                        self._kuroko_manager.stop()
+                        self._kuroko_manager = None
+                    continue
+                elif action == "direct":
+                    self.log("  [Warning] Stealth proxy failed. Proceeding with direct download per user request.")
+                    proxy_url = None
+                    self._kuroko_manager = None
+                    break
                 else:
-                    mode = _settings.value("stealth_proxy_mode", "warp", type=str).strip().lower()
-                    mode_display = "WARP" if mode == "warp" else ("WireGuard" if mode == "wireguard" else mode.capitalize())
-                endpoint = self._kuroko_manager.proxy_url.split("://")[-1]
-                self._proxy_info_tag = f"[via Stealth: {mode_display} ({endpoint})]"
-                self.log(f"  Stealth proxy active: {mode_display} ({self._kuroko_manager.proxy_url})")
-            elif proxy_url:
-                endpoint = proxy_url.split("://")[-1]
-                self._proxy_info_tag = f"[via Stealth: Proxy ({endpoint})]"
-                self.log(f"  Routing download through custom proxy: {proxy_url}")
-        except Exception as e:
-            self.log(f"  [Error] Stealth proxy setup failed: {e}")
-            if not self._is_running:
-                return
-            from utils.kuroko import prompt_stealth_fallback
-            if prompt_stealth_fallback(str(e)):
-                self.log("  [Warning] Stealth proxy failed. Proceeding with direct download per user request.")
-                proxy_url = None
-                self._kuroko_manager = None
-            else:
-                self._is_running = False
-                self.log("  Download cancelled due to stealth connection failure.")
-                self.error.emit((type(e), f"Stealth proxy error: {e}", None))
-                return
+                    self._is_running = False
+                    self.log("  Download cancelled due to stealth connection failure.")
+                    self.error.emit((type(e), f"Stealth proxy error: {e}", None))
+                    return
 
         from utils.helpers import get_dotnet_env
         dotnet_env = get_dotnet_env()
