@@ -136,7 +136,8 @@ def _is_slssteam_pipe_listening() -> bool:
         fd = os.open(SLSSTEAM_API_PIPE, os.O_WRONLY | os.O_NONBLOCK)
         os.close(fd)
         return True
-    except OSError:
+    except OSError as e:
+        logger.debug(f"[sls] pipe listening check: {e}")
         return False
 
 
@@ -203,8 +204,8 @@ def _update_proc_cache_if_needed():
                             cdata = cf.read()
                             if b"steam" in cdata or b".steam-wrapped" in cdata:
                                 _proc_cache["steam_running"] = True
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logger.debug(f"[sls] bwrap cmdline read: {e}")
             except OSError:
                 continue
 
@@ -514,8 +515,8 @@ def _slssteam_api_send(command: str) -> bool:
         if fd >= 0:
             try:
                 os.close(fd)
-            except OSError:
-                pass
+            except OSError as e:
+                logger.debug(f"[sls] close pipe fd: {e}")
 
 
 def _poll_sls_log_for(

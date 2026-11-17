@@ -71,6 +71,8 @@ def main() -> int:
     # The runner is not supposed to need a real dotnet or a real resource tree.
     helpers.get_dotnet_path = lambda: "/nonexistent/dotnet"
     helpers.resource_path = lambda rel: rel
+    import utils.kuroko as kuroko
+    kuroko.resolve_stealth_proxy_url = lambda *args, **kwargs: (None, None)
 
     calls = []
     failures = []

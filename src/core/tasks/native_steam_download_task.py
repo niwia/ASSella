@@ -376,8 +376,8 @@ class NativeSteamDownloadTask(QObject):
             from utils.slssteam_integration import is_slssteam_process_active
             if is_slssteam_process_active():
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[NativeSteamDL] _check_slssteam_active: {e}")
 
         STEAM_COMM_NAMES = {"steam", ".steam-wrapped", "steam-wrapped", "steam-original", "steam.sh"}
         try:
@@ -611,8 +611,8 @@ class NativeSteamDownloadTask(QObject):
                             raw_ws = app_info["depots"].get("workshopdepot")
                             if raw_ws and str(raw_ws).strip().isdigit():
                                 ws_depot_id = str(raw_ws).strip()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[NativeSteamDL] workshopdepot lookup: {e}")
 
                 with open(ws_keys_file, "r", encoding="utf-8") as f:
                     for line in f:

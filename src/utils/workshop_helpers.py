@@ -196,8 +196,8 @@ def check_game_has_workshop(appid: str, game_data: Optional[dict] = None, allow_
                 if settings:
                     settings.setValue(f"has_workshop/{appid_str}", True)
                 return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[Workshop] db_manager app_info lookup: {e}")
 
     if not allow_network:
         return False
@@ -362,8 +362,8 @@ def is_workshop_key_missing(appid: str, game_data: Optional[dict] = None) -> boo
                 raw_ws = app_info["depots"].get("workshopdepot")
                 if raw_ws and str(raw_ws).strip().isdigit():
                     ws_depot_id = str(raw_ws).strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[Workshop] workshopdepot lookup: {e}")
     if ws_depot_id:
         cand_ids.add(ws_depot_id)
 
@@ -387,8 +387,8 @@ def is_workshop_key_missing(appid: str, game_data: Optional[dict] = None) -> boo
             k = stored.get(cid)
             if k and isinstance(k, str) and len(k.strip()) == 64:
                 return False
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[Workshop] DepotKeyManager lookup: {e}")
 
     # 3. workshop_keys.txt
     try:
@@ -402,8 +402,8 @@ def is_workshop_key_missing(appid: str, game_data: Optional[dict] = None) -> boo
                         key_val = parts[1].strip()
                         if len(key_val) == 64:
                             return False
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[Workshop] workshop_keys file read: {e}")
 
     # 4. SLSsteam config.yaml
     try:
@@ -417,7 +417,7 @@ def is_workshop_key_missing(appid: str, game_data: Optional[dict] = None) -> boo
                     key_val = live_keys[cid]
                     if key_val and len(key_val.strip()) == 64:
                         return False
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[Workshop] SLSsteam config keys read: {e}")
 
     return True

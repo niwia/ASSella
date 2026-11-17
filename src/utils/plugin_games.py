@@ -895,8 +895,8 @@ def collect_game_depots_and_keys(
                     raw_ws = app_info["depots"].get("workshopdepot")
                     if raw_ws and str(raw_ws).strip().isdigit():
                         ws_depot_id = str(raw_ws).strip()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[PluginGames] workshopdepot lookup: {e}")
 
             with open(ws_keys_file, "r", encoding="utf-8") as f:
                 for line in f:

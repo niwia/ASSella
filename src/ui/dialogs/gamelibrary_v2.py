@@ -254,8 +254,8 @@ class GameDetailsDialogV2(QDialog):
             from utils.plugin_games import is_plugin_game
             if is_plugin_game(self.appid):
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[GameDetails] is_plugin_game check: {e}")
         return False
 
     # ── Per-tab height: Info is short, the other tabs get the full window ──

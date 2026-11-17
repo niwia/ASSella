@@ -26,7 +26,7 @@ import logging
 import os
 import re
 import sqlite3
-import threading
+import threading  # noqa: TC003
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 

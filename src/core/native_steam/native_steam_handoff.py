@@ -34,8 +34,8 @@ def check_slssteam_active() -> bool:
         from utils.slssteam_integration import is_slssteam_process_active
         if is_slssteam_process_active():
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[NativeHandoff] check_slssteam_active: {e}")
 
     STEAM_COMM_NAMES = {"steam", ".steam-wrapped", "steam-wrapped", "steam-original", "steam.sh"}
     try:

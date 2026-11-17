@@ -389,8 +389,8 @@ class GameItemWidget(QWidget):
                 try:
                     from utils.plugin_games import is_plugin_game
                     is_at0m_game = is_plugin_game(self.game_data.get("appid", ""))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[GameItemWidget] is_plugin_game check: {e}")
 
             if is_at0m_game and update_status not in ("update_available", "key_pending"):
                 update_status = "at0m"
@@ -624,8 +624,8 @@ class GameItemWidget(QWidget):
             try:
                 from utils.plugin_games import is_plugin_game
                 is_at0m_game = is_plugin_game(self.game_data.get("appid", ""))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[GameItemWidget] is_plugin_game check: {e}")
 
         if is_at0m_game and update_status not in ("update_available", "key_pending"):
             update_status = "at0m"
