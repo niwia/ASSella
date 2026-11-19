@@ -63,6 +63,12 @@ class TestDLCOnlyUX(unittest.TestCase):
         self.orig_library_mode = self.settings.value("library_mode", False, type=bool)
         self.settings.setValue("library_mode", True)
         self.cfg_was_created = False
+
+        from unittest.mock import patch
+        from core.steam_helpers import SteamEnv
+        self._sls_patcher = patch.object(SteamEnv, "sls_installed", return_value=True)
+        self._sls_patcher.start()
+
         if not self.cfg_path.exists():
             self.cfg_path.parent.mkdir(parents=True, exist_ok=True)
             minimal_config = (
@@ -82,6 +88,10 @@ class TestDLCOnlyUX(unittest.TestCase):
             self.orig_inode = self.cfg_path.stat().st_ino
 
     def tearDown(self):
+        # Stop SLS mock patcher
+        if hasattr(self, "_sls_patcher"):
+            self._sls_patcher.stop()
+
         # Restore settings
         self.settings.setValue("at0m_default_dlc_action", self.orig_dlc_setting)
         self.settings.setValue("library_mode", self.orig_library_mode)

@@ -716,7 +716,8 @@ class LibraryActionsMixin:
         try:
             if mode == "dlc_data":
                 from utils.yaml.dlc import add_dlc_data_batch
-                add_dlc_data_batch(config_path, appid, dlc_dict)
+                if not add_dlc_data_batch(config_path, appid, dlc_dict):
+                    raise RuntimeError(f"Failed to write DlcData section into {config_path}")
             else:
                 from utils.yaml.apps import add_additional_apps_batch
                 apps_list = [(did, dname) for did, dname in dlc_dict.items()]

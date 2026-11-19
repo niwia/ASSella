@@ -131,11 +131,12 @@ class UpdateCheckerTestCase(unittest.TestCase):
                 build_timestamp if build_timestamp is not None else "",
             ):
                 with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
-                    return check_for_updates(
-                        configured_channel=channel,
-                        current_version=current,
-                        update_server=update_server,
-                    )
+                    with mock.patch("utils.version.get_platform_key", return_value="linux-x86_64"):
+                        return check_for_updates(
+                            configured_channel=channel,
+                            current_version=current,
+                            update_server=update_server,
+                        )
 
 
 class TestUpdateCheckerRules(UpdateCheckerTestCase):
