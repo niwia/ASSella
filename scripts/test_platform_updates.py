@@ -45,7 +45,10 @@ class TestPlatformStrictUpdates(unittest.TestCase):
         # But explicit target_machine="x86_64" is respected even when env var is set
         self.assertEqual(get_platform_key("linux", "x86_64"), "linux-x86_64")
         os.environ["ASSELLA_FORCE_ARM64"] = "0"
-        self.assertEqual(get_platform_key("linux", None), "linux-x86_64")
+        with patch("platform.machine", return_value="x86_64"):
+            self.assertEqual(get_platform_key("linux", None), "linux-x86_64")
+        with patch("platform.machine", return_value="aarch64"):
+            self.assertEqual(get_platform_key("linux", None), "linux-aarch64")
 
     def test_x86_requires_assella_appimage_and_ignores_arm64_only(self):
         arm64_only_release = {
