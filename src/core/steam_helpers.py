@@ -552,7 +552,42 @@ def get_library_index(library_path: str, steam_path: str | None = None) -> int:
         return 0
 
 
-def ensure_steam_library(library_path: str, steam_path: str | None = None) -> Optional[int]:
+_notified_steam_restart_paths: set[str] = set()
+
+
+def _notify_steam_restart_for_new_library(real_path: str) -> None:
+    """Prompt the user when a new Steam library was registered while Steam is running."""
+    try:
+        from utils.main_thread import post_to_main_thread
+
+        def _show():
+            try:
+                from PyQt6.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app is None or app.platformName() == "offscreen":
+                    return
+                from ui.dialogs.themed_message_box import ThemedMessageBox
+                parent = app.activeWindow()
+                ThemedMessageBox.information(
+                    parent,
+                    "Steam Restart Required",
+                    f"A new Steam library folder has been registered:\n{real_path}\n\n"
+                    "Because Steam is currently running, it will not recognize this new library until Steam is restarted.\n\n"
+                    "Please restart Steam so it can detect and save the new library location.",
+                )
+            except Exception as e:
+                logger.debug(f"Failed to display Steam restart dialog: {e}")
+
+        post_to_main_thread(_show)
+    except Exception as e:
+        logger.debug(f"Failed to dispatch Steam restart notice: {e}")
+
+
+def ensure_steam_library(
+    library_path: str,
+    steam_path: str | None = None,
+    notify_if_steam_running: bool = True,
+) -> Optional[int]:
     """Ensure a directory is recognized and registered as a Steam library folder in libraryfolders.vdf.
 
     1. Normalizes the path to library root (stripping steamapps/... if present).
@@ -676,6 +711,11 @@ def ensure_steam_library(library_path: str, steam_path: str | None = None) -> Op
         invalidate_steam_env_cache()
 
         logger.info(f"Registered new Steam library in libraryfolders.vdf at index {next_idx}: {real_path}")
+
+        if notify_if_steam_running and is_steam_running() and real_path not in _notified_steam_restart_paths:
+            _notified_steam_restart_paths.add(real_path)
+            _notify_steam_restart_for_new_library(real_path)
+
         return next_idx
 
     except Exception as e:

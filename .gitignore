@@ -30,6 +30,7 @@ manifests/
 morrenus_manifests/
 hubcap_manifests/
 *.db
+.test_custom_work/
 
 # ── Workshop keys (personal) ────────────────────────────────────────────────
 workshop_keys.txt

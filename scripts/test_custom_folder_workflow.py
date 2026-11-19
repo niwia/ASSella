@@ -250,6 +250,98 @@ def test_zero_libraries_custom_ui():
         dlg_multi.close()
 
 
+def test_offline_custom_path_cancel_in_settings():
+    print("=== 8. [Offline] custom path + Cancel in Settings -> Downloads ===")
+    from unittest.mock import patch
+    from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import QDialog, QFrame, QVBoxLayout, QTabWidget
+    from ui.dialogs.settings_tabs.downloads_tab import create_downloads_tab
+
+    td = str(get_test_dir("settings_offline"))
+    settings_file = os.path.join(td, "test_settings.ini")
+    test_settings = QSettings(settings_file, QSettings.Format.IniFormat)
+
+    offline_path = "/run/media/deck/OFFLINE_CARD/Games"
+    test_settings.setValue("default_download_directory", offline_path)
+    test_settings.setValue("ask_library_each_time", False)
+
+    mock_dialog = QDialog()
+    mock_dialog.settings = test_settings
+    mock_dialog.accent_color = "#6c5ce7"
+    mock_dialog.tab_widget = QTabWidget()
+    mock_dialog._create_card_frame = lambda title="": (QFrame(), QVBoxLayout())
+
+    tab_widget = create_downloads_tab(mock_dialog)
+
+    # 1. Verify combo initialized with [Offline] path at index 1
+    combo = mock_dialog.dl_location_combo
+    check(combo.currentIndex() == 1, f"Offline path preselected at index 1 (got {combo.currentIndex()})")
+    check(combo.currentData() == offline_path, f"Combo currentData matches offline path (got {combo.currentData()})")
+    check("[Offline]" in combo.currentText(), f"Combo currentText displays [Offline] tag (got {combo.currentText()})")
+    check(test_settings.value("default_download_directory") == offline_path, "default_download_directory preserved initially")
+
+    # 2. User selects "Custom Folder..." then Cancels in ThemedFileDialog
+    custom_idx = combo.findData("custom")
+    check(custom_idx >= 0, "Custom Folder... option found in combo")
+
+    with patch("ui.dialogs.themed_file_dialog.ThemedFileDialog.getExistingDirectory", return_value=""):
+        combo.setCurrentIndex(custom_idx)
+
+    # 3. Verify previous index restored, offline path intact, setting not cleared
+    check(combo.currentIndex() == 1, f"Combo restored to index 1 after cancel (got {combo.currentIndex()})")
+    check(combo.currentData() == offline_path, f"Combo data still matches offline path (got {combo.currentData()})")
+    check(test_settings.value("default_download_directory") == offline_path, f"default_download_directory NOT cleared after cancel (got {test_settings.value('default_download_directory')})")
+    check(test_settings.value("ask_library_each_time", type=bool) is False, "ask_library_each_time NOT reset to True")
+
+    mock_dialog.close()
+
+
+def test_notify_steam_restart_when_steam_running():
+    print("=== 9. Steam running notice when allocating new library index ===")
+    from unittest.mock import patch, MagicMock
+    from core import steam_helpers
+
+    td = str(get_test_dir("steam_running_notice"))
+    mock_steam = os.path.join(td, "Steam")
+    steamapps = os.path.join(mock_steam, "steamapps")
+    os.makedirs(steamapps, exist_ok=True)
+
+    vdf_path = os.path.join(steamapps, "libraryfolders.vdf")
+    with open(vdf_path, "w", encoding="utf-8") as f:
+        f.write('"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"' + mock_steam + '"\n\t}\n}\n')
+
+    new_lib1 = os.path.join(td, "NewLib1")
+    new_lib2 = os.path.join(td, "NewLib2")
+    new_lib3 = os.path.join(td, "NewLib3")
+
+    # Case A: Steam running -> allocating new index calls _notify_steam_restart_for_new_library
+    with patch("core.steam_helpers.is_steam_running", return_value=True):
+        with patch("core.steam_helpers._notify_steam_restart_for_new_library") as mock_notify:
+            idx = steam_helpers.ensure_steam_library(new_lib1, steam_path=mock_steam)
+            check(idx == 1, f"new library allocated index 1 (got {idx})")
+            check(mock_notify.called, "notice called when allocating new index while Steam is running")
+
+            # Re-registering existing library must NOT trigger notice again
+            mock_notify.reset_mock()
+            idx_again = steam_helpers.ensure_steam_library(new_lib1, steam_path=mock_steam)
+            check(idx_again == 1, "re-registering returns existing index 1")
+            check(not mock_notify.called, "notice NOT called for already registered library")
+
+    # Case B: Steam NOT running -> no notice triggered
+    with patch("core.steam_helpers.is_steam_running", return_value=False):
+        with patch("core.steam_helpers._notify_steam_restart_for_new_library") as mock_notify:
+            idx2 = steam_helpers.ensure_steam_library(new_lib2, steam_path=mock_steam)
+            check(idx2 == 2, f"new library allocated index 2 (got {idx2})")
+            check(not mock_notify.called, "notice NOT called when Steam is not running")
+
+    # Case C: notify_if_steam_running=False suppresses notice even if Steam is running
+    with patch("core.steam_helpers.is_steam_running", return_value=True):
+        with patch("core.steam_helpers._notify_steam_restart_for_new_library") as mock_notify:
+            idx3 = steam_helpers.ensure_steam_library(new_lib3, steam_path=mock_steam, notify_if_steam_running=False)
+            check(idx3 == 3, f"new library allocated index 3 (got {idx3})")
+            check(not mock_notify.called, "notice suppressed when notify_if_steam_running=False")
+
+
 def main() -> int:
     test_blacklisted_system_path()
     test_normalize_to_library_root()
@@ -258,6 +350,8 @@ def main() -> int:
     test_dialogs_custom_storage_ui()
     test_steam_library_dialog_custom()
     test_zero_libraries_custom_ui()
+    test_offline_custom_path_cancel_in_settings()
+    test_notify_steam_restart_when_steam_running()
 
     # Clean up test work dir
     if TEST_WORK_DIR.exists():
