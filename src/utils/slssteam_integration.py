@@ -146,6 +146,14 @@ def _is_slssteam_available() -> bool:
     """Check if SLSsteam API pipe exists and has an active reader listening."""
     if sys.platform != "linux":
         return False
+    from utils.helpers import is_arm64
+    if is_arm64():
+        from core.steam_helpers import get_steam_env
+        try:
+            if not get_steam_env().sls_installed():
+                return False
+        except Exception:
+            return False
     return _is_slssteam_pipe_listening()
 
 

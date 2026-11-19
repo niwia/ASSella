@@ -9,7 +9,16 @@ on:
 
 jobs:
   lint-and-validate:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    name: Lint & Validate (${{ matrix.arch }})
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -199,6 +208,8 @@ jobs:
                        test_update_checker \
                        test_sls_lua_config_and_dialogs \
                        test_atom_dlc_and_byparr \
+                       test_arm64_gating \
+                       test_platform_updates \
                        test_steam_updates; do
             echo "::group::$suite"
             QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp \
@@ -212,3 +223,7 @@ jobs:
           # whole runner process instead of failing one command.
           QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp \
             python -u scripts/test_manifest_worker.py close-while-running
+
+      - name: Headless CLI Checks
+        run: |
+          QT_QPA_PLATFORM=offscreen python3 src/main.py --headless --check-updates

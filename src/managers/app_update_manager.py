@@ -66,7 +66,10 @@ def _is_qt_alive(obj) -> bool:
 
 def _resolve_appimage_path() -> str:
     """Resolve the installed AppImage target path, following any symlink."""
-    default_appimage = os.path.expanduser("~/.local/share/ACCELA/ASSella.AppImage")
+    from utils.helpers import is_arm64
+    arm = is_arm64()
+    preferred_name = "ASSella-arm64.AppImage" if arm else "ASSella.AppImage"
+    default_appimage = os.path.expanduser(f"~/.local/share/ACCELA/{preferred_name}")
     appimage_path = os.environ.get("APPIMAGE", "")
     # AppRun/run.sh export APPIMAGE=1; ignore non-path sentinel values.
     if appimage_path and appimage_path != "1" and os.path.exists(appimage_path):
@@ -76,6 +79,10 @@ def _resolve_appimage_path() -> str:
         return os.path.realpath(argv0)
     if os.path.exists(default_appimage):
         return os.path.realpath(default_appimage)
+    if arm:
+        alt_appimage = os.path.expanduser("~/.local/share/ACCELA/ASSella.AppImage")
+        if os.path.exists(alt_appimage):
+            return os.path.realpath(alt_appimage)
     return appimage_path or default_appimage
 
 
@@ -424,57 +431,54 @@ def _tags_match_or_newer(
 
 
 def _extract_release_assets(release_data: Dict[str, Any]) -> Tuple[str, Optional[str], Optional[str]]:
-    """Extract (appimage_url, zsync_url, expected_sha256) from a GitHub/R2 release dict."""
+    """Extract (download_url, zsync_url, expected_sha256) strictly for current platform."""
+    from utils.version import get_expected_platform_assets
+
+    spec = get_expected_platform_assets()
+    target_app_name = spec["app_asset"]
+    target_zsync_name = spec["zsync_asset"]
+
     download_url: Optional[str] = None
     appimage_sha: Optional[str] = None
-    appimage_candidates: list[Tuple[str, Optional[str]]] = []
     zsync_url: Optional[str] = None
 
     for asset in release_data.get("assets", []):
         if not isinstance(asset, dict):
             continue
-        name = str(asset.get("name", ""))
+        name = str(asset.get("name", "")).strip()
         url = str(asset.get("browser_download_url", "") or "").strip()
         if not name or not url:
             continue
-        low = name.lower()
-        if low == "assella.appimage.zsync" or (low.endswith(".appimage.zsync") and not zsync_url):
+
+        if target_zsync_name and name == target_zsync_name:
             zsync_url = url
             continue
-        if low.endswith(".zsync") or low.endswith(".sha256"):
-            continue
-        if low.endswith(".appimage"):
+
+        if name == target_app_name:
             raw_sha = str(asset.get("sha256") or "").strip().lower()
             if not raw_sha:
                 raw_digest = str(asset.get("digest") or "").strip().lower()
                 if raw_digest.startswith("sha256:"):
                     raw_sha = raw_digest[len("sha256:"):].strip()
             sha = raw_sha if re.fullmatch(r"[0-9a-f]{64}", raw_sha) else None
-            if name == "ASSella.AppImage":
-                download_url = url
-                appimage_sha = sha
-                continue
-            appimage_candidates.append((url, sha))
-
-    if not download_url and appimage_candidates:
-        download_url, appimage_sha = appimage_candidates[0]
+            download_url = url
+            appimage_sha = sha
 
     if not download_url:
-        raise RuntimeError("No AppImage asset found in the release.")
+        raise RuntimeError(f"Required release asset '{target_app_name}' not found.")
 
-    if not zsync_url:
-        zsync_url = f"{download_url}.zsync"
+    if target_zsync_name in spec.get("required_assets", ()) and not zsync_url:
+        raise RuntimeError(f"Required release zsync asset '{target_zsync_name}' not found.")
 
     return download_url, zsync_url, appimage_sha
 
 
 def _resolve_sha256_sidecar(release_data: Dict[str, Any], download_url: str) -> Tuple[Optional[str], bool]:
-    """Return ``(sidecar_url, advertised)`` for the selected release AppImage asset."""
+    """Return ``(sidecar_url, advertised)`` strictly for the selected release AppImage asset."""
     if not download_url:
         return None, False
     dl_basename = download_url.rstrip("/").rsplit("/", 1)[-1].lower()
-    preferred = f"{dl_basename}.sha256" if dl_basename else "assella.appimage.sha256"
-    fallback_sha_url: Optional[str] = None
+    preferred = f"{dl_basename}.sha256"
     for asset in release_data.get("assets", []):
         if not isinstance(asset, dict):
             continue
@@ -484,11 +488,7 @@ def _resolve_sha256_sidecar(release_data: Dict[str, Any], download_url: str) -> 
             continue
         if name == preferred:
             return url, True
-        if name == "assella.appimage.sha256" and fallback_sha_url is None:
-            fallback_sha_url = url
-    if fallback_sha_url:
-        return fallback_sha_url, True
-    return f"{download_url}.sha256", False
+    return None, False
 
 
 def _fetch_github_release_data(tag: str, channel: Optional[str] = None) -> Dict[str, Any]:
@@ -517,8 +517,7 @@ def _fetch_github_release_data(tag: str, channel: Optional[str] = None) -> Dict[
                     with_appimage.append(r)
                 except RuntimeError:
                     pass
-            if with_appimage:
-                eligible = with_appimage
+            eligible = with_appimage
             if not eligible:
                 raise RuntimeError(f"No GitHub release found for channel '{norm_channel}'.")
             return max(
@@ -556,6 +555,8 @@ def _fetch_github_release_data(tag: str, channel: Optional[str] = None) -> Dict[
                 f"GitHub release '{data.get('tag_name') or tag}' belongs to channel "
                 f"'{actual_channel or 'unknown'}', expected '{norm_channel}'."
             )
+    if isinstance(data, dict):
+        _extract_release_assets(data)
     return data
 
 
@@ -604,6 +605,9 @@ def _fetch_r2_release_data(
             raise RuntimeError(
                 f"R2 mirror currently holds {remote_tag or 'unknown'}, older than requested {requested_tag}."
             )
+
+    if isinstance(data, dict):
+        _extract_release_assets(data)
 
     return data
 
@@ -868,11 +872,14 @@ class AppUpdateManager(QObject):
                             _invoke_progress("setLabelText", Q_ARG(str, "Delta update via AppImageUpdate..."))
                         target = dest_dir / f"{appimage_name}.autoupdate"
                         shutil.copy2(appimage_path, target)
+                        from utils.version import get_expected_platform_assets
+                        spec = get_expected_platform_assets()
+                        zsync_name = spec.get("zsync_asset") or "ASSella.AppImage.zsync"
                         cmd = [
                             updater,
                             "-O",
                             "-u",
-                            f"gh-releases-zsync|niwia|ASSella|{target_tag}|ASSella.AppImage.zsync",
+                            f"gh-releases-zsync|niwia|ASSella|{target_tag}|{zsync_name}",
                             str(target),
                         ]
                         rc, was_cancelled = _run_delta_subprocess(

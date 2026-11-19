@@ -1,6 +1,9 @@
 import json
 import logging
+import os
+import platform
 import re
+import sys
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -419,8 +422,107 @@ def _classify_release_entry(release: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _parse_release_candidates(releases: List[Dict[str, Any]], channel: str) -> List[Tuple[str, str]]:
-    """Filter release entries strictly to the requested channel and require a real AppImage asset."""
+PLATFORM_ASSET_SPECS: Dict[str, Dict[str, Any]] = {
+    "linux-x86_64": {
+        "app_asset": "ASSella.AppImage",
+        "zsync_asset": "ASSella.AppImage.zsync",
+        "required_assets": ("ASSella.AppImage",),
+    },
+    "linux-aarch64": {
+        "app_asset": "ASSella-arm64.AppImage",
+        "zsync_asset": "ASSella-arm64.AppImage.zsync",
+        "required_assets": ("ASSella-arm64.AppImage", "ASSella-arm64.AppImage.zsync"),
+    },
+    "win32-x64": {
+        "app_asset": "ASSella-windows-x64.zip",
+        "zsync_asset": None,
+        "required_assets": ("ASSella-windows-x64.zip",),
+    },
+}
+
+
+def get_platform_key(target_platform: Optional[str] = None, target_machine: Optional[str] = None) -> str:
+    """Return the normalized platform-architecture key (e.g., 'linux-x86_64', 'linux-aarch64')."""
+    plat = (target_platform or sys.platform).strip().lower()
+    mach = (target_machine or platform.machine()).strip().lower()
+
+    if plat.startswith("linux"):
+        is_arm = False
+        if target_machine is None and os.environ.get("ASSELLA_FORCE_ARM64") in ("1", "true", "True"):
+            is_arm = True
+        elif mach in ("aarch64", "arm64", "armv8b", "armv8l"):
+            is_arm = True
+        return "linux-aarch64" if is_arm else "linux-x86_64"
+    elif plat == "win32":
+        return "win32-x64"
+    return f"{plat}-{mach}"
+
+
+def get_expected_platform_assets(
+    target_platform: Optional[str] = None,
+    target_machine: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return the expected asset specification for the specified or current platform."""
+    key = get_platform_key(target_platform, target_machine)
+    return PLATFORM_ASSET_SPECS.get(key, PLATFORM_ASSET_SPECS["linux-x86_64"])
+
+
+def release_has_matching_assets(
+    release_dict: Dict[str, Any],
+    target_platform: Optional[str] = None,
+    target_machine: Optional[str] = None,
+) -> bool:
+    """Check if a release dictionary contains the strictly required assets for the platform.
+
+    On Linux x86_64: requires 'ASSella.AppImage' (and must NOT treat 'ASSella-arm64.AppImage' as a match).
+    On Linux aarch64: requires BOTH 'ASSella-arm64.AppImage' AND 'ASSella-arm64.AppImage.zsync'.
+    """
+    if not isinstance(release_dict, dict):
+        return False
+
+    spec = get_expected_platform_assets(target_platform, target_machine)
+    plat_key = get_platform_key(target_platform, target_machine)
+
+    assets = release_dict.get("assets", [])
+    if not isinstance(assets, list):
+        return False
+
+    available_names = {
+        str(a.get("name", "")).strip()
+        for a in assets
+        if isinstance(a, dict) and a.get("name")
+    }
+
+    if plat_key == "linux-aarch64":
+        return "ASSella-arm64.AppImage" in available_names and "ASSella-arm64.AppImage.zsync" in available_names
+
+    if plat_key == "linux-x86_64":
+        # Requires ASSella.AppImage or non-ARM AppImage; must NOT match ARM64 AppImage
+        for name in available_names:
+            low = name.lower()
+            if low.endswith(".zsync") or low.endswith(".sha256"):
+                continue
+            if name == "ASSella.AppImage" or (
+                low.endswith(".appimage") and not low.endswith(("-arm64.appimage", "-aarch64.appimage"))
+            ):
+                return True
+        return False
+
+    required = spec.get("required_assets", ())
+    for req in required:
+        if req not in available_names:
+            return False
+
+    return True
+
+
+def _parse_release_candidates(
+    releases: List[Dict[str, Any]],
+    channel: str,
+    target_platform: Optional[str] = None,
+    target_machine: Optional[str] = None,
+) -> List[Tuple[str, str]]:
+    """Filter release entries strictly to the requested channel and require platform-matching assets."""
     norm_channel = str(channel or "stable").strip().lower()
     if norm_channel in ("main", "master", ""):
         norm_channel = "stable"
@@ -437,16 +539,10 @@ def _parse_release_candidates(releases: List[Dict[str, Any]], channel: str) -> L
         if release_channel != norm_channel:
             continue
 
-        assets = [a.get("name", "") for a in r.get("assets", []) if isinstance(a, dict)]
-        has_appimage = any(
-            a.lower().endswith(".appimage")
-            and not a.lower().endswith(".zsync")
-            and not a.lower().endswith(".sha256")
-            for a in assets
-        )
+        if not release_has_matching_assets(r, target_platform=target_platform, target_machine=target_machine):
+            continue
 
-        if has_appimage:
-            candidates.append((extract_semver(tag), _release_timestamp(r) or _release_date(r)))
+        candidates.append((extract_semver(tag), _release_timestamp(r) or _release_date(r)))
     return candidates
 
 
@@ -574,7 +670,8 @@ def check_for_updates(
 
     # 3. Fallback check: raw version file on GitHub branch. Only reached in
     #    'auto'/'github' modes when releases endpoints errored/failed to respond.
-    if not api_responded and server in ("auto", "github"):
+    #    Skipped on ARM64 as raw branch versions cannot guarantee ARM64 asset availability.
+    if not api_responded and server in ("auto", "github") and get_platform_key() != "linux-aarch64":
         try:
             branch = channel if channel in ("beta", "canary") else "main"
             url = f"https://raw.githubusercontent.com/niwia/ASSella/{branch}/src/res/version"

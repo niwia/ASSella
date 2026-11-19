@@ -276,14 +276,25 @@ detect_distro_family() {
 
 check_fuse_status() {
     FUSE_INSTALLED=false
+    local arch="x86_64"
+    if command -v uname &>/dev/null; then
+        arch=$(uname -m 2>/dev/null || echo "x86_64")
+    fi
+    if [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
+        # ARM64 AppImage is built with static FUSE3 runtime
+        FUSE_INSTALLED=true
+        return 0
+    fi
+
     if command -v ldconfig &>/dev/null; then
-        if ldconfig -p 2>/dev/null | grep -q "libfuse.so.2"; then
+        if ldconfig -p 2>/dev/null | grep -E -q "libfuse\.so\.2|libfuse3\.so\.3"; then
             FUSE_INSTALLED=true
+            return 0
         fi
     fi
 
     if [ "$FUSE_INSTALLED" = false ]; then
-        if [ -f /usr/lib/libfuse.so.2 ] || [ -f /lib/libfuse.so.2 ] || [ -f /usr/lib64/libfuse.so.2 ] || [ -f /lib64/libfuse.so.2 ] || [ -f /lib/x86_64-linux-gnu/libfuse.so.2 ]; then
+        if [ -f /usr/lib/libfuse.so.2 ] || [ -f /lib/libfuse.so.2 ] || [ -f /usr/lib64/libfuse.so.2 ] || [ -f /lib64/libfuse.so.2 ] || [ -f /lib/x86_64-linux-gnu/libfuse.so.2 ] || [ -f /usr/lib/libfuse3.so.3 ] || [ -f /usr/lib64/libfuse3.so.3 ] || [ -f /lib64/libfuse3.so.3 ] || [ -f /lib/x86_64-linux-gnu/libfuse3.so.3 ]; then
             FUSE_INSTALLED=true
         fi
     fi
@@ -577,6 +588,11 @@ _parse_release_manifest_json() {
     local strict_mode="${3:-}"
     [ -z "$rel_json" ] && return 1
 
+    local host_arch="x86_64"
+    if command -v uname &>/dev/null; then
+        host_arch=$(uname -m 2>/dev/null || echo "x86_64")
+    fi
+
     if command -v python3 &>/dev/null; then
         local parsed
         parsed=$(echo "$rel_json" | python3 -c '
@@ -585,6 +601,8 @@ from datetime import datetime, timezone
 
 target_channel = (sys.argv[1] if len(sys.argv) > 1 else "beta").strip().lower()
 strict_mode = (sys.argv[2] if len(sys.argv) > 2 else "").strip().lower()
+host_arch = (sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "x86_64").strip().lower()
+is_arm = host_arch in ("aarch64", "arm64", "armv8b", "armv8l")
 if target_channel in ("main", "master", ""):
     target_channel = "stable"
 
@@ -691,18 +709,17 @@ try:
             continue
 
         assets = [a for a in r.get("assets", []) if isinstance(a, dict)]
-        app_asset = None
-        for a in assets:
-            name = str(a.get("name", ""))
-            dl_url = str(a.get("browser_download_url", ""))
-            if (
-                dl_url
-                and name.lower().endswith(".appimage")
-                and not name.lower().endswith(".zsync")
-                and not name.lower().endswith(".sha256")
-            ):
-                app_asset = a
-                break
+        asset_names = {str(a.get("name", "")).strip() for a in assets}
+
+        if is_arm:
+            if "ASSella-arm64.AppImage" not in asset_names or "ASSella-arm64.AppImage.zsync" not in asset_names:
+                continue
+            app_asset = next((a for a in assets if str(a.get("name", "")).strip() == "ASSella-arm64.AppImage"), None)
+        else:
+            if "ASSella.AppImage" not in asset_names:
+                continue
+            app_asset = next((a for a in assets if str(a.get("name", "")).strip() == "ASSella.AppImage"), None)
+
         if app_asset is None:
             continue
 
@@ -724,20 +741,6 @@ try:
             if aurl and aname == exact_sha_name:
                 sha_url = aurl
                 break
-        if not sha_url:
-            for a in assets:
-                aname = str(a.get("name", "")).lower()
-                aurl = str(a.get("browser_download_url", ""))
-                if aurl and aname.endswith(".appimage.sha256"):
-                    sha_url = aurl
-                    break
-        if not sha_url:
-            for a in assets:
-                aname = str(a.get("name", "")).lower()
-                aurl = str(a.get("browser_download_url", ""))
-                if aurl and aname.endswith(".sha256"):
-                    sha_url = aurl
-                    break
 
         sv = semver_key(tag, prerelease=bool(r.get("prerelease", False)))
         ts = ts_key(r)
@@ -756,7 +759,7 @@ try:
         sys.exit(0)
 except Exception:
     sys.exit(1)
-' "$channel" "$strict_mode" 2>/dev/null || true)
+' "$channel" "$strict_mode" "$host_arch" 2>/dev/null || true)
         if [ -n "$parsed" ]; then
             local tag_name dl_url sha_val sha_url ts_val
             tag_name=$(printf '%s\n' "$parsed" | sed -n '1p')
@@ -773,8 +776,10 @@ except Exception:
         fi
     elif command -v jq &>/dev/null; then
         local parsed
-        parsed=$(printf '%s' "$rel_json" | jq -r --arg target "${channel:-beta}" '
+        parsed=$(printf '%s' "$rel_json" | jq -r --arg target "${channel:-beta}" --arg arch "$host_arch" '
             (if ($target | ascii_downcase) | (. == "main" or . == "master" or . == "") then "stable" else ($target | ascii_downcase) end) as $tc
+            | ($arch | ascii_downcase) as $a
+            | ($a == "aarch64" or $a == "arm64" or $a == "armv8b" or $a == "armv8l") as $is_arm
             | def norm_branch:
                 (. // "" | ascii_downcase | gsub("^refs/heads/"; "")) as $b
                 | if ($b == "main" or $b == "master") then "main"
@@ -828,8 +833,10 @@ except Exception:
                 | ([ $all_assets[]
                      | select(type == "object")
                      | (.name // "") as $n
+                     | ($n | ascii_downcase) as $nl
                      | (.browser_download_url // "") as $u
-                     | select(($u != "") and ($n | ascii_downcase | (endswith(".appimage") and (endswith(".zsync") | not) and (endswith(".sha256") | not))))
+                     | select(($u != "") and ($nl | (endswith(".appimage") and (endswith(".zsync") | not) and (endswith(".sha256") | not))) and (if $is_arm then ($nl | (endswith("-arm64.appimage") or endswith("-aarch64.appimage"))) else ($nl | (endswith("-arm64.appimage") | not) and (endswith("-aarch64.appimage") | not)) end))
+                     | select(($is_arm == false) or ([ $all_assets[] | select(type == "object") | ((.name // "") | ascii_downcase) | select(. == ($nl + ".zsync")) ] | length > 0))
                      | (((.sha256 // "") | ascii_downcase) as $s1
                         | ((.digest // "") | ascii_downcase | sub("^sha256:"; "")) as $s2
                         | (if ($s1 | test("^[0-9a-f]{64}$")) then $s1
@@ -840,8 +847,6 @@ except Exception:
                 | select($asset != null)
                 | (($asset.name | ascii_downcase) as $an
                    | (([ $all_assets[] | select(type == "object") | select(((.name // "" | ascii_downcase) == ($an + ".sha256")) and ((.browser_download_url // "") != "")) | .browser_download_url ][0])
-                      // ([ $all_assets[] | select(type == "object") | select(((.name // "" | ascii_downcase) | endswith(".appimage.sha256")) and ((.browser_download_url // "") != "")) | .browser_download_url ][0])
-                      // ([ $all_assets[] | select(type == "object") | select(((.name // "" | ascii_downcase) | endswith(".sha256")) and ((.browser_download_url // "") != "")) | .browser_download_url ][0])
                       // "")) as $sha_url
                 | ($r.tag_name | semver_tuple($r.prerelease // false)) as $sv
                 | { ts: ($r.published_at // $r.created_at // ""), sv_num: $sv[0:5], clean: $sv[5], tag: $r.tag_name, url: $asset.url, sha: $asset.sha, sha_url: $sha_url }

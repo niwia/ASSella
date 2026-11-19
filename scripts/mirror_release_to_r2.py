@@ -464,6 +464,15 @@ def collect_local_assets(directory: Path, tag: str) -> List[LocalAsset]:
         f"ASSella-{tag}-linux-source.zip",
         f"ASSella-{tag}-linux-source.zip.sha256",
     ]
+    arm64_names = [
+        "ASSella-arm64.AppImage",
+        "ASSella-arm64.AppImage.zsync",
+        "ASSella-arm64.AppImage.sha256",
+        "ASSella-arm64.AppImage.zsync.sha256",
+    ]
+    if any((directory / name).is_file() for name in arm64_names):
+        expected_names.extend(arm64_names)
+
     missing = [name for name in expected_names if not (directory / name).is_file()]
     if missing:
         raise FileNotFoundError(
@@ -573,7 +582,15 @@ def build_channel_manifest(
                 "sha256": asset.sha256,
                 "browser_download_url": f"{base}/{asset_key(channel, tag, asset.name)}",
             }
-            for asset in sorted(assets, key=lambda a: (0 if a.name == "ASSella.AppImage" else 1, a.name))
+            for asset in sorted(
+                assets,
+                key=lambda a: (
+                    0 if a.name == "ASSella.AppImage"
+                    else 1 if a.name == "ASSella-arm64.AppImage"
+                    else 2,
+                    a.name,
+                ),
+            )
         ],
     }
     if target_commitish:

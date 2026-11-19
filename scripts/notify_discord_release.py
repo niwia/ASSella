@@ -115,6 +115,7 @@ def build_payload(
 
     release_url = f"https://github.com/{repo}/releases/tag/{tag}"
     download_appimage = f"https://github.com/{repo}/releases/download/{tag}/ASSella.AppImage"
+    download_arm64 = f"https://github.com/{repo}/releases/download/{tag}/ASSella-arm64.AppImage"
     download_zsync = f"https://github.com/{repo}/releases/download/{tag}/ASSella.AppImage.zsync"
     avatar_url = f"https://raw.githubusercontent.com/{repo}/main/src/res/logo/icon.png"
 
@@ -130,7 +131,8 @@ def build_payload(
             {
                 "name": "📥 Downloads",
                 "value": (
-                    f"• [ASSella.AppImage]({download_appimage})\n"
+                    f"• [ASSella.AppImage (x86_64)]({download_appimage})\n"
+                    f"• [ASSella-arm64.AppImage (ARM64)]({download_arm64})\n"
                     f"• [Delta Update (.zsync)]({download_zsync})"
                 ),
                 "inline": False,

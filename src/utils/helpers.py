@@ -135,13 +135,21 @@ def get_dotnet_env() -> dict[str, str]:
     env.pop("LD_LIBRARY_PATH", None)
     env.pop("LD_PRELOAD", None)
 
-    # 2. Find local or system .dotnet directory
+    # 2. Check bundled .dotnet inside AppImage / portable app directory first
+    from utils.paths import Paths
+
+    bundled_dotnet = Paths.BASE_DIR.parent / ".dotnet"
+    if not (bundled_dotnet / "dotnet").exists():
+        bundled_dotnet = Paths.BASE_DIR / ".dotnet"
+
     local_dotnet = Path.home() / ".dotnet"
     system_dotnet = Path("/usr/share/dotnet")
     usr_lib_dotnet = Path("/usr/lib/dotnet")
 
     dotnet_dir = None
-    if local_dotnet.exists():
+    if (bundled_dotnet / ("dotnet.exe" if sys.platform == "win32" else "dotnet")).exists():
+        dotnet_dir = bundled_dotnet
+    elif local_dotnet.exists():
         dotnet_dir = local_dotnet
     elif system_dotnet.exists():
         dotnet_dir = system_dotnet
@@ -191,6 +199,17 @@ def get_dotnet_path() -> str | None:
     Prefers user-local and Program Files locations, then PATH.
     """
     candidates = []
+
+    # 1. Bundled .dotnet inside AppImage / app directory
+    try:
+        from utils.paths import Paths
+
+        for b in [Paths.BASE_DIR.parent / ".dotnet", Paths.BASE_DIR / ".dotnet"]:
+            b_exe = b / ("dotnet.exe" if sys.platform == "win32" else "dotnet")
+            if b_exe.is_file() and os.access(b_exe, os.X_OK):
+                candidates.append(str(b_exe))
+    except Exception:
+        pass
 
     system_dotnet = shutil.which("dotnet")
     logger.debug(f"System dotnet from PATH: {system_dotnet}")
@@ -332,16 +351,20 @@ def _install_dotnet_9_linux() -> bool:
         os.chmod(install_script_path, 0o755)
 
         logger.info("Running .NET 9 installer script...")
+        install_cmd = [
+            str(install_script_path),
+            "--channel",
+            "9.0",
+            "--runtime",
+            "dotnet",
+            "--install-dir",
+            str(dotnet_root),
+        ]
+        if is_arm64():
+            install_cmd.extend(["--architecture", "arm64"])
+
         install_result = subprocess.run(
-            [
-                str(install_script_path),
-                "--channel",
-                "9.0",
-                "--runtime",
-                "dotnet",
-                "--install-dir",
-                str(dotnet_root),
-            ],
+            install_cmd,
             capture_output=True,
             text=True,
             timeout=300,
