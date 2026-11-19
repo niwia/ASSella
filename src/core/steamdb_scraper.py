@@ -23,7 +23,7 @@ import concurrent.futures
 import email.utils
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union
 
 import requests
 
@@ -641,6 +641,8 @@ class SteamDBScraper:
 
     def __init__(self, solver_url: Optional[str] = None):
         self.solver_url = solver_url or ByparrManager.get_service_url()
+        self.last_cf_challenged = False
+        self.last_failure_reason = ""
 
     def fetch_via_fast_race(self, url: str, timeout_seconds: float = 4.0, extra_headers: Optional[Dict[str, str]] = None) -> str:
         """
@@ -658,22 +660,39 @@ class SteamDBScraper:
         sticky = str(s.value("steamdb/fast_profile", "", type=str) or "") if s else ""
         profiles = sorted(FAST_RACE_PROFILES, key=lambda p: 0 if p["name"] == sticky else 1)[:3]
 
+        # Use cached cf_clearance cookie if fresh (< 2 hours)
+        cookies = None
+        if s:
+            cf_val = s.value("steamdb/cf_clearance", "", type=str)
+            cf_ts = s.value("steamdb/clearance_timestamp", 0, type=int)
+            if cf_val and (time.time() - cf_ts < 7200):
+                cookies = {"cf_clearance": cf_val}
+
+        challenge_seen = False
         for profile in profiles:
             try:
                 _SteamDBGovernor.acquire(url)
             except SteamDBRateLimited as e:
                 logger.info(f"[SteamDB] {e}; skipping {url}")
+                self.last_failure_reason = "rate_limited"
                 return ""
             try:
                 headers = profile["headers"].copy()
                 if extra_headers:
                     headers.update(extra_headers)
-                r = cffi_requests.get(url, impersonate=profile["impersonate"], headers=headers, timeout=timeout_seconds)
+                r = cffi_requests.get(
+                    url,
+                    impersonate=profile["impersonate"],
+                    headers=headers,
+                    cookies=cookies,
+                    timeout=timeout_seconds,
+                )
             except Exception as e:
                 logger.debug(f"[SteamDB] Fast path via '{profile['name']}' failed for {url}: {e}")
                 continue
             if _looks_rate_limited(r.status_code, r.text):
                 _SteamDBGovernor.note_rate_limited(f"HTTP {r.status_code}")
+                self.last_failure_reason = "rate_limited"
                 return ""
             cf_mitigated = r.headers.get("Cf-Mitigated", "").lower()
             is_challenge = cf_mitigated == "challenge" or "challenges.cloudflare.com" in r.text
@@ -683,9 +702,13 @@ class SteamDBScraper:
                 logger.info(f"[SteamDB] Fast path via '{profile['name']}' for {url}")
                 return r.text
             if is_challenge:
-                # A Cloudflare challenge is per-IP; other profiles will get it too.
-                logger.info(f"[SteamDB] Cloudflare challenge on fast path for {url}")
-                return ""
+                challenge_seen = True
+                logger.info(f"[SteamDB] Cloudflare challenge on fast path via '{profile['name']}' for {url}")
+                # Do not immediately abort; different TLS fingerprints / UAs may pass cleanly
+                continue
+
+        if challenge_seen:
+            self.last_cf_challenged = True
         return ""
 
     def fetch_via_byparr(self, url: str, timeout_seconds: int = 60) -> str:
@@ -758,6 +781,8 @@ class SteamDBScraper:
         return html
 
     def _fetch_rendered_uncached(self, url: str, timeout_seconds: int, allow_fast_path: bool, extra_headers: Optional[Dict[str, str]]) -> str:
+        self.last_cf_challenged = False
+        self.last_failure_reason = ""
 
         # 1. Fast-path multi-profile race
         if allow_fast_path and cffi_requests:
@@ -772,7 +797,19 @@ class SteamDBScraper:
 
         # 2. Byparr fallback (if available)
         if ByparrManager.is_available():
-            return self.fetch_via_byparr(url, timeout_seconds=timeout_seconds)
+            html = self.fetch_via_byparr(url, timeout_seconds=timeout_seconds)
+            if html:
+                return html
+            self.last_failure_reason = "byparr_failed"
+            return ""
+
+        if self.last_cf_challenged:
+            if ByparrManager.find_byparr_dir() and not ByparrManager.is_local_enabled():
+                self.last_failure_reason = "cf_challenge_byparr_disabled"
+            else:
+                self.last_failure_reason = "cf_challenge_no_byparr"
+        elif not self.last_failure_reason:
+            self.last_failure_reason = "fast_path_failed"
 
         return ""
 
@@ -987,15 +1024,26 @@ class SteamDBScraper:
         logger.info(f"[SteamDB] Parsed {len(results)} patchnotes entries for App {appid}")
         return results
 
-    def get_patch_depots(self, buildid_or_url: str) -> Dict[str, Dict[str, str]]:
+    def get_patch_depots(self, buildid_or_url: str, appid: Optional[Union[int, str]] = None) -> Dict[str, Dict[str, str]]:
         """
         Scrapes https://steamdb.info/patchnotes/<buildid>/
         Returns dictionary mapping depot_id -> {depot_id, manifest_id, old_manifest_id}
         """
-        if str(buildid_or_url).startswith("http"):
-            url = str(buildid_or_url)
+        bid_str = str(buildid_or_url).strip()
+        is_url = bid_str.startswith("http")
+        if not is_url:
+            # Check local persistent cache first before making network calls
+            try:
+                aid_int = int(appid) if appid is not None and str(appid).isdigit() else None
+                cached = SteamDBBuildsCache().get_build_depots(bid_str, appid=aid_int)
+                if cached:
+                    logger.info(f"[SteamDB] Retrieved {len(cached)} depots for build {bid_str} from cache.")
+                    return cached
+            except Exception as e:
+                logger.debug(f"[SteamDB] Cache check for build {bid_str} skipped: {e}")
+            url = f"{STEAMDB_BASE_URL}/patchnotes/{bid_str.strip('/')}/"
         else:
-            url = f"{STEAMDB_BASE_URL}/patchnotes/{str(buildid_or_url).strip('/')}/"
+            url = bid_str
 
         html = self.fetch_rendered_html(url)
         if not html:
@@ -1037,6 +1085,11 @@ class SteamDBScraper:
                     }
 
         logger.info(f"[SteamDB] Extracted {len(depots)} depots for {url}")
+        if depots and not is_url and appid is not None and str(appid).isdigit():
+            try:
+                SteamDBBuildsCache().update_build_depots(int(appid), bid_str, depots)
+            except Exception as e:
+                logger.debug(f"[SteamDB] Could not update cache with depots for build {bid_str}: {e}")
         return depots
 
     def get_app_depots(self, appid: str | int) -> Dict[str, Dict[str, Any]]:
@@ -1328,6 +1381,50 @@ class SteamDBBuildsCache:
         except Exception as e:
             logger.error(f"[SteamDB Cache] Failed to save builds for {appid}: {e}")
 
+    def get_build_depots(self, buildid: str, appid: Optional[Union[int, str]] = None) -> Optional[Dict[str, Any]]:
+        """Retrieves cached depot information for a specific build ID."""
+        target_bid = str(buildid).strip()
+        if not target_bid:
+            return None
+
+        # Fast path: check specific app if provided
+        if appid is not None and str(appid).isdigit():
+            try:
+                builds = self.get_builds(int(appid))
+                for b in builds:
+                    if str(b.get("buildid")) == target_bid:
+                        depots = b.get("depots")
+                        if depots:
+                            return depots
+            except Exception as e:
+                logger.debug(f"[SteamDB Cache] Failed to lookup build {target_bid} for app {appid}: {e}")
+
+        # Fallback: scan cached builds in db
+        try:
+            with self._conn_lock, sqlite3.connect(str(self.db_path)) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT builds_blob FROM builds")
+                for row in cur.fetchall():
+                    if not row or not row[0]:
+                        continue
+                    raw_bytes = row[0]
+                    if self.dctx:
+                        try:
+                            decompressed = self.dctx.decompress(raw_bytes)
+                        except Exception:
+                            decompressed = raw_bytes
+                    else:
+                        decompressed = raw_bytes
+                    builds = json.loads(decompressed.decode("utf-8"))
+                    for b in builds:
+                        if str(b.get("buildid")) == target_bid:
+                            depots = b.get("depots")
+                            if depots:
+                                return depots
+        except Exception as e:
+            logger.debug(f"[SteamDB Cache] Failed to lookup build {target_bid}: {e}")
+        return None
+
     def update_build_depots(self, appid: int, buildid: str, depots: Dict[str, Any]):
         """Updates depot information for a cached build entry."""
         builds = self.get_builds(appid)
@@ -1337,6 +1434,7 @@ class SteamDBBuildsCache:
                 b["depots"] = depots
                 updated = True
                 break
-        if updated:
-            self.save_builds(appid, builds)
+        if not updated:
+            builds.append({"buildid": str(buildid), "depots": depots})
+        self.save_builds(appid, builds)
 

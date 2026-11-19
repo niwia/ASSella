@@ -84,10 +84,44 @@ def test_usable_manifests_guard():
     print("  [ok] _has_usable_manifests correctly rejects empty/blank manifest mappings and accepts valid IDs")
 
 
+def test_build_selection_dialog_getters():
+    from ui.dialogs.build_selection_dialog import BuildSelectionDialog
+    dlg = BuildSelectionDialog.__new__(BuildSelectionDialog)
+    dlg._selected_build_id = "25058755"
+    dlg._selected_patch_depots = {"4467921": {"depot_id": "4467921", "manifest_id": "7056134143981021783"}}
+    assert dlg.get_selected_build_id() == "25058755"
+    assert dlg.get_patch_depots() == {"4467921": {"depot_id": "4467921", "manifest_id": "7056134143981021783"}}
+    assert dlg.get_selected_build() == ("25058755", {"4467921": {"depot_id": "4467921", "manifest_id": "7056134143981021783"}})
+    print("  [ok] BuildSelectionDialog provides get_selected_build_id, get_patch_depots, and get_selected_build")
+
+
+def test_steamdb_cache_get_build_depots():
+    from core.steamdb_scraper import SteamDBBuildsCache
+    cache = SteamDBBuildsCache()
+    assert hasattr(cache, "get_build_depots")
+    assert hasattr(cache, "update_build_depots")
+
+    # Verify non-existent build returns None
+    assert cache.get_build_depots("99999999999") is None
+
+    # Verify cache update & retrieval
+    cache.update_build_depots(9999999, "888888", {"123": {"manifest_id": "456"}})
+    depots_by_app = cache.get_build_depots("888888", appid=9999999)
+    assert depots_by_app is not None
+    assert depots_by_app["123"]["manifest_id"] == "456"
+
+    depots_global = cache.get_build_depots("888888")
+    assert depots_global is not None
+    assert depots_global["123"]["manifest_id"] == "456"
+    print("  [ok] SteamDBBuildsCache correctly stores and retrieves build depots with and without appid")
+
+
 if __name__ == "__main__":
     print("=== Testing Build Selection & Pinning Invariants ===")
     test_build_pinning_with_manifest_override()
     test_build_pinning_different_build_id()
     test_build_unpinned_when_current_and_no_overrides()
     test_usable_manifests_guard()
+    test_build_selection_dialog_getters()
+    test_steamdb_cache_get_build_depots()
     print("ALL BUILD SELECTION TESTS PASSED")

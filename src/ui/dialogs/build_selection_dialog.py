@@ -70,7 +70,7 @@ class BuildSelectionDialog(QDialog):
 
     builds_loaded = pyqtSignal(list)
     builds_error = pyqtSignal(str)
-    depots_resolved = pyqtSignal(str, dict)
+    depots_resolved = pyqtSignal(str, dict, str)
 
     def __init__(
         self,
@@ -560,18 +560,68 @@ class BuildSelectionDialog(QDialog):
         def _depot_worker():
             try:
                 from core.steamdb_scraper import SteamDBScraper
-                depots = SteamDBScraper().get_patch_depots(build_id)
-                self.depots_resolved.emit(build_id, depots or {})
+                scraper = SteamDBScraper()
+                depots = scraper.get_patch_depots(build_id, appid=self.app_id)
+                reason = getattr(scraper, "last_failure_reason", "")
+                if not sip.isdeleted(self):
+                    self.depots_resolved.emit(build_id, depots or {}, reason)
             except Exception as e:
                 logger.error(f"Error fetching depots for build {build_id}: {e}")
-                self.depots_resolved.emit(build_id, {})
+                if not sip.isdeleted(self):
+                    self.depots_resolved.emit(build_id, {}, "exception")
 
         threading.Thread(target=_depot_worker, daemon=True).start()
 
-    def _on_depots_resolved(self, build_id: str, depots: dict):
+    def _on_depots_resolved(self, build_id: str, depots: dict, reason: str = ""):
         if not _has_usable_manifests(depots):
             self.select_btn.setEnabled(True)
             self.select_btn.setText(f"Use Build {build_id}")
+
+            from core.steamdb_scraper import ByparrManager
+            has_local_byparr = ByparrManager.find_byparr_dir() is not None
+            is_local_enabled = ByparrManager.is_local_enabled()
+
+            if reason == "cf_challenge_byparr_disabled" or (has_local_byparr and not is_local_enabled and "challenge" in reason):
+                res = ThemedMessageBox.question(
+                    self,
+                    "Cloudflare Challenge • Byparr Disabled",
+                    f"Could not automatically resolve depot manifests for Build {build_id} from SteamDB "
+                    "because SteamDB required Cloudflare Turnstile verification.\n\n"
+                    "Byparr (Cloudflare Solver) is installed on your system but currently disabled in Settings.\n\n"
+                    "Would you like to enable Byparr now to solve the verification and retrieve the manifests?",
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.Yes,
+                )
+                if res == ThemedMessageBox.StandardButton.Yes:
+                    s = get_settings()
+                    s.setValue("byparr_url", "")
+                    s.setValue("byparr_auth_header", "")
+                    s.setValue("byparr_enabled", True)
+                    s.setValue("disable_steamdb_scraping", False)
+                    logger.info("[BuildSelection] Enabled Byparr per user confirmation; retrying build resolve.")
+                    threading.Thread(target=ByparrManager.ensure_running, daemon=True).start()
+                    self._on_select_clicked()
+                    return
+                else:
+                    self._open_manual_with_build(build_id)
+                    return
+
+            if reason == "cf_challenge_no_byparr" or (not has_local_byparr and "challenge" in reason):
+                res = ThemedMessageBox.question(
+                    self,
+                    "Cloudflare Verification Required",
+                    f"Could not automatically resolve depot manifests for Build {build_id} from SteamDB "
+                    "because SteamDB presented a Cloudflare verification challenge.\n\n"
+                    "Byparr solver is not installed. You can install it in Settings → AT0-M tab to resolve "
+                    "historical builds automatically, or enter the manifest ID manually.\n\n"
+                    "Would you like to manually enter the manifest ID for this build?",
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.Yes,
+                )
+                if res == ThemedMessageBox.StandardButton.Yes:
+                    self._open_manual_with_build(build_id)
+                return
+
             res = ThemedMessageBox.question(
                 self,
                 "No Manifests Found",
@@ -616,6 +666,14 @@ class BuildSelectionDialog(QDialog):
     def _on_manual_clicked(self):
         active_bid = self._selected_build_id or self.current_build_id
         self._open_manual_with_build(active_bid)
+
+    def get_selected_build_id(self) -> str:
+        """Return selected build ID string."""
+        return self._selected_build_id
+
+    def get_patch_depots(self) -> Dict[str, Any]:
+        """Return selected patch depots dictionary."""
+        return self._selected_patch_depots
 
     def get_selected_build(self) -> Tuple[str, Dict[str, Any]]:
         """Return (selected_build_id, patch_depots_dict)."""
