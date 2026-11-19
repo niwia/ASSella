@@ -10,13 +10,16 @@ Features:
 """
 
 import atexit
+import json
 import os
 import re
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import logging
 import concurrent.futures
@@ -26,6 +29,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Union
 
 import requests
+
+try:
+    import zstandard as zstd
+except ImportError:
+    zstd = None
 
 
 # curl_cffi and bs4 are heavy (about 0.1s warm, close to a second on a cold
@@ -68,6 +76,7 @@ def BeautifulSoup(*args, **kwargs):  # noqa: N802 - keeps the bs4 name for calle
 
     return _BeautifulSoup(*args, **kwargs)
 
+
 from utils.settings import get_settings
 from utils.helpers import get_base_path
 
@@ -77,7 +86,8 @@ BYPARR_DEFAULT_PORT = 8191
 BYPARR_DEFAULT_URL = f"http://127.0.0.1:{BYPARR_DEFAULT_PORT}"
 STEAMDB_BASE_URL = "https://steamdb.info"
 
-# Fast-path race profiles for Cloudflare bypass via direct TLS impersonation
+# Fast-path race profiles for Cloudflare bypass via direct TLS impersonation.
+# Ordered by distinct TLS/engine fingerprint so the top 3 span Chrome, iOS Safari, and macOS Safari.
 FAST_RACE_PROFILES = [
     {
         "name": "Chrome 152 (Windows)",
@@ -89,6 +99,24 @@ FAST_RACE_PROFILES = [
             "Sec-Ch-Ua": '"Chromium";v="152", "Not(A:Brand";v="24", "Google Chrome";v="152"',
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": '"Windows"',
+        },
+    },
+    {
+        "name": "Safari 180 (iOS)",
+        "impersonate": "safari180_ios",
+        "headers": {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    },
+    {
+        "name": "Safari 17.0 (macOS)",
+        "impersonate": "safari17_0",
+        "headers": {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
         },
     },
     {
@@ -104,28 +132,10 @@ FAST_RACE_PROFILES = [
         },
     },
     {
-        "name": "Safari 17.0 (macOS)",
-        "impersonate": "safari17_0",
-        "headers": {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    },
-    {
         "name": "Safari 270 (macOS)",
         "impersonate": "safari270",
         "headers": {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    },
-    {
-        "name": "Safari 180 (iOS)",
-        "impersonate": "safari180_ios",
-        "headers": {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         },
@@ -142,6 +152,7 @@ class ByparrManager:
 
     _process: Optional[subprocess.Popen] = None
     _managed: bool = False
+    _start_lock = threading.Lock()
 
     @classmethod
     def get_service_url(cls) -> str:
@@ -285,93 +296,97 @@ class ByparrManager:
         if cls.is_running():
             return True
 
-        byparr_dir = cls.find_byparr_dir()
-        if not byparr_dir:
-            logger.warning("[SteamDB] Byparr service not running and local repository not found.")
-            return False
+        with cls._start_lock:
+            if cls.is_running():
+                return True
 
-        try:
-            env = os.environ.copy()
-            # Clean AppImage library overrides so uv and Python 3.14 run clean
-            env.pop("LD_LIBRARY_PATH", None)
-            env.pop("LD_PRELOAD", None)
+            byparr_dir = cls.find_byparr_dir()
+            if not byparr_dir:
+                logger.warning("[SteamDB] Byparr service not running and local repository not found.")
+                return False
 
-            # Ensure PATH contains standard user bin dirs
-            local_bin = str(Path.home() / ".local" / "bin")
-            cargo_bin = str(Path.home() / ".cargo" / "bin")
-            env["PATH"] = f"{local_bin}:{cargo_bin}:{env.get('PATH', '')}"
-
-            env["INVPW_TRUE_HEADLESS"] = "1"
-            env["PORT"] = str(BYPARR_DEFAULT_PORT)
-            env["HOST"] = "127.0.0.1"
-            # Pass ASSELLA PID so Byparr supervisor can self-terminate if ASSELLA crashes
-            env["ASSELLA_PID"] = str(os.getpid())
-            env["ACCELA_PID"] = str(os.getpid())
-
-            uv_path = cls.find_uv_path()
-            runner_script = byparr_dir / "assella_runner.py"
-            if not runner_script.exists():
-                runner_script = byparr_dir / "accela_runner.py"
-            target_script = runner_script.name if runner_script.exists() else "main.py"
-
-            if uv_path and (byparr_dir / "uv.lock").exists():
-                cmd = [uv_path, "run", "python", target_script]
-            else:
-                cmd = ["python3", target_script]
-
-            # Set Linux kernel PR_SET_PDEATHSIG so the kernel terminates Byparr if ASSELLA dies.
-            # The helper also starts at a lower priority: it spins up a headless
-            # Chromium, and that warm-up must not take CPU away from the window.
-            def _preexec():
-                try:
-                    import ctypes
-                    libc = ctypes.CDLL("libc.so.6")
-                    libc.prctl(1, signal.SIGTERM)  # 1 = PR_SET_PDEATHSIG
-                except Exception as _silent_err:
-                    logger.debug("[steamdb_scraper] ensure_running: ignored %s", _silent_err, exc_info=False)
-                try:
-                    os.setpriority(os.PRIO_PROCESS, 0, 10)
-                except OSError as e:
-                    logger.debug(f"[SteamDB] Could not lower the helper priority: {e}")
-
-            logger.info(f"[SteamDB] Starting background Byparr process in {byparr_dir} (ASSELLA PID={os.getpid()})...")
-            log_dir = get_base_path() / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            byparr_log_path = log_dir / "byparr.log"
-            cls._rotate_byparr_log(byparr_log_path, max_sessions=5)
-            byparr_logfile = open(byparr_log_path, "a", encoding="utf-8")
-            byparr_logfile.write(
-                f"\n--- Byparr Session Started by ASSELLA (PID={os.getpid()}) at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
-            )
-            byparr_logfile.flush()
-
-            cls._process = subprocess.Popen(
-                cmd,
-                cwd=str(byparr_dir),
-                env=env,
-                stdout=byparr_logfile,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                preexec_fn=_preexec if sys.platform != "win32" else None,
-            )
             try:
-                byparr_logfile.close()
+                env = os.environ.copy()
+                # Clean AppImage library overrides so uv and Python 3.14 run clean
+                env.pop("LD_LIBRARY_PATH", None)
+                env.pop("LD_PRELOAD", None)
+
+                # Ensure PATH contains standard user bin dirs
+                local_bin = str(Path.home() / ".local" / "bin")
+                cargo_bin = str(Path.home() / ".cargo" / "bin")
+                env["PATH"] = f"{local_bin}:{cargo_bin}:{env.get('PATH', '')}"
+
+                env["INVPW_TRUE_HEADLESS"] = "1"
+                env["PORT"] = str(BYPARR_DEFAULT_PORT)
+                env["HOST"] = "127.0.0.1"
+                # Pass ASSELLA PID so Byparr supervisor can self-terminate if ASSELLA crashes
+                env["ASSELLA_PID"] = str(os.getpid())
+                env["ACCELA_PID"] = str(os.getpid())
+
+                uv_path = cls.find_uv_path()
+                runner_script = byparr_dir / "assella_runner.py"
+                if not runner_script.exists():
+                    runner_script = byparr_dir / "accela_runner.py"
+                target_script = runner_script.name if runner_script.exists() else "main.py"
+
+                if uv_path and (byparr_dir / "uv.lock").exists():
+                    cmd = [uv_path, "run", "python", target_script]
+                else:
+                    cmd = ["python3", target_script]
+
+                # Set Linux kernel PR_SET_PDEATHSIG so the kernel terminates Byparr if ASSELLA dies.
+                # The helper also starts at a lower priority: it spins up a headless
+                # Chromium, and that warm-up must not take CPU away from the window.
+                def _preexec():
+                    try:
+                        import ctypes
+                        libc = ctypes.CDLL("libc.so.6")
+                        libc.prctl(1, signal.SIGTERM)  # 1 = PR_SET_PDEATHSIG
+                    except Exception as _silent_err:
+                        logger.debug("[steamdb_scraper] ensure_running: ignored %s", _silent_err, exc_info=False)
+                    try:
+                        os.setpriority(os.PRIO_PROCESS, 0, 10)
+                    except OSError as e:
+                        logger.debug(f"[SteamDB] Could not lower the helper priority: {e}")
+
+                logger.info(f"[SteamDB] Starting background Byparr process in {byparr_dir} (ASSELLA PID={os.getpid()})...")
+                log_dir = get_base_path() / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                byparr_log_path = log_dir / "byparr.log"
+                cls._rotate_byparr_log(byparr_log_path, max_sessions=5)
+                byparr_logfile = open(byparr_log_path, "a", encoding="utf-8")
+                byparr_logfile.write(
+                    f"\n--- Byparr Session Started by ASSELLA (PID={os.getpid()}) at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
+                )
+                byparr_logfile.flush()
+
+                cls._process = subprocess.Popen(
+                    cmd,
+                    cwd=str(byparr_dir),
+                    env=env,
+                    stdout=byparr_logfile,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    preexec_fn=_preexec if sys.platform != "win32" else None,
+                )
+                try:
+                    byparr_logfile.close()
+                except Exception as e:
+                    logger.debug(f"[SteamDB] Could not close byparr logfile handle in parent: {e}")
+                cls._managed = True
+
+                # Wait up to 10 seconds for service readiness
+                for _ in range(20):
+                    time.sleep(0.5)
+                    if cls.is_running():
+                        logger.info("[SteamDB] Byparr helper process is now running and responsive.")
+                        return True
+
+                logger.warning("[SteamDB] Byparr process launched but socket connect timed out.")
+                return False
             except Exception as e:
-                logger.debug(f"[SteamDB] Could not close byparr logfile handle in parent: {e}")
-            cls._managed = True
-
-            # Wait up to 10 seconds for service readiness
-            for _ in range(20):
-                time.sleep(0.5)
-                if cls.is_running():
-                    logger.info("[SteamDB] Byparr helper process is now running and responsive.")
-                    return True
-
-            logger.warning("[SteamDB] Byparr process launched but socket connect timed out.")
-            return False
-        except Exception as e:
-            logger.error(f"[SteamDB] Failed to launch Byparr process: {e}")
-            return False
+                logger.error(f"[SteamDB] Failed to launch Byparr process: {e}")
+                return False
 
     @classmethod
     def stop(cls):
@@ -516,7 +531,6 @@ atexit.register(ByparrManager.stop)
 # Request governor: every SteamDB request (fast path and Byparr) goes through
 # here so the app as a whole stays polite and never hammers SteamDB from one IP.
 # ─────────────────────────────────────────────────────────────────────────────
-import threading as _threading
 
 
 class SteamDBRateLimited(RuntimeError):
@@ -530,7 +544,7 @@ class _SteamDBGovernor:
     COOLDOWN_MAX = 3 * 3600     # cap: 3 h
     STRIKE_RESET = 6 * 3600     # strikes decay after 6 h without a hit
 
-    _lock = _threading.Lock()
+    _lock = threading.Lock()
     _last_request = 0.0
     _cache: Dict[str, Tuple[float, str]] = {}
 
@@ -648,10 +662,10 @@ class SteamDBScraper:
         """
         Direct TLS fetch with browser impersonation (curl_cffi).
 
-        Polite by design: the profile that last worked is tried first and, only
-        if it fails, at most two others one after another (no parallel fan-out,
-        which multiplied every request by the number of profiles). A 429 or a
-        rate-limit page stops immediately and starts the global back-off.
+        Polite by design: if a fresh Byparr cf_clearance cookie is cached, tries it
+        once with its matching saved User-Agent; otherwise tries the sticky profile
+        first and at most two other distinct TLS profiles sequentially (no parallel
+        fan-out). A 429 or rate-limit page stops immediately and starts the global back-off.
         """
         if not cffi_requests:
             return ""
@@ -660,15 +674,52 @@ class SteamDBScraper:
         sticky = str(s.value("steamdb/fast_profile", "", type=str) or "") if s else ""
         profiles = sorted(FAST_RACE_PROFILES, key=lambda p: 0 if p["name"] == sticky else 1)[:3]
 
-        # Use cached cf_clearance cookie if fresh (< 2 hours)
-        cookies = None
-        if s:
-            cf_val = s.value("steamdb/cf_clearance", "", type=str)
-            cf_ts = s.value("steamdb/clearance_timestamp", 0, type=int)
-            if cf_val and (time.time() - cf_ts < 7200):
-                cookies = {"cf_clearance": cf_val}
-
         challenge_seen = False
+
+        # 1. If a fresh Byparr cf_clearance cookie + matching UA exist (< 2 hours), try them once
+        #    with a matching Firefox/Camoufox TLS fingerprint rather than attaching them to Chrome/Safari.
+        if s:
+            cf_val = str(s.value("steamdb/cf_clearance", "", type=str) or "").strip()
+            cf_ua = str(s.value("steamdb/user_agent", "", type=str) or "").strip()
+            cf_ts = int(s.value("steamdb/clearance_timestamp", 0, type=int) or 0)
+            if cf_val and cf_ua and (time.time() - cf_ts < 7200):
+                try:
+                    _SteamDBGovernor.acquire(url)
+                except SteamDBRateLimited as e:
+                    logger.info(f"[SteamDB] {e}; skipping {url}")
+                    self.last_failure_reason = "rate_limited"
+                    return ""
+                try:
+                    cf_headers = {
+                        "User-Agent": cf_ua,
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    }
+                    if extra_headers:
+                        cf_headers.update(extra_headers)
+                    r = cffi_requests.get(
+                        url,
+                        impersonate="firefox",
+                        headers=cf_headers,
+                        cookies={"cf_clearance": cf_val},
+                        timeout=timeout_seconds,
+                    )
+                    if _looks_rate_limited(r.status_code, r.text):
+                        _SteamDBGovernor.note_rate_limited(f"HTTP {r.status_code}")
+                        self.last_failure_reason = "rate_limited"
+                        return ""
+                    cf_mitigated = r.headers.get("Cf-Mitigated", "").lower()
+                    is_challenge = cf_mitigated == "challenge" or "challenges.cloudflare.com" in r.text
+                    if r.status_code == 200 and not is_challenge and len(r.text) > 500:
+                        logger.info(f"[SteamDB] Fast path via cached cf_clearance for {url}")
+                        return r.text
+                    if is_challenge:
+                        challenge_seen = True
+                        logger.debug(f"[SteamDB] Cached cf_clearance challenged for {url}; falling back to TLS profiles.")
+                except Exception as e:
+                    logger.debug(f"[SteamDB] Cached cf_clearance attempt failed for {url}: {e}")
+
+        # 2. Try clean direct TLS impersonation profiles without mismatched cookies
         for profile in profiles:
             try:
                 _SteamDBGovernor.acquire(url)
@@ -684,7 +735,6 @@ class SteamDBScraper:
                     url,
                     impersonate=profile["impersonate"],
                     headers=headers,
-                    cookies=cookies,
                     timeout=timeout_seconds,
                 )
             except Exception as e:
@@ -719,6 +769,7 @@ class SteamDBScraper:
             _SteamDBGovernor.acquire(url)
         except SteamDBRateLimited as e:
             logger.info(f"[SteamDB] {e}; skipping Byparr fetch of {url}")
+            self.last_failure_reason = "rate_limited"
             return ""
 
         if not ByparrManager.is_running():
@@ -740,6 +791,7 @@ class SteamDBScraper:
                 html = sol.get("response", "")
                 if _looks_rate_limited(int(sol.get("status") or 200), html):
                     _SteamDBGovernor.note_rate_limited("Byparr page")
+                    self.last_failure_reason = "rate_limited"
                     return ""
 
                 # Cache cookies & user-agent for fast static requests
@@ -774,6 +826,7 @@ class SteamDBScraper:
         if cached is not None:
             return cached
         if _SteamDBGovernor.cooldown_remaining() > 0:
+            self.last_failure_reason = "rate_limited"
             return ""
 
         html = self._fetch_rendered_uncached(url, timeout_seconds, allow_fast_path, extra_headers)
@@ -792,6 +845,8 @@ class SteamDBScraper:
             html = self.fetch_via_fast_race(url, timeout_seconds=fast_timeout, extra_headers=extra_headers)
             if html:
                 return html
+            if self.last_failure_reason == "rate_limited":
+                return ""
             elapsed = time.time() - t0
             logger.info(f"[SteamDB] Fast-path did not resolve cleanly ({elapsed:.2f}s). Byparr available: {has_byparr}")
 
@@ -800,7 +855,8 @@ class SteamDBScraper:
             html = self.fetch_via_byparr(url, timeout_seconds=timeout_seconds)
             if html:
                 return html
-            self.last_failure_reason = "byparr_failed"
+            if not self.last_failure_reason:
+                self.last_failure_reason = "byparr_failed"
             return ""
 
         if self.last_cf_challenged:
@@ -1059,11 +1115,11 @@ class SteamDBScraper:
                 d_match = re.search(r"/depot/(\d+)", depot_link["href"])
                 if d_match:
                     depot_id = d_match.group(1)
-                    
+
                     # Target manifest ID is in changeid=M:<id> on the depot link
                     m_target = re.search(r"changeid=M:(\d+)", depot_link["href"])
                     manifest_id = m_target.group(1) if m_target else ""
-                    
+
                     old_manifest_id = ""
                     panel = heading.find_parent("div")
                     if panel:
@@ -1267,17 +1323,8 @@ def parse_size_to_bytes(size_str: str) -> int:
     return 0
 
 
-try:
-    import zstandard as zstd
-except ImportError:
-    zstd = None
-import sqlite3
-import json
-import threading
-
-
 class SteamDBBuildsCache:
-    """Manages persistent zstandard-compressed SQLite caching of the last 6 builds in its own database (steamdb_builds.db)."""
+    """Manages persistent zstandard-compressed SQLite caching of SteamDB builds in steamdb_builds.db."""
 
     _instance = None
     _lock = threading.Lock()
@@ -1301,7 +1348,6 @@ class SteamDBBuildsCache:
             if legacy_path.exists() and not target_path.exists():
                 try:
                     target_path.parent.mkdir(parents=True, exist_ok=True)
-                    import shutil
                     shutil.move(str(legacy_path), str(target_path))
                     logger.info(f"[SteamDB Cache] Migrated legacy steamdb_builds.db from root to {target_path}")
                 except Exception as e:
@@ -1359,36 +1405,61 @@ class SteamDBBuildsCache:
         return [], -1
 
     def save_builds(self, appid: int, builds: List[Dict[str, Any]]):
-        """Saves up to 50 most recent builds into steamdb_builds.db with zstandard compression."""
+        """Saves up to 50 most recent builds into steamdb_builds.db with zstandard compression,
+        preserving any previously cached per-build depot mappings."""
         if not builds:
             return
-        top_builds = builds[:50]
+        top_builds = [dict(b) for b in builds[:50]]
         try:
-            json_bytes = json.dumps(top_builds).encode("utf-8")
-            compressed_blob = self.cctx.compress(json_bytes) if self.cctx else json_bytes
+            with self._conn_lock:
+                # Preserve previously cached depots on matching build IDs
+                existing = self.get_builds(int(appid))
+                existing_depots = {
+                    str(b.get("buildid")): b["depots"]
+                    for b in existing
+                    if isinstance(b, dict) and b.get("buildid") and b.get("depots")
+                }
+                if existing_depots:
+                    for b in top_builds:
+                        bid = str(b.get("buildid") or "")
+                        if bid and not b.get("depots") and bid in existing_depots:
+                            b["depots"] = existing_depots[bid]
 
-            with self._conn_lock, sqlite3.connect(str(self.db_path)) as conn:
-                cur = conn.cursor()
-                cur.execute("""
-                    INSERT INTO builds (appid, builds_blob, last_updated)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(appid) DO UPDATE SET
-                        builds_blob = excluded.builds_blob,
-                        last_updated = excluded.last_updated
-                """, (int(appid), compressed_blob, int(time.time())))
-                conn.commit()
-                logger.info(f"[SteamDB Cache] Successfully cached {len(top_builds)} builds for App {appid} in {self.db_path.name}")
+                json_bytes = json.dumps(top_builds).encode("utf-8")
+                compressed_blob = self.cctx.compress(json_bytes) if self.cctx else json_bytes
+
+                with sqlite3.connect(str(self.db_path)) as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO builds (appid, builds_blob, last_updated)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(appid) DO UPDATE SET
+                            builds_blob = excluded.builds_blob,
+                            last_updated = excluded.last_updated
+                    """, (int(appid), compressed_blob, int(time.time())))
+                    conn.commit()
+                    logger.info(f"[SteamDB Cache] Successfully cached {len(top_builds)} builds for App {appid} in {self.db_path.name}")
         except Exception as e:
             logger.error(f"[SteamDB Cache] Failed to save builds for {appid}: {e}")
 
-    def get_build_depots(self, buildid: str, appid: Optional[Union[int, str]] = None) -> Optional[Dict[str, Any]]:
-        """Retrieves cached depot information for a specific build ID."""
+    def get_build_depots(
+        self,
+        buildid: str,
+        appid: Optional[Union[int, str]] = None,
+        scan_all: Optional[bool] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieves cached depot information for a specific build ID.
+
+        When `appid` is provided, only that app's cached row is inspected unless `scan_all=True`.
+        """
         target_bid = str(buildid).strip()
         if not target_bid:
             return None
 
+        has_valid_appid = appid is not None and str(appid).isdigit()
+
         # Fast path: check specific app if provided
-        if appid is not None and str(appid).isdigit():
+        if has_valid_appid:
             try:
                 builds = self.get_builds(int(appid))
                 for b in builds:
@@ -1398,8 +1469,13 @@ class SteamDBBuildsCache:
                             return depots
             except Exception as e:
                 logger.debug(f"[SteamDB Cache] Failed to lookup build {target_bid} for app {appid}: {e}")
+            if scan_all is not True:
+                return None
 
-        # Fallback: scan cached builds in db
+        if scan_all is False:
+            return None
+
+        # Fallback: scan cached builds in db (only when appid was omitted or scan_all=True)
         try:
             with self._conn_lock, sqlite3.connect(str(self.db_path)) as conn:
                 cur = conn.cursor()
@@ -1427,14 +1503,14 @@ class SteamDBBuildsCache:
 
     def update_build_depots(self, appid: int, buildid: str, depots: Dict[str, Any]):
         """Updates depot information for a cached build entry."""
-        builds = self.get_builds(appid)
-        updated = False
-        for b in builds:
-            if str(b.get("buildid")) == str(buildid):
-                b["depots"] = depots
-                updated = True
-                break
-        if not updated:
-            builds.append({"buildid": str(buildid), "depots": depots})
-        self.save_builds(appid, builds)
-
+        with self._conn_lock:
+            builds = self.get_builds(appid)
+            updated = False
+            for b in builds:
+                if str(b.get("buildid")) == str(buildid):
+                    b["depots"] = depots
+                    updated = True
+                    break
+            if not updated:
+                builds.append({"buildid": str(buildid), "depots": depots})
+            self.save_builds(appid, builds)

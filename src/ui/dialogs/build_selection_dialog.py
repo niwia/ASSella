@@ -57,7 +57,6 @@ class BuildSelectionCard(QFrame):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            from PyQt6 import sip
             if not sip.isdeleted(self.dialog):
                 self.dialog._on_card_clicked(self.idx)
             event.accept()
@@ -336,6 +335,18 @@ class BuildSelectionDialog(QDialog):
         self.select_btn.setEnabled(False)
         self.select_btn.setText("Use Build")
 
+        # Load cached depots for this app in a single read (avoids per-card DB scans on the UI thread)
+        cached_depots_by_build: Dict[str, Any] = {}
+        if self.app_id.isdigit():
+            try:
+                from core.steamdb_scraper import SteamDBBuildsCache
+                for cb in SteamDBBuildsCache().get_builds(int(self.app_id)):
+                    bid = str(cb.get("buildid") or "")
+                    if bid and cb.get("depots"):
+                        cached_depots_by_build[bid] = cb["depots"]
+            except Exception as e:
+                logger.debug(f"Could not preload cached depots for {self.app_id}: {e}")
+
         container_bg = get_dark_container_color(self.accent_color)
 
         for idx, item in enumerate(data):
@@ -430,13 +441,7 @@ class BuildSelectionDialog(QDialog):
             card._depots_container.setVisible(False)
             card_layout.addWidget(card._depots_container)
 
-            card_depots = item.get("depots")
-            if not card_depots:
-                try:
-                    from core.steamdb_scraper import SteamDBBuildsCache
-                    card_depots = SteamDBBuildsCache().get_build_depots(build_id)
-                except Exception:
-                    card_depots = None
+            card_depots = item.get("depots") or cached_depots_by_build.get(build_id)
             if card_depots:
                 self._update_card_depots(card, build_id, card_depots)
 
@@ -536,11 +541,11 @@ class BuildSelectionDialog(QDialog):
         build_id = str(item.get("buildid", ""))
         self._selected_build_id = build_id
 
-        # Check if depots are already in item or cache
+        # Check if depots are already in item or app-scoped cache
         try:
             from core.steamdb_scraper import SteamDBBuildsCache
             cache = SteamDBBuildsCache()
-            c_depots = cache.get_build_depots(build_id)
+            c_depots = cache.get_build_depots(build_id, appid=self.app_id)
             if _has_usable_manifests(c_depots):
                 self._selected_patch_depots = c_depots
                 self.accept()
@@ -573,13 +578,32 @@ class BuildSelectionDialog(QDialog):
         threading.Thread(target=_depot_worker, daemon=True).start()
 
     def _on_depots_resolved(self, build_id: str, depots: dict, reason: str = ""):
+        if sip.isdeleted(self):
+            return
+
         if not _has_usable_manifests(depots):
             self.select_btn.setEnabled(True)
             self.select_btn.setText(f"Use Build {build_id}")
 
-            from core.steamdb_scraper import ByparrManager
+            from core.steamdb_scraper import ByparrManager, steamdb_cooldown_remaining
             has_local_byparr = ByparrManager.find_byparr_dir() is not None
             is_local_enabled = ByparrManager.is_local_enabled()
+
+            if reason == "rate_limited":
+                remaining = steamdb_cooldown_remaining()
+                mins = max(1, int(remaining // 60) + 1)
+                res = ThemedMessageBox.question(
+                    self,
+                    "SteamDB Rate Limit Active",
+                    f"SteamDB asked ACCELA to back off temporarily (retry in ~{mins} min), "
+                    f"so manifests for Build {build_id} could not be fetched automatically.\n\n"
+                    "Would you like to manually enter the manifest ID for this build?",
+                    ThemedMessageBox.StandardButton.Yes | ThemedMessageBox.StandardButton.No,
+                    ThemedMessageBox.StandardButton.Yes,
+                )
+                if res == ThemedMessageBox.StandardButton.Yes:
+                    self._open_manual_with_build(build_id)
+                return
 
             if reason == "cf_challenge_byparr_disabled" or (has_local_byparr and not is_local_enabled and "challenge" in reason):
                 res = ThemedMessageBox.question(
@@ -599,7 +623,7 @@ class BuildSelectionDialog(QDialog):
                     s.setValue("byparr_enabled", True)
                     s.setValue("disable_steamdb_scraping", False)
                     logger.info("[BuildSelection] Enabled Byparr per user confirmation; retrying build resolve.")
-                    threading.Thread(target=ByparrManager.ensure_running, daemon=True).start()
+                    # fetch_via_byparr() inside _depot_worker() starts Byparr safely under _start_lock
                     self._on_select_clicked()
                     return
                 else:
