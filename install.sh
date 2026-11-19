@@ -277,7 +277,9 @@ detect_distro_family() {
 check_fuse_status() {
     FUSE_INSTALLED=false
     local arch="x86_64"
-    if command -v uname &>/dev/null; then
+    if [ -n "${ASSELLA_ARCH:-}" ]; then
+        arch="$ASSELLA_ARCH"
+    elif command -v uname &>/dev/null; then
         arch=$(uname -m 2>/dev/null || echo "x86_64")
     fi
     if [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
@@ -589,7 +591,9 @@ _parse_release_manifest_json() {
     [ -z "$rel_json" ] && return 1
 
     local host_arch="x86_64"
-    if command -v uname &>/dev/null; then
+    if [ -n "${ASSELLA_ARCH:-}" ]; then
+        host_arch="$ASSELLA_ARCH"
+    elif command -v uname &>/dev/null; then
         host_arch=$(uname -m 2>/dev/null || echo "x86_64")
     fi
 
