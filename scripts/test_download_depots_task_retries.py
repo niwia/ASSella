@@ -58,11 +58,16 @@ class TestDownloadDepotsTaskRetries(unittest.TestCase):
     @patch("core.morrenus_api.generate_single_manifest", return_value=(b"dummy", None))
     @patch("utils.manifest_resolver.is_valid_manifest", return_value=True)
     def test_02_keys_path_created_with_0600_mode(self, mock_is_valid, mock_gen):
-        """mistwalker_keys.vdf must be created owner-only (0o600) via os.open."""
+        """mistwalker_keys.vdf must be created owner-only (0o600), even if it pre-existed with looser permissions."""
         temp_dir = tempfile.gettempdir()
         keys_path = os.path.join(temp_dir, "mistwalker_keys.vdf")
-        if os.path.exists(keys_path):
-            os.remove(keys_path)
+        # Pre-create file with looser permissions (0o666) to test fchmod tightening
+        with open(keys_path, "w") as f:
+            f.write("stale_keys")
+        try:
+            os.chmod(keys_path, 0o666)
+        except OSError:
+            pass
 
         game_data = {
             "appid": "12345",
@@ -244,6 +249,72 @@ class TestDownloadDepotsTaskRetries(unittest.TestCase):
 
         if os.path.exists(mf_path):
             os.remove(mf_path)
+
+    def test_06_execute_depot_cmd_handles_timeout_escalation(self):
+        """_execute_depot_cmd must escalate from wait(5) -> terminate() -> kill() upon TimeoutExpired without raising."""
+        import subprocess
+        mock_proc = MagicMock()
+        mock_proc.stdout = None
+
+        # First wait(5) raises TimeoutExpired; second wait(2) raises TimeoutExpired; third wait(2) succeeds with -9
+        mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd=["cmd"], timeout=5),
+            subprocess.TimeoutExpired(cmd=["cmd"], timeout=2),
+            -9,
+        ]
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            with patch.object(self.task, "_read_process_output"):
+                rc = self.task._execute_depot_cmd(["cmd"], 0, "12345")
+
+        self.assertEqual(rc, -9)
+        mock_proc.terminate.assert_called_once()
+        mock_proc.kill.assert_called_once()
+
+    def test_07_stop_during_recovery_exits_cleanly(self):
+        """When task is cancelled while recovery is underway, it must exit cleanly without emitting error."""
+        mock_settings = MagicMock()
+        mock_settings.value.return_value = False
+
+        cmd = [
+            "dotnet", "DepotDownloaderMod.dll",
+            "-app", "10",
+            "-depot", "100",
+            "-manifest", "200",
+            "-manifestfile", "/tmp/mf_dummy",
+        ]
+
+        def fake_exec(cmd_arg, flags, d_id):
+            # First attempt fails and simulates user clicking Stop right after
+            self.task.stop()
+            return 1
+
+        self.task._execute_depot_cmd = MagicMock(side_effect=fake_exec)
+        completed_emitted = False
+        error_emitted = False
+        self.task.completed.connect(lambda: nonlocal_set("c"))
+        self.task.error.connect(lambda err: nonlocal_set("e"))
+
+        def nonlocal_set(which):
+            nonlocal completed_emitted, error_emitted
+            if which == "c":
+                completed_emitted = True
+            elif which == "e":
+                error_emitted = True
+
+        with patch.object(ddt, "get_settings", return_value=mock_settings):
+            with patch("core.morrenus_api.generate_single_manifest") as mock_wudrm:
+                with patch("utils.helpers.ensure_dotnet_availability", return_value=True):
+                    with patch.object(self.task, "_prepare_downloads", return_value=([cmd], [], [1000])):
+                        self.task.run(
+                            game_data={"appid": "10", "branch": "public", "depots": {"100": {"size": 1000}}},
+                            selected_depots=["100"],
+                            dest_path="/tmp",
+                        )
+
+        self.assertTrue(completed_emitted)
+        self.assertFalse(error_emitted)
+        mock_wudrm.assert_not_called()
 
 
 if __name__ == "__main__":

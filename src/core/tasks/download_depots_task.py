@@ -261,6 +261,7 @@ class DownloadDepotsTask(QObject):
                                     self.progress.emit(f"Failed over to new stealth endpoint: {active_url}. Resuming depot {depot_id}...")
                                     return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                                     if not self._is_running:
+                                        logger.info("Download task stopping because stop() was called.")
                                         self.completed.emit()
                                         return
                                     if return_code == 0:
@@ -271,6 +272,8 @@ class DownloadDepotsTask(QObject):
                         # 2b. If rotation failed or is disabled, prompt user with modal fallback
                         if not failed_over and return_code != 0:
                             if not self._is_running:
+                                logger.info("Download task stopping because stop() was called.")
+                                self.completed.emit()
                                 return
                             from utils.kuroko import prompt_stealth_fallback
                             user_action = prompt_stealth_fallback(net_err)
@@ -290,6 +293,7 @@ class DownloadDepotsTask(QObject):
                                         current_cmd = commands[i]
                                         return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                                         if not self._is_running:
+                                            logger.info("Download task stopping because stop() was called.")
                                             self.completed.emit()
                                             return
                                 except Exception as retry_err:
@@ -307,6 +311,7 @@ class DownloadDepotsTask(QObject):
                                 current_cmd = commands[i]
                                 return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                                 if not self._is_running:
+                                    logger.info("Download task stopping because stop() was called.")
                                     self.completed.emit()
                                     return
                             else:
@@ -382,8 +387,14 @@ class DownloadDepotsTask(QObject):
                         retry_cmd = [arg for arg in current_cmd if arg != "-use-lancache"]
                         return_code = self._execute_depot_cmd(retry_cmd, creation_flags, depot_id)
                         if not self._is_running:
+                            logger.info("Download task stopping because stop() was called.")
                             self.completed.emit()
                             return
+
+                if not self._is_running:
+                    logger.info("Download task stopping because stop() was called.")
+                    self.completed.emit()
+                    return
 
                 # 4. Final failure check: if all recovery attempts failed, abort
                 if return_code != 0:
@@ -617,8 +628,18 @@ class DownloadDepotsTask(QObject):
                 try:
                     self.process.terminate()
                     return_code = self.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        f"[DownloadDepotsTask] Process for depot {depot_id or 'unknown'} did not exit after SIGTERM, killing."
+                    )
+                    try:
+                        self.process.kill()
+                        return_code = self.process.wait(timeout=2)
+                    except Exception as kill_err:
+                        logger.debug(f"[DownloadDepotsTask] Kill error: {kill_err}")
+                        return_code = -1
                 except Exception as wait_err:
-                    logger.debug(f"[DownloadDepotsTask] Terminate wait error: {wait_err}")
+                    logger.debug(f"[DownloadDepotsTask] Teardown wait error: {wait_err}")
                     return_code = -1
             self.process = None
 
@@ -981,6 +1002,11 @@ class DownloadDepotsTask(QObject):
 
         # Depot decryption keys in /tmp: create owner-only (0o600) atomically from the start
         fd = os.open(keys_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        if hasattr(os, "fchmod"):
+            try:
+                os.fchmod(fd, 0o600)
+            except OSError as fchmod_err:
+                logger.debug(f"[DownloadDepotsTask] fchmod error: {fchmod_err}")
         with open(fd, "w", encoding="utf-8") as f:
             for depot_id in selected_depots:
                 depots_map = game_data.get("depots", {})
