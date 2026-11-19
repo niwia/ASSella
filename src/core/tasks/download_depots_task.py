@@ -242,15 +242,13 @@ class DownloadDepotsTask(QObject):
                         rotation_on = settings.value("stealth_rotation_enabled", False, type=bool)
                         failed_over = False
                         if rotation_on:
-                            from utils.kuroko import resolve_stealth_proxy_url
                             self.progress.emit(f"Stealth connection interrupted on depot {depot_id}. Attempting pool failover...")
                             prev_id = getattr(self._kuroko_manager, "endpoint_id", None)
                             self._cleanup_stealth_proxy()
                             try:
-                                new_url, new_mgr = resolve_stealth_proxy_url(settings, failover_from=prev_id)
-                                if new_mgr or new_url:
-                                    self._kuroko_manager = new_mgr
-                                    active_url = new_mgr.proxy_url if new_mgr else new_url
+                                new_url = self._setup_stealth_proxy(settings, failover_from=prev_id)
+                                active_url = self._kuroko_manager.proxy_url if self._kuroko_manager else new_url
+                                if active_url:
                                     for c in commands[i:]:
                                         if "-proxy" in c:
                                             p_idx = c.index("-proxy")
@@ -279,17 +277,18 @@ class DownloadDepotsTask(QObject):
                             user_action = prompt_stealth_fallback(net_err)
                             if user_action == "retry":
                                 self.progress.emit(f"Stealth dropped mid-download. Reconnecting stealth proxy for depot {depot_id}...")
+                                prev_id = getattr(getattr(self, "_kuroko_manager", None), "endpoint_id", None) or "active"
                                 self._cleanup_stealth_proxy()
                                 try:
-                                    prev_id = getattr(getattr(self, "_kuroko_manager", None), "endpoint_id", None) or "active"
                                     new_proxy_url = self._setup_stealth_proxy(settings, failover_from=prev_id)
-                                    if new_proxy_url:
+                                    active_url = self._kuroko_manager.proxy_url if self._kuroko_manager else new_proxy_url
+                                    if active_url:
                                         for c in commands[i:]:
                                             if "-proxy" in c:
                                                 p_idx = c.index("-proxy")
-                                                c[p_idx + 1] = new_proxy_url
+                                                c[p_idx + 1] = active_url
                                             else:
-                                                c.extend(["-proxy", new_proxy_url])
+                                                c.extend(["-proxy", active_url])
                                         current_cmd = commands[i]
                                         return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                                         if not self._is_running:
@@ -524,6 +523,12 @@ class DownloadDepotsTask(QObject):
                         logger.warning(f"Manifest file not found at {manifest_file_path}, skipping delta manifest setup.")
                 except Exception as e:
                     logger.warning(f"Failed to copy manifest for depot {depot_id}: {e}", exc_info=True)
+
+            if skipped_depots:
+                self.progress.emit(
+                    f"Skipped {len(skipped_depots)} depot(s) due to missing or invalid manifests: "
+                    f"{', '.join(skipped_depots)}"
+                )
 
             if not self._is_running:
                 logger.info("Download task stopped before cleanup.")
@@ -1326,7 +1331,7 @@ class DownloadDepotsTask(QObject):
             login_id = random.randint(1, 2147483647)
             cmd_args.extend(["-loginid", str(login_id)])
 
-            # 3. Selective files list support (-filelist)
+            # 5. Selective files list support (-filelist)
             selected_files = game_data.get("selected_files_list")
             if selected_files:
                 # Write filelist to temp file
