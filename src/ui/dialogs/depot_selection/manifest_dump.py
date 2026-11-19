@@ -146,7 +146,14 @@ def find_manifest_file(temp_dir: str, depot_id: str) -> Path:
     """The bundle's ``.manifest`` for ``depot_id``, or the only one there is."""
     manifest_files = list(Path(temp_dir).glob(f"{depot_id}_*.manifest"))
     if not manifest_files:
-        manifest_files = list(Path(temp_dir).glob("*.manifest"))
+        all_manifests = list(Path(temp_dir).glob("*.manifest"))
+        if len(all_manifests) == 1:
+            manifest_files = all_manifests
+        elif len(all_manifests) > 1:
+            raise ManifestDumpError(
+                f"Multiple manifest files found in bundle, but none matched requested depot {depot_id}: "
+                f"{[m.name for m in all_manifests]}"
+            )
     if not manifest_files:
         raise ManifestDumpError(
             f"No manifest file (*.manifest) found for depot {depot_id} in the extracted manifest bundle."

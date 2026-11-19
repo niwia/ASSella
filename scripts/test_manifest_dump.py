@@ -248,6 +248,17 @@ def main() -> int:
         check((message or "").startswith("Failed to write keys file:"),
               "an unwritable keys path is reported as such")
 
+        work_e = str(Path(tmp) / "work_e")
+        lua_9999 = 'addappid(9999, 1, "aabbccdd11223344556677889900aabb")\n'
+        make_bundle(hubcap / "accela_fetch_1234.zip", lua=lua_9999, members={"2001_1.manifest": b"x", "2002_2.manifest": b"y"})
+        try:
+            md.prepare_manifest_dump(1234, "9999", manifests_dir=hubcap, temp_root=work_e)
+            message = None
+        except md.ManifestDumpError as e:
+            message = str(e)
+        check((message or "").startswith("Multiple manifest files found in bundle, but none matched requested depot 9999:"),
+              "multiple ambiguous manifests for another depot are refused rather than picking [0]")
+
     print("\n=== discarding a keys file is safe to call twice ===")
     with tempfile.TemporaryDirectory() as tmp:
         keys = Path(tmp) / "depot.keys"

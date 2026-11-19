@@ -11,6 +11,7 @@ Design principles:
     per updated appid (or "*" for global Denuvo sync).
 """
 
+import atexit
 import inspect
 import json
 import logging
@@ -299,33 +300,71 @@ def _invalidate_protondb_cache() -> None:
         _protondb_mem_cache = None
 
 
-def _save_protondb_entry(appid: str, tier: str, success: bool = True) -> None:
-    """Persist one ProtonDB result to disk safely with locking to prevent concurrent clobbering."""
-    global _protondb_mem_cache
+_dirty_protondb: bool = False
+_protondb_flush_timer: Optional[threading.Timer] = None
+
+
+def flush_protondb_cache() -> None:
+    """Flush pending in-memory ProtonDB cache entries to disk atomically."""
+    global _dirty_protondb, _protondb_flush_timer
     with _protondb_mem_lock:
-        cache: dict = {}
-        if PROTONDB_CACHE_PATH.exists():
+        if _protondb_flush_timer is not None:
             try:
-                with open(PROTONDB_CACHE_PATH, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    cache = loaded
-            except Exception as e:
-                logger.warning(f"Error reading ProtonDB cache for merging: {e}")
+                _protondb_flush_timer.cancel()
+            except Exception as _cancel_err:
+                logger.debug(f"Timer cancel error: {_cancel_err}")
+            _protondb_flush_timer = None
+        if not _dirty_protondb or _protondb_mem_cache is None:
+            return
+        cache_copy = dict(_protondb_mem_cache)
+        _dirty_protondb = False
 
-        cache[str(appid)] = {"tier": tier, "timestamp": time.time(), "success": success}
+    try:
+        PROTONDB_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PROTONDB_CACHE_PATH.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cache_copy, f, separators=(",", ":"))
+        tmp.replace(PROTONDB_CACHE_PATH)
+    except Exception as e:
+        logger.warning(f"Failed to flush ProtonDB cache to disk: {e}")
+        with _protondb_mem_lock:
+            _dirty_protondb = True
 
-        # Update memory cache in place to avoid disk read on next lookup
-        _protondb_mem_cache = cache
 
-        try:
-            PROTONDB_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            tmp = PROTONDB_CACHE_PATH.with_suffix(".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(cache, f, indent=2)
-            tmp.replace(PROTONDB_CACHE_PATH)
-        except Exception as e:
-            logger.warning(f"Failed to write ProtonDB cache entry for {appid}: {e}")
+atexit.register(flush_protondb_cache)
+
+
+def _schedule_protondb_flush(delay: float = 1.5) -> None:
+    """Debounce writing the ProtonDB cache to disk."""
+    global _protondb_flush_timer
+    with _protondb_mem_lock:
+        if _protondb_flush_timer is not None:
+            try:
+                _protondb_flush_timer.cancel()
+            except Exception as _cancel_err:
+                logger.debug(f"Timer cancel error: {_cancel_err}")
+        _protondb_flush_timer = threading.Timer(delay, flush_protondb_cache)
+        _protondb_flush_timer.daemon = True
+        _protondb_flush_timer.start()
+
+
+def _save_protondb_entry(appid: str, tier: str, success: bool = True) -> None:
+    """Record one ProtonDB result in memory and debounce disk flush."""
+    global _protondb_mem_cache, _dirty_protondb
+    with _protondb_mem_lock:
+        if _protondb_mem_cache is None:
+            _load_protondb_cache()
+        if _protondb_mem_cache is None:
+            _protondb_mem_cache = {}
+
+        _protondb_mem_cache[str(appid)] = {
+            "tier": tier,
+            "timestamp": time.time(),
+            "success": success,
+        }
+        _dirty_protondb = True
+
+    _schedule_protondb_flush(1.5)
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +427,8 @@ def _worker_loop() -> None:
                 _queued_appids.discard(appid)
             # Schedule a debounced subscriber notification for this specific appid
             notify_rating_updated(str(appid))
+            if _fetch_queue.empty():
+                flush_protondb_cache()
             # Brief sleep between requests — keeps network gentle
             time.sleep(_WORKER_SLEEP_S)
 

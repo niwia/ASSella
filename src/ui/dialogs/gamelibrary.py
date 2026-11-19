@@ -220,6 +220,44 @@ class GameLibraryDialog(
                 background-color: rgba(255, 255, 255, 0.02);
                 color: {self.accent_color};
             }}
+            
+            QLabel[badgeRole="proton"] {{
+                border-radius: 4px;
+                padding: 1px 6px;
+                font-size: 9px;
+                font-weight: bold;
+                letter-spacing: 0.5px;
+            }}
+            QLabel[badgeRole="proton"][protonTier="platinum"] {{
+                color: #CFD8DC;
+                background-color: rgba(207, 216, 220, 0.18);
+                border: 1px solid rgba(236, 239, 241, 0.35);
+            }}
+            QLabel[badgeRole="proton"][protonTier="gold"] {{
+                color: #FFE082;
+                background-color: rgba(255, 193, 7, 0.15);
+                border: 1px solid rgba(255, 224, 130, 0.30);
+            }}
+            QLabel[badgeRole="proton"][protonTier="silver"] {{
+                color: #B0BEC5;
+                background-color: rgba(144, 164, 174, 0.15);
+                border: 1px solid rgba(176, 190, 197, 0.30);
+            }}
+            QLabel[badgeRole="proton"][protonTier="bronze"] {{
+                color: #FFAB91;
+                background-color: rgba(255, 112, 67, 0.15);
+                border: 1px solid rgba(255, 171, 145, 0.30);
+            }}
+            QLabel[badgeRole="proton"][protonTier="borked"] {{
+                color: #EF9A9A;
+                background-color: rgba(239, 83, 80, 0.18);
+                border: 1px solid rgba(239, 154, 154, 0.35);
+            }}
+            QLabel[badgeRole="proton"][protonTier="native"] {{
+                color: #A5D6A7;
+                background-color: rgba(76, 175, 80, 0.15);
+                border: 1px solid rgba(165, 214, 167, 0.30);
+            }}
         """
         )
 

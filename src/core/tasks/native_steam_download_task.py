@@ -374,34 +374,10 @@ class NativeSteamDownloadTask(QObject):
         """Check if SLSsteam.so is loaded in a running Steam process or listening on its API pipe."""
         try:
             from utils.slssteam_integration import is_slssteam_process_active
-            if is_slssteam_process_active():
-                return True
+            return is_slssteam_process_active()
         except Exception as e:
             logger.debug(f"[NativeSteamDL] _check_slssteam_active: {e}")
-
-        STEAM_COMM_NAMES = {"steam", ".steam-wrapped", "steam-wrapped", "steam-original", "steam.sh"}
-        try:
-            for pid_dir in os.listdir("/proc"):
-                if not pid_dir.isdigit():
-                    continue
-                try:
-                    with open(f"/proc/{pid_dir}/comm", "r", encoding="utf-8", errors="ignore") as f:
-                        comm = f.read().strip()
-                        if comm not in STEAM_COMM_NAMES and not comm.startswith((".steam", "steam")):
-                            continue
-                except OSError as e:
-                    logger.debug(f"[NativeSteamDL] Could not read /proc/{pid_dir}/comm: {e}")
-                    continue
-                try:
-                    with open(f"/proc/{pid_dir}/maps", "r", encoding="utf-8", errors="ignore") as f:
-                        if "SLSsteam.so" in f.read():
-                            return True
-                except OSError as e:
-                    logger.debug(f"[NativeSteamDL] Could not read /proc/{pid_dir}/maps: {e}")
-                    continue
-        except OSError as e:
-            logger.debug(f"[NativeSteamDL] Steam process scan failed: {e}")
-        return False
+            return False
 
     def _get_config_dir(self) -> Optional[Path]:
         """Return the active SLSsteam config directory."""

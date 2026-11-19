@@ -947,17 +947,15 @@ class PreReleaseTester:
             )
             with tempfile.TemporaryDirectory() as tmp_d:
                 cfg = Path(tmp_d) / "config.yaml"
-                cfg.write_text("Plugins: false\nSmartTickets: 0x0\n")
+                cfg.write_text("Plugins: false\n")
 
-                ensure_smart_tickets_enabled(config_path=cfg, enable=True)
-                assert is_smart_tickets_enabled(config_path=cfg) is True
-                ensure_smart_tickets_enabled(config_path=cfg, enable=False)
-                assert is_smart_tickets_enabled(config_path=cfg) is False
+                # SmartTickets is a deprecated no-op in modern SLSsteam; ensure it returns True safely
+                assert ensure_smart_tickets_enabled(config_path=cfg, enable=True) is True
 
                 ensure_plugins_enabled(config_path=cfg)
                 assert "Plugins: yes" in cfg.read_text() or "Plugins: true" in cfg.read_text()
 
-            self.log_result("Spliced Ticket Plugin SLS Configuration Management", True, "SmartTickets & Plugins toggles verified", duration=time.time() - t0)
+            self.log_result("Spliced Ticket Plugin SLS Configuration Management", True, "SmartTickets deprecation & Plugins toggles verified", duration=time.time() - t0)
         except Exception as e:
             self.log_result("Spliced Ticket Plugin SLS Configuration Management", False, str(e), duration=time.time() - t0)
 

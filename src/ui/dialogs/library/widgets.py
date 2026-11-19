@@ -808,48 +808,26 @@ class GameItemWidget(QWidget):
         except ImportError:
             tier = None
 
-        if not tier:
-            # Currently loading asynchronously on the backend
-            self.proton_badge.setText("FETCHING...")
-            self.proton_badge.setStyleSheet(
-                "color: #B0BEC5; "
-                "background-color: rgba(255, 255, 255, 0.08); "
-                "border: 1px solid rgba(255, 255, 255, 0.20); "
-                "border-radius: 4px; "
-                "padding: 1px 6px; "
-                "font-size: 9px; "
-                "font-weight: bold; "
-                "letter-spacing: 0.5px;"
-            )
-            self.proton_badge.show()
-            return
-
-        if tier == "unknown":
+        if not tier or tier == "unknown":
             self.proton_badge.hide()
             return
 
-        _tier_map = {
-            "platinum": ("PLATINUM", "#CFD8DC", "rgba(207, 216, 220, 0.18)", "rgba(236, 239, 241, 0.35)"),
-            "gold":     ("GOLD",     "#FFE082", "rgba(255, 193, 7, 0.15)",   "rgba(255, 224, 130, 0.30)"),
-            "silver":   ("SILVER",   "#B0BEC5", "rgba(144, 164, 174, 0.15)", "rgba(176, 190, 197, 0.30)"),
-            "bronze":   ("BRONZE",   "#FFAB91", "rgba(255, 112, 67, 0.15)",  "rgba(255, 171, 145, 0.30)"),
-            "borked":   ("BORKED",   "#EF9A9A", "rgba(239, 83, 80, 0.18)",   "rgba(239, 154, 154, 0.35)"),
-            "native":   ("NATIVE",   "#A5D6A7", "rgba(76, 175, 80, 0.15)",   "rgba(165, 214, 167, 0.30)"),
+        _tier_text_map = {
+            "platinum": "PLATINUM",
+            "gold":     "GOLD",
+            "silver":   "SILVER",
+            "bronze":   "BRONZE",
+            "borked":   "BORKED",
+            "native":   "NATIVE",
         }
 
-        if tier in _tier_map:
-            text, color, bg_color, border_color = _tier_map[tier]
+        text = _tier_text_map.get(tier)
+        if text:
             self.proton_badge.setText(text)
-            self.proton_badge.setStyleSheet(
-                f"color: {color}; "
-                f"background-color: {bg_color}; "
-                f"border: 1px solid {border_color}; "
-                f"border-radius: 4px; "
-                f"padding: 1px 6px; "
-                f"font-size: 9px; "
-                f"font-weight: bold; "
-                f"letter-spacing: 0.5px;"
-            )
+            self.proton_badge.setProperty("badgeRole", "proton")
+            self.proton_badge.setProperty("protonTier", tier)
+            self.proton_badge.style().unpolish(self.proton_badge)
+            self.proton_badge.style().polish(self.proton_badge)
             self.proton_badge.show()
         else:
             self.proton_badge.hide()

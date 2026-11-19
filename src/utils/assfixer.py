@@ -1317,16 +1317,11 @@ def check_config_status(config_path: Optional[Path] = None, online: bool = True)
                 return True, f"Network check failed: {e}", [f"Could not fetch template from {TEMPLATE_SOURCE_URL}: {e}"]
     else:
         # Fallback to local template if offline
-        from utils.helpers import get_base_path
-        local_tmpl_path = get_base_path() / "SLSsteam" / "res" / "config.yaml"
-        if not local_tmpl_path.exists():
-            local_tmpl_path = Path(__file__).resolve().parent.parent.parent / "SLSsteam" / "config.yaml"
-        if local_tmpl_path.exists():
-            try:
-                template_yaml = local_tmpl_path.read_text(encoding="utf-8")
-                logger.debug(f"Using local template fallback from {local_tmpl_path}")
-            except Exception:
-                pass
+        local_fallback = get_bundled_or_cached_template()
+        if local_fallback:
+            template_yaml = local_fallback
+            key_types = infer_key_types(template_yaml)
+            logger.debug("[AssFixer] Using local cached/bundled template for offline config check.")
 
     reader = SimpleYAMLReader(key_types, lenient=True)
     try:

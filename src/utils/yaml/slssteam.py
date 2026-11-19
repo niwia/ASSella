@@ -136,50 +136,12 @@ def ensure_slssteam_logging_enabled(config_path: Path) -> bool:
         return False
 
 def ensure_smart_tickets_enabled(config_path: Optional[Path] = None, enable: bool = True) -> bool:
-    """Ensure 'SmartTickets: 0x1' (or 0x0 if disabled) is present in SLSsteam config.yaml."""
-    if config_path is None:
-        config_path = get_user_config_path()
-
-    if not config_path.exists():
-        logger.debug(f"ensure_smart_tickets_enabled: Config not found at {config_path}")
-        return False
-
-    if not is_slssteam_config_management_enabled():
-        logger.debug("ensure_smart_tickets_enabled: SLS config management disabled in settings")
-        return False
-
-    val_str = "0x1" if enable else "0x0"
-    try:
-        with open(config_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-
-        pattern = re.compile(
-            r"^([ \t]*)SmartTickets[ \t]*:[ \t]*([^\r\n#]+)(.*)$",
-            re.MULTILINE,
-        )
-        match = pattern.search(content)
-        if not match:
-            logger.info(f"Adding 'SmartTickets: {val_str}' to {config_path}")
-            new_content = content.rstrip() + f"\n\nSmartTickets: {val_str}\n"
-            return _atomic_write(config_path, new_content)
-
-        indent = match.group(1)
-        cur_val = match.group(2).strip()
-        comment = match.group(3)
-
-        if cur_val.lower() == val_str.lower():
-            return True
-
-        comment_str = f" {comment.strip()}" if comment.strip() else ""
-        replacement = f"{indent}SmartTickets: {val_str}{comment_str}"
-        new_content = pattern.sub(replacement, content, count=1)
-        return _atomic_write(config_path, new_content)
-    except Exception as e:
-        logger.error(f"Failed to update SmartTickets in {config_path}: {e}")
-        return False
+    """Deprecated: Upstream SLSsteam removed SmartTickets; ASSella no longer manages this flag."""
+    logger.debug("ensure_smart_tickets_enabled: SmartTickets is deprecated and no longer managed in SLSsteam config.")
+    return True
 
 def is_smart_tickets_enabled(config_path: Optional[Path] = None) -> bool:
-    """Check if 'SmartTickets: 0x1' is enabled in SLSsteam config.yaml."""
+    """Check if legacy 'SmartTickets: 0x1' is enabled in SLSsteam config.yaml."""
     if config_path is None:
         config_path = get_user_config_path()
 
