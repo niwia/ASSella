@@ -1462,6 +1462,40 @@ class ZipImportConfirmationDialog(QDialog):
             elif not real_installed and def_dir and os.path.realpath(lib_path) == os.path.realpath(def_dir):
                 preselect_idx = idx
 
+        self.dest_combo.addItem("Custom Folder...", "custom")
+
+        def _on_dest_combo_changed(index):
+            data = self.dest_combo.itemData(index)
+            if data == "custom":
+                from ui.dialogs.themed_file_dialog import ThemedFileDialog
+                from utils.paths import is_valid_download_directory, normalize_to_library_root
+                from core.steam_helpers import ensure_steam_library
+
+                path = ThemedFileDialog.getExistingDirectory(self, "Select Custom Download Location")
+                if path:
+                    norm = normalize_to_library_root(path)
+                    if is_valid_download_directory(norm):
+                        ensure_steam_library(norm)
+                        existing_idx = self.dest_combo.findData(norm)
+                        if existing_idx >= 0:
+                            self.dest_combo.setCurrentIndex(existing_idx)
+                        else:
+                            insert_pos = self.dest_combo.count() - 1
+                            self.dest_combo.insertItem(insert_pos, f"Custom ({norm})", norm)
+                            self.dest_combo.setCurrentIndex(insert_pos)
+                    else:
+                        from ui.dialogs.themed_message_box import ThemedMessageBox
+                        ThemedMessageBox.warning(
+                            self,
+                            "Invalid Location",
+                            "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
+                        )
+                        self.dest_combo.setCurrentIndex(0)
+                else:
+                    self.dest_combo.setCurrentIndex(0)
+
+        self.dest_combo.currentIndexChanged.connect(_on_dest_combo_changed)
+
         if self.dest_combo.count() > 0:
             self.dest_combo.setCurrentIndex(preselect_idx)
 

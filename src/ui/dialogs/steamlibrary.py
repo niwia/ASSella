@@ -75,9 +75,15 @@ class SteamLibraryDialog(QDialog):
         accent_color: Optional[str] = None,
     ):
         super().__init__(parent)
-        self.library_paths = list(library_paths) if library_paths else []
-        self.selected_path: Optional[str] = None
         self.settings = get_settings()
+        self.library_paths = list(library_paths) if library_paths else []
+        from utils.paths import is_valid_download_directory
+        cur_def = self.settings.value("default_download_directory", "", type=str)
+        if cur_def and is_valid_download_directory(cur_def):
+            real_def = os.path.realpath(cur_def)
+            if real_def not in [os.path.realpath(x) for x in self.library_paths]:
+                self.library_paths.append(real_def)
+        self.selected_path: Optional[str] = None
 
         if not accent_color:
             self.accent_color = self.settings.value("accent_color", "#6c5ce7", type=str)
@@ -214,6 +220,61 @@ class SteamLibraryDialog(QDialog):
             scroll.setFixedHeight(220)
 
         body_lay.addWidget(scroll)
+
+        # Custom folder button
+        self.add_custom_btn = QPushButton("+ Select Custom Folder...")
+        self.add_custom_btn.setFixedHeight(30)
+        self.add_custom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_custom_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.05);
+                color: rgba(255, 255, 255, 0.85);
+                border: 1px dashed rgba(255, 255, 255, 0.2);
+                border-radius: 6px;
+                font-size: 8.5pt;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.1);
+                color: #FFFFFF;
+                border-color: rgba(255, 255, 255, 0.4);
+            }
+        """)
+
+        def _on_add_custom():
+            from ui.dialogs.themed_file_dialog import ThemedFileDialog
+            from utils.paths import is_valid_download_directory, normalize_to_library_root
+            from core.steam_helpers import ensure_steam_library
+
+            chosen = ThemedFileDialog.getExistingDirectory(self, "Select Custom Steam Library / Folder")
+            if not chosen:
+                return
+            norm = normalize_to_library_root(chosen)
+            if not is_valid_download_directory(norm):
+                ThemedMessageBox.warning(
+                    self,
+                    "Invalid Location",
+                    "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
+                )
+                return
+            real_p = os.path.realpath(norm)
+            ensure_steam_library(real_p)
+
+            # Check if already present in card widgets
+            for item in self.card_widgets:
+                if os.path.realpath(item["path"]) == real_p:
+                    item["radio"].setChecked(True)
+                    self._update_all_card_styles()
+                    return
+
+            card = self._create_storage_card(real_p, is_default=True)
+            list_lay.insertWidget(list_lay.count() - 1, card)
+            if real_p not in self.library_paths:
+                self.library_paths.append(real_p)
+            self._update_all_card_styles()
+
+        self.add_custom_btn.clicked.connect(_on_add_custom)
+        body_lay.addWidget(self.add_custom_btn)
 
         # Remember my choice Checkbox
         self.remember_chk = QCheckBox("Remember my choice")

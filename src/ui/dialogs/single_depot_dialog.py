@@ -550,19 +550,19 @@ class SingleDepotSelectionDialog(QDialog):
         """
         def_dir = self._settings.value("default_download_directory", "", type=str) if self._settings else ""
 
-        # A configured default download directory means "put it there": this
-        # dialog then offers that one drive instead of every Steam library, and
-        # a preferred path is shown first so it is the one the user lands on.
+        # Offer all candidate drives with preferred first so the user can easily
+        # switch to another drive or custom directory even if a default is configured.
         storage_paths = storage_targets.candidate_drives(
             def_dir,
             self.preferred_library_path,
-            only_default_when_configured=True,
+            only_default_when_configured=False,
             preferred_first=True,
         )
 
         self._storage_paths = storage_paths
         self._storage_btn_group = QButtonGroup(self)
         self._storage_btn_group.setExclusive(True)
+        self._custom_storage_path = None
 
         if not storage_paths:
             layout.addStretch(1)
@@ -640,6 +640,8 @@ class SingleDepotSelectionDialog(QDialog):
             def _make_handler(target_path):
                 def _handler():
                     self.selected_storage_path = target_path
+                    if hasattr(self, "_custom_storage_btn") and self._custom_storage_btn:
+                        self._custom_storage_btn.setChecked(False)
                     if self._storage_overflow_combo:
                         self._storage_overflow_combo.blockSignals(True)
                         self._storage_overflow_combo.setCurrentIndex(0)
@@ -671,6 +673,8 @@ class SingleDepotSelectionDialog(QDialog):
                 target_path = combo.itemData(index)
                 if target_path:
                     self.selected_storage_path = target_path
+                    if hasattr(self, "_custom_storage_btn") and self._custom_storage_btn:
+                        self._custom_storage_btn.setChecked(False)
                     self._storage_btn_group.setExclusive(False)
                     for b in self._storage_btn_group.buttons():
                         b.setChecked(False)
@@ -681,6 +685,89 @@ class SingleDepotSelectionDialog(QDialog):
             combo.currentIndexChanged.connect(_on_overflow_selected)
             self._storage_overflow_combo = combo
             layout.addWidget(combo, 1)
+
+        # Custom directory selection button
+        self._custom_storage_btn = QPushButton("📁 Custom...")
+        self._custom_storage_btn.setCheckable(True)
+        self._custom_storage_btn.setFixedHeight(28)
+        self._custom_storage_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._custom_storage_btn.setToolTip("Select a custom directory or external drive")
+        self._custom_storage_btn.setStyleSheet(btn_style)
+
+        def _on_custom_clicked():
+            from ui.dialogs.themed_file_dialog import ThemedFileDialog
+            from ui.dialogs.themed_message_box import ThemedMessageBox
+            from utils.paths import is_valid_download_directory, normalize_to_library_root
+            from core.steam_helpers import ensure_steam_library
+
+            chosen_dir = ThemedFileDialog.getExistingDirectory(self, "Select Installation / Steam Library Location")
+            if not chosen_dir:
+                if self._custom_storage_path and self.selected_storage_path == self._custom_storage_path:
+                    self._custom_storage_btn.setChecked(True)
+                else:
+                    self._custom_storage_btn.setChecked(False)
+                    if self.selected_storage_path in direct_paths:
+                        idx = direct_paths.index(self.selected_storage_path)
+                        b = self._storage_btn_group.button(idx)
+                        if b:
+                            b.setChecked(True)
+                return
+
+            norm = normalize_to_library_root(chosen_dir)
+            if not is_valid_download_directory(norm):
+                ThemedMessageBox.warning(
+                    self,
+                    "Invalid Location",
+                    "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
+                )
+                self._custom_storage_btn.setChecked(bool(self._custom_storage_path and self.selected_storage_path == self._custom_storage_path))
+                return
+
+            real_p = os.path.realpath(norm)
+            ensure_steam_library(real_p)
+            self._custom_storage_path = real_p
+            self.selected_storage_path = real_p
+
+            target = storage_targets.describe(real_p)
+            btn_text = f"📁 {target.label} ({target.free})" if target.free else f"📁 {target.label}"
+            self._custom_storage_btn.setText(btn_text)
+            self._custom_storage_btn.setToolTip(target.tooltip)
+            self._custom_storage_btn.setChecked(True)
+
+            self._storage_btn_group.setExclusive(False)
+            for b in self._storage_btn_group.buttons():
+                b.setChecked(False)
+            self._storage_btn_group.setExclusive(True)
+
+            if self._storage_overflow_combo:
+                self._storage_overflow_combo.blockSignals(True)
+                self._storage_overflow_combo.setCurrentIndex(0)
+                self._storage_overflow_combo.blockSignals(False)
+                self._set_overflow_combo_active(False)
+
+            logger.info(f"[SingleDepot] Custom storage library selected: {real_p}")
+
+        self._custom_storage_btn.clicked.connect(_on_custom_clicked)
+        layout.addWidget(self._custom_storage_btn, 1)
+
+        self.remember_storage_chk = QCheckBox("Remember choice")
+        self.remember_storage_chk.setChecked(False)
+        self.remember_storage_chk.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remember_storage_chk.setToolTip("Use this library from now on without asking.\nChange it in Settings → Downloads.")
+        self.remember_storage_chk.setStyleSheet("""
+            QCheckBox {
+                font-size: 8pt;
+                color: rgba(255, 255, 255, 0.7);
+                spacing: 5px;
+                border: none;
+                background: transparent;
+            }
+            QCheckBox:focus {
+                border: none;
+                outline: none;
+            }
+        """)
+        layout.addWidget(self.remember_storage_chk)
 
         # Pre-select priority: preferred -> default -> first
         default_target = storage_targets.preselect(
@@ -702,6 +789,13 @@ class SingleDepotSelectionDialog(QDialog):
                 self._storage_overflow_combo.setCurrentIndex(c_idx)
                 self._storage_overflow_combo.blockSignals(False)
                 self._set_overflow_combo_active(True)
+        elif default_target and getattr(self, "_custom_storage_btn", None):
+            self._custom_storage_path = default_target
+            target = storage_targets.describe(default_target)
+            btn_text = f"📁 {target.label} ({target.free})" if target.free else f"📁 {target.label}"
+            self._custom_storage_btn.setText(btn_text)
+            self._custom_storage_btn.setToolTip(target.tooltip)
+            self._custom_storage_btn.setChecked(True)
 
     def _set_overflow_combo_active(self, active: bool) -> None:
         if not self._storage_overflow_combo:
@@ -874,7 +968,18 @@ class SingleDepotSelectionDialog(QDialog):
         if not self.depot_checkbox.isChecked():
             ThemedMessageBox.warning(self, "No Depots Selected", "Please select the depot to proceed with download.")
             return
+        if hasattr(self, "should_remember_storage") and self.should_remember_storage():
+            chosen = self.get_selected_storage()
+            if chosen and hasattr(self, "_settings") and self._settings:
+                from utils.library_choice import remember_library
+
+                remember_library(chosen, self._settings)
+                logger.info(f"[SingleDepot] Remembered default storage library: {chosen}")
         self.accept()
+
+    def should_remember_storage(self) -> bool:
+        """Whether the user checked the 'Remember choice' toggle for storage."""
+        return bool(getattr(self, "remember_storage_chk", None) and self.remember_storage_chk.isChecked())
 
     # Public API conforming with DepotSelectionDialog
     def get_selected_depots(self) -> List[str]:

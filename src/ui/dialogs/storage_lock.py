@@ -19,22 +19,7 @@ logger = logging.getLogger(__name__)
 _NON_APP_IDS = ("0", "N/A", "unknown")
 
 
-def _normalize_to_library_root(path_str: str) -> str:
-    """If path_str points inside a steamapps folder (e.g. install_path), trim to library root."""
-    if not path_str:
-        return ""
-    try:
-        real = os.path.realpath(path_str)
-        if "steamapps" in real:
-            parts = real.split(os.sep)
-            for i, part in enumerate(parts):
-                if part.lower() == "steamapps":
-                    root = os.sep.join(parts[:i])
-                    if root and os.path.isdir(root):
-                        return root
-        return real
-    except Exception:
-        return str(path_str)
+from utils.paths import normalize_to_library_root as _normalize_to_library_root
 
 
 def resolve_locked_target(parent, app_id, preferred_library_path,

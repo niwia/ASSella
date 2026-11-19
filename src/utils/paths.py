@@ -1,5 +1,8 @@
+import logging
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class Paths:
@@ -113,6 +116,63 @@ def get_jumpscare_gif(filename: str) -> str:
     if user_path.exists():
         return str(user_path)
     return ""
+
+
+def is_blacklisted_system_path(path: str) -> bool:
+    """Check if a path points to a forbidden system or transient directory (/tmp, /proc, AppImage mount, etc.).
+
+    Used to sanitize saved preferences without wiping temporarily unmounted external drives or removable media.
+    """
+    if not path or not isinstance(path, str):
+        return True
+    clean = path.strip()
+    if not clean:
+        return True
+    try:
+        p = Path(clean).expanduser()
+        raw_str = str(p)
+        if raw_str in ("/tmp", "/var/tmp", "/proc", "/sys", "/dev", "/"):
+            return True
+        if raw_str.startswith(("/tmp/", "/var/tmp/", "/proc/", "/sys/", "/dev/")):
+            return True
+        if "/.mount_" in raw_str:
+            return True
+        try:
+            resolved_str = str(p.resolve())
+            if resolved_str in ("/tmp", "/var/tmp", "/proc", "/sys", "/dev", "/"):
+                return True
+            if resolved_str.startswith(("/tmp/", "/var/tmp/", "/proc/", "/sys/", "/dev/")):
+                return True
+            if "/.mount_" in resolved_str:
+                return True
+        except (OSError, RuntimeError) as err:
+            logger.debug("[paths] is_blacklisted_system_path resolve failed: %s", err)
+        return False
+    except (TypeError, ValueError) as err:
+        logger.debug("[paths] is_blacklisted_system_path failed: %s", err)
+        return True
+
+
+def normalize_to_library_root(path_str: str) -> str:
+    """If path_str points inside a steamapps folder (e.g. install_path), trim to library root."""
+    if not path_str or not isinstance(path_str, str):
+        return ""
+    clean = path_str.strip()
+    if not clean:
+        return ""
+    try:
+        import os
+        real = os.path.realpath(os.path.expanduser(clean))
+        if "steamapps" in real:
+            parts = real.split(os.sep)
+            for i, part in enumerate(parts):
+                if part.lower() == "steamapps":
+                    root = os.sep.join(parts[:i])
+                    if root and os.path.isdir(root):
+                        return root
+        return real
+    except Exception:
+        return clean
 
 
 def is_valid_download_directory(path: str) -> bool:

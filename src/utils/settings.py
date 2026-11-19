@@ -72,9 +72,9 @@ def get_settings() -> QSettings:
 
         # Sanitize default_download_directory (e.g. if transient /tmp was left behind)
         try:
-            from utils.paths import is_valid_download_directory
+            from utils.paths import is_blacklisted_system_path
             cur_dl = _settings_local.instance.value("default_download_directory", "", type=str)
-            if cur_dl and not is_valid_download_directory(cur_dl):
+            if cur_dl and is_blacklisted_system_path(cur_dl):
                 _settings_local.instance.setValue("default_download_directory", "")
                 _settings_local.instance.sync()
         except Exception:

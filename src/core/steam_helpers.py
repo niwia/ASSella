@@ -552,6 +552,125 @@ def get_library_index(library_path: str, steam_path: str | None = None) -> int:
         return 0
 
 
+def ensure_steam_library(library_path: str, steam_path: str | None = None) -> Optional[int]:
+    """Ensure a directory is recognized and registered as a Steam library folder in libraryfolders.vdf.
+
+    1. Normalizes the path to library root (stripping steamapps/... if present).
+    2. Ensures <library_path>/steamapps and <library_path>/steamapps/common exist.
+    3. If already registered in libraryfolders.vdf (or is the primary Steam install), returns its index.
+    4. Otherwise, registers a new numeric entry in libraryfolders.vdf, creates libraryfolder.vdf sidecar,
+       and invalidates the library cache so get_steam_libraries() and get_library_index() immediately reflect it.
+    """
+    if not library_path:
+        return None
+
+    from utils.paths import normalize_to_library_root, is_blacklisted_system_path
+    if is_blacklisted_system_path(library_path):
+        return None
+
+    norm_path = normalize_to_library_root(library_path)
+    real_path = os.path.realpath(norm_path)
+
+    # Always ensure local steamapps/common structure exists
+    try:
+        os.makedirs(os.path.join(real_path, "steamapps", "common"), exist_ok=True)
+    except OSError as e:
+        logger.warning(f"ensure_steam_library: could not create steamapps/common in {real_path}: {e}")
+
+    # Ensure sidecar libraryfolder.vdf exists inside steamapps
+    try:
+        sidecar_path = os.path.join(real_path, "steamapps", "libraryfolder.vdf")
+        if not os.path.exists(sidecar_path):
+            with open(sidecar_path, "w", encoding="utf-8") as sf:
+                sf.write('"libraryfolder"\n{\n\t"contentid"\t\t"0"\n\t"label"\t\t""\n}\n')
+    except OSError as e:
+        logger.debug(f"ensure_steam_library: sidecar creation skipped: {e}")
+
+    if not steam_path:
+        steam_path = find_steam_install()
+    if not steam_path:
+        return None
+
+    # If it is the primary Steam install directory, index is 0
+    if os.path.realpath(steam_path) == real_path:
+        return 0
+
+    vdf_path = os.path.join(steam_path, "steamapps", "libraryfolders.vdf")
+    if not os.path.exists(vdf_path):
+        return None
+
+    try:
+        with open(vdf_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+
+        # Check if already present
+        lines = content.split("\n")
+        current_index = None
+        for line in lines:
+            index_match = re.match(r'^\s*"(\d+)"\s*$', line)
+            if index_match:
+                current_index = int(index_match.group(1))
+                continue
+            path_match = re.match(r'^\s*"path"\s*"([^"]+)"', line)
+            if path_match and current_index is not None:
+                p = path_match.group(1).replace("\\\\", "\\")
+                if os.path.realpath(p) == real_path:
+                    return current_index
+
+        # Find all existing numeric indices to allocate next
+        indices = [int(m) for m in re.findall(r'^\s*"(\d+)"\s*$', content, re.MULTILINE)]
+        next_idx = max(indices) + 1 if indices else 1
+
+        new_entry = (
+            f'\t"{next_idx}"\n'
+            f'\t{{\n'
+            f'\t\t"path"\t\t"{real_path}"\n'
+            f'\t\t"label"\t\t""\n'
+            f'\t\t"contentid"\t\t"0"\n'
+            f'\t\t"totalsize"\t\t"0"\n'
+            f'\t\t"update_clean_bytes_tally"\t\t"0"\n'
+            f'\t\t"time_last_update_verified"\t\t"0"\n'
+            f'\t\t"apps"\n'
+            f'\t\t{{\n'
+            f'\t\t}}\n'
+            f'\t}}\n'
+        )
+
+        last_brace = content.rfind("}")
+        if last_brace != -1:
+            updated_content = content[:last_brace] + new_entry + "}\n"
+        else:
+            updated_content = f'"libraryfolders"\n{{\n{new_entry}}}\n'
+
+        # Write atomically with .bak backup
+        bak_path = vdf_path + ".assella.bak"
+        try:
+            if not os.path.exists(bak_path):
+                import shutil
+                shutil.copy2(vdf_path, bak_path)
+        except OSError:
+            pass
+
+        tmp_path = vdf_path + f".tmp.{os.getpid()}"
+        with open(tmp_path, "w", encoding="utf-8") as tf:
+            tf.write(updated_content)
+            tf.flush()
+            os.fsync(tf.fileno())
+        os.replace(tmp_path, vdf_path)
+
+        # Invalidate memory and mtime cache
+        global _cached_steam_libraries, _cached_libraries_vdf_mtime
+        _cached_steam_libraries = None
+        _cached_libraries_vdf_mtime = None
+
+        logger.info(f"Registered new Steam library in libraryfolders.vdf at index {next_idx}: {real_path}")
+        return next_idx
+
+    except Exception as e:
+        logger.warning(f"ensure_steam_library failed for {real_path}: {e}")
+        return None
+
+
 def dispatch_steam_url(url: str) -> bool:
     """Dispatch a steam:// URL (such as steam://install/<appid>) to the active Steam client."""
     import shutil

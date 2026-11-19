@@ -1643,21 +1643,19 @@ class TaskManager(
             )
             return
 
+        from utils.paths import is_valid_download_directory
         from utils.library_choice import remembered_library
 
-        norm_libs = {os.path.normpath(p): p for p in steam_libs}
-        remembered = remembered_library(steam_libs, self.settings)
-        if remembered and (
-            not library_path
-            or os.path.normpath(library_path) not in norm_libs
-        ):
-            library_path = remembered
+        if not library_path or not is_valid_download_directory(library_path):
+            remembered = remembered_library(steam_libs, self.settings)
+            if remembered and is_valid_download_directory(remembered):
+                library_path = remembered
 
-        if (
-            not library_path
-            or os.path.normpath(library_path) not in norm_libs
-        ):
-            if len(steam_libs) == 1:
+        if not library_path or not is_valid_download_directory(library_path):
+            auto_skip = self.settings.value(
+                "auto_skip_single_choice", True, type=bool
+            )
+            if auto_skip and len(steam_libs) == 1:
                 library_path = steam_libs[0]
             else:
                 from ui.dialogs.steamlibrary import SteamLibraryDialog
@@ -1665,8 +1663,15 @@ class TaskManager(
                 accent_c = self.settings.value(
                     "accent_color", "#6c5ce7", type=str
                 )
+                candidate_libs = list(steam_libs)
+                pref = self.settings.value("default_download_directory", "", type=str)
+                if pref and is_valid_download_directory(pref):
+                    real_p = os.path.realpath(pref)
+                    if real_p not in [os.path.realpath(x) for x in candidate_libs]:
+                        candidate_libs.append(real_p)
+
                 lib_dlg = SteamLibraryDialog(
-                    steam_libs, self.main_window, accent_color=accent_c
+                    candidate_libs, self.main_window, accent_color=accent_c
                 )
                 if lib_dlg.exec() and lib_dlg.get_selected_path():
                     library_path = lib_dlg.get_selected_path()
@@ -1675,6 +1680,10 @@ class TaskManager(
                         "[TaskManager] User cancelled Steam library selection"
                     )
                     return
+
+        # Ensure the selected library path is registered with Steam
+        if library_path:
+            steam_helpers.ensure_steam_library(library_path)
 
         if not pin_build:
             pin_build = self.settings.value(
