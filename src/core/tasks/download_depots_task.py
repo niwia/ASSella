@@ -1404,8 +1404,8 @@ class DownloadDepotsTask(QObject):
             if proxy_url:
                 cmd_args.extend(["-proxy", str(proxy_url)])
 
-            # 3. Adaptive CDN latency probe support (default enabled)
-            if settings.value("probe_cdn", True, type=bool):
+            # 3. Adaptive CDN latency probe support (only if stealth proxy is not active)
+            if settings.value("probe_cdn", True, type=bool) and not proxy_url:
                 cmd_args.append("-probe-cdn")
 
             # 4. LoginID session isolation (randomized 32-bit integer)

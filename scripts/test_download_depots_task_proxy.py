@@ -102,6 +102,7 @@ class TestDownloadDepotsTaskProxy(unittest.TestCase):
         proxy_idx = cmd.index("-proxy")
         self.assertEqual(cmd[proxy_idx + 1], "socks5://127.0.0.1:11080")
         self.assertNotIn("-use-lancache", cmd)
+        self.assertNotIn("-probe-cdn", cmd)
 
     @patch("utils.kuroko.Kuroko.probe_alive", return_value=True)
     def test_05_warp_proxy_mode_lifecycle(self, mock_probe):
