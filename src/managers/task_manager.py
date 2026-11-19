@@ -612,6 +612,12 @@ class TaskManager(
             selected_storage = (
                 self.main_window.ui_state.depot_dialog.get_selected_storage()
             )
+            depot_dlg = self.main_window.ui_state.depot_dialog
+            if hasattr(depot_dlg, "should_remember_storage") and depot_dlg.should_remember_storage():
+                if selected_storage:
+                    from utils.library_choice import remember_library
+                    remember_library(selected_storage, self.settings)
+                    logger.info(f"[TaskManager] Remembered storage library: {selected_storage}")
             if self.game_data:
                 self.game_data["selected_depots_list"] = selected_depots
                 self.game_data["selected_dlc_appids"] = list(
@@ -1106,25 +1112,34 @@ class TaskManager(
                 self.job_finished()
                 return
 
+            from utils.paths import is_valid_download_directory
             from utils.library_choice import remembered_library
 
-            norm_libs = {os.path.normpath(p): p for p in steam_libs}
-            remembered = remembered_library(steam_libs, self.settings)
-            if remembered and (
-                not dest_path or os.path.normpath(dest_path) not in norm_libs
-            ):
-                dest_path = remembered
-                self.current_dest_path = dest_path
+            if not dest_path or not is_valid_download_directory(dest_path):
+                remembered = remembered_library(steam_libs, self.settings)
+                if remembered and is_valid_download_directory(remembered):
+                    dest_path = remembered
+                    self.current_dest_path = dest_path
 
-            if not dest_path or os.path.normpath(dest_path) not in norm_libs:
-                if len(steam_libs) == 1:
+            if not dest_path or not is_valid_download_directory(dest_path):
+                auto_skip = self.settings.value(
+                    "auto_skip_single_choice", True, type=bool
+                )
+                if auto_skip and len(steam_libs) == 1:
                     dest_path = steam_libs[0]
                     self.current_dest_path = dest_path
                 else:
                     from ui.dialogs.steamlibrary import SteamLibraryDialog
 
+                    candidate_libs = list(steam_libs)
+                    pref = self.settings.value("default_download_directory", "", type=str)
+                    if pref and is_valid_download_directory(pref):
+                        real_p = os.path.realpath(pref)
+                        if real_p not in [os.path.realpath(x) for x in candidate_libs]:
+                            candidate_libs.append(real_p)
+
                     lib_dlg = SteamLibraryDialog(
-                        steam_libs, self.main_window, accent_color=accent_c
+                        candidate_libs, self.main_window, accent_color=accent_c
                     )
                     if lib_dlg.exec() and lib_dlg.get_selected_path():
                         dest_path = lib_dlg.get_selected_path()
@@ -1135,6 +1150,14 @@ class TaskManager(
                         )
                         self.job_finished()
                         return
+
+            if dest_path:
+                try:
+                    steam_helpers.ensure_steam_library(dest_path)
+                except Exception as e:
+                    logger.warning(
+                        f"[TaskManager] Failed to ensure Steam library {dest_path}: {e}"
+                    )
 
             if action_mode == "ask":
                 from ui.dialogs.native_steam_action_dialog import (

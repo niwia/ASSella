@@ -489,10 +489,18 @@ class DepotSelectionDialog(
         selected_depots = self.get_selected_depots()
 
         # 2. Validate storage selection if enabled
-        if self.show_storage and hasattr(self, "_storage_paths") and self._storage_paths:
+        if self.show_storage:
             if not self.selected_storage_path:
                 ThemedMessageBox.warning(self, "No Storage Selected", "Please select a storage location before proceeding.")
                 return
+
+        # Ensure chosen storage library is registered in Steam libraryfolders.vdf
+        if self.selected_storage_path:
+            try:
+                from core.steam_helpers import ensure_steam_library
+                ensure_steam_library(self.selected_storage_path)
+            except Exception as e:
+                logger.warning(f"[DepotSelection] Failed to register library in Steam config: {e}")
 
         # 3. Promote header image to permanent cache since user is downloading
         if hasattr(self, "app_id") and self.app_id:

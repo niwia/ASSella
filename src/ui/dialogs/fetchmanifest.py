@@ -1497,7 +1497,7 @@ class FetchManifestDialog(QDialog):
                             try:
                                 from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
                                 cache = SteamDBBuildsCache()
-                                c_depots = cache.get_build_depots(rec_bid)
+                                c_depots = cache.get_build_depots(rec_bid, appid=aid_str)
                                 if c_depots:
                                     rec_overrides = {str(d): str(info.get("manifest_id") or info.get("gid", "")) for d, info in c_depots.items()}
                                 else:
@@ -1881,7 +1881,7 @@ class FetchManifestDialog(QDialog):
                                     try:
                                         from core.steamdb_scraper import SteamDBBuildsCache, SteamDBScraper
                                         cache = SteamDBBuildsCache()
-                                        c_depots = cache.get_build_depots(rec_bid)
+                                        c_depots = cache.get_build_depots(rec_bid, appid=appid)
                                         if c_depots:
                                             patch_depots = c_depots
                                         else:

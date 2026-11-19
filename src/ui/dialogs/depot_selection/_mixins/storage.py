@@ -35,14 +35,10 @@ class StorageMixin:
             else ""
         )
 
-        storage_paths = storage_targets.candidate_drives(def_dir, self.preferred_library_path)
+        storage_paths = storage_targets.candidate_drives(def_dir, self.preferred_library_path) or []
         self._storage_paths = storage_paths
         self._storage_btn_group = QButtonGroup(self)
         self._storage_btn_group.setExclusive(True)
-
-        if not storage_paths:
-            layout.addStretch(1)
-            return
 
         # Locked storage display (verify / update / DLC flows over installed
         # games): greyed-out label showing the install location, no choice.
@@ -162,7 +158,7 @@ class StorageMixin:
             layout.addWidget(self._more_storage_combo, 1)
 
         # Custom directory selection button
-        self._custom_storage_btn = QPushButton("📁 Custom...")
+        self._custom_storage_btn = QPushButton("Custom...")
         self._custom_storage_btn.setCheckable(True)
         self._custom_storage_btn.setFixedHeight(28)
         self._custom_storage_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -173,7 +169,6 @@ class StorageMixin:
             from ui.dialogs.themed_file_dialog import ThemedFileDialog
             from ui.dialogs.themed_message_box import ThemedMessageBox
             from utils.paths import is_valid_download_directory, normalize_to_library_root
-            from core.steam_helpers import ensure_steam_library
 
             chosen_dir = ThemedFileDialog.getExistingDirectory(self, "Select Installation / Steam Library Location")
             if not chosen_dir:
@@ -196,12 +191,11 @@ class StorageMixin:
                 return
 
             real_p = os.path.realpath(norm)
-            ensure_steam_library(real_p)
             self._custom_storage_path = real_p
             self.selected_storage_path = real_p
 
             target = storage_targets.describe(real_p)
-            btn_text = f"📁 {target.label} ({target.free})" if target.free else f"📁 {target.label}"
+            btn_text = f"{target.label} ({target.free})" if target.free else target.label
             self._custom_storage_btn.setText(btn_text)
             self._custom_storage_btn.setToolTip(target.tooltip)
             self._custom_storage_btn.setChecked(True)
@@ -224,7 +218,7 @@ class StorageMixin:
         self.remember_storage_chk = QCheckBox("Remember choice")
         self.remember_storage_chk.setChecked(False)
         self.remember_storage_chk.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.remember_storage_chk.setToolTip("Use this library from now on without asking.\nChange it in Settings → Downloads.")
+        self.remember_storage_chk.setToolTip("Use this library from now on without asking.\nChange it in Settings -> Downloads.")
         self.remember_storage_chk.setStyleSheet("""
             QCheckBox {
                 font-size: 8pt;
@@ -274,7 +268,7 @@ class StorageMixin:
         elif default_target and getattr(self, "_custom_storage_btn", None):
             self._custom_storage_path = default_target
             target = storage_targets.describe(default_target)
-            btn_text = f"📁 {target.label} ({target.free})" if target.free else f"📁 {target.label}"
+            btn_text = f"{target.label} ({target.free})" if target.free else target.label
             self._custom_storage_btn.setText(btn_text)
             self._custom_storage_btn.setToolTip(target.tooltip)
             self._custom_storage_btn.setChecked(True)

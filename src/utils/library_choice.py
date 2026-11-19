@@ -48,9 +48,11 @@ def _match(path: str, libraries: Iterable[str]) -> Optional[str]:
     if not path:
         return None
     norm = os.path.normpath(path)
+    real = os.path.realpath(os.path.expanduser(path))
     for lib in libraries:
-        if os.path.normpath(str(lib)) == norm:
-            return str(lib)
+        lib_str = str(lib)
+        if os.path.normpath(lib_str) == norm or os.path.realpath(os.path.expanduser(lib_str)) == real:
+            return lib_str
     return None
 
 

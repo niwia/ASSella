@@ -114,7 +114,7 @@ def test_ensure_steam_library():
     idx = steam_helpers.ensure_steam_library(custom_lib, steam_path=mock_steam)
     check(idx == 1, f"new library assigned index 1 (got {idx})")
     check(os.path.isdir(os.path.join(custom_lib, "steamapps", "common")), "steamapps/common created")
-    check(os.path.isfile(os.path.join(custom_lib, "steamapps", "libraryfolder.vdf")), "libraryfolder.vdf sidecar created")
+    check(os.path.isfile(os.path.join(custom_lib, "libraryfolder.vdf")), "libraryfolder.vdf sidecar created at library root")
 
     # Verify get_library_index finds it
     resolved_idx = steam_helpers.get_library_index(custom_lib, steam_path=mock_steam)
@@ -221,6 +221,35 @@ def test_steam_library_dialog_custom():
         dlg.close()
 
 
+def test_zero_libraries_custom_ui():
+    print("=== 7. Zero libraries detected still allows Custom folder ===")
+    from unittest.mock import patch
+    from ui.dialogs.depot_selection.dialog import DepotSelectionDialog
+    from ui.dialogs.single_depot_dialog import SingleDepotSelectionDialog
+
+    with patch("core.steam_helpers.get_steam_libraries", return_value=[]):
+        depots_single = {"100": {"desc": "Main Depot", "size": 1024}}
+        dlg_single = SingleDepotSelectionDialog(
+            "999", "Zero Lib Single", depots_single
+        )
+        check(hasattr(dlg_single, "_custom_storage_btn"), "SingleDepot has _custom_storage_btn even with 0 libs")
+        check(hasattr(dlg_single, "remember_storage_chk"), "SingleDepot has remember_storage_chk even with 0 libs")
+        check(dlg_single._custom_storage_btn.text() == "Custom...", "SingleDepot custom button has clean text without emoji")
+        dlg_single.close()
+
+        depots_multi = {
+            "100": {"desc": "Depot 1", "size": 1024},
+            "101": {"desc": "Depot 2", "size": 2048},
+        }
+        dlg_multi = DepotSelectionDialog(
+            "998", "Zero Lib Multi", depots_multi
+        )
+        check(hasattr(dlg_multi, "_custom_storage_btn"), "MultiDepot has _custom_storage_btn even with 0 libs")
+        check(hasattr(dlg_multi, "remember_storage_chk"), "MultiDepot has remember_storage_chk even with 0 libs")
+        check(dlg_multi._custom_storage_btn.text() == "Custom...", "MultiDepot custom button has clean text without emoji")
+        dlg_multi.close()
+
+
 def main() -> int:
     test_blacklisted_system_path()
     test_normalize_to_library_root()
@@ -228,6 +257,7 @@ def main() -> int:
     test_library_choice_custom_persistence()
     test_dialogs_custom_storage_ui()
     test_steam_library_dialog_custom()
+    test_zero_libraries_custom_ui()
 
     # Clean up test work dir
     if TEST_WORK_DIR.exists():

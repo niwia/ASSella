@@ -163,7 +163,7 @@ def normalize_to_library_root(path_str: str) -> str:
     try:
         import os
         real = os.path.realpath(os.path.expanduser(clean))
-        if "steamapps" in real:
+        if "steamapps" in real.lower():
             parts = real.split(os.sep)
             for i, part in enumerate(parts):
                 if part.lower() == "steamapps":
@@ -177,23 +177,18 @@ def normalize_to_library_root(path_str: str) -> str:
 
 def is_valid_download_directory(path: str) -> bool:
     """Validates that a directory path is usable as a download/Steam library location.
-    
+
     Rejects empty paths, non-existent directories, and transient system/mount directories
-    such as /tmp, /var/tmp, AppImage mount directories, /proc, /dev, etc.
+    such as /tmp, /var/tmp, AppImage mount directories, /proc, /dev, root, etc.
     """
     if not path or not isinstance(path, str):
         return False
     clean = path.strip()
-    if not clean:
+    if not clean or is_blacklisted_system_path(clean):
         return False
     try:
         p = Path(clean).expanduser().resolve()
         if not p.is_dir():
-            return False
-        real_str = str(p)
-        if real_str in ("/tmp", "/var/tmp", "/proc", "/sys", "/dev"):
-            return False
-        if real_str.startswith(("/tmp/", "/var/tmp/", "/proc/", "/sys/", "/dev/")):
             return False
         return True
     except Exception:

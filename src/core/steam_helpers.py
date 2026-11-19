@@ -577,9 +577,9 @@ def ensure_steam_library(library_path: str, steam_path: str | None = None) -> Op
     except OSError as e:
         logger.warning(f"ensure_steam_library: could not create steamapps/common in {real_path}: {e}")
 
-    # Ensure sidecar libraryfolder.vdf exists inside steamapps
+    # Ensure sidecar libraryfolder.vdf exists at library root
     try:
-        sidecar_path = os.path.join(real_path, "steamapps", "libraryfolder.vdf")
+        sidecar_path = os.path.join(real_path, "libraryfolder.vdf")
         if not os.path.exists(sidecar_path):
             with open(sidecar_path, "w", encoding="utf-8") as sf:
                 sf.write('"libraryfolder"\n{\n\t"contentid"\t\t"0"\n\t"label"\t\t""\n}\n')
@@ -621,10 +621,11 @@ def ensure_steam_library(library_path: str, steam_path: str | None = None) -> Op
         indices = [int(m) for m in re.findall(r'^\s*"(\d+)"\s*$', content, re.MULTILINE)]
         next_idx = max(indices) + 1 if indices else 1
 
+        vdf_escaped_path = real_path.replace("\\", "\\\\")
         new_entry = (
             f'\t"{next_idx}"\n'
             f'\t{{\n'
-            f'\t\t"path"\t\t"{real_path}"\n'
+            f'\t\t"path"\t\t"{vdf_escaped_path}"\n'
             f'\t\t"label"\t\t""\n'
             f'\t\t"contentid"\t\t"0"\n'
             f'\t\t"totalsize"\t\t"0"\n'
@@ -642,26 +643,37 @@ def ensure_steam_library(library_path: str, steam_path: str | None = None) -> Op
         else:
             updated_content = f'"libraryfolders"\n{{\n{new_entry}}}\n'
 
-        # Write atomically with .bak backup
-        bak_path = vdf_path + ".assella.bak"
-        try:
-            if not os.path.exists(bak_path):
-                import shutil
-                shutil.copy2(vdf_path, bak_path)
-        except OSError:
-            pass
+        def _write_vdf_atomic(target_file: str, data: str):
+            bak = target_file + ".assella.bak"
+            try:
+                if not os.path.exists(bak):
+                    import shutil
+                    shutil.copy2(target_file, bak)
+            except OSError:
+                pass
+            tmp = target_file + f".tmp.{os.getpid()}"
+            with open(tmp, "w", encoding="utf-8") as tf:
+                tf.write(data)
+                tf.flush()
+                os.fsync(tf.fileno())
+            os.replace(tmp, target_file)
 
-        tmp_path = vdf_path + f".tmp.{os.getpid()}"
-        with open(tmp_path, "w", encoding="utf-8") as tf:
-            tf.write(updated_content)
-            tf.flush()
-            os.fsync(tf.fileno())
-        os.replace(tmp_path, vdf_path)
+        # Write to steamapps/libraryfolders.vdf
+        _write_vdf_atomic(vdf_path, updated_content)
 
-        # Invalidate memory and mtime cache
+        # Mirror update to config/libraryfolders.vdf if present
+        config_vdf = os.path.join(steam_path, "config", "libraryfolders.vdf")
+        if os.path.exists(config_vdf):
+            try:
+                _write_vdf_atomic(config_vdf, updated_content)
+            except OSError as err:
+                logger.debug(f"ensure_steam_library: config mirror skipped: {err}")
+
+        # Invalidate memory, mtime, and SteamEnv cache
         global _cached_steam_libraries, _cached_libraries_vdf_mtime
         _cached_steam_libraries = None
         _cached_libraries_vdf_mtime = None
+        invalidate_steam_env_cache()
 
         logger.info(f"Registered new Steam library in libraryfolders.vdf at index {next_idx}: {real_path}")
         return next_idx

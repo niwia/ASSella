@@ -1463,26 +1463,27 @@ class ZipImportConfirmationDialog(QDialog):
                 preselect_idx = idx
 
         self.dest_combo.addItem("Custom Folder...", "custom")
+        self._prev_dest_idx = preselect_idx
 
         def _on_dest_combo_changed(index):
             data = self.dest_combo.itemData(index)
             if data == "custom":
                 from ui.dialogs.themed_file_dialog import ThemedFileDialog
                 from utils.paths import is_valid_download_directory, normalize_to_library_root
-                from core.steam_helpers import ensure_steam_library
 
                 path = ThemedFileDialog.getExistingDirectory(self, "Select Custom Download Location")
                 if path:
                     norm = normalize_to_library_root(path)
                     if is_valid_download_directory(norm):
-                        ensure_steam_library(norm)
                         existing_idx = self.dest_combo.findData(norm)
                         if existing_idx >= 0:
                             self.dest_combo.setCurrentIndex(existing_idx)
+                            self._prev_dest_idx = existing_idx
                         else:
                             insert_pos = self.dest_combo.count() - 1
                             self.dest_combo.insertItem(insert_pos, f"Custom ({norm})", norm)
                             self.dest_combo.setCurrentIndex(insert_pos)
+                            self._prev_dest_idx = insert_pos
                     else:
                         from ui.dialogs.themed_message_box import ThemedMessageBox
                         ThemedMessageBox.warning(
@@ -1490,9 +1491,17 @@ class ZipImportConfirmationDialog(QDialog):
                             "Invalid Location",
                             "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
                         )
-                        self.dest_combo.setCurrentIndex(0)
+                        fallback_idx = self._prev_dest_idx if (self._prev_dest_idx >= 0 and self.dest_combo.itemData(self._prev_dest_idx) != "custom") else -1
+                        self.dest_combo.blockSignals(True)
+                        self.dest_combo.setCurrentIndex(fallback_idx)
+                        self.dest_combo.blockSignals(False)
                 else:
-                    self.dest_combo.setCurrentIndex(0)
+                    fallback_idx = self._prev_dest_idx if (self._prev_dest_idx >= 0 and self.dest_combo.itemData(self._prev_dest_idx) != "custom") else -1
+                    self.dest_combo.blockSignals(True)
+                    self.dest_combo.setCurrentIndex(fallback_idx)
+                    self.dest_combo.blockSignals(False)
+            elif data:
+                self._prev_dest_idx = index
 
         self.dest_combo.currentIndexChanged.connect(_on_dest_combo_changed)
 
@@ -1665,8 +1674,9 @@ class ZipImportConfirmationDialog(QDialog):
         """
         if self.dest_combo.count() > 0 and self.dest_combo.currentData():
             chosen_lib = self.dest_combo.currentData()
-            self.result_data["library_path"] = chosen_lib
-            logger.info(f"[ZipConfirmDialog] User selected destination library: {chosen_lib}")
+            if chosen_lib and chosen_lib != "custom":
+                self.result_data["library_path"] = chosen_lib
+                logger.info(f"[ZipConfirmDialog] User selected destination library: {chosen_lib}")
 
         missing_mfs = self.result_data.get("missing_manifests", {})
         self.loading_cancel_btn.setVisible(False)
@@ -1948,7 +1958,9 @@ class ZipImportConfirmationDialog(QDialog):
         if self.result_data.get("is_installed") and self.result_data.get("library_path"):
             target_lib = self.result_data["library_path"]
         elif hasattr(self, "dest_combo") and self.dest_combo.currentData():
-            target_lib = self.dest_combo.currentData()
+            val = self.dest_combo.currentData()
+            if val and val != "custom":
+                target_lib = val
         if target_lib:
             meta["library_path"] = target_lib
 
@@ -1957,6 +1969,13 @@ class ZipImportConfirmationDialog(QDialog):
         return meta
 
     def accept(self):
+        target_lib = self.result_data.get("library_path")
+        if target_lib and target_lib != "custom":
+            try:
+                from core.steam_helpers import ensure_steam_library
+                ensure_steam_library(target_lib)
+            except Exception as e:
+                logger.warning(f"[ZipConfirmDialog] Failed to register library in Steam config: {e}")
         if getattr(self, "movie", None):
             try:
                 self.movie.stop()

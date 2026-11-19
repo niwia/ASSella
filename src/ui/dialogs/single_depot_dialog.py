@@ -559,14 +559,10 @@ class SingleDepotSelectionDialog(QDialog):
             preferred_first=True,
         )
 
-        self._storage_paths = storage_paths
+        self._storage_paths = storage_paths or []
         self._storage_btn_group = QButtonGroup(self)
         self._storage_btn_group.setExclusive(True)
         self._custom_storage_path = None
-
-        if not storage_paths:
-            layout.addStretch(1)
-            return
 
         # Locked storage display (verify / update / DLC flows over installed
         # games): greyed-out label showing the install location, no choice.
@@ -687,7 +683,7 @@ class SingleDepotSelectionDialog(QDialog):
             layout.addWidget(combo, 1)
 
         # Custom directory selection button
-        self._custom_storage_btn = QPushButton("📁 Custom...")
+        self._custom_storage_btn = QPushButton("Custom...")
         self._custom_storage_btn.setCheckable(True)
         self._custom_storage_btn.setFixedHeight(28)
         self._custom_storage_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -698,7 +694,6 @@ class SingleDepotSelectionDialog(QDialog):
             from ui.dialogs.themed_file_dialog import ThemedFileDialog
             from ui.dialogs.themed_message_box import ThemedMessageBox
             from utils.paths import is_valid_download_directory, normalize_to_library_root
-            from core.steam_helpers import ensure_steam_library
 
             chosen_dir = ThemedFileDialog.getExistingDirectory(self, "Select Installation / Steam Library Location")
             if not chosen_dir:
@@ -724,12 +719,11 @@ class SingleDepotSelectionDialog(QDialog):
                 return
 
             real_p = os.path.realpath(norm)
-            ensure_steam_library(real_p)
             self._custom_storage_path = real_p
             self.selected_storage_path = real_p
 
             target = storage_targets.describe(real_p)
-            btn_text = f"📁 {target.label} ({target.free})" if target.free else f"📁 {target.label}"
+            btn_text = f"{target.label} ({target.free})" if target.free else target.label
             self._custom_storage_btn.setText(btn_text)
             self._custom_storage_btn.setToolTip(target.tooltip)
             self._custom_storage_btn.setChecked(True)
@@ -753,7 +747,7 @@ class SingleDepotSelectionDialog(QDialog):
         self.remember_storage_chk = QCheckBox("Remember choice")
         self.remember_storage_chk.setChecked(False)
         self.remember_storage_chk.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.remember_storage_chk.setToolTip("Use this library from now on without asking.\nChange it in Settings → Downloads.")
+        self.remember_storage_chk.setToolTip("Use this library from now on without asking.\nChange it in Settings -> Downloads.")
         self.remember_storage_chk.setStyleSheet("""
             QCheckBox {
                 font-size: 8pt;
@@ -792,7 +786,7 @@ class SingleDepotSelectionDialog(QDialog):
         elif default_target and getattr(self, "_custom_storage_btn", None):
             self._custom_storage_path = default_target
             target = storage_targets.describe(default_target)
-            btn_text = f"📁 {target.label} ({target.free})" if target.free else f"📁 {target.label}"
+            btn_text = f"{target.label} ({target.free})" if target.free else target.label
             self._custom_storage_btn.setText(btn_text)
             self._custom_storage_btn.setToolTip(target.tooltip)
             self._custom_storage_btn.setChecked(True)
@@ -968,6 +962,15 @@ class SingleDepotSelectionDialog(QDialog):
         if not self.depot_checkbox.isChecked():
             ThemedMessageBox.warning(self, "No Depots Selected", "Please select the depot to proceed with download.")
             return
+        if self.show_storage and not self.selected_storage_path:
+            ThemedMessageBox.warning(self, "No Storage Selected", "Please select a storage location before proceeding.")
+            return
+        if self.selected_storage_path:
+            try:
+                from core.steam_helpers import ensure_steam_library
+                ensure_steam_library(self.selected_storage_path)
+            except Exception as e:
+                logger.warning(f"[SingleDepot] Failed to register library in Steam config: {e}")
         if hasattr(self, "should_remember_storage") and self.should_remember_storage():
             chosen = self.get_selected_storage()
             if chosen and hasattr(self, "_settings") and self._settings:
@@ -1341,6 +1344,8 @@ class SingleDepotSelectionDialog(QDialog):
             """
             for btn in self._storage_btn_group.buttons():
                 btn.setStyleSheet(btn_style)
+            if hasattr(self, "_custom_storage_btn") and self._custom_storage_btn:
+                self._custom_storage_btn.setStyleSheet(btn_style)
 
         self.update()
 

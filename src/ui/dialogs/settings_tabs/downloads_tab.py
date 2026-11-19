@@ -196,6 +196,8 @@ def create_downloads_tab(dialog) -> QWidget:
         dialog.dl_location_combo.insertItem(1, lbl, current_val)
         dialog.dl_location_combo.setCurrentIndex(1)
 
+    dialog._prev_dl_location_idx = dialog.dl_location_combo.currentIndex()
+
     def on_dl_location_changed(index):
         data = dialog.dl_location_combo.itemData(index)
         if data == "custom":
@@ -207,19 +209,27 @@ def create_downloads_tab(dialog) -> QWidget:
                     existing_idx = dialog.dl_location_combo.findData(norm)
                     if existing_idx >= 0:
                         dialog.dl_location_combo.setCurrentIndex(existing_idx)
+                        dialog._prev_dl_location_idx = existing_idx
                     else:
                         insert_pos = dialog.dl_location_combo.count() - 1
                         dialog.dl_location_combo.insertItem(insert_pos, _fmt_path(norm), norm)
                         dialog.dl_location_combo.setCurrentIndex(insert_pos)
+                        dialog._prev_dl_location_idx = insert_pos
                 else:
                     ThemedMessageBox.warning(
                         dialog,
                         "Invalid Location",
                         "System temporary directories (/tmp, AppImage mounts, etc.) cannot be used as a download location.",
                     )
-                    dialog.dl_location_combo.setCurrentIndex(0)
+                    dialog.dl_location_combo.blockSignals(True)
+                    dialog.dl_location_combo.setCurrentIndex(dialog._prev_dl_location_idx)
+                    dialog.dl_location_combo.blockSignals(False)
             else:
-                dialog.dl_location_combo.setCurrentIndex(0)
+                dialog.dl_location_combo.blockSignals(True)
+                dialog.dl_location_combo.setCurrentIndex(dialog._prev_dl_location_idx)
+                dialog.dl_location_combo.blockSignals(False)
+        else:
+            dialog._prev_dl_location_idx = index
 
     dialog.dl_location_combo.currentIndexChanged.connect(on_dl_location_changed)
     size_control(dialog.dl_location_combo, "md")

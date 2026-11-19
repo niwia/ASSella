@@ -771,5 +771,7 @@ class BuildUIMixin:
             """
             for btn in self._storage_btn_group.buttons():
                 btn.setStyleSheet(btn_style)
+            if hasattr(self, "_custom_storage_btn") and self._custom_storage_btn:
+                self._custom_storage_btn.setStyleSheet(btn_style)
 
         self.update()

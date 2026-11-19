@@ -244,7 +244,6 @@ class SteamLibraryDialog(QDialog):
         def _on_add_custom():
             from ui.dialogs.themed_file_dialog import ThemedFileDialog
             from utils.paths import is_valid_download_directory, normalize_to_library_root
-            from core.steam_helpers import ensure_steam_library
 
             chosen = ThemedFileDialog.getExistingDirectory(self, "Select Custom Steam Library / Folder")
             if not chosen:
@@ -258,7 +257,6 @@ class SteamLibraryDialog(QDialog):
                 )
                 return
             real_p = os.path.realpath(norm)
-            ensure_steam_library(real_p)
 
             # Check if already present in card widgets
             for item in self.card_widgets:
@@ -271,6 +269,7 @@ class SteamLibraryDialog(QDialog):
             list_lay.insertWidget(list_lay.count() - 1, card)
             if real_p not in self.library_paths:
                 self.library_paths.append(real_p)
+            scroll.setFixedHeight(min(len(self.card_widgets) * 64 + 10, 220))
             self._update_all_card_styles()
 
         self.add_custom_btn.clicked.connect(_on_add_custom)
@@ -499,6 +498,13 @@ class SteamLibraryDialog(QDialog):
 
             remember_library(self.selected_path, self.settings)
             logger.info(f"[SteamLibraryDialog] Remembered default storage library: {self.selected_path}")
+
+        if self.selected_path:
+            try:
+                from core.steam_helpers import ensure_steam_library
+                ensure_steam_library(self.selected_path)
+            except Exception as e:
+                logger.warning(f"[SteamLibraryDialog] Failed to register library in Steam config: {e}")
 
         logger.info(f"User selected Steam library: {self.selected_path}")
         super().accept()
