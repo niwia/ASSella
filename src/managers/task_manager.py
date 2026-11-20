@@ -82,6 +82,7 @@ class TaskManager(
         self.workshop_task = None
         self.workshop_runner = None
         self.is_awaiting_workshop_stop = False
+        self.active_workshop_job_id = None
         self.achievement_task = None
         self.achievement_task_runner = None
         self.achievement_worker = None
@@ -1356,6 +1357,7 @@ class TaskManager(
         self.current_job = display_name
         self.current_job_metadata = {"game_name": display_name}
         self.game_data = {"game_name": display_name, "appid": "Workshop"}
+        self.active_workshop_job_id = workshop_data.get("job_id")
         self._job_steps_completed.clear()
 
         self._init_simplified_stages()
@@ -1410,6 +1412,13 @@ class TaskManager(
         When Steam marks the game StateFlags=4 (Fully Installed) in appmanifest_<appid>.acf,
         automatically trigger an async library scan so the game appears in the Library tab.
         """
+        watchers = getattr(self, "_vapor_watchers", None)
+        if watchers is None:
+            watchers = self._vapor_watchers = {}
+        if appid in watchers:
+            logger.debug(f"[VaporWatcher] Watcher already active for AppID {appid}")
+            return
+
         try:
             from core.steam_helpers import get_steam_env
 
@@ -1423,6 +1432,8 @@ class TaskManager(
                 )
                 return
 
+            watchers[appid] = True
+            closed = False
             watcher = QFileSystemWatcher(self)
             paths_to_watch = []
             for s_dir in steamapps_dirs:
@@ -1441,6 +1452,14 @@ class TaskManager(
             poll_timer.setInterval(15 * 1000)
 
             def _cleanup():
+                nonlocal closed
+                # One ACF write fires both directoryChanged and fileChanged, so
+                # cleanup can be requested twice; touching an already-deleted
+                # watcher inside a Qt slot aborts the process in PyQt6.
+                if closed:
+                    return
+                closed = True
+                watchers.pop(appid, None)
                 try:
                     if timeout_timer.isActive():
                         timeout_timer.stop()
@@ -1452,11 +1471,15 @@ class TaskManager(
                     logger.debug(
                         f"[VaporWatcher] Cleanup error for {appid}: {ex}"
                     )
-                watcher.deleteLater()
-                timeout_timer.deleteLater()
-                poll_timer.deleteLater()
+                for obj in (watcher, timeout_timer, poll_timer):
+                    try:
+                        obj.deleteLater()
+                    except RuntimeError:
+                        pass
 
             def _check_acf():
+                if closed:
+                    return
                 for s_dir in steamapps_dirs:
                     acf_path = s_dir / f"appmanifest_{appid}.acf"
                     if not acf_path.exists():
@@ -1563,6 +1586,7 @@ class TaskManager(
             _check_acf()
 
         except Exception as e:
+            watchers.pop(appid, None)
             logger.debug(
                 f"[VaporWatcher] Error setting up watcher for AppID {appid}: {e}"
             )
@@ -1991,6 +2015,7 @@ class TaskManager(
         self.is_cancelling = False
         self._error_reported_for_job = False
         self._delete_files_on_cancel = None
+        self.active_workshop_job_id = None
 
         if self.speed_monitor_task:
             self.is_awaiting_speed_monitor_stop = True
@@ -2226,8 +2251,9 @@ class TaskManager(
             except Exception as e:
                 logger.error(f"Failed to kill process: {e}")
 
-            self.download_task.process = None
-            self.download_task.process_pid = None
+            # Leave the handle owned by the worker thread; nulling it here raced
+            # the reader/wait path (AttributeError / false success). The task
+            # reaps and clears it itself.
 
     def _cleanup_cancelled_job_files(self):
         if not self.game_data or not self.current_dest_path:

@@ -52,7 +52,7 @@ def add_decryption_keys_batch(
                     continue
                 if editor.add_key(did, k, comment=comm):
                     any_added = True
-    return any_added
+    return any_added and editor.committed_successfully
 
 def get_decryption_keys(config_path: Path) -> Dict[str, str]:
     """Get mapping of {depot_id: key} currently in DecryptionKeys section."""

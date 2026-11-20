@@ -376,17 +376,16 @@ def _add_map_item_in_memory(
         content, bounds = _expand_flow_section_if_needed(content, section_name, bounds)
         _, content_start, section_end = bounds
         sec_content = content[content_start:section_end]
+        # A '#' only starts a comment when preceded by whitespace (YAML rule),
+        # so values like `-x=#foo` or hashes containing '#' are not truncated.
         map_pattern = re.compile(
-            rf"^[ \t]*['\"]?{re.escape(key)}['\"]?[ \t]*:[ \t]*([^\r\n#]+)(?:#[^\r\n]*)?$",
+            rf"^[ \t]*['\"]?{re.escape(key)}['\"]?[ \t]*:[ \t]*(.+?)(?:[ \t]+#(.*))?$",
             re.MULTILINE,
         )
         m = map_pattern.search(sec_content)
         if m:
             existing_val = m.group(1).strip().strip('"').strip("'")
-            existing_comment = ""
-            m_comm = re.search(r"#[ \t]*(.*)$", m.group(0))
-            if m_comm:
-                existing_comment = m_comm.group(1).strip()
+            existing_comment = (m.group(2) or "").strip()
 
             final_comment = comment if comment else existing_comment
             final_suffix = f" # {final_comment}" if final_comment else ""

@@ -99,6 +99,15 @@ def add_fake_app_id(
     if not fake_appid:
         fake_appid = get_fake_appid_for_online()
 
+    # These values are interpolated straight into YAML; a newline would inject
+    # extra entries into FakeAppIds.
+    app_id = str(app_id).strip()
+    fake_appid = str(fake_appid).strip()
+    game_name = str(game_name or "").replace("\r", " ").replace("\n", " ").strip()
+    if not app_id or not fake_appid or any(ch in app_id + fake_appid for ch in "\r\n"):
+        logger.error(f"Refusing to write invalid FakeAppIds entry: {app_id!r} -> {fake_appid!r}")
+        return False
+
     suffix = "Spacewar" if fake_appid == "480" else "SLSonline"
 
     try:
@@ -125,12 +134,34 @@ def add_fake_app_id(
         if bounds:
             _, content_start, section_end = bounds
             section_content = content[content_start:section_end]
+            # Match on the AppID alone. Including the target value let a
+            # re-mapped app append a duplicate key, and the read paths then
+            # disagreed about which target applies.
             existing_pattern = re.compile(
-                rf"^[ \t]*['\"]?{re.escape(str(app_id))}['\"]?[ \t]*:[ \t]*{re.escape(str(fake_appid))}(?:[ \t]+#[^\r\n]*|[ \t]*)$",
+                rf"^[ \t]*['\"]?{re.escape(app_id)}['\"]?[ \t]*:[^\r\n]*$",
                 re.MULTILINE,
             )
-            if existing_pattern.search(section_content):
-                return False
+            existing_match = existing_pattern.search(section_content)
+            if existing_match:
+                current_value = re.match(
+                    rf"^[ \t]*['\"]?{re.escape(app_id)}['\"]?[ \t]*:[ \t]*(\S+)",
+                    existing_match.group(0),
+                )
+                if (
+                    current_value
+                    and current_value.group(1).strip().strip('"').strip("'") == fake_appid
+                ):
+                    return False
+                new_section = (
+                    section_content[: existing_match.start()]
+                    + entry_line.rstrip("\n")
+                    + section_content[existing_match.end():]
+                )
+                new_content = content[:content_start] + new_section + content[section_end:]
+                if not _atomic_write(config_path, new_content):
+                    return False
+                logger.info(f"Updated AppID '{app_id}' in FakeAppIds in {config_path}")
+                return True
 
             lines = section_content.splitlines(keepends=True)
             last_entry_end_offset = 0

@@ -223,18 +223,14 @@ def get_shared_client():
 
 
 def disconnect_shared_client():
-    """Disconnect the shared Steam client, if one was ever created.
+    """Intentionally a no-op.
 
-    Runs the call on the worker thread (the client has thread affinity there),
-    rather than touching it from the calling thread.
+    The shared anonymous Steam client is kept alive between jobs: tearing it
+    down would force a reconnect (slow) on the next check, and issuing a
+    disconnect through the worker's command queue can race its own reconnect
+    logic. Kept as a named hook so call sites remain explicit.
     """
-    worker = _steam_worker_instance
-    if worker is None:
-        return
-    try:
-        worker.execute("disconnect", timeout=5)
-    except Exception as e:
-        logger.debug(f"disconnect_shared_client: {e}")
+    return
 
 
 CACHE_DIR = os.path.join(tempfile.gettempdir(), "mistwalker_api_cache")

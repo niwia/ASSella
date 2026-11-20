@@ -256,6 +256,14 @@ class TaskRunner(QObject):
                 runner.stop(wait_ms=500, terminate_on_timeout=False)
             except RuntimeError as e:
                 logger.debug(f"Failed to stop TaskRunner during shutdown: {e}")
+        # Also wait (bounded) on threads that were retired earlier. Destroying a
+        # QThread while it is still running aborts the process at exit.
+        for thread in list(cls._retiring_threads):
+            try:
+                if thread.wait(1000):
+                    cls._retiring_threads.discard(thread)
+            except RuntimeError:
+                cls._retiring_threads.discard(thread)
 
     @classmethod
     def _ensure_shutdown_hook(cls):

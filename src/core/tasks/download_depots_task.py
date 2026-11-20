@@ -53,6 +53,9 @@ class DownloadDepotsTask(QObject):
         self.percentage_regex = re.compile(r"(\d{1,3}(?:\.\d{1,2})?)%")
         self.last_percentage = -1
         self.process: Optional[subprocess.Popen] = None
+        # Set once the task has emitted completed/error, so a stray return path
+        # can be caught in run()'s finally instead of leaving the queue stalled.
+        self._terminal_signal_emitted = False
 
         self.total_download_size_for_this_job = 0
         self.actual_download_bytes_for_this_job = 0
@@ -82,6 +85,16 @@ class DownloadDepotsTask(QObject):
         self._kuroko_manager = None
         self._proxy_info_tag = None
 
+    def _emit_completed(self):
+        """Emit the terminal 'task ended' signal exactly once."""
+        self._terminal_signal_emitted = True
+        self.completed.emit()
+
+    def _emit_error(self, payload):
+        """Emit the terminal error signal exactly once."""
+        self._terminal_signal_emitted = True
+        self.error.emit(payload)
+
     @property
     def is_running_flag(self) -> bool:
         """Property to access the private running state safely."""
@@ -103,6 +116,8 @@ class DownloadDepotsTask(QObject):
         Main execution method to download selected depots.
         """
         logger.info(f"Download task starting for {len(selected_depots)} depots.")
+        self._terminal_signal_emitted = False
+        self._temp_files_cleaned = False
         current_cmd: Optional[List[str]] = None
 
         try:
@@ -113,7 +128,7 @@ class DownloadDepotsTask(QObject):
                     "ERROR: .NET 9 runtime is required and could not be installed automatically."
                 )
                 logger.critical(".NET 9 runtime not available")
-                self.error.emit((RuntimeError, ".NET 9 runtime not available", None))
+                self._emit_error((RuntimeError, ".NET 9 runtime not available", None))
                 return
 
             settings = get_settings()
@@ -126,6 +141,7 @@ class DownloadDepotsTask(QObject):
                 except Exception as e:
                     logger.warning(f"[DownloadDepotsTask] Stealth proxy setup failed: {e}")
                     if not self._is_running:
+                        self._emit_completed()
                         return
                     from utils.kuroko import prompt_stealth_fallback
                     user_action = prompt_stealth_fallback(str(e))
@@ -142,10 +158,12 @@ class DownloadDepotsTask(QObject):
                         self._is_running = False
                         self.progress.emit("Download cancelled due to stealth connection failure.")
                         logger.info(f"[DownloadDepotsTask] User cancelled download on stealth failure: {e}")
+                        self._emit_completed()
                         return
 
             if not self._is_running:
                 logger.info("[DownloadDepotsTask] Download task stopped during stealth setup.")
+                self._emit_completed()
                 return
 
             commands, skipped_depots, depot_sizes = self._prepare_downloads(
@@ -160,12 +178,12 @@ class DownloadDepotsTask(QObject):
                     )
                     logger.error(f"[DownloadDepotsTask] {err_msg}")
                     self.progress.emit(f"ERROR: {err_msg}")
-                    self.error.emit((RuntimeError, err_msg, None))
+                    self._emit_error((RuntimeError, err_msg, None))
                 else:
                     self.progress.emit(
                         "No valid download commands to execute. Task finished."
                     )
-                    self.completed.emit()
+                    self._emit_completed()
                 return
 
             total_depots = len(commands)
@@ -205,7 +223,7 @@ class DownloadDepotsTask(QObject):
                 return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                 if not self._is_running:
                     logger.info("Download task stopping because stop() was called.")
-                    self.completed.emit()
+                    self._emit_completed()
                     return
 
                 # 1. Automatic LanCache fallback: if LanCache was used and failed, retry directly
@@ -223,7 +241,7 @@ class DownloadDepotsTask(QObject):
                     return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                     if not self._is_running:
                         logger.info("Download task stopping because stop() was called.")
-                        self.completed.emit()
+                        self._emit_completed()
                         return
 
                 # 2. Check for mid-flight stealth proxy or network connection failure
@@ -260,7 +278,7 @@ class DownloadDepotsTask(QObject):
                                     return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                                     if not self._is_running:
                                         logger.info("Download task stopping because stop() was called.")
-                                        self.completed.emit()
+                                        self._emit_completed()
                                         return
                                     if return_code == 0:
                                         failed_over = True
@@ -271,7 +289,7 @@ class DownloadDepotsTask(QObject):
                         if not failed_over and return_code != 0:
                             if not self._is_running:
                                 logger.info("Download task stopping because stop() was called.")
-                                self.completed.emit()
+                                self._emit_completed()
                                 return
                             from utils.kuroko import prompt_stealth_fallback
                             user_action = prompt_stealth_fallback(net_err)
@@ -293,7 +311,7 @@ class DownloadDepotsTask(QObject):
                                         return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                                         if not self._is_running:
                                             logger.info("Download task stopping because stop() was called.")
-                                            self.completed.emit()
+                                            self._emit_completed()
                                             return
                                 except Exception as retry_err:
                                     logger.warning(f"[DownloadDepotsTask] Stealth retry failed: {retry_err}")
@@ -311,7 +329,7 @@ class DownloadDepotsTask(QObject):
                                 return_code = self._execute_depot_cmd(current_cmd, creation_flags, depot_id)
                                 if not self._is_running:
                                     logger.info("Download task stopping because stop() was called.")
-                                    self.completed.emit()
+                                    self._emit_completed()
                                     return
                             else:
                                 self._is_running = False
@@ -387,12 +405,12 @@ class DownloadDepotsTask(QObject):
                         return_code = self._execute_depot_cmd(retry_cmd, creation_flags, depot_id)
                         if not self._is_running:
                             logger.info("Download task stopping because stop() was called.")
-                            self.completed.emit()
+                            self._emit_completed()
                             return
 
                 if not self._is_running:
                     logger.info("Download task stopping because stop() was called.")
-                    self.completed.emit()
+                    self._emit_completed()
                     return
 
                 # 4. Final failure check: if all recovery attempts failed, abort
@@ -420,7 +438,7 @@ class DownloadDepotsTask(QObject):
                     self.progress.emit(f"ERROR: {error_msg}")
                     logger.error(f"[DownloadDepotsTask] {error_msg}")
                     self._cleanup_temp_files()
-                    self.error.emit((RuntimeError, error_msg, None))
+                    self._emit_error((RuntimeError, error_msg, None))
                     return
 
                 # 5. Success accounting and post-depot artifacts
@@ -533,18 +551,18 @@ class DownloadDepotsTask(QObject):
                 )
                 logger.error(f"[DownloadDepotsTask] {err_msg}")
                 self.progress.emit(f"ERROR: {err_msg}")
-                self.error.emit((RuntimeError, err_msg, None))
+                self._emit_error((RuntimeError, err_msg, None))
                 return
 
             if not self._is_running:
                 logger.info("Download task stopped before cleanup.")
-                self.completed.emit()
+                self._emit_completed()
                 return
 
             self._copy_manifests_to_steam_depotcache()
             self._cleanup_temp_files()
 
-            self.completed.emit()
+            self._emit_completed()
 
         except FileNotFoundError:
             binary = "executable"
@@ -557,26 +575,38 @@ class DownloadDepotsTask(QObject):
             )
             self.progress.emit(error_msg)
             logger.critical(f"'{binary}' not found.")
-            self.error.emit((FileNotFoundError, f"'{binary}' not found", None))
+            self._emit_error((FileNotFoundError, f"'{binary}' not found", None))
             raise
 
         except (OSError, subprocess.SubprocessError) as e:
             self.progress.emit(f"An unexpected error occurred during download: {e}")
             logger.error(f"Download subprocess failed: {e}", exc_info=True)
             self.process = None
-            self.error.emit((type(e), str(e), None))
+            self._emit_error((type(e), str(e), None))
             raise
         except Exception as e:
             self.progress.emit(f"An unexpected error occurred during download: {e}")
             logger.error(f"Download task failed: {e}", exc_info=True)
             self.process = None
-            self.error.emit((type(e), str(e), None))
+            self._emit_error((type(e), str(e), None))
             raise
         finally:
             self._cleanup_stealth_proxy()
             # Plaintext depot keys and manifests live in the temp dir; remove
             # them on every exit path, not only on success.
             self._cleanup_temp_files()
+            # Safety net: no return path may leave the job queue waiting for a
+            # terminal signal that never comes.
+            if not self._terminal_signal_emitted:
+                if self._is_running:
+                    logger.error(
+                        "[DownloadDepotsTask] Task ended without reporting a result; emitting error."
+                    )
+                    self._emit_error(
+                        (RuntimeError, "Download task ended without reporting a result", None)
+                    )
+                else:
+                    self._emit_completed()
 
     def _execute_depot_cmd(
         self, cmd: List[str], creation_flags: int, depot_id: str = ""
@@ -605,6 +635,7 @@ class DownloadDepotsTask(QObject):
 
         self.process = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,  # never block on an interactive prompt
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=False,  # Binary mode
@@ -1486,7 +1517,9 @@ class DownloadDepotsTask(QObject):
             logger.error(
                 f"Main process {self.process.pid} not found. Cannot pause/resume."
             )
-            self.process = None
+            # Do not clear the handle here: the worker thread still owns it and
+            # needs it to reap the child and read the remaining stdout. Clearing
+            # it from another thread raced the reader and could report success.
         except psutil.Error as e:
             logger.error(f"An error occurred while {target_action} process: {e}")
             raise

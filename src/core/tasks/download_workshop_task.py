@@ -327,6 +327,7 @@ class DownloadWorkshopTask(QObject):
             except Exception as e:
                 self.log(f"  [Error] Stealth proxy setup failed: {e}")
                 if not self._is_running:
+                    self.completed.emit()
                     return
                 from utils.kuroko import prompt_stealth_fallback
                 action = prompt_stealth_fallback(str(e))

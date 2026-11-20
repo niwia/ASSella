@@ -44,7 +44,13 @@ class PostInstallMixin:
 
     def _on_download_complete(self):
         """Handle download completion"""
-        if self.is_cancelling:
+        # A stopped task also emits ``completed`` (its terminal "ended" signal);
+        # never finalise an install whose downloader was told to stop.
+        stopped = (
+            self.download_task is not None
+            and getattr(self.download_task, "_is_running", True) is False
+        )
+        if self.is_cancelling or stopped:
             if self._delete_files_on_cancel:
                 self._cleanup_cancelled_job_files()
             self.job_finished()

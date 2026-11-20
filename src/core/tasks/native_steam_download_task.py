@@ -68,6 +68,7 @@ class NativeSteamDownloadTask(QObject):
     def __init__(self):
         super().__init__()
         self._is_running = True
+        self._terminal_signal_emitted = False
         self.process = None
         self.process_pid = None
         self.total_download_size_for_this_job = 0
@@ -81,6 +82,14 @@ class NativeSteamDownloadTask(QObject):
         self._appid: str = ""
         self._game_name: str = ""
         self._acf_path: Optional[Path] = None
+
+    def _emit_completed(self):
+        self._terminal_signal_emitted = True
+        self.completed.emit()
+
+    def _emit_error(self, payload):
+        self._terminal_signal_emitted = True
+        self.error.emit(payload)
 
     @property
     def is_running_flag(self) -> bool:
@@ -102,12 +111,25 @@ class NativeSteamDownloadTask(QObject):
         logger.info(f"[NativeSteamDL] Starting native Steam download: {game_name} ({appid})")
         self.progress.emit(f"[Native Steam] Starting download for {game_name} ({appid})")
 
+        self._terminal_signal_emitted = False
         try:
             self._run_impl(game_data, selected_depots, dest_path, appid, game_name)
         except Exception as e:
             logger.exception(f"[NativeSteamDL] Unexpected error: {e}")
             self._cleanup_failure()
-            self.error.emit((type(e), str(e), None))
+            self._emit_error((type(e), str(e), None))
+        finally:
+            # Silent `return`s on cancellation must still release the job queue.
+            if not self._terminal_signal_emitted:
+                if self._is_running:
+                    logger.error(
+                        "[NativeSteamDL] Task ended without reporting a result; emitting error."
+                    )
+                    self._emit_error(
+                        (RuntimeError, "Native Steam download ended without reporting a result", None)
+                    )
+                else:
+                    self._emit_completed()
 
     def _run_impl(
         self,
@@ -126,14 +148,14 @@ class NativeSteamDownloadTask(QObject):
                 "Please start Steam first, then try again."
             )
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
 
         sls_config_dir = self._get_config_dir()
         if not sls_config_dir:
             msg = "SLSsteam config directory not found."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
         self._sls_config_dir = sls_config_dir
         config_path = sls_config_dir / "config.yaml"
@@ -142,7 +164,7 @@ class NativeSteamDownloadTask(QObject):
         if not steamapps_dir:
             msg = f"Could not resolve a steamapps directory in: {dest_path}"
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
 
         acf_path = steamapps_dir / f"appmanifest_{appid}.acf"
@@ -170,7 +192,7 @@ class NativeSteamDownloadTask(QObject):
         if not depot_keys:
             msg = "No depot keys available from Hubcap for this game."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
         self.progress.emit(f"[Native Steam] Got {len(depot_keys)} depot key(s) from Hubcap")
         if not self._is_running:
@@ -193,7 +215,7 @@ class NativeSteamDownloadTask(QObject):
             msg = "Failed to patch SLSsteam config.yaml."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
         self.progress.emit("[Native Steam] config.yaml patched with depot keys")
 
@@ -222,7 +244,7 @@ class NativeSteamDownloadTask(QObject):
             msg = "AT0-M plugins (download interceptor / Styx) not found. Please enable and deploy plugin support from the AT0-M page in Settings, or enable 'I'm using custom plugins (Advanced)'."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
             return
 
         if is_plugin_check_bypassed() and not are_plugins_present(ignore_bypass=True):
@@ -360,7 +382,7 @@ class NativeSteamDownloadTask(QObject):
             except Exception as e:
                 logger.warning(f"[NativeSteamDL] Could not register into plugin_library: {e}")
 
-            self.completed.emit()
+            self._emit_completed()
         elif not self._is_running:
             self.progress.emit("[Native Steam] Download cancelled")
             self._cleanup_failure()
@@ -368,7 +390,7 @@ class NativeSteamDownloadTask(QObject):
             msg = "Steam download did not complete successfully. Check Steam and logs for details."
             self.progress.emit(f"[Native Steam] ERROR: {msg}")
             self._cleanup_failure()
-            self.error.emit((RuntimeError, msg, None))
+            self._emit_error((RuntimeError, msg, None))
 
     def _check_slssteam_active(self) -> bool:
         """Check if SLSsteam.so is loaded in a running Steam process or listening on its API pipe."""

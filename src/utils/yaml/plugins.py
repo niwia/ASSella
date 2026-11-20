@@ -73,7 +73,11 @@ def ensure_sls_plugin_config_sections(config_path: Optional[Path] = None) -> boo
                 modified = True
 
         if modified:
-            _write_in_place(config_path, content)
+            if not _write_in_place(config_path, content):
+                logger.error(
+                    f"ensure_sls_plugin_config_sections: Could not write {config_path}"
+                )
+                return False
             logger.info(f"ensure_sls_plugin_config_sections: Added missing sections to {config_path}")
 
         # The plugins' shared config (katamari.conf.lua) lives next to

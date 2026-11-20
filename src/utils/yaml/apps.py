@@ -77,7 +77,7 @@ def add_additional_apps_batch(
         for app_id, comment in apps:
             if editor.add_app(app_id, comment):
                 any_added = True
-    return any_added
+    return any_added and editor.committed_successfully
 
 def add_additional_depots_batch(
     config_path: Path, depots: List[Tuple[Union[str, int], str]]
@@ -91,7 +91,7 @@ def add_additional_depots_batch(
         for depot_id, comment in depots:
             if editor.add_depot(depot_id, comment):
                 any_added = True
-    return any_added
+    return any_added and editor.committed_successfully
 
 def add_additional_app(config_path: Path, app_id: Union[str, int], comment: str = "") -> bool:
     """Add an AppID to the AdditionalApps list in SLSsteam config.yaml."""
@@ -246,8 +246,9 @@ def has_game_config_entries(
 
     # 2. Check dlc_data batch block in config.yaml
     try:
-        dlc_data = get_dlc_data(cfg_path)
-        if appid_str in dlc_data:
+        # get_dlc_data requires the parent appid and returns that parent's DLC
+        # map, so a non-empty result means this app has a DlcData block.
+        if get_dlc_data(cfg_path, appid_str):
             return True
     except Exception:
         pass

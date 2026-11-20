@@ -146,7 +146,11 @@ class JobQueueManager(QObject):
         # Update if already popped and actively running in TaskManager
         tm = getattr(self.main_window, "task_manager", None)
         if tm and tm.is_processing and tm.workshop_task is not None:
-            if isinstance(tm.game_data, dict) and tm.game_data.get("appid") == "Workshop":
+            if (
+                isinstance(tm.game_data, dict)
+                and tm.game_data.get("appid") == "Workshop"
+                and getattr(tm, "active_workshop_job_id", None) == job_id
+            ):
                 tm.current_job = display_name
                 if isinstance(tm.current_job_metadata, dict):
                     tm.current_job_metadata["game_name"] = display_name
