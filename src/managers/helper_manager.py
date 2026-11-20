@@ -189,10 +189,18 @@ def run_headless_helper(app_id: int, logger: logging.Logger):
         logger.info(f"Download progress: {percent}%")
     download_task.progress_percentage.connect(on_progress_percent)
 
+    download_errors = []
+    download_task.error.connect(download_errors.append)
+
     try:
         download_task.run(game_data, selected_depots, dest_path)
     except Exception as e:
         logger.error(f"Depot download failed with error: {e}")
+        sys.exit(1)
+
+    if download_errors:
+        _err = download_errors[0]
+        logger.error(f"Depot download reported failure: {_err[1] if isinstance(_err, tuple) else _err}")
         sys.exit(1)
 
     # 5. Run post-processing

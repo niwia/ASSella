@@ -525,10 +525,16 @@ class DownloadDepotsTask(QObject):
                     logger.warning(f"Failed to copy manifest for depot {depot_id}: {e}", exc_info=True)
 
             if skipped_depots:
-                self.progress.emit(
-                    f"Skipped {len(skipped_depots)} depot(s) due to missing or invalid manifests: "
-                    f"{', '.join(skipped_depots)}"
+                # Never finalise an install with missing depots: that would write
+                # an ACF/buildid for content which was never downloaded.
+                err_msg = (
+                    f"Download incomplete: {len(skipped_depots)} depot(s) were skipped due to "
+                    f"missing or invalid manifests: {', '.join(skipped_depots)}"
                 )
+                logger.error(f"[DownloadDepotsTask] {err_msg}")
+                self.progress.emit(f"ERROR: {err_msg}")
+                self.error.emit((RuntimeError, err_msg, None))
+                return
 
             if not self._is_running:
                 logger.info("Download task stopped before cleanup.")
@@ -568,6 +574,9 @@ class DownloadDepotsTask(QObject):
             raise
         finally:
             self._cleanup_stealth_proxy()
+            # Plaintext depot keys and manifests live in the temp dir; remove
+            # them on every exit path, not only on success.
+            self._cleanup_temp_files()
 
     def _execute_depot_cmd(
         self, cmd: List[str], creation_flags: int, depot_id: str = ""
@@ -622,7 +631,9 @@ class DownloadDepotsTask(QObject):
             self.process = None
             return -1
 
-        return_code = 0
+        # If the process handle disappeared (e.g. toggle_pause cleared it after a
+        # psutil race) the downloader never finished — never report success.
+        return_code = -1
         if self.process:
             try:
                 return_code = self.process.wait(timeout=5)
@@ -757,6 +768,9 @@ class DownloadDepotsTask(QObject):
 
     def _cleanup_temp_files(self):
         """Cleans up temporary files created during the download process."""
+        if getattr(self, "_temp_files_cleaned", False):
+            return
+        self._temp_files_cleaned = True
         self.progress.emit("--- Cleaning up temporary files ---")
         temp_dir = tempfile.gettempdir()
         items_to_clean = {

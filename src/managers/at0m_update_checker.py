@@ -467,6 +467,15 @@ class At0mUpdateChecker(QObject):
             else:
                 steam_depots.add(did_str)
 
+        # Language depots are listed by PICS but never shipped in a manifest
+        # bundle, so they would otherwise be reported as missing keys forever.
+        language_depots = {
+            str(v).strip()
+            for v in (steam_info.get("baselanguages") or {}).values()
+            if str(v).strip().isdigit()
+        }
+        steam_depots -= language_depots
+
         return steam_depots, depots_dict, install_platform
 
     def _classify_depots(self, depot_ids: List[str]) -> Tuple[List[str], List[str], Optional[str]]:
@@ -660,19 +669,22 @@ class At0mUpdateChecker(QObject):
         if cached and not force_refresh:
             last_tu = cached.get("last_timeupdated", 0)
             if last_tu > 0 and time_updated > 0 and time_updated == last_tu:
-                # The depot set cannot have changed, so the previous verdict
-                # still holds - unless keys were missing, because that is
-                # exactly what the verdict is about.
+                # The Steam build cannot have changed, but the *local* key set
+                # can (config.yaml / keys.db reset, SLSsteam wipe). Re-check the
+                # local-only delta before trusting the cached "up_to_date".
                 if not (cached.get("new_depots") or []):
-                    self.db.save_at0m_update_status(
-                        appid=appid_str,
-                        game_title=app_name,
-                        last_timeupdated=time_updated,
-                        status="up_to_date",
-                        new_depots=[],
-                    )
-                    logger.debug(f"[At0mChecker] {appid_str} timeupdated unchanged ({time_updated}), skipping.")
-                    return "up_to_date", {"appid": appid_str, "status": "up_to_date"}
+                    cached_depots, _, _ = self._collect_steam_depots(appid_str, steam_info)
+                    _, cached_known_keys = self.get_locally_known_depots(appid_str)
+                    if not (cached_depots - set(cached_known_keys.keys())):
+                        self.db.save_at0m_update_status(
+                            appid=appid_str,
+                            game_title=app_name,
+                            last_timeupdated=time_updated,
+                            status="up_to_date",
+                            new_depots=[],
+                        )
+                        logger.debug(f"[At0mChecker] {appid_str} timeupdated unchanged ({time_updated}), skipping.")
+                        return "up_to_date", {"appid": appid_str, "status": "up_to_date"}
 
         # Step 4: Depot Delta calculation
         steam_depots, depots_dict, install_platform = self._collect_steam_depots(appid_str, steam_info)

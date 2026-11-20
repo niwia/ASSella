@@ -272,10 +272,12 @@ def search_games(
             elif isinstance(lib_data.get("results"), list):
                 page_games = lib_data["results"]
             if total_count is None:
-                try:
-                    total_count = int(lib_data.get("total_count", 0))
-                except (TypeError, ValueError):
-                    total_count = None
+                raw_total = lib_data.get("total_count")
+                if raw_total is not None:
+                    try:
+                        total_count = int(raw_total)
+                    except (TypeError, ValueError):
+                        total_count = None
         elif isinstance(lib_data, list):
             page_games = lib_data
 
@@ -727,11 +729,35 @@ def download_manifest(
         r = execute_hubcap_request(
             get_session(), "GET", url, headers=headers, stream=True, timeout=60
         )
-        r.raise_for_status()
-        mark_hubcap_manifest_used()
-        with open(temp_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
+        try:
+            r.raise_for_status()
+            ctype = str(r.headers.get("Content-Type", "")).lower()
+            # A captive portal / ISP block page is served with HTTP 200. When
+            # streaming, isp_bypass cannot inspect the body, so reject obvious
+            # text payloads before they are written into the cache.
+            if "text/html" in ctype or "text/plain" in ctype:
+                raise ValueError(f"server returned non-binary payload ({ctype or 'unknown'})")
+            mark_hubcap_manifest_used()
+            with open(temp_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
+
+        # Validate the payload before it can replace a known-good bundle.
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(temp_path) as archive:
+                names = archive.namelist()
+        except (zipfile.BadZipFile, OSError) as zip_err:
+            raise ValueError(f"downloaded bundle is not a valid zip: {zip_err}") from zip_err
+        if not any(name.endswith((".lua", ".manifest")) for name in names):
+            raise ValueError("downloaded bundle contains no .lua or .manifest entries")
 
     def _cleanup_partial() -> None:
         if temp_path.exists():

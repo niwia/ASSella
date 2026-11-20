@@ -96,8 +96,16 @@ def post_to_main_thread(fn, *args, **kwargs):
         # Main thread has an event loop: plain singleShot is valid here and
         # keeps the historical async (deferred) delivery semantics.
         _ensure_bridge()
+
+        def _run():
+            try:
+                fn(*args, **kwargs)
+            except Exception:
+                # An exception escaping a Qt slot aborts the process in PyQt6.
+                logger.exception("[MainThread] Posted callable failed")
+
         try:
-            QTimer.singleShot(0, lambda: fn(*args, **kwargs))
+            QTimer.singleShot(0, _run)
         except Exception:
             logger.exception("[MainThread] singleShot post failed")
         return

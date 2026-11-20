@@ -166,8 +166,6 @@ class TaskRunner(QObject):
         self._request_task_stop()
         worker = self.worker
         thread = self._thread
-        self._thread = None
-        self.worker = None
 
         if worker is not None:
             try:
@@ -211,6 +209,11 @@ class TaskRunner(QObject):
                 # which causes SIGABRT / C++ heap corruption on exit.
             except (RuntimeError, Exception) as e:
                 logger.debug(f"Error during thread wait/quit in stop(): {e}")
+        # Only drop our references once the thread has actually stopped. If it
+        # is still running it stays reachable and will be cleaned up by the
+        # finished->cleanup connection; nulling early would orphan the QThread.
+        if thread is None or not thread.isRunning():
+            self._cleanup()
         if self in TaskRunner._active_runners:
             TaskRunner._active_runners.remove(self)
 

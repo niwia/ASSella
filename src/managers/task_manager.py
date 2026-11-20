@@ -91,6 +91,9 @@ class TaskManager(
         self.is_processing = False
         self.is_download_paused = False
         self.is_cancelling = False
+        # A task may report a failure both through its own ``error`` signal and
+        # through the worker's (the task re-raises). Show the dialog once.
+        self._error_reported_for_job = False
         self.current_job: Optional[str] = None
         self.current_job_metadata: Optional[Dict[str, Any]] = None
         self.game_data: Optional[Dict[str, Any]] = None
@@ -1813,6 +1816,9 @@ class TaskManager(
             return
         if not self.is_processing:
             return
+        if getattr(self, "_error_reported_for_job", False):
+            return
+        self._error_reported_for_job = True
 
         _, error_value, _ = error_info
         ThemedMessageBox.critical(
@@ -1983,6 +1989,7 @@ class TaskManager(
         self.main_window.ui_state.set_download_controls_visible(False)
         self.download_task = None
         self.is_cancelling = False
+        self._error_reported_for_job = False
         self._delete_files_on_cancel = None
 
         if self.speed_monitor_task:

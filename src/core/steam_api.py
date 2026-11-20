@@ -223,7 +223,18 @@ def get_shared_client():
 
 
 def disconnect_shared_client():
-    pass
+    """Disconnect the shared Steam client, if one was ever created.
+
+    Runs the call on the worker thread (the client has thread affinity there),
+    rather than touching it from the calling thread.
+    """
+    worker = _steam_worker_instance
+    if worker is None:
+        return
+    try:
+        worker.execute("disconnect", timeout=5)
+    except Exception as e:
+        logger.debug(f"disconnect_shared_client: {e}")
 
 
 CACHE_DIR = os.path.join(tempfile.gettempdir(), "mistwalker_api_cache")
@@ -1060,14 +1071,8 @@ def batched_get_product_info(
 
     global _batched_consecutive_failures
 
-    shared_client = None
-    try:
-        shared_client = get_shared_client()
-    except Exception as e:
-        logger.error(f"Batched fetch: Error obtaining shared SteamClient: {e}")
-        shared_client = None
-
     # Process each batch
+    aborted = False
     for batch_idx, batch_appids in enumerate(batches):
         if is_cancelled and is_cancelled():
             logger.info("Batched fetch cancelled before batch execution")
@@ -1124,7 +1129,6 @@ def batched_get_product_info(
                         branches = {}
                         if app_data:
                             app_data.get("config", {}).get("installdir")
-                            ImageFetcher.get_header_image_url(int_appid)
                             app_name = app_data.get("common", {}).get("name")
                             try:
                                 public_branch = (
@@ -1202,8 +1206,14 @@ def batched_get_product_info(
                     logger.warning("Steam PICS connection lost and reconnect failed. Aborting remaining batches.")
                     for rem_idx in range(batch_idx, len(batches)):
                         failed_appids.extend(batches[rem_idx])
+                    aborted = True
                     break
 
+        if aborted:
+            # Remaining batches (including this one) were already recorded as
+            # failed. Stop here instead of retrying every one against a dead
+            # connection and counting them twice.
+            break
 
         if not batch_success:
             failed_appids.extend(batch_appids)
@@ -1328,6 +1338,9 @@ def get_app_branches(appid: str, access_token: str = None, force_refresh: bool =
     Query Steam PICS for available open branches for an AppID.
     If force_refresh=False, returns cached branch info from DB or memory instantly.
     """
+    # Normalise so int and str callers share one cache entry (clear_branch_cache
+    # evicts by str(appid)).
+    appid = str(appid)
     try:
         if not force_refresh:
             if appid in _branch_cache:
@@ -1394,8 +1407,9 @@ def get_app_branches(appid: str, access_token: str = None, force_refresh: bool =
         if branches:
             db = DatabaseManager()
             db.upsert_app_info(appid, {"branches": branches})
-
-        _branch_cache[appid] = branches
+            # Cache only positive results: caching {} after every provider
+            # failed would pin the app to "no branches" for the whole process.
+            _branch_cache[appid] = branches
         return branches
     except BaseException as e:
         logger.error(f"Failed to fetch branches for AppID {appid}: {e}")

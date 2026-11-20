@@ -47,7 +47,8 @@ class SingleInstanceIPC(QObject):
         socket.connectToServer(server_name)
         if socket.waitForConnected(timeout_ms):
             try:
-                data = json.dumps(payload).encode("utf-8")
+                # Newline-framed so the server can reassemble partial reads.
+                data = json.dumps(payload).encode("utf-8") + b"\n"
                 socket.write(data)
                 socket.waitForBytesWritten(1000)
                 socket.disconnectFromServer()
@@ -66,13 +67,20 @@ class SingleInstanceIPC(QObject):
     def start_server(self) -> bool:
         """Start listening for commands from future secondary instances."""
         try:
-            # Purge any stale socket node left over from an unclean termination (SIGKILL)
-            QLocalServer.removeServer(self.server_name)
             self.server = QLocalServer(self)
             self.server.newConnection.connect(self._on_new_connection)
             if self.server.listen(self.server_name):
                 logger.debug(
                     f"[SingleInstance] IPC server listening on '{self.server_name}'"
+                )
+                return True
+            # Only purge the socket node after a failed bind: an unconditional
+            # removeServer() would unlink a live instance's socket during the
+            # startup race, leaving both instances running with IPC dead.
+            QLocalServer.removeServer(self.server_name)
+            if self.server.listen(self.server_name):
+                logger.debug(
+                    f"[SingleInstance] IPC server listening on '{self.server_name}' after stale-socket cleanup"
                 )
                 return True
             logger.warning(
@@ -85,27 +93,42 @@ class SingleInstanceIPC(QObject):
     def _on_new_connection(self):
         if not self.server:
             return
-        client = self.server.nextPendingConnection()
-        if not client:
-            return
+        while self.server.hasPendingConnections():
+            client = self.server.nextPendingConnection()
+            if not client:
+                break
+            self._wire_client(client)
+
+    def _wire_client(self, client):
+        buffer = bytearray()
 
         def _read_and_process():
+            nonlocal buffer
             try:
-                raw = bytes(client.readAll())
-                if raw:
-                    payload = json.loads(raw.decode("utf-8"))
+                buffer.extend(bytes(client.readAll()))
+                # Messages are newline-framed; process every complete line and
+                # keep any partial tail buffered for the next readyRead.
+                while b"\n" in buffer:
+                    line, _, rest = buffer.partition(b"\n")
+                    buffer = bytearray(rest)
+                    if not line.strip():
+                        continue
+                    payload = json.loads(line.decode("utf-8"))
                     logger.info(
                         f"[SingleInstance] Received IPC message from secondary launch: {payload}"
                     )
                     if self.on_command_received:
                         self.on_command_received(payload)
+                    client.disconnectFromServer()
             except Exception as e:
                 logger.debug(f"[SingleInstance] Error parsing IPC payload: {e}")
-            finally:
                 client.disconnectFromServer()
-                client.deleteLater()
+
+        def _cleanup():
+            client.deleteLater()
 
         client.readyRead.connect(_read_and_process)
+        client.disconnected.connect(_cleanup)
 
     def close(self):
         """Clean up the local server."""

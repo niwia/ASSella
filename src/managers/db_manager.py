@@ -146,6 +146,7 @@ def _construct_full_url(header_path: str) -> Optional[str]:
 class DatabaseManager:
     _instance = None
     _lock = threading.Lock()
+    _init_lock = threading.Lock()
 
     def __new__(cls):
         with cls._lock:
@@ -155,9 +156,15 @@ class DatabaseManager:
         return cls._instance
 
     def __init__(self):
-        if self.is_initialized:
-            return
+        # Serialise the one-time initialisation: __new__ guards instance
+        # creation, but two threads could otherwise both run __init__ and open
+        # two connections (one leaked while still in use).
+        with DatabaseManager._init_lock:
+            if self.is_initialized:
+                return
+            self._initialize()
 
+    def _initialize(self):
         if zstd is None:
             logger.critical(
                 "Module 'zstandard' is missing! Database functionality will be limited. "
@@ -178,20 +185,7 @@ class DatabaseManager:
             try:
                 with self._conn_lock:
                     cur = self.conn.cursor()
-                    cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS depot_enrichments (
-                            appid INTEGER,
-                            depot_id INTEGER,
-                            name TEXT,
-                            size INTEGER,
-                            sharedinstall INTEGER,
-                            system INTEGER,
-                            last_updated INTEGER,
-                            PRIMARY KEY (appid, depot_id)
-                        )
-                        """
-                    )
+                    self._ensure_depot_enrichments_schema(cur)
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_apps_depots_cached ON apps(appid) WHERE depots_json IS NOT NULL;")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_depot_enrichments_appid ON depot_enrichments(appid);")
                     self.conn.commit()
@@ -200,6 +194,65 @@ class DatabaseManager:
 
         self.is_initialized = True
         logger.info(f"DatabaseManager initialized at: {self.db_path}")
+
+    @staticmethod
+    def _ensure_depot_enrichments_schema(cur) -> None:
+        """Create the canonical depot_enrichments table and migrate legacy rows.
+
+        A previous build created this table with an incompatible legacy schema
+        (appid INTEGER, depot_id INTEGER, size INTEGER, ...). Because every
+        writer uses ``CREATE TABLE IF NOT EXISTS``, that wrong table won the
+        race on fresh installs and every enrichment insert then failed with
+        "no column named size_str" (swallowed, so data silently vanished).
+        Rebuild a legacy table in place.
+        """
+        cur.execute("PRAGMA table_info(depot_enrichments)")
+        columns = {row[1] for row in cur.fetchall()}
+        is_legacy = bool(columns) and "size_str" not in columns
+
+        if is_legacy:
+            cur.execute("DROP TABLE IF EXISTS depot_enrichments_legacy")
+            cur.execute("ALTER TABLE depot_enrichments RENAME TO depot_enrichments_legacy")
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS depot_enrichments (
+                depot_id TEXT PRIMARY KEY,
+                appid TEXT,
+                name TEXT,
+                size_str TEXT,
+                size_bytes INTEGER,
+                dl_str TEXT,
+                is_dlc INTEGER,
+                oslist TEXT,
+                osarch TEXT,
+                releasestate TEXT,
+                release_src TEXT,
+                updated_at INTEGER
+            )
+            """
+        )
+
+        if is_legacy:
+            try:
+                cur.execute(
+                    """
+                    INSERT OR IGNORE INTO depot_enrichments
+                        (depot_id, appid, name, size_bytes, updated_at)
+                    SELECT CAST(depot_id AS TEXT), CAST(appid AS TEXT), name,
+                           COALESCE(size, 0), COALESCE(last_updated, 0)
+                    FROM depot_enrichments_legacy
+                    """
+                )
+            except sqlite3.Error as e:
+                logger.warning(f"[DatabaseManager] Legacy depot_enrichments migration skipped: {e}")
+            cur.execute("DROP TABLE depot_enrichments_legacy")
+
+        cur.execute("PRAGMA table_info(depot_enrichments)")
+        existing = {row[1] for row in cur.fetchall()}
+        for column in ("osarch", "releasestate", "release_src", "source"):
+            if column not in existing:
+                cur.execute(f"ALTER TABLE depot_enrichments ADD COLUMN {column} TEXT")
 
     def _connect_db(self) -> Optional[sqlite3.Connection]:
         try:
