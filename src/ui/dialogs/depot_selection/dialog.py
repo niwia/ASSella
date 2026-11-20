@@ -494,11 +494,13 @@ class DepotSelectionDialog(
                 ThemedMessageBox.warning(self, "No Storage Selected", "Please select a storage location before proceeding.")
                 return
 
-        # Ensure chosen storage library is registered in Steam libraryfolders.vdf
+        # Ensure chosen storage library is registered in Steam libraryfolders.vdf (skip for standalone custom folders)
         if self.selected_storage_path:
             try:
-                from core.steam_helpers import ensure_steam_library
-                ensure_steam_library(self.selected_storage_path)
+                from core.steam_helpers import ensure_steam_library, is_path_in_steam_library
+                is_standalone = getattr(self, "selected_is_standalone", False) or not is_path_in_steam_library(self.selected_storage_path)
+                if not is_standalone:
+                    ensure_steam_library(self.selected_storage_path)
             except Exception as e:
                 logger.warning(f"[DepotSelection] Failed to register library in Steam config: {e}")
 

@@ -1623,8 +1623,9 @@ class FetchManifestDialog(QDialog):
                     self._dismiss_loading_overlay()
                     self.status_label.setText("Download cancelled.")
                     return
-                from core.steam_helpers import ensure_steam_library
-                ensure_steam_library(selected_library_path)
+                from core.steam_helpers import ensure_steam_library, is_path_in_steam_library
+                if is_path_in_steam_library(selected_library_path):
+                    ensure_steam_library(selected_library_path)
             else:
                 self._dismiss_loading_overlay()
                 self.status_label.setText("Download cancelled.")
@@ -2092,8 +2093,9 @@ class FetchManifestDialog(QDialog):
                     if dialog.exec():
                         dest_path = dialog.get_selected_path()
                         if dest_path:
-                            from core.steam_helpers import ensure_steam_library
-                            ensure_steam_library(dest_path)
+                            from core.steam_helpers import ensure_steam_library, is_path_in_steam_library
+                            if is_path_in_steam_library(dest_path):
+                                ensure_steam_library(dest_path)
                     else:
                         return
             else:

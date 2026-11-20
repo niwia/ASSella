@@ -967,8 +967,9 @@ class SingleDepotSelectionDialog(QDialog):
             return
         if self.selected_storage_path:
             try:
-                from core.steam_helpers import ensure_steam_library
-                ensure_steam_library(self.selected_storage_path)
+                from core.steam_helpers import ensure_steam_library, is_path_in_steam_library
+                if is_path_in_steam_library(self.selected_storage_path):
+                    ensure_steam_library(self.selected_storage_path)
             except Exception as e:
                 logger.warning(f"[SingleDepot] Failed to register library in Steam config: {e}")
         if hasattr(self, "should_remember_storage") and self.should_remember_storage():

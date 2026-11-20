@@ -474,6 +474,25 @@ def get_steam_libraries():
     return list(_cached_steam_libraries)
 
 
+def is_path_in_steam_library(target_path: str, steam_libraries: Optional[List[str]] = None) -> bool:
+    """Return True if target_path resides within a registered Steam library folder."""
+    if not target_path:
+        return False
+    try:
+        norm_target = os.path.realpath(os.path.expanduser(str(target_path)))
+        libs = steam_libraries if steam_libraries is not None else get_steam_libraries()
+        for lib in libs:
+            norm_lib = os.path.realpath(os.path.expanduser(str(lib)))
+            if norm_target == norm_lib or norm_target.startswith(norm_lib + os.sep):
+                return True
+        # Structural check: if path contains 'steamapps' folder
+        if "steamapps" in Path(norm_target).parts:
+            return True
+    except Exception as e:
+        logger.debug(f"is_path_in_steam_library check failed for {target_path}: {e}")
+    return False
+
+
 STEAM_PROCESS_NAMES = {
     "steam",
     ".steam-wrapped",

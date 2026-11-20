@@ -81,6 +81,8 @@ class GameManagerConfigSyncMixin:
                 continue
             if game.get("is_atom") or game.get("is_vapor"):
                 continue
+            if game.get("is_standalone"):
+                continue
             appid = game.get("appid")
             game_name = game.get("game_name", "")
             if appid and appid not in ("0", "N/A", "unknown"):

@@ -24,6 +24,13 @@ def get_install_folder_name(game_data: Dict[str, Any]) -> str:
 
 
 def get_game_directory(dest_path: str, game_data: Dict[str, Any]) -> str:
+    if not dest_path:
+        return ""
+    if game_data and (game_data.get("is_standalone") or game_data.get("source") == "Standalone"):
+        return dest_path
+    from core.steam_helpers import is_path_in_steam_library
+    if not is_path_in_steam_library(dest_path):
+        return dest_path
     return os.path.join(
         dest_path, "steamapps", "common", get_install_folder_name(game_data)
     )

@@ -82,6 +82,19 @@ def _create_empty_db(path: Path) -> None:
             )
         """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS standalone_games (
+                appid TEXT PRIMARY KEY,
+                game_name TEXT NOT NULL,
+                install_path TEXT NOT NULL,
+                buildid TEXT DEFAULT '',
+                size INTEGER DEFAULT 0,
+                created_at INTEGER DEFAULT 0
+            )
+        """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_standalone_games_path ON standalone_games(install_path);")
         conn.commit()
         conn.close()
     except Exception as e:
@@ -186,6 +199,7 @@ class DatabaseManager:
                 with self._conn_lock:
                     cur = self.conn.cursor()
                     self._ensure_depot_enrichments_schema(cur)
+                    self._ensure_standalone_games_table(cur)
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_apps_depots_cached ON apps(appid) WHERE depots_json IS NOT NULL;")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_depot_enrichments_appid ON depot_enrichments(appid);")
                     self.conn.commit()
@@ -1036,3 +1050,129 @@ class DatabaseManager:
         except Exception as e:
             logger.debug(f"[DBManager] Failed to get all AT0-M update statuses: {e}")
             return {}
+
+    # ── Standalone Custom Folder Games ──────────────────────────────────────
+    @staticmethod
+    def _ensure_standalone_games_table(cur) -> None:
+        """Creates the standalone_games table if it doesn't exist yet."""
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS standalone_games (
+                appid TEXT PRIMARY KEY,
+                game_name TEXT NOT NULL,
+                install_path TEXT NOT NULL,
+                buildid TEXT DEFAULT '',
+                size INTEGER DEFAULT 0,
+                created_at INTEGER DEFAULT 0
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_standalone_games_path ON standalone_games(install_path);")
+
+    def save_standalone_game(
+        self,
+        appid: str,
+        game_name: str,
+        install_path: str,
+        buildid: str = "",
+        size: int = 0,
+    ) -> None:
+        """Persists or updates a standalone custom folder game record."""
+        if not self.conn or not appid:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_standalone_games_table(cur)
+                now = int(time.time())
+                cur.execute(
+                    """
+                    INSERT INTO standalone_games (appid, game_name, install_path, buildid, size, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(appid) DO UPDATE SET
+                        game_name = excluded.game_name,
+                        install_path = excluded.install_path,
+                        buildid = CASE WHEN excluded.buildid != '' THEN excluded.buildid ELSE standalone_games.buildid END,
+                        size = CASE WHEN excluded.size > 0 THEN excluded.size ELSE standalone_games.size END,
+                        created_at = CASE WHEN standalone_games.created_at > 0 THEN standalone_games.created_at ELSE excluded.created_at END
+                    """,
+                    (str(appid), str(game_name), str(install_path), str(buildid or ""), int(size or 0), now),
+                )
+                self.conn.commit()
+                logger.info(f"[DBManager] Saved standalone game '{game_name}' ({appid}) at {install_path}")
+        except Exception as e:
+            logger.error(f"[DBManager] Failed to save standalone game {appid}: {e}")
+
+    def get_standalone_games(self) -> Dict[str, dict]:
+        """Return all registered standalone games keyed by str(appid)."""
+        if not self.conn:
+            return {}
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_standalone_games_table(cur)
+                cur.execute(
+                    """
+                    SELECT appid, game_name, install_path, buildid, size, created_at
+                    FROM standalone_games
+                    """
+                )
+                rows = cur.fetchall()
+                result = {}
+                for row in rows:
+                    result[str(row[0])] = {
+                        "appid": str(row[0]),
+                        "game_name": row[1] or "",
+                        "install_path": row[2] or "",
+                        "buildid": row[3] or "",
+                        "size": int(row[4] or 0),
+                        "created_at": int(row[5] or 0),
+                    }
+                return result
+        except Exception as e:
+            logger.debug(f"[DBManager] Failed to get standalone games: {e}")
+            return {}
+
+    def get_standalone_game(self, appid: str) -> Optional[dict]:
+        """Return a single standalone game record by AppID, or None."""
+        if not self.conn or not appid:
+            return None
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_standalone_games_table(cur)
+                cur.execute(
+                    """
+                    SELECT appid, game_name, install_path, buildid, size, created_at
+                    FROM standalone_games WHERE appid = ?
+                    """,
+                    (str(appid),),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return {
+                    "appid": str(row[0]),
+                    "game_name": row[1] or "",
+                    "install_path": row[2] or "",
+                    "buildid": row[3] or "",
+                    "size": int(row[4] or 0),
+                    "created_at": int(row[5] or 0),
+                }
+        except Exception as e:
+            logger.debug(f"[DBManager] Failed to get standalone game {appid}: {e}")
+            return None
+
+    def remove_standalone_game(self, appid: str) -> None:
+        """Removes a standalone game record by AppID."""
+        if not self.conn or not appid:
+            return
+        try:
+            with self._conn_lock:
+                cur = self.conn.cursor()
+                self._ensure_standalone_games_table(cur)
+                cur.execute("DELETE FROM standalone_games WHERE appid = ?", (str(appid),))
+                self.conn.commit()
+                logger.info(f"[DBManager] Removed standalone game record for AppID {appid}")
+        except Exception as e:
+            logger.error(f"[DBManager] Failed to remove standalone game {appid}: {e}")

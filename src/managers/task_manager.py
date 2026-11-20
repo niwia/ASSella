@@ -629,6 +629,8 @@ class TaskManager(
                 )
                 if selected_files:
                     self.game_data["selected_files_list"] = selected_files
+                if hasattr(depot_dlg, "is_standalone_storage_selected") and depot_dlg.is_standalone_storage_selected():
+                    self.game_data["is_standalone"] = True
 
             if not selected_depots:
                 self.job_finished()
@@ -757,6 +759,9 @@ class TaskManager(
                 libraries, self.main_window, accent_color=accent_c
             )
             if dialog.exec():
+                if hasattr(dialog, "is_standalone_selected") and dialog.is_standalone_selected():
+                    if self.game_data:
+                        self.game_data["is_standalone"] = True
                 return dialog.get_selected_path()
             else:
                 return None
@@ -1155,7 +1160,7 @@ class TaskManager(
                         self.job_finished()
                         return
 
-            if dest_path:
+            if dest_path and steam_helpers.is_path_in_steam_library(dest_path):
                 try:
                     steam_helpers.ensure_steam_library(dest_path)
                 except Exception as e:
@@ -1731,8 +1736,8 @@ class TaskManager(
                     )
                     return
 
-        # Ensure the selected library path is registered with Steam
-        if library_path:
+        # Ensure the selected library path is registered with Steam if it is a Steam library
+        if library_path and steam_helpers.is_path_in_steam_library(library_path):
             steam_helpers.ensure_steam_library(library_path)
 
         if not pin_build:

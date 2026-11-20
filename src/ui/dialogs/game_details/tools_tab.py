@@ -665,6 +665,9 @@ def refresh_drm_emulation_state(dialog, is_applied=None) -> None:
         dialog._last_goldberg_applied = is_applied
     applied = getattr(dialog, "_last_goldberg_applied", False)
 
+    from utils.game_modes import is_standalone_game
+    is_standalone = is_standalone_game(dialog.game_data)
+
     if is_dlc:
         if hasattr(dialog, "sl_row_widget") and dialog.sl_row_widget:
             dialog.sl_row_widget.setVisible(False)
@@ -696,8 +699,15 @@ def refresh_drm_emulation_state(dialog, is_applied=None) -> None:
         dialog.b_steamless_cli.setEnabled(not steamless_busy)
         dialog.b_steamless_cli.setToolTip("Remove Steam DRM using .NET 9 Steamless CLI")
     if hasattr(dialog, "fix_btn") and dialog.fix_btn:
-        dialog.fix_btn.setEnabled(True)
-        dialog.fix_btn.setToolTip("Repairs game installation and forces Steam verification.")
+        if is_standalone:
+            dialog.fix_btn.setEnabled(False)
+            dialog.fix_btn.setToolTip("Fix Installation is unavailable for Standalone / Custom Folder games.")
+        else:
+            dialog.fix_btn.setEnabled(True)
+            dialog.fix_btn.setToolTip("Repairs game installation and forces Steam verification.")
+    if hasattr(dialog, "desktop_btn") and dialog.desktop_btn and is_standalone:
+        dialog.desktop_btn.setEnabled(False)
+        dialog.desktop_btn.setToolTip("Steam desktop shortcuts require games installed in Steam libraries.")
 
     if hasattr(dialog, "gb_apply_btn") and hasattr(dialog, "gb_remove_btn"):
         if applied:
@@ -745,6 +755,12 @@ def update_depot_label(dialog) -> None:
 def refresh_dlcdata_btn_text(dialog) -> None:
     """Refreshes text on Move DLC to DlcData button depending on existing config."""
     if not hasattr(dialog, "dlcdata_exp_btn") or not dialog.dlcdata_exp_btn or sip.isdeleted(dialog.dlcdata_exp_btn):
+        return
+    from utils.game_modes import is_standalone_game
+    if is_standalone_game(dialog.game_data):
+        dialog.dlcdata_exp_btn.setEnabled(False)
+        dialog.dlcdata_exp_btn.setText("Move DLC to DlcData (Advanced)")
+        dialog.dlcdata_exp_btn.setToolTip("Unavailable for Standalone / Custom Folder games.")
         return
     try:
         cp = get_user_config_path()
@@ -868,8 +884,15 @@ def handle_move_dlc_to_dlcdata(dialog) -> None:
 def _wire_desktop_button(dialog) -> None:
     """Add / remove the app-menu shortcut; all file and network work off the GUI thread."""
     from utils import desktop_shortcuts
+    from utils.game_modes import is_standalone_game
 
     btn = dialog.desktop_btn
+    if is_standalone_game(dialog.game_data):
+        btn.setEnabled(False)
+        btn.setText("Desktop")
+        btn.setToolTip("Steam desktop shortcuts require games installed in Steam libraries.")
+        return
+
     appid = str(dialog.appid)
     name = dialog.game_data.get("game_name", "") or ""
     state = {"has": False}

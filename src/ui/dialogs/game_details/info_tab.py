@@ -405,7 +405,16 @@ def init_info_tab(dialog) -> None:
         }
     """
 
-    if is_vapor_mode:
+    from utils.game_modes import is_standalone_game
+    if is_standalone_game(dialog.game_data):
+        dialog.move_to_vapor_btn.setEnabled(False)
+        dialog.move_to_vapor_btn.setStyleSheet(trans_disabled_style)
+        dialog.move_to_vapor_btn.setToolTip("Standalone custom folder games cannot be moved to AT0-M.")
+
+        dialog.remove_from_vapor_btn.setEnabled(False)
+        dialog.remove_from_vapor_btn.setStyleSheet(trans_disabled_style)
+        dialog.remove_from_vapor_btn.setToolTip("Game is installed standalone in a custom folder.")
+    elif is_vapor_mode:
         dialog.move_to_vapor_btn.setEnabled(False)
         dialog.move_to_vapor_btn.setStyleSheet(trans_disabled_style)
         dialog.move_to_vapor_btn.setToolTip("Game is already in AT0-M (Steam Native) mode.")
@@ -1340,6 +1349,18 @@ def on_dlc_only_toggled(dialog, state: bool) -> None:
 
 
 def update_eos_btn_state(dialog) -> None:
+    from utils.game_modes import is_standalone_game
+    if is_standalone_game(dialog.game_data):
+        stand_tip = "Unavailable for Standalone / Custom Folder games"
+        for attr in ("sls_tile", "netsock_tile", "eos_tile", "bypass_tile", "eos_exp_tile"):
+            tile = getattr(dialog, attr, None)
+            if tile:
+                tile.setEnabled(False)
+                tile.setToolTip(stand_tip)
+        if hasattr(dialog, "sls_input") and dialog.sls_input:
+            dialog.sls_input.setEnabled(False)
+        return
+
     from utils.dlc_helpers import is_dlc_only_mode
     if is_dlc_only_mode(dialog.appid):
         if hasattr(dialog, "eos_tile") and dialog.eos_tile:
@@ -1741,13 +1762,34 @@ def init_slsonline_logic(dialog) -> None:
 
     update_eos_btn_state(dialog)
 
-    from utils.dlc_helpers import is_dlc_only_mode
-    if is_dlc_only_mode(dialog.appid):
-        dialog.sls_tile.setEnabled(False)
-        dialog.sls_tile.setToolTip("Not available in DLC-Only mode")
-        dialog.sls_input.setEnabled(False)
-        dialog.eos_tile.setEnabled(False)
-        dialog.eos_tile.setToolTip("Not available in DLC-Only mode")
+    from utils.game_modes import is_standalone_game
+    if is_standalone_game(dialog.game_data):
+        stand_tip = "Unavailable for Standalone / Custom Folder games"
+        if hasattr(dialog, "sls_tile") and dialog.sls_tile:
+            dialog.sls_tile.setEnabled(False)
+            dialog.sls_tile.setToolTip(stand_tip)
+        if hasattr(dialog, "sls_input") and dialog.sls_input:
+            dialog.sls_input.setEnabled(False)
+        if hasattr(dialog, "netsock_tile") and dialog.netsock_tile:
+            dialog.netsock_tile.setEnabled(False)
+            dialog.netsock_tile.setToolTip(stand_tip)
+        if hasattr(dialog, "eos_tile") and dialog.eos_tile:
+            dialog.eos_tile.setEnabled(False)
+            dialog.eos_tile.setToolTip(stand_tip)
+        if hasattr(dialog, "bypass_tile") and dialog.bypass_tile:
+            dialog.bypass_tile.setEnabled(False)
+            dialog.bypass_tile.setToolTip(stand_tip)
+        if hasattr(dialog, "eos_exp_tile") and dialog.eos_exp_tile:
+            dialog.eos_exp_tile.setEnabled(False)
+            dialog.eos_exp_tile.setToolTip(stand_tip)
+    else:
+        from utils.dlc_helpers import is_dlc_only_mode
+        if is_dlc_only_mode(dialog.appid):
+            dialog.sls_tile.setEnabled(False)
+            dialog.sls_tile.setToolTip("Not available in DLC-Only mode")
+            dialog.sls_input.setEnabled(False)
+            dialog.eos_tile.setEnabled(False)
+            dialog.eos_tile.setToolTip("Not available in DLC-Only mode")
 
 
 def on_status_btn_clicked(dialog) -> None:

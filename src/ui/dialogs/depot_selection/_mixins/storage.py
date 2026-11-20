@@ -157,20 +157,26 @@ class StorageMixin:
             self._more_storage_combo.currentIndexChanged.connect(_on_combo_changed)
             layout.addWidget(self._more_storage_combo, 1)
 
-        # Custom directory selection button
+        # Custom directory selection button (hidden in AT0-M mode)
         self._custom_storage_btn = QPushButton("Custom...")
         self._custom_storage_btn.setCheckable(True)
         self._custom_storage_btn.setFixedHeight(28)
         self._custom_storage_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._custom_storage_btn.setToolTip("Select a custom directory or external drive")
         self._custom_storage_btn.setStyleSheet(_get_storage_btn_style())
+        self.selected_is_standalone = False
+
+        from utils.yaml.modes import is_at0m_enabled
+        if is_at0m_enabled():
+            self._custom_storage_btn.setVisible(False)
 
         def _on_custom_btn_clicked():
             from ui.dialogs.themed_file_dialog import ThemedFileDialog
             from ui.dialogs.themed_message_box import ThemedMessageBox
-            from utils.paths import is_valid_download_directory, normalize_to_library_root
+            from utils.paths import is_valid_download_directory
+            from core.steam_helpers import is_path_in_steam_library
 
-            chosen_dir = ThemedFileDialog.getExistingDirectory(self, "Select Installation / Steam Library Location")
+            chosen_dir = ThemedFileDialog.getExistingDirectory(self, "Select Installation Directory / Steam Library")
             if not chosen_dir:
                 if self._custom_storage_path and self.selected_storage_path == self._custom_storage_path:
                     self._custom_storage_btn.setChecked(True)
@@ -180,8 +186,8 @@ class StorageMixin:
                         self._storage_buttons[self.selected_storage_path].setChecked(True)
                 return
 
-            norm = normalize_to_library_root(chosen_dir)
-            if not is_valid_download_directory(norm):
+            real_p = os.path.realpath(os.path.expanduser(chosen_dir))
+            if not is_valid_download_directory(real_p):
                 ThemedMessageBox.warning(
                     self,
                     "Invalid Location",
@@ -190,14 +196,21 @@ class StorageMixin:
                 self._custom_storage_btn.setChecked(bool(self._custom_storage_path and self.selected_storage_path == self._custom_storage_path))
                 return
 
-            real_p = os.path.realpath(norm)
             self._custom_storage_path = real_p
             self.selected_storage_path = real_p
+            is_in_steam = is_path_in_steam_library(real_p)
+            self.selected_is_standalone = not is_in_steam
 
-            target = storage_targets.describe(real_p)
-            btn_text = f"{target.label} ({target.free})" if target.free else target.label
+            if is_in_steam:
+                target = storage_targets.describe(real_p)
+                btn_text = f"{target.label} ({target.free})" if target.free else target.label
+                self._custom_storage_btn.setToolTip(target.tooltip)
+            else:
+                folder_name = os.path.basename(real_p) or "Folder"
+                btn_text = f"{folder_name} (Standalone)"
+                self._custom_storage_btn.setToolTip(f"Standalone custom folder: {real_p}")
+
             self._custom_storage_btn.setText(btn_text)
-            self._custom_storage_btn.setToolTip(target.tooltip)
             self._custom_storage_btn.setChecked(True)
 
             self._storage_btn_group.setExclusive(False)
@@ -210,7 +223,7 @@ class StorageMixin:
                 self._more_storage_combo.setCurrentIndex(-1)
                 self._more_storage_combo.blockSignals(False)
 
-            logger.info(f"Custom storage library selected: {real_p}")
+            logger.info(f"Custom storage library selected: {real_p} (standalone={self.selected_is_standalone})")
 
         self._custom_storage_btn.clicked.connect(_on_custom_btn_clicked)
         layout.addWidget(self._custom_storage_btn, 1)
@@ -280,3 +293,12 @@ class StorageMixin:
     def should_remember_storage(self) -> bool:
         """Whether the user checked the 'Remember choice' toggle for storage."""
         return bool(getattr(self, "remember_storage_chk", None) and self.remember_storage_chk.isChecked())
+
+    def is_standalone_storage_selected(self) -> bool:
+        """Whether the user selected a standalone custom folder."""
+        from core.steam_helpers import is_path_in_steam_library
+        if getattr(self, "selected_is_standalone", False):
+            return True
+        if self.selected_storage_path and not is_path_in_steam_library(self.selected_storage_path):
+            return True
+        return False

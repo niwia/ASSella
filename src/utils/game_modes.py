@@ -15,10 +15,35 @@ from typing import Any, Dict
 
 
 def is_accela_managed(game: Any) -> bool:
-    """True when the game dict describes an ASSella-managed install."""
+    """True when the game dict describes an ASSella-managed install (including standalone custom folders)."""
     if not isinstance(game, dict):
         return False
-    return bool(game.get("accela_marker_path") or game.get("source") == "ACCELA")
+    return bool(
+        game.get("accela_marker_path")
+        or game.get("source") in ("ACCELA", "Standalone")
+        or game.get("is_accela_install")
+        or game.get("is_standalone")
+    )
+
+
+def is_standalone_game(game: Any) -> bool:
+    """True when the game dict describes a Standalone Custom Folder install (decoupled from Steam/SLSsteam)."""
+    if not isinstance(game, dict):
+        return False
+    if game.get("is_atom") or game.get("is_vapor") or game.get("source") == "at0-m":
+        return False
+    if game.get("appmanifest_path"):
+        return False
+    if game.get("is_standalone") or game.get("source") == "Standalone":
+        return True
+    if game.get("source") == "Steam":
+        return False
+    install_path = game.get("install_path") or game.get("library_path")
+    if install_path:
+        from core.steam_helpers import is_path_in_steam_library
+        if not is_path_in_steam_library(install_path):
+            return True
+    return False
 
 
 def is_atom_managed(game: Any) -> bool:

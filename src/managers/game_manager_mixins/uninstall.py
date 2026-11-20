@@ -54,6 +54,20 @@ class GameManagerUninstallMixin:
 
         is_accela_install = game_data.get("is_accela_install", False)
 
+        from core.steam_helpers import is_path_in_steam_library
+        is_standalone = bool(
+            game_data.get("is_standalone")
+            or (install_path and not is_path_in_steam_library(install_path))
+        )
+        if is_standalone:
+            confirm_msg = f"Are you sure you want to uninstall standalone game '{game_name}'?\n\n"
+            confirm_msg += "[Will Be Removed]\n"
+            confirm_msg += f"• Game directory: {install_path or 'Unknown'}\n"
+            if platform.system() == "Linux":
+                confirm_msg += "• Application shortcuts & icons\n"
+            confirm_msg += "• ASSella standalone game record\n"
+            return confirm_msg
+
         is_dlc_only = False
         if appid and appid not in ("0", "N/A", "unknown"):
             from utils.dlc_helpers import is_dlc_only_mode
@@ -357,6 +371,55 @@ class GameManagerUninstallMixin:
                             library_path = atom_info.get("library_path")
                 except Exception as e:
                     logger.debug(f"Could not resolve atom install info for {appid}: {e}")
+
+            from core.steam_helpers import is_path_in_steam_library
+            is_standalone = bool(
+                game_data.get("is_standalone")
+                or (install_path and not is_path_in_steam_library(install_path))
+            )
+
+            if is_standalone:
+                removed_items = []
+                if remove_game_files and install_path and os.path.exists(install_path):
+                    shutil.rmtree(install_path, ignore_errors=True)
+                    if os.path.exists(install_path) and os.listdir(install_path):
+                        removed_items.append(f"Game folder: {install_path} (some files remaining)")
+                    else:
+                        removed_items.append(f"Game folder: {install_path}")
+                elif not remove_game_files and install_path:
+                    removed_items.append(f"Game folder: {install_path} (preserved on disk)")
+
+                if platform.system() == "Linux" and remove_shortcuts and appid:
+                    self._remove_linux_shortcuts_and_icons(appid)
+                    removed_items.append("Desktop application shortcuts & icons")
+
+                from managers.db_manager import DatabaseManager
+                DatabaseManager().remove_standalone_game(str(appid))
+
+                try:
+                    settings = get_settings()
+                    for key in (
+                        f"installed_branch/{appid}",
+                        f"selected_branch/{appid}",
+                        f"installed_buildid/{appid}",
+                        f"pin_build/{appid}",
+                        f"exclude_from_update_all/{appid}",
+                        f"game_update_status/{appid}",
+                        f"depot_selection/{appid}",
+                    ):
+                        settings.remove(key)
+                except Exception as e:
+                    logger.debug(f"Failed to clear settings for standalone appid {appid}: {e}")
+
+                summary_lines = [
+                    f"Uninstalled standalone game '{game_name}'.",
+                    "",
+                    "[Removed]",
+                ]
+                summary_lines.extend(f"• {item}" for item in removed_items)
+                self.last_uninstall_summary = "\n".join(summary_lines)
+                self.remove_game(appid)
+                return True, None
 
             try:
                 from utils.slssteam_integration import (

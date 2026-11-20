@@ -141,6 +141,60 @@ class GameManagerScanningMixin:
             logger.info("Discarding cancelled or superseded library scan results")
             return games_found
 
+        # Discover registered standalone custom folder games
+        try:
+            from managers.db_manager import DatabaseManager
+            standalone_records = DatabaseManager().get_standalone_games()
+            for appid, s_info in standalone_records.items():
+                if self._scan_cancelled or generation != getattr(self, "_scan_generation", generation):
+                    break
+                inst_path = s_info.get("install_path", "")
+                if not inst_path or not os.path.isdir(inst_path):
+                    continue
+                # Skip empty directory
+                try:
+                    if not any(os.scandir(inst_path)):
+                        continue
+                except Exception:
+                    continue
+
+                # Avoid duplicates if already discovered
+                if any(str(g.get("appid")) == str(appid) for g in scanned_games):
+                    continue
+
+                game_name = s_info.get("game_name") or f"App {appid}"
+                buildid = str(s_info.get("buildid") or "")
+                size_bytes = s_info.get("size") or 0
+
+                standalone_game = {
+                    "appid": str(appid),
+                    "name": game_name,
+                    "game_name": game_name,
+                    "install_dir": os.path.basename(inst_path),
+                    "install_path": inst_path,
+                    "game_path": inst_path,
+                    "library_path": inst_path,
+                    "library_index": -1,
+                    "size": size_bytes,
+                    "size_on_disk": size_bytes,
+                    "buildid": buildid,
+                    "source": "Standalone",
+                    "is_standalone": True,
+                    "is_accela_install": True,
+                    "is_vapor": False,
+                    "is_atom": False,
+                    "is_plugin_game": False,
+                    "is_installed": True,
+                    "is_dlc_only": False,
+                    "depot_downloader_path": "",
+                    "accela_marker_path": "",
+                    "appmanifest_path": "",
+                }
+                scanned_games.append(standalone_game)
+                games_found += 1
+        except Exception as e:
+            logger.error(f"[GameManager] Error scanning standalone games: {e}")
+
         accela_games_found = sum(
             1 for game in scanned_games if game.get("is_accela_install")
         )

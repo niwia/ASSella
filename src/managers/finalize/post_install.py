@@ -133,20 +133,37 @@ class PostInstallMixin:
             # A `return` inside the `with` would run the context manager's
             # success path and log "done" for a cancelled job, so the loop
             # breaks out instead and the outcome is recorded explicitly.
+            from core.steam_helpers import is_path_in_steam_library
+            is_standalone = bool(
+                (self.game_data and self.game_data.get("is_standalone"))
+                or (self.current_dest_path and not is_path_in_steam_library(self.current_dest_path))
+            )
+            if is_standalone and self.game_data:
+                self.game_data["is_standalone"] = True
+                self.game_data["source"] = "Standalone"
+
             cancelled = False
             with log_step(
                 "Finalizing install",
                 category=CONFIG,
                 skipped_message="cancelled",
             ) as step:
-                for name, run_step in (
-                    ("manifests", lambda: self._finalize_acf_and_manifests(size_on_disk)),
-                    ("wrapper metadata", self._persist_wrapper_metadata),
-                    ("platform specifics", lambda: self._finalize_platform_specifics(config_enabled)),
-                    ("emulation", lambda: self._finalize_goldberg(auto_apply_goldberg)),
-                    ("eosproxy", self._finalize_eosproxy),
-                    ("greenluma", lambda: self._finalize_greenluma(config_enabled)),
-                ):
+                if is_standalone:
+                    steps = (
+                        ("standalone record", lambda: self._finalize_standalone_record(size_on_disk)),
+                        ("permissions", self._set_linux_binary_permissions),
+                        ("emulation", lambda: self._finalize_goldberg(auto_apply_goldberg)),
+                    )
+                else:
+                    steps = (
+                        ("manifests", lambda: self._finalize_acf_and_manifests(size_on_disk)),
+                        ("wrapper metadata", self._persist_wrapper_metadata),
+                        ("platform specifics", lambda: self._finalize_platform_specifics(config_enabled)),
+                        ("emulation", lambda: self._finalize_goldberg(auto_apply_goldberg)),
+                        ("eosproxy", self._finalize_eosproxy),
+                        ("greenluma", lambda: self._finalize_greenluma(config_enabled)),
+                    )
+                for name, run_step in steps:
                     if self._finalize_cancel_event.is_set() or self.is_cancelling:
                         cancelled = True
                         break
@@ -168,6 +185,30 @@ class PostInstallMixin:
                 QMetaObject.invokeMethod(
                     self, "_finalize_job_logic", Qt.ConnectionType.QueuedConnection
                 )
+
+    def _finalize_standalone_record(self, size_on_disk: int):
+        """Register a standalone custom-folder installation in DatabaseManager."""
+        try:
+            if not self.game_data or not self.current_dest_path:
+                return
+            from managers.db_manager import DatabaseManager
+            from utils.steam_manifest import get_game_directory
+
+            appid = str(self.game_data.get("appid", ""))
+            game_name = str(self.game_data.get("name") or self.game_data.get("game_name") or f"App {appid}")
+            buildid = str(self.game_data.get("buildid", ""))
+            game_dir = get_game_directory(self.current_dest_path, self.game_data)
+            DatabaseManager().save_standalone_game(
+                appid=appid,
+                game_name=game_name,
+                install_path=game_dir,
+                buildid=buildid,
+                size=size_on_disk,
+            )
+            logger.info(f"[PostInstall] Saved standalone game '{game_name}' ({appid}) at {game_dir}")
+        except Exception as e:
+            logger.error(f"[PostInstall] Failed to register standalone game: {e}")
+
     def _finalize_acf_and_manifests(self, size_on_disk: int):
         # 1. Manifests → Steam's central depotcache FIRST, so they are in place
         #    before the SLS install|appid|index command fires. Without this,

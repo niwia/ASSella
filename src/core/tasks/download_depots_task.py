@@ -116,6 +116,8 @@ class DownloadDepotsTask(QObject):
         Main execution method to download selected depots.
         """
         logger.info(f"Download task starting for {len(selected_depots)} depots.")
+        self.game_data = game_data
+        self.dest_path = dest_path
         self._terminal_signal_emitted = False
         self._temp_files_cleaned = False
         current_cmd: Optional[List[str]] = None
@@ -760,6 +762,12 @@ class DownloadDepotsTask(QObject):
         falls back to 'needs download' state (blue Install button).
         """
         try:
+            from core.steam_helpers import is_path_in_steam_library
+            if getattr(self, "game_data", None) and (
+                self.game_data.get("is_standalone")
+                or not is_path_in_steam_library(getattr(self, "dest_path", ""))
+            ):
+                return
             from utils.slssteam_integration import _experimental_mode_enabled
             if not _experimental_mode_enabled():
                 return
@@ -1122,12 +1130,17 @@ class DownloadDepotsTask(QObject):
                         f"Warning: No decryption key found for depot {depot_id}. Download may fail or be skipped."
                     )
 
-        from utils.steam_manifest import get_install_folder_name
-        install_folder_name = get_install_folder_name(game_data)
-
-        download_dir = os.path.join(
-            dest_path, "steamapps", "common", install_folder_name
-        )
+        from core.steam_helpers import is_path_in_steam_library
+        is_standalone = game_data.get("is_standalone") or not is_path_in_steam_library(dest_path)
+        if is_standalone:
+            game_data["is_standalone"] = True
+            download_dir = dest_path
+        else:
+            from utils.steam_manifest import get_install_folder_name
+            install_folder_name = get_install_folder_name(game_data)
+            download_dir = os.path.join(
+                dest_path, "steamapps", "common", install_folder_name
+            )
         self.download_dir = download_dir
         os.makedirs(download_dir, exist_ok=True)
         self.progress.emit(f"Download destination set to: {download_dir}")
