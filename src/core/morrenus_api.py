@@ -745,8 +745,8 @@ def download_manifest(
         finally:
             try:
                 r.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[Hubcap] Error closing response stream: {e}")
 
         # Validate the payload before it can replace a known-good bundle.
         import zipfile

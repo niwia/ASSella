@@ -689,13 +689,15 @@ class SingleDepotSelectionDialog(QDialog):
         self._custom_storage_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._custom_storage_btn.setToolTip("Select a custom directory or external drive")
         self._custom_storage_btn.setStyleSheet(btn_style)
+        self.selected_is_standalone = False
 
         def _on_custom_clicked():
             from ui.dialogs.themed_file_dialog import ThemedFileDialog
             from ui.dialogs.themed_message_box import ThemedMessageBox
-            from utils.paths import is_valid_download_directory, normalize_to_library_root
+            from utils.paths import is_valid_download_directory
+            from core.steam_helpers import is_path_in_steam_library
 
-            chosen_dir = ThemedFileDialog.getExistingDirectory(self, "Select Installation / Steam Library Location")
+            chosen_dir = ThemedFileDialog.getExistingDirectory(self, "Select Installation Directory / Steam Library")
             if not chosen_dir:
                 if self._custom_storage_path and self.selected_storage_path == self._custom_storage_path:
                     self._custom_storage_btn.setChecked(True)
@@ -708,8 +710,8 @@ class SingleDepotSelectionDialog(QDialog):
                             b.setChecked(True)
                 return
 
-            norm = normalize_to_library_root(chosen_dir)
-            if not is_valid_download_directory(norm):
+            real_p = os.path.realpath(os.path.expanduser(chosen_dir))
+            if not is_valid_download_directory(real_p):
                 ThemedMessageBox.warning(
                     self,
                     "Invalid Location",
@@ -718,14 +720,21 @@ class SingleDepotSelectionDialog(QDialog):
                 self._custom_storage_btn.setChecked(bool(self._custom_storage_path and self.selected_storage_path == self._custom_storage_path))
                 return
 
-            real_p = os.path.realpath(norm)
             self._custom_storage_path = real_p
             self.selected_storage_path = real_p
+            is_in_steam = is_path_in_steam_library(real_p)
+            self.selected_is_standalone = not is_in_steam
 
-            target = storage_targets.describe(real_p)
-            btn_text = f"{target.label} ({target.free})" if target.free else target.label
+            if is_in_steam:
+                target = storage_targets.describe(real_p)
+                btn_text = f"{target.label} ({target.free})" if target.free else target.label
+                self._custom_storage_btn.setToolTip(target.tooltip)
+            else:
+                folder_name = os.path.basename(real_p) or "Folder"
+                btn_text = f"{folder_name} (Standalone)"
+                self._custom_storage_btn.setToolTip(f"Standalone custom folder: {real_p}")
+
             self._custom_storage_btn.setText(btn_text)
-            self._custom_storage_btn.setToolTip(target.tooltip)
             self._custom_storage_btn.setChecked(True)
 
             self._storage_btn_group.setExclusive(False)
@@ -984,6 +993,15 @@ class SingleDepotSelectionDialog(QDialog):
     def should_remember_storage(self) -> bool:
         """Whether the user checked the 'Remember choice' toggle for storage."""
         return bool(getattr(self, "remember_storage_chk", None) and self.remember_storage_chk.isChecked())
+
+    def is_standalone_storage_selected(self) -> bool:
+        """Whether the user selected a standalone custom folder."""
+        from core.steam_helpers import is_path_in_steam_library
+        if getattr(self, "selected_is_standalone", False):
+            return True
+        if self.selected_storage_path and not is_path_in_steam_library(self.selected_storage_path):
+            return True
+        return False
 
     # Public API conforming with DepotSelectionDialog
     def get_selected_depots(self) -> List[str]:

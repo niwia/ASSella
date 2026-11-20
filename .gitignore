@@ -42,9 +42,8 @@ gifs/
 # scripts/ is intentionally TRACKED — the pre-release checker and test suite
 # are the gate against shipping a broken build, so they belong in history.
 # Only throwaway experiments go in scratch/
-.commandcode/.
-scratch/
 .commandcode/
+scratch/
 
 # ── Plugin distribution & R2 publishing ──────────────────────────────────────
 /plugins_manifest.json

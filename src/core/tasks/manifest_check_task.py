@@ -529,9 +529,14 @@ class ManifestCheckTask(QObject):
             logger.info(f"[UpdateCheck {appid}] Game build is pinned. Ignoring updates. Status: up_to_date.")
             return "up_to_date"
 
+        # Standalone custom-folder games bypass: files are not managed via Steam manifests or ACF
+        from utils.game_modes import is_accela_managed, is_atom_managed, is_standalone_game
+        if is_standalone_game(game_data):
+            logger.info(f"[UpdateCheck {appid}] Standalone custom-folder game. Updates are not managed via Steam manifests. Status: standalone.")
+            return "standalone"
+
         # AT0-M / Vapor / Plugin games bypass: Steam manages file and manifest updates natively.
         # ASSella only checks for the addition of new depots, which is handled exclusively by At0mUpdateChecker.
-        from utils.game_modes import is_accela_managed, is_atom_managed
         is_accela = is_accela_managed(game_data)
         is_atom = (not is_accela) and (
             is_atom_managed(game_data)

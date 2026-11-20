@@ -379,7 +379,7 @@ def _add_map_item_in_memory(
         # A '#' only starts a comment when preceded by whitespace (YAML rule),
         # so values like `-x=#foo` or hashes containing '#' are not truncated.
         map_pattern = re.compile(
-            rf"^[ \t]*['\"]?{re.escape(key)}['\"]?[ \t]*:[ \t]*(.+?)(?:[ \t]+#(.*))?$",
+            rf"^[ \t]*['\"]?{re.escape(key)}['\"]?[ \t]*:[ \t]*(.+?)(?:[ \t]+#(.*))?\r?$",
             re.MULTILINE,
         )
         m = map_pattern.search(sec_content)

@@ -48,7 +48,7 @@ class PostInstallMixin:
         # never finalise an install whose downloader was told to stop.
         stopped = (
             self.download_task is not None
-            and getattr(self.download_task, "_is_running", True) is False
+            and getattr(self.download_task, "is_running_flag", True) is False
         )
         if self.is_cancelling or stopped:
             if self._delete_files_on_cancel:
@@ -693,10 +693,19 @@ class PostInstallMixin:
         Runs in the background and never holds up the rest of the install.
         """
         from utils import desktop_shortcuts
+        from utils.game_modes import is_standalone_game
 
         if (self.is_cancelling or is_dlc_only or not self.game_data or not desktop_shortcuts.supported()
                 or not self.settings.value(desktop_shortcuts.SETTING_AFTER_INSTALL, False, type=bool)):
             return
+
+        if is_standalone_game(self.game_data):
+            logger.info(
+                f"[PostInstall] Skipping Steam desktop shortcut for standalone game "
+                f"{self.game_data.get('appid')}"
+            )
+            return
+
         appid = str(self.game_data.get("appid") or "")
         name = self.game_data.get("game_name", "") or ""
 

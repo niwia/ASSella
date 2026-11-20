@@ -166,10 +166,6 @@ class StorageMixin:
         self._custom_storage_btn.setStyleSheet(_get_storage_btn_style())
         self.selected_is_standalone = False
 
-        from utils.yaml.modes import is_at0m_enabled
-        if is_at0m_enabled():
-            self._custom_storage_btn.setVisible(False)
-
         def _on_custom_btn_clicked():
             from ui.dialogs.themed_file_dialog import ThemedFileDialog
             from ui.dialogs.themed_message_box import ThemedMessageBox

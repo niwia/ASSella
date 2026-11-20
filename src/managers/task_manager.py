@@ -629,8 +629,10 @@ class TaskManager(
                 )
                 if selected_files:
                     self.game_data["selected_files_list"] = selected_files
-                if hasattr(depot_dlg, "is_standalone_storage_selected") and depot_dlg.is_standalone_storage_selected():
-                    self.game_data["is_standalone"] = True
+                if hasattr(depot_dlg, "is_standalone_storage_selected"):
+                    self.game_data["is_standalone"] = bool(
+                        depot_dlg.is_standalone_storage_selected()
+                    )
 
             if not selected_depots:
                 self.job_finished()
@@ -759,9 +761,11 @@ class TaskManager(
                 libraries, self.main_window, accent_color=accent_c
             )
             if dialog.exec():
-                if hasattr(dialog, "is_standalone_selected") and dialog.is_standalone_selected():
+                if hasattr(dialog, "is_standalone_selected"):
                     if self.game_data:
-                        self.game_data["is_standalone"] = True
+                        self.game_data["is_standalone"] = bool(
+                            dialog.is_standalone_selected()
+                        )
                 return dialog.get_selected_path()
             else:
                 return None
@@ -946,7 +950,15 @@ class TaskManager(
             )
         )
 
-        if explicit_backend == "assella" or is_rollback_requested:
+        from utils.game_modes import is_standalone_game
+        is_standalone = is_standalone_game(self.game_data)
+
+        if is_standalone:
+            logger.info(
+                f"[TaskManager] Standalone custom folder game '{game_title}' — using ASSella Downloader backend"
+            )
+            use_native_steam = False
+        elif explicit_backend == "assella" or is_rollback_requested:
             logger.info(
                 f"[TaskManager] Job explicitly requested ASSella Downloader "
                 f"{'(Rollback/Downgrade)' if is_rollback_requested else ''} for '{game_title}'"
@@ -1479,8 +1491,8 @@ class TaskManager(
                 for obj in (watcher, timeout_timer, poll_timer):
                     try:
                         obj.deleteLater()
-                    except RuntimeError:
-                        pass
+                    except RuntimeError as re:
+                        logger.debug(f"[VaporWatcher] Object already deleted: {re}")
 
             def _check_acf():
                 if closed:
@@ -2271,34 +2283,50 @@ class TaskManager(
             return
 
         try:
-            steamapps_dir = os.path.join(self.current_dest_path, "steamapps")
-            common_dir = os.path.join(steamapps_dir, "common")
+            from utils.game_modes import is_standalone_game
+            is_standalone = is_standalone_game(self.game_data)
             game_dir = get_game_directory(
                 self.current_dest_path, self.game_data
             )
-            acf_path = os.path.join(
-                steamapps_dir, f"appmanifest_{self.game_data['appid']}.acf"
-            )
 
-            if os.path.exists(game_dir):
-                shutil.rmtree(game_dir)
-            if os.path.exists(acf_path):
-                os.remove(acf_path)
+            if is_standalone:
+                # Never delete the user-selected destination folder itself (e.g. ~/Games)
+                logger.info(f"[CancelCleanup] Preserving standalone custom root folder: {game_dir}")
+                if os.path.isdir(game_dir):
+                    for entry in os.scandir(game_dir):
+                        try:
+                            if entry.is_dir():
+                                shutil.rmtree(entry.path, ignore_errors=True)
+                            else:
+                                os.unlink(entry.path)
+                        except Exception as ce:
+                            logger.debug(f"[CancelCleanup] Error removing partial file {entry.path}: {ce}")
+            else:
+                steamapps_dir = os.path.join(self.current_dest_path, "steamapps")
+                common_dir = os.path.join(steamapps_dir, "common")
+                acf_path = os.path.join(
+                    steamapps_dir, f"appmanifest_{self.game_data['appid']}.acf"
+                )
+
+                if os.path.exists(game_dir):
+                    shutil.rmtree(game_dir)
+                if os.path.exists(acf_path):
+                    os.remove(acf_path)
+
+                if not self.slssteam_mode_was_active:
+                    try:
+                        if os.path.exists(common_dir):
+                            os.rmdir(common_dir)
+                        if os.path.exists(steamapps_dir):
+                            os.rmdir(steamapps_dir)
+                    except OSError:
+                        pass
 
             temp_manifest_dir = os.path.join(
                 tempfile.gettempdir(), "mistwalker_manifests"
             )
             if os.path.exists(temp_manifest_dir):
                 shutil.rmtree(temp_manifest_dir)
-
-            if not self.slssteam_mode_was_active:
-                try:
-                    if os.path.exists(common_dir):
-                        os.rmdir(common_dir)
-                    if os.path.exists(steamapps_dir):
-                        os.rmdir(steamapps_dir)
-                except OSError:
-                    pass
 
         except OSError as e:
             logger.error(f"Failed during cancel cleanup: {e}")

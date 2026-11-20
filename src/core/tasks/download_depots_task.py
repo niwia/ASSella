@@ -87,11 +87,15 @@ class DownloadDepotsTask(QObject):
 
     def _emit_completed(self):
         """Emit the terminal 'task ended' signal exactly once."""
+        if self._terminal_signal_emitted:
+            return
         self._terminal_signal_emitted = True
         self.completed.emit()
 
     def _emit_error(self, payload):
         """Emit the terminal error signal exactly once."""
+        if self._terminal_signal_emitted:
+            return
         self._terminal_signal_emitted = True
         self.error.emit(payload)
 

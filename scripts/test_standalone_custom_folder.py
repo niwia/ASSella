@@ -146,56 +146,70 @@ def test_is_standalone_game():
 
 def test_database_manager_standalone():
     print("=== 4. DatabaseManager standalone_games table ===")
+    from unittest.mock import patch
     from managers.db_manager import DatabaseManager
 
-    db = DatabaseManager()
-    test_appid = "998877"
-    test_name = "Super Standalone Adventure"
-    test_path = "/home/test/Games/SuperStandalone"
-    test_build = "889900"
-    test_size = 123456789
+    with tempfile.TemporaryDirectory() as td:
+        temp_db_path = Path(td) / "test_steam_headers.db"
+        orig_instance = DatabaseManager._instance
+        try:
+            DatabaseManager._instance = None
+            with patch("managers.db_manager._setup_database_path", return_value=temp_db_path):
+                db = DatabaseManager()
+                test_appid = "998877"
+                test_name = "Super Standalone Adventure"
+                test_path = "/home/test/Games/SuperStandalone"
+                test_build = "889900"
+                test_size = 123456789
 
-    # Clean up any leftover
-    db.remove_standalone_game(test_appid)
-    check(db.get_standalone_game(test_appid) is None, "Game starts absent")
+                # Clean up any leftover
+                db.remove_standalone_game(test_appid)
+                check(db.get_standalone_game(test_appid) is None, "Game starts absent")
 
-    # Save
-    db.save_standalone_game(
-        appid=test_appid,
-        game_name=test_name,
-        install_path=test_path,
-        buildid=test_build,
-        size=test_size,
-    )
+                # Save
+                db.save_standalone_game(
+                    appid=test_appid,
+                    game_name=test_name,
+                    install_path=test_path,
+                    buildid=test_build,
+                    size=test_size,
+                )
 
-    rec = db.get_standalone_game(test_appid)
-    check(rec is not None, "get_standalone_game returned record")
-    if rec:
-        check(rec.get("appid") == test_appid, f"AppID matches ({rec.get('appid')})")
-        check(
-            rec.get("game_name") == test_name,
-            f"Name matches ({rec.get('game_name')})",
-        )
-        check(
-            rec.get("install_path") == test_path,
-            f"Path matches ({rec.get('install_path')})",
-        )
-        check(
-            rec.get("buildid") == test_build,
-            f"BuildID matches ({rec.get('buildid')})",
-        )
-        check(rec.get("size") == test_size, f"Size matches ({rec.get('size')})")
+                rec = db.get_standalone_game(test_appid)
+                check(rec is not None, "get_standalone_game returned record")
+                if rec:
+                    check(rec.get("appid") == test_appid, f"AppID matches ({rec.get('appid')})")
+                    check(
+                        rec.get("game_name") == test_name,
+                        f"Name matches ({rec.get('game_name')})",
+                    )
+                    check(
+                        rec.get("install_path") == test_path,
+                        f"Path matches ({rec.get('install_path')})",
+                    )
+                    check(
+                        rec.get("buildid") == test_build,
+                        f"BuildID matches ({rec.get('buildid')})",
+                    )
+                    check(rec.get("size") == test_size, f"Size matches ({rec.get('size')})")
 
-    # Check bulk fetch
-    all_recs = db.get_standalone_games()
-    check(test_appid in all_recs, "AppID found in get_standalone_games dict")
+                # Check bulk fetch
+                all_recs = db.get_standalone_games()
+                check(test_appid in all_recs, "AppID found in get_standalone_games dict")
 
-    # Remove
-    db.remove_standalone_game(test_appid)
-    check(
-        db.get_standalone_game(test_appid) is None,
-        "Record removed cleanly after remove_standalone_game",
-    )
+                # Remove
+                db.remove_standalone_game(test_appid)
+                check(
+                    db.get_standalone_game(test_appid) is None,
+                    "Record removed cleanly after remove_standalone_game",
+                )
+        finally:
+            if DatabaseManager._instance and DatabaseManager._instance.conn:
+                try:
+                    DatabaseManager._instance.conn.close()
+                except Exception:
+                    pass
+            DatabaseManager._instance = orig_instance
 
 
 def test_sls_config_sync_skipped_for_standalone():

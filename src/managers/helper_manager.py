@@ -238,11 +238,11 @@ def run_headless_update_check(logger):
     logger.info("Scanning library for games...")
     game_manager._perform_scan()
 
-    from utils.game_modes import is_accela_managed, is_atom_managed
+    from utils.game_modes import is_accela_managed, is_atom_managed, is_standalone_game
 
     accela_games = [
         g for g in game_manager.games
-        if is_accela_managed(g) and not is_atom_managed(g)
+        if is_accela_managed(g) and not is_atom_managed(g) and not is_standalone_game(g)
     ]
     logger.info(f"Found {len(accela_games)} ASSella-managed game(s).")
     if not accela_games:

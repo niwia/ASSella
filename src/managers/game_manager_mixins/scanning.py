@@ -155,7 +155,8 @@ class GameManagerScanningMixin:
                 try:
                     if not any(os.scandir(inst_path)):
                         continue
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"[GameManager] Could not scan directory {inst_path}: {e}")
                     continue
 
                 # Avoid duplicates if already discovered

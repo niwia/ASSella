@@ -485,9 +485,19 @@ def is_path_in_steam_library(target_path: str, steam_libraries: Optional[List[st
             norm_lib = os.path.realpath(os.path.expanduser(str(lib)))
             if norm_target == norm_lib or norm_target.startswith(norm_lib + os.sep):
                 return True
-        # Structural check: if path contains 'steamapps' folder
-        if "steamapps" in Path(norm_target).parts:
-            return True
+        # Structural check: verify genuine Steam library markers around 'steamapps'
+        target_path_obj = Path(norm_target)
+        if "steamapps" in target_path_obj.parts:
+            idx = target_path_obj.parts.index("steamapps")
+            steamapps_dir = Path(*target_path_obj.parts[: idx + 1])
+            lib_root = steamapps_dir.parent
+            if (
+                (lib_root / "libraryfolders.vdf").is_file()
+                or (lib_root / "steamapps" / "libraryfolder.vdf").is_file()
+                or (steamapps_dir / "libraryfolder.vdf").is_file()
+                or (steamapps_dir.is_dir() and any(steamapps_dir.glob("appmanifest_*.acf")))
+            ):
+                return True
     except Exception as e:
         logger.debug(f"is_path_in_steam_library check failed for {target_path}: {e}")
     return False

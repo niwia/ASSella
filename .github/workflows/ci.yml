@@ -210,7 +210,9 @@ jobs:
                        test_atom_dlc_and_byparr \
                        test_arm64_gating \
                        test_platform_updates \
-                       test_steam_updates; do
+                       test_steam_updates \
+                       test_custom_folder_workflow \
+                       test_standalone_custom_folder; do
             echo "::group::$suite"
             QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp \
               python -u "scripts/$suite.py"

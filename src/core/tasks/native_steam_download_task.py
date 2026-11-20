@@ -84,10 +84,14 @@ class NativeSteamDownloadTask(QObject):
         self._acf_path: Optional[Path] = None
 
     def _emit_completed(self):
+        if self._terminal_signal_emitted:
+            return
         self._terminal_signal_emitted = True
         self.completed.emit()
 
     def _emit_error(self, payload):
+        if self._terminal_signal_emitted:
+            return
         self._terminal_signal_emitted = True
         self.error.emit(payload)
 

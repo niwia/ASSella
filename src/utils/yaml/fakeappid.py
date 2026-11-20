@@ -138,7 +138,7 @@ def add_fake_app_id(
             # re-mapped app append a duplicate key, and the read paths then
             # disagreed about which target applies.
             existing_pattern = re.compile(
-                rf"^[ \t]*['\"]?{re.escape(app_id)}['\"]?[ \t]*:[^\r\n]*$",
+                rf"^[ \t]*['\"]?{re.escape(app_id)}['\"]?[ \t]*:[^\r\n]*\r?$",
                 re.MULTILINE,
             )
             existing_match = existing_pattern.search(section_content)
@@ -154,7 +154,7 @@ def add_fake_app_id(
                     return False
                 new_section = (
                     section_content[: existing_match.start()]
-                    + entry_line.rstrip("\n")
+                    + entry_line.rstrip("\r\n")
                     + section_content[existing_match.end():]
                 )
                 new_content = content[:content_start] + new_section + content[section_end:]

@@ -242,8 +242,6 @@ class SteamLibraryDialog(QDialog):
                 border-color: rgba(255, 255, 255, 0.4);
             }
         """)
-        if is_at0m_enabled():
-            self.add_custom_btn.setVisible(False)
 
         def _on_add_custom():
             from ui.dialogs.themed_file_dialog import ThemedFileDialog

@@ -11,7 +11,9 @@ Keep this logic here, not copy-pasted per call site, so the guard
 (at0m_update_checker) can never drift apart again.
 """
 
-from typing import Any, Dict
+import os
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 
 def is_accela_managed(game: Any) -> bool:
@@ -26,23 +28,61 @@ def is_accela_managed(game: Any) -> bool:
     )
 
 
+def resolve_install_layout(
+    dest_path: str, game_data: Optional[Dict[str, Any]] = None
+) -> Tuple[bool, str]:
+    """Resolve install layout returning (is_standalone, resolved_game_directory).
+
+    Single source of truth for determining whether an install destination / game
+    is standalone, and what its final directory on disk should be.
+    """
+    if not dest_path:
+        return False, ""
+
+    game = game_data if isinstance(game_data, dict) else {}
+
+    # Explicit Steam / AT0-M markers cannot be standalone
+    if (
+        game.get("is_atom")
+        or game.get("is_vapor")
+        or game.get("source") in ("at0-m", "Steam")
+        or game.get("appmanifest_path")
+    ):
+        is_standalone = False
+    elif game.get("is_standalone") or game.get("source") == "Standalone":
+        is_standalone = True
+    else:
+        from core.steam_helpers import is_path_in_steam_library
+        is_standalone = not is_path_in_steam_library(dest_path)
+
+    if is_standalone:
+        return True, dest_path
+
+    # For Steam library layout, nest inside steamapps/common/<installdir>
+    # unless dest_path already points to the game directory inside steamapps/common
+    from utils.steam_manifest import get_install_folder_name
+    folder_name = get_install_folder_name(game)
+    norm = os.path.normpath(dest_path)
+    if os.path.basename(norm) == folder_name and ("steamapps" + os.sep + "common") in norm:
+        return False, dest_path
+
+    return False, os.path.join(dest_path, "steamapps", "common", folder_name)
+
+
 def is_standalone_game(game: Any) -> bool:
     """True when the game dict describes a Standalone Custom Folder install (decoupled from Steam/SLSsteam)."""
     if not isinstance(game, dict):
         return False
-    if game.get("is_atom") or game.get("is_vapor") or game.get("source") == "at0-m":
+    if game.get("is_atom") or game.get("is_vapor") or game.get("source") in ("at0-m", "Steam"):
         return False
     if game.get("appmanifest_path"):
         return False
     if game.get("is_standalone") or game.get("source") == "Standalone":
         return True
-    if game.get("source") == "Steam":
-        return False
     install_path = game.get("install_path") or game.get("library_path")
     if install_path:
-        from core.steam_helpers import is_path_in_steam_library
-        if not is_path_in_steam_library(install_path):
-            return True
+        is_standalone, _ = resolve_install_layout(install_path, game)
+        return is_standalone
     return False
 
 
