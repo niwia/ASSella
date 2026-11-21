@@ -379,11 +379,40 @@ class GameManagerUninstallMixin:
             if is_standalone:
                 removed_items = []
                 if remove_game_files and install_path and os.path.exists(install_path):
-                    shutil.rmtree(install_path, ignore_errors=True)
-                    if os.path.exists(install_path) and os.listdir(install_path):
-                        removed_items.append(f"Game folder: {install_path} (some files remaining)")
+                    resolved = Path(install_path).resolve()
+                    home = Path.home()
+                    protected = {
+                        Path("/"),
+                        Path("/home"),
+                        Path("/root"),
+                        Path("/usr"),
+                        Path("/var"),
+                        Path("/etc"),
+                        Path("/bin"),
+                        Path("/sbin"),
+                        Path("/lib"),
+                        Path("/opt"),
+                        Path("/tmp"),
+                        home,
+                        home / "Desktop",
+                        home / "Downloads",
+                        home / "Documents",
+                        home / ".config",
+                        home / ".local",
+                    }
+                    is_safe = resolved not in protected and resolved.is_dir() and len(resolved.parts) > 2
+                    if is_safe:
+                        shutil.rmtree(resolved, ignore_errors=True)
+                        if os.path.exists(resolved) and os.listdir(resolved):
+                            removed_items.append(f"Game folder: {resolved} (some files remaining)")
+                        else:
+                            removed_items.append(f"Game folder: {resolved}")
                     else:
-                        removed_items.append(f"Game folder: {install_path}")
+                        logger.critical(
+                            f"[Uninstall] Refusing to rmtree unsafe standalone install path: {install_path} "
+                            f"(resolved: {resolved})"
+                        )
+                        removed_items.append(f"Game folder: {install_path} (skipped unsafe directory)")
                 elif not remove_game_files and install_path:
                     removed_items.append(f"Game folder: {install_path} (preserved on disk)")
 

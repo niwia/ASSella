@@ -767,8 +767,18 @@ class SimpleYAMLReader:
 def dedup_list(items: list) -> list:
     seen = {}
     for entry in items:
-        num = entry.val.split()[0]
-        seen[num] = entry
+        val = entry.val if isinstance(entry, ConfigEntry) else str(entry)
+        val_parts = val.split()
+        if not val_parts:
+            continue
+        num = val_parts[0]
+        if num not in seen:
+            seen[num] = entry
+        else:
+            prev_entry = seen[num]
+            prev_val = prev_entry.val if isinstance(prev_entry, ConfigEntry) else str(prev_entry)
+            if "#" in val and "#" not in prev_val:
+                seen[num] = entry
     return list(seen.values())
 
 
@@ -1106,7 +1116,7 @@ def validate_config(config_path: Path, key_types: dict) -> list:
 # ──────────────────────────────────────────────────────────────
 
 def _render_list(items: list, indent: str = "  ") -> str:
-    return "\n".join(f"{indent}- {e.val}" for e in dedup_list(items))
+    return "\n".join(f"{indent}- {e.val if isinstance(e, ConfigEntry) else str(e)}" for e in dedup_list(items))
 
 
 def _render_map(mapping: dict, parent_key: str, indent: str = "  ") -> str:
@@ -1115,9 +1125,12 @@ def _render_map(mapping: dict, parent_key: str, indent: str = "  ") -> str:
         if isinstance(v, list):
             out.append(f"{indent}{k}:")
             for sub in v:
-                out.append(f"{indent}  - {sub.val}")
+                sub_val = sub.val if isinstance(sub, ConfigEntry) else str(sub)
+                out.append(f"{indent}  - {sub_val}")
         elif isinstance(v, ConfigEntry):
             out.append(f"{indent}{k}: {v.val}")
+        elif v is not None:
+            out.append(f"{indent}{k}: {v}")
     return "\n".join(out)
 
 

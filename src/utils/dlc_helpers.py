@@ -1119,6 +1119,7 @@ def purge_and_sanitize_for_dlc_only(
         add_additional_app,
         remove_additional_depot,
         add_additional_depot,
+        add_additional_depots_batch,
         get_additional_depots,
         add_decryption_key,
         remove_decryption_key,
@@ -1202,13 +1203,16 @@ def purge_and_sanitize_for_dlc_only(
                     summary["base_depots_removed"].append(d)
 
         depots_meta = game_data.get("depots") if (game_data and isinstance(game_data.get("depots"), dict)) else {}
+        depots_to_add = []
         for d in sorted(sel_dlc_depots, key=lambda x: int(x) if x.isdigit() else 0):
             if d == appid_str:
                 continue  # Safeguard: parent AppID is NEVER in AdditionalDepots
             meta = depots_meta.get(d) or depots_meta.get(int(d) if d.isdigit() else d) or {}
             desc = meta.get("desc", "") if isinstance(meta, dict) else ""
             comment = f"{game_name} [{desc}] ({appid_str})" if desc else f"{game_name} ({appid_str})"
-            add_additional_depot(config_path, d, comment=comment)
+            depots_to_add.append((d, comment))
+        if depots_to_add:
+            add_additional_depots_batch(config_path, depots_to_add)
 
         # 3. DecryptionKeys: Remove unselected depot keys, then add keys for selected DLC depots
         existing_keys = get_decryption_keys(config_path)
