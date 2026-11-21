@@ -204,25 +204,42 @@ def _block_bounds(content: str, parent: str) -> Optional[Tuple[int, int]]:
     return start, end
 
 
-def _apply(content: str, setting: SlsSetting, text: str) -> str:
+def _apply(content: str, setting: SlsSetting, text: str) -> Optional[str]:
+    """Return the edited content, or None when the line cannot be rewritten safely."""
     if "." not in setting.key:
         rx = _value_regex(setting.key)
         m = rx.search(content)
         if m is not None:
             lead = f"{setting.key}:"
             return content[: m.start()] + lead + " " + text + content[m.end("val"):]
-        # Fallback: check if the top-level key exists in any form at column 0 (e.g. malformed or empty)
+        # Fallback: the top-level key exists but not in a shape _value_regex
+        # matches (empty value, malformed scalar). Rewrite that one column-0
+        # line, keeping its quoting and the separator before any inline
+        # comment - `f"{key}: {text}{tail}"` dropped the separator and produced
+        # `yes# note`, which YAML reads as the literal string "yes# note".
         key_pattern = re.compile(
-            r"^['\"]?" + re.escape(setting.key) + r"['\"]?[ \t]*:[ \t]*(?:\"[^\"]*\"|'[^']*'|[^#\r\n]*?)?(?P<tail>[ \t]*#[^\r\n]*)?\r?$",
+            r"^(?P<key>['\"]?" + re.escape(setting.key) + r"['\"]?[ \t]*:)"
+            r"[ \t]*(?P<val>[^\r\n]*?)?(?P<tail>[ \t]+#[^\r\n]*)?\r?$",
             re.MULTILINE,
         )
         km = key_pattern.search(content)
         if km is not None:
-            tail = km.group("tail") or ""
-            replacement = f"{setting.key}: {text}{tail}"
+            existing = (km.group("val") or "").strip()
+            if "#" in existing and not existing.startswith(('"', "'")):
+                # One scalar ('Neo#tight'), not a value plus comment: no
+                # single-line rewrite exists. `write_sls_setting` replaces
+                # values that do not read back, and appending would duplicate
+                # the key, so the caller must refuse this edit instead.
+                logger.warning(
+                    f"[SlsSettings] {setting.key} holds an unquoted value containing '#', "
+                    "which YAML reads as one scalar; refusing to rewrite it"
+                )
+                return None
+            replacement = f"{km.group('key')} {text}{km.group('tail') or ''}"
             return content[: km.start()] + replacement + content[km.end():]
         return content.rstrip("\n") + f"\n\n{setting.key}: {text}\n"
 
+    # Nested setting:
     parent, child = setting.key.split(".", 1)
     bounds = _block_bounds(content, parent)
     if bounds is None:
@@ -242,14 +259,25 @@ def _apply(content: str, setting: SlsSetting, text: str) -> str:
     indent = indent_m.group(1) if indent_m else "  "
     m = _value_regex(child, indent).search(block)
     if m is None:
+        # Same rule as the top-level fallback: keep the separator before an
+        # inline comment, and keep a quoted child key quoted. Anchored to the
+        # block's own indent - an unanchored `^` matched a deeper child and
+        # rewrote it as a sibling.
         child_pattern = re.compile(
-            r"^(" + re.escape(indent) + r"['\"]?" + re.escape(child) + r"['\"]?[ \t]*:)[ \t]*(?:\"[^\"]*\"|'[^']*'|[^#\r\n]*?)?(?P<tail>[ \t]*#[^\r\n]*)?\r?$",
+            r"^" + re.escape(indent) + r"(?P<key>['\"]?" + re.escape(child) + r"['\"]?[ \t]*:)"
+            r"[ \t]*(?P<val>[^\r\n]*?)?(?P<tail>[ \t]+#[^\r\n]*)?\r?$",
             re.MULTILINE,
         )
         cm = child_pattern.search(block)
         if cm is not None:
-            tail = cm.group("tail") or ""
-            replacement = f"{indent}{child}: {text}{tail}"
+            existing = (cm.group("val") or "").strip()
+            if "#" in existing and not existing.startswith(('"', "'")):
+                logger.warning(
+                    f"[SlsSettings] {setting.key} holds an unquoted value containing '#', "
+                    "which YAML reads as one scalar; refusing to rewrite it"
+                )
+                return None
+            replacement = f"{indent}{cm.group('key')} {text}{cm.group('tail') or ''}"
             block = block[: cm.start()] + replacement + block[cm.end():]
         else:
             insert = f"{indent}{child}: {text}\n"
@@ -289,6 +317,8 @@ def write_sls_setting(path: Path, setting: SlsSetting, value: Any) -> Tuple[bool
         return True, "unchanged"
 
     new_content = _apply(content, setting, text)
+    if new_content is None:
+        return False, f"{setting.key} cannot be rewritten safely; edit config.yaml by hand."
     try:
         after = _load(new_content)
     except Exception as e:

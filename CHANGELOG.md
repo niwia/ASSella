@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Standalone status** has its own "Standalone install" badge instead of falling through to "Unable to check updates", and is no longer reset to "checking" by a manual update check.
 - **Uninstall** uses the shared `is_standalone_game` classification instead of its own inline copy.
 - **Custom-folder CI suites** pass on a clean home: the picker test builds a usable, non-transient target instead of relying on `/tmp` or on pre-existing Steam libraries, and the home-path blacklist check skips when `HOME` is itself transient.
+- **Config writes**: rewrote the value fallbacks in `yaml_values.update_yaml_boolean_value` and `sls_settings._apply` so the separator before an inline comment survives (`Plugins:  # note` no longer becomes `yes# note`, which YAML reads as a string) and an indented look-alike key is no longer matched and duplicated. A value that YAML reads as one scalar containing `#` is refused instead of silently mangled.
+- **Concurrent writes**: `batch_config_edit` now serialises read-modify-write per config file through `config_write_lock`, so two writers (GUI, headless helper, update checker) no longer drop each other's entries.
+- **Config validation**: `_validate_yaml_content` rejects duplicate mapping keys at any depth, not just at column 0, so a broken edit is refused before it reaches the file.
+- **Config fixer (Settings → Tools)**: repairs and backup restores now go through the in-place `_atomic_write` instead of truncating or replacing the file, so the SLSsteam file watcher keeps following the same inode and never sees a half-written `config.yaml`; the CLI path does the same.
+
+### Added
+- `scripts/test_config_write_safety.py`, now part of CI, covers the comment separator, nested-key isolation, scalar refusal, duplicate-key validation, concurrent batch edits and inode preservation.
 
 ## [3.1.0] - 2026-11-09
 

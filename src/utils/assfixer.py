@@ -1034,9 +1034,17 @@ def validate_config(config_path: Path, key_types: dict) -> list:
     for lineno, line in enumerate(lines, 1):
         if line != line.rstrip():
             issues.append(f"Line {lineno}: trailing whitespace")
-        if "  #" in line:
-            parts = line.split("  #", 1)
-            if parts[0].rstrip() != parts[0]:
+        # Only a real inline comment, not a commented-out example ("#  - 12345")
+        # and not a '#' inside a value. A "multiple spaces" complaint here used
+        # to fire on every comment block and example line, so the check reported
+        # issues on healthy configs and "Repair" never showed as optional.
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        m = re.search(r"[ \t]#", stripped)
+        if m and m.start() > 0:
+            before = stripped[: m.start()]
+            if before.endswith(" ") or before.endswith("\t"):
                 issues.append(f"Line {lineno}: multiple spaces before inline comment")
 
     reader = SimpleYAMLReader(key_types, lenient=True)
@@ -1205,8 +1213,15 @@ def restore_latest_backup(config_path: Path) -> tuple[bool, str, Optional[Path]]
         bak_path = get_latest_backup_path(config_path)
         if not bak_path:
             return False, "No backup file found to restore.", None
-            
-        shutil.copy2(bak_path, config_path)
+
+        # Overwrite the file in place rather than shutil.copy2: copy2 creates a
+        # new inode, and SLSsteam's watcher follows the old one, so the running
+        # plugin would keep reading the file it already had open.
+        from utils.yaml.core import _atomic_write
+
+        content = bak_path.read_text(encoding="utf-8", errors="replace")
+        if not _atomic_write(config_path, content):
+            return False, f"Backup {bak_path.name} could not be restored: it does not parse as YAML.", bak_path
         return True, f"Successfully restored config from backup:\n{bak_path.name}", bak_path
     except Exception as e:
         return False, f"Failed to restore backup: {e}", None
@@ -1424,11 +1439,15 @@ def repair_and_sync_config(
         merged = merge_config(template_yaml, old_data, key_types)
         bak_path = make_backup_with_rotation(config_path)
 
-        # In-place write to preserve file inode for live SLS inotify
-        with open(config_path, "w", encoding="utf-8") as f:
-            f.write(merged)
-            f.flush()
-            os.fsync(f.fileno())
+        # Same writer ASSella uses everywhere else: in place (same inode, so
+        # SLSsteam's file watcher sees one change and never an empty file),
+        # fsync'd, 0600, and refused outright if the merge is not valid YAML.
+        # The previous open(..., "w") truncated the file first, so the watcher
+        # could reload a half-written config.
+        from utils.yaml.core import _atomic_write
+
+        if not _atomic_write(config_path, merged):
+            return False, "Repaired config did not validate; the existing file was left untouched.", bak_path
 
         # Ensure ASSella prerequisites (API: yes, LogLevels: 0x2)
         try:
@@ -1773,7 +1792,15 @@ def main() -> None:
         bak_path = make_backup_with_rotation(config_path)
         ok(f"Backup created: {bak_path}")
 
-    out_path.write_text(merged, encoding="utf-8")
+    from utils.yaml.core import _atomic_write
+
+    if out_path == config_path:
+        # In place: same inode, so SLSsteam's watcher picks the change up.
+        if not _atomic_write(out_path, merged):
+            error("Merged config did not validate; nothing was written.")
+            return
+    else:
+        out_path.write_text(merged, encoding="utf-8")
     ok(f"Config written:  {out_path}")
     print()
 
