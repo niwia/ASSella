@@ -41,41 +41,64 @@ def resolve_install_layout(
 
     game = game_data if isinstance(game_data, dict) else {}
 
-    # Explicit Steam / AT0-M markers cannot be standalone
-    if (
-        game.get("is_atom")
-        or game.get("is_vapor")
-        or game.get("source") in ("at0-m", "Steam")
-        or game.get("appmanifest_path")
-    ):
+    # Anything Steam or a plugin owns is never standalone: AT0-M/Vapor/plugin
+    # games (which include ACCELA-managed installs, stamped is_accela_install
+    # while source stays "Steam") and any game with a real appmanifest.
+    if _is_steam_owned_game(game):
         is_standalone = False
     elif game.get("is_standalone") or game.get("source") == "Standalone":
         is_standalone = True
     else:
+        # Everything else is decided by the destination: a path inside a Steam
+        # library uses the library layout, a path outside one is standalone.
         from core.steam_helpers import is_path_in_steam_library
         is_standalone = not is_path_in_steam_library(dest_path)
 
     if is_standalone:
         return True, dest_path
 
-    # For Steam library layout, nest inside steamapps/common/<installdir>
-    # unless dest_path already points to the game directory inside steamapps/common
+    # For Steam library layout, nest inside steamapps/common/<installdir>.
+    # A destination already inside a steamapps/common tree is a game directory,
+    # not a library root, so returning it untouched avoids .../common/X/steamapps/common/...
     from utils.steam_manifest import get_install_folder_name
     folder_name = get_install_folder_name(game)
     norm = os.path.normpath(dest_path)
-    if os.path.basename(norm) == folder_name and ("steamapps" + os.sep + "common") in norm:
+    common_parts = ("steamapps", "common")
+    parts = Path(norm).parts
+    if any(parts[i: i + 2] == common_parts for i in range(len(parts) - 1)):
         return False, dest_path
 
     return False, os.path.join(dest_path, "steamapps", "common", folder_name)
+
+
+# Sources that mean "Steam or a plugin owns this install", so ASSella must treat
+# it as a normal Steam-library game rather than a standalone custom folder.
+# "ACCELA" is ASSella's own managed install inside a Steam library.
+_STEAM_OWNED_SOURCES = frozenset(
+    ("at0-m", "AT0-M", "Steam", "Vapor", "plugin_native", "ACCELA")
+)
+
+
+def _is_steam_owned_game(game: Dict[str, Any]) -> bool:
+    """True when the game dict carries Steam/AT0-M/plugin ownership signals.
+
+    Deliberately does not look at ``is_accela_install``: standalone custom
+    folders carry it too, and they are the case this predicate must not catch.
+    """
+    return bool(
+        game.get("is_atom")
+        or game.get("is_vapor")
+        or game.get("is_plugin_game")
+        or game.get("appmanifest_path")
+        or game.get("source") in _STEAM_OWNED_SOURCES
+    )
 
 
 def is_standalone_game(game: Any) -> bool:
     """True when the game dict describes a Standalone Custom Folder install (decoupled from Steam/SLSsteam)."""
     if not isinstance(game, dict):
         return False
-    if game.get("is_atom") or game.get("is_vapor") or game.get("source") in ("at0-m", "Steam"):
-        return False
-    if game.get("appmanifest_path"):
+    if _is_steam_owned_game(game):
         return False
     if game.get("is_standalone") or game.get("source") == "Standalone":
         return True

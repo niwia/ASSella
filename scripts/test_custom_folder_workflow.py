@@ -37,6 +37,26 @@ def check(cond: bool, label: str):
 TEST_WORK_DIR = REPO_ROOT / ".test_custom_work"
 
 
+def _non_transient_root() -> str:
+    """A directory the storage picker accepts as a download target.
+
+    /tmp is deliberately rejected as transient, so the picker tests cannot use
+    the default temporary directory: they need a location that
+    is_valid_download_directory() accepts on any machine, including a clean CI
+    home with no Steam libraries.
+    """
+    for candidate in (str(TEST_WORK_DIR), str(Path.home())):
+        try:
+            Path(candidate).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        from utils.paths import is_valid_download_directory
+
+        if is_valid_download_directory(candidate):
+            return candidate
+    return tempfile.gettempdir()
+
+
 def get_test_dir(name: str) -> Path:
     d = TEST_WORK_DIR / name
     if d.exists():
@@ -62,7 +82,11 @@ def test_blacklisted_system_path():
     check(is_blacklisted_system_path("/run/media/deck/SDCARD") is False, "unmounted /run/media path is NOT blacklisted")
     check(is_blacklisted_system_path("/media/user/Drive1") is False, "unmounted /media path is NOT blacklisted")
     check(is_blacklisted_system_path("/mnt/CustomGames") is False, "unmounted /mnt path is NOT blacklisted")
-    check(is_blacklisted_system_path(str(Path.home() / "Games")) is False, "user Games path is NOT blacklisted")
+    # Only meaningful when the home directory is not itself under a blacklisted
+    # prefix (CI runners and TMPDIR-based temp homes put HOME under /tmp).
+    games_home = str(Path.home() / "Games")
+    if not games_home.startswith(("/tmp/", "/var/tmp/", "/proc/", "/sys/", "/dev/")):
+        check(is_blacklisted_system_path(games_home) is False, "user Games path is NOT blacklisted")
 
 
 def test_normalize_to_library_root():
@@ -173,7 +197,14 @@ def test_dialogs_custom_storage_ui():
     from ui.dialogs.depot_selection.dialog import DepotSelectionDialog
     from ui.dialogs.single_depot_dialog import SingleDepotSelectionDialog
 
-    with tempfile.TemporaryDirectory() as td:
+    # The picker only offers usable download targets, and /tmp is rejected as
+    # transient, so the test must build a library outside it rather than reuse
+    # the temporary directory (which failed on a clean CI home).
+    from ui.dialogs.depot_selection import storage_targets
+
+    with tempfile.TemporaryDirectory(dir=_non_transient_root()) as td:
+        check(storage_targets.is_usable(td), "test library directory is a usable download target")
+
         depots_single = {"100": {"desc": "Main Depot", "size": 1024}}
         dlg_single = SingleDepotSelectionDialog(
             "123", "Test Game Single", depots_single, library_path=td

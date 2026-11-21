@@ -32,7 +32,7 @@ CACHE_TTL_SECONDS = 24 * 60 * 60
 UPDATE_AVAILABLE_RECHECK_SECONDS = 24 * 60 * 60
 
 # Status values that are considered "conclusively known" and worth persisting
-PERSISTENT_STATUSES = {"update_available", "up_to_date"}
+PERSISTENT_STATUSES = {"update_available", "up_to_date", "standalone"}
 
 # Status values that should never be persisted (transient/incomplete)
 TRANSIENT_STATUSES = {"checking", "cannot_determine"}

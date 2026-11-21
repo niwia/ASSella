@@ -67,6 +67,34 @@ def test_is_path_in_steam_library():
             "Custom folder outside steam libraries returns False",
         )
 
+        # Structural detection: a library ensure_steam_library() just created is
+        # not in libraryfolders.vdf yet, so it must be recognised by the sidecar
+        # it writes at the library root. Regression: it was reported as "not a
+        # library", which made a chosen library root download into the root.
+        fresh_lib = os.path.join(td, "FreshLibrary")
+        os.makedirs(os.path.join(fresh_lib, "steamapps", "common"), exist_ok=True)
+        with open(os.path.join(fresh_lib, "libraryfolder.vdf"), "w") as sf:
+            sf.write('"libraryfolder"\n{\n}\n')
+        for label, path in (
+            ("library root", fresh_lib),
+            ("steamapps dir", os.path.join(fresh_lib, "steamapps")),
+            ("steamapps/common", os.path.join(fresh_lib, "steamapps", "common")),
+        ):
+            check(
+                is_path_in_steam_library(path, steam_libraries=[]) is True,
+                f"Fresh library {label} is detected structurally",
+            )
+
+        # A library made by another OS has ACFs but no libraryfolders.vdf.
+        dual_boot = os.path.join(td, "DualBoot")
+        os.makedirs(os.path.join(dual_boot, "steamapps", "common"), exist_ok=True)
+        with open(os.path.join(dual_boot, "steamapps", "appmanifest_440.acf"), "w") as af:
+            af.write('"AppState"\n{\n}\n')
+        check(
+            is_path_in_steam_library(dual_boot, steam_libraries=[]) is True,
+            "Dual-boot library root is detected from its ACFs",
+        )
+
 
 def test_get_game_directory():
     print("=== 2. get_game_directory ===")
@@ -141,6 +169,63 @@ def test_is_standalone_game():
         check(
             is_standalone_game(g4) is False,
             "Standard Steam game inside steamapps/common is NOT standalone",
+        )
+
+        # Regression: only ("at0-m", "Steam") were exempt, so plugin and ACCELA
+        # games outside a detected library were routed down the standalone path
+        # (standalone UI gating, entry-deleting cancel cleanup, no SLS sync).
+        for source, extra, label in (
+            ("plugin_native", {}, "plugin_native"),
+            ("ACCELA", {}, "ACCELA"),
+            ("AT0-M", {}, "AT0-M"),
+            ("plugin_native", {"is_plugin_game": True}, "is_plugin_game flag"),
+        ):
+            g = {"appid": "104", "install_path": custom_dir, "source": source, **extra}
+            check(
+                is_standalone_game(g) is False,
+                f"{label} game outside a library is NOT standalone",
+            )
+
+        # The standalone record the scanner writes sets is_accela_install too,
+        # so that flag must never be a "Steam owns this" signal.
+        g5 = {
+            "appid": "105",
+            "install_path": custom_dir,
+            "source": "Standalone",
+            "is_standalone": True,
+            "is_accela_install": True,
+        }
+        check(
+            is_standalone_game(g5) is True,
+            "Scanned standalone record stays standalone despite is_accela_install",
+        )
+
+
+def test_resolve_install_layout():
+    print("=== 3b. resolve_install_layout placement ===")
+    from utils.game_modes import resolve_install_layout
+
+    with tempfile.TemporaryDirectory() as td:
+        lib = os.path.join(td, "SteamLib")
+        os.makedirs(os.path.join(lib, "steamapps", "common"), exist_ok=True)
+        with open(os.path.join(lib, "libraryfolder.vdf"), "w") as sf:
+            sf.write('"libraryfolder"\n{\n}\n')
+
+        game = {"appid": "440", "game_name": "Team Fortress 2"}
+        standalone, game_dir = resolve_install_layout(lib, game)
+        check(standalone is False, "Library root is not standalone")
+        check(
+            game_dir == os.path.join(lib, "steamapps", "common", "Team Fortress 2"),
+            f"Library root nests into steamapps/common (got {game_dir})",
+        )
+
+        # Regression: picking the game folder inside common double-nested it.
+        inside = os.path.join(lib, "steamapps", "common", "SomeGame")
+        standalone, game_dir = resolve_install_layout(inside, {"appid": "1", "game_name": "SomeGame"})
+        check(standalone is False, "Path inside steamapps/common is not standalone")
+        check(
+            game_dir == inside,
+            f"Path inside steamapps/common is not nested twice (got {game_dir})",
         )
 
 
@@ -282,13 +367,60 @@ def test_ui_gating_for_standalone():
     check(dlg.desktop_btn.isEnabled() is False, "Desktop shortcut button is disabled for standalone game")
 
 
+def test_standalone_status_and_cancel_safety():
+    print("=== 7. Standalone status badge and cancel-cleanup decision ===")
+
+    # The badge used to fall through to "Unable to check updates" because
+    # "standalone" had no status_map entry.
+    from ui.dialogs.library.widgets import GameItemWidget
+
+    widget = GameItemWidget(
+        {"appid": "77777", "game_name": "StandaloneGame", "source": "Standalone",
+         "is_standalone": True, "update_status": "standalone"},
+        "1 GB", "#7C4DFF", "#1E1E1E",
+    )
+    check(
+        widget.status_label.text() == "Standalone install",
+        f"Standalone badge reads 'Standalone install' (got {widget.status_label.text()!r})",
+    )
+
+    # A manual "check all updates" must not reset standalone to 'checking',
+    # because no check will ever run for it and it would stick on 'checking'.
+    from utils.update_status_cache import PERSISTENT_STATUSES, TRANSIENT_STATUSES
+    check(
+        "standalone" in PERSISTENT_STATUSES,
+        "standalone status is persisted",
+    )
+    check(
+        "standalone" not in TRANSIENT_STATUSES,
+        "standalone status is not treated as transient",
+    )
+
+    # Cancel cleanup must decide from the destination, not from game_data: the
+    # plain "Select Destination Folder" flow leaves install_path unset, and the
+    # old rule then classified the custom folder as a Steam library and
+    # rmtree'd the whole folder the user picked.
+    from core.steam_helpers import is_path_in_steam_library
+
+    with tempfile.TemporaryDirectory() as td:
+        custom_dest = os.path.join(td, "MyGames")
+        os.makedirs(custom_dest, exist_ok=True)
+        bare_game_data = {"appid": "88888", "game_name": "StandaloneGame"}
+        check(
+            is_path_in_steam_library(custom_dest) is False,
+            "Custom destination is standalone by path, even with bare game_data",
+        )
+
+
 def main():
     test_is_path_in_steam_library()
     test_get_game_directory()
     test_is_standalone_game()
+    test_resolve_install_layout()
     test_database_manager_standalone()
     test_sls_config_sync_skipped_for_standalone()
     test_ui_gating_for_standalone()
+    test_standalone_status_and_cancel_safety()
 
     print("\n--------------------------------------------------")
     print(f"Results: {passed} passed, {len(failed)} failed")

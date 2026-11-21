@@ -54,10 +54,9 @@ class GameManagerUninstallMixin:
 
         is_accela_install = game_data.get("is_accela_install", False)
 
-        from core.steam_helpers import is_path_in_steam_library
-        is_standalone = bool(
-            game_data.get("is_standalone")
-            or (install_path and not is_path_in_steam_library(install_path))
+        from utils.game_modes import is_standalone_game
+        is_standalone = is_standalone_game(
+            {**game_data, "install_path": install_path} if install_path else game_data
         )
         if is_standalone:
             confirm_msg = f"Are you sure you want to uninstall standalone game '{game_name}'?\n\n"
@@ -372,10 +371,9 @@ class GameManagerUninstallMixin:
                 except Exception as e:
                     logger.debug(f"Could not resolve atom install info for {appid}: {e}")
 
-            from core.steam_helpers import is_path_in_steam_library
-            is_standalone = bool(
-                game_data.get("is_standalone")
-                or (install_path and not is_path_in_steam_library(install_path))
+            from utils.game_modes import is_standalone_game
+            is_standalone = is_standalone_game(
+                {**game_data, "install_path": install_path} if install_path else game_data
             )
 
             if is_standalone:

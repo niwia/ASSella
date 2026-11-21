@@ -485,15 +485,25 @@ def is_path_in_steam_library(target_path: str, steam_libraries: Optional[List[st
             norm_lib = os.path.realpath(os.path.expanduser(str(lib)))
             if norm_target == norm_lib or norm_target.startswith(norm_lib + os.sep):
                 return True
-        # Structural check: verify genuine Steam library markers around 'steamapps'
+        # Structural check for libraries Steam has not registered in libraryfolders.vdf
+        # (external/dual-boot drives, or a library this app just created). Walk up from
+        # the target to the nearest candidate library root and accept the path when that
+        # root carries a genuine Steam library marker. This deliberately covers the root
+        # itself, its steamapps/ directory and everything below, so the same library is
+        # never reported "inside a library" for one path and outside for its parent.
         target_path_obj = Path(norm_target)
         if "steamapps" in target_path_obj.parts:
             idx = target_path_obj.parts.index("steamapps")
-            steamapps_dir = Path(*target_path_obj.parts[: idx + 1])
-            lib_root = steamapps_dir.parent
+            candidate_roots = [Path(*target_path_obj.parts[:idx])]
+        else:
+            candidate_roots = [target_path_obj, target_path_obj.parent]
+        for lib_root in candidate_roots:
+            steamapps_dir = lib_root / "steamapps"
+            # libraryfolder.vdf is written by ensure_steam_library at the library
+            # root; libraryfolders.vdf is Steam's own index of primary libraries.
             if (
-                (lib_root / "libraryfolders.vdf").is_file()
-                or (lib_root / "steamapps" / "libraryfolder.vdf").is_file()
+                (lib_root / "libraryfolder.vdf").is_file()
+                or (lib_root / "libraryfolders.vdf").is_file()
                 or (steamapps_dir / "libraryfolder.vdf").is_file()
                 or (steamapps_dir.is_dir() and any(steamapps_dir.glob("appmanifest_*.acf")))
             ):

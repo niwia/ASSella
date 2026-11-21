@@ -2283,9 +2283,15 @@ class TaskManager(
             return
 
         try:
-            from utils.game_modes import is_standalone_game
-            is_standalone = is_standalone_game(self.game_data)
-            game_dir = get_game_directory(
+            from core.steam_helpers import is_path_in_steam_library
+            from utils.game_modes import resolve_install_layout
+
+            # Decide from the destination this job actually used, not from
+            # game_data: the plain "Select Destination Folder" flow leaves
+            # install_path/is_standalone unset, and reading game_data there
+            # classified a custom folder as a Steam library and rmtree'd it.
+            is_standalone = not is_path_in_steam_library(self.current_dest_path)
+            _, game_dir = resolve_install_layout(
                 self.current_dest_path, self.game_data
             )
 

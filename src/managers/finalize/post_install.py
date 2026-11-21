@@ -133,10 +133,14 @@ class PostInstallMixin:
             # A `return` inside the `with` would run the context manager's
             # success path and log "done" for a cancelled job, so the loop
             # breaks out instead and the outcome is recorded explicitly.
-            from core.steam_helpers import is_path_in_steam_library
-            is_standalone = bool(
-                (self.game_data and self.game_data.get("is_standalone"))
-                or (self.current_dest_path and not is_path_in_steam_library(self.current_dest_path))
+            from utils.game_modes import is_standalone_game
+            is_standalone = is_standalone_game(
+                {
+                    **(self.game_data or {}),
+                    "install_path": self.current_dest_path,
+                }
+                if self.current_dest_path
+                else self.game_data
             )
             if is_standalone and self.game_data:
                 self.game_data["is_standalone"] = True

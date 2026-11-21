@@ -31,7 +31,6 @@ from ui.dialogs.themed_message_box import ThemedMessageBox
 from ui.dialog_titlebar import DialogTitleBar
 from utils.settings import get_settings
 from utils.color_utils import get_best_foreground_color
-from utils.yaml.modes import is_at0m_enabled
 
 logger = logging.getLogger(__name__)
 

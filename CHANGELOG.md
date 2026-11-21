@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Standalone Custom Folder Installs**: download a game into any folder you pick, with no Steam library, `.acf` or SLSsteam involvement. New storage picker option in the depot-selection and Steam-library dialogs, persisted in the `standalone_games` table and re-discovered on scan; game-details tabs (fix, desktop shortcut, DLC-to-DlcData, tickets) explain why they do not apply.
+
+### Fixed
+- **Library detection**: `is_path_in_steam_library` now recognises a library by the marker `ensure_steam_library` actually writes at the library root, so a freshly created or dual-boot library is no longer classed as "not a library" — which had made a chosen library root download into the root itself.
+- **Double nesting**: a destination already inside `steamapps/common` is no longer nested into `steamapps/common` a second time.
+- **Plugin and ACCELA games** are no longer classified as standalone, which had sent them through the standalone UI gating, cancel cleanup and SLS config-sync skip.
+- **Cancel cleanup** decides from the destination the job used rather than from `game_data`, so cancelling a download to a freshly picked custom folder no longer deletes that folder.
+- **Standalone status** has its own "Standalone install" badge instead of falling through to "Unable to check updates", and is no longer reset to "checking" by a manual update check.
+- **Uninstall** uses the shared `is_standalone_game` classification instead of its own inline copy.
+- **Custom-folder CI suites** pass on a clean home: the picker test builds a usable, non-transient target instead of relying on `/tmp` or on pre-existing Steam libraries, and the home-path blacklist check skips when `HOME` is itself transient.
+
 ## [3.1.0] - 2026-11-09
 
 ### Added

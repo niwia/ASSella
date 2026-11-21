@@ -72,9 +72,12 @@ class MainWindowUpdateAllMixin:
             # so they are re-queried. Games already marked 'update_available' are
             # intentionally left intact so the pending-updates list stays populated
             # during the refresh — cache acts as a display layer throughout.
+            # 'standalone' installs are never re-queried, so resetting them would
+            # leave them stuck on 'checking'.
             for g in self.game_manager.games:
-                if g.get("update_status") != "update_available":
-                    g["update_status"] = "checking"
+                if g.get("update_status") in ("update_available", "standalone"):
+                    continue
+                g["update_status"] = "checking"
             self.game_manager.library_updated.emit()
 
             # Start checks with force_refresh = True so update_available games are
