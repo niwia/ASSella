@@ -235,7 +235,10 @@ def _apply(content: str, setting: SlsSetting, text: str) -> Optional[str]:
                     "which YAML reads as one scalar; refusing to rewrite it"
                 )
                 return None
-            replacement = f"{km.group('key')} {text}{km.group('tail') or ''}"
+            # A tab before an inline comment is not valid YAML; normalise it
+            # so the edited line can still be written.
+            tail = (km.group("tail") or "").replace("\t", " ")
+            replacement = f"{km.group('key')} {text}{tail}"
             return content[: km.start()] + replacement + content[km.end():]
         return content.rstrip("\n") + f"\n\n{setting.key}: {text}\n"
 
@@ -277,7 +280,8 @@ def _apply(content: str, setting: SlsSetting, text: str) -> Optional[str]:
                     "which YAML reads as one scalar; refusing to rewrite it"
                 )
                 return None
-            replacement = f"{indent}{cm.group('key')} {text}{cm.group('tail') or ''}"
+            tail = (cm.group("tail") or "").replace("\t", " ")
+            replacement = f"{indent}{cm.group('key')} {text}{tail}"
             block = block[: cm.start()] + replacement + block[cm.end():]
         else:
             insert = f"{indent}{child}: {text}\n"
