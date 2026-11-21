@@ -147,6 +147,78 @@ def get_yaml_boolean_value(config_path: Path, key: str, default: bool = False) -
         logger.warning(f"Error reading '{key}' from {config_path}: {e}")
         return default
 
+def set_yaml_boolean_content(content: str, key: str, value_key: bool) -> Optional[str]:
+    """Return ``content`` with the top-level ``key`` set, or None if it already is.
+
+    Pure in-memory sibling of :func:`update_yaml_boolean_value`, for callers
+    that want several keys changed in one write (see
+    ``batch_config_edit``). Same rules: only a column-0 key is touched, its
+    quoting and any inline comment survive, and a value YAML reads as one
+    scalar (`no#tight`) is refused rather than partially rewritten.
+    """
+    new_value = "yes" if value_key else "no"
+    match = _bool_pattern(key).search(content)
+    # Only a trailing comment may follow the boolean on its line;
+    # `no#tight` is one scalar (the string "no#tight"), and rewriting its
+    # boolean prefix would change the value without setting the flag.
+    line_rest = re.split(r"\r?\n", content[match.end():], maxsplit=1)[0] if match else ""
+    # (A tab before an inline comment is invalid YAML and is normalised
+    # when the line is rewritten, so it still counts as a comment here.)
+    if match and line_rest.strip() and not re.match(r"[ \t]+#", line_rest.replace("\t", " ")):
+        # An unrecognised value is left for a human to fix.
+        logger.warning(
+            f"Leaving '{key}' alone: its value is a single scalar "
+            f"that cannot be rewritten in place safely"
+        )
+        return None
+
+    if not match:
+        # The key exists but not as a boolean we can rewrite in place
+        # (empty value, malformed scalar, an unexpected spelling). Rewrite
+        # that one line rather than appending a duplicate key, which YAML
+        # would resolve in favour of whichever came first.
+        new_content = _rewrite_key_line(content, key, new_value)
+        if new_content is not None:
+            logger.info(f"Rewrote existing '{key}' line to '{new_value}'")
+            return new_content
+        logger.info(f"Key '{key}' not found, appending '{key}: {new_value}'")
+        return _append_key_line(content, key, new_value)
+
+    if _spellings_to_bool(match.group("val")) is value_key:
+        return None
+
+    # The value may be a longer scalar that merely starts with a boolean
+    # spelling ('no#tight', which YAML reads as the string "no#tight").
+    # Rewriting the boolean prefix would change the scalar without setting
+    # the flag, so leave an unrecognised value to a human.
+    line_start, line_end = match.span()
+    after_value = re.split(r"\r?\n", content[match.end():], maxsplit=1)[0]
+    if not re.fullmatch(r"[ \t]*#[^\r\n]*|[ \t]*", after_value):
+        logger.warning(
+            f"Leaving '{key}' alone: its value is a single scalar "
+            f"that cannot be rewritten in place safely"
+        )
+        return None
+
+    # Rewrite only the matched span; anything after it (a trailing comment)
+    # is left untouched because the pattern stops before it. The span is
+    # re-expressed as `key:` + separator + value, so both the key's quoting
+    # and the whitespace before the comment survive.
+    matched = content[line_start:line_end]
+    prefix = matched[: len(matched) - len(match.group("val"))]
+    # The span ends at a zero-width lookahead; the rest of the line (the
+    # comment) is left as it is, except that any tab before '#' must become
+    # a space or PyYAML refuses to parse the file.
+    rest = content[line_end:]
+    m_comment = re.match(r"^([ \t]*)(#[^\r\n]*)?(\r?\n.*)?$", rest, re.DOTALL)
+    if m_comment:
+        sep = (m_comment.group(1) or "").replace("\t", " ")
+        comment = m_comment.group(2) or ""
+        remainder = m_comment.group(3) or ""
+        rest = sep + comment + remainder
+    return content[:line_start] + prefix + new_value + rest
+
+
 def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
     """Set a top-level boolean in YAML config, preserving layout. Appends if absent.
 
@@ -167,83 +239,18 @@ def update_yaml_boolean_value(config_path: Path, key: str, value: bool) -> bool:
         with open(config_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        new_value = "yes" if value else "no"
-        pattern = _bool_pattern(key)
-        match = pattern.search(content)
-
-        # Only a trailing comment may follow the boolean on its line;
-        # `no#tight` is one scalar (the string "no#tight"), and rewriting its
-        # boolean prefix would change the value without setting the flag.
-        line_rest = re.split(r"\r?\n", content[match.end():], maxsplit=1)[0] if match else ""
-        # (A tab before an inline comment is invalid YAML and is normalised
-        # when the line is rewritten, so it still counts as a comment here.)
-        if match and line_rest.strip() and not re.match(r"[ \t]+#", line_rest.replace("\t", " ")):
-            # An unrecognised value is left for a human to fix.
-            logger.warning(
-                f"Leaving '{key}' alone in {config_path}: its value is a single scalar "
-                f"that cannot be rewritten in place safely"
-            )
-            return False
-
-        if not match:
-            # The key exists but not as a boolean we can rewrite in place
-            # (empty value, malformed scalar, an unexpected spelling). Rewrite
-            # that one line rather than appending a duplicate key, which YAML
-            # would resolve in favour of whichever came first.
-            new_content = _rewrite_key_line(content, key, new_value)
-            if new_content is not None:
-                logger.info(f"Rewrote existing '{key}' line to '{new_value}' in {config_path}")
-            else:
-                logger.info(f"Key '{key}' not found in {config_path}, appending '{key}: {new_value}'")
-                new_content = _append_key_line(content, key, new_value)
-
-            if not _atomic_write(config_path, new_content):
-                return False
-            _ALREADY_CORRECT.discard(memo) if memo else None
-            return True
-
-        if _spellings_to_bool(match.group("val")) is value:
+        new_content = set_yaml_boolean_content(content, key, value)
+        if new_content is None:
             if memo is not None:
                 _ALREADY_CORRECT.add(memo)
             return False
-
-        # The value may be a longer scalar that merely starts with a boolean
-        # spelling ('no#tight', which YAML reads as the string "no#tight").
-        # Rewriting the boolean prefix would change the scalar without setting
-        # the flag, so leave an unrecognised value to a human.
-        line_start, line_end = match.span()
-        after_value = re.split(r"\r?\n", content[match.end():], maxsplit=1)[0]
-        if not re.fullmatch(r"[ \t]*#[^\r\n]*|[ \t]*", after_value):
-            logger.warning(
-                f"Leaving '{key}' alone in {config_path}: its value is a single scalar "
-                f"that cannot be rewritten in place safely"
-            )
-            return False
-
-        # Rewrite only the matched span; anything after it (a trailing comment)
-        # is left untouched because the pattern stops before it. The span is
-        # re-expressed as `key:` + separator + value, so both the key's quoting
-        # and the whitespace before the comment survive.
-        matched = content[line_start:line_end]
-        prefix = matched[: len(matched) - len(match.group("val"))]
-        # The span ends at a zero-width lookahead; the rest of the line (the
-        # comment) is left as it is, except that any tab before '#' must become
-        # a space or PyYAML refuses to parse the file.
-        rest = content[line_end:]
-        m_comment = re.match(r"^([ \t]*)(#[^\r\n]*)?(\r?\n.*)?$", rest, re.DOTALL)
-        if m_comment:
-            sep = (m_comment.group(1) or "").replace("\t", " ")
-            comment = m_comment.group(2) or ""
-            remainder = m_comment.group(3) or ""
-            rest = sep + comment + remainder
-        new_content = content[:line_start] + prefix + new_value + rest
 
         if not _atomic_write(config_path, new_content):
             return False
 
         if memo is not None:
             _ALREADY_CORRECT.discard(memo)
-        logger.info(f"Updated '{key}' to {new_value} in {config_path}")
+        logger.info(f"Updated '{key}' to {'yes' if value else 'no'} in {config_path}")
         return True
 
     except OSError as e:

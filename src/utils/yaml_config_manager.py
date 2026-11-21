@@ -175,6 +175,7 @@ from utils.yaml.validation import (  # noqa: F401
 
 from utils.yaml.yaml_values import (  # noqa: F401
     get_yaml_boolean_value,
+    set_yaml_boolean_content,
     update_yaml_boolean_value,
 )
 

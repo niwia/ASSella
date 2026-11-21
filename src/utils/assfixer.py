@@ -94,6 +94,12 @@ FALLBACK_TEMPLATE_SOURCE_URL = (
 TEMPLATE_TIMEOUT  = 15   # seconds – GitHub raw file download
 STEAM_API_TIMEOUT =  5   # seconds – per-game name lookups (many in parallel)
 
+# How many rotated copies of config.yaml repair keeps (`.bak`, `.bak2`, `.bak3`).
+_MAX_BACKUPS = 3
+# The boot check runs on every launch; a successful upstream fetch is reused
+# for this long so a normal start-up does not touch the network at all.
+_BOOT_TEMPLATE_TTL = 24 * 60 * 60
+
 
 def extract_template_yaml(raw_text: str) -> str:
     """Extract YAML text, whether downloaded directly from res/config.yaml or embedded in C++ header."""
@@ -203,9 +209,14 @@ def _fetch_url(url: str, timeout: int) -> str:
         return resp.read().decode("utf-8")
 
 
+def _template_cache_path() -> Path:
+    """Where the last downloaded upstream template is kept."""
+    return Path.home() / ".config" / "SLSsteam" / "sls_config_template.yaml"
+
+
 def get_bundled_or_cached_template() -> Optional[str]:
     """Retrieve template from local user cache or bundled resources."""
-    cache_path = Path.home() / ".config" / "SLSsteam" / "sls_config_template.yaml"
+    cache_path = _template_cache_path()
     if cache_path.is_file():
         try:
             txt = cache_path.read_text(encoding="utf-8")
@@ -235,10 +246,39 @@ def get_bundled_or_cached_template() -> Optional[str]:
     return None
 
 
+def get_boot_template() -> str:
+    """Return the upstream template for the boot check, reusing a recent fetch.
+
+    ``run_boot_config_check`` runs on every launch; refetching a 34 KB file from
+    GitHub each time is wasteful and leaves start-up blocked on the network.
+    A successful download is reused for ``_BOOT_TEMPLATE_TTL``; a failure
+    (offline) falls back to the local cache written by ``fetch_template``.
+    Raises RuntimeError when neither is available.
+    """
+    cache_path = _template_cache_path()
+    try:
+        if cache_path.is_file() and (time.time() - cache_path.stat().st_mtime) < _BOOT_TEMPLATE_TTL:
+            cached = cache_path.read_text(encoding="utf-8", errors="replace")
+            if cached and len(cached) > 200:
+                logger.debug(f"[AssFixer] Using template cached at {cache_path}")
+                return cached
+    except OSError as e:
+        logger.debug(f"[AssFixer] Could not read template cache {cache_path}: {e}")
+
+    try:
+        return fetch_template()
+    except RuntimeError:
+        local_tmpl = get_bundled_or_cached_template()
+        if local_tmpl:
+            logger.info("[AssFixer] Using local cached/bundled SLSsteam config template.")
+            return local_tmpl
+        raise
+
+
 def fetch_template(url: str = TEMPLATE_SOURCE_URL) -> str:
     """Download upstream template (YAML or C++ embedded) and return the YAML template, with offline/cache fallback."""
     raw = None
-    cache_path = Path.home() / ".config" / "SLSsteam" / "sls_config_template.yaml"
+    cache_path = _template_cache_path()
 
     try:
         raw = _fetch_url(url, min(TEMPLATE_TIMEOUT, 8))
@@ -1175,17 +1215,24 @@ def merge_config(template_yaml: str, user_data: dict, key_types: dict) -> str:
 # ──────────────────────────────────────────────────────────────
 
 def make_backup_with_rotation(config_path: Path) -> Path:
-    bak_base = config_path.with_name(config_path.name + ".bak")
-    if not bak_base.exists():
-        shutil.copy2(config_path, bak_base)
-        return bak_base
-    i = 2
-    while True:
-        bak_rot = config_path.with_name(config_path.name + f".bak{i}")
-        if not bak_rot.exists():
-            shutil.copy2(config_path, bak_rot)
-            return bak_rot
-        i += 1
+    """Snapshot ``config_path`` to ``.bak``, ``.bak2`` or ``.bak3``.
+
+    Rotation is capped: once the three slots are used the oldest snapshot is
+    replaced, so a repeatedly repaired config cannot fill the directory with
+    backups.
+    """
+    slots = [config_path.with_name(f"{config_path.name}.bak")]
+    slots += [config_path.with_name(f"{config_path.name}.bak{i}") for i in range(2, _MAX_BACKUPS + 1)]
+
+    for slot in slots:
+        if not slot.exists():
+            shutil.copy2(config_path, slot)
+            return slot
+
+    # All slots taken: recycle the oldest one.
+    oldest = min(slots, key=lambda p: p.stat().st_mtime)
+    shutil.copy2(config_path, oldest)
+    return oldest
 
 
 def get_latest_backup_path(config_path: Path) -> Optional[Path]:
@@ -1246,7 +1293,7 @@ def run_boot_config_check() -> None:
         new_keys = set()
         issues = []
         try:
-            raw_hpp = _fetch_url(TEMPLATE_SOURCE_URL, TEMPLATE_TIMEOUT)
+            raw_hpp = get_boot_template()
             key_types = infer_key_types(raw_hpp)
             template_yaml = extract_template_yaml(raw_hpp)
             if not template_yaml:

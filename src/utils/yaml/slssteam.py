@@ -16,10 +16,9 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from utils.yaml.core import _atomic_write, _create_backup, get_user_config_path
+from utils.yaml.core import _atomic_write, _create_backup, batch_config_edit, get_user_config_path
 from utils.yaml.modes import is_slssteam_config_management_enabled, is_slssteam_mode_enabled
-from utils.yaml.plugins import ensure_plugins_enabled
-from utils.yaml.yaml_values import update_yaml_boolean_value
+from utils.yaml.yaml_values import set_yaml_boolean_content, update_yaml_boolean_value
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +159,54 @@ def is_smart_tickets_enabled(config_path: Optional[Path] = None) -> bool:
         pass
     return False
 
+_LOG_LEVELS_PATTERN = re.compile(
+    r"^([ \t]*)LogLevels[ \t]*:[ \t]*([^\r\n#]+)(.*)$",
+    re.MULTILINE,
+)
+_LOG_LEVEL_PATTERN = re.compile(
+    r"^([ \t]*)LogLevel[ \t]*:[ \t]*([^\r\n#]+)(.*)$",
+    re.MULTILINE,
+)
+
+
+def _parse_level(raw_val: str) -> int:
+    raw_val = raw_val.strip().strip('"').strip("'")
+    try:
+        return int(raw_val, 16) if raw_val.lower().startswith("0x") else int(raw_val, 10)
+    except ValueError:
+        return 0
+
+
+def _enable_once_flag(content: str) -> Optional[str]:
+    """Return ``content`` with the Once log level enabled, or None if it already is.
+
+    New SLSsteam uses a bitmask (`LogLevels`, bit 0x2 = Once); the old format
+    used an enum (`LogLevel`, 0 = Once). Only the value span changes, so any
+    inline comment and the rest of the file stay as they were.
+    """
+    match = _LOG_LEVELS_PATTERN.search(content)
+    if match:
+        current = _parse_level(match.group(2))
+        if current & 0x2:
+            return None
+        indent, comment = match.group(1), match.group(3)
+        comment_str = f" {comment.strip()}" if comment.strip() else ""
+        replacement = f"{indent}LogLevels: 0x{current | 0x2:X}{comment_str}"
+        return _LOG_LEVELS_PATTERN.sub(replacement, content, count=1)
+
+    match = _LOG_LEVEL_PATTERN.search(content)
+    if match:
+        if _parse_level(match.group(2)) == 0:
+            return None
+        indent, comment = match.group(1), match.group(3)
+        comment_str = f" {comment.strip()}" if comment.strip() else ""
+        replacement = f"{indent}LogLevel: 0{comment_str}"
+        return _LOG_LEVEL_PATTERN.sub(replacement, content, count=1)
+
+    logger.debug("No LogLevels/LogLevel key found (default enables all)")
+    return None
+
+
 def ensure_slssteam_prerequisites(config_path: Optional[Path] = None) -> bool:
     """Silently ensure all SLSsteam configuration prerequisites are met.
 
@@ -168,8 +215,10 @@ def ensure_slssteam_prerequisites(config_path: Optional[Path] = None) -> bool:
       2. LogLevels has 0x2 / Once flag enabled (or old LogLevel: 0)
       3. Plugins: yes (for library-inject plugin loader)
 
-    Creates a backup before applying any modifications and performs in-place atomic writes.
-    Never shows disruptive UI popups — logs actions at INFO/DEBUG level.
+    All three are applied to one in-memory copy and committed as a single
+    in-place write, so SLSsteam's file watcher reloads once instead of up to
+    three times. Creates a backup before applying any modification and never
+    shows disruptive UI popups - logs actions at INFO/DEBUG level.
     """
     if config_path is None:
         config_path = get_user_config_path()
@@ -182,22 +231,38 @@ def ensure_slssteam_prerequisites(config_path: Optional[Path] = None) -> bool:
         logger.debug("ensure_slssteam_prerequisites: SLS config management disabled in settings")
         return False
 
-    changed = False
-    _create_backup(config_path)
-
     try:
-        if ensure_slssteam_api_enabled(config_path):
-            changed = True
-            logger.info("Silently ensured SLSsteam API is enabled in config.yaml")
+        with batch_config_edit(config_path) as editor:
+            content = editor.content
+            changed = []
 
-        if ensure_slssteam_logging_enabled(config_path):
-            changed = True
-            logger.info("Silently ensured SLSsteam LogLevels includes 0x2 (Once) in config.yaml")
+            new_content = set_yaml_boolean_content(content, "API", True)
+            if new_content is not None:
+                content = new_content
+                changed.append("API: yes")
 
-        if ensure_plugins_enabled(config_path):
-            changed = True
-            logger.info("Silently ensured SLSsteam Plugins: yes is enabled in config.yaml")
+            new_content = _enable_once_flag(content)
+            if new_content is not None:
+                content = new_content
+                changed.append("LogLevels Once flag")
+
+            new_content = set_yaml_boolean_content(content, "Plugins", True)
+            if new_content is not None:
+                content = new_content
+                changed.append("Plugins: yes")
+
+            if changed:
+                # Snapshot the original before this session's first write, the
+                # same way the single-key writers do.
+                _create_backup(config_path)
+                editor.content = content
+                editor.has_changes = True
+        if not editor.committed_successfully:
+            logger.error(f"ensure_slssteam_prerequisites: Could not write {config_path}")
+            return False
+        if changed:
+            logger.info(f"Silently ensured SLSsteam prerequisites in config.yaml ({', '.join(changed)})")
+        return bool(changed)
     except Exception as e:
         logger.warning(f"Error ensuring SLSsteam prerequisites: {e}")
-
-    return changed
+        return False
